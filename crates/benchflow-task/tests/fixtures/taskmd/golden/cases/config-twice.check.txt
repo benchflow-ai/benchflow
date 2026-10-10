@@ -1,0 +1,11 @@
+config-twice/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 2 words; starts 'Fix it.'
+  blocks: toml task, toml task
+  config: block (name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: duplicate ```toml task block (task.md:7)
+  error: config found in more than one place: block, block
+  FAILED

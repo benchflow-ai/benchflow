@@ -1,0 +1,42 @@
+{
+  "path": "training-good/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/training-good\"\nversion = \"1.0.0\"\n[roles.critic]\npolicy = true\n\n[training]\nfork = false\nmax_concurrent = 2\nreward = \"partial\"\n\n[agent]\ntimeout_basis = \"wall\"\n\n[verifier]\nfeedback = \"verdicts\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/training-good",
+    "version": "1.0.0",
+    "roles": {
+      "critic": {
+        "policy": true
+      }
+    },
+    "training": {
+      "fork": false,
+      "max_concurrent": 2,
+      "reward": "partial"
+    },
+    "agent": {
+      "timeout_basis": "wall"
+    },
+    "verifier": {
+      "feedback": "verdicts"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/training-good",
+  "ok": true
+}

@@ -1,0 +1,1 @@
+{"trajectory": [{"type": "agent_message", "text": "continuation of n1"}, "not-an-event", {"type": "tool_call", "tool_call_id": "t", "kind": "execute", "title": "ls", "status": "completed"}], "native_usage": {"total_tokens": 10, "cost_usd": "0.5"}, "timing": {"agent_execution": 4.0, "total": 9}, "error": null, "export_error": "child export failed"}

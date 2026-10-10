@@ -1,0 +1,65 @@
+{
+  "path": "library-week--refactor-cli/task.md",
+  "mode": "blocks",
+  "instruction": "`/repo/datekit/cli.py` has grown to one long function. Split it into one function per subcommand without changing what any command prints or returns. The existing tests, and the ones you added earlier this week, must keep passing.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/library-week-refactor-cli\"\ntitle = \"Split the CLI into one function per subcommand\"\nversion = \"1.0.0\"\n\n[agent]\ntimeout = \"20m\"\nnetwork = \"none\"\n\n[sandbox]\nimage = \"python:3.12-slim\"\nworkdir = \"/repo\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "examples/library-week-refactor-cli",
+    "title": "Split the CLI into one function per subcommand",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "20m",
+      "network": "none"
+    },
+    "sandbox": {
+      "image": "python:3.12-slim",
+      "workdir": "/repo"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "tests-pass",
+        "gate": true,
+        "judge": "test",
+        "check": "tests/",
+        "text": "All tests pass, including those added earlier in the sequence.",
+        "stated": "The existing tests, and the ones you added earlier this week, must keep passing"
+      },
+      {
+        "id": "same-behavior",
+        "gate": true,
+        "judge": "replay",
+        "check": "replay recorded CLI calls from the previous task and compare output",
+        "text": "Every recorded command prints and returns exactly what it did before the refactor.",
+        "stated": "without changing what any command prints or returns"
+      },
+      {
+        "id": "one-function-per-subcommand",
+        "points": 1,
+        "judge": "llm",
+        "evidence": [
+          "diff:datekit/cli.py"
+        ],
+        "text": "Each subcommand has its own function, and the dispatcher only routes.",
+        "stated": "Split it into one function per subcommand"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "`/repo/datekit/cli.py` has grown to one long function. Split it into one function per subcommand without changing what any command prints or returns. The existing tests, and the ones you added earlier this week, must keep passing.",
+  "title": "Split the CLI into one function per subcommand",
+  "ok": true
+}

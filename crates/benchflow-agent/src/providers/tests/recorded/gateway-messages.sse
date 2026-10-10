@@ -1,0 +1,30 @@
+event: message_start
+data: {"type":"message_start","message":{"id":"gen_RECORDED","type":"message","role":"assistant","content":[],"model":"deepseek/deepseek-v4-flash-0731","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"We"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" need"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" answer"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" user"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"input_tokens":84,"output_tokens":5},"provider_metadata":{"novita":{"acceptedPredictionTokens":0,"rejectedPredictionTokens":0},"gateway":{"routing":{"originalModelId":"deepseek/deepseek-v4-flash-0731","finalProvider":"novita"},"cost":"0.00004356","marketCost":"0.00004356","surchargeCost":"0","gatewayCost":"0.00004356","inferenceCost":"0.00004356","inputInferenceCost":"0.00003696","outputInferenceCost":"0.0000066","generationId":"gen_RECORDED"}}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

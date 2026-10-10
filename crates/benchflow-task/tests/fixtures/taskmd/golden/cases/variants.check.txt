@@ -1,0 +1,11 @@
+variants/task.md
+  mode: blocks
+  title: acme/variants
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, variants, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: unknown key 'sandbx' in [variants.fast]; did you mean sandbox? it holds about, agent, conventions, credits, description, family, import, integrity, interaction, matrix, oracle, preference, provenance, roles, runs, sandbox, stages, tiers, training, trajectory, user, variants, verifier, world, or x- extensions (task.md)
+  error: unknown key 'timout' in [variants.fast.agent]; did you mean timeout? it holds budget, network, network_reason, on_timeout, system_prompt_append, timeout, timeout_basis, user, or x- extensions (task.md)
+  FAILED

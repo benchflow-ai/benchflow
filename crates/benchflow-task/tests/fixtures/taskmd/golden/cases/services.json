@@ -1,0 +1,77 @@
+{
+  "path": "services/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/services\"\nversion = \"1.0.0\"\n[[sandbox.services]]\nname = \"main\"\nimage = \"postgres:16\"\n\n[[sandbox.services]]\nname = \"db\"\nimage = \"postgres:16\"\nports = [5432]\nready = { run = \"\" }\n\n[[sandbox.services]]\nname = \"db\"\nbuild = \"sandbox/db\"\n\n[[sandbox.services]]\nimage = \"redis\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/services",
+    "version": "1.0.0",
+    "sandbox": {
+      "services": [
+        {
+          "name": "main",
+          "image": "postgres:16"
+        },
+        {
+          "name": "db",
+          "image": "postgres:16",
+          "ports": [
+            5432
+          ],
+          "ready": {
+            "run": ""
+          }
+        },
+        {
+          "name": "db",
+          "build": "sandbox/db"
+        },
+        {
+          "image": "redis"
+        }
+      ]
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "the service name main is the agent's own container; name the service something else",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key ports in service db",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "service db ready needs run, the command that must pass",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "each [[sandbox.services]] entry has a name and an image or a build folder",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "service db is declared twice",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/services",
+  "ok": false
+}

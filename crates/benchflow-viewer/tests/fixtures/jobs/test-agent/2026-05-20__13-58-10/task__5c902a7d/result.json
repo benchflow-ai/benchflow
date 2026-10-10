@@ -1,0 +1,48 @@
+{
+  "task_name": "task",
+  "rollout_name": "task__5c902a7d",
+  "rewards": null,
+  "agent": "test-agent",
+  "agent_name": "test-agent",
+  "model": "",
+  "n_tool_calls": 5,
+  "n_prompts": 1,
+  "error": null,
+  "verifier_error": "verifier crashed: No reward file found at jobs/2026-05-20__13-58-10/task__5c902a7d/verifier/reward.txt or jobs/2026-05-20__13-58-10/task__5c902a7d/verifier/reward.json",
+  "partial_trajectory": false,
+  "trajectory_source": "scraped",
+  "started_at": "2026-05-20 13:58:10.329159",
+  "finished_at": "2026-05-20 13:58:10.335728",
+  "timing": {
+    "environment_setup": 0.0,
+    "agent_setup": 0.0,
+    "agent_execution": 0.0,
+    "verifier": 0.0,
+    "total": 0.0
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "parallel_group": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "test-agent",
+          "model": null,
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ]
+}

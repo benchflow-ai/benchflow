@@ -1,0 +1,10 @@
+no-grader/task.md
+  mode: blocks
+  title: acme/no-grader
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image (task.md)
+  FAILED

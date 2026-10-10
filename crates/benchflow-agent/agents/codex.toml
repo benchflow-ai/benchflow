@@ -1,0 +1,111 @@
+# OpenAI Codex through its ACP adapter, as BenchFlow 0.8's `codex-acp`.
+name = "codex"
+aliases = ["codex-acp"]
+description = "OpenAI Codex agent via ACP, or headless with codex exec"
+acp_registry = "codex-acp"
+skill_paths = ["$HOME/.agents/skills"]
+
+[install]
+# The pin decides which models Codex knows: 2.0.1 (@openai/codex ^0.159.1)
+# lists gpt-6.1-sol; a model missing from Codex's catalog gets a reduced tool
+# surface.
+npm = "@agentclientprotocol/codex-acp@2.0.1"
+bin = "codex-acp"
+
+[launch]
+# Writes ~/.codex/auth.json from OPENAI_API_KEY only when the key is set, so a
+# ChatGPT login copied into the sandbox is left alone. The config.toml lines
+# keep 0.8's handling of BENCHFLOW_CODEX_HOME_CONFIG: a run on a provider sets
+# it (see [providers.openai] below); without it they only remove a config.toml
+# a BenchFlow launch wrote earlier.
+command = '''h="${BENCHFLOW_AGENT_HOME:-$HOME}"; if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && printf '{"OPENAI_API_KEY": "%s"}' "$OPENAI_API_KEY" > "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; fi; c="${CODEX_HOME:-$h/.codex}"; if [ -n "$BENCHFLOW_CODEX_HOME_CONFIG" ]; then { mkdir -p "$c" && printf '%s' "$BENCHFLOW_CODEX_HOME_CONFIG" > "$c/config.toml"; } || { echo "BenchFlow: cannot write $c/config.toml" >&2; exit 1; }; elif [ "$(head -n 1 "$c/config.toml" 2>/dev/null)" = '# benchflow-codex-home-config' ]; then rm -f "$c/config.toml"; fi; exec /opt/benchflow/bin/codex-acp ${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL} "$@"'''
+# The sandbox (a non-root user, BenchFlow's firewall) owns isolation. The
+# adapter's default workspace-write mode nests bwrap, which fails in Docker
+# and Daytona before any tool runs.
+env = { INITIAL_AGENT_MODE = "agent-full-access" }
+
+[headless]
+# `codex exec --json` on the Codex CLI the ACP adapter carries (codex-acp
+# 2.0.1 depends on @openai/codex ^0.159.1), so both harnesses share one
+# install. The instruction comes on stdin (`-`). An API key is written to
+# auth.json as the ACP launcher does; a ChatGPT login is already there. On a
+# provider, or on an API key BenchFlow's forwarder holds, config.toml comes
+# from BENCHFLOW_CODEX_HOME_CONFIG as for ACP (see [providers.openai] below).
+command = '''c=/opt/benchflow/js-agents/lib/node_modules/@agentclientprotocol/codex-acp/node_modules/@openai/codex/bin/codex.js; [ -f "$c" ] || { echo "BenchFlow: the Codex CLI is not at $c; reinstall the agent" >&2; exit 127; }; if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$HOME/.codex" && printf '{"OPENAI_API_KEY": "%s"}' "$OPENAI_API_KEY" > "$HOME/.codex/auth.json" && chmod 600 "$HOME/.codex/auth.json"; fi; d="${CODEX_HOME:-$HOME/.codex}"; if [ -n "$BENCHFLOW_CODEX_HOME_CONFIG" ]; then { mkdir -p "$d" && printf '%s' "$BENCHFLOW_CODEX_HOME_CONFIG" > "$d/config.toml"; } || { echo "BenchFlow: cannot write $d/config.toml" >&2; exit 1; }; elif [ "$(head -n 1 "$d/config.toml" 2>/dev/null)" = '# benchflow-codex-home-config' ]; then rm -f "$d/config.toml"; fi; exec /opt/benchflow/node/bin/node "$c" exec ${BENCHFLOW_RESUME:+resume --last} --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} ${BENCHFLOW_EFFORT:+-c model_reasoning_effort="$BENCHFLOW_EFFORT"} ${OPENAI_BASE_URL:+-c openai_base_url="$OPENAI_BASE_URL"} "$@" - < "$BENCHFLOW_INSTRUCTION_FILE"'''
+output = "codex-json"
+
+[credentials]
+family = "openai"
+
+[model]
+# codex-acp validates session/set_model ids as `model[effort]`; BenchFlow picks
+# the variant the session advertises. Its "model" config option rejects those
+# ids, so Codex stays on session/set_model.
+select = "set-model"
+format = "model[effort]"
+# 0.8 stripped its registered `openai/` provider prefix before Codex saw the id.
+strip_prefixes = ["openai/"]
+
+[providers.openai]
+# Codex calls the Responses API. codex-acp 2.0.1 ignores OPENAI_BASE_URL and
+# `-c openai_base_url` (checked 2026-10-10: it called api.openai.com), so the
+# endpoint goes into config.toml, which both commands write from
+# BENCHFLOW_CODEX_HOME_CONFIG, as a model provider of its own reading the
+# (placeholder) key from OPENAI_API_KEY. On Codex's own API key (held by the
+# forwarder) the model and effort lines are left out unless the run names
+# them, so Codex keeps its own defaults. WebSockets are off: Codex would try
+# them first and retry five times before falling back to HTTPS.
+api = "responses"
+key = "OPENAI_API_KEY"
+clear = ["OPENAI_BASE_URL", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"]
+# The effort `{effort}` stands for when the run names none (Codex's default).
+effort = "medium"
+
+[providers.openai.env]
+# Codex's catalog lacks provider models, and codex-acp 2.0.1 refuses
+# session/set_model for a model it does not list, even the current one. So
+# the model and effort go into config.toml too, and the session starts on
+# them: codex-acp reports `<model>[<effort>]` as current, which BenchFlow
+# then finds already selected and does not send again.
+BENCHFLOW_CODEX_HOME_CONFIG = '''# benchflow-codex-home-config
+model = "{model}"
+model_reasoning_effort = "{effort}"
+model_provider = "benchflow"
+
+[model_providers.benchflow]
+name = "BenchFlow forwarder"
+base_url = "{base_url}"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+supports_websockets = false
+'''
+
+# Rollouts live under ~/.codex/sessions. Over ACP a later stage loads the
+# previous stage's session (session/load); headless it runs
+# `codex exec resume --last`, as Harbor does.
+[resume]
+acp = true
+headless = true
+session_dirs = [".codex/sessions"]
+# bench run --load-trajectory places a session file of this format.
+load = "codex-rollout"
+
+# Harbor's codex options. The `-c` overrides reach both harnesses: codex-acp
+# takes them as the CLI does.
+[options.version]
+type = "string"
+description = "codex-acp version to install; it carries the Codex CLI both harnesses run."
+default = "2.0.1"
+install = "@agentclientprotocol/codex-acp"
+
+[options.reasoning_summary]
+type = "enum"
+description = "How model reasoning is summarized."
+choices = ["auto", "concise", "detailed", "none"]
+flag = "-c model_reasoning_summary={value}"
+
+[options.web_search]
+type = "enum"
+description = "Web search mode."
+choices = ["disabled", "cached", "live"]
+flag = "-c web_search={value}"

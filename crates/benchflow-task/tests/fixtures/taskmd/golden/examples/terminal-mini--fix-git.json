@@ -1,0 +1,58 @@
+{
+  "path": "terminal-mini--fix-git/task.md",
+  "mode": "blocks",
+  "instruction": "I just made some changes to my personal site and checked out master, but now I can't find those changes. Please help me find them and merge them into master.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "[about]\nauthor_name = \"TheMikeMerrill\"\nauthor_email = \"mchlmerrill@gmail.com\"\ndifficulty = \"easy\"\ncategory = \"software-engineering\"\ntags = [\"coding\", \"version-control\"]\nexpert_time_estimate_min = 5.0\njunior_time_estimate_min = 20.0\n\n[agent]\ntimeout = \"15m\"\n\n[sandbox]\nimage = \"alexgshaw/fix-git:20251031\"\ncpus = 1\nmemory = \"2 GB\"\ndisk = \"10 GB\"\nbuild_timeout = \"10m\"\n\n[verifier]\ntimeout = \"15m\"\nmount = \"/tests\"\n\n[oracle]\nmount = \"/solution\"\n\n[import.harbor]\nversion = \"1.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "about": {
+      "author_name": "TheMikeMerrill",
+      "author_email": "mchlmerrill@gmail.com",
+      "difficulty": "easy",
+      "category": "software-engineering",
+      "tags": [
+        "coding",
+        "version-control"
+      ],
+      "expert_time_estimate_min": 5.0,
+      "junior_time_estimate_min": 20.0
+    },
+    "agent": {
+      "timeout": "15m"
+    },
+    "sandbox": {
+      "image": "alexgshaw/fix-git:20251031",
+      "cpus": 1,
+      "memory": "2 GB",
+      "disk": "10 GB",
+      "build_timeout": "10m"
+    },
+    "verifier": {
+      "timeout": "15m",
+      "mount": "/tests"
+    },
+    "oracle": {
+      "mount": "/solution"
+    },
+    "import": {
+      "harbor": {
+        "version": "1.0"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "I just made some changes to my personal site and checked out master, but now I can't find those changes. Please help me find them and merge them into master.",
+  "title": null,
+  "ok": true
+}

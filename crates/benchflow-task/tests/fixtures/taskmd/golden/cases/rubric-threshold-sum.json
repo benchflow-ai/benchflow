@@ -1,0 +1,42 @@
+{
+  "path": "rubric-threshold-sum/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-threshold-sum\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-threshold-sum",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "works",
+        "gate": true,
+        "judge": "test",
+        "check": "test_works",
+        "text": "It works.",
+        "stated": "Fix the bug"
+      }
+    ],
+    "scoring": {
+      "method": "sum",
+      "pass_threshold": 5
+    }
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-threshold-sum",
+  "ok": true
+}

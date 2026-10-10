@@ -1,0 +1,54 @@
+{
+  "path": "matrix-preference/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/matrix-preference\"\nversion = \"1.0.0\"\n[matrix]\naxes = []\ncells = 3\n\n[preference]\nprotocol = \"pairwise\"\nraters = 3\n\n[preference.min_agreement]\nmetric = \"kappa\"\nthreshold = 0.6",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/matrix-preference",
+    "version": "1.0.0",
+    "matrix": {
+      "axes": [],
+      "cells": 3
+    },
+    "preference": {
+      "protocol": "pairwise",
+      "raters": 3,
+      "min_agreement": {
+        "metric": "kappa",
+        "threshold": 0.6
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key 'cells' in [matrix]; it holds accept, axes, pair_on, report, trials_per_cell, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'raters' in [preference]; did you mean rater_pool? it holds aggregate, answers, blind, compare, directions, export_pairs, gold_pairs, min_agreement, protocol, randomize_sides, rater_brief, rater_pool, raters_per_pair, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'threshold' in [preference.min_agreement]; it holds metric, value, or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/matrix-preference",
+  "ok": false
+}

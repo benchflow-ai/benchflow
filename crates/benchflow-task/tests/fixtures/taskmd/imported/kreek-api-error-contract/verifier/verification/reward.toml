@@ -1,0 +1,3 @@
+# Synced from eval/verifier/shared/verification/reward.toml. Do not edit in tests/.
+[scoring.verification]
+aggregation = "all-pass"

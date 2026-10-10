@@ -1,0 +1,43 @@
+{
+  "path": "budget/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/budget\"\nversion = \"1.0.0\"\n[agent]\nbudget = { tokens = \"2.5k\", tool_calls = 0 }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/budget",
+    "version": "1.0.0",
+    "agent": {
+      "budget": {
+        "tokens": "2.5k",
+        "tool_calls": 0
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[agent] budget tokens is a count: a whole number, or a string of a number and K (1,000) or M (1,000,000) that comes to a whole number, such as 400000, \"400K\", or \"2M\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[agent] budget tool_calls is a whole number, at least 1",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/budget",
+  "ok": false
+}

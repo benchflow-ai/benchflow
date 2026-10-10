@@ -1,0 +1,16 @@
+# OpenAI's own API. Codex runs `openai/<model>` on its own logins (its
+# manifest strips the prefix), so this provider serves the other agents.
+name = "openai"
+description = "OpenAI's API"
+
+[openai]
+base_url = "https://api.openai.com/v1"
+apis = ["chat", "responses"]
+
+[key]
+# CODEX_API_KEY is Codex's own name for an OpenAI API key.
+env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
+
+[check]
+endpoint = "openai"
+path = "/models"

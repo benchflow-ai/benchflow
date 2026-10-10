@@ -1,0 +1,12 @@
+grading-stage-parts/task.md
+  mode: blocks
+  title: acme/grading-stage-parts
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: stage two, toml task
+  config: block (name, stages, verifier, version)
+  rubric: 1 criteria, 0 gates, 2 points; judges llm
+  grading needs a model: yes: llm judges 2 criteria
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  judge llm (stage two): model from the run, samples 2, aggregate median*, min_samples 2*, per criterion*, timeout 1m; * marks a default
+  worst-case grading time: 9m (scripts 2m + scripts 3m (stage two) + llm 3 sessions, 4m; in sequence, before retries)
+  ok

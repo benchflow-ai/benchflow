@@ -1,0 +1,32 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "picture__00000002",
+  "agent": {
+    "name": "claude",
+    "version": "2.1.0",
+    "model_name": "anthropic/claude-sonnet-4-6"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": [
+        {
+          "type": "text",
+          "text": "What is in this picture?"
+        },
+        {
+          "type": "image",
+          "source": {
+            "path": "images/cat.png"
+          }
+        }
+      ]
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "A cat."
+    }
+  ]
+}

@@ -1,0 +1,583 @@
+{
+  "harbor/agents-run-single-task": {
+    "notes": [
+      "task.toml kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/agents-run-single-task": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.version"
+    ]
+  },
+  "harbor/build-steps": {
+    "notes": [
+      "steps/configure/trajectory.json is ATIF context Harbor seeds the agent's session with before it starts; no task.md runtime loads it, so it is recorded under [import.harbor] trajectory, and the checker warns",
+      "Harbor copies steps/<name>/workdir/ into the agent's working directory before the step starts and runs its setup.sh; no task.md runtime does, so stages/build/workdir are recorded under [import.harbor] workdirs, and the checker warns",
+      "instruction.md is not shown to agents in a multi-step Harbor task; kept under [import.harbor]",
+      "task.toml kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/build-steps": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md",
+      "steps/configure/instruction.md",
+      "steps/build/instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.schema_version"
+    ]
+  },
+  "harbor/flood-risk-analysis": {
+    "notes": [
+      "warning: environment/skills/ holds skills that nothing installs: Harbor installs skills only from the skills_dir that task.toml names, and it names none. If the task means them to be installed, as BenchFlow's runtime does by convention, declare [sandbox] skills = \"sandbox/skills\" (import-dataset does so for a BenchFlow registry)",
+      "task.toml kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/flood-risk-analysis": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.version"
+    ]
+  },
+  "harbor/nanofirm-task": {
+    "notes": [
+      "task.toml kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/nanofirm-task": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.version"
+    ]
+  },
+  "harbor/odd-values": {
+    "notes": [
+      "kept environment.network_mode = 'offline' as written: Harbor's values are no-network, public, and allowlist",
+      "kept agent.timeout_sec as written: its value is not in the form Harbor documents",
+      "task.toml kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/odd-values": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.agent",
+      "import.harbor.environment"
+    ]
+  },
+  "harbor/open-fence": {
+    "error": "cannot import: instruction.md: the code fence at its line 3 is never closed, so the task.md blocks after the instruction, the config included, would become part of it; close the fence"
+  },
+  "harbor/parse-logs": {
+    "notes": [
+      "environment.memory is Harbor's deprecated spelling; imported as 4 GB",
+      "environment.allow_internet is Harbor's deprecated spelling; imported as network = 'none'",
+      "the verifier's scripts call a model: [verifier.env] passes OPENAI_API_KEY. Declared as [verifier] models = true, so a task.md runtime gives them its model proxy and a scoped token; on Harbor they read the keys [verifier.env] passes from the host",
+      "task.toml kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/parse-logs": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.task",
+      "import.harbor.version"
+    ]
+  },
+  "harbor/r2r-mpc-control": {
+    "notes": [
+      "environment.memory is Harbor's deprecated spelling; imported as 4 GB",
+      "environment.storage is Harbor's deprecated spelling; imported as 5 GB",
+      "environment.allow_internet is Harbor's deprecated spelling; imported as network = 'open'",
+      "warning: environment/skills/ holds skills that nothing installs: Harbor installs skills only from the skills_dir that task.toml names, and it names none. If the task means them to be installed, as BenchFlow's runtime does by convention, declare [sandbox] skills = \"sandbox/skills\" (import-dataset does so for a BenchFlow registry)",
+      "task.toml kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/r2r-mpc-control": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.version"
+    ]
+  },
+  "harbor/services-and-cheats": {
+    "notes": [
+      "trajectory.json is ATIF context Harbor seeds the agent's session with before it starts; no task.md runtime loads it, so it is recorded under [import.harbor] trajectory, and the checker warns",
+      "cheat/ holds a cheat oracle (Terminal-Bench 3's convention): declared as [integrity.controls] cheats = ['cheat/solve.sh']; its files stay in place",
+      "warning: environment/skills/ holds skills that nothing installs: Harbor installs skills only from the skills_dir that task.toml names, and it names none. The image copies the folder (environment/Dockerfile line 2: COPY skills /root/.skills), so only an agent that looks there finds them. If the task means them to be installed, as BenchFlow's runtime does by convention, declare [sandbox] skills = \"sandbox/skills\" (import-dataset does so for a BenchFlow registry)",
+      "task.toml, instruction.md kept byte for byte in import/harbor/, so exporting the unchanged task gives back Harbor's exact files and content digest"
+    ]
+  },
+  "roundtrip/harbor/services-and-cheats": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [
+      "task.toml",
+      "instruction.md"
+    ],
+    "rewritten": [],
+    "restored_extension_paths": [
+      "import.harbor.version"
+    ]
+  },
+  "v06/3d-scan-calc": {
+    "notes": [
+      "environment/skills/ holds the task's bundled skills, which the v0.6 runtime installs by convention in its with-skill mode; declared as [sandbox] skills = 'sandbox/skills', so a task.md run installs them",
+      "verifier/verifier.md is v0.6's verifier document, which draft 1 does not map: strategies pytest (script). It is copied as a file and recorded under [import.v06] verifier_md; a task.md runtime runs the verifier's test.sh"
+    ]
+  },
+  "roundtrip/v06/3d-scan-calc": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[sandbox] skills",
+        "reason": "Harbor's skills_dir is a path in the environment, so the agent gets no skills unless the image copies the folder there",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/acp-smoke": {
+    "notes": [
+      "environment/skills/ holds the task's bundled skills, which the v0.6 runtime installs by convention in its with-skill mode; declared as [sandbox] skills = 'sandbox/skills', so a task.md run installs them",
+      "instruction.md is a Harbor copy of this task; the v0.6 task.md is the source, so it was not carried",
+      "task.toml is a Harbor copy of this task; the v0.6 task.md is the source, so it was not carried"
+    ]
+  },
+  "roundtrip/v06/acp-smoke": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[sandbox] skills",
+        "reason": "Harbor's skills_dir is a path in the environment, so the agent gets no skills unless the image copies the folder there",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/clean-body-roles-scenes": {
+    "notes": []
+  },
+  "roundtrip/v06/clean-body-roles-scenes": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "the ```role reviewer block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```stage investigate block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```user block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/demo-task": {
+    "notes": [
+      "instruction.md is a Harbor copy of this task; the v0.6 task.md is the source, so it was not carried",
+      "task.toml is a Harbor copy of this task; the v0.6 task.md is the source, so it was not carried"
+    ]
+  },
+  "roundtrip/v06/demo-task": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/flaky-oracle": {
+    "notes": [
+      "environment is v0.6's legacy spelling of sandbox",
+      "solution is v0.6's legacy spelling of oracle",
+      "environment.memory is v0.6's deprecated spelling; imported as 4 GB",
+      "environment.allow_internet is v0.6's deprecated spelling; imported as network = 'open'",
+      "the v0.6 oracle case 'oracle-rerun' passes only most of the time (reruns 3, flake_rate_max 0.34), but its live report evidence/acceptance/live-report.json is not in the package, so no runs were recorded; task.md's oracle must earn full marks every time"
+    ]
+  },
+  "roundtrip/v06/flaky-oracle": {
+    "status": "degraded",
+    "losses": [
+      {
+        "path": "[x-benchflow]",
+        "reason": "an extension key, which Harbor ignores",
+        "severity": "metadata"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/harbor-parity": {
+    "notes": [
+      "kept under [import.v06]: interaction.scenes, roles.solver.agent",
+      "the verifier's scripts call a model: [verifier.env] passes JUDGE_API_KEY. Declared as [verifier] models = true, so a task.md runtime gives them its model proxy and a scoped token; on Harbor they read the keys [verifier.env] passes from the host"
+    ]
+  },
+  "roundtrip/v06/harbor-parity": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[roles]",
+        "reason": "Harbor runs one agent",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[user]",
+        "reason": "Harbor has no simulated user",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/multi-scene": {
+    "notes": [
+      "kept under [import.v06]: interaction.scenes, roles.executor.agent, roles.executor.capabilities, roles.planner.agent, roles.planner.capabilities, roles.reviewer.agent, roles.reviewer.capabilities"
+    ]
+  },
+  "roundtrip/v06/multi-scene": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[roles]",
+        "reason": "Harbor runs one agent",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```stage plan block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```stage implement block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```stage review block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/nudgebench-team": {
+    "notes": [
+      "kept under [import.v06]: interaction.scenes, roles.concierge.agent, roles.concierge.capabilities, roles.operator.agent, roles.operator.capabilities, user.stop_rule, user.tools"
+    ]
+  },
+  "roundtrip/v06/nudgebench-team": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[roles]",
+        "reason": "Harbor runs one agent",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[user]",
+        "reason": "Harbor has no simulated user",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```role concierge block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```role operator block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```user block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/private-facts-nudges": {
+    "notes": [
+      "kept under [import.v06]: interaction.scenes, roles.support_solver.agent, roles.support_solver.capabilities, user.private_facts.order_id, user.stop_rule",
+      "verifier/verifier.md is v0.6's verifier document, which draft 1 does not map: strategies deterministic (script). It is copied as a file and recorded under [import.v06] verifier_md; a task.md runtime runs the verifier's test.sh"
+    ]
+  },
+  "roundtrip/v06/private-facts-nudges": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[roles]",
+        "reason": "Harbor runs one agent",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[user]",
+        "reason": "Harbor has no simulated user",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[x-benchflow]",
+        "reason": "an extension key, which Harbor ignores",
+        "severity": "metadata"
+      },
+      {
+        "path": "the ```role support_solver block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```stage triage block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```stage finish block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```user block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/regex-email-parser": {
+    "notes": [
+      "environment.allow_internet is v0.6's deprecated spelling; imported as network = 'open'",
+      "sandbox.skills_dir = '/skills' is where the v0.6 runtime mounts the bundled skills; kept under [import.v06]",
+      "environment/skills/ holds the task's bundled skills, which the v0.6 runtime installs by convention in its with-skill mode; declared as [sandbox] skills = 'sandbox/skills', so a task.md run installs them",
+      "verifier/verifier.md is v0.6's verifier document, which draft 1 does not map: strategies judge (script). It is copied as a file and recorded under [import.v06] verifier_md; a task.md runtime runs the verifier's test.sh"
+    ]
+  },
+  "roundtrip/v06/regex-email-parser": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[sandbox] skills",
+        "reason": "Harbor's skills_dir is a path in the environment, so the agent gets no skills unless the image copies the folder there",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/report-writer": {
+    "notes": [
+      "dropped metadata.note: null (TOML has no null; an absent key means the same to the runtime)",
+      "kept under [import.v06]: interaction.agents.default_role, interaction.scenes, roles.writer.agent, user.stop_rule",
+      "sandbox.skills_dir = '/root/.claude/skills' is where the v0.6 runtime mounts the bundled skills; kept under [import.v06]",
+      "environment/skills/ holds the task's bundled skills, which the v0.6 runtime installs by convention in its with-skill mode; declared as [sandbox] skills = 'sandbox/skills', so a task.md run installs them",
+      "verifier/verifier.md is v0.6's verifier document, which draft 1 does not map: strategies deterministic (script), judge (llm-judge). It is copied as a file and recorded under [import.v06] verifier_md; a task.md runtime runs the verifier's test.sh, not the llm-judge strategies",
+      "the verifier's scripts call a model: RewardKit judges that stay scripts (verifier/judge.toml); [verifier.env] passes ANTHROPIC_API_KEY. Declared as [verifier] models = true, so a task.md runtime gives them its model proxy and a scoped token; on Harbor they read the keys [verifier.env] passes from the host"
+    ]
+  },
+  "roundtrip/v06/report-writer": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[sandbox] skills",
+        "reason": "Harbor's skills_dir is a path in the environment, so the agent gets no skills unless the image copies the folder there",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[roles]",
+        "reason": "Harbor runs one agent",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[user]",
+        "reason": "Harbor has no simulated user",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[x-benchflow]",
+        "reason": "an extension key, which Harbor ignores",
+        "severity": "metadata"
+      },
+      {
+        "path": "[x-robouse]",
+        "reason": "an extension key, which Harbor ignores",
+        "severity": "metadata"
+      },
+      {
+        "path": "the ```role writer block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```stage draft block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "the ```user block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "export/clock-refused": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[sandbox] network",
+        "reason": "Harbor has no network that is open except for listed hosts",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[sandbox] clock",
+        "reason": "Harbor has no clock, so it would run the task on real time",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[sandbox] timezone",
+        "reason": "Harbor has no time zone setting, so the task would run in the image's zone",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "export/lossless": {
+    "status": "lossless",
+    "losses": [],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "export/metadata-only": {
+    "status": "degraded",
+    "losses": [
+      {
+        "path": "title",
+        "reason": "Harbor's [task] table has no title",
+        "severity": "metadata"
+      },
+      {
+        "path": "[provenance]",
+        "reason": "Harbor keeps only [provenance] source, as its top-level source",
+        "severity": "metadata"
+      },
+      {
+        "path": "credits",
+        "reason": "Harbor has no credits",
+        "severity": "metadata"
+      },
+      {
+        "path": "[x-acme]",
+        "reason": "an extension key, which Harbor ignores",
+        "severity": "metadata"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "export/rubric-judges": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[verifier.judges.agent] model",
+        "reason": "Harbor runs no task.md judges: its reward comes from test.sh alone",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[verifier.judges.agent] budget",
+        "reason": "Harbor runs no task.md judges: its reward comes from test.sh alone",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "verifier/rubric.json",
+        "reason": "Harbor reads no rubric: its reward comes from test.sh alone",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "verifier/judge.md",
+        "reason": "the brief task.md's model judges read; Harbor runs no task.md judges",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "export/stages": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "the ```role critic block",
+        "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  }
+}

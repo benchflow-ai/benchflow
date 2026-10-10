@@ -1,0 +1,42 @@
+{
+  "path": "clock-no-zone-offset/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-no-zone-offset\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"10m\"\nnetwork = \"none\"\n\n[sandbox]\nclock = { start = \"2026-03-14T09:00:00+05:30\", enforce = \"vm\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-no-zone-offset",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "10m",
+      "network": "none"
+    },
+    "sandbox": {
+      "clock": {
+        "start": "2026-03-14T09:00:00+05:30",
+        "enforce": "vm"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "[sandbox] clock start is at +05:30, but no timezone is set, so the sandbox keeps the image's zone (usually UTC), where it reads 03:30; set [sandbox] timezone",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-no-zone-offset",
+  "ok": true
+}

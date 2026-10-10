@@ -1,0 +1,37 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "blocks-in-matching-bins",
+      "gate": true,
+      "text": "Each block ends inside the bin of its color.",
+      "stated": "Put each block into the bin of its color",
+      "judge": "human",
+      "evidence": [
+        "overhead-video#final"
+      ]
+    },
+    {
+      "id": "no-bin-tipped",
+      "gate": true,
+      "text": "No bin is tipped over at the end.",
+      "stated": "they are light and tip over easily",
+      "judge": "human",
+      "evidence": [
+        "overhead-video#final"
+      ]
+    },
+    {
+      "id": "wall-clock",
+      "points": 1,
+      "text": "The whole task takes under 5 minutes.",
+      "stated": "within 5 minutes",
+      "judge": "test",
+      "check": "wall_clock"
+    }
+  ]
+}

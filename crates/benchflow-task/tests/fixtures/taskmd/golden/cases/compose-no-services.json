@@ -1,0 +1,35 @@
+{
+  "path": "compose-no-services/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/compose-no-services\"\nversion = \"1.0.0\"\n[sandbox]\ncompose = \"sandbox/docker-compose.yaml\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/compose-no-services",
+    "version": "1.0.0",
+    "sandbox": {
+      "compose": "sandbox/docker-compose.yaml"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "the Compose file asks for host privileges (privileged mode, the host's network or processes, or the Docker socket); a runtime refuses them unless its operator allows them for this task",
+      "where": "sandbox/docker-compose.yaml"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/compose-no-services",
+  "ok": false
+}

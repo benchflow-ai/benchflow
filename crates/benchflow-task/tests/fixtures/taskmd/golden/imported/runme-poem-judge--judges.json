@@ -1,0 +1,153 @@
+{
+  "path": "runme-poem-judge--judges/task.md",
+  "mode": "blocks",
+  "instruction": "# Write a Funny Runme Poem\n\nWrite a short, funny poem about Runme, notebooks, terminals, or developer\nworkflow.\n\nSave the poem at:\n\n```text\npoem.txt\n```\n\nThe verifier will judge the poem's humor with an LLM.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"runmedev/poem-judge\"\ndescription = \"Poem-writing task graded by an LLM-as-a-judge verifier.\"\nauthors = []\nkeywords = [\"runme\", \"harbor\", \"containerless\", \"llm\", \"judge\"]\n\n[about]\ndifficulty = \"easy\"\ncategory = \"behavior\"\ntags = [\"runme\", \"harbor\", \"llm-as-a-judge\", \"verifier-env\"]\n\n[agent]\ntimeout = \"8m\"\n\n[sandbox]\ncpus = 1\nmemory = \"1 GB\"\ndisk = \"1 GB\"\ngpus = 0\nworkdir = \"/app/examples/harbor/datasets/runme-llm-judge/poem-judge/workdir\"\nenv = {}\nbuild_timeout = \"1m\"\n\n[verifier]\ntimeout = \"15m\"\nmount = \"/tests\"\n\n# From verifier/judge.toml by tools/convert.py --convert-judges. RewardKit 0.1.7, the newest release ~=0.1.0 admits: its defaults for effort, per, timeout are written out.\n[verifier.judges.llm]\nmodel = \"openai/gpt-5.6-terra\"\neffort = \"medium\"\nper = \"rubric\"\nsamples = 1\ntimeout = \"5m\"\n\n[oracle]\nenv = {}\nmount = \"/solution\"\n\n[import.harbor]\nschema_version = \"1.1\"\n\n[import.harbor.rewardkit]\ninstalls = \"harbor-rewardkit~=0.1.0\"\nscripts = [\"verifier/test.sh\"]\njudges = []\nconverted = [\"verifier/judge.toml\"]\ndefaults = \"0.1.7\"\nenv = { OPENAI_API_KEY = \"${OPENAI_API_KEY}\" }\n\n[import.harbor.rewardkit.kept]\n\"tests/test.sh\" = \"sha256:1b4dd117dea44035c94f247ce62ad670dd8692d12340ea0a61f92280a7d1ca52\"\n\"tests/judge.toml\" = \"sha256:1d5c0d46e56a3173615196f6bf71b7180a03a94dac737545dce0135d4c876377\"\n\n[import.harbor.rewardkit.wrote]\n\"verifier/judge.md\" = \"sha256:9b11d5e2742a813f0db6d43c58d01441030153c69b4ae1865555a7340efd9770\"\n\"verifier/rubric.json\" = \"sha256:163c291626e8d4fdd14bedff4f5ef863c136d26f4086deaac52969f8ad473f37\"\n\"verifier/test.sh\" = \"sha256:72f98a601fd8ed60021bc3fcd4c9f965105fd7cb2e6cefe3d0c5dd334419a6ae\"\n\"verifier.judges.llm\" = \"sha256:ddc2d0c38b93a2a1f19c335c58fc481aa5286de3df3d323f9850d0b38efb5a9d\"\n\n[import.harbor.originals.\"task.toml\"]\noriginal = \"sha256:e815740c2b3ffc4e53f2047d82c472798aab398fdcb0d3dd3267409896f06d7a\"\nconverted = \"sha256:3840f52a16e0442b01fe69e0ce514281bcf0e1af535272974fab7a34a9016d85\"\n\n[import.harbor.originals.\"instruction.md\"]\noriginal = \"sha256:035289f25429530be7a8c582392c43b2a394d615e30c6a3b10564bb9899a1868\"\nconverted = \"sha256:035289f25429530be7a8c582392c43b2a394d615e30c6a3b10564bb9899a1868\"",
+      "line": 14
+    }
+  ],
+  "config": {
+    "name": "runmedev/poem-judge",
+    "description": "Poem-writing task graded by an LLM-as-a-judge verifier.",
+    "authors": [],
+    "keywords": [
+      "runme",
+      "harbor",
+      "containerless",
+      "llm",
+      "judge"
+    ],
+    "about": {
+      "difficulty": "easy",
+      "category": "behavior",
+      "tags": [
+        "runme",
+        "harbor",
+        "llm-as-a-judge",
+        "verifier-env"
+      ]
+    },
+    "agent": {
+      "timeout": "8m"
+    },
+    "sandbox": {
+      "cpus": 1,
+      "memory": "1 GB",
+      "disk": "1 GB",
+      "gpus": 0,
+      "workdir": "/app/examples/harbor/datasets/runme-llm-judge/poem-judge/workdir",
+      "env": {},
+      "build_timeout": "1m"
+    },
+    "verifier": {
+      "timeout": "15m",
+      "mount": "/tests",
+      "judges": {
+        "llm": {
+          "model": "openai/gpt-5.6-terra",
+          "effort": "medium",
+          "per": "rubric",
+          "samples": 1,
+          "timeout": "5m"
+        }
+      }
+    },
+    "oracle": {
+      "env": {},
+      "mount": "/solution"
+    },
+    "import": {
+      "harbor": {
+        "schema_version": "1.1",
+        "rewardkit": {
+          "installs": "harbor-rewardkit~=0.1.0",
+          "scripts": [
+            "verifier/test.sh"
+          ],
+          "judges": [],
+          "converted": [
+            "verifier/judge.toml"
+          ],
+          "defaults": "0.1.7",
+          "env": {
+            "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+          },
+          "kept": {
+            "tests/test.sh": "sha256:1b4dd117dea44035c94f247ce62ad670dd8692d12340ea0a61f92280a7d1ca52",
+            "tests/judge.toml": "sha256:1d5c0d46e56a3173615196f6bf71b7180a03a94dac737545dce0135d4c876377"
+          },
+          "wrote": {
+            "verifier/judge.md": "sha256:9b11d5e2742a813f0db6d43c58d01441030153c69b4ae1865555a7340efd9770",
+            "verifier/rubric.json": "sha256:163c291626e8d4fdd14bedff4f5ef863c136d26f4086deaac52969f8ad473f37",
+            "verifier/test.sh": "sha256:72f98a601fd8ed60021bc3fcd4c9f965105fd7cb2e6cefe3d0c5dd334419a6ae",
+            "verifier.judges.llm": "sha256:ddc2d0c38b93a2a1f19c335c58fc481aa5286de3df3d323f9850d0b38efb5a9d"
+          }
+        },
+        "originals": {
+          "task.toml": {
+            "original": "sha256:e815740c2b3ffc4e53f2047d82c472798aab398fdcb0d3dd3267409896f06d7a",
+            "converted": "sha256:3840f52a16e0442b01fe69e0ce514281bcf0e1af535272974fab7a34a9016d85"
+          },
+          "instruction.md": {
+            "original": "sha256:035289f25429530be7a8c582392c43b2a394d615e30c6a3b10564bb9899a1868",
+            "converted": "sha256:035289f25429530be7a8c582392c43b2a394d615e30c6a3b10564bb9899a1868"
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "scoring": {
+      "method": "points",
+      "headline": "partial"
+    },
+    "criteria": [
+      {
+        "id": "funny",
+        "text": "Rate how funny the poem is. Consider whether it has a clear joke, surprise, wordplay, or a playful take on developer workflow.",
+        "judge": "llm",
+        "points": 1,
+        "score": {
+          "min": 0,
+          "max": 1
+        },
+        "evidence": [
+          "poem.txt"
+        ],
+        "x-rewardkit": {
+          "name": "funny",
+          "type": "numeric"
+        }
+      }
+    ],
+    "x-rewardkit": {
+      "source": "verifier/judge.toml",
+      "release": "0.1.7",
+      "judge": "openai/gpt-5.6-terra"
+    }
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "import.harbor.rewardkit.env.OPENAI_API_KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "'funny' does not say where the agent is told about it: quote the instruction in stated, or explain in implicit why the agent should know",
+      "where": "verifier/rubric.json criteria[0]"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "# Write a Funny Runme Poem\n\nWrite a short, funny poem about Runme, notebooks, terminals, or developer\nworkflow.\n\nSave the poem at:\n\n```text\npoem.txt\n```\n\nThe verifier will judge the poem's humor with an LLM.",
+  "title": "runmedev/poem-judge",
+  "ok": true
+}

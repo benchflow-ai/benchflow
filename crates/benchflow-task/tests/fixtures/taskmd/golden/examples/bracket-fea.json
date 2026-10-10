@@ -1,0 +1,109 @@
+{
+  "path": "bracket-fea/task.md",
+  "mode": "blocks",
+  "instruction": "Design an aluminum (6061-T6) wall bracket in CadQuery that holds a 12 kg load hung 150 mm from the wall. The tip may deflect at most 0.5 mm, the bracket must weigh at most 180 g, and it mounts with two M6 screws spaced 60 mm apart vertically. Keep the peak von Mises stress below half the yield strength.\n\nWrite `/work/bracket.py` so that running it produces `/work/bracket.step`, with the load, arm length, and screw spacing as parameters. We will re-run your script at other values of those parameters and check each part with our own finite-element analysis.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/bracket-fea\"\ntitle = \"A light bracket that passes FEA\"\nversion = \"3.2.0\"\nkeywords = [\"cad\", \"mechanical\", \"fea\", \"3d\"]\n\n[about]\ndifficulty = \"medium\"\ncategory = \"industrial-physical-systems\"\n\n[agent]\ntimeout = \"1h\"\n\n[sandbox]\nimage = \"ghcr.io/example/cad-fea@sha256:5c1b0e7d\"\ncpus = 4\nmemory = \"8 GB\"\n\n[conventions]\nunits = \"mm, N, g\"\nmaterial = \"6061-T6: E = 68.9 GPa, yield = 276 MPa, density = 2.70 g/cm3\"\n\n[verifier]\ntimeout = \"20m\"\nisolation = \"separate\"",
+      "line": 5
+    }
+  ],
+  "config": {
+    "name": "examples/bracket-fea",
+    "title": "A light bracket that passes FEA",
+    "version": "3.2.0",
+    "keywords": [
+      "cad",
+      "mechanical",
+      "fea",
+      "3d"
+    ],
+    "about": {
+      "difficulty": "medium",
+      "category": "industrial-physical-systems"
+    },
+    "agent": {
+      "timeout": "1h"
+    },
+    "sandbox": {
+      "image": "ghcr.io/example/cad-fea@sha256:5c1b0e7d",
+      "cpus": 4,
+      "memory": "8 GB"
+    },
+    "conventions": {
+      "units": "mm, N, g",
+      "material": "6061-T6: E = 68.9 GPa, yield = 276 MPa, density = 2.70 g/cm3"
+    },
+    "verifier": {
+      "timeout": "20m",
+      "isolation": "separate"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "step-valid",
+        "gate": true,
+        "text": "Running bracket.py produces a single valid solid in bracket.step.",
+        "stated": "Write `/work/bracket.py` so that running it produces `/work/bracket.step`",
+        "judge": "test",
+        "check": "test_step_valid"
+      },
+      {
+        "id": "fea-deflection",
+        "gate": true,
+        "text": "Tip deflection under the load is at most 0.5 mm in the verifier's FEA.",
+        "stated": "The tip may deflect at most 0.5 mm",
+        "judge": "test",
+        "check": "test_fea_deflection"
+      },
+      {
+        "id": "mass",
+        "gate": true,
+        "text": "Mass is at most 180 g at the density of 6061-T6.",
+        "stated": "the bracket must weigh at most 180 g",
+        "judge": "test",
+        "check": "test_mass"
+      },
+      {
+        "id": "holes",
+        "gate": true,
+        "text": "Two 6.4 mm holes, 60 mm apart vertically, on the mounting face.",
+        "stated": "it mounts with two M6 screws spaced 60 mm apart vertically",
+        "judge": "test",
+        "check": "test_holes"
+      },
+      {
+        "id": "stress-margin",
+        "points": 2,
+        "text": "Maximum von Mises stress stays below half the material's yield strength.",
+        "stated": "Keep the peak von Mises stress below half the yield strength",
+        "judge": "test",
+        "check": "test_stress_margin"
+      },
+      {
+        "id": "parametric-replay",
+        "points": 1,
+        "text": "The script is parametric: at hidden load, arm length, and hole spacing it still produces a valid part that passes the verifier's FEA.",
+        "stated": "We will re-run your script at other values of those parameters",
+        "judge": "replay",
+        "check": "re-run bracket.py at hidden load (10-14 kg), arm length (140-160 mm), and hole spacing; re-check deflection and mass"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Design an aluminum (6061-T6) wall bracket in CadQuery that holds a 12 kg load hung 150 mm from the wall. The tip may deflect at most 0.5 mm, the bracket must weigh at most 180 g, and it mounts with two M6 screws spaced 60 mm apart vertically. Keep the peak von Mises stress below half the yield strength.\n\nWrite `/work/bracket.py` so that running it produces `/work/bracket.step`, with the load, arm length, and screw spacing as parameters. We will re-run your script at other values of those parameters and check each part with our own finite-element analysis.",
+  "title": "A light bracket that passes FEA",
+  "ok": true
+}

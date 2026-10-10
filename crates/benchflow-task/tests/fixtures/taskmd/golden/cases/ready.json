@@ -1,0 +1,55 @@
+{
+  "path": "ready/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/ready\"\nversion = \"1.0.0\"\n[sandbox]\nready = { interval = 5, timeout = \"30s\", retries = -1, start_period = \"1 min\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/ready",
+    "version": "1.0.0",
+    "sandbox": {
+      "ready": {
+        "interval": 5,
+        "timeout": "30s",
+        "retries": -1,
+        "start_period": "1 min"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] ready needs run, the command that must pass",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] ready interval must be a duration such as \"5s\" or \"1m\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] ready start_period must be a duration such as \"5s\" or \"1m\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] ready retries is a whole number, at least 0",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/ready",
+  "ok": false
+}

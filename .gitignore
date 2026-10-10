@@ -191,3 +191,6 @@ tutorials/
 
 # task.md draft 2 fixtures are verbatim copies; their logs are evidence, not output.
 !tests/fixtures/taskmd/**/*.log
+
+# Rust
+/target/

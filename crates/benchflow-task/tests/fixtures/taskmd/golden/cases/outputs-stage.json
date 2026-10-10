@@ -1,0 +1,47 @@
+{
+  "path": "outputs-stage/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "two",
+      "info": "stage two",
+      "body": "Now document it.",
+      "line": 3
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/outputs-stage\"\nversion = \"1.0.0\"\n[stages.two]\nunlock = \"on_submit\"\noutputs = [\"rel\"]",
+      "line": 7
+    }
+  ],
+  "config": {
+    "name": "acme/outputs-stage",
+    "version": "1.0.0",
+    "stages": {
+      "two": {
+        "unlock": "on_submit",
+        "outputs": [
+          "rel"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[stages.two] outputs[0] path rel is relative; an output's path is absolute, such as /work/rel",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/outputs-stage",
+  "ok": false
+}

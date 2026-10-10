@@ -1,0 +1,1415 @@
+//! The shell programs that set a sandbox up and hand it from the agent to
+//! the verifier.
+//!
+//! Every program here runs as root inside the sandbox through `bash -c` (or
+//! `sh -c`), and uses only POSIX shell and tools that busybox and coreutils
+//! both have. Each prints machine-readable lines (`BF <tag> ...`) that the
+//! runner parses into the trial's defense record and custody report.
+//!
+//! The order of a trial:
+//!
+//! 1. [`setup_user`]: create the non-root agent user and hand it the workdir.
+//! 2. [`lock_hidden`]: lock any verifier or oracle folders the image ships,
+//!    [`lock_system_path`]: lock folders on `PATH` the agent could write,
+//!    and [`lock_system_dirs`]: remove group and other write permission
+//!    from system folders (`/usr`, `/etc`, `/opt`, ...).
+//! 3. [`baseline`]: snapshot the files that steer test runners
+//!    (`conftest.py`, `pytest.ini`, `sitecustomize.py`, `.pth`, ...), and
+//!    [`preload_snapshot`]: snapshot `/etc/ld.so.preload`.
+//! 4. The agent works, every command it runs prefixed by [`oom_prefix`] so
+//!    the kernel stops its processes first when memory runs out.
+//! 5. [`kill_user`]: kill every process of the agent user and confirm none is
+//!    left.
+//! 6. [`handoff`]: clear `/logs/verifier`, remove special files and escaping
+//!    symlinks from the workdir, and remove or restore planted and edited
+//!    test-runner files against the baseline; [`preload_check`]: put
+//!    `/etc/ld.so.preload` back as it was.
+//! 7. [`trusted_path`]: the verifier's `PATH`, root-owned folders only;
+//!    [`verifier_env_check`]: confirm the verifier's environment holds no
+//!    loader variables before it runs, under [`verifier_env_prefix`].
+
+use crate::shell_quote as q;
+
+/// The variable that carries the image's own `PATH` into the root programs
+/// that judge it ([`lock_system_path`], [`trusted_path`]): those run, like
+/// every root command of the runner, with `PATH` set to
+/// [`benchflow_sandbox::shell::SYSTEM_PATH`].
+pub const IMAGE_PATH_VAR: &str = "BENCHFLOW_IMAGE_PATH";
+
+/// Where BenchFlow keeps root-only state inside a sandbox: the baseline the
+/// handoff restores from, the `/etc/ld.so.preload` snapshot, the packed
+/// outputs.
+///
+/// Not under `/root`: a task with no declared workdir works in its image's
+/// WORKDIR, which is often `/root`, and the agent user owns its workdir; the
+/// owner of a folder can rename a root-owned folder inside it and put its
+/// own in place. [`setup_user`] keeps the folders above it root's, and the
+/// runner refuses a workdir that holds it ([`holds_state`]).
+pub const STATE_DIR: &str = "/var/lib/benchflow";
+
+/// Whether giving the agent user `workdir` would give it the folder that
+/// holds [`STATE_DIR`]: the workdir is `/`, the state folder, or one of the
+/// folders above it.
+pub fn holds_state(workdir: &str) -> bool {
+    let w = workdir.trim_end_matches('/');
+    w.is_empty() || STATE_DIR == w || STATE_DIR.starts_with(&format!("{w}/"))
+}
+
+/// Make [`STATE_DIR`] root's alone, and the folders above it root's and not
+/// writable by others, so no other user can move it aside.
+fn make_state_dir() -> String {
+    format!(
+        r#"mkdir -p {state}; chown root:root {state}; chmod 700 {state}
+d={state}; while d=$(dirname "$d"); [ "$d" != / ]; do chown root:root "$d" 2>/dev/null; chmod go-w "$d" 2>/dev/null; done"#,
+        state = q(STATE_DIR),
+    )
+}
+
+/// The root programs that prepare a sandbox no agent user works in (an
+/// agent running as root, or a separate verifier's fresh sandbox): the log
+/// folders, `extra` (quoted folders) made too, and [`STATE_DIR`].
+pub fn prepare_root(extra: &[&str]) -> String {
+    let extra: Vec<String> = extra.iter().map(|d| q(d)).collect();
+    format!(
+        "mkdir -p {extra} /logs/agent /logs/verifier /logs/artifacts\n{state}",
+        extra = extra.join(" "),
+        state = make_state_dir(),
+    )
+}
+
+/// The sandbox user agents run as unless a task names another.
+pub const DEFAULT_USER: &str = "agent";
+
+/// Files that change how pytest and Python behave at startup. An agent that
+/// plants or edits one can make tests pass without doing the task.
+///
+/// Project files (`Makefile`, `package.json`, `pyproject.toml`, `setup.cfg`,
+/// `tox.ini`, JS test configs) are not here: they are often the answer
+/// itself ("write a Makefile", "fix the build"), and removing or restoring
+/// them undid correct work. BenchFlow 0.8 never touched them either.
+const STEERING_FILES: &[&str] = &[
+    "conftest.py",
+    "pytest.ini",
+    "sitecustomize.py",
+    "usercustomize.py",
+    "*.pth",
+];
+
+fn steering_find_expr() -> String {
+    let names: Vec<String> = STEERING_FILES
+        .iter()
+        .map(|n| format!("-name {}", q(n)))
+        .collect();
+    format!("\\( {} \\)", names.join(" -o "))
+}
+
+/// The folders the steering-file scan skips: kernel filesystems, the package
+/// caches agents fill, BenchFlow's own state, and the root-owned system
+/// folders where package installs put `.pth` files and test suites
+/// (`/usr/lib`, `/usr/local/lib`, `/etc`), as 0.8 skips them. A non-root
+/// agent cannot write there; a solution's `pip install -e .` as root writes a
+/// `.pth` there that the verifier needs.
+fn prune_expr() -> String {
+    let dirs = [
+        "/proc",
+        "/sys",
+        "/dev",
+        "/run",
+        STATE_DIR,
+        "/opt/benchflow",
+        "/var/lib/apt",
+        "/var/cache",
+        "/usr/share",
+        "/usr/lib",
+        "/usr/local/lib",
+        "/etc",
+    ];
+    let mut parts: Vec<String> = dirs.iter().map(|d| format!("-path {}", q(d))).collect();
+    parts.push("-name node_modules".to_string());
+    parts.push("-name .git".to_string());
+    format!("\\( {} \\) -prune", parts.join(" -o "))
+}
+
+/// Folders outside the workdir that tasks tell the agent to write its answer
+/// to; BenchFlow 0.8 hands each to the agent user when the image has it
+/// (SkillsBench's `civ6-adjacency-optimizer` builds `/output` root-owned).
+pub const OUTPUT_DIRS: [&str; 2] = ["/output", "/outputs"];
+
+/// Hand `dirs` to `owner` (`user:group`) when each is a real folder; a
+/// symlink is left alone, so the image cannot point the chown elsewhere.
+fn own_dirs(owner: &str, dirs: &[&str]) -> String {
+    let list: Vec<String> = dirs.iter().map(|d| q(d)).collect();
+    format!(
+        r#"for d in {list}; do if [ -d "$d" ] && [ ! -L "$d" ]; then chown -R {owner} "$d"; fi; done"#,
+        list = list.join(" "),
+    )
+}
+
+/// Create the agent user (if missing), give it a home, the workdir, the
+/// [`OUTPUT_DIRS`] the image has, and `/logs/agent`, and keep
+/// `/logs/verifier` root-only during the agent's run.
+///
+/// Prints `BF user <name> <uid>`; exits 3 when the image can create no user.
+pub fn setup_user(user: &str, workdir: &str) -> String {
+    format!(
+        r#"set -e
+u={user}; w={workdir}
+if ! id -u "$u" >/dev/null 2>&1; then
+  if command -v useradd >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "$u" 2>/dev/null || useradd -m "$u"
+  elif command -v adduser >/dev/null 2>&1; then
+    adduser -D "$u" 2>/dev/null || adduser --disabled-password --gecos '' "$u"
+  else
+    echo "BF error no-useradd" >&2; exit 3
+  fi
+fi
+g=$(id -gn "$u")
+home=$(sh -c "echo ~$u")
+[ -d "$home" ] || mkdir -p "$home"
+chown "$u:$g" "$home"
+mkdir -p "$w" /logs/agent /logs/artifacts /logs/verifier
+chown -R "$u:$g" "$w" /logs/agent /logs/artifacts
+{outputs}
+chown root:root /logs/verifier
+chmod 755 /logs
+chmod 700 /logs/verifier
+{state}
+echo "BF user $u $(id -u "$u") $home""#,
+        user = q(user),
+        workdir = q(workdir),
+        state = make_state_dir(),
+        outputs = own_dirs(r#""$u:$g""#, &OUTPUT_DIRS),
+    )
+}
+
+/// Let root's git work in the workdir, which `setup_user` gave the agent
+/// user: git refuses a repository another user owns ("dubious ownership").
+/// Run as root before a reference solution that runs as root, as BenchFlow
+/// 0.8 does; best effort, since not every image has git.
+pub fn trust_workdir_for_git(workdir: &str) -> String {
+    format!(
+        "command -v git >/dev/null 2>&1 && git config --global --add safe.directory {} 2>/dev/null || true",
+        q(workdir)
+    )
+}
+
+/// Give the workdir and everything in it to `owner` and its group, staying
+/// on the workdir's own filesystem and changing links themselves, never
+/// what they point at. After the handoff the owner is root (or the task's
+/// verifier user), as BenchFlow 0.8 gives the workspace to root before
+/// grading: programs that check who owns a folder then work for the
+/// verifier, such as git, which refuses a repository another user owns
+/// ("detected dubious ownership"). Before a later stage the owner is the
+/// agent user again. Prints `BF owned <owner>`.
+pub fn own_workdir(workdir: &str, owner: &str) -> String {
+    format!(
+        r#"w={workdir}; o={owner}
+r=$(readlink -f "$w" 2>/dev/null); [ -n "$r" ] || r=$w
+for p in "$w" "$r"; do case "$p" in /|'') echo "BF error workdir $w" >&2; exit 2;; esac; done
+g=$(id -gn "$o" 2>/dev/null) || {{ echo "BF error no-user $o" >&2; exit 2; }}
+[ -d "$w" ] && find "$w" -xdev -exec chown -h "$o:$g" {{}} + 2>/dev/null
+echo "BF owned $o""#,
+        workdir = q(workdir),
+        owner = q(owner),
+    )
+}
+
+/// Read-only checks, run as the agent user before the agent starts, for a
+/// way it can become root: `sudo` without a password, a `doas` rule
+/// without one, system files it can write, a group or socket that is
+/// root's equal, setuid-root shells and interpreters, file capabilities
+/// that grant root's powers, and capabilities of its own. Nothing is run
+/// as root: `sudo -n -l` only lists. Prints `BF root-path <how>` for each
+/// way found, and `BF root-path-unchecked <what>` for a check the image
+/// has no tool for.
+pub const ROOT_PATHS_AS_USER: &str = r#"bf_t() { s=$1; shift; if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"; else "$@"; fi; }
+if command -v sudo >/dev/null 2>&1; then
+  if out=$(bf_t 20 sudo -n -l </dev/null 2>/dev/null); then
+    rules=$(printf '%s\n' "$out" | grep -E '^[[:space:]]+\(' | grep NOPASSWD | head -n 3)
+    [ -n "$rules" ] || rules=$(printf '%s\n' "$out" | grep -E '^[[:space:]]+\(' | head -n 3)
+    rules=$(printf '%s\n' "$rules" | sed 's/^[[:space:]]*//' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+    [ -n "$rules" ] && echo "BF root-path sudo runs commands for it without a password ($rules)"
+  fi
+fi
+if [ -r /etc/doas.conf ]; then
+  me=$(id -un); gs=" $(id -Gn) "
+  awk -v me="$me" -v gs="$gs" '$1 == "permit" {
+    nopass = 0; who = ""
+    for (i = 2; i <= NF; i++) { if ($i == "nopass") nopass = 1; else if ($i ~ /^(persist|keepenv|nolog|setenv)$/ || $i ~ /[{}]/) continue; else { who = $i; break } }
+    if (nopass && (who == me || (substr(who, 1, 1) == ":" && index(gs, " " substr(who, 2) " ")))) { print "BF root-path doas runs commands for it without a password (" $0 ")"; exit }
+  }' /etc/doas.conf
+fi
+for f in /etc/passwd /etc/shadow /etc/group /etc/sudoers /etc/sudoers.d /etc/doas.conf; do
+  [ -e "$f" ] && [ -w "$f" ] && echo "BF root-path it can write $f"
+done
+for g in $(id -Gn 2>/dev/null); do [ "$g" = disk ] && echo "BF root-path it is in the disk group (raw access to the disks)"; done
+for f in /var/run/docker.sock /run/docker.sock /run/podman/podman.sock /var/lib/lxd/unix.socket; do
+  [ -S "$f" ] && [ -w "$f" ] && echo "BF root-path it can use the container daemon at $f"
+done
+cap=$(awk '/^CapEff:/ { print $2 }' /proc/self/status 2>/dev/null)
+case $cap in ''|0000000000000000) ;; *) echo "BF root-path its processes hold capabilities (CapEff $cap)";; esac
+if command -v find >/dev/null 2>&1; then
+  bf_t 60 find / -xdev \( -path /proc -o -path /sys -o -path /dev \) -prune -o -type f -perm -4000 -user root -print 2>/dev/null | while IFS= read -r f; do
+    case ${f##*/} in
+      sh|bash|dash|zsh|ksh|mksh|csh|tcsh|fish|ash|busybox|python|python[0-9]*|perl|perl[0-9]*|ruby*|lua*|node|php*|env|find|vi|vim|vim.*|nano|less|more|awk|gawk|mawk|nawk|cp|mv|tee|dd|chmod|chown|install|rsync|tar|cat|sed|xargs|nice|timeout|stdbuf|strace|gdb|nsenter|unshare|chroot|setpriv|capsh|docker)
+        echo "BF root-path $f is setuid root";;
+    esac
+  done
+else
+  echo "BF root-path-unchecked setuid files (no find)"
+fi
+if command -v getcap >/dev/null 2>&1; then
+  bf_t 60 getcap -r /usr /bin /sbin /opt /home 2>/dev/null | grep -Ei 'cap_(setuid|setgid|sys_admin|dac_override|dac_read_search|chown|fowner|sys_ptrace|sys_module|net_admin)|[[:space:]]=ep' | head -n 5 | while IFS= read -r l; do echo "BF root-path $l (a file capability)"; done
+else
+  echo "BF root-path-unchecked file capabilities (no getcap)"
+fi
+true
+"#;
+
+/// The read-only checks that need root to read `/etc/shadow`: a uid-0
+/// account with no password (so `su` asks for none), and an agent user
+/// with no password that `sudo` lists rules for. Prints `BF root-path`.
+pub fn root_paths_as_root(user: &str) -> String {
+    format!(
+        r#"u={user}
+awk -F: '$3 == 0 && $2 == "" {{ print $1 }}' /etc/passwd 2>/dev/null | while read -r a; do echo "BF root-path $a (uid 0) has no password at all"; done
+if [ -r /etc/shadow ]; then
+  if command -v su >/dev/null 2>&1; then
+    awk -F: 'NR == FNR {{ if ($3 == 0) z[$1] = 1; next }} ($1 in z) && $2 == "" {{ print $1 }}' /etc/passwd /etc/shadow | while read -r a; do echo "BF root-path $a (uid 0) has an empty password, so su asks for none"; done
+  fi
+  if command -v sudo >/dev/null 2>&1 && awk -F: -v u="$u" '$1 == u && $2 == "" {{ f = 1 }} END {{ exit !f }}' /etc/shadow; then
+    sudo -l -U "$u" 2>/dev/null | grep -qE '^[[:space:]]+\(' && echo "BF root-path it has an empty password, and sudo has rules for it"
+  fi
+fi
+true
+"#,
+        user = q(user),
+    )
+}
+
+/// Lock folders the image already ships at the verifier and oracle mounts, so
+/// the agent cannot read hidden tests or the reference solution. Prints
+/// `BF locked <path>` for each one found.
+pub fn lock_hidden(paths: &[String]) -> String {
+    let list: Vec<String> = paths.iter().map(|p| q(p)).collect();
+    format!(
+        r#"for d in {list}; do
+  if [ -L "$d" ]; then echo "BF locked-symlink $d"; rm -f "$d"; continue; fi
+  [ -e "$d" ] || continue
+  chown -R root:root "$d" && chmod 700 "$d" && echo "BF locked $d"
+done
+true"#,
+        list = list.join(" ")
+    )
+}
+
+/// Lock the folders on the sandbox's `PATH` (and the folders above them)
+/// that someone other than root could write, before the agent starts.
+///
+/// Every command the runner sends, as root, resolves `sh` and `bash` through
+/// this `PATH`, and so does the sandbox's own exec service (Daytona's daemon
+/// starts each command session that way). An agent that can write one of
+/// these folders could replace `sh` and have the runner, or the verifier, run
+/// its program as root. Folders in the workdir, homes, and temp folders are
+/// left alone, as [`trusted_path`] leaves them out. Prints
+/// `BF unlocked-path <folder>` for each folder it locked.
+pub fn lock_system_path(workdir: &str) -> String {
+    format!(
+        r#"w={workdir}
+IFS=:
+for d in ${{{IMAGE_PATH_VAR}:-${{PATH:-}}}}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; do
+  case "$d" in /*) ;; *) continue;; esac
+  case "$d" in "$w"|"$w"/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*|/home/*|/dev/shm*) continue;; esac
+  [ -d "$d" ] || continue
+  d=$(readlink -f "$d" 2>/dev/null || echo "$d")
+  while :; do
+    m=$(stat -c %A "$d" 2>/dev/null); u=$(stat -c %u "$d" 2>/dev/null)
+    case "$m" in ?????w????|????????w?) bad=1;; *) bad=;; esac
+    [ -n "$u" ] && [ "$u" != 0 ] && bad=1
+    if [ -n "$bad" ]; then chown root:root "$d" 2>/dev/null; chmod go-w "$d" && echo "BF unlocked-path $d"; fi
+    [ "$d" = / ] && break
+    d=$(dirname "$d")
+  done
+done
+true"#,
+        workdir = q(workdir)
+    )
+}
+
+/// A shell function, `foreign_links <path>`, that prints every symlink on
+/// the way to `<path>` (itself included) that someone other than root owns.
+/// A symlink belongs to whoever made it, so these are the ones the agent
+/// (or another user) made: a root program that writes or reads through one
+/// goes where that user chose.
+const FOREIGN_LINKS: &str = r#"foreign_links() (
+  p=; IFS=/
+  for c in ${1#/}; do
+    [ -n "$c" ] || continue
+    p="$p/$c"
+    if [ -L "$p" ] && [ "$(stat -c %u "$p" 2>/dev/null)" != 0 ]; then printf '%s\n' "$p"; fi
+  done
+)"#;
+
+/// Make `path` safe for root to write into after the agent's turn: remove
+/// every symlink on the way to it that root does not own (`BF symlink
+/// <link>`), and, with `foreign`, remove `path` itself when anything in it
+/// belongs to another user (`BF planted <path>`): files root uploads there
+/// next (the verifier, a stage's mounts) must not mix with files the agent
+/// left. Ends with `BF claimed <path>`.
+pub fn claim(path: &str, foreign: bool) -> String {
+    let drop_foreign = if foreign {
+        r#"if [ -e "$t" ] && [ -n "$(find "$t" ! -user 0 -print 2>/dev/null | head -n 1)" ]; then
+  echo "BF planted $t"; rm -rf -- "$t"
+fi"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{FOREIGN_LINKS}
+t={path}
+foreign_links "$t" | while IFS= read -r l; do echo "BF symlink $l"; rm -f -- "$l"; done
+{drop_foreign}
+echo "BF claimed $t""#,
+        path = q(path),
+    )
+}
+
+/// Print `BF open <folder>` for each folder above `path` that someone other
+/// than root owns, or that group or others can write without the sticky
+/// bit: whoever can write it can move `path` aside and put other files in
+/// its place.
+pub fn open_parents(path: &str) -> String {
+    format!(
+        r#"d={path}
+while :; do
+  d=$(dirname "$d")
+  if [ -d "$d" ]; then
+    u=$(stat -Lc %u "$d" 2>/dev/null); m=$(stat -Lc %A "$d" 2>/dev/null); o=
+    [ "$u" = 0 ] || o=1
+    case "$m" in ?????w????|????????w?) [ -k "$d" ] || o=1;; esac
+    [ -n "$o" ] && echo "BF open $d"
+  fi
+  [ "$d" = / ] && break
+done
+true"#,
+        path = q(path),
+    )
+}
+
+/// Snapshot the steering files (path and SHA-256) and keep a copy of each, in
+/// root-only state, before the agent starts; and note the `*.py` files
+/// already in the temp folders.
+pub fn baseline() -> String {
+    format!(
+        r#"b={state}/baseline
+rm -rf "$b"; mkdir -p "$b"; chmod 700 {state} "$b"
+find / -xdev {prune} -o -type f {names} -print 2>/dev/null | LC_ALL=C sort > "$b/list"
+: > "$b/sums"
+while IFS= read -r f; do
+  s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1) && printf '%s  %s\n' "$s" "$f" >> "$b/sums"
+done < "$b/list"
+if [ -s "$b/list" ]; then tar -cf "$b/files.tar" -T "$b/list" 2>/dev/null || true; fi
+find /tmp /var/tmp -xdev -name '*.py' -type f -print 2>/dev/null | while IFS= read -r f; do
+  s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1) && printf '%s  %s\n' "$s" "$f"
+done > "$b/tmp-sums"
+echo "BF baseline $(wc -l < "$b/list" | tr -d ' ')""#,
+        state = q(STATE_DIR),
+        prune = prune_expr(),
+        names = steering_find_expr(),
+    )
+}
+
+/// Kill every process of `user` and confirm none survives (zombies excepted).
+///
+/// Kills from inside the user's own identity (`kill -9 -1` as that uid
+/// signals everything it owns, in any PID namespace), then sweeps `/proc`,
+/// several rounds. Prints `BF killed <n>`; exits 1 and prints
+/// `BF survivors <pids>` when processes remain. Reads `/proc` with shell
+/// builtins, so it needs neither procps nor python.
+pub fn kill_user(user: &str) -> String {
+    format!(
+        r#"u={user}
+uid=$(id -u "$u" 2>/dev/null) || {{ echo "BF error no-user" >&2; exit 2; }}
+case "$uid" in ''|*[!0-9]*|0) echo "BF error bad-uid $uid" >&2; exit 2;; esac
+live() {{
+  for e in /proc/[0-9]*; do
+    p=${{e##*/}}
+    st=; eu=
+    if {{ while read -r k a b rest || [ -n "$k" ]; do
+            case "$k" in State:) st=$a;; Uid:) eu=$b;; esac; k=
+          done < "$e/status"; }} 2>/dev/null && [ -n "$st" ]; then
+      [ "$eu" = "$uid" ] && [ "$st" != Z ] && echo "$p"
+    fi
+  done
+  return 0
+}}
+n=$(live | wc -l | tr -d ' ')
+for r in 1 2 3 4 5 6 7 8; do
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid="$uid" --regid="$(id -g "$u")" --clear-groups sh -c 'kill -9 -1' 2>/dev/null
+  else
+    su -s /bin/sh "$u" -c 'kill -9 -1' 2>/dev/null
+  fi
+  for p in $(live); do kill -9 "$p" 2>/dev/null; done
+  s=$(live)
+  [ -z "$s" ] && {{ echo "BF killed $n"; exit 0; }}
+  sleep 0.5 2>/dev/null || sleep 1
+done
+echo "BF survivors" $(live)
+exit 1"#,
+        user = q(user)
+    )
+}
+
+/// Hand the sandbox from the agent to the verifier.
+///
+/// - Clears `/logs/verifier` (anything the agent wrote there is discarded).
+/// - Removes every file or folder whose name has a line break in it, in the
+///   workdir, the temp folders, and the folders the steering scan reads
+///   (`BF special ...`, the break shown as `?`): the scans below read one
+///   path per line, and such a name would read as two paths, one of which
+///   the agent chose (the baseline, say, which would end the cleanup).
+/// - Removes FIFOs, sockets, and device files from the workdir and the
+///   [`OUTPUT_DIRS`] the agent was given, and symlinks there that point
+///   outside both (`BF special ...`, `BF symlink ...`): a verifier that
+///   opens a FIFO hangs, and a symlink can point it at files the agent
+///   should not choose.
+/// - Removes steering files the agent planted and restores ones it edited
+///   (`BF planted ...`, `BF restored ...`), against [`baseline`].
+/// - Removes `*.py` files left in `/tmp` and `/var/tmp`, which shadow
+///   modules for any Python started there; files that were there unchanged
+///   before the agent started (the sandbox's own, such as Daytona's
+///   `daytona_repl_worker.py`) stay.
+/// - Reports files over 1 GB in the workdir (`BF large ...`).
+///
+/// Ends with `BF handoff done`; without it the runner does not grade.
+pub fn handoff(workdir: &str, verifier_user: Option<&str>) -> String {
+    let chown = match verifier_user {
+        Some(u) if u != "root" && u != "0" => {
+            format!("chown {u} /logs/verifier 2>/dev/null || true", u = q(u))
+        }
+        _ => String::new(),
+    };
+    format!(
+        r#"w={workdir}; b={state}/baseline
+rm -rf /logs/verifier; mkdir -p /logs/verifier; chown root:root /logs/verifier; chmod 755 /logs/verifier
+{chown}
+nl='
+'
+exec 3>&1
+drop='for f; do printf "BF special %s\n" "$(printf %s "$f" | tr "\n" "?")" >&3; rm -rf -- "$f"; done; true'
+for d in "$w" /tmp /var/tmp {outputs}; do
+  [ -d "$d" ] && {{ [ "$d" = "$w" ] || [ ! -L "$d" ]; }} && find "$d" -xdev -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; 2>/dev/null
+done
+rw=$(readlink -f "$w" 2>/dev/null || echo "$w")
+for d in "$w" {outputs}; do
+  [ -d "$d" ] || continue
+  [ "$d" != "$w" ] && [ -L "$d" ] && continue
+  find "$d" -xdev \( -type p -o -type s -o -type b -o -type c \) -print 2>/dev/null | while IFS= read -r f; do
+    echo "BF special $f"; rm -f "$f"
+  done
+  rd=$(readlink -f "$d" 2>/dev/null || echo "$d")
+  find "$d" -xdev -type l -print 2>/dev/null | while IFS= read -r l; do
+    t=$(readlink -f "$l" 2>/dev/null || true)
+    case "$t" in "$rw"|"$rw"/*|"$rd"|"$rd"/*) ;; *) echo "BF symlink $l -> $t"; rm -f "$l";; esac
+  done
+  find "$d" -xdev -type f -size +1048576k -print 2>/dev/null | while IFS= read -r f; do echo "BF large $f"; done
+done
+if [ -f "$b/list" ]; then
+  find / -xdev {prune} -o -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; -o -type f {names} -print 2>/dev/null | LC_ALL=C sort > "$b/after"
+  while IFS= read -r f; do
+    if ! grep -Fxq -- "$f" "$b/list"; then echo "BF planted $f"; rm -f "$f"; fi
+  done < "$b/after"
+  while IFS= read -r line; do
+    s=${{line%%  *}}; f=${{line#*  }}
+    now=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+    if [ "$now" != "$s" ]; then
+      rm -rf "$f"; tar -xf "$b/files.tar" -C / "${{f#/}}" 2>/dev/null && echo "BF restored $f" || echo "BF lost $f"
+    fi
+  done < "$b/sums"
+fi
+find /tmp /var/tmp -xdev -name '*.py' -type f -print 2>/dev/null | while IFS= read -r f; do
+  s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+  [ -f "$b/tmp-sums" ] && grep -Fxq -- "$s  $f" "$b/tmp-sums" && continue
+  echo "BF tmp-module $f"; rm -f "$f"
+done
+echo "BF handoff done""#,
+        workdir = q(workdir),
+        state = q(STATE_DIR),
+        chown = chown,
+        prune = prune_expr(),
+        names = steering_find_expr(),
+        outputs = OUTPUT_DIRS.join(" "),
+    )
+}
+
+/// Print the verifier's `PATH`: the image's `PATH` entries that are absolute,
+/// root-owned, and not writable by group or others, outside the workdir and
+/// temp folders. Falls back to the standard system folders.
+pub fn trusted_path(workdir: &str) -> String {
+    format!(
+        r#"w={workdir}
+out=
+IFS=:
+for d in ${{{IMAGE_PATH_VAR}:-${{PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}}}}; do
+  case "$d" in /*) ;; *) continue;; esac
+  case "$d" in "$w"|"$w"/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*|/home/*|/dev/shm*) continue;; esac
+  [ -d "$d" ] || continue
+  [ "$(stat -c %u "$d" 2>/dev/null)" = 0 ] || continue
+  m=$(stat -c %A "$d" 2>/dev/null)
+  case "$m" in ?????w????|????????w?) continue;; esac
+  case ":$out:" in *":$d:"*) continue;; esac
+  out=${{out:+$out:}}$d
+done
+echo "BF path ${{out:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}}""#,
+        workdir = q(workdir)
+    )
+}
+
+/// The system folders [`lock_system_dirs`] takes group and other write
+/// permission from. Missing ones are skipped, and so are symlinks (`/bin` is
+/// often a link to `/usr/bin`, which is covered through `/usr`).
+pub const SYSTEM_DIRS: &[&str] = &[
+    "/usr", "/etc", "/opt", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot",
+    "/srv", "/root",
+];
+
+/// How many changed paths [`lock_system_dirs`] names one by one; the rest
+/// are only counted.
+pub const SYSTEM_DIRS_NAMED: usize = 20;
+
+/// Remove group and other write permission from everything under
+/// [`SYSTEM_DIRS`] except the workdir and the agent user's home, before the
+/// agent starts.
+///
+/// An agent that can write a library, an interpreter, or a file in `/etc`
+/// can change what the verifier runs, wherever it looks programs up. Prints
+/// `BF syswrite <old mode> <path>` for the first [`SYSTEM_DIRS_NAMED`]
+/// paths it changed, `BF syswrite-count <n>` for all of them, and
+/// `BF syswrite-left <n>` for paths still writable afterwards (0 when it
+/// held). Symlinks are left alone: their own mode means nothing.
+///
+/// Permissions do not bind a file's owner, so it also prints
+/// `BF sysowned <path>` for the first [`SYSTEM_DIRS_NAMED`] paths there
+/// that `user` owns (an image's own user that a task names as its agent
+/// may own a venv in `/opt`), and `BF sysowned-count <n>`. Those are left
+/// as they are: the image gave them to that user on purpose.
+pub fn lock_system_dirs(workdir: &str, home: &str, user: &str) -> String {
+    let dirs: Vec<String> = SYSTEM_DIRS.iter().map(|d| q(d)).collect();
+    format!(
+        r#"w={workdir}; h={home}; l={state}/syswrite
+mkdir -p {state}; chmod 700 {state}
+scan() {{
+  for r in {dirs}; do
+    [ -d "$r" ] && [ ! -L "$r" ] || continue
+    find "$r" -xdev \( -path "$w" -o -path "$h" \) -prune -o ! -type l \( -perm -020 -o -perm -002 \) -print 2>/dev/null
+  done
+}}
+scan > "$l"
+n=0
+while IFS= read -r f; do
+  n=$((n + 1))
+  [ "$n" -le {named} ] && echo "BF syswrite $(stat -c %a "$f" 2>/dev/null) $f"
+  chmod go-w "$f" 2>/dev/null
+done < "$l"
+echo "BF syswrite-count $n"
+echo "BF syswrite-left $(scan | wc -l | tr -d ' ')"
+rm -f "$l"
+u={user}
+if id -u "$u" >/dev/null 2>&1; then
+  n=0
+  for r in {dirs}; do
+    [ -d "$r" ] && [ ! -L "$r" ] || continue
+    find "$r" -xdev \( -path "$w" -o -path "$h" \) -prune -o -user "$u" -print 2>/dev/null
+  done > "$l"
+  while IFS= read -r f; do
+    n=$((n + 1))
+    [ "$n" -le {named} ] && echo "BF sysowned $f"
+  done < "$l"
+  echo "BF sysowned-count $n"
+  rm -f "$l"
+fi"#,
+        workdir = q(workdir),
+        home = q(home),
+        user = q(user),
+        state = q(STATE_DIR),
+        dirs = dirs.join(" "),
+        named = SYSTEM_DIRS_NAMED,
+    )
+}
+
+/// Keep a copy of `/etc/ld.so.preload` (or note that there is none) in
+/// root-only state, before the agent starts. Every dynamically linked
+/// program, the verifier's included, loads the libraries that file names.
+/// Prints `BF preload absent` or `BF preload present <lines>`.
+pub fn preload_snapshot() -> String {
+    format!(
+        r#"b={state}/preload; p=/etc/ld.so.preload
+mkdir -p {state}; chmod 700 {state}; rm -rf "$b" "$b.sum"
+if [ -e "$p" ] || [ -L "$p" ]; then
+  cp -P "$p" "$b" && {{ sha256sum < "$p" 2>/dev/null | cut -d' ' -f1; }} > "$b.sum"
+  echo "BF preload present $(wc -l < "$p" | tr -d ' ')"
+else
+  echo absent > "$b.sum"; echo "BF preload absent"
+fi"#,
+        state = q(STATE_DIR),
+    )
+}
+
+/// Compare `/etc/ld.so.preload` with [`preload_snapshot`]'s copy and put it
+/// back when it changed. Prints `BF preload absent`, `BF preload unchanged`,
+/// `BF preload restored`, or `BF preload no-baseline`; prints
+/// `BF preload stuck` and exits 1 when it could not be put back.
+pub fn preload_check() -> String {
+    format!(
+        r#"b={state}/preload; p=/etc/ld.so.preload
+sum() {{ if [ -e "$p" ] || [ -L "$p" ]; then s=$(sha256sum < "$p" 2>/dev/null | cut -d' ' -f1); echo "${{s:-unreadable}}"; else echo absent; fi; }}
+[ -f "$b.sum" ] || {{ echo "BF preload no-baseline"; exit 0; }}
+before=$(cat "$b.sum"); now=$(sum)
+if [ "$now" = "$before" ]; then
+  if [ "$now" = absent ]; then echo "BF preload absent"; else echo "BF preload unchanged"; fi
+  exit 0
+fi
+rm -rf "$p"
+[ "$before" = absent ] || cp -P "$b" "$p"
+if [ "$(sum)" = "$before" ]; then echo "BF preload restored"; else echo "BF preload stuck"; exit 1; fi"#,
+        state = q(STATE_DIR),
+    )
+}
+
+/// The value [`oom_prefix`] gives every agent process: the kernel's
+/// highest, so the agent's processes are the first it stops when the
+/// sandbox runs out of memory.
+pub const AGENT_OOM_SCORE_ADJ: i32 = 1000;
+
+/// A line put before every command the agent (or a scripted attempt) runs:
+/// it raises the shell's `oom_score_adj`, which every process it starts
+/// inherits. Raising it needs no privilege; lowering it below the value the
+/// sandbox started with does, so an agent can at most undo it, never go
+/// below the runner's and the verifier's.
+pub fn oom_prefix() -> String {
+    format!("{{ echo {AGENT_OOM_SCORE_ADJ} > /proc/self/oom_score_adj; }} 2>/dev/null\n")
+}
+
+/// Print the sandbox's memory limit as the kernel sees it: `BF mem v2 <max>
+/// <swap max>` (cgroup v2), `BF mem v1 <limit> -` (cgroup v1), or
+/// `BF mem none`; and `BF memtotal <kB>` from `/proc/meminfo`.
+pub fn memory_limit() -> String {
+    r#"if [ -r /sys/fs/cgroup/memory.max ]; then
+  echo "BF mem v2 $(cat /sys/fs/cgroup/memory.max) $(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null || echo -)"
+elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+  echo "BF mem v1 $(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) -"
+else
+  echo "BF mem none"
+fi
+while read -r k v rest; do [ "$k" = MemTotal: ] && echo "BF memtotal $v"; done < /proc/meminfo 2>/dev/null
+true"#
+        .to_string()
+}
+
+/// Environment variables that change how programs load or start: the
+/// dynamic loader's (`LD_PRELOAD`, `LD_LIBRARY_PATH`, ...), glibc's
+/// (`GCONV_PATH`, ...), and the shells' start-up files (`BASH_ENV`, `ENV`).
+/// The verifier runs with every one unset, except ones the task's own
+/// `[verifier] env` sets.
+pub const LOADER_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_DEBUG_OUTPUT",
+    "LD_PROFILE",
+    "LD_PROFILE_OUTPUT",
+    "LD_ORIGIN_PATH",
+    "LD_DYNAMIC_WEAK",
+    "LD_BIND_NOT",
+    "LD_SHOW_AUXV",
+    "LD_USE_LOAD_BIAS",
+    "LD_HWCAP_MASK",
+    "LD_ASSUME_KERNEL",
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "MALLOC_TRACE",
+    "LOCPATH",
+    "NLSPATH",
+    "HOSTALIASES",
+    "RES_OPTIONS",
+    "BASH_ENV",
+    "ENV",
+];
+
+/// The loader variables the verifier runs without: [`LOADER_VARS`] minus
+/// the ones the task's `[verifier] env` sets itself.
+pub fn unset_vars(task_env: &std::collections::BTreeMap<String, String>) -> Vec<&'static str> {
+    LOADER_VARS
+        .iter()
+        .copied()
+        .filter(|v| !task_env.contains_key(*v))
+        .collect()
+}
+
+/// The line the verifier's command starts with: unset `vars`, so neither the
+/// verifier nor anything it starts inherits them.
+pub fn verifier_env_prefix(vars: &[&str]) -> String {
+    if vars.is_empty() {
+        return String::new();
+    }
+    format!("unset {}\n", vars.join(" "))
+}
+
+/// Check the environment the verifier would get, run with the verifier's
+/// own user, folder, and variables. Prints `BF venv-dropped <name>` for each
+/// of `vars` the sandbox's environment held (they are unset next, as
+/// [`verifier_env_prefix`] does), then, after the unset: `BF venv-set
+/// <name>` for any still set, `BF venv-safepath <value>`,
+/// `BF venv-path-bad <folder> <why>` for each `PATH` folder that is relative
+/// or that someone other than root could write, `BF venv-path <PATH>`, and
+/// `BF venv-done`.
+pub fn verifier_env_check(vars: &[&str]) -> String {
+    let list = vars.join(" ");
+    format!(
+        r#"for v in {list}; do eval "[ -n \"\${{$v+x}}\" ]" && echo "BF venv-dropped $v"; done
+{prefix}for v in {list}; do eval "[ -n \"\${{$v+x}}\" ]" && echo "BF venv-set $v"; done
+echo "BF venv-safepath ${{PYTHONSAFEPATH:-}}"
+p=${{PATH:-}}
+IFS=:
+for d in $p; do
+  case "$d" in /*) ;; *) echo "BF venv-path-bad '$d' relative"; continue;; esac
+  [ -d "$d" ] || continue
+  u=$(stat -Lc %u "$d" 2>/dev/null); m=$(stat -Lc %A "$d" 2>/dev/null)
+  [ "$u" = 0 ] || echo "BF venv-path-bad $d owner-uid-$u"
+  case "$m" in ?????w????|????????w?) echo "BF venv-path-bad $d $m";; esac
+done
+unset IFS
+echo "BF venv-path $p"
+echo "BF venv-done""#,
+        prefix = verifier_env_prefix(vars),
+    )
+}
+
+/// Caps on what output collection copies, from task.md's defaults: 100 MB
+/// per file, 10,000 files, 32 folders deep, and 1 GiB in all (0.8's cap on
+/// collected artifacts).
+pub const MAX_OUTPUT_FILE_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_OUTPUT_FILES: u64 = 10_000;
+pub const MAX_OUTPUT_DEPTH: u32 = 32;
+pub const MAX_OUTPUT_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Where [`pack_outputs`] leaves its archive.
+pub const OUTPUTS_TAR: &str = "/var/lib/benchflow/outputs.tar";
+
+/// Pack the outputs at `paths` into [`OUTPUTS_TAR`] (paths relative to `/`),
+/// taking custody of only what is safe to copy (an output reached through a
+/// symlink another user made is skipped, as `BF skipped-special`): regular files up to
+/// [`MAX_OUTPUT_FILE_BYTES`], at most [`MAX_OUTPUT_FILES`], at most
+/// [`MAX_OUTPUT_DEPTH`] deep, and at most [`MAX_OUTPUT_TOTAL_BYTES`] in all.
+/// Symlinks and special files are never copied (`BF skipped-special`), nor
+/// are files over a size cap (`BF skipped-large`),
+/// so a sparse 100 GB file or a FIFO cannot stall the copy. Paths with a
+/// line break are left out: the list `tar` reads has one path per line. Prints
+/// `BF packed <files> <bytes>`.
+pub fn pack_outputs(paths: &[String]) -> String {
+    pack_into(paths, OUTPUTS_TAR)
+}
+
+/// The agent's session folders, packed by [`pack_into`] at the end of its
+/// turn.
+pub const SESSIONS_TAR: &str = "/var/lib/benchflow/sessions.tar";
+
+/// [`pack_outputs`], into the archive `tar`.
+pub fn pack_into(paths: &[String], tar: &str) -> String {
+    pack_capped(paths, tar, MAX_OUTPUT_TOTAL_BYTES)
+}
+
+/// [`pack_into`], with `total` bytes in all.
+fn pack_capped(paths: &[String], tar: &str, total: u64) -> String {
+    let list: Vec<String> = paths.iter().map(|p| q(p)).collect();
+    format!(
+        r#"{links}
+o={state}; mkdir -p "$o"; chmod 700 "$o"; l="$o/outputs.list"; : > "$l"; rm -f {tar}
+nl='
+'
+for p in {list}; do
+  [ -e "$p" ] || [ -L "$p" ] || {{ echo "BF missing $p"; continue; }}
+  if [ -L "$p" ] || [ -n "$(foreign_links "$p")" ]; then echo "BF skipped-special $p"; continue; fi
+  find "$p" -xdev -maxdepth {depth} \( -type l -o -type p -o -type s -o -type b -o -type c \) -print 2>/dev/null | while IFS= read -r f; do echo "BF skipped-special $f"; done
+  find "$p" -xdev -maxdepth {depth} -type f -size +{kb}k -print 2>/dev/null | while IFS= read -r f; do echo "BF skipped-large $f"; done
+  find "$p" -xdev -maxdepth {depth} -path "*$nl*" -prune -o -type f -size -{kb1}k -print 2>/dev/null >> "$l"
+done
+n=$(wc -l < "$l" | tr -d ' ')
+if [ "$n" -gt {max_files} ]; then echo "BF skipped-count $((n - {max_files}))"; head -n {max_files} "$l" > "$l.cut"; mv "$l.cut" "$l"; fi
+t=0; : > "$l.fit"
+while IFS= read -r f; do
+  s=$(stat -c %s "$f" 2>/dev/null || wc -c < "$f" 2>/dev/null | tr -d ' '); s=${{s:-0}}
+  if [ $((t + s)) -gt {total} ]; then echo "BF skipped-large $f"; else t=$((t + s)); printf '%s\n' "$f" >> "$l.fit"; fi
+done < "$l"
+mv "$l.fit" "$l"
+sed 's|^/||' "$l" > "$l.rel"
+if [ -s "$l.rel" ]; then (cd / && tar -cf {tar} -T "$l.rel") 2>/dev/null || {{ echo "BF error tar"; exit 1; }}; else tar -cf {tar} -T /dev/null; fi
+echo "BF packed $(wc -l < "$l.rel" | tr -d ' ') $(wc -c < {tar} | tr -d ' ')""#,
+        links = FOREIGN_LINKS,
+        state = q(STATE_DIR),
+        tar = q(tar),
+        list = list.join(" "),
+        depth = MAX_OUTPUT_DEPTH,
+        kb = MAX_OUTPUT_FILE_BYTES / 1024,
+        kb1 = MAX_OUTPUT_FILE_BYTES / 1024 + 1,
+        max_files = MAX_OUTPUT_FILES,
+    )
+}
+
+/// Parsed `BF ...` lines from a hardening program.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Report {
+    pub lines: Vec<(String, String)>,
+}
+
+impl Report {
+    pub fn parse(output: &str) -> Self {
+        let lines = output
+            .lines()
+            .filter_map(|l| l.strip_prefix("BF "))
+            .map(|l| match l.split_once(' ') {
+                Some((tag, rest)) => (tag.to_string(), rest.to_string()),
+                None => (l.to_string(), String::new()),
+            })
+            .collect();
+        Self { lines }
+    }
+
+    pub fn all(&self, tag: &str) -> Vec<&str> {
+        self.lines
+            .iter()
+            .filter(|(t, _)| t == tag)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    pub fn first(&self, tag: &str) -> Option<&str> {
+        self.all(tag).into_iter().next()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_root_path_checks_are_valid_sh_and_quiet_for_a_plain_user() {
+        for script in [ROOT_PATHS_AS_USER.to_string(), root_paths_as_root("agent")] {
+            let out = std::process::Command::new("sh")
+                .arg("-n")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        // Nothing in them runs a command as root: sudo only lists.
+        assert!(ROOT_PATHS_AS_USER.contains("sudo -n -l"));
+        assert_eq!(ROOT_PATHS_AS_USER.matches("sudo -").count(), 1);
+        assert!(root_paths_as_root("agent").contains("sudo -l -U"));
+    }
+
+    /// A stand-in `sudo` that lists a rule without a password, and a
+    /// doas.conf, on a fake PATH: each way is reported.
+    #[cfg(unix)]
+    #[test]
+    fn passwordless_sudo_is_reported_as_a_way_to_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let sudo = d.path().join("sudo");
+        std::fs::write(
+            &sudo,
+            "#!/bin/sh\n[ \"$1 $2\" = \"-n -l\" ] || exit 9\nprintf 'Matching Defaults entries:\\n    env_reset\\n\\nUser agent may run the following commands:\\n    (ALL) NOPASSWD: ALL\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A `find` that finds nothing keeps the test off this machine's disk.
+        let find = d.path().join("find");
+        std::fs::write(&find, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&find, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(ROOT_PATHS_AS_USER)
+            .env("PATH", format!("{}:/usr/bin:/bin", d.path().display()))
+            .output()
+            .unwrap();
+        let r = Report::parse(&String::from_utf8_lossy(&out.stdout));
+        assert!(
+            r.all("root-path")
+                .contains(&"sudo runs commands for it without a password ((ALL) NOPASSWD: ALL)"),
+            "{r:?}"
+        );
+        // A sudo that needs a password is not a way.
+        std::fs::write(
+            &sudo,
+            "#!/bin/sh\necho 'sudo: a password is required' >&2\nexit 1\n",
+        )
+        .unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(ROOT_PATHS_AS_USER)
+            .env("PATH", format!("{}:/usr/bin:/bin", d.path().display()))
+            .output()
+            .unwrap();
+        let r = Report::parse(&String::from_utf8_lossy(&out.stdout));
+        assert!(
+            !r.all("root-path").iter().any(|l| l.starts_with("sudo")),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn report_parses_tagged_lines() {
+        let r =
+            Report::parse("noise\nBF planted /app/conftest.py\nBF killed 3\nBF special /app/x\n");
+        assert_eq!(r.all("planted"), vec!["/app/conftest.py"]);
+        assert_eq!(r.first("killed"), Some("3"));
+        assert_eq!(r.all("special"), vec!["/app/x"]);
+        assert!(r.all("nothing").is_empty());
+    }
+
+    #[test]
+    fn programs_quote_their_inputs() {
+        let s = setup_user("agent", "/app dir");
+        assert!(s.contains("w='/app dir'"));
+        let h = handoff("/app", Some("tester"));
+        assert!(h.contains("chown tester /logs/verifier"));
+        assert!(!handoff("/app", Some("root")).contains("chown root /logs/verifier 2>"));
+    }
+
+    /// Only pytest and Python startup files count as planted or edited;
+    /// project files are the agent's work. Guards the e2e-docker fix: on
+    /// Terminal-Bench 2, build-cython-ext's own `pip install -e .` left
+    /// `__editable__.pyknotid-0.5.3.pth` in /usr/local/lib, the handoff
+    /// removed it, and the oracle failed; cloned Makefiles were removed too.
+    #[test]
+    fn only_test_runner_files_are_steering_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = [
+            "conftest.py",
+            "pytest.ini",
+            "sitecustomize.py",
+            "usercustomize.py",
+            "zz.pth",
+            "Makefile",
+            "package.json",
+            "pyproject.toml",
+            "setup.cfg",
+            "tox.ini",
+            "jest.config.js",
+        ];
+        for n in names {
+            std::fs::write(dir.path().join(n), "").unwrap();
+        }
+        let script = format!(
+            "find {} -type f {} -print | sed 's|.*/||' | LC_ALL=C sort",
+            q(&dir.path().display().to_string()),
+            steering_find_expr()
+        );
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "conftest.py\npytest.ini\nsitecustomize.py\nusercustomize.py\nzz.pth\n"
+        );
+        let prune = prune_expr();
+        for d in ["/usr/lib", "/usr/local/lib", "/etc", "/proc"] {
+            assert!(
+                prune.contains(&format!("-path {d} ")),
+                "{d} not pruned: {prune}"
+            );
+        }
+    }
+
+    /// Run [`handoff`] on the host with every absolute path it touches moved
+    /// under `root`, so nothing outside `root` is read or changed.
+    fn handoff_under(root: &std::path::Path, workdir: &std::path::Path) -> String {
+        let r = root.to_str().unwrap();
+        let script = handoff(workdir.to_str().unwrap(), None)
+            .replace("/logs/verifier", &format!("{r}/logs/verifier"))
+            .replace(STATE_DIR, &format!("{r}/state"))
+            .replace("find / -xdev", &format!("find {r} -xdev"))
+            .replace("/tmp /var/tmp", &format!("{r}/tmp {r}/var/tmp"))
+            .replace(
+                &OUTPUT_DIRS.join(" "),
+                &OUTPUT_DIRS.map(|d| format!("{r}{d}")).join(" "),
+            );
+        for left in [
+            "find / ",
+            " /tmp ",
+            " /var/tmp ",
+            " /output",
+            " /logs/",
+            STATE_DIR,
+        ] {
+            assert!(
+                !script.contains(left),
+                "the test would touch the host ({left:?})"
+            );
+        }
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("sh");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A path with a line break in it must not split into two paths for the
+    /// root programs: one of the halves could name any file, such as the
+    /// baseline that planted-file cleanup reads.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_is_not_steered_by_line_breaks_in_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let baseline = root.join("state/baseline");
+        for d in ["app/site", "tmp", "var/tmp", "logs"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(&baseline).unwrap();
+        std::fs::write(baseline.join("list"), "").unwrap();
+        std::fs::write(baseline.join("sums"), "").unwrap();
+        std::fs::write(baseline.join("tmp-sums"), "").unwrap();
+        let app = root.join("app");
+        // The agent plants a conftest.py, then tries to make the handoff
+        // delete the baseline so the cleanup is skipped: a symlink at
+        // `<app>/x\n<baseline>/list` reads as two lines, the second the
+        // baseline's own list.
+        std::fs::write(app.join("conftest.py"), "forced pass").unwrap();
+        let trick = app.join(format!("x\n{}", baseline.display()));
+        std::fs::create_dir_all(&trick).unwrap();
+        std::os::unix::fs::symlink("/nonexistent", trick.join("list")).unwrap();
+        // And a .pth file whose name splits into two paths that do not exist.
+        std::fs::write(app.join("site/evil\nx.pth"), "import os").unwrap();
+
+        let out = handoff_under(&root, &app);
+        assert!(
+            baseline.join("list").is_file(),
+            "the baseline was deleted: {out}"
+        );
+        assert!(
+            !app.join("conftest.py").exists(),
+            "the planted conftest.py survived: {out}"
+        );
+        assert!(
+            !app.join("site/evil\nx.pth").exists(),
+            "the planted .pth survived: {out}"
+        );
+        assert!(!app.join("x\n").exists(), "{out}");
+    }
+
+    /// The agent user owns `/output` and `/outputs` as it owns the workdir,
+    /// so the handoff takes the same custody of special files and escaping
+    /// symlinks there.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_takes_custody_of_the_output_folders_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let baseline = root.join("state/baseline");
+        for d in ["app", "tmp", "var/tmp", "logs", "output"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(&baseline).unwrap();
+        std::fs::write(root.join("output/answer.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(root.join("state"), root.join("output/escape")).unwrap();
+        std::os::unix::fs::symlink(root.join("output/answer.json"), root.join("output/same"))
+            .unwrap();
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(root.join("output/pipe"))
+            .status()
+            .unwrap();
+        assert!(fifo.success());
+        let out = handoff_under(&root, &root.join("app"));
+        assert!(out.contains("BF handoff done"), "{out}");
+        let gone = |n: &str| std::fs::symlink_metadata(root.join("output").join(n)).is_err();
+        assert!(gone("escape"), "{out}");
+        assert!(gone("pipe"), "{out}");
+        assert!(!gone("same"), "a link inside the folder stays: {out}");
+        assert!(!gone("answer.json"), "{out}");
+    }
+
+    /// The workdir goes to the owner named, on its own filesystem, links
+    /// changed themselves and never followed; `/` and unknown users are
+    /// refused before anything changes.
+    #[cfg(unix)]
+    #[test]
+    fn own_workdir_gives_the_folder_to_its_owner_and_refuses_the_root_folder() {
+        let s = own_workdir("/root", "root");
+        assert!(
+            s.contains(r#"find "$w" -xdev -exec chown -h "$o:$g""#),
+            "{s}"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let w = tmp.path().join("work");
+        std::fs::create_dir_all(w.join("repo/.git")).unwrap();
+        std::fs::write(w.join("repo/file"), "x").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("outside"), w.join("link")).unwrap();
+        let me = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .unwrap();
+        let me = String::from_utf8(me.stdout).unwrap().trim().to_string();
+        let sh = |script: String| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .output()
+                .unwrap()
+        };
+        // Owning what it already owns is all a test can do without root.
+        let out = sh(own_workdir(w.to_str().unwrap(), &me));
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("BF owned {me}\n")
+        );
+        assert!(!tmp.path().join("outside").exists(), "a link was followed");
+        let to_root = tmp.path().join("to-root");
+        std::os::unix::fs::symlink("/", &to_root).unwrap();
+        for (workdir, owner) in [
+            ("/", me.as_str()),
+            ("", me.as_str()),
+            (to_root.to_str().unwrap(), me.as_str()),
+            (w.to_str().unwrap(), "no-such-user-bf"),
+        ] {
+            let out = sh(own_workdir(workdir, owner));
+            assert_eq!(out.status.code(), Some(2), "{workdir:?} {owner}");
+            assert!(!String::from_utf8_lossy(&out.stdout).contains("BF owned"));
+        }
+    }
+
+    /// Run `script` under host `sh` with a stand-in `stat` that reads the
+    /// owner's uid from `ls -ln` (the host's `stat` may not take `-c`).
+    fn with_stand_in_stat(root: &std::path::Path, script: &str) -> String {
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("stat"),
+            "#!/bin/sh\nfor a; do f=$a; done\nls -lnd \"$f\" | awk '{print $3}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("stat"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Before root writes into a path after the agent's turn, symlinks on
+    /// the way that another user made are removed, and with `foreign` so is
+    /// anything another user left there. (The test runs as a user other
+    /// than root, so every file here counts as another user's.)
+    #[cfg(unix)]
+    #[test]
+    fn claim_removes_other_users_links_and_files_on_the_way() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        std::fs::write(root.join("elsewhere/keep.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("app/tests")).unwrap();
+        let target = root.join("app/tests/inner");
+        let out = with_stand_in_stat(&root, &claim(target.to_str().unwrap(), false));
+        assert!(out.contains("BF symlink "), "{out}");
+        assert!(
+            std::fs::symlink_metadata(root.join("app/tests")).is_err(),
+            "{out}"
+        );
+        assert!(
+            root.join("elsewhere/keep.txt").is_file(),
+            "the link's target stays"
+        );
+
+        std::fs::create_dir_all(root.join("app/v")).unwrap();
+        std::fs::write(root.join("app/v/test_extra.py"), "x").unwrap();
+        let v = root.join("app/v");
+        let out = with_stand_in_stat(&root, &claim(v.to_str().unwrap(), false));
+        assert!(v.join("test_extra.py").is_file(), "{out}");
+        let out = with_stand_in_stat(&root, &claim(v.to_str().unwrap(), true));
+        assert!(out.contains("BF planted "), "{out}");
+        assert!(!v.exists(), "{out}");
+    }
+
+    /// A line break in an output's path must not let the agent add a file
+    /// from elsewhere (a root-only one, say) to the saved outputs.
+    #[cfg(unix)]
+    #[test]
+    fn pack_outputs_takes_no_paths_from_line_breaks_in_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let r = root.to_str().unwrap();
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("ok.txt"), "mine").unwrap();
+        std::fs::write(root.join("secret.txt"), "root only").unwrap();
+        let trick = app.join(format!("x\n{r}"));
+        std::fs::create_dir_all(&trick).unwrap();
+        std::fs::write(trick.join("secret.txt"), "decoy").unwrap();
+        let script = pack_outputs(&[app.to_str().unwrap().to_string()])
+            .replace(STATE_DIR, &format!("{r}/state"));
+        assert!(!script.contains(STATE_DIR));
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let mut ar =
+            tar::Archive::new(std::fs::File::open(root.join("state/outputs.tar")).unwrap());
+        let names: Vec<String> = ar
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        let secret = format!("{}/secret.txt", r.trim_start_matches('/'));
+        assert!(!names.contains(&secret), "{names:?}");
+        assert!(names.iter().any(|n| n.ends_with("app/ok.txt")), "{names:?}");
+    }
+
+    /// Outputs stop at the total cap: files past it are left out as large.
+    #[cfg(unix)]
+    #[test]
+    fn pack_outputs_stops_at_the_total_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let r = root.to_str().unwrap();
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(app.join(name), "0123456789").unwrap();
+        }
+        let script = pack_capped(&[app.to_str().unwrap().to_string()], OUTPUTS_TAR, 25)
+            .replace(STATE_DIR, &format!("{r}/state"));
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let report = Report::parse(&String::from_utf8_lossy(&out.stdout));
+        assert_eq!(report.all("skipped-large").len(), 1, "{report:?}");
+        assert!(
+            report.first("packed").unwrap().starts_with("2 "),
+            "{report:?}"
+        );
+        let mut ar =
+            tar::Archive::new(std::fs::File::open(root.join("state/outputs.tar")).unwrap());
+        // macOS's tar adds `._` entries for extended attributes.
+        let files: Vec<String> = ar
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".txt") && !n.rsplit('/').next().unwrap().starts_with("._"))
+            .collect();
+        assert_eq!(files.len(), 2, "{files:?}");
+    }
+
+    /// The agent user gets a real `/output` folder, as in 0.8, but never the
+    /// target of a symlink planted there.
+    #[test]
+    fn output_folders_go_to_the_agent_unless_they_are_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("output")).unwrap();
+        std::fs::create_dir(root.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("outputs")).unwrap();
+        // A stand-in chown that records what it was asked to change.
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = root.join("chown.log");
+        std::fs::write(
+            bin.join("chown"),
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {}\n",
+                q(&log.display().to_string())
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("chown"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let output = root.join("output").display().to_string();
+        let outputs = root.join("outputs").display().to_string();
+        let missing = root.join("missing").display().to_string();
+        let script = own_dirs("agent:agent", &[&output, &outputs, &missing]);
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            format!("-R agent:agent {output}\n")
+        );
+        assert!(setup_user("agent", "/app").contains(r#"chown -R "$u:$g" "$d""#));
+        assert!(setup_user("agent", "/app").contains("for d in /output /outputs;"));
+    }
+
+    /// The programs must at least parse as POSIX shell.
+    #[test]
+    fn programs_are_valid_shell() {
+        for (name, prog) in [
+            ("setup_user", setup_user("agent", "/app")),
+            (
+                "lock_hidden",
+                lock_hidden(&["/verifier".into(), "/oracle".into()]),
+            ),
+            ("lock_system_path", lock_system_path("/app")),
+            ("baseline", baseline()),
+            ("kill_user", kill_user("agent")),
+            ("handoff", handoff("/app", None)),
+            ("claim", claim("/tests", true)),
+            ("claim_links_only", claim("/app/data", false)),
+            ("open_parents", open_parents("/app/data")),
+            ("trusted_path", trusted_path("/app")),
+            (
+                "lock_system_dirs",
+                lock_system_dirs("/app", "/home/agent", "agent"),
+            ),
+            ("preload_snapshot", preload_snapshot()),
+            ("preload_check", preload_check()),
+            ("memory_limit", memory_limit()),
+            ("oom_prefix", format!("{}true", oom_prefix())),
+            ("verifier_env_check", verifier_env_check(LOADER_VARS)),
+            ("verifier_env_check_empty", verifier_env_check(&[])),
+            (
+                "pack_outputs",
+                pack_outputs(&["/app".into(), "/var/log/x".into()]),
+            ),
+        ] {
+            let out = std::process::Command::new("sh")
+                .arg("-n")
+                .arg("-c")
+                .arg(&prog)
+                .output()
+                .expect("sh");
+            assert!(
+                out.status.success(),
+                "{name} is not valid sh: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+}

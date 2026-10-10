@@ -1,0 +1,10 @@
+canary-own/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 2 words; starts 'Fix it.'
+  canary: task.md canary 3e1d0b52-61f1-4c5b-9b0d-6a2e3f1d9c11 (stripped from the agent view)
+  blocks: toml task
+  config: block (name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

@@ -1,0 +1,46 @@
+{
+  "task_name": "task",
+  "rollout_name": "task__f6dcb9a4",
+  "rewards": null,
+  "agent": "test-agent",
+  "agent_name": "test-agent",
+  "model": "",
+  "n_tool_calls": 3,
+  "n_prompts": 1,
+  "error": "lost",
+  "verifier_error": null,
+  "partial_trajectory": true,
+  "trajectory_source": "partial_acp",
+  "started_at": "2026-05-20 13:58:10.344319",
+  "finished_at": "2026-05-20 13:58:10.346210",
+  "timing": {
+    "environment_setup": 0.0,
+    "agent_setup": 0.0,
+    "total": 0.0
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "parallel_group": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "test-agent",
+          "model": null,
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+clock-bad-8/task.md
+  mode: blocks
+  title: acme/clock-bad-8
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, verifier, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [verifier.sandbox] takes no clock: the clock covers the agent's and the oracle's phases and the task's services, never grading. The verifier receives TASKMD_CLOCK_START, TASKMD_CLOCK_HANDOFF, and TASKMD_TIMEZONE instead (task.md)
+  FAILED

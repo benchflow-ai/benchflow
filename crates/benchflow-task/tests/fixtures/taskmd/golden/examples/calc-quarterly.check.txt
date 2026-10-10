@@ -1,0 +1,13 @@
+calc-quarterly/task.md
+  mode: blocks
+  title: Summarize quarterly sales in a spreadsheet
+  instruction: 44 words; starts 'In LibreOffice Calc, open `~/Documents/q3_sales.xlsx`. Add a sheet nam'
+  blocks: toml task
+  config: block (about, agent, keywords, name, sandbox, title, version, world)
+  rubric: 4 criteria, 3 gates, 3 points; judges test, vlm
+  behaviors: cua.destructive-action, process.loop, cua.wrong-app
+  grading needs a model: yes: llm judges 3 behaviors; vlm judges 1 criterion
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  judge vlm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 8m (llm 3 x 2m + vlm 1 x 2m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  ok

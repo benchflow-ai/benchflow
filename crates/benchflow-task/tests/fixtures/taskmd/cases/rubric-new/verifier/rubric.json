@@ -1,0 +1,105 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "a",
+      "points": 1,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "A.",
+      "stated": "Fix the bug",
+      "outcome": "neutral"
+    },
+    {
+      "id": "b",
+      "points": 1,
+      "judge": "test",
+      "check": "t",
+      "text": "B.",
+      "stated": "Fix the bug",
+      "cite": "independent"
+    },
+    {
+      "id": "c",
+      "points": 1,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "C.",
+      "stated": "Fix the bug",
+      "cite": "always"
+    },
+    {
+      "id": "d",
+      "points": 1,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "D.",
+      "stated": "Fix the bug",
+      "score": {
+        "min": 5,
+        "max": 5
+      }
+    },
+    {
+      "id": "e",
+      "points": 1,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "E.",
+      "stated": "Fix the bug",
+      "score": {
+        "min": 0,
+        "max": 100
+      },
+      "levels": {
+        "0": "none",
+        "1": "some"
+      }
+    },
+    {
+      "id": "f",
+      "points": 1,
+      "judge": "test",
+      "check": "t",
+      "text": "F.",
+      "stated": "Fix the bug",
+      "score": {
+        "min": 0,
+        "max": 1
+      }
+    },
+    {
+      "id": "g",
+      "points": -2,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "Adds a dependency.",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "h",
+      "points": 1,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "H.",
+      "stated": "Fix the bug",
+      "outcom": "bad"
+    }
+  ],
+  "scoring": {
+    "method": "weighted",
+    "gates": "any"
+  }
+}

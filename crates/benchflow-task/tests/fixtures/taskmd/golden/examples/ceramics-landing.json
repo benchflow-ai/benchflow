@@ -1,0 +1,116 @@
+{
+  "path": "ceramics-landing/task.md",
+  "mode": "blocks",
+  "instruction": "Design and build a single-page website for Oda Clay, a two-person ceramics studio in Portland. It should show their three product lines, their weekend class schedule, and a way to join the mailing list. The owners want it to feel calm and handmade, not like a template. It has to work on a phone as well as on a laptop.\n\nBuild it as static HTML, CSS, and JavaScript in `/work/site/`. Use the photos in `/assets/`; do not use stock imagery.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/ceramics-landing\"\ntitle = \"A landing page for a ceramics studio\"\nversion = \"2.2.0\"\nkeywords = [\"web-design\", \"taste\", \"frontend\"]\n\n[agent]\ntimeout = \"1h\"\n\n[sandbox]\nimage = \"ghcr.io/example/web-static:2026.09\"\n\n[preference]\nprotocol = \"pairwise\"\ncompare = \"same-task-version\"\nblind = true\nrandomize_sides = true\nanswers = [\"A\", \"B\", \"tie\", \"cannot-judge\"]\ndirections = [\"overall\", \"aesthetic\", \"fit-to-brief\"]\nraters_per_pair = 3\nrater_pool = \"designers\"\ngold_pairs = \"evidence/gold-pairs.jsonl\"\nmin_agreement = { metric = \"krippendorff_alpha\", value = 0.4 }\naggregate = \"davidson-bradley-terry\"\nexport_pairs = true",
+      "line": 5
+    }
+  ],
+  "config": {
+    "name": "examples/ceramics-landing",
+    "title": "A landing page for a ceramics studio",
+    "version": "2.2.0",
+    "keywords": [
+      "web-design",
+      "taste",
+      "frontend"
+    ],
+    "agent": {
+      "timeout": "1h"
+    },
+    "sandbox": {
+      "image": "ghcr.io/example/web-static:2026.09"
+    },
+    "preference": {
+      "protocol": "pairwise",
+      "compare": "same-task-version",
+      "blind": true,
+      "randomize_sides": true,
+      "answers": [
+        "A",
+        "B",
+        "tie",
+        "cannot-judge"
+      ],
+      "directions": [
+        "overall",
+        "aesthetic",
+        "fit-to-brief"
+      ],
+      "raters_per_pair": 3,
+      "rater_pool": "designers",
+      "gold_pairs": "evidence/gold-pairs.jsonl",
+      "min_agreement": {
+        "metric": "krippendorff_alpha",
+        "value": 0.4
+      },
+      "aggregate": "davidson-bradley-terry",
+      "export_pairs": true
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "loads",
+        "gate": true,
+        "text": "/work/site/index.html loads without console errors and uses only local assets.",
+        "stated": [
+          "Build it as static HTML, CSS, and JavaScript in `/work/site/`",
+          "Use the photos in `/assets/`; do not use stock imagery"
+        ],
+        "implicit": "A page that throws console errors is broken, whatever the brief says.",
+        "judge": "test",
+        "check": "test_loads"
+      },
+      {
+        "id": "content",
+        "gate": true,
+        "text": "The page shows all three product lines, the class schedule, and a mailing-list form.",
+        "stated": "It should show their three product lines, their weekend class schedule, and a way to join the mailing list",
+        "judge": "test",
+        "check": "test_content"
+      },
+      {
+        "id": "visual-quality",
+        "points": 5,
+        "text": "Visual quality: typography, spacing, and color feel deliberate and fit the brief.",
+        "stated": "Design and build a single-page website for Oda Clay",
+        "judge": "human"
+      },
+      {
+        "id": "calm-and-handmade",
+        "points": 5,
+        "text": "It feels calm and handmade rather than template-like, as the owners asked.",
+        "stated": "The owners want it to feel calm and handmade, not like a template",
+        "judge": "human"
+      },
+      {
+        "id": "works-on-phones",
+        "points": 3,
+        "text": "Works on a phone-sized screen.",
+        "stated": "It has to work on a phone as well as on a laptop",
+        "judge": "vlm",
+        "evidence": [
+          "screenshots#mobile"
+        ]
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Design and build a single-page website for Oda Clay, a two-person ceramics studio in Portland. It should show their three product lines, their weekend class schedule, and a way to join the mailing list. The owners want it to feel calm and handmade, not like a template. It has to work on a phone as well as on a laptop.\n\nBuild it as static HTML, CSS, and JavaScript in `/work/site/`. Use the photos in `/assets/`; do not use stock imagery.",
+  "title": "A landing page for a ceramics studio",
+  "ok": true
+}

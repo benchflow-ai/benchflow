@@ -1,0 +1,17 @@
+world/task.md
+  mode: blocks
+  title: acme/world
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version, world)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [world] time must be one of 'decision-synchronous', 'real-time' (task.md)
+  error: [world.episode] success must be one of 'first', 'final' (task.md)
+  error: unknown key 'settle' in [world.episode]; did you mean settle_steps? it holds hidden_seeds, public_seeds, settle_steps, success, or x- extensions (task.md)
+  error: [world.safety.limit] on_violation must be one of 'reject-command', 'reject-protocol', 'clamp', 'stop', 'end-episode' (task.md)
+  error: unknown key 'unit' in [world.safety.limit]; did you mean quantity? it holds enforced_by, frame, max, measured_by, min, on_violation, proxy, quantity, or x- extensions (task.md)
+  error: [world.desktop] modality must be one of 'gui-only', 'gui-preferred', 'any' (task.md)
+  error: unknown key 'colors' in [world.desktop.display]; it holds depth, dpi, height, width, or x- extensions (task.md)
+  error: [world] kind must be one of ['physical', 'simulated', 'virtual'] (task.md)
+  FAILED

@@ -1,0 +1,48 @@
+# Rovo Dev (Atlassian), run headless with `acli rovodev run --yolo`, as
+# Harbor's `rovodev-cli` agent runs it. It needs an Atlassian account with
+# Rovo Dev; the models are Atlassian's.
+name = "rovodev-cli"
+aliases = ["rovodev"]
+description = "Rovo Dev (Atlassian), headless with acli rovodev run; needs an Atlassian account"
+
+[install]
+# The Atlassian CLI's release for this machine, pinned and checked, instead
+# of Atlassian's apt repository (which serves only its latest release).
+installer = '''
+set -eu
+case "$(uname -m)" in
+  x86_64|amd64) a=amd64; sum=7e0fb4dbedb1bb9100f8dc854d31d43c4b7c2c740e4cfd83b750760f4957b5a5 ;;
+  aarch64|arm64) a=arm64; sum=afb3865b4ddf27e4a8e89eae59849632e4bec1754344b10d74eef4332456fa5a ;;
+  *) echo "BenchFlow: the Atlassian CLI has no build for $(uname -m)" >&2; exit 1 ;;
+esac
+curl -fsSL -o acli.tar.gz "https://acli.atlassian.com/linux/1.3.39-stable/acli_1.3.39-stable_linux_$a.tar.gz"
+if command -v sha256sum > /dev/null 2>&1; then echo "$sum  acli.tar.gz" | sha256sum -c - > /dev/null; fi
+mkdir -p bin
+tar -xzf acli.tar.gz --strip-components=1 --no-same-owner -C bin
+rm -f acli.tar.gz
+'''
+links = ["bin/acli"]
+verify = "/opt/benchflow/bin/acli --version"
+
+[headless]
+# Rovo Dev logs in with the account's email and an API token, then runs on
+# the instruction. The billing site is written only when one is given.
+command = '''if [ -z "$ROVODEV_USER_EMAIL" ]; then
+  echo 'BenchFlow: Rovo Dev logs in with an Atlassian account email as well as the API token, and no email was given; add --env ROVODEV_USER_EMAIL=<email> to bench run' >&2
+  exit 2
+fi
+mkdir -p "$HOME/.rovodev"
+if [ -n "$ROVODEV_USER_BILLING_SITE" ]; then
+  printf '\natlassianBillingSite:\n  siteUrl: "%s"\n' "$ROVODEV_USER_BILLING_SITE" >> "$HOME/.rovodev/config.yml"
+fi
+printf '%s\n' "$ROVODEV_USER_API_TOKEN" | /opt/benchflow/bin/acli rovodev auth login --email "$ROVODEV_USER_EMAIL" --token >&2 || exit $?
+exec /opt/benchflow/bin/acli rovodev run --yolo "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null'''
+output = "text"
+
+[credentials]
+env = ["ROVODEV_USER_API_TOKEN"]
+account = "an Atlassian account with Rovo Dev: create an API token at https://id.atlassian.com/manage-profile/security/api-tokens, `export ROVODEV_USER_API_TOKEN=<token>`, and pass `--env ROVODEV_USER_EMAIL=<the account's email>` (and `--env ROVODEV_USER_BILLING_SITE=https://<site>.atlassian.net` to bill a site)"
+
+[model]
+# Rovo Dev picks its own model; BenchFlow cannot choose one.
+select = "none"

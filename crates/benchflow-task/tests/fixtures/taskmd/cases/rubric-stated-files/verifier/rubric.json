@@ -1,0 +1,44 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "f",
+      "gate": true,
+      "judge": "test",
+      "check": "t",
+      "text": "F.",
+      "stated": [
+        {
+          "file": "sandbox/spec.md",
+          "quote": "The API returns JSON"
+        },
+        {
+          "file": "sandbox/spec.md",
+          "quote": "not in the file"
+        },
+        {
+          "file": "verifier/answers.md",
+          "quote": "x"
+        },
+        {
+          "file": "sandbox/missing.md",
+          "quote": "x"
+        },
+        {
+          "file": "sandbox/blob.bin",
+          "quote": "x"
+        },
+        {
+          "file": "sandbox/other.md",
+          "quote": "Other"
+        },
+        {
+          "file": "sandbox/spec.md"
+        },
+        {
+          "quote": "x"
+        }
+      ]
+    }
+  ]
+}

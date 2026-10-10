@@ -1,0 +1,29 @@
+{
+  "path": "grading-episodes-default/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/grading-episodes-default\"\nversion = \"1.0.0\"\n[training]\nmax_concurrent = 4",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/grading-episodes-default",
+    "version": "1.0.0",
+    "training": {
+      "max_concurrent": 4
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/grading-episodes-default",
+  "ok": true
+}

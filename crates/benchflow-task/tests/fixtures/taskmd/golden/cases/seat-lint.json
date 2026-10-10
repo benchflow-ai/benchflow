@@ -1,0 +1,71 @@
+{
+  "path": "seat-lint/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/seat-lint\"\nversion = \"1.0.0\"\n[integrity.controls]\nno_op = \"controls/no-op.sh\"\ncheats = [\"controls/read.py\", \"cheat/solve.sh\"]",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/seat-lint",
+    "version": "1.0.0",
+    "integrity": {
+      "controls": {
+        "no_op": "controls/no-op.sh",
+        "cheats": [
+          "controls/read.py",
+          "cheat/solve.sh"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "a comment names the seat ('reference solution'), so a judge that reads this script can tell the reference from a solver: keep such notes in [integrity.controls] or a notes block",
+      "where": "oracle/solve.sh:2"
+    },
+    {
+      "level": "warning",
+      "message": "a comment names the seat ('known-bad'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block",
+      "where": "controls/fixed-delay.patch:4"
+    },
+    {
+      "level": "warning",
+      "message": "a comment names the seat ('should pass'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block",
+      "where": "controls/main.c:1"
+    },
+    {
+      "level": "warning",
+      "message": "a comment names the seat ('near miss'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block",
+      "where": "controls/page.html:1"
+    },
+    {
+      "level": "warning",
+      "message": "a comment names the seat ('cheat'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block",
+      "where": "controls/read.py:1"
+    },
+    {
+      "level": "warning",
+      "message": "a comment names the seat ('Full marks'), so a judge that reads this script can tell the reference from a solver: keep such notes in [integrity.controls] or a notes block",
+      "where": "stages/two/oracle/solve.sh:2"
+    },
+    {
+      "level": "warning",
+      "message": "a comment names the seat ('should score'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block",
+      "where": "cheat/solve.sh:2"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/seat-lint",
+  "ok": true
+}

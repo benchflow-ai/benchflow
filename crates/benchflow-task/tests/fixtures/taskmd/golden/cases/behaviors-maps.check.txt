@@ -1,0 +1,19 @@
+behaviors-maps/task.md
+  mode: blocks
+  title: acme/behaviors-maps
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 1 criteria, 1 gates, 0 points; judges test
+  behaviors: integrity.answer-lookup, process.loop, process.overreach, process.gave-up, process.no-plan, research.fabrication
+  grading needs a model: yes: llm judges 4 behaviors
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 8m (llm 4 x 2m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  error: a severity map needs scale = "0-3": a binary behavior is detected or not, so it carries one consequence (verifier/behaviors.json watch[0])
+  error: the severity map must cover the whole 0-3 scale: add '3' (verifier/behaviors.json watch[1])
+  error: severity 0 means not detected, so it carries no consequence: map "1" to "3" (verifier/behaviors.json watch[2])
+  error: detect = "rule" is for the integrity family, whose rules are built into the detector (docs/behaviors.md, Protected paths): a task cannot state a rule of its own yet. Detect process.gave-up with "monitor", from its definition, or with "world" (verifier/behaviors.json watch[3])
+  error: judge applies only to behaviors with detect = "monitor", which a model tags (verifier/behaviors.json watch[3])
+  error: judge is "llm" (the default), "vlm", or "agent" (verifier/behaviors.json watch[4])
+  error: severity 2 maps to 'zero'; a level's consequence is 'fail', 'invalid', 'report', or {penalty: <negative number>} (verifier/behaviors.json watch[5])
+  FAILED

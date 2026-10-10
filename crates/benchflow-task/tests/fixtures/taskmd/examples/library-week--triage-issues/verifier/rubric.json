@@ -1,0 +1,11 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    { "id": "labels", "points": 2, "judge": "test", "check": "test_labels_match_reference",
+      "text": "At least 90% of labels match the maintainers' labels.",
+      "stated": "Label every issue as `bug`, `feature`, or `question`" },
+    { "id": "urgent", "points": 1, "judge": "test", "check": "test_urgent_are_bugs_with_most_reports",
+      "text": "The three urgent issues are bugs, and at least two are among the three most reported.",
+      "stated": "pick the three most urgent bugs" }
+  ]
+}

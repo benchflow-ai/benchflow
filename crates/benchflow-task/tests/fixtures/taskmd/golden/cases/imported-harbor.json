@@ -1,0 +1,51 @@
+{
+  "path": "imported-harbor/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/imported-harbor\"\nversion = \"1.0.0\"\n[import.harbor]\ntrajectory = \"trajectory.json\"\nworkdirs = { one = \"steps/one/workdir\", two = \"steps/two/workdir\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/imported-harbor",
+    "version": "1.0.0",
+    "import": {
+      "harbor": {
+        "trajectory": "trajectory.json",
+        "workdirs": {
+          "one": "steps/one/workdir",
+          "two": "steps/two/workdir"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "[import.harbor] trajectory: Harbor seeds the agent's session with trajectory.json, an ATIF trajectory, before the agent starts; no task.md runtime loads it, so a task.md run starts without that context",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "[import.harbor] workdirs: before stage one starts, Harbor copies steps/one/workdir/ into the agent's working directory and runs its setup.sh; no task.md runtime does, so the stage starts without them",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "[import.harbor] workdirs: before stage two starts, Harbor copies steps/two/workdir/ into the agent's working directory; no task.md runtime does, so the stage starts without them",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/imported-harbor",
+  "ok": true
+}

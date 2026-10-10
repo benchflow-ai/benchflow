@@ -1,0 +1,1 @@
+{"criteria": [{"name": "notes_present", "blocker": 1, "weight": 5}, {"name": "notes_accuracy", "blocker": 0, "weight": 5}]}

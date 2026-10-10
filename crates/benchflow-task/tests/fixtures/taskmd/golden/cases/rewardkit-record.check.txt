@@ -1,0 +1,10 @@
+rewardkit-record/task.md
+  mode: blocks
+  title: acme/rewardkit-record
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (import, name, version)
+  grading needs a model: yes (a script): [import.harbor] rewardkit records judge files that call a model (judge.toml, style.toml)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: grading calls a model from a script ([import.harbor] rewardkit records judge files that call a model (judge.toml, style.toml)), but [verifier] models is not true: set [verifier] models = true, so the runtime gives the verifier a seat token and the proxy's URL. Without it the script cannot reach a model on a task.md runtime, and its judge calls fail (task.md)
+  ok

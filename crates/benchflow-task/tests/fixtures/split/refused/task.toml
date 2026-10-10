@@ -1,0 +1,15 @@
+schema_version = "1.4"
+
+[environment]
+os = "windows"
+gpu_types = ["H100"]
+skills_dir = "/skills"
+
+[verifier]
+reward_range = [-1.0, 1.0]
+
+[[steps]]
+name = "first"
+
+[[steps]]
+name = "second"

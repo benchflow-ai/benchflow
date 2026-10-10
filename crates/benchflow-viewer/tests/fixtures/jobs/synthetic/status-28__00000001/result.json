@@ -1,0 +1,1 @@
+{"rewards": {"reward": 1}, "scoring": {"schema_version": 1, "policy": "tests-blockers-quality-v1", "status": "complete", "passed": true, "tests_pass": true, "all_blockers_pass": true, "failed_blockers": [], "verifier_reward": 1.0, "rubric_reward": 1.5, "reviewer_run": "reviews/abc"}}

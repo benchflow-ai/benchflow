@@ -1,0 +1,25 @@
+{
+  "path": "canary-own/task.md",
+  "mode": "blocks",
+  "instruction": "Fix it.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"",
+      "line": 5
+    }
+  ],
+  "config": {
+    "name": "acme/x"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": "task.md canary 3e1d0b52-61f1-4c5b-9b0d-6a2e3f1d9c11",
+  "instruction_source": "<!-- task.md canary 3e1d0b52-61f1-4c5b-9b0d-6a2e3f1d9c11 -->\n\nFix it.",
+  "title": "acme/x",
+  "ok": true
+}

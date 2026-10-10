@@ -1,0 +1,46 @@
+{
+  "path": "hello-world/task.md",
+  "mode": "blocks",
+  "instruction": "Create a file `/app/hello.txt` that contains exactly `Hello, world!` with no trailing newline.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/hello-world\"\ntitle = \"Hello, world\"\nversion = \"1.3.0\"\n\n[agent]\ntimeout = \"2m\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "examples/hello-world",
+    "title": "Hello, world",
+    "version": "1.3.0",
+    "agent": {
+      "timeout": "2m"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "hello",
+        "gate": true,
+        "text": "/app/hello.txt contains exactly \"Hello, world!\".",
+        "stated": "Create a file `/app/hello.txt` that contains exactly `Hello, world!`",
+        "judge": "test",
+        "check": "test_hello"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Create a file `/app/hello.txt` that contains exactly `Hello, world!` with no trailing newline.",
+  "title": "Hello, world",
+  "ok": true
+}

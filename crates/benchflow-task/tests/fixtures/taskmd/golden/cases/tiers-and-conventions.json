@@ -1,0 +1,47 @@
+{
+  "path": "tiers-and-conventions/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/tiers-and-conventions\"\nversion = \"1.0.0\"\n[tiers.bench]\nkind = \"physical\"\nnotes = \"x\"\n\n[conventions]\nunits = \"SI\"\ncolor = \"red\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/tiers-and-conventions",
+    "version": "1.0.0",
+    "tiers": {
+      "bench": {
+        "kind": "physical",
+        "notes": "x"
+      }
+    },
+    "conventions": {
+      "units": "SI",
+      "color": "red"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key 'notes' in [tiers.bench]; it holds gate, kind, profile, record, supervision, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'color' in [conventions]; it holds frames, material, units, or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/tiers-and-conventions",
+  "ok": false
+}

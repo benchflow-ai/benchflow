@@ -1,0 +1,32 @@
+{
+  "path": "no-grader/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/no-grader\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/no-grader",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/no-grader",
+  "ok": false
+}

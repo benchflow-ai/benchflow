@@ -1,0 +1,10 @@
+task-toml-beside/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 2 words; starts 'Fix it.'
+  blocks: toml task
+  config: block (name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: task.toml is Harbor's config file; task.md keeps config in a ```toml task block (tools/convert.py import converts Harbor tasks) (task.toml)
+  FAILED

@@ -1,0 +1,52 @@
+# Kimi Code (Moonshot AI's npm @moonshot-ai/kimi-code CLI, not the Python
+# kimi-cli), run headless with `kimi --prompt --output-format stream-json`,
+# as Harbor's `kimi-code` agent runs it.
+name = "kimi-code"
+description = "Kimi Code (Moonshot AI), headless with kimi --prompt"
+# Skills are copied here and named to kimi with `--skills-dir`, as Harbor
+# passes them.
+skill_paths = ["$HOME/.kimi-code/skills"]
+skills_via = "named to kimi with --skills-dir"
+
+[install]
+npm = "@moonshot-ai/kimi-code@2.1.1"
+bin = "kimi"
+verify = "/opt/benchflow/bin/kimi --version"
+
+[headless]
+# Kimi Code takes a bring-your-own-key model from KIMI_MODEL_*: the
+# provider type (kimi, anthropic or openai) and key from the `provider/model`
+# id. After kimi exits, the session journal's usage lines are printed for
+# the parser (the stream has no token counts).
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+case "$p" in
+  kimi|moonshot) export KIMI_MODEL_PROVIDER_TYPE=kimi KIMI_MODEL_API_KEY="${KIMI_API_KEY:-$MOONSHOT_API_KEY}" ;;
+  anthropic) export KIMI_MODEL_PROVIDER_TYPE=anthropic KIMI_MODEL_API_KEY="$ANTHROPIC_API_KEY"; [ -z "$ANTHROPIC_BASE_URL" ] || export KIMI_MODEL_BASE_URL="$ANTHROPIC_BASE_URL" ;;
+  openai) export KIMI_MODEL_PROVIDER_TYPE=openai KIMI_MODEL_API_KEY="$OPENAI_API_KEY"; [ -z "$OPENAI_BASE_URL" ] || export KIMI_MODEL_BASE_URL="$OPENAI_BASE_URL" ;;
+  *) echo "BenchFlow: kimi-code takes kimi/, moonshot/, anthropic/ or openai/ models, not '$BENCHFLOW_MODEL'" >&2; exit 2 ;;
+esac
+export KIMI_MODEL_NAME="$m" KIMI_CODE_HOME="$HOME/.kimi-code"
+[ -z "$BENCHFLOW_EFFORT" ] || export KIMI_MODEL_THINKING_EFFORT="$BENCHFLOW_EFFORT"
+/opt/benchflow/bin/kimi ${BENCHFLOW_SKILLS_DIR:+--skills-dir "$BENCHFLOW_SKILLS_DIR"} --prompt "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" --output-format stream-json < /dev/null
+s=$?
+for f in "$KIMI_CODE_HOME"/sessions/*/session_*/agents/main/wire.jsonl; do
+  [ -f "$f" ] && grep '"usage' "$f" | sed -e 's/^/{"@bf":"wire","item":/' -e 's/$/}/'
+done
+exit "$s"'''
+output = "kimi-stream-json"
+env = { KIMI_DISABLE_TELEMETRY = "true", KIMI_CODE_NO_AUTO_UPDATE = "true", NO_COLOR = "true" }
+
+[credentials]
+# `kimi/<model>` reads KIMI_API_KEY, `moonshot/<model>` MOONSHOT_API_KEY.
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# An `openai/` model is Kimi Code's bring-your-own-key `openai` type (Chat
+# Completions), its key and URL from OPENAI_API_KEY and OPENAI_BASE_URL.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"

@@ -1,0 +1,9 @@
+aws-bench-count-old-buckets--judges/task.md
+  mode: blocks
+  title: aws-introspection/count-old-s-buckets
+  instruction: 18 words; starts 'How many S3 buckets were created more than a day ago?'
+  blocks: toml task
+  config: block (about, agent, authors, description, import, keywords, name, oracle, sandbox, verifier)
+  grading needs a model: yes (a script): [verifier] models = true; verifier/test.sh runs RewardKit, whose judges call a model
+  worst-case grading time: 4m (scripts 4m; in sequence, before retries)
+  ok

@@ -1,0 +1,28 @@
+schema_version = "1.4"
+artifacts = []
+
+[metadata]
+author_name = "Test Author"
+author_email = "unknown"
+difficulty = "unknown"
+category = "data-science"
+tags = [ "web-scraping",]
+
+[verifier]
+timeout_sec = 120.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 360.0
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 600.0
+os = "linux"
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

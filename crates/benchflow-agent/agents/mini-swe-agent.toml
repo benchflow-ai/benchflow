@@ -1,0 +1,70 @@
+# mini-swe-agent (the SWE-agent team's minimal agent), run headless as
+# Harbor's `mini-swe-agent` agent runs it: `--yolo --exit-immediately`, no
+# cost limit, the packaged `mini` config. Its trajectory file is followed
+# while it works.
+name = "mini-swe-agent"
+description = "mini-swe-agent, headless, its trajectory followed as it works"
+
+[install]
+uv-tool = "mini-swe-agent==2.4.6"
+bin = "mini-swe-agent"
+python = "3.12"
+verify = "/opt/benchflow/bin/mini-swe-agent --help > /dev/null"
+
+[headless]
+# The model is a LiteLLM id (`anthropic/claude-sonnet-4-6`, `openai/gpt-5`).
+# OpenAI models take a reasoning effort through the Responses API, others
+# as LiteLLM's reasoning_effort (as Harbor does).
+command = '''if [ -n "$BENCHFLOW_EFFORT" ]; then
+  case "$BENCHFLOW_MODEL" in
+    openai/*) set -- "$@" -c model.model_class=litellm_response -c "model.model_kwargs.reasoning.effort=$BENCHFLOW_EFFORT" ;;
+    *) set -- "$@" -c "model.model_kwargs.reasoning_effort=$BENCHFLOW_EFFORT" ;;
+  esac
+fi
+t="$HOME/.benchflow/mini-swe-agent.traj.json"
+exec /opt/benchflow/uv-tools/mini-swe-agent/bin/python "$HOME/.benchflow/follow.py" "$t" messages "" -- \
+  /opt/benchflow/bin/mini-swe-agent --yolo --exit-immediately --cost-limit 0 -c mini -c model.model_kwargs.timeout=3600 "$@" \
+  --model "$BENCHFLOW_MODEL" --output "$t" --task "$(cat "$BENCHFLOW_INSTRUCTION_FILE")"'''
+output = "mini-swe-agent-trajectory"
+env = { MSWEA_CONFIGURED = "true", MSWEA_COST_TRACKING = "ignore_errors" }
+
+[credentials]
+# LiteLLM reads the key of the provider in the model's `provider/model` id.
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+# Harbor's mini-swe-agent options; the flags follow the defaults above, so
+# they win.
+[options.version]
+type = "string"
+description = "mini-swe-agent version to install."
+default = "2.4.6"
+install = "mini-swe-agent"
+
+[options.cost_limit]
+type = "float"
+description = "Stop when the run has spent this many US dollars; 0 is no limit."
+default = 0.0
+min = 0.0
+flag = "--cost-limit"
+
+[options.max_tokens]
+type = "int"
+description = "Most completion tokens per model call."
+min = 1
+flag = "-c model.model_kwargs.max_tokens={value}"
+
+[providers.openai]
+# LiteLLM's `openai/<model>` (Chat Completions) on OPENAI_BASE_URL, which
+# LiteLLM also reads as OPENAI_API_BASE; MSWEA_API_KEY would win over the
+# placeholder, so it is cleared.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+clear = ["MSWEA_API_KEY"]
+model = "openai/{model}"
+
+[providers.openai.env]
+OPENAI_API_BASE = "{base_url}"

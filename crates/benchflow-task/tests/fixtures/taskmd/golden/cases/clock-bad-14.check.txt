@@ -1,0 +1,10 @@
+clock-bad-14/task.md
+  mode: blocks
+  title: acme/clock-bad-14
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [sandbox] clock start 2026-03-14 09:00:00-07:00 is at -07:00, but America/New_York is at -04:00 at that instant, so the agent would see 12:00; write start = "2026-03-14T12:00:00-04:00", or the time you meant with -04:00 (task.md)
+  FAILED

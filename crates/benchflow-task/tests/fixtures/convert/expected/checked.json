@@ -1,0 +1,35 @@
+{
+  "harbor/agents-run-single-task": [
+    "nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image",
+    "nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build"
+  ],
+  "harbor/build-steps": [],
+  "harbor/flood-risk-analysis": [],
+  "harbor/nanofirm-task": [],
+  "harbor/odd-values": [],
+  "harbor/parse-logs": [],
+  "harbor/r2r-mpc-control": [],
+  "harbor/services-and-cheats": [
+    "[verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so an imported entry needs them added"
+  ],
+  "v06/3d-scan-calc": [],
+  "v06/acp-smoke": [],
+  "v06/clean-body-roles-scenes": [
+    "nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image",
+    "nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build"
+  ],
+  "v06/demo-task": [],
+  "v06/flaky-oracle": [],
+  "v06/harbor-parity": [],
+  "v06/multi-scene": [
+    "nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image",
+    "nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build"
+  ],
+  "v06/nudgebench-team": [
+    "nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image",
+    "nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build"
+  ],
+  "v06/private-facts-nudges": [],
+  "v06/regex-email-parser": [],
+  "v06/report-writer": []
+}

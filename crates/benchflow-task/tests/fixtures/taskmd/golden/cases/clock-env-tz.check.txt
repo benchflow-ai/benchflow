@@ -1,0 +1,10 @@
+clock-env-tz/task.md
+  mode: blocks
+  title: acme/clock-env-tz
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: [sandbox] env sets TZ to 'UTC', which differs; [sandbox] timezone wins over it, so remove TZ from env (task.md)
+  ok

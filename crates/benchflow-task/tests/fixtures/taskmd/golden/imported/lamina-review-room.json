@@ -1,0 +1,196 @@
+{
+  "path": "lamina-review-room/task.md",
+  "mode": "blocks",
+  "instruction": "# dev-review-room \u2014 lamina init\n\nUse the installed `$lamina` skill and its contained `/lamina-*` routes fully. Follow Mode B: during `/lamina-*` commands write only under `.lamina/`; implement application source in separate coding turns. Do not skip persona-panel native Task children, risk-skill loads, or authority/lifecycle modeling because this is a development pilot \u2014 those are part of how Lamina works.\n\nRoute through the installed `$lamina` skill and run **only** `/lamina-init`. Write real `business-context.md` + evidence-grounded `personas.json` (\u22652 materially distinct personas). Observe those sources, publish canonical Product, Persona, and Actor Resources through an explicit graph session, then export evaluator evidence with `mkdir -p .lamina/benchmark && lamina graph backup --output .lamina/benchmark/init-graph.json`. Do not implement application code in this step.\n\n## Lamina development pilot profile\n\n- Contract stage: start from **`shape`**. Model authority, privacy, and lifecycle boundaries in `reduce`/`project`.\n- Delivery posture: in-memory reducer + HTML UI in `/app`.\n- Design must run the persona-panel via native Task children before publishing the validated design GraphVersion.\n- Mode B: during `/lamina-*` write only `.lamina/`; implement app source in coding turns.\n## Required native persona Task children\n\nSpawn **\u22652 materially distinct personas** using Cursor's native Task/subagent tool (`taskToolCall`), not parent-authored simulation. Each child must run on requested `composer-2.5`. Preserve child `agentId`, success, duration, and conversation steps in the parent transcript; publish only normalized simulated evidence through graphd.\n\n## Development-only persona provenance envelope\n\nThis pilot accepts Cursor native `taskToolCall` metadata in the parent session when independent child `system.init` events are unavailable:\n\n- parent `system.init.model = Composer 2.5`\n- native `taskToolCall` with child `agentId`\n- requested child model `composer-2.5`\n- successful completion, duration, and conversation steps\n\nRecord `child_actual_model_unverified: true`. This pilot cannot satisfy the claim-ready LaminaBench-6 native-child contract.\n\n\n## Founder brief\n\n# Lightweight document review\n\nI want a small product where someone can invite a trusted person to review one document and leave useful comments. It should feel safe and focused rather than like giving away access to a whole workspace. Please shape the product and build the next coherent version.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "lamina_design",
+      "info": "stage lamina_design",
+      "body": "# dev-review-room \u2014 lamina design\n\nUse the installed `$lamina` skill and its contained `/lamina-*` routes fully. Follow Mode B: during `/lamina-*` commands write only under `.lamina/`; implement application source in separate coding turns. Do not skip persona-panel native Task children, risk-skill loads, or authority/lifecycle modeling because this is a development pilot \u2014 those are part of how Lamina works.\n\nRoute through the installed `$lamina` skill and run **only** `/lamina-design` through a validated, atomically published GraphVersion. Spawn **\u22652 native Task persona children** during design \u2014 do not inline-fake the panel in parent text when Task is available. Create `.lamina/projections/implement.md` strictly from the published graph query and cite its exact GraphVersion plus source revision. The projection must specify reducer-enforced authority, illegal-state bans, and edge/recovery paths the next coding step must ship in `app.mjs` (not UI-only). Finally export evaluator evidence with `mkdir -p .lamina/benchmark && lamina graph backup --output .lamina/benchmark/design-graph.json`.\n\n## Lamina development pilot profile\n\n- Contract stage: start from **`shape`**. Model authority, privacy, and lifecycle boundaries in `reduce`/`project`.\n- Delivery posture: in-memory reducer + HTML UI in `/app`.\n- Design must run the persona-panel via native Task children before publishing the validated design GraphVersion.\n- Mode B: during `/lamina-*` write only `.lamina/`; implement app source in coding turns.\n## Required native persona Task children\n\nSpawn **\u22652 materially distinct personas** using Cursor's native Task/subagent tool (`taskToolCall`), not parent-authored simulation. Each child must run on requested `composer-2.5`. Preserve child `agentId`, success, duration, and conversation steps in the parent transcript; publish only normalized simulated evidence through graphd.\n\n## Development-only persona provenance envelope\n\nThis pilot accepts Cursor native `taskToolCall` metadata in the parent session when independent child `system.init` events are unavailable:\n\n- parent `system.init.model = Composer 2.5`\n- native `taskToolCall` with child `agentId`\n- requested child model `composer-2.5`\n- successful completion, duration, and conversation steps\n\nRecord `child_actual_model_unverified: true`. This pilot cannot satisfy the claim-ready LaminaBench-6 native-child contract.\n\n\n## Founder brief\n\n# Lightweight document review\n\nI want a small product where someone can invite a trusted person to review one document and leave useful comments. It should feel safe and focused rather than like giving away access to a whole workspace. Please shape the product and build the next coherent version.",
+      "line": 35
+    },
+    {
+      "kind": "stage",
+      "arg": "implement",
+      "info": "stage implement",
+      "body": "# dev-review-room \u2014 implement\n\nUse the installed `$lamina` skill and its contained `/lamina-*` routes fully. Follow Mode B: during `/lamina-*` commands write only under `.lamina/`; implement application source in separate coding turns. Do not skip persona-panel native Task children, risk-skill loads, or authority/lifecycle modeling because this is a development pilot \u2014 those are part of how Lamina works.\n\nImplement the **published ABI** (`app.mjs` / `ui.mjs`) from `.lamina/projections/implement.md` in a normal coding turn. You may Read `.lamina/` and supporting skills. **Do not** invoke `/lamina-*` slash commands in this step. Do not build a non-ABI `app.js` prototype first.\n\n## Required thin-slice ship target\n\nBuild a self-contained product in `/app` with no external services. Use plain HTML/CSS/JavaScript and Node ESM so it runs offline.\n\nRequired files (these are what the judge scores \u2014 do **not** ship a parallel `app.js`):\n- `index.html`: minimal UI with a `<main>` landmark and controls for the core flow\n- `app.mjs`: exports `createInitialState()`, `reduce(state, action)`, and `project(state, actorId)`\n- `ui.mjs` (recommended): browser UI that imports from `app.mjs` \u2014 do not put domain rules only in the DOM layer\n\n`reduce()` must be deterministic and side-effect free. **Every published action type must actually mutate domain state** (no silent no-ops). `project()` must return JSON-serializable **actor-scoped** views.\n\n## Product-quality bar (beyond selfcheck)\n\n- Enforce authority and illegal transitions **inside `reduce`** (not only by hiding buttons in the UI).\n- Reject unknown ids / empty payloads; do not autovivify phantom domain records.\n- Cover failure, empty, and recovery paths that the founder brief implies.\n- Prefer durable invariants from design artifacts over comment slogans.\n\n## Published action schema\n\nAll arms must implement `reduce(state, action)` accepting these action types:\n\n- `accept_invite`: payload shape example: `{\"type\":\"accept_invite\",\"id\":\"invite-1\",\"email\":\"participant@example.org\"}`\n- `add_comment`: payload shape example: `{\"type\":\"add_comment\",\"id\":\"c-1\",\"text\":\"Example note text\"}`\n- `expire_invite`: payload shape example: `{\"type\":\"expire_invite\",\"id\":\"invite-1\"}`\n- `invite`: payload shape example: `{\"type\":\"invite\",\"id\":\"invite-1\",\"document\":\"example-document\"}`\n- `revoke_invite`: payload shape example: `{\"type\":\"revoke_invite\",\"id\":\"invite-1\"}`\n\n`project(state, actorId)` must return JSON-serializable actor-scoped views used by the behavior grader.\n\nImplementation pressure (honest \u2014 not graded substrings):\n- Lifecycle actions must leave distinct inspectable statuses (open vs completed vs overdue/missed with follow-up).\n- Private/sensitive notes must stay distinguishable in the owning actor view.\n- Revoke/expire/deny must change the affected actor projection (access ended / denied), not only UI copy.\n\n## Published typed projection contract\n\nThe verifier checks the following structured behavior contract. Equivalent values listed here are accepted; arbitrary UI wording is not graded.\n\n```json\n{\n  \"actors\": [\n    \"reviewer\",\n    \"owner\"\n  ],\n  \"shape\": \"{ invites: [{ id, status, access, comments?: [{ id, text }] }] }\",\n  \"typed_equivalents\": {\n    \"granted\": [\n      \"granted\",\n      \"active\",\n      \"accepted\"\n    ],\n    \"denied\": [\n      \"denied\",\n      \"expired\",\n      \"revoked\",\n      false\n    ]\n  }\n}\n```\n\nFinal scoring uses Harbor RewardKit LLM-as-judge (no hardcoded semantic rubric). Keep the product coherent and runnable.\n\n## Structural self-check (required before finishing this step)\n\nRun `node /app/.lb6-abi/selfcheck.mjs` and fix until it exits 0.\n\nThis checks only structural integrity (every published action mutates state; action ids stick; revoke/expire actions change actor projections). It does **not** reveal hidden behavior assertions.\n\n## Lamina implement mandate\n\nTranslate the graph-backed `.lamina/projections/implement.md` and persona evidence into the **published ABI files** above.\n- Write `/app/app.mjs` (+ `ui.mjs` / `index.html` / `styles.css` as needed). **Never** create `/app/app.js` as the product.\n- Run `node /app/.lb6-abi/selfcheck.mjs` until it exits 0 before finishing this step.\n- Spend the budget on domain correctness in `reduce`/`project`, not a throwaway non-ABI prototype.\n\n## Founder brief\n\n# Lightweight document review\n\nI want a small product where someone can invite a trusted person to review one document and leave useful comments. It should feel safe and focused rather than like giving away access to a whole workspace. Please shape the product and build the next coherent version.\n\nDo not wait for clarification: this is unattended development-pilot work.",
+      "line": 71
+    },
+    {
+      "kind": "stage",
+      "arg": "fix",
+      "info": "stage fix",
+      "body": "# dev-review-room \u2014 fix\n\nUse the installed `$lamina` skill and its contained `/lamina-*` routes fully. Follow Mode B: during `/lamina-*` commands write only under `.lamina/`; implement application source in separate coding turns. Do not skip persona-panel native Task children, risk-skill loads, or authority/lifecycle modeling because this is a development pilot \u2014 those are part of how Lamina works.\n\nHarden the already-shipped ABI product using the latest design artifacts. Fix authority gaps, edge/recovery paths, and runtime bugs in `app.mjs`/`ui.mjs`. Leave the product runnable. **Do not** rewrite from scratch or invent a parallel `app.js`. **Do not** invoke `/lamina-*` slash commands in this step.\n\n## Required thin-slice ship target\n\nBuild a self-contained product in `/app` with no external services. Use plain HTML/CSS/JavaScript and Node ESM so it runs offline.\n\nRequired files (these are what the judge scores \u2014 do **not** ship a parallel `app.js`):\n- `index.html`: minimal UI with a `<main>` landmark and controls for the core flow\n- `app.mjs`: exports `createInitialState()`, `reduce(state, action)`, and `project(state, actorId)`\n- `ui.mjs` (recommended): browser UI that imports from `app.mjs` \u2014 do not put domain rules only in the DOM layer\n\n`reduce()` must be deterministic and side-effect free. **Every published action type must actually mutate domain state** (no silent no-ops). `project()` must return JSON-serializable **actor-scoped** views.\n\n## Product-quality bar (beyond selfcheck)\n\n- Enforce authority and illegal transitions **inside `reduce`** (not only by hiding buttons in the UI).\n- Reject unknown ids / empty payloads; do not autovivify phantom domain records.\n- Cover failure, empty, and recovery paths that the founder brief implies.\n- Prefer durable invariants from design artifacts over comment slogans.\n\n## Published action schema\n\nAll arms must implement `reduce(state, action)` accepting these action types:\n\n- `accept_invite`: payload shape example: `{\"type\":\"accept_invite\",\"id\":\"invite-1\",\"email\":\"participant@example.org\"}`\n- `add_comment`: payload shape example: `{\"type\":\"add_comment\",\"id\":\"c-1\",\"text\":\"Example note text\"}`\n- `expire_invite`: payload shape example: `{\"type\":\"expire_invite\",\"id\":\"invite-1\"}`\n- `invite`: payload shape example: `{\"type\":\"invite\",\"id\":\"invite-1\",\"document\":\"example-document\"}`\n- `revoke_invite`: payload shape example: `{\"type\":\"revoke_invite\",\"id\":\"invite-1\"}`\n\n`project(state, actorId)` must return JSON-serializable actor-scoped views used by the behavior grader.\n\nImplementation pressure (honest \u2014 not graded substrings):\n- Lifecycle actions must leave distinct inspectable statuses (open vs completed vs overdue/missed with follow-up).\n- Private/sensitive notes must stay distinguishable in the owning actor view.\n- Revoke/expire/deny must change the affected actor projection (access ended / denied), not only UI copy.\n\n## Published typed projection contract\n\nThe verifier checks the following structured behavior contract. Equivalent values listed here are accepted; arbitrary UI wording is not graded.\n\n```json\n{\n  \"actors\": [\n    \"reviewer\",\n    \"owner\"\n  ],\n  \"shape\": \"{ invites: [{ id, status, access, comments?: [{ id, text }] }] }\",\n  \"typed_equivalents\": {\n    \"granted\": [\n      \"granted\",\n      \"active\",\n      \"accepted\"\n    ],\n    \"denied\": [\n      \"denied\",\n      \"expired\",\n      \"revoked\",\n      false\n    ]\n  }\n}\n```\n\nFinal scoring uses Harbor RewardKit LLM-as-judge (no hardcoded semantic rubric). Keep the product coherent and runnable.\n\n## Structural self-check (required before finishing this step)\n\nRun `node /app/.lb6-abi/selfcheck.mjs` and fix until it exits 0.\n\nThis checks only structural integrity (every published action mutates state; action ids stick; revoke/expire actions change actor projections). It does **not** reveal hidden behavior assertions.\n\n## Founder brief\n\n# Lightweight document review\n\nI want a small product where someone can invite a trusted person to review one document and leave useful comments. It should feel safe and focused rather than like giving away access to a whole workspace. Please shape the product and build the next coherent version.\n\nDo not wait for clarification: this is unattended development-pilot work.",
+      "line": 164
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"aryaniyaps/dev-review-room-lamina-v3\"\ndescription = \"LB6 development pilot: dev-review-room (lamina) \u2014 RewardKit LLM judge; not claim-ready LaminaBench-6\"\nauthors = [\"LaminaBench\"]\nkeywords = [\"fuzzy-prompt\", \"development-pilot\", \"lb6\", \"lamina\", \"rewardkit\"]\n\n[about]\nbenchmark = \"lamina-lb6-pilot\"\nbenchmark_version = \"lb6-dev-pilot-v3\"\ncampaign_id = \"lb6-dev-pilot-skill-rerun-v3\"\ntask_id = \"dev-review-room\"\narm = \"lamina\"\nkind = \"greenfield-privacy\"\nstage = \"shape\"\ndevelopment_only = true\nconfirmatory = false\nchild_actual_model_unverified = true\nhost_sealed_supervisor_required = false\nmeasurement_contract = \"rewardkit_llm_judge_v3\"\nharbor_version = \"0.18.0\"\nagent = \"cursor-cli\"\nmodel = \"cursor/composer-2.5\"\n\n[agent]\ntimeout = \"25m\"\n\n[sandbox]\nimage = \"lb6-pilot-agent-runtime:cursor-20260720\"\nos = \"linux\"\ncpus = 2\nmemory = \"4 GB\"\ndisk = \"10 GB\"\nnetwork = \"open\"\nworkdir = \"/app\"\nbuild_timeout = \"3m\"\noutputs = [\"/app/.lamina\"]\n\n[verifier]\ntimeout = \"5m\"\ncombine_stages = \"final\"\nmount = \"/tests\"\nmodels = true\n\n[verifier.env]\nOPENAI_API_KEY = \"${OPENAI_API_KEY}\"\nREWARDKIT_JUDGE = \"${REWARDKIT_JUDGE}\"\nLITELLM_DROP_PARAMS = \"1\"\n\n[stages.lamina_init]\nunlock = \"at_start\"\nagent = { timeout = \"4m\" }\nverifier = { timeout = \"45s\" }\ngate = 0.0\n\n[stages.lamina_design]\nunlock = \"after:lamina_init\"\nagent = { timeout = \"6m\" }\nverifier = { timeout = \"45s\" }\ngate = 0.0\n\n[stages.implement]\nunlock = \"after:lamina_design\"\nagent = { timeout = \"10m\" }\nverifier = { timeout = \"45s\" }\ngate = 0.0\n\n[stages.fix]\nunlock = \"after:implement\"\nagent = { timeout = \"5m\" }\nverifier = { timeout = \"5m\" }\ngate = 0.0\noutputs = [\"/app/app.mjs\", \"/app/index.html\", \"/app/ui.mjs\", \"/app/styles.css\"]\n\n[import.harbor]\nschema_version = \"1.3\"\n\n[import.harbor.rewardkit]\ninstalls = \"harbor-rewardkit==0.1.7\"\nscripts = [\"stages/fix/verifier/test.sh\"]\njudges = [\"stages/fix/verifier/judge.toml\"]\n\n[import.harbor.originals.\"task.toml\"]\noriginal = \"sha256:081920f05bb5cdc75a744844cd2cdc5b3f39bfda7d20e8107d420f8c403d6a06\"\nconverted = \"sha256:eceda7239b63dc0d57477b90e62c55ab92a4d515dd6cde7abe50fcf7997924f1\"\n\n[import.harbor.originals.\"steps/lamina_init/instruction.md\"]\noriginal = \"sha256:89b344c5497484593c3e1e5f00aaab4ce6ecc8c17f69bd4f1d226789115f1c2f\"\nconverted = \"sha256:89b344c5497484593c3e1e5f00aaab4ce6ecc8c17f69bd4f1d226789115f1c2f\"\n\n[import.harbor.originals.\"steps/lamina_design/instruction.md\"]\noriginal = \"sha256:807ee999a389cc58631891d80a4a48757e9dbb2e92ba525255eee76e4477ab3f\"\nconverted = \"sha256:807ee999a389cc58631891d80a4a48757e9dbb2e92ba525255eee76e4477ab3f\"\n\n[import.harbor.originals.\"steps/implement/instruction.md\"]\noriginal = \"sha256:802d244a8f70ff58e62789749bcc438ca547cb33c22973095103d61f64d41c5d\"\nconverted = \"sha256:802d244a8f70ff58e62789749bcc438ca547cb33c22973095103d61f64d41c5d\"\n\n[import.harbor.originals.\"steps/fix/instruction.md\"]\noriginal = \"sha256:7619290dc69b7d9b4c4dc7ce932c62e1d5ca4b6e7f8d3dc940cd62accbd5714e\"\nconverted = \"sha256:7619290dc69b7d9b4c4dc7ce932c62e1d5ca4b6e7f8d3dc940cd62accbd5714e\"",
+      "line": 250
+    }
+  ],
+  "config": {
+    "name": "aryaniyaps/dev-review-room-lamina-v3",
+    "description": "LB6 development pilot: dev-review-room (lamina) \u2014 RewardKit LLM judge; not claim-ready LaminaBench-6",
+    "authors": [
+      "LaminaBench"
+    ],
+    "keywords": [
+      "fuzzy-prompt",
+      "development-pilot",
+      "lb6",
+      "lamina",
+      "rewardkit"
+    ],
+    "about": {
+      "benchmark": "lamina-lb6-pilot",
+      "benchmark_version": "lb6-dev-pilot-v3",
+      "campaign_id": "lb6-dev-pilot-skill-rerun-v3",
+      "task_id": "dev-review-room",
+      "arm": "lamina",
+      "kind": "greenfield-privacy",
+      "stage": "shape",
+      "development_only": true,
+      "confirmatory": false,
+      "child_actual_model_unverified": true,
+      "host_sealed_supervisor_required": false,
+      "measurement_contract": "rewardkit_llm_judge_v3",
+      "harbor_version": "0.18.0",
+      "agent": "cursor-cli",
+      "model": "cursor/composer-2.5"
+    },
+    "agent": {
+      "timeout": "25m"
+    },
+    "sandbox": {
+      "image": "lb6-pilot-agent-runtime:cursor-20260720",
+      "os": "linux",
+      "cpus": 2,
+      "memory": "4 GB",
+      "disk": "10 GB",
+      "network": "open",
+      "workdir": "/app",
+      "build_timeout": "3m",
+      "outputs": [
+        "/app/.lamina"
+      ]
+    },
+    "verifier": {
+      "timeout": "5m",
+      "combine_stages": "final",
+      "mount": "/tests",
+      "models": true,
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "REWARDKIT_JUDGE": "${REWARDKIT_JUDGE}",
+        "LITELLM_DROP_PARAMS": "1"
+      }
+    },
+    "stages": {
+      "lamina_init": {
+        "unlock": "at_start",
+        "agent": {
+          "timeout": "4m"
+        },
+        "verifier": {
+          "timeout": "45s"
+        },
+        "gate": 0.0
+      },
+      "lamina_design": {
+        "unlock": "after:lamina_init",
+        "agent": {
+          "timeout": "6m"
+        },
+        "verifier": {
+          "timeout": "45s"
+        },
+        "gate": 0.0
+      },
+      "implement": {
+        "unlock": "after:lamina_design",
+        "agent": {
+          "timeout": "10m"
+        },
+        "verifier": {
+          "timeout": "45s"
+        },
+        "gate": 0.0
+      },
+      "fix": {
+        "unlock": "after:implement",
+        "agent": {
+          "timeout": "5m"
+        },
+        "verifier": {
+          "timeout": "5m"
+        },
+        "gate": 0.0,
+        "outputs": [
+          "/app/app.mjs",
+          "/app/index.html",
+          "/app/ui.mjs",
+          "/app/styles.css"
+        ]
+      }
+    },
+    "import": {
+      "harbor": {
+        "schema_version": "1.3",
+        "rewardkit": {
+          "installs": "harbor-rewardkit==0.1.7",
+          "scripts": [
+            "stages/fix/verifier/test.sh"
+          ],
+          "judges": [
+            "stages/fix/verifier/judge.toml"
+          ]
+        },
+        "originals": {
+          "task.toml": {
+            "original": "sha256:081920f05bb5cdc75a744844cd2cdc5b3f39bfda7d20e8107d420f8c403d6a06",
+            "converted": "sha256:eceda7239b63dc0d57477b90e62c55ab92a4d515dd6cde7abe50fcf7997924f1"
+          },
+          "steps/lamina_init/instruction.md": {
+            "original": "sha256:89b344c5497484593c3e1e5f00aaab4ce6ecc8c17f69bd4f1d226789115f1c2f",
+            "converted": "sha256:89b344c5497484593c3e1e5f00aaab4ce6ecc8c17f69bd4f1d226789115f1c2f"
+          },
+          "steps/lamina_design/instruction.md": {
+            "original": "sha256:807ee999a389cc58631891d80a4a48757e9dbb2e92ba525255eee76e4477ab3f",
+            "converted": "sha256:807ee999a389cc58631891d80a4a48757e9dbb2e92ba525255eee76e4477ab3f"
+          },
+          "steps/implement/instruction.md": {
+            "original": "sha256:802d244a8f70ff58e62789749bcc438ca547cb33c22973095103d61f64d41c5d",
+            "converted": "sha256:802d244a8f70ff58e62789749bcc438ca547cb33c22973095103d61f64d41c5d"
+          },
+          "steps/fix/instruction.md": {
+            "original": "sha256:7619290dc69b7d9b4c4dc7ce932c62e1d5ca4b6e7f8d3dc940cd62accbd5714e",
+            "converted": "sha256:7619290dc69b7d9b4c4dc7ce932c62e1d5ca4b6e7f8d3dc940cd62accbd5714e"
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "verifier.env.OPENAI_API_KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "verifier.env.REWARDKIT_JUDGE resolves ${REWARDKIT_JUDGE} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "# dev-review-room \u2014 lamina init\n\nUse the installed `$lamina` skill and its contained `/lamina-*` routes fully. Follow Mode B: during `/lamina-*` commands write only under `.lamina/`; implement application source in separate coding turns. Do not skip persona-panel native Task children, risk-skill loads, or authority/lifecycle modeling because this is a development pilot \u2014 those are part of how Lamina works.\n\nRoute through the installed `$lamina` skill and run **only** `/lamina-init`. Write real `business-context.md` + evidence-grounded `personas.json` (\u22652 materially distinct personas). Observe those sources, publish canonical Product, Persona, and Actor Resources through an explicit graph session, then export evaluator evidence with `mkdir -p .lamina/benchmark && lamina graph backup --output .lamina/benchmark/init-graph.json`. Do not implement application code in this step.\n\n## Lamina development pilot profile\n\n- Contract stage: start from **`shape`**. Model authority, privacy, and lifecycle boundaries in `reduce`/`project`.\n- Delivery posture: in-memory reducer + HTML UI in `/app`.\n- Design must run the persona-panel via native Task children before publishing the validated design GraphVersion.\n- Mode B: during `/lamina-*` write only `.lamina/`; implement app source in coding turns.\n## Required native persona Task children\n\nSpawn **\u22652 materially distinct personas** using Cursor's native Task/subagent tool (`taskToolCall`), not parent-authored simulation. Each child must run on requested `composer-2.5`. Preserve child `agentId`, success, duration, and conversation steps in the parent transcript; publish only normalized simulated evidence through graphd.\n\n## Development-only persona provenance envelope\n\nThis pilot accepts Cursor native `taskToolCall` metadata in the parent session when independent child `system.init` events are unavailable:\n\n- parent `system.init.model = Composer 2.5`\n- native `taskToolCall` with child `agentId`\n- requested child model `composer-2.5`\n- successful completion, duration, and conversation steps\n\nRecord `child_actual_model_unverified: true`. This pilot cannot satisfy the claim-ready LaminaBench-6 native-child contract.\n\n\n## Founder brief\n\n# Lightweight document review\n\nI want a small product where someone can invite a trusted person to review one document and leave useful comments. It should feel safe and focused rather than like giving away access to a whole workspace. Please shape the product and build the next coherent version.",
+  "title": "aryaniyaps/dev-review-room-lamina-v3",
+  "ok": true
+}

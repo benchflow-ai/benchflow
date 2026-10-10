@@ -1,0 +1,35 @@
+{
+  "kind": "branch-child",
+  "node_id": "n3",
+  "lineage": {
+    "parent_rollout": "count-files__b1a2c3d4",
+    "fork_id": "6e317397806c42528cb1d006206ee268",
+    "parent_node": "root",
+    "index": 0,
+    "label": null
+  },
+  "reward": 1.0,
+  "error": null,
+  "verifier_error": null,
+  "export_error": null,
+  "timing": {},
+  "native_usage": {
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable",
+    "price_source": null,
+    "usage_details": {
+      "thought_tokens": 0
+    }
+  },
+  "trajectory": [
+    {
+      "type": "agent_message",
+      "text": "continuation of n3"
+    }
+  ]
+}

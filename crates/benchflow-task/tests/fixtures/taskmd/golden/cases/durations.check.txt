@@ -1,0 +1,12 @@
+durations/task.md
+  mode: blocks
+  title: acme/durations
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, verifier, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [sandbox] build_timeout must be a duration such as "90s", "15m", or "1h30m" (task.md)
+  error: [agent] timeout must be a duration such as "90s", "15m", or "1h30m" (task.md)
+  error: [verifier] timeout must be a duration such as "90s", "15m", or "1h30m" (task.md)
+  FAILED

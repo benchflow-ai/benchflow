@@ -1,0 +1,16 @@
+seat-lint/task.md
+  mode: blocks
+  title: acme/seat-lint
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (integrity, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: a comment names the seat ('reference solution'), so a judge that reads this script can tell the reference from a solver: keep such notes in [integrity.controls] or a notes block (oracle/solve.sh:2)
+  warning: a comment names the seat ('known-bad'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block (controls/fixed-delay.patch:4)
+  warning: a comment names the seat ('should pass'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block (controls/main.c:1)
+  warning: a comment names the seat ('near miss'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block (controls/page.html:1)
+  warning: a comment names the seat ('cheat'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block (controls/read.py:1)
+  warning: a comment names the seat ('Full marks'), so a judge that reads this script can tell the reference from a solver: keep such notes in [integrity.controls] or a notes block (stages/two/oracle/solve.sh:2)
+  warning: a comment names the seat ('should score'), so a judge that reads this script can tell a control from a solver: keep such notes in [integrity.controls] or a notes block (cheat/solve.sh:2)
+  ok

@@ -1,0 +1,17 @@
+training-keys/task.md
+  mode: blocks
+  title: acme/training-keys
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, roles, training, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  episodes: fork no, max_concurrent 0
+  warning: [training] reward "binary" is spelled "strict", the rubric's name for the all-or-nothing score: write reward = "strict" (task.md)
+  error: [training] learnable_band is [low, high], two pass rates with 0 <= low < high <= 1 (task.md)
+  error: [training] fork is true (the default: a runtime may start episodes from a snapshot) or false (every episode is set up from scratch) (task.md)
+  error: [training] max_concurrent is a whole number of episodes, at least 1 (task.md)
+  error: [training] admit is a table: { max_pass_rate, models, reasoning_effort } (task.md)
+  error: [training] difficulty names an evidence file, such as "evidence/difficulty.json" (task.md)
+  error: [roles.critic] policy is true for a trainable role, or false (the default) (task.md)
+  FAILED

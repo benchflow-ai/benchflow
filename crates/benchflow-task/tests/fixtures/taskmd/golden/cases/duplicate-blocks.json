@@ -1,0 +1,69 @@
+{
+  "path": "duplicate-blocks/task.md",
+  "mode": "blocks",
+  "instruction": "Fix it.",
+  "blocks": [
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "n",
+      "line": 3
+    },
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "m",
+      "line": 7
+    },
+    {
+      "kind": "stage",
+      "arg": "review",
+      "info": "stage review",
+      "body": "Review it.",
+      "line": 11
+    },
+    {
+      "kind": "stage",
+      "arg": "review",
+      "info": "stage review",
+      "body": "Again.",
+      "line": 15
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"\n\n[stages.review]\nunlock = \"on_submit\"",
+      "line": 19
+    }
+  ],
+  "config": {
+    "name": "acme/x",
+    "stages": {
+      "review": {
+        "unlock": "on_submit"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "duplicate ```notes block",
+      "where": "task.md:7"
+    },
+    {
+      "level": "error",
+      "message": "duplicate ```stage review block",
+      "where": "task.md:15"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix it.",
+  "title": "acme/x",
+  "ok": false
+}

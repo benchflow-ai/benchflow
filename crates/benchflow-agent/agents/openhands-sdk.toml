@@ -1,0 +1,43 @@
+# OpenHands' software agent SDK (not the OpenHands app), run headless by
+# BenchFlow's runner script runners/run_openhands_sdk.py, with the tools and
+# settings of Harbor's `openhands-sdk` agent: terminal, file editor, task
+# tracker, skills from SKILL.md folders, LiteLLM model ids.
+name = "openhands-sdk"
+description = "OpenHands software agent SDK (Python), headless through BenchFlow's runner"
+skill_paths = ["$HOME/.openhands-sdk/skills"]
+
+[install]
+uv-venv = ["openhands-sdk==1.54.0", "openhands-tools==1.54.0"]
+python = "3.12"
+verify = "/opt/benchflow/agents/openhands-sdk/venv/bin/python -c \"import importlib.metadata as m, openhands.tools.terminal; print('openhands-sdk', m.version('openhands-sdk'))\""
+timeout = 1200
+
+[headless]
+# The model is a LiteLLM id (`anthropic/claude-sonnet-4-6`); the reasoning
+# effort is LiteLLM's. Options: LLM_BASE_URL, OPENHANDS_MAX_ITERATIONS,
+# OPENHANDS_TEMPERATURE, OPENHANDS_SKILL_PATHS (`bench run --env NAME=VALUE`).
+command = '''exec /opt/benchflow/agents/openhands-sdk/venv/bin/python -u "$HOME/.benchflow/runners/run_openhands_sdk.py" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+
+[[headless.files]]
+path = ".benchflow/runners/bf_events.py"
+runner = "bf_events.py"
+
+[[headless.files]]
+path = ".benchflow/runners/run_openhands_sdk.py"
+runner = "run_openhands_sdk.py"
+
+[credentials]
+# LiteLLM reads the key of the provider in the model's `provider/model` id.
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# The runner gives LLM_BASE_URL and LLM_API_KEY to the SDK's LLM, with
+# LiteLLM's `openai/<model>` (Chat Completions).
+base_url = "LLM_BASE_URL"
+key = "LLM_API_KEY"
+model = "openai/{model}"

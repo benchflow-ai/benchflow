@@ -1,0 +1,21 @@
+rubric-new/task.md
+  mode: blocks
+  title: acme/rubric-new
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 8 criteria, 0 gates, 7 points; judges llm, test
+  grading needs a model: yes: llm judges 6 criteria
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 12m (llm 6 x 2m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  error: scoring.gates is gone: every gate must pass, always, so the key had one value, "all". Remove it; "any", RewardKit's any-pass, has no rubric form, and a converter that meets it refuses (verifier/rubric.json)
+  error: scoring.method is "points" (the default: earned points over the maximum positive points, clipped to [0, 1]) or "sum" (the raw, unclipped total) (verifier/rubric.json)
+  error: outcome is "good" (the default: the text states a good thing) or "bad" (the text states a bad thing); pass always means the task went as it should (verifier/rubric.json criteria[0])
+  error: cite applies to criteria a model judges; the runtime decides a test criterion (verifier/rubric.json criteria[1])
+  error: cite is "independent": a pass then needs a citation the solver neither wrote nor ran (verifier/rubric.json criteria[2])
+  error: score is a continuous range, {"min": <number>, "max": <number>}, with min below max (verifier/rubric.json criteria[3])
+  error: a criterion has levels or a continuous score, not both (verifier/rubric.json criteria[4])
+  error: a continuous score needs a model or human judge; the runtime decides a test criterion as pass or fail, and float test results are deferred (verifier/rubric.json criteria[5])
+  warning: 'g' is a draft-1 penalty, and its verdict word changed meaning: a model's pass used to charge the penalty, and now pass means the task went as it should, with negative points charged on fail. Its text names the bad outcome, so set "outcome": "bad" (verifier/rubric.json criteria[6])
+  error: unknown key 'outcom'; did you mean outcome? a criterion holds check, cite, evidence, gate, group, guidance, id, implicit, judge, levels, missing, outcome, points, reference, score, stated, text, or x- extensions (verifier/rubric.json criteria[7])
+  FAILED

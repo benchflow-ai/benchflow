@@ -1,0 +1,10 @@
+terminal-mini--sql-family/task.md
+  mode: blocks
+  title: Top-k customers, a seeded task family
+  instruction: 128 words; starts 'The SQLite database at `/data/shop.db` has three tables: `customers(id'
+  blocks: toml task
+  config: block (agent, family, keywords, name, provenance, sandbox, title, training, verifier, version)
+  rubric: 2 criteria, 2 gates, 0 points; judges test
+  grading needs a model: no (2 criteria decided by tests, rules, the world, or replay)
+  worst-case grading time: 1m (scripts 1m; in sequence, before retries)
+  ok

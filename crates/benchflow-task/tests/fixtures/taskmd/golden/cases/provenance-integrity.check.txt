@@ -1,0 +1,13 @@
+provenance-integrity/task.md
+  mode: blocks
+  title: acme/provenance-integrity
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (integrity, name, provenance, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: unknown key 'author' in [provenance]; it holds derived_from, failure_mode, human_review, method, scrubbed, source, trace, trace_turns, or x- extensions (task.md)
+  error: unknown key 'level' in [integrity]; it holds answers, canary, controls, forbidden_sources, intended_use, profile, residual_risks, resources, threat_model, or x- extensions (task.md)
+  error: unknown key 'bad' in [integrity.controls]; it holds cheats, injection, known_bad, near_miss, no_op, or x- extensions (task.md)
+  error: [integrity.controls] bad names x, which is not a file in the package (task.md)
+  FAILED

@@ -1,0 +1,40 @@
+{
+  "path": "clock-bad-6/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-bad-6\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\nnetwork = \"none\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = \"frozen:2026-03-14T09:00:00\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-bad-6",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m",
+      "network": "none"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": "frozen:2026-03-14T09:00:00"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] clock is a table { start, advance, enforce }: write [sandbox] clock = { start = \"2026-03-14T09:00:00-04:00\", advance = \"none\", enforce = \"world\" }, which is what \"frozen:2026-03-14T09:00:00\" meant, and set network = \"none\" for the agent's phase, which a clock requires",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-bad-6",
+  "ok": false
+}

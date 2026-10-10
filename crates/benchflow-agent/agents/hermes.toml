@@ -1,0 +1,100 @@
+# Hermes (Nous Research's hermes-agent), run headless with `hermes --yolo
+# chat -q`, as Harbor's `hermes` agent runs it, from PyPI instead of the
+# repository's install script; the session is exported when it ends. The
+# same install (with the package's `acp` extra) also serves ACP through its
+# `hermes-acp` adapter. Headless stays the default: it is Harbor's route,
+# and Hermes over ACP takes its model only from its config file.
+name = "hermes"
+aliases = ["hermes-agent"]
+description = "Hermes (Nous Research), headless with hermes chat -q, or via ACP (hermes-acp)"
+harness = "headless"
+# Hermes reads skills from $HERMES_HOME/skills; the command keeps
+# HERMES_HOME at ~/.hermes (Harbor copies them to its /tmp/hermes home).
+skill_paths = ["$HOME/.hermes/skills"]
+
+[install]
+uv-tool = "hermes-agent[anthropic,acp]==0.19.0"
+bin = "hermes"
+python = "3.12"
+verify = "/opt/benchflow/bin/hermes version"
+
+[launch]
+# hermes-acp starts each session on the model in ~/.hermes/config.yaml
+# (`model.default` and `model.provider`), so the launch writes the headless
+# config with the run's model in it, the provider spelled as the headless
+# command spells it.
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+case "$p" in
+  openai) p=openai-api ;;
+  kimi) p=kimi-coding ;;
+  google|gemini) p=gemini ;;
+esac
+h="${HERMES_HOME:-$HOME/.hermes}"
+mkdir -p "$h"
+{
+  printf 'toolsets:\n- hermes-cli\nmemory:\n  memory_enabled: false\n  user_profile_enabled: false\nterminal:\n  backend: local\n  timeout: 180\ndelegation:\n  max_iterations: 50\ncheckpoints:\n  enabled: false\n'
+  [ -z "$BENCHFLOW_MODEL" ] || printf 'model:\n  default: "%s"\n  provider: "%s"\n' "$m" "$p"
+} > "$h/config.yaml" || exit 1
+exec /opt/benchflow/bin/hermes-acp'''
+env = { TERMINAL_ENV = "local" }
+
+[headless]
+# Hermes's provider ids differ from BenchFlow's for openai (openai-api),
+# kimi (kimi-coding) and google (gemini); an `openrouter/` model goes to
+# OpenRouter whole. After the chat, the sessions (the home is this run's
+# alone) are printed for the parser, which skips subagents' sessions.
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+case "$p" in
+  openai) set -- --provider openai-api --model "$m" ;;
+  kimi) set -- --provider kimi-coding --model "$m" ;;
+  google|gemini) set -- --provider gemini --model "$m" ;;
+  openrouter) set -- --model "$m" ;;
+  *) set -- --provider "$p" --model "$m" ;;
+esac
+/opt/benchflow/bin/hermes --yolo chat -q "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" "$@" < /dev/null 2>&1
+s=$?
+f="$HOME/.benchflow/hermes-sessions.jsonl"
+mkdir -p "$HOME/.benchflow"
+/opt/benchflow/bin/hermes sessions export "$f" >&2
+[ -s "$f" ] && sed -e 's/^/{"@bf":"session","item":/' -e 's/$/}/' "$f"
+exit "$s"'''
+output = "hermes-session"
+env = { TERMINAL_ENV = "local" }
+
+# Harbor's Hermes config, without the model (the command passes it).
+[[headless.files]]
+path = ".hermes/config.yaml"
+contents = '''
+toolsets:
+- hermes-cli
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+terminal:
+  backend: local
+  timeout: 180
+delegation:
+  max_iterations: 50
+checkpoints:
+  enabled: false
+'''
+
+[credentials]
+# Hermes reads the key of the provider in the model's `provider/model` id
+# (OPENROUTER_API_KEY for `openrouter/`).
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# Hermes's `openai-api` provider (Chat Completions) honors OPENAI_BASE_URL.
+# Both commands read the model from $BENCHFLOW_MODEL, which an ACP run on a
+# provider does not otherwise set.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"
+
+[providers.openai.env]
+BENCHFLOW_MODEL = "openai/{model}"

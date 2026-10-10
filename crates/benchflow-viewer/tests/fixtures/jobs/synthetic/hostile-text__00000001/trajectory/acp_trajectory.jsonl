@@ -1,0 +1,2 @@
+{"type": "agent_message", "text": "<img src=x onerror=\"alert(1)\"> and </script><script>alert(2)</script> <!--<script> & \u2028\u2029 done"}
+{"type": "user_message", "text": "</script>"}

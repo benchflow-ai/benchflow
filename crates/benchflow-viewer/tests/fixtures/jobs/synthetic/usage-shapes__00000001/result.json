@@ -1,0 +1,1 @@
+{"agent_result": {"zeta": 1, "n_tool_calls": "42", "n_prompts": 3.0, "n_input_tokens": -1, "n_output_tokens": 2.5, "n_cache_read_tokens": true, "n_cache_creation_tokens": 100000000000000000000, "total_tokens": "1e3", "cost_usd": "0.25", "usage_source": 5, "price_source": null, "extra": {"nested": [NaN, 1]}}, "n_tool_calls": null}

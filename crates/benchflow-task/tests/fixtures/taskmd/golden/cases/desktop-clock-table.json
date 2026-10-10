@@ -1,0 +1,40 @@
+{
+  "path": "desktop-clock-table/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/desktop-clock-table\"\nversion = \"1.0.0\"\n[world]\nkind = \"virtual\"\n\n[world.desktop]\nclock = { start = \"x\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/desktop-clock-table",
+    "version": "1.0.0",
+    "world": {
+      "kind": "virtual",
+      "desktop": {
+        "clock": {
+          "start": "x"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[world.desktop] clock moved to [sandbox] clock = { start, advance, enforce }: one clock for the whole task (docs/document.md, Clocks)",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/desktop-clock-table",
+  "ok": false
+}

@@ -1,0 +1,111 @@
+# Status
+
+What the Rust `bench` does today, what it does not do yet, and how each part was checked. When a part's row says "not yet", the 0.8 Python CLI on this branch still has it (`uv run bench ...`).
+
+## Commands
+
+| 0.8 | Rust | State |
+|---|---|---|
+| `bench eval run` | `bench run` | Ported for the oracle, `nop`, and agents on every harness: ACP, headless, the native loops, SDK runners, and project agents. Registry datasets (`-d name@version`, from BenchFlow's registry, the public registry, or a local `dataset.toml`), job files (`-c`, TOML, YAML, or JSON, local or at an `https://` address, with new keys; 0.8's YAML run configs are not read), `--rerun`, and per-phase timeout multipliers are ported; every job writes `lock.json`. Agent options (`--ak`) are checked against each agent's manifest, `--resume-sessions` resumes the agent's session on each later stage, and `--diff` reuses or regrades trials from earlier jobs. Registry digests are recorded but not checked yet. Skills reach the agent (the task's, `--skill`, and `--no-task-skills` for 0.8's `no-skill` mode), and `--load-trajectory` starts Claude Code or Codex on a session file. Not yet: multi-agent scenes, 0.8's `self-gen` skill mode, budgets (`--max-cost-usd` and friends), the LiteLLM usage gateway, hosted environments (`--source-env`) |
+| `bench eval resume` | rerun `bench run` | Resuming is automatic: the same command reuses the latest matching job |
+| `bench eval list`, `metrics`, `inspect`, `compare` | `bench results` | Ported: pass rates with 95% Wilson intervals, pass@k, failures by cause, paired comparison with a t interval |
+| `bench eval view` | `bench view` | Ported (0.8's viewer assets, served by Rust), plus compare, outcomes, and Pareto pages across jobs ([viewer.md](./viewer.md)) |
+| `bench eval regrade` | `bench regrade` | Ported for trials that saved outputs: a fresh sandbox per trial, the outputs restored, the current verifier; results go to `<job>-regrade-<n>` |
+| `bench eval branch`, `branches`, `score`, `continue`, `adopt`, `smoke` | — | Not yet |
+| `bench tasks init` | `bench new` | Ported, with templates that pass `bench test` as created |
+| `bench tasks check` | `bench check` | Ported for every format, with spans, did-you-mean, `--fix`, and `--watch` |
+| `bench tasks migrate` | `bench import` | Ported (split layout, 0.8 task.md, and Terminal-Bench v1 to task.md) |
+| `bench tasks export` | `bench export` | Ported (task.md to the split layout, with a loss report) |
+| `bench train convert` | `bench export <job>` | A job's trajectories as a Hugging Face dataset (with ShareGPT conversations on request) or OpenTelemetry JSON lines; the trainer files (`verifiers.jsonl`, `adp.jsonl`, `atif.json`) are written per trial during the run |
+| `bench tasks normalize`, `digest`, `snapshot-hf`, `overlap`, `generate`, `list-sources` | — | Not yet (`bench check --json` prints digests) |
+| `bench agent list`, `show` | `bench agents` | Ported, with each agent's options, skills folders, and session support |
+| `bench doctor` | `bench doctor` | Ported for sandboxes, agent logins, git, and disk |
+| — | `bench test` | New: oracle, empty run, controls, and eight exploit probes per task |
+| — | `bench shell` | New: a shell in a task's sandbox, then grading what you left (Docker and Podman) |
+| — | `bench cache` | New: what BenchFlow keeps between runs (images, task sources, registry indexes, logs), and `bench cache clean` |
+| — | `bench handoff` | New: resume a finished Claude Code or Codex trial's saved session in the local CLI, in the current folder |
+| — | `bench explain` | New: every diagnostic and failure code |
+| — | `bench schema` | New: JSON Schemas for task.md's config, job files, `result.json`, and `lock.json` |
+| `bench train`, `skills`, `sandbox`, `traj`, `hub`, `review`, `embodied` | — | Not yet |
+
+## Task formats
+
+| Format | State |
+|---|---|
+| task.md draft 2 | Native. The parser and checker are a port of task-md's reference checker (`tools/taskmd.py`), checked against its output on every example |
+| BenchFlow 0.8 task.md (YAML frontmatter) | Read and checked; `bench import` converts it |
+| Split layout (`task.toml`, schema 1.0 to 1.4) | Read and checked, with warnings for keys other runners ignore silently; `bench import` and `bench export` convert both ways |
+| Terminal-Bench v1 (`task.yaml`, `run-tests.sh`, `docker-compose.yaml`) | `bench import` converts it through the split layout (checked on synthetic fixtures and 9 real tasks). `solution.yaml` is refused |
+
+Fields the Rust runner reads but cannot honor yet are refused by name before a trial starts (`R401`), never skipped. Today that covers: wildcard hosts in a network allowlist or blocklist, `network = "none"` or an allowlist with a model agent (its own traffic to its model would be refused), rubric criteria judged by models or people, clocks, worlds, simulated users, roles, and per-output caps.
+
+## Task runtime features
+
+| Feature | How a task asks for it | Docker, Podman | Daytona |
+|---|---|---|---|
+| Stages graded one after another | The split layout's `[[steps]]` (`steps/<name>/`, `min_reward`, `multi_step_reward_strategy`); task.md stages with a `gate`, `outputs`, their own `agent`/`verifier` timeout, `ready`, `mounts`, or `stages/<name>/verifier/` and `oracle/` | Run | Run |
+| A separate verifier's own image | `isolation = "separate"` (split layout: `environment_mode`) with `[verifier.sandbox] image` (split layout: `[verifier.environment] docker_image`) or `verifier/Dockerfile` (split layout: `tests/Dockerfile`) | Run | Run |
+| Services beside the agent's container | The split layout's `environment/docker-compose.yaml`; task.md's `[[sandbox.services]]` or `[sandbox] compose = "sandbox/docker-compose.yaml"` | Run, on a private network | Refused by name |
+| Hooks after the agent's turn, before grading | The split layout's `[[verifier.collect]]`; task.md's `[[verifier.snapshot]]` | Run | Run (in the agent's container; a hook in a service is refused with the services) |
+| Package files mounted read-only | task.md's `[sandbox] mounts` and `[stages.<name>] mounts` | Run | Run |
+| Artifacts manifest | Declared outputs (`artifacts`, `[sandbox] outputs`, a stage's outputs) | `artifacts/<save_as>` and `artifacts/manifest.json` | The same |
+| GPU types | `gpu_types` | Checked with `nvidia-smi` in the sandbox; a mismatch refuses the trial | GPUs refused by name |
+
+How each one works:
+
+- **Stages.** Every stage runs in the same sandbox: the previous stage's verifier and solution are removed, the stage's files and mounts are placed, the agent gets the stage's prompt and time, the handoff kills every agent process, the stage's outputs and hooks are collected, and the stage's verifier grades it (its own folder, else the task's; in the split layout, `steps/<name>/tests/` is layered over `tests/`). A missed gate stops the trial. The reward is each key's mean over the stages or the final stage's (`multi_step_reward_strategy`, `[verifier] combine_stages`); a stage never reached counts as 0 (task.md's default) or is left out (the split layout's rule). The oracle runs each stage's own solution, else the task's; `nop` does nothing; controls and probes run once per stage with `BENCHFLOW_STAGE` set; a model agent gets a fresh session per stage, unless `--resume-sessions` asks it to resume its own. Each stage leaves `steps/<name>/` (agent, trajectory, verifier, artifacts, hooks), and `result.json` holds `step_results` in the split layout's shape (`step_name`, `verifier_result.rewards`) with each gate's outcome.
+- **A verifier image.** The image is chosen in task.md's order: the named image, then `verifier/Dockerfile` (built with that folder as its context), then the task's own image. BenchFlow 0.8 differs in one case, and a 0.8 frontmatter task keeps 0.8's order: with no verifier sandbox declared, 0.8 takes the task's prebuilt `docker_image` before `tests/Dockerfile`. The verifier's files are uploaded as well, as 0.8 does.
+- **Services.** Each service starts from its own image (pulled, or built from its folder) before the agent's sandbox, and must pass its healthcheck before the next starts. They share an internal network the host has no address on: services have no internet, and nothing on the network can reach the host. The agent's sandbox keeps its own network and joins this one, where it reaches each service by name; with `network = "none"` the services are all it can reach. Their logs are kept in `services/<name>.log`, and they are removed with the trial. Compose files may use the split layout's template: the keys it puts on service `main` (the build, the image name, an idle command, the network mode, the log folders, CPU and memory limits) are what BenchFlow sets from the task, so they are ignored with a note (`P010`). An environment value read from the host is dropped with a warning (`P011`; `${VAR:-default}` becomes its default), and so is a bind mount of a host folder (`P012`). Services take `image` or `build`, `command`, `environment`, `healthcheck`, `expose`, `networks`, and `depends_on`, with one plain bridge network; any other key is refused by name.
+- **Hooks** run after every agent process is gone and before grading, as root unless they name a user, with the verifier's trusted `PATH`; each one's command, exit code, and output are in `hooks/<n>.txt`. A failing hook leaves the trial unscored (`R311`). task.md's spec runs a snapshot in a fresh container of the task's image with its `reads` paths on volumes; this runner runs it in the agent's own container, where those paths already are.
+- **Mounts** are uploaded and made root-owned and read-only before the agent starts (a stage's when the stage unlocks); an agent running as root could still change them, and the trial's defenses say so.
+
+Still refused by name within these features: a step's own settings other than its timeouts (a step's user, network, or env), a separate verifier for each stage, stages that unlock on a submitted file, outputs collected from a service, regrading a task graded in stages, and services or GPUs on Daytona.
+
+## Sandboxes
+
+| Backend | State |
+|---|---|
+| Docker (CLI, local or `DOCKER_HOST`) | Ported |
+| Podman | The Docker backend with the `podman` CLI |
+| Daytona | Ported over REST |
+| Modal, Apple Container, AgentCore, remote Docker over SSH | Not yet |
+
+## Verification
+
+Each row is a check run end to end with the built `bench` binary, where it ran, and the report that holds the evidence. Docker runs were on a Linux VM (Docker 29.1.3, host daemon); Daytona runs were from a Mac. The reports are in the rewrite's working notes, not in this repository. Each report names the commit it ran at; later merges were not all rerun.
+
+| Area | What was verified | Where | Result | Report |
+|---|---|---|---|---|
+| `bench test` on the fixtures | The six fixtures give their expected verdicts: `hello`, `hello-split`, `hello-v06`, `ships-solution`, and `writable-bin` prove themselves; `always-passes` fails on `nop`. Docker live tests 10/10 | Docker | As expected, after eight fixes | `T2.1.md` |
+| `bench test` on the fixtures | The same six fixtures and verdicts | Daytona | As expected, after eight fixes | `T2.2.md` |
+| SkillsBench oracle and nop against 0.8 | 40 tasks, paired with BenchFlow 0.8 | Docker | Round 1: oracle 0.8 38/40, Rust 34/40; nop 0/40 in both. Round 2 reran the 6 tasks that differed or were at risk: 3 more pass. Round 3, with the Compose reader, ran the 2 Compose tasks: both pass the oracle and score 0 on nop, as in 0.8. With each task's latest round: oracle 38/40 in both engines, the same 2 failing in both (task problems); nop 0/40 in both. Only those 6 tasks were rerun on later builds | `T2.3.md` |
+| Split layout (Terminal-Bench 2) | `bench check` and the oracle on the first 20 tasks | Docker | `bench check` refused nothing; oracle as root 16/20, the 4 failures explained (3 tasks or upstream hosts, 1 BenchFlow path bug, fixed) | `T2.4.md` |
+| 0.8 reads Rust jobs | `bf.load_job` and 0.8's `bench eval view` on Rust oracle, nop, and `bench test` jobs | Docker | Counts and rewards right; the viewer serves every payload | `T2.5.md` |
+| Codex on its ChatGPT login; Claude Code on an OAuth login | `hello` with each agent; no token in any job file | Daytona | Codex 5/5; Claude Code (Haiku) passed | `T3.1.md` |
+| Rust against 0.8 with a real agent | Codex on 8 SkillsBench tasks, 3 rounds, paired | Daytona | Pass@1 11/24 in both; every task tied on pass count; mean reward +0.040 (−0.054 to +0.133) | `T3.2.md` |
+| Models through a provider | Claude Code and Codex on two Vercel AI Gateway models, through the forwarder | Daytona | Every trial passed (reward 1), both agents on both models | `T3.3.md` |
+| Keys out of the agent's reach | The forwarder holds the key; scans for it as the agent user and in job folders | Daytona | 0 matches in 42,212 readable files, `/proc`, and job folders | `T3.4.md` |
+| First run on a fresh machine | `install.sh --from` a release-style tarball, `doctor`, `new`, `check`, `test`, `run`, `view` as a new user | Docker | All worked; four friction points fixed, two listed (one, the install doc's sizes, fixed since) | `T4.1.md` |
+| Failure codes | Every code `bench explain` lists (128) triggered, 18 through the binary | Daytona, and tests | 101 read as written, 27 fixed | `T4.2.md` |
+| Speed | `bench check` over 1,000 tasks; start-up against 0.8; per-trial phases against 0.8 | Mac, Daytona | 0.16 to 0.29 s; start-up 124 to 210 times faster; setup 6.3 s against 41.1 s | `T4.3.md` |
+| Live view and `bench shell` | `bench test`, `bench run`, and a model run recorded at 80 and 160 columns; `bench shell` | Daytona, Docker | No line wider than the terminal after nine fixes; `bench shell` grades what was left | `T4.5.md` |
+| Regression sweep | Oracle on SkillsBench (36 tasks) and Terminal-Bench 2 (20) | Daytona | SkillsBench 32/36 with fixes (0.8: 35/36); Terminal-Bench 2 16/20 | `T4.7-regress.md` |
+| Native harnesses | `builtin` and `terminus-2` on `hello` through the gateway | Daytona | builtin 4/4, terminus-2 4/4 | `T7.1-native.md` |
+| Every gateway-capable agent | 46 agent and harness routes on `hello` through the forwarder, on `vercel/deepseek/deepseek-v4-flash-0731`, after 23 manifests gained provider tables | Daytona | 41 passed; of the 5 failures, none is BenchFlow's (the model or agent on this task, 2 ACP servers that cannot take a custom endpoint); 6 agents not run, each with its reason | `T7.1-gateway-sweep.md` |
+| ACP registry agents | Install methods checked live; `acp:codex-acp` end to end on `hello` | Daytona | 1/1 passed | `T7.1-acp.md` |
+| CLI and SDK agents | Installs, launches, and parsers for the headless agents and SDK runners | Daytona | Each installed and launched; they ran with placeholder keys, so they end in login errors (R212) as intended, not passes | `T7.1-cli-b.md`, `T7.1-sdk.md`, `T7.1-routes.md` |
+| `external`, `dspy-rlm`, `computer-1` | Each on `hello` (computer-1 on `hello-desktop`) | Daytona | external 3/3 (a fake backend), dspy-rlm 1/3, computer-1 1/3 | `T7.1-more.md` |
+| Networks | `none`, allowlists, and blocklists on four tasks with every probe | Docker, Daytona | All four tasks prove themselves on both; the self-test caught an IPv6 bug, fixed | `T7.2.md` |
+| Daytona's in-sandbox daemon | The guard that closes the daemon's ports to the agent user on every Daytona trial; `bench test` on `hello`, and a port check as the agent user | Daytona | `hello` proves itself and all 11 trials record `root_service` enforced; the agent user's connections to every daemon port are refused | `T7.2.md` (round 2) |
+| Task runtime | `two-stage`, `sidecar`, `separate-verifier`, `snapshot-hook` | Docker, Daytona | All four prove themselves on Docker; all but `sidecar` on Daytona, which refuses services by name (R401) | `T7.3.md` |
+| Regrade and `--diff` | A job rerun with `--diff`: one trial reused, one regraded, one rerun | Daytona | As planned | `T7.4-parity-p1.md` |
+| `bench cache` | Listing and `clean --only sources --remove` on a cache filled by real fetches; the image half against a fake `docker` | Mac | Removed only the sources; the rest stayed. Images were not removed from a real daemon (a listing on one is in `T6.1.md`) | `T7.4-parity-p1.md` |
+| Agent options and session resume | `--ak`, and `--resume-sessions` on a two-stage task whose second stage needs a code word given only in the first, Claude Code over ACP and headless | Daytona | Resumed: stage 2 passed on both harnesses; fresh: it failed on both (one trial per arm) | `T7.1-parity-p2.md` |
+| Skills and loaded sessions | A task's two skills with Claude Code over ACP; `--load-trajectory` with a session holding a code word | Daytona | Both skills in place and owned by the agent user; the code word reached the agent (one trial each) | `T7.1-parity-p5.md` |
+| Terminal-Bench v1 import, job files from URLs, trace export | 10 real Terminal-Bench v1 tasks; `-c` against a local server and GitHub; every job folder in the reports exported both ways and compared with a reference exporter | Mac, no sandbox | 9 of 10 imported and check clean, identical to the reference converter (1 refused); 61 jobs compared: every row and trace equal to the reference's | `T7.4-parity-p3.md` |
+| `bench handoff` and the Pareto view | Claude Code and Codex trials on `hello`, each session handed off to a scratch folder; `/pareto` on real jobs | Daytona, Mac | Both sessions copied where the CLI looks and the resume command started (an interactive resume was not run); `/pareto` drew its frontiers for 12 one-trial jobs | `T7.4-parity-p4.md` |
+| Correctness and security review, round 2 | Everything merged from `26c8b230` to `61e44c61`: task runtime, confinement, workdir, harnesses, forwarder, CLI | Code review, Daytona | 29 findings: all 4 high, 8 of 13 medium, and 2 of 12 low fixed, each with a test, and merged; the 15 open ones are listed there, the ones that affect a trial under Residual risks in testing-tasks.md | `T5.2-review-r2.md` |
+| Model-assisted review | `bench check --review` on the fixtures; `bench results --analyze` on 4 jobs | Gateway only | Found both planted holes, nothing on `hello`; explained all 24 failed trials | `T7.5.md` |
+| Confinement | `bench doctor --confinement`, `bench test` on the fixtures, `--runtime runsc`, `script:` agents | Docker, Daytona | Each setting read back with its evidence; every probe refused on the fixtures | `T7.6.md` |
+| Trainer files | `verifiers.jsonl`, `adp.jsonl`, ATIF rebuilt from 391 real 0.8 rollouts | Offline | 391/391 byte for byte | `T7.8.md` |
+| The docs' example output | Every output in README.md and testing-tasks.md, recaptured at `83aa1649` | Docker, Daytona | Captured, not written by hand, at 100 columns; the capture scripts are in `tools/` next to the reports | `T6.1.md` |

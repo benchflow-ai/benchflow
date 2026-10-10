@@ -1,0 +1,11 @@
+{"type": "tool_call", "tool_call_id": "a0", "kind": "think", "title": "Task", "status": "completed", "content": []}
+{"type": "tool_call", "tool_call_id": "a1", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a0"}
+{"type": "tool_call", "tool_call_id": "a2", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a1"}
+{"type": "tool_call", "tool_call_id": "a3", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a2"}
+{"type": "tool_call", "tool_call_id": "a4", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a3"}
+{"type": "tool_call", "tool_call_id": "a5", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a4"}
+{"type": "tool_call", "tool_call_id": "a6", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a5"}
+{"type": "tool_call", "tool_call_id": "a7", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a6"}
+{"type": "tool_call", "tool_call_id": "a8", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a7"}
+{"type": "tool_call", "tool_call_id": "a9", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "a8"}
+{"type": "agent_message", "text": "deepest", "parent_tool_call_id": "a9"}

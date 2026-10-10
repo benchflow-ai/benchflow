@@ -1,0 +1,7 @@
+frontmatter/task.md
+  mode: prompt-only
+  title: acme/front
+  instruction: 2 words; starts 'Fix it.'
+  config: frontmatter (name)
+  warning: legacy YAML frontmatter: `task fmt` moves it into a ```toml task block
+  ok

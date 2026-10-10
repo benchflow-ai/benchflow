@@ -1,0 +1,45 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "method",
+      "points": 2,
+      "judge": "agent",
+      "evidence": [
+        "report.md"
+      ],
+      "text": "The method is sound.",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "method-2",
+      "points": 2,
+      "judge": "agent",
+      "evidence": [
+        "report.md"
+      ],
+      "text": "The method is sound.",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "fig",
+      "points": 1,
+      "judge": "vlm",
+      "evidence": [
+        "fig.png"
+      ],
+      "text": "F.",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "fig-2",
+      "points": 1,
+      "judge": "vlm",
+      "evidence": [
+        "fig.png"
+      ],
+      "text": "G.",
+      "stated": "Fix the bug"
+    }
+  ]
+}

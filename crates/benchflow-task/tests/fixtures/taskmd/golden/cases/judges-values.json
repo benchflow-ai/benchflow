@@ -1,0 +1,218 @@
+{
+  "path": "judges-values/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/judges-values\"\nversion = \"1.0.0\"\n[verifier.judges]\nsamples = 0\nmin_samples = \"x\"\nlazy = \"no\"\naggregate = \"avg\"\nllm = 5\nvlm = \"\"\npanel = [\"a\", \"b\"]\nunverified = true\n\n[verifier.judges.agent]\nmodel = \"\"\neffort = 3\naggregate = \"medain\"\nper = \"task\"\ntimeout = 600\nharness = \"judge-loop\"\nresources = { cpu = 2, memory = \"lots\" }\nservices = \"yes\"\nviews = [\"/logs/agent/t.json\", 5, { path = \"rel\", format = \"atif\" }, { pth = \"/x\", format = \"trajectory-1\" }, { path = \"/y\" }]\nbudget = { tokens = 0, tool_calls = -1 }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/judges-values",
+    "version": "1.0.0",
+    "verifier": {
+      "judges": {
+        "samples": 0,
+        "min_samples": "x",
+        "lazy": "no",
+        "aggregate": "avg",
+        "llm": 5,
+        "vlm": "",
+        "panel": [
+          "a",
+          "b"
+        ],
+        "unverified": true,
+        "agent": {
+          "model": "",
+          "effort": 3,
+          "aggregate": "medain",
+          "per": "task",
+          "timeout": 600,
+          "harness": "judge-loop",
+          "resources": {
+            "cpu": 2,
+            "memory": "lots"
+          },
+          "services": "yes",
+          "views": [
+            "/logs/agent/t.json",
+            5,
+            {
+              "path": "rel",
+              "format": "atif"
+            },
+            {
+              "pth": "/x",
+              "format": "trajectory-1"
+            },
+            {
+              "path": "/y"
+            }
+          ],
+          "budget": {
+            "tokens": 0,
+            "tool_calls": -1
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier.judges] aggregate must be one of 'median', 'mean', 'majority', 'min'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges] unverified is gone: a verdict with no verified citation is always flagged no-verified-citation, and at delivery grade the runtime judges that sample once more (docs/judges.md). Remove the key",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges] samples is a whole number, at least 1",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges] min_samples is a whole number, at least 1",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges] lazy is true (the default) or false",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges] llm is a model name, or a table [verifier.judges.llm]",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges] vlm is a model name, or a table [verifier.judges.vlm]",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] model names a model",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] effort is the model's reasoning effort, such as \"high\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] aggregate must be one of 'median', 'mean', 'majority', 'min'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] per is \"rubric\" (one session grades all of the role's criteria) or \"criterion\" (one session each)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] timeout must be a duration such as \"90s\", \"15m\", or \"1h30m\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] budget tokens is a count: a whole number, or a string of a number and K (1,000) or M (1,000,000) that comes to a whole number, such as 400000, \"400K\", or \"2M\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] budget tool_calls is a whole number, at least 1",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] harness names a harness and its version, such as \"judge-loop@1\": conformance is per harness version",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'cpu' in [verifier.judges.agent] resources; did you mean cpus? it holds cpus, disk, gpu_types, gpus, memory, tpu",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] resources memory must be a size such as \"512 MB\" or \"4 GB\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] services is true (the task's services run for the judge too) or false",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] views[0] is a bare path, '/logs/agent/t.json', which meant format \"atif\": ATIF views are cut, since no page defines their bytes. Write { path = \"/logs/agent/t.json\", format = \"trajectory-1\" }",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] views[1] is a table { path, format = \"trajectory-1\" }",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] views[2] needs a path: the absolute path the judge reads it at, such as \"/logs/agent/trajectory.json\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] views[2] format \"atif\" is cut, since no page defines an ATIF view's bytes: write format = \"trajectory-1\", the solver's trajectory in the runtime's own record",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'pth' in [verifier.judges.agent] views[3]; did you mean path? a view holds path and format",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] views[3] needs a path: the absolute path the judge reads it at, such as \"/logs/agent/trajectory.json\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] views[4] format is \"trajectory-1\", the solver's trajectory in the runtime's own record",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 600, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/judges-values",
+  "ok": false
+}

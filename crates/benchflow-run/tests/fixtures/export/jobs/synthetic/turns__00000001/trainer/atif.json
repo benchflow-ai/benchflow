@@ -1,0 +1,196 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "turns__00000001",
+  "trajectory_id": "main",
+  "agent": {
+    "name": "claude",
+    "version": "2.1.0",
+    "model_name": "anthropic/claude-sonnet-4-6",
+    "tool_definitions": [
+      {
+        "name": "Bash",
+        "description": "Run a command, café ✓",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "Task",
+        "description": "Start a subagent"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "system",
+      "message": "You are a careful agent.",
+      "timestamp": "2026-10-10T16:00:00.000001+00:00"
+    },
+    {
+      "step_id": 2,
+      "source": "user",
+      "message": "List the files, then summarize them — in English.",
+      "timestamp": "2026-10-10T16:00:01.250000+00:00"
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "I will look.",
+      "reasoning_content": "Start with ls.",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "timestamp": "2026-10-10T16:00:02.5+00:00",
+      "llm_call_count": 1,
+      "metrics": {
+        "prompt_tokens": 1200,
+        "completion_tokens": 80,
+        "cached_tokens": 1000,
+        "cost_usd": 0.0012
+      },
+      "tool_calls": [
+        {
+          "tool_call_id": "call_1",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "ls -la"
+          }
+        },
+        {
+          "tool_call_id": "call_2",
+          "function_name": "Task",
+          "arguments": {
+            "prompt": "summarize README"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_1",
+            "content": "README.md\nsrc/"
+          },
+          {
+            "source_call_id": "call_2",
+            "content": [
+              {
+                "type": "text",
+                "text": "README says hi"
+              }
+            ],
+            "subagent_trajectory_ref": [
+              {
+                "trajectory_id": "subagent:call_2"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "message": "context compacted",
+      "extra": {
+        "context_management": {
+          "action": "compact",
+          "kept": 3
+        }
+      },
+      "timestamp": "2026-10-10T16:00:04Z"
+    },
+    {
+      "step_id": 5,
+      "source": "user",
+      "message": "Now count them.",
+      "timestamp": "2026-10-10T16:00:05+00:00"
+    },
+    {
+      "step_id": 6,
+      "source": "agent",
+      "message": "",
+      "llm_call_count": 0,
+      "timestamp": "2026-10-10T16:00:06+00:00",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_3",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "ls | wc -l"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_3",
+            "content": "2"
+          }
+        ]
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "agent",
+      "message": "thinking done</think>There are 2 entries.",
+      "llm_call_count": 3,
+      "timestamp": "2026-10-10T16:00:07.123456789+00:00",
+      "metrics": {
+        "prompt_tokens": 1500,
+        "completion_tokens": 20
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 2700,
+    "total_completion_tokens": 100,
+    "total_cost_usd": 0.0031,
+    "total_steps": 7
+  },
+  "subagent_trajectories": [
+    {
+      "schema_version": "ATIF-v1.8",
+      "trajectory_id": "subagent:call_2",
+      "agent": {
+        "name": "claude-subagent",
+        "version": "2.1.0",
+        "model_name": "anthropic/claude-haiku-4-5"
+      },
+      "steps": [
+        {
+          "step_id": 1,
+          "source": "user",
+          "message": "summarize README",
+          "timestamp": "2026-10-10T16:00:03+00:00"
+        },
+        {
+          "step_id": 2,
+          "source": "agent",
+          "message": "README says hi",
+          "timestamp": "2026-10-10T16:00:03.5+00:00",
+          "tool_calls": [
+            {
+              "tool_call_id": "s1",
+              "function_name": "Read",
+              "arguments": {
+                "path": "README.md"
+              }
+            }
+          ],
+          "observation": {
+            "results": [
+              {
+                "source_call_id": "s1",
+                "content": "hi"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "path": "family-split-table-no-role/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-split-table-no-role\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/generate.py\"\n\n[family.splits.holdout]\nrule = \"seed > 5\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-split-table-no-role",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/generate.py",
+      "splits": {
+        "holdout": {
+          "rule": "seed > 5"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[family.splits.holdout] needs a role: \"train\", \"validation\", or \"test\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/family-split-table-no-role",
+  "ok": false
+}

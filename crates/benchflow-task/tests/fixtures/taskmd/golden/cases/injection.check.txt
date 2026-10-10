@@ -1,0 +1,11 @@
+injection/task.md
+  mode: blocks
+  title: acme/injection
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (integrity, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [integrity.controls] injection pairs known_bad, which the table does not declare (task.md)
+  error: [integrity.controls] injection names 'nearmiss'; it names controls by key: known_bad, near_miss, no_op, or cheats (task.md)
+  FAILED

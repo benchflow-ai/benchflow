@@ -1,0 +1,74 @@
+{
+  "path": "controls/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/controls\"\nversion = \"1.0.0\"\n[integrity.controls]\nno_op = \"controls/no-op.sh\"\nknown_bad = [\"controls/missing.sh\", \"/abs/x.sh\", \"../out.sh\", \"\", \"controls/fixed-delay.patch\"]\nnear_miss = [\"controls/near.sh\"]\ncheats = 5\nx-other = \"x\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/controls",
+    "version": "1.0.0",
+    "integrity": {
+      "controls": {
+        "no_op": "controls/no-op.sh",
+        "known_bad": [
+          "controls/missing.sh",
+          "/abs/x.sh",
+          "../out.sh",
+          "",
+          "controls/fixed-delay.patch"
+        ],
+        "near_miss": [
+          "controls/near.sh"
+        ],
+        "cheats": 5,
+        "x-other": "x"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[integrity.controls] known_bad names controls/missing.sh, which is not a file in the package",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[integrity.controls] known_bad names /abs/x.sh, which is outside the package: a control is a file in it",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[integrity.controls] known_bad names ../out.sh, which is outside the package: a control is a file in it",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[integrity.controls] known_bad names each control by its path in the package, such as \"controls/no-op.sh\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[integrity.controls] known_bad names controls/fixed-delay.patch, a patch: patch controls are cut, since no page says how a runtime applies one. Write a script that makes the change, which runs in place of the agent as oracle/solve.sh does",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[integrity.controls] cheats names each control by its path in the package, such as \"controls/no-op.sh\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/controls",
+  "ok": false
+}

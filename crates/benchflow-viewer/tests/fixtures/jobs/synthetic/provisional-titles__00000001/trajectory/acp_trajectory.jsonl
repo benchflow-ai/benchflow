@@ -1,0 +1,11 @@
+{"type": "tool_call", "tool_call_id": "write", "kind": "edit", "title": "Preparing file\u2026", "status": "completed", "raw_input": {"file_path": "/app/hello.txt", "content": "Hello, world!"}, "content": [{"type": "diff", "path": "/app/hello.txt", "oldText": null, "newText": "y"}]}
+{"type": "tool_call", "tool_call_id": "edit", "kind": "edit", "title": "Edit", "status": "completed", "content": [{"type": "diff", "path": "src/a.py", "oldText": "x", "newText": "y"}, {"type": "diff", "path": "src/a.py", "oldText": "x", "newText": "y"}]}
+{"type": "tool_call", "tool_call_id": "read", "kind": "read", "title": "Read File", "status": "completed", "raw_input": {"file_path": "/app/c.txt"}}
+{"type": "tool_call", "tool_call_id": "read-bare", "kind": "read", "title": "Read File", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "two-files", "kind": "edit", "title": "Edit", "status": "completed", "content": [{"type": "diff", "path": "src/a.py", "oldText": "x", "newText": "y"}, {"type": "diff", "path": "b", "oldText": "x", "newText": "y"}]}
+{"type": "tool_call", "tool_call_id": "final", "kind": "edit", "title": "Write notes.md", "status": "completed", "raw_input": {"file_path": "x"}}
+{"type": "tool_call", "tool_call_id": "padded", "kind": "edit", "title": "  Write  ", "status": "completed", "raw_input": {"file_path": "/p"}}
+{"type": "tool_call", "tool_call_id": "empty-path", "kind": "edit", "title": "Edit", "status": "completed", "raw_input": {"file_path": ""}, "content": [{"type": "diff", "path": "src/a.py", "oldText": "x", "newText": "y"}]}
+{"type": "tool_call", "tool_call_id": "nonstr-path", "kind": "edit", "title": "Edit", "status": "completed", "raw_input": {"file_path": 5}, "content": [{"type": "diff", "path": 7, "oldText": "x", "newText": "y"}]}
+{"type": "tool_call", "tool_call_id": "diff-none-path", "kind": "edit", "title": "Edit", "status": "completed", "content": [{"type": "diff", "oldText": "a"}]}
+{"type": "tool_call", "tool_call_id": "wrong-kind", "kind": "read", "title": "Edit", "status": "completed", "raw_input": {"file_path": "/p"}}

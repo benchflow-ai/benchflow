@@ -1,0 +1,8 @@
+{"type": "tool_call", "tool_call_id": "s1", "kind": "other", "title": "WebSearch", "status": "\"><script>globalThis.pwned=true</script>"}
+{"type": "tool_call", "tool_call_id": "s2", "kind": "execute", "title": "ls", "status": "IN-PROGRESS"}
+{"type": "tool_call", "tool_call_id": "s3", "kind": "execute", "title": "ls", "status": "in progress"}
+{"type": "tool_call", "tool_call_id": "s4", "kind": "execute", "title": "ls", "status": " Completed "}
+{"type": "tool_call", "tool_call_id": "s5", "kind": "execute", "title": "ls", "status": "cancelled"}
+{"type": "tool_call", "tool_call_id": "s6", "kind": "execute", "title": "ls", "status": 5}
+{"type": "tool_call", "tool_call_id": "s7", "kind": "execute", "title": "ls", "status": null}
+{"type": "tool_call", "tool_call_id": "s8", "kind": "execute", "title": "ls", "status": "pending"}

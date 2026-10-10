@@ -1,0 +1,26 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "method",
+      "points": 2,
+      "judge": "agent",
+      "evidence": [
+        "out/report.md",
+        "diff:/app/out/fit.py",
+        "trajectory",
+        "trajectory:reasoning",
+        "tests",
+        "report.md",
+        "trajectory:steps",
+        "diff:",
+        "",
+        "screenshots#3",
+        "camera",
+        "camera:front"
+      ],
+      "text": "The method is sound.",
+      "stated": "Fix the bug"
+    }
+  ]
+}

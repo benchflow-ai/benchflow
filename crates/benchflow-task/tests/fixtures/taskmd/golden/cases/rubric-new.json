@@ -1,0 +1,181 @@
+{
+  "path": "rubric-new/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-new\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-new",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "a",
+        "points": 1,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "A.",
+        "stated": "Fix the bug",
+        "outcome": "neutral"
+      },
+      {
+        "id": "b",
+        "points": 1,
+        "judge": "test",
+        "check": "t",
+        "text": "B.",
+        "stated": "Fix the bug",
+        "cite": "independent"
+      },
+      {
+        "id": "c",
+        "points": 1,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "C.",
+        "stated": "Fix the bug",
+        "cite": "always"
+      },
+      {
+        "id": "d",
+        "points": 1,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "D.",
+        "stated": "Fix the bug",
+        "score": {
+          "min": 5,
+          "max": 5
+        }
+      },
+      {
+        "id": "e",
+        "points": 1,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "E.",
+        "stated": "Fix the bug",
+        "score": {
+          "min": 0,
+          "max": 100
+        },
+        "levels": {
+          "0": "none",
+          "1": "some"
+        }
+      },
+      {
+        "id": "f",
+        "points": 1,
+        "judge": "test",
+        "check": "t",
+        "text": "F.",
+        "stated": "Fix the bug",
+        "score": {
+          "min": 0,
+          "max": 1
+        }
+      },
+      {
+        "id": "g",
+        "points": -2,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "Adds a dependency.",
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "h",
+        "points": 1,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "H.",
+        "stated": "Fix the bug",
+        "outcom": "bad"
+      }
+    ],
+    "scoring": {
+      "method": "weighted",
+      "gates": "any"
+    }
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "scoring.gates is gone: every gate must pass, always, so the key had one value, \"all\". Remove it; \"any\", RewardKit's any-pass, has no rubric form, and a converter that meets it refuses",
+      "where": "verifier/rubric.json"
+    },
+    {
+      "level": "error",
+      "message": "scoring.method is \"points\" (the default: earned points over the maximum positive points, clipped to [0, 1]) or \"sum\" (the raw, unclipped total)",
+      "where": "verifier/rubric.json"
+    },
+    {
+      "level": "error",
+      "message": "outcome is \"good\" (the default: the text states a good thing) or \"bad\" (the text states a bad thing); pass always means the task went as it should",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "cite applies to criteria a model judges; the runtime decides a test criterion",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "error",
+      "message": "cite is \"independent\": a pass then needs a citation the solver neither wrote nor ran",
+      "where": "verifier/rubric.json criteria[2]"
+    },
+    {
+      "level": "error",
+      "message": "score is a continuous range, {\"min\": <number>, \"max\": <number>}, with min below max",
+      "where": "verifier/rubric.json criteria[3]"
+    },
+    {
+      "level": "error",
+      "message": "a criterion has levels or a continuous score, not both",
+      "where": "verifier/rubric.json criteria[4]"
+    },
+    {
+      "level": "error",
+      "message": "a continuous score needs a model or human judge; the runtime decides a test criterion as pass or fail, and float test results are deferred",
+      "where": "verifier/rubric.json criteria[5]"
+    },
+    {
+      "level": "warning",
+      "message": "'g' is a draft-1 penalty, and its verdict word changed meaning: a model's pass used to charge the penalty, and now pass means the task went as it should, with negative points charged on fail. Its text names the bad outcome, so set \"outcome\": \"bad\"",
+      "where": "verifier/rubric.json criteria[6]"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'outcom'; did you mean outcome? a criterion holds check, cite, evidence, gate, group, guidance, id, implicit, judge, levels, missing, outcome, points, reference, score, stated, text, or x- extensions",
+      "where": "verifier/rubric.json criteria[7]"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-new",
+  "ok": false
+}

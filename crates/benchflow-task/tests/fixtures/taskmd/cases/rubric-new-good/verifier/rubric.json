@@ -1,0 +1,46 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "g",
+      "points": -2,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "Adds a dependency.",
+      "stated": "Fix the bug",
+      "outcome": "bad"
+    },
+    {
+      "id": "s",
+      "points": 3,
+      "judge": "llm",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "Quality, 0 to 100.",
+      "stated": "Fix the bug",
+      "score": {
+        "min": 0,
+        "max": 100
+      },
+      "cite": "independent"
+    },
+    {
+      "id": "n",
+      "points": 1,
+      "judge": "agent",
+      "evidence": [
+        "x.md"
+      ],
+      "text": "Never deletes data.",
+      "stated": "Fix the bug",
+      "outcome": "bad",
+      "missing": "no-penalty"
+    }
+  ],
+  "scoring": {
+    "method": "sum"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "path": "rubric-criteria-shape/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-criteria-shape\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-criteria-shape",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": {
+      "a": 1
+    }
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "needs a non-empty criteria list (or extends)",
+      "where": "verifier/rubric.json"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-criteria-shape",
+  "ok": false
+}

@@ -1,0 +1,45 @@
+services:
+  main:
+    build:
+      context: ${CONTEXT_DIR}
+    image: ${MAIN_IMAGE_NAME}
+    command:
+    - sh
+    - -c
+    - sleep infinity
+    environment:
+    - TEST_DIR=${TEST_DIR}
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPUS}
+          memory: ${MEMORY}
+    networks:
+    - app-network
+    depends_on:
+      server:
+        condition: service_healthy
+  server:
+    build:
+      context: server
+    image: hb__server
+    command:
+    - python
+    - ./serve.py
+    ports:
+    - '8000'
+    environment:
+      PORT: 8000
+      DEBUG: true
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8000
+      interval: 10s
+    networks:
+    - app-network
+networks:
+  app-network:
+    driver: bridge

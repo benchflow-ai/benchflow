@@ -1,0 +1,31 @@
+{
+  "path": "rubric-extends-only/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-extends-only\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-extends-only",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "extends": [
+      "https://task.md/rubrics/x@1"
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-extends-only",
+  "ok": true
+}

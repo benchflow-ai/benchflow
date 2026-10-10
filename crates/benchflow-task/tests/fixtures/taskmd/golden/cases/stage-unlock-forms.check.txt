@@ -1,0 +1,10 @@
+stage-unlock-forms/task.md
+  mode: blocks
+  title: acme/stage-unlock-forms
+  instruction: 2 words; starts 'Fix it.'
+  blocks: stage a, stage b, stage c, toml task
+  config: block (name, stages, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [stages.c] unlock must be on_submit, on_request, at_start, after:<stage>, or at_turn:<n> (task.md)
+  FAILED

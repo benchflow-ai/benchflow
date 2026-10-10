@@ -1,0 +1,11 @@
+lab-antitrust-gap-analysis/task.md
+  mode: blocks
+  title: harveyai/antitrust-competition-compare-corporate-antitrust-compliance-program-against-doj-and-ftc-guidelines
+  instruction: 28 words; starts 'Review the attached antitrust compliance program materials against the'
+  blocks: toml task
+  config: block (about, agent, authors, import, keywords, name, sandbox, verifier)
+  grading needs a model: yes (a script): [verifier] models = true; [verifier] env names ANTHROPIC_API_KEY; verifier/test.sh runs RewardKit, whose judges call a model
+  worst-case grading time: 30m (scripts 30m; in sequence, before retries)
+  warning: verifier.env.ANTHROPIC_API_KEY resolves ${ANTHROPIC_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  warning: verifier.env.JUDGE_CONCURRENCY resolves ${JUDGE_CONCURRENCY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  ok

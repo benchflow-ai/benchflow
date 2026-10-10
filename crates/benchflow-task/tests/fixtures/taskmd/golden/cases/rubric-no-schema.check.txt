@@ -1,0 +1,10 @@
+rubric-no-schema/task.md
+  mode: blocks
+  title: acme/rubric-no-schema
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: no task.md $schema (https://task.md/schema/rubric-1.json), so this is read as a file for the verifier's scripts, not as the task's rubric (verifier/rubric.json)
+  ok

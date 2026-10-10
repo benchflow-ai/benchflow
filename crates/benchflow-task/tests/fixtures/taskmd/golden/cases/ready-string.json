@@ -1,0 +1,35 @@
+{
+  "path": "ready-string/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/ready-string\"\nversion = \"1.0.0\"\n[sandbox]\nready = \"curl -f localhost\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/ready-string",
+    "version": "1.0.0",
+    "sandbox": {
+      "ready": "curl -f localhost"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] ready is a table: { run = \"<command>\" }, with interval, timeout, start_period, start_interval, and retries",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/ready-string",
+  "ok": false
+}

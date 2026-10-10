@@ -1,0 +1,5 @@
+{"type": "agent_message", "text": "hi", "ts": "not-a-time"}
+{"type": "tool_call", "tool_call_id": "c", "kind": "read", "title": "x", "status": "completed", "content": [], "started_at": true}
+{"type": "agent_message", "text": "bad month", "ts": "2026-13-01T00:00:00Z"}
+{"type": "agent_message", "text": "list", "ts": [1, 2]}
+{"type": "agent_message", "text": "huge", "ts": Infinity}

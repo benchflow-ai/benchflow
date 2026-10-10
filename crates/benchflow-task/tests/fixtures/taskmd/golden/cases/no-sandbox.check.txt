@@ -1,0 +1,10 @@
+no-sandbox/task.md
+  mode: blocks
+  title: acme/no-sandbox
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build (task.md)
+  FAILED

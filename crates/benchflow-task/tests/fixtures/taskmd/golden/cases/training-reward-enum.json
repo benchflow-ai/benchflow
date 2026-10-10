@@ -1,0 +1,39 @@
+{
+  "path": "training-reward-enum/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/training-reward-enum\"\nversion = \"1.0.0\"\n[training]\nreward = \"full\"\nlearnable_band = [0, 1]",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/training-reward-enum",
+    "version": "1.0.0",
+    "training": {
+      "reward": "full",
+      "learnable_band": [
+        0,
+        1
+      ]
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[training] reward must be one of 'strict', 'partial'",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/training-reward-enum",
+  "ok": false
+}

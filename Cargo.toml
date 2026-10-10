@@ -1,0 +1,94 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/benchflow-cli"]
+
+[workspace.package]
+version = "0.8.1-dev.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/benchflow-ai/benchflow"
+homepage = "https://benchflow.ai"
+authors = ["BenchFlow <hello@benchflow.ai>"]
+
+[workspace.dependencies]
+benchflow-task = { path = "crates/benchflow-task", version = "0.8.1-dev.0" }
+benchflow-sandbox = { path = "crates/benchflow-sandbox", version = "0.8.1-dev.0" }
+benchflow-agent = { path = "crates/benchflow-agent", version = "0.8.1-dev.0" }
+benchflow-run = { path = "crates/benchflow-run", version = "0.8.1-dev.0" }
+benchflow-viewer = { path = "crates/benchflow-viewer", version = "0.8.1-dev.0" }
+
+anstream = "1.0"
+anstyle = "1.0"
+anyhow = "1.0"
+annotate-snippets = "0.12"
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+base64 = "0.23"
+bytes = "1.12"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4.6", features = ["derive", "env", "wrap_help", "string"] }
+clap_complete = "4.6"
+dirs = "7.0"
+flate2 = "1.1"
+futures = "0.3"
+globset = "0.4"
+hex = "0.4"
+indexmap = { version = "2.14", features = ["serde"] }
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-zoneinfo"] }
+open = "5.4"
+regex = "1.13"
+schemars = "1.2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "multipart", "query"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
+serde_yaml_ng = "0.10"
+sha2 = "0.11"
+shlex = "2.0"
+strsim = "0.11"
+tar = "0.4"
+tempfile = "3.27"
+terminal_size = "0.4"
+thiserror = "2.0"
+tokio = { version = "1.53", features = ["full"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+toml = { version = "1.1", features = ["preserve_order"] }
+toml_edit = "0.25"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+unicode-width = "0.2"
+uuid = { version = "1.28", features = ["v4"] }
+walkdir = "2.5"
+
+# dev
+assert_cmd = "2.2"
+insta = "1.49"
+predicates = "3.1"
+tower = { version = "0.5", features = ["util"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Published binaries (`cargo build --profile dist`, used by .github/workflows/rust.yml):
+# release plus whole-program LTO, which trades a slower build for a smaller binary.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+
+[profile.dev]
+# Faster incremental builds; keep debug info for backtraces only.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1

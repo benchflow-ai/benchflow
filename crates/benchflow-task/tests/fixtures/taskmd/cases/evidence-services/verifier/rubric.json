@@ -1,0 +1,16 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "method",
+      "points": 2,
+      "judge": "agent",
+      "evidence": [
+        "/taskmd/services/db/data/x.csv",
+        "/data/x.csv"
+      ],
+      "text": "The method is sound.",
+      "stated": "Fix the bug"
+    }
+  ]
+}

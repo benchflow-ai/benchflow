@@ -1,0 +1,77 @@
+{
+  "path": "library-week--release-notes/task.md",
+  "mode": "blocks",
+  "instruction": "Write `/repo/CHANGELOG.md` for datekit 0.4.0, covering every change made to the repository this week. Readers are users of the library, not its maintainers.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/library-week-release-notes\"\ntitle = \"Release notes for the week's changes\"\nversion = \"1.1.0\"\n\n[agent]\ntimeout = \"20m\"\nnetwork = \"none\"\n\n[sandbox]\nimage = \"python:3.12-slim\"\nworkdir = \"/repo\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "examples/library-week-release-notes",
+    "title": "Release notes for the week's changes",
+    "version": "1.1.0",
+    "agent": {
+      "timeout": "20m",
+      "network": "none"
+    },
+    "sandbox": {
+      "image": "python:3.12-slim",
+      "workdir": "/repo"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "covers-changes",
+        "points": 3,
+        "judge": "llm",
+        "evidence": [
+          "CHANGELOG.md",
+          "diff:."
+        ],
+        "text": "Mentions the trailing-Z fix, the --tz option, and that the CLI refactor changes no behavior.",
+        "stated": "covering every change made to the repository this week",
+        "levels": {
+          "0": "Misses two or more changes.",
+          "2": "Misses one change.",
+          "3": "Covers all three accurately."
+        }
+      },
+      {
+        "id": "user-facing",
+        "points": 1,
+        "judge": "llm",
+        "evidence": [
+          "CHANGELOG.md"
+        ],
+        "text": "Written for users of the library: what changed for them, not how the code changed.",
+        "stated": "Readers are users of the library, not its maintainers"
+      },
+      {
+        "id": "no-invented-changes",
+        "outcome": "bad",
+        "points": -2,
+        "judge": "llm",
+        "evidence": [
+          "CHANGELOG.md",
+          "diff:."
+        ],
+        "text": "Describes a change that was not made.",
+        "implicit": "Release notes that invent changes mislead users; this is the release-notes version of an unsupported claim."
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Write `/repo/CHANGELOG.md` for datekit 0.4.0, covering every change made to the repository this week. Readers are users of the library, not its maintainers.",
+  "title": "Release notes for the week's changes",
+  "ok": true
+}

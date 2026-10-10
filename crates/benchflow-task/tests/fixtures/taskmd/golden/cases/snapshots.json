@@ -1,0 +1,69 @@
+{
+  "path": "snapshots/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/snapshots\"\nversion = \"1.0.0\"\n[[verifier.snapshot]]\nrun = \"\"\n\n[[verifier.snapshot]]\nrun = \"pg_dump\"\nreads = [\"var/lib\", \"/a/../b\"]\ntimeout = \"2 min\"\n\n[[verifier.snapshot]]\nrun = \"x\"\nreads = [\"/var/lib/postgresql\"]\nservice = \"db\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/snapshots",
+    "version": "1.0.0",
+    "verifier": {
+      "snapshot": [
+        {
+          "run": ""
+        },
+        {
+          "run": "pg_dump",
+          "reads": [
+            "var/lib",
+            "/a/../b"
+          ],
+          "timeout": "2 min"
+        },
+        {
+          "run": "x",
+          "reads": [
+            "/var/lib/postgresql"
+          ],
+          "service": "db"
+        }
+      ]
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier] snapshot[0] needs run, the command",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so an imported entry needs them added",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] snapshot[1] reads is a list of absolute paths, without ..",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] snapshot[1] timeout is a duration, such as \"2m\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/snapshots",
+  "ok": false
+}

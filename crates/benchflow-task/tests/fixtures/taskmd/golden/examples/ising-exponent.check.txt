@@ -1,0 +1,15 @@
+ising-exponent/task.md
+  mode: blocks
+  title: Critical point of the 3D Ising model from raw Monte Carlo data
+  instruction: 112 words; starts 'You are joining a statistical-physics group. We ran Monte Carlo simula'
+  blocks: stage analysis, notes, toml task
+  config: block (about, agent, integrity, keywords, name, sandbox, stages, title, verifier, version)
+  rubric: 7 criteria, 2 gates, 30 points; judges agent, vlm
+  behaviors: integrity.answer-lookup, research.answer-recall, research.fabrication, process.gave-up
+  grading needs a model: yes: agent judges 6 criteria; llm judges 4 behaviors; vlm judges 1 criterion
+  judge agent: model from the run, harness judge-loop@1*, samples 1*, per rubric*, timeout 20m*, no token budget (the timeout bounds it); * marks a default
+  judge llm: model claude-opus-5-5, samples 1*, per criterion*, timeout 2m*; * marks a default
+  judge vlm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 30m (agent 1 x 20m + llm 4 x 2m + vlm 1 x 2m; the shared rubrics it extends may add criteria, which check does not fetch; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  warning: the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = "rl" and delivery grade require one (task.md)
+  ok

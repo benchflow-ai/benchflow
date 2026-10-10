@@ -1,0 +1,47 @@
+{
+  "path": "behaviors-empty/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/behaviors-empty\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/behaviors-empty",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "works",
+        "gate": true,
+        "judge": "test",
+        "check": "test_works",
+        "text": "It works.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "watch": []
+  },
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "needs a non-empty watch list",
+      "where": "verifier/behaviors.json"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/behaviors-empty",
+  "ok": false
+}

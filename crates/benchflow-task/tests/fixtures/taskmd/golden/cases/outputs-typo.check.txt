@@ -1,0 +1,17 @@
+outputs-typo/task.md
+  mode: blocks
+  title: acme/outputs-typo
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: unknown key 'pth' in [sandbox] outputs[0]; did you mean path? an output holds path, save_as, and max_bytes (exclude and service come from Harbor imports), or x- extensions (task.md)
+  error: [sandbox] outputs[0] needs a path: an absolute path to a file or a folder in the sandbox (task.md)
+  error: [sandbox] outputs[1] save_as is a relative name for the saved copy, without .. (task.md)
+  error: [sandbox] outputs[1] max_bytes is a positive number of bytes or a size such as "100 MB" (task.md)
+  error: [sandbox] outputs[3] path relative/x is relative; an output's path is absolute, such as /work/relative/x (task.md)
+  error: [sandbox] outputs[4] path /a/../b climbs out with ..; write the path it means (task.md)
+  error: [sandbox] outputs[5] is a path or a { path, save_as, max_bytes } table (task.md)
+  error: [sandbox] outputs[6] exclude is a list of patterns (task.md)
+  FAILED

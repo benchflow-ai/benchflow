@@ -1,0 +1,7 @@
+{"type": "start", "agent": "strands", "framework": "strands-agents", "version": "1.59.0", "model": "openai/mock-model"}
+{"type": "tool_call", "id": "call_279973f644", "name": "shell", "input": {"command": "echo benchflow > bf_mock_out.txt && cat bf_mock_out.txt"}}
+{"type": "tool_result", "id": "call_279973f644", "output": "{\"output\": \"benchflow\\n\", \"error\": \"\", \"exit_code\": 0}", "failed": false}
+{"type": "usage", "input_tokens": 100, "output_tokens": 10}
+{"type": "message", "text": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}
+{"type": "usage", "input_tokens": 200, "output_tokens": 20}
+{"type": "done", "answer": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}

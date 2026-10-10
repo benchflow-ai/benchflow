@@ -1,0 +1,33 @@
+{
+  "path": "ready-ok/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/ready-ok\"\nversion = \"1.0.0\"\n[sandbox]\nready = { run = \"curl -f localhost\", interval = \"5s\", retries = 3 }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/ready-ok",
+    "version": "1.0.0",
+    "sandbox": {
+      "ready": {
+        "run": "curl -f localhost",
+        "interval": "5s",
+        "retries": 3
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/ready-ok",
+  "ok": true
+}

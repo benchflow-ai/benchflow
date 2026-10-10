@@ -1,0 +1,10 @@
+clock-variant-clock/task.md
+  mode: blocks
+  title: acme/clock-variant-clock
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, variants, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: variant frozen: [sandbox] clock needs enforce: "preload" (a library in the sandbox; fidelity, not protection), "vm" (a guest with its own clock), or "world" (the task's own services hold the time) (task.md)
+  FAILED

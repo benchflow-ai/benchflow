@@ -1,0 +1,14 @@
+identity-shapes/task.md
+  mode: blocks
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (about, authors, credits, name, roles, title, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: title is an identity key, not a table (task.md)
+  error: credits must be written as [[credits]] tables (task.md)
+  error: [about] must be a table (task.md)
+  error: authors entries are "Name <email>" strings or { name, email } tables (task.md)
+  error: authors entries are "Name <email>" strings or { name, email } tables (task.md)
+  error: [roles.critic] is a table of the role's settings (task.md)
+  FAILED

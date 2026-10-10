@@ -1,0 +1,28 @@
+# OpenRouter: an OpenAI-compatible API (its Responses API is in beta) and an
+# Anthropic-compatible one for Claude Code, both taking the key as a bearer
+# token. Not run live by BenchFlow yet; the routes answer 401 without a key.
+name = "openrouter"
+description = "OpenRouter: models from many providers behind one key"
+
+[openai]
+base_url = "https://openrouter.ai/api/v1"
+apis = ["chat", "responses"]
+
+[anthropic]
+base_url = "https://openrouter.ai/api"
+auth = "bearer"
+
+[key]
+env = ["OPENROUTER_API_KEY"]
+
+[check]
+# The key's own record: needs a valid key, spends nothing.
+endpoint = "openai"
+path = "/key"
+
+[routing]
+# OpenRouter picks an upstream among the providers serving a model. Every
+# request names the denied ones in provider.ignore (OpenRouter's documented
+# provider-routing field): baseten always, more with BENCHFLOW_DENY_UPSTREAMS.
+ignore = true
+deny = []

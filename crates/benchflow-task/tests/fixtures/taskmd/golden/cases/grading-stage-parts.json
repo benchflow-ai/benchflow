@@ -1,0 +1,64 @@
+{
+  "path": "grading-stage-parts/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "two",
+      "info": "stage two",
+      "body": "Two.",
+      "line": 3
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/grading-stage-parts\"\nversion = \"1.0.0\"\n[verifier]\ntimeout = \"2m\"\n\n[stages.two]\nunlock = \"on_submit\"\n\n[stages.two.verifier]\ntimeout = \"3m\"\n\n[stages.two.verifier.judges.llm]\ntimeout = \"1m\"\nsamples = 2",
+      "line": 7
+    }
+  ],
+  "config": {
+    "name": "acme/grading-stage-parts",
+    "version": "1.0.0",
+    "verifier": {
+      "timeout": "2m"
+    },
+    "stages": {
+      "two": {
+        "unlock": "on_submit",
+        "verifier": {
+          "timeout": "3m",
+          "judges": {
+            "llm": {
+              "timeout": "1m",
+              "samples": 2
+            }
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "m1",
+        "points": 2,
+        "judge": "llm",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/grading-stage-parts",
+  "ok": true
+}

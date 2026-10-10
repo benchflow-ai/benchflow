@@ -1,0 +1,124 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    "not an object",
+    {
+      "id": "Bad_ID",
+      "text": "",
+      "judge": "robot",
+      "gate": true,
+      "points": 1
+    },
+    {
+      "id": "dup",
+      "judge": "rule",
+      "points": 1,
+      "text": "R.",
+      "implicit": "Obvious."
+    },
+    {
+      "id": "dup",
+      "judge": "panel",
+      "gate": true,
+      "text": "P.",
+      "levels": [],
+      "stated": [
+        "Fix the bug",
+        ""
+      ]
+    },
+    {
+      "judge": "test",
+      "check": "x",
+      "points": 1,
+      "text": "No id.",
+      "stated": 5
+    },
+    {
+      "id": "rm",
+      "remove": true
+    },
+    {
+      "id": "rm2",
+      "remove": "yes",
+      "text": "x"
+    },
+    {
+      "id": "miss",
+      "points": 1,
+      "judge": "agent",
+      "evidence": "report.md",
+      "text": "M.",
+      "missing": "skip",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "miss-good",
+      "points": 1,
+      "judge": "agent",
+      "evidence": [
+        "r.md"
+      ],
+      "text": "M.",
+      "missing": "no-penalty",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "score-shape",
+      "points": 1,
+      "judge": "human",
+      "text": "S.",
+      "score": [
+        0,
+        1
+      ],
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "gate-score",
+      "gate": true,
+      "judge": "llm",
+      "evidence": [
+        "r.md"
+      ],
+      "text": "G.",
+      "score": {
+        "min": 0,
+        "max": 1
+      },
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "vlm-cite",
+      "points": 1,
+      "judge": "vlm",
+      "evidence": [
+        "fig.png",
+        "camera"
+      ],
+      "text": "V.",
+      "cite": "independent",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "agent-cite",
+      "points": 1,
+      "judge": "agent",
+      "evidence": [
+        "report.md"
+      ],
+      "text": "A.",
+      "cite": "independent",
+      "stated": "Fix the bug"
+    }
+  ],
+  "scoring": {
+    "method": "points",
+    "headline": "both",
+    "pass_threshold": 2,
+    "pased": 1,
+    "x-note": 1
+  },
+  "extra_key": 1,
+  "x_ok": 1
+}

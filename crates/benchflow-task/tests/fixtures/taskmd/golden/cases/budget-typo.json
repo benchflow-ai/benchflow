@@ -1,0 +1,37 @@
+{
+  "path": "budget-typo/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/budget-typo\"\nversion = \"1.0.0\"\n[agent]\nbudget = { tokns = \"2M\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/budget-typo",
+    "version": "1.0.0",
+    "agent": {
+      "budget": {
+        "tokns": "2M"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[agent] budget is a table of tool_calls and tokens",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/budget-typo",
+  "ok": false
+}

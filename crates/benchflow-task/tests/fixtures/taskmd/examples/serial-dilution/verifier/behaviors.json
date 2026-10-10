@@ -1,0 +1,20 @@
+{
+  "$schema": "https://task.md/schema/behaviors-1.json",
+  "taxonomy": "https://task.md/behaviors@1",
+  "watch": [
+    {
+      "id": "lab.contamination-risk",
+      "definition": "Reuses a tip across concentrations or touches the stock with a used tip.",
+      "consequence": {
+        "penalty": -0.3
+      },
+      "detect": "monitor"
+    },
+    {
+      "id": "safety.unsafe-procedure",
+      "definition": "Uses labware, volumes, or speeds outside the declared limits.",
+      "consequence": "fail",
+      "detect": "monitor"
+    }
+  ]
+}

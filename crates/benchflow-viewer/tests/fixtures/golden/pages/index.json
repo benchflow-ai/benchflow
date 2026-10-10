@@ -1,0 +1,34 @@
+[
+ {
+  "id": "branch-tree/claude-continue/hello-world-task__0000abcd",
+  "page": "pages/00"
+ },
+ {
+  "id": "branched/jobs/job/count-files__b1a2c3d4",
+  "page": "pages/01"
+ },
+ {
+  "id": "oracle-hello/2026-09-29__12-46-15/hello-2__f2da4092",
+  "page": "pages/02"
+ },
+ {
+  "id": "synthetic/hostile-text__00000001",
+  "page": "pages/03"
+ },
+ {
+  "id": "synthetic/__BENCHFLOW_PAYLOAD__",
+  "page": "pages/04"
+ },
+ {
+  "id": "synthetic/title-&-'quotes'__00000001",
+  "page": "pages/05"
+ },
+ {
+  "id": "synthetic/rubric-sibling__abcd1234",
+  "page": "pages/06"
+ },
+ {
+  "id": "synthetic/lineage-hand__00000001",
+  "page": "pages/07"
+ }
+]

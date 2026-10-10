@@ -1,0 +1,18 @@
+judges-typos/task.md
+  mode: blocks
+  title: acme/judges-typos
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  rubric: 1 criteria, 0 gates, 2 points; judges agent
+  grading needs a model: yes: agent judges 1 criterion
+  judge agent: model m, harness judge-loop@1*, samples 1*, per rubric*, timeout 20m*, no token budget (the timeout bounds it); * marks a default
+  worst-case grading time: 20m (agent 1 x 20m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  error: [verifier.judges.llm] harness is for the agent role only: an llm judge is one model call with the evidence inline (task.md)
+  error: [verifier.judges.llm] min_samples is at most samples (task.md)
+  error: [verifier.judges.llm] budget tool_calls is for the agent role only: an llm judge makes one call and uses no tools (task.md)
+  error: unknown key 'budgett' in [verifier.judges.agent]; did you mean budget? it holds aggregate, brief, budget, effort, harness, min_samples, model, per, resources, samples, services, timeout, views, or x- extensions (task.md)
+  error: unknown key 'timout' in [verifier.judges.agent]; did you mean timeout? it holds aggregate, brief, budget, effort, harness, min_samples, model, per, resources, samples, services, timeout, views, or x- extensions (task.md)
+  error: [verifier.judges.agent] reasoning is gone: the evidence items trajectory and trajectory:reasoning say, criterion by criterion, whether a judge reads the solver's reasoning (task.md)
+  warning: the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = "rl" and delivery grade require one (task.md)
+  FAILED

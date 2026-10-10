@@ -1,0 +1,44 @@
+# Xiaomi's MiMo Code (an OpenCode fork) in its ACP mode (`mimo acp`), as
+# BenchFlow 0.8's `mimo`, without 0.8's LiteLLM wiring, or headless with
+# `mimo run --format=json` (Harbor's `mimo`) from the same install. 0.8 pinned
+# @mimo-ai/cli 0.1.4, which npm no longer serves; 0.1.15 is the only
+# published version.
+name = "mimo"
+aliases = ["mimo-code"]
+description = "MiMo Code (Xiaomi) via ACP, or headless with mimo run; models.dev provider/model ids"
+skill_paths = ["$HOME/.config/mimocode/skills"]
+home_dirs = [".config/mimocode"]
+
+[install]
+npm = "@mimo-ai/cli@0.1.15"
+bin = "mimo"
+launcher = "auto"
+timeout = 1200
+
+[launch]
+args = ["acp"]
+
+[headless]
+# Harbor's `mimo run --format=json --thinking`, OpenCode's JSON events.
+command = '''exec /opt/benchflow/bin/mimo ${BENCHFLOW_MODEL:+--model="$BENCHFLOW_MODEL"} run --format=json --thinking --dangerously-skip-permissions -- "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null'''
+output = "opencode-json"
+env = { MIMOCODE_FAKE_VCS = "git" }
+
+[credentials]
+family = "env"
+env = ["XIAOMI_API_KEY", "OPENAI_API_KEY"]
+
+[model]
+select = "auto"
+format = "provider/model"
+
+[providers.openai]
+# A provider of its own through MIMOCODE_CONFIG_CONTENT (MiMo's name for
+# OpenCode's OPENCODE_CONFIG_CONTENT): @ai-sdk/openai-compatible on the
+# forwarder (Chat Completions), the small model pinned to the same model so
+# MiMo's title helper asks for no other.
+api = "chat"
+model = "benchflow/{model}"
+
+[providers.openai.env]
+MIMOCODE_CONFIG_CONTENT = '{"provider": {"benchflow": {"npm": "@ai-sdk/openai-compatible", "name": "BenchFlow forwarder", "options": {"baseURL": "{base_url}", "apiKey": "{key}"}, "models": {"{model}": {"name": "{model}"}}}}, "model": "benchflow/{model}", "small_model": "benchflow/{model}"}'

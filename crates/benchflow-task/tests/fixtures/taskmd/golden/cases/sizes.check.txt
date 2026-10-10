@@ -1,0 +1,12 @@
+sizes/task.md
+  mode: blocks
+  title: acme/sizes
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, sandbox, verifier, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [sandbox] memory must be a size such as "512 MB" or "4 GB" (task.md)
+  error: [sandbox] disk must be a size such as "512 MB" or "4 GB" (task.md)
+  error: [verifier.sandbox] memory must be a size such as "512 MB" or "4 GB" (task.md)
+  FAILED

@@ -1,0 +1,12 @@
+credits/task.md
+  mode: blocks
+  title: acme/credits
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (credits, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: each [[credits]] entry has a name and a role: author, advisor, domain-reviewer, or technical-reviewer (task.md)
+  error: each [[credits]] entry has a name and a role: author, advisor, domain-reviewer, or technical-reviewer (task.md)
+  error: unknown key 'company' in [credits]; it holds conflicts, name, organization, role, or x- extensions (task.md)
+  FAILED

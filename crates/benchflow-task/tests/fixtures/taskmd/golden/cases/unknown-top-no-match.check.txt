@@ -1,0 +1,10 @@
+unknown-top-no-match/task.md
+  mode: blocks
+  title: acme/unknown-top-no-match
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version, zzzz)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: unknown key zzzz. The config block holds the identity keys authors, description, keywords, name, title, version, then the tables [about], [agent], [conventions], [family], [import], [integrity], [interaction], [matrix], [oracle], [preference], [provenance], [roles], [runs], [sandbox], [stages], [tiers], [training], [trajectory], [user], [variants], [verifier], [world] and [[credits]], or x- extensions (task.md)
+  FAILED

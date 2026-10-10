@@ -1,0 +1,4 @@
+# Task fixtures need folders named build/ and log files, which the
+# repository-wide ignore rules exclude.
+!build/
+!*.log

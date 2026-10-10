@@ -1,0 +1,88 @@
+{
+  "path": "kreek-api-error-contract--judges/task.md",
+  "mode": "blocks",
+  "instruction": "# User Lookup Response Bug\n\nFix `handleUserLookup` in `src/users.js`.\n\nRequirements:\n\n- Distinguish missing input, missing users, and successful lookups with\n  appropriate HTTP-style statuses.\n- Keep successful responses and error responses predictable for callers.\n- Error responses should have stable machine-readable and human-readable\n  fields.\n\nDo not add external dependencies.\n\nWork in the provided repository. Do not add external dependencies.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"consult/api-error-contract\"\ndescription = \"Tighten an HTTP contract and failure response.\"\n\n[about]\nkind = \"code\"\nfeatures = [\"api\", \"error-handling\", \"security\", \"documentation\"]\n\n[agent]\ntimeout = \"15m\"\n\n[verifier]\ntimeout = \"10m\"\nmount = \"/tests\"\nmodels = true\n\n[verifier.env]\nCLAUDE_CODE_OAUTH_TOKEN = \"${CLAUDE_CODE_OAUTH_TOKEN:-}\"\nREWARDKIT_FORCE_SUBSCRIPTION = \"${REWARDKIT_FORCE_SUBSCRIPTION:-1}\"\nREWARDKIT_JUDGE = \"${CONSULT_EVAL_JUDGE:-claude-code}\"\n\n[import.harbor]\nschema_version = \"1.3\"\n\n[import.harbor.rewardkit]\ninstalls = \"harbor-rewardkit==0.2.1\"\nscripts = [\"verifier/test.sh\"]\njudges = [\"verifier/judge/quality.toml\"]\n\n[import.harbor.originals.\"task.toml\"]\noriginal = \"sha256:60f479897e60053727716386c214f097ac11579cd0fa4759b19ad3c5f3557e4b\"\nconverted = \"sha256:0f2098a2074ffed32960485d472692077d7f72a787b04e499645db7b1748fa96\"\n\n[import.harbor.originals.\"instruction.md\"]\noriginal = \"sha256:5d336d486d5e8e5ffbb2ab540c70fd7cfe7f2c997c4c430533e5126d1cc34263\"\nconverted = \"sha256:5d336d486d5e8e5ffbb2ab540c70fd7cfe7f2c997c4c430533e5126d1cc34263\"",
+      "line": 17
+    }
+  ],
+  "config": {
+    "name": "consult/api-error-contract",
+    "description": "Tighten an HTTP contract and failure response.",
+    "about": {
+      "kind": "code",
+      "features": [
+        "api",
+        "error-handling",
+        "security",
+        "documentation"
+      ]
+    },
+    "agent": {
+      "timeout": "15m"
+    },
+    "verifier": {
+      "timeout": "10m",
+      "mount": "/tests",
+      "models": true,
+      "env": {
+        "CLAUDE_CODE_OAUTH_TOKEN": "${CLAUDE_CODE_OAUTH_TOKEN:-}",
+        "REWARDKIT_FORCE_SUBSCRIPTION": "${REWARDKIT_FORCE_SUBSCRIPTION:-1}",
+        "REWARDKIT_JUDGE": "${CONSULT_EVAL_JUDGE:-claude-code}"
+      }
+    },
+    "import": {
+      "harbor": {
+        "schema_version": "1.3",
+        "rewardkit": {
+          "installs": "harbor-rewardkit==0.2.1",
+          "scripts": [
+            "verifier/test.sh"
+          ],
+          "judges": [
+            "verifier/judge/quality.toml"
+          ]
+        },
+        "originals": {
+          "task.toml": {
+            "original": "sha256:60f479897e60053727716386c214f097ac11579cd0fa4759b19ad3c5f3557e4b",
+            "converted": "sha256:0f2098a2074ffed32960485d472692077d7f72a787b04e499645db7b1748fa96"
+          },
+          "instruction.md": {
+            "original": "sha256:5d336d486d5e8e5ffbb2ab540c70fd7cfe7f2c997c4c430533e5126d1cc34263",
+            "converted": "sha256:5d336d486d5e8e5ffbb2ab540c70fd7cfe7f2c997c4c430533e5126d1cc34263"
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "verifier.env.CLAUDE_CODE_OAUTH_TOKEN resolves ${CLAUDE_CODE_OAUTH_TOKEN} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "verifier.env.REWARDKIT_FORCE_SUBSCRIPTION resolves ${REWARDKIT_FORCE_SUBSCRIPTION} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "verifier.env.REWARDKIT_JUDGE resolves ${CONSULT_EVAL_JUDGE} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "# User Lookup Response Bug\n\nFix `handleUserLookup` in `src/users.js`.\n\nRequirements:\n\n- Distinguish missing input, missing users, and successful lookups with\n  appropriate HTTP-style statuses.\n- Keep successful responses and error responses predictable for callers.\n- Error responses should have stable machine-readable and human-readable\n  fields.\n\nDo not add external dependencies.\n\nWork in the provided repository. Do not add external dependencies.",
+  "title": "consult/api-error-contract",
+  "ok": true
+}

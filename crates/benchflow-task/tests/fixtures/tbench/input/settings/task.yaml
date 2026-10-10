@@ -1,0 +1,5 @@
+instruction: Start the server on port 8080.
+difficulty: medium
+tags: [web]
+estimated_duration_sec: 120
+max_agent_timeout_sec: 600

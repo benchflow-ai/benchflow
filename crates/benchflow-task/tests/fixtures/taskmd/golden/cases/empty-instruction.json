@@ -1,0 +1,31 @@
+{
+  "path": "empty-instruction/task.md",
+  "mode": "blocks",
+  "instruction": "",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/x"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "the instruction is empty: task.md must start with the task itself",
+      "where": null
+    }
+  ],
+  "canary": "canary 1234",
+  "instruction_source": "<!-- canary 1234 -->",
+  "title": "acme/x",
+  "ok": false
+}

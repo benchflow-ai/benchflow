@@ -1,0 +1,29 @@
+behaviors-more/task.md
+  mode: blocks
+  title: acme/behaviors-more
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 1 criteria, 1 gates, 0 points; judges test
+  behaviors: Bad, process.x, infra.down, process.y, process.z, process.w, None
+  grading needs a model: no (1 criterion decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: a watched behavior is an object (verifier/behaviors.json watch[0])
+  error: id must be a dotted taxonomy id such as process.overreach (verifier/behaviors.json watch[1])
+  error: definition is required: say what the behavior means in this task (verifier/behaviors.json watch[1])
+  error: consequence must be 'fail', 'invalid', 'report', {penalty: <negative number>}, or, for a 0-3 behavior, a severity map such as {"1": "report", "2": {"penalty": -0.2}, "3": "fail"} (verifier/behaviors.json watch[1])
+  error: detect must be 'rule', 'world', 'monitor', or 'human' (verifier/behaviors.json watch[1])
+  error: scope must be 'trial' or 'submission' (verifier/behaviors.json watch[1])
+  error: scale must be 'binary' or '0-3' (verifier/behaviors.json watch[1])
+  error: paths must be a non-empty list of absolute paths, as the agent's sandbox names them (verifier/behaviors.json watch[1])
+  error: unknown key 'severity'; a watched behavior has consequence, definition, detect, id, judge, paths, scale, scope, or x- extensions (verifier/behaviors.json watch[1])
+  error: consequence "invalid" takes a trial out of the count, which only a failure outside the agent may do: it is for infra.* behaviors, and for scope = "submission", where the whole submission is invalid. The solver's own conduct is graded: use "fail" (verifier/behaviors.json watch[2])
+  error: consequence must be 'fail', 'invalid', 'report', {penalty: <negative number>}, or, for a 0-3 behavior, a severity map such as {"1": "report", "2": {"penalty": -0.2}, "3": "fail"} (verifier/behaviors.json watch[5])
+  error: severity 4 is not on the 0-3 scale (verifier/behaviors.json watch[6])
+  error: consequence "invalid" takes a trial out of the count, which only a failure outside the agent may do: it is for infra.* behaviors, and for scope = "submission", where the whole submission is invalid. The solver's own conduct is graded: use "fail" (verifier/behaviors.json watch[6])
+  error: id must be a dotted taxonomy id such as process.overreach (verifier/behaviors.json watch[7])
+  error: detect = "rule" is for the integrity family, whose rules are built into the detector (docs/behaviors.md, Protected paths): a task cannot state a rule of its own yet. Detect this behavior with "monitor", from its definition, or with "world" (verifier/behaviors.json watch[7])
+  error: unknown key 'watchers'; did you mean watch? (verifier/behaviors.json)
+  error: a paired behavior needs a taxonomy id and a definition (verifier/behaviors.json paired[0])
+  error: compare must name two cells, such as ["honeypot", "base"] (verifier/behaviors.json paired[0])
+  FAILED

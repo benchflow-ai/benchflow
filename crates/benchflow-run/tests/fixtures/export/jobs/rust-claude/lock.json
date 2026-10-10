@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "job_name": "claude-deepseek-pinned",
+  "created_at": "2026-10-10T05:37:38.402376-07:00",
+  "bench": {
+    "version": "0.9.0-dev.0",
+    "long_version": "0.9.0-dev.0 (fe003456e 2026-10-10)",
+    "commit": "fe003456e",
+    "commit_date": "2026-10-10"
+  },
+  "fingerprint": "0d5e6b137b84a487",
+  "dataset": null,
+  "source": {
+    "targets": [
+      "/Users/lixiangyi/benchflow/benchflow-draft1/.claude/worktrees/agent-a852fa68ca6eb0185/crates/benchflow-run/tests/fixtures/tasks/hello"
+    ],
+    "path": "/Users/lixiangyi/benchflow/benchflow-draft1/.claude/worktrees/agent-a852fa68ca6eb0185/crates/benchflow-run/tests/fixtures/tasks/hello",
+    "remote": []
+  },
+  "options": {
+    "sandbox": "daytona",
+    "sandbox_user": "agent",
+    "trials_per_task": 1,
+    "concurrency": 4,
+    "agent_timeout_multiplier": 1.0,
+    "verifier_timeout_multiplier": 1.0,
+    "build_timeout_multiplier": 1.0,
+    "default_agent_timeout_sec": null,
+    "default_verifier_timeout_sec": 600.0,
+    "idle_timeout_sec": 600.0,
+    "pids_limit": 4096,
+    "agent_env_keys": [],
+    "extra_instruction": null,
+    "keep": "never",
+    "save_outputs": false,
+    "retries": 1,
+    "rerun": []
+  },
+  "trials": [
+    {
+      "trial": "hello__5af89adc",
+      "task": {
+        "id": "fixtures/hello",
+        "name": "hello",
+        "path": "/Users/lixiangyi/benchflow/benchflow-draft1/.claude/worktrees/agent-a852fa68ca6eb0185/crates/benchflow-run/tests/fixtures/tasks/hello",
+        "digest": "sha256:76fe5d4c665fabb1e5cecd7e1fa3bd38a3627e0cbfd978f5ee4301533342efeb",
+        "registry_digest": null,
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "claude",
+        "model": "vercel/deepseek/deepseek-v4-flash-0731",
+        "kind": "model",
+        "agent_fingerprint": "850d0594575f6f1cce2eec41307cd6a5d7090eb84775ef83ff3039a021b77177"
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "/Users/lixiangyi/benchflow/benchflow-draft1/.claude/worktrees/agent-a852fa68ca6eb0185/crates/benchflow-run/tests/fixtures/tasks/hello/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    }
+  ]
+}

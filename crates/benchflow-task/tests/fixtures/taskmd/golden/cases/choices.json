@@ -1,0 +1,95 @@
+{
+  "path": "choices/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/choices\"\nversion = \"1.0.0\"\n[verifier]\nisolation = \"seperate\"\ncombine_stages = \"max\"\nunreached_stages = 0\nfeedback = \"all\"\nmodels = \"yes\"\n\n[agent]\non_timeout = \"pass\"\ntimeout_basis = \"cpu\"\n\n[sandbox]\nboundary = \"docker\"\n\n[runs]\nerrored = \"skip\"\ntrajectory = \"maybe\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/choices",
+    "version": "1.0.0",
+    "verifier": {
+      "isolation": "seperate",
+      "combine_stages": "max",
+      "unreached_stages": 0,
+      "feedback": "all",
+      "models": "yes"
+    },
+    "agent": {
+      "on_timeout": "pass",
+      "timeout_basis": "cpu"
+    },
+    "sandbox": {
+      "boundary": "docker"
+    },
+    "runs": {
+      "errored": "skip",
+      "trajectory": "maybe"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier] isolation must be one of 'shared', 'separate'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] combine_stages must be one of 'mean', 'final'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] unreached_stages must be one of 'zero', 'exclude'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[agent] on_timeout must be one of 'grade', 'grade-flagged', 'fail'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] boundary must be one of 'container', 'gvisor', 'microvm', 'vm'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[runs] errored must be one of 'zero', 'retry'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[runs] trajectory must be one of 'required', 'optional'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[agent] timeout_basis must be one of 'wall', 'environment'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] feedback must be one of 'none', 'verdicts'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] models is true when the verifier's scripts call a model themselves, such as a RewardKit judge in test.sh, or false (the default)",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/choices",
+  "ok": false
+}

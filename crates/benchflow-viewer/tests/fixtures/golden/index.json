@@ -1,0 +1,820 @@
+[
+ {
+  "id": "branch-tree/claude-continue/hello-world-task__0000abcd",
+  "payload": "payloads/000.json",
+  "branches": {
+   "00000000000000000000000000000002/n5": "payloads/000-b0.json",
+   "00000000000000000000000000000002/n9": "payloads/000-b1.json"
+  }
+ },
+ {
+  "id": "branched/jobs/job/count-files__b1a2c3d4",
+  "payload": "payloads/001.json",
+  "branches": {
+   "f4a68c24ee874c3ca23f1104c99249f2/n1": "payloads/001-b0.json",
+   "f4a68c24ee874c3ca23f1104c99249f2/n2": "payloads/001-b1.json",
+   "6e317397806c42528cb1d006206ee268/n3": "payloads/001-b2.json",
+   "6e317397806c42528cb1d006206ee268/n4": "payloads/001-b3.json"
+  }
+ },
+ {
+  "id": "oracle-hello/2026-09-29__12-46-15/hello-2__f2da4092",
+  "payload": "payloads/002.json",
+  "branches": {}
+ },
+ {
+  "id": "oracle-hello/2026-09-29__12-46-15/hello-3__f061ba46",
+  "payload": "payloads/003.json",
+  "branches": {}
+ },
+ {
+  "id": "oracle-hello/2026-09-29__12-46-15/hello-4__0e8d5b9a",
+  "payload": "payloads/004.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/__BENCHFLOW_PAYLOAD__",
+  "payload": "payloads/005.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/binary-result-valid__00000001",
+  "payload": "payloads/006.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/binary-sidecars__00000001",
+  "payload": "payloads/007.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/catalog-shared__00000001",
+  "payload": "payloads/008.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-00__00000001",
+  "payload": "payloads/009.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-01__00000001",
+  "payload": "payloads/010.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-02__00000001",
+  "payload": "payloads/011.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-03__00000001",
+  "payload": "payloads/012.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-04__00000001",
+  "payload": "payloads/013.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-05__00000001",
+  "payload": "payloads/014.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-06__00000001",
+  "payload": "payloads/015.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-07__00000001",
+  "payload": "payloads/016.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-08__00000001",
+  "payload": "payloads/017.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-09__00000001",
+  "payload": "payloads/018.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-10__00000001",
+  "payload": "payloads/019.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-11__00000001",
+  "payload": "payloads/020.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-12__00000001",
+  "payload": "payloads/021.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-13__00000001",
+  "payload": "payloads/022.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-14__00000001",
+  "payload": "payloads/023.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-15__00000001",
+  "payload": "payloads/024.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-16__00000001",
+  "payload": "payloads/025.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-17__00000001",
+  "payload": "payloads/026.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-18__00000001",
+  "payload": "payloads/027.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-19__00000001",
+  "payload": "payloads/028.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-20__00000001",
+  "payload": "payloads/029.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-21__00000001",
+  "payload": "payloads/030.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-22__00000001",
+  "payload": "payloads/031.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-23__00000001",
+  "payload": "payloads/032.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-error-24__00000001",
+  "payload": "payloads/033.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-00__00000001",
+  "payload": "payloads/034.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-01__00000001",
+  "payload": "payloads/035.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-02__00000001",
+  "payload": "payloads/036.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-03__00000001",
+  "payload": "payloads/037.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-04__00000001",
+  "payload": "payloads/038.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-05__00000001",
+  "payload": "payloads/039.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-06__00000001",
+  "payload": "payloads/040.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-07__00000001",
+  "payload": "payloads/041.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-08__00000001",
+  "payload": "payloads/042.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-09__00000001",
+  "payload": "payloads/043.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/classify-verifier-10__00000001",
+  "payload": "payloads/044.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/codex-shapes__00000001",
+  "payload": "payloads/045.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/deep-jsonl-1200__00000001",
+  "payload": "payloads/046.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/deep-jsonl-80__00000001",
+  "payload": "payloads/047.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/deep-sidecars__00000001",
+  "payload": "payloads/048.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/depth-edges__00000001",
+  "payload": "payloads/049.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/diag-error__00000001",
+  "payload": "payloads/050.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/diag-info__00000001",
+  "payload": "payloads/051.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/empty-trajectory__00000001",
+  "payload": "payloads/052.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/events-all__00000001",
+  "payload": "payloads/053.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/hostile-text__00000001",
+  "payload": "payloads/054.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/json-edge__00000001",
+  "payload": "payloads/055.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/jsonl-bom-only__00000001",
+  "payload": "payloads/056.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/jsonl-invalid-utf8__00000001",
+  "payload": "payloads/057.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/jsonl-separators__00000001",
+  "payload": "payloads/058.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/lineage-bad-json__00000001",
+  "payload": "payloads/059.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/lineage-hand__00000001",
+  "payload": "payloads/060.json",
+  "branches": {
+   "f1/n1": "payloads/060-b0.json",
+   "f1/n2": "payloads/060-b1.json",
+   "f1/n1\n": "payloads/060-b2.json",
+   "f1\n/n1": "payloads/060-b3.json"
+  }
+ },
+ {
+  "id": "synthetic/lineage-other-kind__00000001",
+  "payload": "payloads/061.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/lineage-outside-target__00000001",
+  "payload": "payloads/062.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/lineage-schema-9__00000001",
+  "payload": "payloads/063.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/lineage-schema-float__00000001",
+  "payload": "payloads/064.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/lineage-schema-none__00000001",
+  "payload": "payloads/065.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/lone-surrogate__00000001",
+  "payload": "payloads/066.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/malformed-ctrf__00000001",
+  "payload": "payloads/067.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/non-finite__00000001",
+  "payload": "payloads/068.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/pending-not-list__00000001",
+  "payload": "payloads/069.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/prompts-dedup__00000001",
+  "payload": "payloads/070.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/prompts-shapes__00000001",
+  "payload": "payloads/071.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/prompts-string__00000001",
+  "payload": "payloads/072.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/prompts-task__00000001",
+  "payload": "payloads/073.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/prompts-wrong-top__00000001",
+  "payload": "payloads/074.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/provisional-titles__00000001",
+  "payload": "payloads/075.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/recovery-bad-pointer__00000001",
+  "payload": "payloads/076.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/recovery-entries__00000001",
+  "payload": "payloads/077.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/recovery-missing-receipt__00000001",
+  "payload": "payloads/078.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/recovery-pointer-file-only__00000001",
+  "payload": "payloads/079.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/recovery-publication__00000001",
+  "payload": "payloads/080.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/recovery-two__00000001",
+  "payload": "payloads/081.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/result-not-dict__00000001",
+  "payload": "payloads/082.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/rubric-auto-escape__00000001",
+  "payload": "payloads/083.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/rubric-auto-snapshot-escape__00000001",
+  "payload": "payloads/084.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/rubric-auto__00000001",
+  "payload": "payloads/085.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/rubric-invalid-only__abcd1234",
+  "payload": "payloads/086.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/rubric-legacy__abcd1234",
+  "payload": "payloads/087.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/rubric-sibling__abcd1234",
+  "payload": "payloads/088.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/spawn-labels__00000001",
+  "payload": "payloads/089.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-00__00000001",
+  "payload": "payloads/090.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-01__00000001",
+  "payload": "payloads/091.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-02__00000001",
+  "payload": "payloads/092.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-03__00000001",
+  "payload": "payloads/093.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-04__00000001",
+  "payload": "payloads/094.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-05__00000001",
+  "payload": "payloads/095.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-06__00000001",
+  "payload": "payloads/096.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-07__00000001",
+  "payload": "payloads/097.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-08__00000001",
+  "payload": "payloads/098.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-09__00000001",
+  "payload": "payloads/099.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-10__00000001",
+  "payload": "payloads/100.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-11__00000001",
+  "payload": "payloads/101.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-12__00000001",
+  "payload": "payloads/102.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-13__00000001",
+  "payload": "payloads/103.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-14__00000001",
+  "payload": "payloads/104.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-15__00000001",
+  "payload": "payloads/105.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-16__00000001",
+  "payload": "payloads/106.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-17__00000001",
+  "payload": "payloads/107.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-18__00000001",
+  "payload": "payloads/108.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-19__00000001",
+  "payload": "payloads/109.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-20__00000001",
+  "payload": "payloads/110.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-21__00000001",
+  "payload": "payloads/111.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-22__00000001",
+  "payload": "payloads/112.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-23__00000001",
+  "payload": "payloads/113.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-24__00000001",
+  "payload": "payloads/114.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-25__00000001",
+  "payload": "payloads/115.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-26__00000001",
+  "payload": "payloads/116.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-27__00000001",
+  "payload": "payloads/117.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-28__00000001",
+  "payload": "payloads/118.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-29__00000001",
+  "payload": "payloads/119.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-30__00000001",
+  "payload": "payloads/120.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-31__00000001",
+  "payload": "payloads/121.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-32__00000001",
+  "payload": "payloads/122.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-33__00000001",
+  "payload": "payloads/123.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-34__00000001",
+  "payload": "payloads/124.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-35__00000001",
+  "payload": "payloads/125.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-36__00000001",
+  "payload": "payloads/126.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-37__00000001",
+  "payload": "payloads/127.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-38__00000001",
+  "payload": "payloads/128.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-39__00000001",
+  "payload": "payloads/129.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-40__00000001",
+  "payload": "payloads/130.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-41__00000001",
+  "payload": "payloads/131.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-42__00000001",
+  "payload": "payloads/132.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-43__00000001",
+  "payload": "payloads/133.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-44__00000001",
+  "payload": "payloads/134.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-45__00000001",
+  "payload": "payloads/135.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-46__00000001",
+  "payload": "payloads/136.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/status-none__00000001",
+  "payload": "payloads/137.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/subagents-claude__00000001",
+  "payload": "payloads/138.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/subagents-cyclic__00000001",
+  "payload": "payloads/139.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/subagents-depth__00000001",
+  "payload": "payloads/140.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/subagents-mixed__00000001",
+  "payload": "payloads/141.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/subagents-orphans__00000001",
+  "payload": "payloads/142.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/timestamps-aware__00000001",
+  "payload": "payloads/143.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/timestamps-bad__00000001",
+  "payload": "payloads/144.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/timing-embedded-only__00000001",
+  "payload": "payloads/145.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/timing-fallback__00000001",
+  "payload": "payloads/146.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/title-&-'quotes'__00000001",
+  "payload": "payloads/147.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/tool-content__00000001",
+  "payload": "payloads/148.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/tool-hues__00000001",
+  "payload": "payloads/149.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/tool-status__00000001",
+  "payload": "payloads/150.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/trajectory-is-dir__00000001",
+  "payload": "payloads/151.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/unknown-event__00000001",
+  "payload": "payloads/152.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/untruncated__00000001",
+  "payload": "payloads/153.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/usage-big__00000001",
+  "payload": "payloads/154.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/usage-shapes__00000001",
+  "payload": "payloads/155.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/wrong-shapes-0__00000001",
+  "payload": "payloads/156.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/wrong-shapes-1__00000001",
+  "payload": "payloads/157.json",
+  "branches": {}
+ },
+ {
+  "id": "synthetic/wrong-shapes-2__00000001",
+  "payload": "payloads/158.json",
+  "branches": {}
+ },
+ {
+  "id": "test-agent/2026-05-20__13-58-10/task__5c902a7d",
+  "payload": "payloads/159.json",
+  "branches": {}
+ },
+ {
+  "id": "test-agent/2026-05-20__13-58-10/task__f6dcb9a4",
+  "payload": "payloads/160.json",
+  "branches": {}
+ }
+]

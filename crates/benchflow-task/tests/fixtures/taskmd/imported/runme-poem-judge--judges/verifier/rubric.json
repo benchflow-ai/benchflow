@@ -1,0 +1,31 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "scoring": {
+    "method": "points",
+    "headline": "partial"
+  },
+  "criteria": [
+    {
+      "id": "funny",
+      "text": "Rate how funny the poem is. Consider whether it has a clear joke, surprise, wordplay, or a playful take on developer workflow.",
+      "judge": "llm",
+      "points": 1,
+      "score": {
+        "min": 0,
+        "max": 1
+      },
+      "evidence": [
+        "poem.txt"
+      ],
+      "x-rewardkit": {
+        "name": "funny",
+        "type": "numeric"
+      }
+    }
+  ],
+  "x-rewardkit": {
+    "source": "verifier/judge.toml",
+    "release": "0.1.7",
+    "judge": "openai/gpt-5.6-terra"
+  }
+}

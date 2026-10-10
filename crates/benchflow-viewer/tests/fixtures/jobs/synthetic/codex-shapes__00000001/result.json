@@ -1,0 +1,1 @@
+{"task_name": "bugfix", "agent_name": "@agentclientprotocol/codex-acp", "model": "gpt-5.5", "rewards": {"reward": 1.0}, "skill_mode": "with-skill", "timing": {"agent_execution": 10.0, "total": 12.0}, "agent_result": {"total_tokens": 1234, "cost_usd": 0.05}, "n_tool_calls": 1}

@@ -1,0 +1,50 @@
+{
+  "path": "about-import-open/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/about-import-open\"\nversion = \"1.0.0\"\n[about]\nanything = { goes = 1 }\n\n[import.harbor]\nwhatever = true\n\n[integrity.resources]\n\"data/x\" = \"agent\"\n\n[family]\ngenerator = \"family/gen.py\"\n\n[family.params]\nn = [1, 2]",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/about-import-open",
+    "version": "1.0.0",
+    "about": {
+      "anything": {
+        "goes": 1
+      }
+    },
+    "import": {
+      "harbor": {
+        "whatever": true
+      }
+    },
+    "integrity": {
+      "resources": {
+        "data/x": "agent"
+      }
+    },
+    "family": {
+      "generator": "family/gen.py",
+      "params": {
+        "n": [
+          1,
+          2
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/about-import-open",
+  "ok": true
+}

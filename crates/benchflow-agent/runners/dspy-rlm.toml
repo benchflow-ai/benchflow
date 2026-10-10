@@ -1,0 +1,46 @@
+# DSPy's recursive language model (dspy.RLM), run headless by BenchFlow's
+# runner script runners/run_dspy_rlm.py, after Harbor's `dspy-rlm` agent.
+# Not in the agent registry: `bench run -a dspy-rlm` builds it in
+# benchflow-run's dspy_agent.rs, which starts the provider forwarder first,
+# so the model's key stays outside the agent and a gateway's requests are
+# pinned to the allowed upstreams.
+name = "dspy-rlm"
+aliases = ["dspy"]
+description = "DSPy's recursive language model (dspy.RLM) from Harbor: the model writes Python in a Deno/Pyodide REPL whose tools act on the task; headless through BenchFlow's runner"
+
+[install]
+# dspy 3.4.0 pins Pyodide (0.29.4) in its REPL; deno comes from PyPI.
+uv-venv = ["dspy==3.4.0", "deno==2.9.7"]
+python = "3.12"
+verify = "/opt/benchflow/agents/dspy-rlm/venv/bin/python -c \"import importlib.metadata as m, dspy, deno; print('dspy', m.version('dspy'), 'deno', m.version('deno'))\""
+timeout = 1200
+
+[headless]
+# Options: DSPY_RLM_SIGNATURE, DSPY_RLM_MAX_ITERATIONS, DSPY_RLM_MAX_LLM_CALLS,
+# DSPY_RLM_MAX_OUTPUT_CHARS, DSPY_RLM_TOOL_TIMEOUT.
+command = '''exec /opt/benchflow/agents/dspy-rlm/venv/bin/python -u "$HOME/.benchflow/runners/run_dspy_rlm.py" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+
+[[headless.files]]
+path = ".benchflow/runners/bf_events.py"
+runner = "bf_events.py"
+
+[[headless.files]]
+path = ".benchflow/runners/run_dspy_rlm.py"
+runner = "run_dspy_rlm.py"
+
+[credentials]
+# The provider's key stays with the forwarder; the agent gets none.
+family = "none"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+api = "chat"
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+
+[providers.openai.env]
+BENCHFLOW_DSPY_LM = "openai/{model}"

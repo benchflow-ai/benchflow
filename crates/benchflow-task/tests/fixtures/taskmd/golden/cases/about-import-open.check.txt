@@ -1,0 +1,10 @@
+about-import-open/task.md
+  mode: blocks
+  title: acme/about-import-open
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (about, family, import, integrity, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: family/gen.py exited 0 but wrote no instance.json for seed 0: under family@1 the instance is malformed, and a runtime refuses every episode with generator-failed (family/gen.py)
+  FAILED

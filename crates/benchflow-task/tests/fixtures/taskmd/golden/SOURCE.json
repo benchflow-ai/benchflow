@@ -1,0 +1,7 @@
+{
+  "repository": "task.md",
+  "commit": "7045e6831e904ad582908780e32b9e7951f78c4a",
+  "taskmd_py_sha256": "65ee759d3ba952c849d5ca6f8eaf47da6a02e3a125f30cc0ff5816d5015b2880",
+  "rubrics_py_sha256": "0db3c027cfd58b74a15cfa205d31cac5dbc87c69edd69488a3c727a028bdf24d",
+  "note": "examples/ are copies of the checkout's example packages; imported/ are tools/convert.py imports of tools/fixtures/rewardkit/; cases/ come from make_cases.py; golden/ is what tools/taskmd.py json and check print for each, run from its group's folder."
+}

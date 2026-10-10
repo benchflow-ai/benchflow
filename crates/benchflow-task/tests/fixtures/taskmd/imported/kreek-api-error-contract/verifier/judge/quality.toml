@@ -1,0 +1,54 @@
+# Synced from eval/verifier/shared/judge/quality.toml. Do not edit in tests/.
+# REWARDKIT_JUDGE (set in task.toml [verifier.env]) overrides `judge` at run time.
+# claude-code runs the judge through the Claude Code CLI, the one client that
+# accepts a subscription token. It ignores `files` and `reasoning_effort` and
+# reads the paths named in prompt.md; an LLM judge override uses them.
+# isolated stays false: RewardKit isolates with an overlay mount, which fails in
+# Harbor's unprivileged Docker trials. Headless `claude -p` denies writes anyway.
+# cwd is "/" because `claude -p` denies reads outside its working directory, and
+# the judge inputs live under /tests and /logs, not the /app workspace.
+[judge]
+judge = "claude-code"
+model = "anthropic/claude-sonnet-5"
+isolated = false
+cwd = "/"
+files = ["/tests/judge/instruction.md", "/logs/verifier/judge-bundle.md"]
+atif-trajectory = "/logs/agent/trajectory.json"
+prompt_template = "prompt.md"
+reasoning_effort = "medium"
+timeout = 300
+
+[scoring]
+aggregation = "weighted-mean"
+
+[[criterion]]
+name = "engineering_maturity"
+description = "Production-grade for scope: edge cases, error paths, and deployment/operational safety. A solution that fails verification should score lower than one that passes with the same simplicity."
+type = "numeric"
+min = 0
+max = 100
+weight = 0.35
+
+[[criterion]]
+name = "proof_quality"
+description = "Proofs verify task invariants and edge cases rather than only satisfying visible tests."
+type = "numeric"
+min = 0
+max = 100
+weight = 0.25
+
+[[criterion]]
+name = "simplicity"
+description = "Lean and maintainable for the problem scope; neither over-engineered nor convoluted."
+type = "numeric"
+min = 0
+max = 100
+weight = 0.2
+
+[[criterion]]
+name = "risk_handling"
+description = "Security, data-safety, and boundary concerns are explicit and known failure modes are genuinely handled."
+type = "numeric"
+min = 0
+max = 100
+weight = 0.2

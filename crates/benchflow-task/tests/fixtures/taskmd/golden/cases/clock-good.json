@@ -1,0 +1,37 @@
+{
+  "path": "clock-good/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-good\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\nnetwork = \"none\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = { start = \"2026-03-14T09:00:00-04:00\", enforce = \"preload\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-good",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m",
+      "network": "none"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": {
+        "start": "2026-03-14T09:00:00-04:00",
+        "enforce": "preload"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-good",
+  "ok": true
+}

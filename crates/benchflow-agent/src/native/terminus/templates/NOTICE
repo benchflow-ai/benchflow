@@ -1,0 +1,6 @@
+The prompt templates in this folder (terminus-json-plain.txt, terminus-xml-plain.txt,
+timeout.txt) are copied unchanged from Harbor's Terminus-2 agent
+(https://github.com/laude-institute/harbor, src/harbor/agents/terminus_2/templates,
+harbor 0.24.0, commit 09f5b964), licensed under the Apache License, Version 2.0
+(http://www.apache.org/licenses/LICENSE-2.0). They are kept byte for byte so
+Terminus-2 scores from BenchFlow and from Harbor stay comparable.

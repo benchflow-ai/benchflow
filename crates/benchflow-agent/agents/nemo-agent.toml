@@ -1,0 +1,48 @@
+# NVIDIA NeMo Agent Toolkit (NAT), run headless by BenchFlow's runner script
+# runners/run_nemo_agent.py. By default it runs Harbor's `nemo-agent`
+# workflow: NAT's chat_completion, one model call with no tools, so it only
+# answers (for tasks graded on the answer). NEMO_CONFIG runs your own NAT
+# config instead.
+name = "nemo-agent"
+aliases = ["nvidia-nat"]
+description = "NVIDIA NeMo Agent Toolkit workflow (answers only by default), headless through BenchFlow's runner"
+
+[install]
+uv-venv = ["nvidia-nat[langchain]==1.9.0"]
+python = "3.12"
+verify = "/opt/benchflow/agents/nemo-agent/venv/bin/python -c \"import importlib.metadata as m, nat.runtime.session; print('nvidia-nat', m.version('nvidia-nat'))\""
+timeout = 1200
+
+[headless]
+# Models: nvidia/<model> (NVIDIA_API_KEY, NVIDIA_BASE_URL), openai/<model>
+# (OPENAI_API_KEY, OPENAI_BASE_URL) or litellm/<model>. Options: NEMO_CONFIG
+# (a NAT YAML config in the sandbox), NEMO_SYSTEM_PROMPT, NEMO_ANSWER_FILE.
+command = '''exec /opt/benchflow/agents/nemo-agent/venv/bin/python -u "$HOME/.benchflow/runners/run_nemo_agent.py" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+env = { NAT_LOG_LEVEL = "WARNING" }
+
+[[headless.files]]
+path = ".benchflow/runners/bf_events.py"
+runner = "bf_events.py"
+
+[[headless.files]]
+path = ".benchflow/runners/run_nemo_agent.py"
+runner = "run_nemo_agent.py"
+
+[credentials]
+# The provider in the model's id: NVIDIA_API_KEY for nvidia/, and so on.
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+# Harbor's default, meta/llama-3.3-70b-instruct, reached its end of life on
+# NVIDIA's API on 2026-08-26.
+default = "nvidia/nvidia/nemotron-3-super-120b-a12b"
+
+[providers.openai]
+# The runner's `openai/` models: NAT's openai LLM (Chat Completions) on
+# OPENAI_BASE_URL.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"

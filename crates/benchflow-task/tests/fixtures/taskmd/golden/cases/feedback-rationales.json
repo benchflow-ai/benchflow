@@ -1,0 +1,35 @@
+{
+  "path": "feedback-rationales/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/feedback-rationales\"\nversion = \"1.0.0\"\n[verifier]\nfeedback = \"rationales\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/feedback-rationales",
+    "version": "1.0.0",
+    "verifier": {
+      "feedback": "rationales"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier] feedback = \"rationales\" is cut: a trainable seat may be shown its verdicts, levels, and scores, never a judge's rationales. Write feedback = \"verdicts\" or \"none\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/feedback-rationales",
+  "ok": false
+}

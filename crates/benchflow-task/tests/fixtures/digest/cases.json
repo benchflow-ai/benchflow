@@ -1,0 +1,111 @@
+{
+  "split-defaults": {
+    "about": "A split-layout task without .gitignore: Harbor publishes task.toml, instruction.md, README.md, trajectory.json, and environment/, tests/, solution/, steps/, minus its default ignores",
+    "files": {
+      "task.toml": "schema_version = \"1.4\"\n\n[task]\nname = \"acme/digest\"\n",
+      "instruction.md": "Do it.\n",
+      "README.md": "# acme/digest\n",
+      "trajectory.json": "[]\n",
+      "notes.md": "not published\n",
+      "extra/ignored.txt": "not published\n",
+      "environment/Dockerfile": "FROM ubuntu:24.04\nWORKDIR /app\n",
+      "environment/data/table.csv": "a,b\r\n1,2\r\n",
+      "environment/data/empty.txt": "",
+      "environment/data/blob.bin": {
+        "base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+      },
+      "environment/a.b/c": "dot\n",
+      "environment/a/c": "slash\n",
+      "environment/B.txt": "upper\n",
+      "environment/a.txt": "lower\n",
+      "environment/café.txt": "été ☃\n",
+      "environment/keep.pyc.txt": "kept: *.pyc does not match it\n",
+      "environment/__pycache__/m.cpython-312.pyc": {
+        "base64": "yw0NCgAAAAD/AIA="
+      },
+      "environment/.DS_Store": "x",
+      "environment/notes.txt~": "backup\n",
+      "environment/.edit.swp": "swap\n",
+      "environment/.edit.swo": "swap\n",
+      "tests/test.sh": "#!/bin/bash\necho 1 > /logs/verifier/reward.txt\n",
+      "tests/__pycache__/t.cpython-312.pyc": {
+        "base64": "yw0NCgAAAAD/AIA="
+      },
+      "tests/sub/__pycache__/deep/z.txt": "under __pycache__/\n",
+      "solution/solve.sh": "#!/bin/bash\ntrue\n",
+      "steps/step-1/instruction.md": "First.\n"
+    }
+  },
+  "split-gitignore": {
+    "about": "A split-layout task with its own .gitignore, which replaces Harbor's default ignores",
+    "files": {
+      ".gitignore": "# build output\n*.log\n!keep.log\nbuild/\n!environment/build/keep.txt\n/environment/cache/\ntests/**/fixture-*.tmp\n\\#hash.txt\ntrail.txt   \ndocs\nsolution/*.bak\n!solution/important.bak\n",
+      "task.toml": "schema_version = \"1.4\"\n",
+      "instruction.md": "Do it.\n",
+      "environment/Dockerfile": "FROM ubuntu:24.04\n",
+      "environment/run.log": "ignored\n",
+      "environment/keep.log": "kept by !keep.log\n",
+      "environment/build/out.bin": "ignored\n",
+      "environment/build/keep.txt": "kept by a later ! pattern\n",
+      "environment/build.txt": "kept: build/ matches folders\n",
+      "environment/cache/c.txt": "ignored\n",
+      "environment/sub/cache/c.txt": "kept: /environment/cache/ is anchored\n",
+      "environment/#hash.txt": "ignored by the escaped #\n",
+      "environment/trail.txt": "ignored: trailing spaces are stripped\n",
+      "environment/docs/readme.md": "ignored\n",
+      "environment/__pycache__/m.cpython-312.pyc": {
+        "base64": "yw0NCgAAAAD/AIA="
+      },
+      "tests/test.sh": "#!/bin/bash\n",
+      "tests/fixture-2.tmp": "ignored: **/ matches no folder too\n",
+      "tests/a/b/fixture-1.tmp": "ignored\n",
+      "tests/a/b/other.tmp": "kept\n",
+      "solution/solve.sh": "#!/bin/bash\n",
+      "solution/old.bak": "ignored\n",
+      "solution/important.bak": "kept\n"
+    }
+  },
+  "split-gitignore-crlf": {
+    "about": "A .gitignore with Windows line endings reads the same",
+    "files": {
+      ".gitignore": "*.log\r\n!keep.log\r\n",
+      "task.toml": "",
+      "environment/a.log": "ignored\n",
+      "environment/keep.log": "kept\n",
+      "environment/__pycache__/x.pyc": "kept: no default ignores\n"
+    }
+  },
+  "taskmd": {
+    "about": "A task.md package: the tree hash covers every file except evidence/, changes.json, and .git at the root",
+    "files": {
+      "task.md": "Do it.\n\n```toml task\nname = \"acme/digest\"\n```\n",
+      "sandbox/Dockerfile": "FROM ubuntu:24.04\n",
+      "sandbox/changes.json": "kept: only the root's is skipped\n",
+      "sandbox/.env.example": "A=1\n",
+      "verifier/test.sh": "#!/bin/bash\r\nexit 0\r\n",
+      "verifier/evidence/kept.txt": "kept: only the root's is skipped\n",
+      "oracle/solve.sh": "#!/bin/bash\n",
+      "evidence/runs.json": "[]\n",
+      "changes.json": "[]\n",
+      ".hidden": "hidden files count\n",
+      ".benchflow-source.json": "{}\n",
+      "data/empty": "",
+      "data/blob.bin": {
+        "base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+      },
+      "data/café.txt": "é\n"
+    }
+  },
+  "v06": {
+    "about": "A BenchFlow 0.8 task.md: its digest covers every file except .benchflow-source.json, in any folder",
+    "files": {
+      "task.md": "---\nagent:\n  timeout_sec: 60\n---\nDo it.\n",
+      ".benchflow-source.json": "{\"repo\": \"acme/tasks\"}\n",
+      "environment/.benchflow-source.json": "{}\n",
+      "environment/Dockerfile": "FROM ubuntu:24.04\n",
+      "tests/test.sh": "#!/bin/bash\n",
+      "evidence/runs.json": "[]\n",
+      "changes.json": "[]\n"
+    }
+  }
+}

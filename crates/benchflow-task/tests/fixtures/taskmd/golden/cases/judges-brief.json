@@ -1,0 +1,82 @@
+{
+  "path": "judges-brief/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/judges-brief\"\nversion = \"1.0.0\"\n[verifier.judges.agent]\nbrief = \"https://example.com/brief.md\"\n\n[verifier.judges.vlm]\nbrief = \"sandbox/brief.md\"\n\n[verifier.judges.llm]\nbrief = \"verifier/nope.md\"\n\n[verifier.judges.panel]\nbrief = \"\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/judges-brief",
+    "version": "1.0.0",
+    "verifier": {
+      "judges": {
+        "agent": {
+          "brief": "https://example.com/brief.md"
+        },
+        "vlm": {
+          "brief": "sandbox/brief.md"
+        },
+        "llm": {
+          "brief": "verifier/nope.md"
+        },
+        "panel": {
+          "brief": ""
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier.judges.llm] brief verifier/nope.md is not in the package",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.vlm] brief sandbox/brief.md must be a file under verifier/, which only grading sees; anywhere else the agent could read it",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] brief https://example.com/brief.md is a URL, and briefs are files in the package: copy the shared brief into verifier/, and apply a change across a dataset's tasks with a tool",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.panel] brief names a markdown file under verifier/",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/judges-brief",
+  "ok": false
+}

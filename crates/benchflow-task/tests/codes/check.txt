@@ -1,0 +1,211 @@
+error[T101]: text after the first task.md block: move it into the instruction or a notes block
+  at task.md:6
+
+error[T102]: unterminated fenced block
+  at task.md:3
+
+error[T103]: ```rubric blocks are no longer part of task.md: move them to verifier/rubric.json
+  at task.md:3
+
+error[T104]: fenced block ```bash after the first task.md block: move it into the instruction
+  at task.md:7
+
+error[T105]: the instruction is empty: task.md must start with the task itself
+  at task.md:1
+
+error[T106]: duplicate ```notes block
+  at task.md:6
+
+error[T107]: config block is not valid TOML: string values must be quoted, expected literal string
+  at task.md:7
+  label: the config stops parsing here
+
+error[T108]: task.toml is Harbor's config file; task.md keeps config in a ```toml task block (tools/convert.py import converts Harbor tasks)
+  at task.toml
+  help: `bench import <folder>` converts a Harbor task into task.md; otherwise remove task.toml
+
+warning[T109]: legacy YAML frontmatter: `task fmt` moves it into a ```toml task block
+  at task.md:1
+  help: move its settings into a ```toml task block after the instruction (`task fmt` is task-md's formatter; bench has none)
+
+error[T110]: config found in more than one place: block, block
+  at task.md:7
+  help: keep one config (a single ```toml task block) and merge the others into it
+
+warning[T111]: the canary reuses the public BIG-bench GUID, which cannot detect contamination; give each task its own, for example from uuidgen
+  at task.md:1
+
+error[T112]: cannot read task.md: No such file or directory (os error 2)
+  at task.md
+  help: a task.md package is a folder whose task.md holds the instruction and a ```toml task block
+
+error[T201]: unknown key [agent] timout; did you mean timeout? [agent] holds budget, network, network_reason, on_timeout, system_prompt_append, timeout, timeout_basis, user, or x- extensions
+  at task.md:7
+  label: did you mean `timeout`?
+  fix: rename `timout` to `timeout`
+
+error[T202]: [agent] timeout_sec is Harbor's name; task.md uses timeout (tools/convert.py import converts Harbor tasks)
+  at task.md:7
+  label: task.md spells this `timeout`
+  help: `bench import <folder>` converts a whole Harbor task into task.md
+  fix: replace `timeout_sec = 600` with `timeout = "10m"`
+
+error[T203]: [training] deterministic is gone: whether a reward is deterministic is computed (no model-judged criterion and no monitor behavior), and judge noise is measured as retest and reward_noise in the rubric's validation (docs/rubrics.md). Remove the key
+  at task.md:7
+  fix: remove `deterministic`
+
+error[T204]: [sandbox] ready is a table: { run = "<command>" }, with interval, timeout, start_period, start_interval, and retries
+  at task.md:7
+
+error[T205]: [agent] timeout must be a duration such as "90s", "15m", or "1h30m"
+  at task.md:7
+  label: if this is 600 seconds, write "10m"
+  fix: write 600 seconds as "10m"
+
+error[T206]: [sandbox] memory must be a size such as "512 MB" or "4 GB"
+  at task.md:7
+  fix: write "4 GB"
+
+error[T207]: [sandbox] network must be "none", "open", a list of hosts, or { block = [hosts] }
+  at task.md:7
+  label: Harbor's "no-network" is "none" in task.md
+  fix: write "none"
+
+error[T208]: [verifier] isolation must be one of 'shared', 'separate'
+  at task.md:7
+  label: did you mean "separate"?
+  fix: write "separate"
+
+error[T209]: [agent] budget tokens is a count: a whole number, or a string of a number and K (1,000) or M (1,000,000) that comes to a whole number, such as 400000, "400K", or "2M"
+  at task.md:7
+
+error[T210]: [verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so an imported entry needs them added
+  at task.md:6
+
+error[T211]: [sandbox] outputs[0] path rel/x is relative; an output's path is absolute, such as /work/rel/x
+  at task.md:7
+
+error[T212]: [stages.two] unlock must be on_submit, on_request, at_start, after:<stage>, or at_turn:<n>
+  at task.md:7
+
+error[T213]: the service name main is the agent's own container; name the service something else
+  at task.md:7
+
+error[T214]: [sandbox] clock start 2026-03-14T09:00:00 has no offset: write it in RFC 3339 with the zone's offset, such as 2026-03-14T09:00:00<offset>, so the instant is not left to the machine that runs it
+  at task.md:10
+
+error[T215]: [sandbox] timezone 'America/Nowhere' is not a zone in the tz database; write a name such as "America/New_York" or "UTC"
+  at task.md:7
+
+error[T216]: a set clock needs network = "none" while it runs, and [agent] network is "open": the network tells the real date (TLS, HTTP Date headers, package mirrors). Set [agent] network = "none"
+  at task.md:7
+
+warning[T217]: the run can cross midnight in UTC: it starts at 23:30 and may run 2h00m, so the agent's date can change during the run while TASKMD_CLOCK_START keeps the start's date. Start earlier in the day, or have the verifier read TASKMD_CLOCK_HANDOFF
+  at task.md:7
+
+error[T218]: [family.splits] holdout needs a role: write [family.splits.holdout] with rule = "seed > 3" and role = "train", "validation", or "test"
+  at task.md:7
+
+error[T219]: [training] learnable_band is [low, high], two pass rates with 0 <= low < high <= 1
+  at task.md:7
+
+error[T220]: [integrity.controls] injection names 'nearmiss'; it names controls by key: known_bad, near_miss, no_op, or cheats
+  at task.md:8
+  label: did you mean "near_miss"?
+  fix: write "near_miss"
+
+warning[T221]: sandbox.env.KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead
+  at task.md:7
+
+warning[T222]: [import.harbor] trajectory: Harbor seeds the agent's session with t.json, an ATIF trajectory, before the agent starts; no task.md runtime loads it, so a task.md run starts without that context
+  at task.md:7
+
+error[T301]: not valid JSON: expected value at line 1 column 15
+  at verifier/rubric.json:1
+
+warning[T302]: no task.md $schema (https://task.md/schema/rubric-1.json), so this is read as a file for the verifier's scripts, not as the task's rubric
+  at verifier/rubric.json:1
+
+error[T303]: unknown key 'outcom'; did you mean outcome? a criterion holds check, cite, evidence, gate, group, guidance, id, implicit, judge, levels, missing, outcome, points, reference, score, stated, text, or x- extensions
+  at verifier/rubric.json:3
+  label: did you mean `outcome`?
+  fix: rename `outcom` to `outcome`
+
+error[T304]: scoring.method is "points" (the default: earned points over the maximum positive points, clipped to [0, 1]) or "sum" (the raw, unclipped total)
+  at verifier/rubric.json:2
+
+error[T305]: needs a non-empty criteria list (or extends)
+  at verifier/rubric.json:1
+
+error[T306]: id must be lowercase letters, digits, and hyphens
+  at verifier/rubric.json:3
+
+error[T307]: remove drops a criterion from a shared rubric, so it needs extends
+  at verifier/rubric.json:3
+
+error[T308]: judge is required: one of ['agent', 'human', 'llm', 'panel', 'replay', 'rule', 'test', 'vlm', 'world']
+  at verifier/rubric.json:3
+  label: did you mean "test"?
+  fix: write "test"
+
+error[T309]: cite is "independent": a pass then needs a citation the solver neither wrote nor ran
+  at verifier/rubric.json:4
+  label: did you mean "independent"?
+  fix: write "independent"
+
+error[T310]: score is a continuous range, {"min": <number>, "max": <number>}, with min below max
+  at verifier/rubric.json:4
+
+error[T311]: evidence report.md reads /app/report.md, which no [sandbox] outputs entry saves: add { path = "/app/report.md" } to outputs, or a folder that holds it
+  at verifier/rubric.json:4
+
+error[T312]: stated quote not found in what the agent is told: 'Add jitter'
+  at verifier/rubric.json:2
+
+warning[T313]: 'quiet' does not say where the agent is told about it: quote the instruction in stated, or explain in implicit why the agent should know
+  at verifier/rubric.json:2
+
+error[T320]: id must be a dotted taxonomy id such as process.overreach
+  at verifier/behaviors.json:3
+
+error[T321]: consequence must be 'fail', 'invalid', 'report', {penalty: <negative number>}, or, for a 0-3 behavior, a severity map such as {"1": "report", "2": {"penalty": -0.2}, "3": "fail"}
+  at verifier/behaviors.json:3
+
+error[T322]: detect must be 'rule', 'world', 'monitor', or 'human'
+  at verifier/behaviors.json:3
+
+error[T330]: [verifier.judges.llm] harness is for the agent role only: an llm judge is one model call with the evidence inline
+  at task.md:7
+
+error[T331]: [verifier.judges.agent] brief https://x.com/b.md is a URL, and briefs are files in the package: copy the shared brief into verifier/, and apply a change across a dataset's tasks with a tool
+  at task.md:7
+
+warning[T332]: the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = "rl" and delivery grade require one
+  at task.md:6
+
+warning[T333]: grading calls a model from a script ([verifier] env names OPENAI_API_KEY), but [verifier] models is not true: set [verifier] models = true, so the runtime gives the verifier a seat token and the proxy's URL. Without it the script cannot reach a model on a task.md runtime, and its judge calls fail
+  at task.md:6
+
+error[T401]: nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build
+  at task.md:3
+
+error[T402]: nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image
+  at task.md:3
+
+error[T403]: [integrity.controls] no_op names controls/nope.sh, which is not a file in the package
+  at task.md:7
+
+warning[T404]: a comment names the seat ('reference solution'), so a judge that reads this script can tell the reference from a solver: keep such notes in [integrity.controls] or a notes block
+  at oracle/solve.sh:2
+
+error[T405]: Compose service main asks for privileged mode (privileged); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task
+  at sandbox/compose.yaml:4
+
+error[T406]: family/gen.py needs a first line naming its interpreter, such as #!/usr/bin/env python3: family@1 runs it by that line
+  at family/gen.py:1
+  help: add a #! line as the generator's first line
+
+note[T901]: the placeholders {{item}} were not verified: checking runs no package code, so the family's generator, family/gen.py, was not run to see that it writes a value for each into instance.json
+  at task.md
+  help: run the generator once yourself (<generator> --seed 0 --out <empty folder>) and read instance.json's placeholders
+

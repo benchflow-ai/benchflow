@@ -1,0 +1,51 @@
+{
+  "path": "durations/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/durations\"\nversion = \"1.0.0\"\n[agent]\ntimeout = 600\n\n[sandbox]\nbuild_timeout = \"1 hour\"\n\n[verifier]\ntimeout = \"600\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/durations",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": 600
+    },
+    "sandbox": {
+      "build_timeout": "1 hour"
+    },
+    "verifier": {
+      "timeout": "600"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] build_timeout must be a duration such as \"90s\", \"15m\", or \"1h30m\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[agent] timeout must be a duration such as \"90s\", \"15m\", or \"1h30m\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] timeout must be a duration such as \"90s\", \"15m\", or \"1h30m\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/durations",
+  "ok": false
+}

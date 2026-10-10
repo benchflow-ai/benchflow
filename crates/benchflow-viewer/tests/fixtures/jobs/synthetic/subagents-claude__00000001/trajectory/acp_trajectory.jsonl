@@ -1,0 +1,7 @@
+{"type": "user_message", "text": "use one child agent"}
+{"type": "tool_call", "tool_call_id": "toolu_task", "kind": "think", "title": "Task", "status": "completed", "content": [], "raw_input": {"description": "Create child.txt", "prompt": "create /app/child.txt", "subagent_type": "general-purpose"}}
+{"type": "agent_thought", "text": "child thinking", "parent_tool_call_id": "toolu_task"}
+{"type": "tool_call", "tool_call_id": "toolu_bash", "kind": "execute", "title": "printf x > f", "status": "completed", "content": [], "parent_tool_call_id": "toolu_task"}
+{"type": "tool_call", "tool_call_id": "toolu_xxd", "kind": "execute", "title": "xxd f", "status": "failed", "content": [], "parent_tool_call_id": "toolu_task"}
+{"type": "agent_message", "text": "child done", "parent_tool_call_id": "toolu_task"}
+{"type": "agent_message", "text": "root continues"}

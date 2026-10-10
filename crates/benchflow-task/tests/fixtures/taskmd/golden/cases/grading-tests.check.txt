@@ -1,0 +1,10 @@
+grading-tests/task.md
+  mode: blocks
+  title: acme/grading-tests
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 1 criteria, 1 gates, 0 points; judges test
+  grading needs a model: no (1 criterion decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

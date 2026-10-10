@@ -1,0 +1,13 @@
+host-var/task.md
+  mode: blocks
+  title: acme/host-var
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: stage two, toml task
+  config: block (name, sandbox, stages, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: sandbox.env.KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  warning: sandbox.env.BOTH resolves ${A} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  warning: sandbox.env.BOTH resolves ${B} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  warning: sandbox.services.0.env.P resolves ${PGPASS} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  ok

@@ -1,0 +1,45 @@
+{
+  "path": "clock-variant-clock/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-variant-clock\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"10m\"\nnetwork = \"none\"\n\n[variants.frozen.sandbox]\nclock = { start = \"2026-03-14T09:00:00Z\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-variant-clock",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "10m",
+      "network": "none"
+    },
+    "variants": {
+      "frozen": {
+        "sandbox": {
+          "clock": {
+            "start": "2026-03-14T09:00:00Z"
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "variant frozen: [sandbox] clock needs enforce: \"preload\" (a library in the sandbox; fidelity, not protection), \"vm\" (a guest with its own clock), or \"world\" (the task's own services hold the time)",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-variant-clock",
+  "ok": false
+}

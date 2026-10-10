@@ -1,0 +1,1 @@
+{"task_name": 1034, "agent_name": ["wrong-shape"], "agent": "fallback-agent", "model": {"wrong": "shape"}, "skill_mode": "no-skill", "rewards": {"reward": "1"}, "n_tool_calls": "4", "agent_result": {"n_tool_calls": "3", "total_tokens": "42", "cost_usd": "0.25"}, "timing": {"total": 999}, "export_error": "could not export"}

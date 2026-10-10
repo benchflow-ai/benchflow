@@ -1,0 +1,16 @@
+version = "1.0"
+
+[agent]
+timeout_sec = 600
+prompt_prefix = "You are working in a sandbox."
+
+[sandbox]
+cpus = 1
+memory = "2G"
+
+[verifier]
+timeout_sec = 300
+sandbox_mode = "shared"
+
+[oracle]
+env = { SEED = "7" }

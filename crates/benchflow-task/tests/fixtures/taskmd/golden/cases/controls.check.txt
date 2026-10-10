@@ -1,0 +1,15 @@
+controls/task.md
+  mode: blocks
+  title: acme/controls
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (integrity, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [integrity.controls] known_bad names controls/missing.sh, which is not a file in the package (task.md)
+  error: [integrity.controls] known_bad names /abs/x.sh, which is outside the package: a control is a file in it (task.md)
+  error: [integrity.controls] known_bad names ../out.sh, which is outside the package: a control is a file in it (task.md)
+  error: [integrity.controls] known_bad names each control by its path in the package, such as "controls/no-op.sh" (task.md)
+  error: [integrity.controls] known_bad names controls/fixed-delay.patch, a patch: patch controls are cut, since no page says how a runtime applies one. Write a script that makes the change, which runs in place of the agent as oracle/solve.sh does (task.md)
+  error: [integrity.controls] cheats names each control by its path in the package, such as "controls/no-op.sh" (task.md)
+  FAILED

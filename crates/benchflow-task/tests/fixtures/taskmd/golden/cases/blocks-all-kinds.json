@@ -1,0 +1,58 @@
+{
+  "path": "blocks-all-kinds/task.md",
+  "mode": "blocks",
+  "instruction": "Fix it.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "review",
+      "info": "stage review",
+      "body": "<!-- canary 9 -->\n\nReview your fix.",
+      "line": 3
+    },
+    {
+      "kind": "role",
+      "arg": "critic",
+      "info": "role critic",
+      "body": "Critique.",
+      "line": 9
+    },
+    {
+      "kind": "user",
+      "arg": null,
+      "info": "user",
+      "body": "You are a user.",
+      "line": 13
+    },
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "Notes.",
+      "line": 17
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"\n\n[stages.review]\nunlock = \"on_submit\"",
+      "line": 21
+    }
+  ],
+  "config": {
+    "name": "acme/x",
+    "stages": {
+      "review": {
+        "unlock": "on_submit"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix it.",
+  "title": "acme/x",
+  "ok": true
+}

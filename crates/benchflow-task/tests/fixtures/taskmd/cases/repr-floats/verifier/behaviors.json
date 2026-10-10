@@ -1,0 +1,20 @@
+{
+  "$schema": "https://task.md/schema/behaviors-1.json",
+  "watch": [
+    {
+      "id": "process.x",
+      "definition": "X.",
+      "scale": "0-3",
+      "consequence": {
+        "1": 0.5,
+        "2": {
+          "penalty": 1e-05
+        },
+        "3": [
+          1e+16,
+          -0.0
+        ]
+      }
+    }
+  ]
+}

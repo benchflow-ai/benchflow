@@ -1,0 +1,32 @@
+{
+  "path": "rubric-not-json/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-not-json\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-not-json",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "not valid JSON: Expecting value: line 2 column 16 (char 32)",
+      "where": "rubric.json"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-not-json",
+  "ok": false
+}

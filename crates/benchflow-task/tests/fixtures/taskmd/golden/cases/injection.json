@@ -1,0 +1,47 @@
+{
+  "path": "injection/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/injection\"\nversion = \"1.0.0\"\n[integrity.controls]\nno_op = \"controls/no-op.sh\"\ninjection = [\"no_op\", \"known_bad\", \"nearmiss\"]",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/injection",
+    "version": "1.0.0",
+    "integrity": {
+      "controls": {
+        "no_op": "controls/no-op.sh",
+        "injection": [
+          "no_op",
+          "known_bad",
+          "nearmiss"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[integrity.controls] injection pairs known_bad, which the table does not declare",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[integrity.controls] injection names 'nearmiss'; it names controls by key: known_bad, near_miss, no_op, or cheats",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/injection",
+  "ok": false
+}

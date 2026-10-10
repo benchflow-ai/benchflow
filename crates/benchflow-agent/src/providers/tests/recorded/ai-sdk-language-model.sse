@@ -1,0 +1,6 @@
+data: {"type":"stream-start","warnings":[]}
+
+data: {"type":"text-delta","id":"0","delta":"Hello"}
+
+data: {"type":"finish","finishReason":"stop","usage":{"inputTokens":250,"outputTokens":30,"totalTokens":280,"reasoningTokens":10,"cachedInputTokens":200},"providerMetadata":{"gateway":{"cost":"0.00002100"}}}
+

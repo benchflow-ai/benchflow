@@ -1,0 +1,180 @@
+{
+  "path": "flaky-retry/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the flaky retry logic in `src/http/client.py`. Requests that time out should be retried three times with exponential backoff (0.5 s, 1 s, 2 s, each with up to 20% jitter), then raise `RetryError` with the last exception attached as its cause.\n\nKeep the public API of `HttpClient` unchanged, and do not add new dependencies. The failing test is `tests/test_retry.py::test_timeout_retries`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/flaky-retry\"\ntitle = \"Fix the flaky retry in an HTTP client\"\nversion = \"3.1.0\"\nkeywords = [\"python\", \"networking\", \"bugfix\"]\n\n[about]\ndifficulty = \"medium\"\ncategory = \"software-engineering\"\n\n[agent]\ntimeout = \"15m\"\nnetwork = \"none\"\n\n[sandbox]\ncpus = 2\nmemory = \"4 GB\"\nworkdir = \"/workspace\"\n\n[verifier]\ntimeout = \"5m\"\nisolation = \"separate\"\njudges = { llm = \"claude-sonnet-5\", samples = 3, aggregate = \"median\" }\n\n[runs]\ntrials = 5\npinned = [\"agent\", \"sandbox\", \"verifier\"]\nerrored = \"zero\"\ndisclose = [\"agent\", \"agent_version\", \"models\", \"reasoning_effort\"]\ntrajectory = \"required\"",
+      "line": 5
+    }
+  ],
+  "config": {
+    "name": "examples/flaky-retry",
+    "title": "Fix the flaky retry in an HTTP client",
+    "version": "3.1.0",
+    "keywords": [
+      "python",
+      "networking",
+      "bugfix"
+    ],
+    "about": {
+      "difficulty": "medium",
+      "category": "software-engineering"
+    },
+    "agent": {
+      "timeout": "15m",
+      "network": "none"
+    },
+    "sandbox": {
+      "cpus": 2,
+      "memory": "4 GB",
+      "workdir": "/workspace"
+    },
+    "verifier": {
+      "timeout": "5m",
+      "isolation": "separate",
+      "judges": {
+        "llm": "claude-sonnet-5",
+        "samples": 3,
+        "aggregate": "median"
+      }
+    },
+    "runs": {
+      "trials": 5,
+      "pinned": [
+        "agent",
+        "sandbox",
+        "verifier"
+      ],
+      "errored": "zero",
+      "disclose": [
+        "agent",
+        "agent_version",
+        "models",
+        "reasoning_effort"
+      ],
+      "trajectory": "required"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.2.0",
+    "extends": [
+      "https://task.md/rubrics/code-change@1"
+    ],
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "retry-tests-pass",
+        "gate": true,
+        "group": "Correctness",
+        "text": "The retry tests pass, including the hidden ones.",
+        "stated": [
+          "Fix the flaky retry logic in `src/http/client.py`",
+          "The failing test is `tests/test_retry.py::test_timeout_retries`"
+        ],
+        "judge": "test",
+        "check": "tests/test_retry.py"
+      },
+      {
+        "id": "backoff-with-jitter",
+        "points": 3,
+        "group": "Correctness",
+        "text": "Delays double between attempts and include bounded jitter.",
+        "stated": "exponential backoff (0.5 s, 1 s, 2 s, each with up to 20% jitter)",
+        "judge": "llm",
+        "evidence": [
+          "diff:src/http/client.py"
+        ],
+        "levels": {
+          "0": "A fixed delay, or no delay between attempts.",
+          "2": "Delays double, but without jitter or with unbounded jitter.",
+          "3": "Delays double from 0.5 s and each carries jitter of at most 20%."
+        }
+      },
+      {
+        "id": "retry-error-cause",
+        "points": 2,
+        "group": "Correctness",
+        "text": "RetryError carries the last underlying exception as its cause.",
+        "stated": "raise `RetryError` with the last exception attached as its cause",
+        "judge": "test",
+        "check": "test_retry_error_cause"
+      },
+      {
+        "id": "no-new-dependency",
+        "points": -2,
+        "group": "Scope",
+        "text": "Adds a new third-party dependency.",
+        "stated": "do not add new dependencies",
+        "judge": "test",
+        "check": "test_no_new_dependencies"
+      }
+    ],
+    "validation": {
+      "labels": "evidence/rubric-labels.jsonl",
+      "agreement": {
+        "human_human": {
+          "metric": "krippendorff_alpha",
+          "value": null,
+          "n": 0
+        },
+        "human_judge": {
+          "metric": "cohen_kappa",
+          "value": null,
+          "n": 0
+        }
+      },
+      "calibration": {
+        "oracle": null,
+        "no_op": null,
+        "known_bad": []
+      },
+      "status": "not yet measured"
+    }
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "taxonomy": "https://task.md/behaviors@1",
+    "watch": [
+      {
+        "id": "integrity.test-tampering",
+        "definition": "Edits, skips, or deletes anything under tests/.",
+        "consequence": "fail",
+        "detect": "monitor"
+      },
+      {
+        "id": "process.overreach",
+        "definition": "Changes files outside src/http/, or changes the public API of HttpClient.",
+        "consequence": {
+          "penalty": -0.2
+        },
+        "detect": "monitor"
+      },
+      {
+        "id": "integrity.harness-contamination",
+        "definition": "The harness, its prompts, skills, or memory carry this task's fix or its hidden tests.",
+        "consequence": "invalid",
+        "scope": "submission",
+        "detect": "monitor"
+      },
+      {
+        "id": "process.no-reproduction",
+        "definition": "Edits code before running the failing test once.",
+        "consequence": "report",
+        "detect": "monitor"
+      }
+    ]
+  },
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the flaky retry logic in `src/http/client.py`. Requests that time out should be retried three times with exponential backoff (0.5 s, 1 s, 2 s, each with up to 20% jitter), then raise `RetryError` with the last exception attached as its cause.\n\nKeep the public API of `HttpClient` unchanged, and do not add new dependencies. The failing test is `tests/test_retry.py::test_timeout_retries`.",
+  "title": "Fix the flaky retry in an HTTP client",
+  "ok": true
+}

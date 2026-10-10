@@ -1,0 +1,10 @@
+grading-human/task.md
+  mode: blocks
+  title: acme/grading-human
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  rubric: 2 criteria, 1 gates, 1 points; judges human, test
+  grading needs a model: no (1 criterion decided by tests, rules, the world, or replay); 1 criterion wait for human raters
+  worst-case grading time: 1m (scripts 1m; in sequence, before retries)
+  ok

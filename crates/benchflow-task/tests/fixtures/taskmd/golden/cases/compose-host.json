@@ -1,0 +1,80 @@
+{
+  "path": "compose-host/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/compose-host\"\nversion = \"1.0.0\"\n[sandbox]\ncompose = \"sandbox/docker-compose.yaml\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/compose-host",
+    "version": "1.0.0",
+    "sandbox": {
+      "compose": "sandbox/docker-compose.yaml"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "Compose service helper asks for privileged mode (privileged); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper asks for the host's network (network_mode); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper asks for the host's process namespace (pid); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper asks for added capabilities (cap_add); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper asks for security options (security_opt); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper mounts /var/run/docker.sock from the host; mounts must stay inside the package or in folders the runtime provides",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper mounts ${HOME} from the host; mounts must stay inside the package or in folders the runtime provides",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper mounts ~/x from the host; mounts must stay inside the package or in folders the runtime provides",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper mounts ../up from the host; mounts must stay inside the package or in folders the runtime provides",
+      "where": "sandbox/docker-compose.yaml"
+    },
+    {
+      "level": "error",
+      "message": "Compose service helper mounts /etc from the host; mounts must stay inside the package or in folders the runtime provides",
+      "where": "sandbox/docker-compose.yaml"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/compose-host",
+  "ok": false
+}

@@ -1,0 +1,104 @@
+{
+  "path": "from-trace-toml/task.md",
+  "mode": "blocks",
+  "instruction": "The CLI in `/repo` loads its settings from `config.yaml`. Move it to `config.toml`: read TOML with the standard library, keep reading `config.yaml` for one release with a deprecation warning, and update the docs. Existing users must not lose any setting.",
+  "blocks": [
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "Derived from a real session in which an agent did this migration and silently dropped the `retries` setting; the user caught it three turns later. The trace was scrubbed, the repository was replaced with a synthetic one that reproduces the same shape, and the failure became the -3 criterion.",
+      "line": 3
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/from-trace-toml\"\ntitle = \"Migrate a CLI's config from YAML to TOML\"\nversion = \"1.3.0\"\nkeywords = [\"python\", \"migration\", \"trace-derived\"]\n\n[agent]\ntimeout = \"30m\"\n\n[sandbox]\nimage = \"python:3.12-slim\"\n\n[provenance]\nderived_from = \"trace\"\ntrace = \"traces/2026-09-12-cli-config.jsonl\"\ntrace_turns = [14, 31]\nmethod = \"trace2task\"\nscrubbed = [\"paths\", \"names\", \"secrets\"]\nhuman_review = \"2026-09-20\"\nfailure_mode = \"dropped setting during migration\"",
+      "line": 7
+    }
+  ],
+  "config": {
+    "name": "examples/from-trace-toml",
+    "title": "Migrate a CLI's config from YAML to TOML",
+    "version": "1.3.0",
+    "keywords": [
+      "python",
+      "migration",
+      "trace-derived"
+    ],
+    "agent": {
+      "timeout": "30m"
+    },
+    "sandbox": {
+      "image": "python:3.12-slim"
+    },
+    "provenance": {
+      "derived_from": "trace",
+      "trace": "traces/2026-09-12-cli-config.jsonl",
+      "trace_turns": [
+        14,
+        31
+      ],
+      "method": "trace2task",
+      "scrubbed": [
+        "paths",
+        "names",
+        "secrets"
+      ],
+      "human_review": "2026-09-20",
+      "failure_mode": "dropped setting during migration"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "tests-pass",
+        "gate": true,
+        "text": "All existing tests pass, and the new config tests pass.",
+        "stated": "Move it to `config.toml`: read TOML with the standard library",
+        "implicit": "A migration that breaks the existing tests is not finished.",
+        "judge": "test",
+        "check": "tests/"
+      },
+      {
+        "id": "yaml-fallback",
+        "gate": true,
+        "text": "A config.yaml from the previous release still loads, with a deprecation warning.",
+        "stated": "keep reading `config.yaml` for one release with a deprecation warning",
+        "judge": "test",
+        "check": "test_yaml_fallback"
+      },
+      {
+        "id": "docs-cover-every-setting",
+        "points": 3,
+        "text": "Every setting documented for YAML is documented for TOML.",
+        "stated": "update the docs",
+        "judge": "llm",
+        "evidence": [
+          "diff:."
+        ]
+      },
+      {
+        "id": "settings-preserved",
+        "points": -3,
+        "text": "Drops or renames a setting.",
+        "stated": "Existing users must not lose any setting",
+        "judge": "test",
+        "check": "test_settings_preserved"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "The CLI in `/repo` loads its settings from `config.yaml`. Move it to `config.toml`: read TOML with the standard library, keep reading `config.yaml` for one release with a deprecation warning, and update the docs. Existing users must not lose any setting.",
+  "title": "Migrate a CLI's config from YAML to TOML",
+  "ok": true
+}

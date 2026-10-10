@@ -1,0 +1,58 @@
+{
+  "path": "library-week--fix-date-parsing/task.md",
+  "mode": "blocks",
+  "instruction": "`parse_date` in `/repo/datekit/parse.py` rejects ISO 8601 timestamps that end in `Z`, such as `2026-09-27T10:00:00Z`. Fix it so a trailing `Z` means UTC. Keep the public API unchanged; the failing test is `tests/test_parse.py::test_trailing_z`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/library-week-fix-date-parsing\"\ntitle = \"Accept a trailing Z in ISO timestamps\"\nversion = \"1.0.0\"\n\n[agent]\ntimeout = \"20m\"\nnetwork = \"none\"\n\n[sandbox]\nimage = \"python:3.12-slim\"\nworkdir = \"/repo\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "examples/library-week-fix-date-parsing",
+    "title": "Accept a trailing Z in ISO timestamps",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "20m",
+      "network": "none"
+    },
+    "sandbox": {
+      "image": "python:3.12-slim",
+      "workdir": "/repo"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "tests-pass",
+        "gate": true,
+        "judge": "test",
+        "check": "tests/test_parse.py",
+        "text": "The parse tests pass, including hidden cases with offsets and fractional seconds.",
+        "stated": [
+          "Fix it so a trailing `Z` means UTC",
+          "the failing test is `tests/test_parse.py::test_trailing_z`"
+        ]
+      },
+      {
+        "id": "api-unchanged",
+        "gate": true,
+        "judge": "test",
+        "check": "test_public_api_unchanged",
+        "text": "The public names and signatures in datekit are unchanged.",
+        "stated": "Keep the public API unchanged"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "`parse_date` in `/repo/datekit/parse.py` rejects ISO 8601 timestamps that end in `Z`, such as `2026-09-27T10:00:00Z`. Fix it so a trailing `Z` means UTC. Keep the public API unchanged; the failing test is `tests/test_parse.py::test_trailing_z`.",
+  "title": "Accept a trailing Z in ISO timestamps",
+  "ok": true
+}

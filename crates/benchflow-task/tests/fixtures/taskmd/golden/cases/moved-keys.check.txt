@@ -1,0 +1,15 @@
+moved-keys/task.md
+  mode: blocks
+  title: acme/moved-keys
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, training, trajectory, version, world)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [training] deterministic is gone: whether a reward is deterministic is computed (no model-judged criterion and no monitor behavior), and judge noise is measured as retest and reward_noise in the rubric's validation (docs/rubrics.md). Remove the key (task.md)
+  error: [training] verifier_latency_p50 is gone: grading latency is measured, not declared. Episode results report grading time, and task check --level rl requires the measurement as evidence (docs/training.md). Remove the key (task.md)
+  error: [trajectory] tokens is gone: token records are asked for per run, by episode@1's record_tokens and token_owner (docs/runtime/episodes.md), not declared by the task. Remove the key (task.md)
+  error: [trajectory] format is gone: every runtime records trajectory-1 (docs/runtime/episodes.md), and ATIF and OpenTelemetry are formats a trajectory is exported to, not something a task declares. Remove the key; [trajectory] require stays (task.md)
+  error: [trajectory] span_attributes is gone: it named OpenTelemetry span attributes, and trajectory-1, the record every runtime keeps, has no spans. Remove the key; to require subagents' steps, write [trajectory] require = ["subagents"] (task.md)
+  error: [world.desktop] clock moved to [sandbox] clock: write [sandbox] clock = { start = "2026-03-14T09:00:00-07:00", advance = "none", enforce = "world" }, which is what "frozen:2026-03-14T09:00:00" meant, and set network = "none" for the agent's phase, which a clock requires (task.md)
+  FAILED

@@ -1,0 +1,41 @@
+{
+  "job_name": "claude-deepseek-pinned",
+  "agent": "claude",
+  "model": "vercel/deepseek/deepseek-v4-flash-0731",
+  "environment": "daytona",
+  "concurrency": 4,
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "errored": 0,
+  "verifier_errored": 0,
+  "unscored": 0,
+  "pass": 1,
+  "fail": 0,
+  "error": 0,
+  "not_started": 0,
+  "score": "100.0%",
+  "score_ratio": 1.0,
+  "score_interval": [
+    0.20654931437723745,
+    1.0
+  ],
+  "score_excl_errors": "100.0%",
+  "score_excl_errors_ratio": 1.0,
+  "mean_reward": 1.0,
+  "elapsed_sec": 30.025562417,
+  "total_input_tokens": 17036,
+  "total_output_tokens": 491,
+  "total_cache_read_tokens": 33664,
+  "total_cache_creation_tokens": 0,
+  "total_tokens": 51191,
+  "total_cost_usd": null,
+  "pass_at_k": {
+    "1": 1.0
+  },
+  "failures_by_cause": [],
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.9.0-dev.0"
+  }
+}

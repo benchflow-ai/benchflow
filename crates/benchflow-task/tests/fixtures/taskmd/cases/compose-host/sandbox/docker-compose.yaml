@@ -1,0 +1,31 @@
+{
+  "services": {
+    "main": {
+      "image": "python:3.12"
+    },
+    "helper": {
+      "image": "alpine",
+      "privileged": true,
+      "cap_add": [
+        "NET_ADMIN"
+      ],
+      "security_opt": [
+        "seccomp:unconfined"
+      ],
+      "pid": "host",
+      "ipc": "shareable",
+      "volumes": [
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "./data:/data",
+        "${HOME}:/h",
+        "~/x:/y",
+        "../up:/up",
+        {
+          "source": "/etc",
+          "target": "/e"
+        }
+      ],
+      "network_mode": "host"
+    }
+  }
+}

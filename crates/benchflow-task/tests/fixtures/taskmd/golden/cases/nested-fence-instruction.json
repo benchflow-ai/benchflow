@@ -1,0 +1,25 @@
+{
+  "path": "nested-fence-instruction/task.md",
+  "mode": "blocks",
+  "instruction": "Write a rubric block, like this:\n\n````markdown\n```rubric\n{}\n```\n````",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"",
+      "line": 9
+    }
+  ],
+  "config": {
+    "name": "acme/x"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Write a rubric block, like this:\n\n````markdown\n```rubric\n{}\n```\n````",
+  "title": "acme/x",
+  "ok": true
+}

@@ -1,0 +1,19 @@
+choices/task.md
+  mode: blocks
+  title: acme/choices
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, runs, sandbox, verifier, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [verifier] isolation must be one of 'shared', 'separate' (task.md)
+  error: [verifier] combine_stages must be one of 'mean', 'final' (task.md)
+  error: [verifier] unreached_stages must be one of 'zero', 'exclude' (task.md)
+  error: [agent] on_timeout must be one of 'grade', 'grade-flagged', 'fail' (task.md)
+  error: [sandbox] boundary must be one of 'container', 'gvisor', 'microvm', 'vm' (task.md)
+  error: [runs] errored must be one of 'zero', 'retry' (task.md)
+  error: [runs] trajectory must be one of 'required', 'optional' (task.md)
+  error: [agent] timeout_basis must be one of 'wall', 'environment' (task.md)
+  error: [verifier] feedback must be one of 'none', 'verdicts' (task.md)
+  error: [verifier] models is true when the verifier's scripts call a model themselves, such as a RewardKit judge in test.sh, or false (the default) (task.md)
+  FAILED

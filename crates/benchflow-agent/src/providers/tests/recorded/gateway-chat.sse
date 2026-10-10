@@ -1,0 +1,16 @@
+data: {"id":"gen_RECORDED","object":"chat.completion.chunk","created":1791658199,"model":"deepseek/deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"gen_RECORDED","object":"chat.completion.chunk","created":1791658199,"model":"deepseek/deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"reasoning":"We","reasoning_details":[{"type":"reasoning.text","text":"We","format":"unknown","index":0}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"gen_RECORDED","object":"chat.completion.chunk","created":1791658199,"model":"deepseek/deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"reasoning":" need","reasoning_details":[{"type":"reasoning.text","text":" need","format":"unknown","index":0}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"gen_RECORDED","object":"chat.completion.chunk","created":1791658199,"model":"deepseek/deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"reasoning":" answer","reasoning_details":[{"type":"reasoning.text","text":" answer","format":"unknown","index":0}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"gen_RECORDED","object":"chat.completion.chunk","created":1791658199,"model":"deepseek/deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"reasoning":".","reasoning_details":[{"type":"reasoning.text","text":".","format":"unknown","index":0}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"gen_RECORDED","object":"chat.completion.chunk","created":1791658199,"model":"deepseek/deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"reasoning":" Need","reasoning_details":[{"type":"reasoning.text","text":" Need","format":"unknown","index":0}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"gen_RECORDED","object":"chat.completion.chunk","created":1791658199,"model":"deepseek/deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"provider_metadata":{"novita":{"acceptedPredictionTokens":0,"rejectedPredictionTokens":0},"gateway":{"routing":{"originalModelId":"deepseek/deepseek-v4-flash-0731","finalProvider":"novita"},"cost":"0.00004356","marketCost":"0.00004356","surchargeCost":"0","gatewayCost":"0.00004356","inferenceCost":"0.00004356","inputInferenceCost":"0.00003696","outputInferenceCost":"0.0000066","generationId":"gen_RECORDED"}}},"logprobs":null,"finish_reason":"length"}],"usage":{"prompt_tokens":84,"completion_tokens":5,"total_tokens":89,"cost":4.356e-05,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":null,"upstream_inference_prompt_cost":0,"upstream_inference_completions_cost":0},"completion_tokens_details":{"reasoning_tokens":5,"image_tokens":0},"cache_creation_input_tokens":0,"market_cost":4.356e-05,"gateway_cost":4.356e-05},"generationId":"gen_RECORDED"}
+
+data: [DONE]
+

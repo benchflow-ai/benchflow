@@ -1,0 +1,14 @@
+grading-plan/task.md
+  mode: blocks
+  title: acme/grading-plan
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  rubric: 4 criteria, 0 gates, 6 points; judges agent, vlm
+  behaviors: process.loop
+  grading needs a model: yes: agent judges 2 criteria; llm judges 1 behavior; vlm judges 2 criteria
+  judge agent: model from the run, harness judge-loop@1*, samples 3, aggregate median*, min_samples 3*, per rubric*, timeout 10m, budget tokens 1M; * marks a default
+  judge llm: model from the run, samples 3, aggregate median*, min_samples 3*, per criterion*, timeout 2m*; * marks a default
+  judge vlm: model from the run, samples 1, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 45m (scripts 5m + agent 3 x 10m + llm 3 x 2m + vlm 2 x 2m; in sequence, before retries)
+  ok

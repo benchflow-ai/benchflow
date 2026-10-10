@@ -1,0 +1,11 @@
+lamina-review-room/task.md
+  mode: blocks
+  title: aryaniyaps/dev-review-room-lamina-v3
+  instruction: 333 words; starts '# dev-review-room — lamina init'
+  blocks: stage lamina_design, stage implement, stage fix, toml task
+  config: block (about, agent, authors, description, import, keywords, name, sandbox, stages, verifier)
+  grading needs a model: yes (a script): [verifier] models = true; [verifier] env names OPENAI_API_KEY; stages/fix/verifier/test.sh runs RewardKit, whose judges call a model
+  worst-case grading time: 12m15s (scripts 5m + scripts 45s (stage lamina_init) + scripts 45s (stage lamina_design) + scripts 45s (stage implement) + scripts 5m (stage fix); in sequence, before retries)
+  warning: verifier.env.OPENAI_API_KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  warning: verifier.env.REWARDKIT_JUDGE resolves ${REWARDKIT_JUDGE} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  ok

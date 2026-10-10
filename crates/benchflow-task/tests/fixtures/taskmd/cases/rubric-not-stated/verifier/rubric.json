@@ -1,0 +1,31 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "quiet",
+      "gate": true,
+      "judge": "test",
+      "check": "t",
+      "text": "Q."
+    },
+    {
+      "id": "quoted",
+      "gate": true,
+      "judge": "test",
+      "check": "t",
+      "text": "Q.",
+      "stated": "the **bug** in app.py"
+    },
+    {
+      "id": "missing-quote",
+      "gate": true,
+      "judge": "test",
+      "check": "t",
+      "text": "Q.",
+      "stated": [
+        "Fix the bug",
+        "never said anywhere at all, not even once, in the whole entire long instruction text"
+      ]
+    }
+  ]
+}

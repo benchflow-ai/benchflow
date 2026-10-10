@@ -1,0 +1,13 @@
+snapshots/task.md
+  mode: blocks
+  title: acme/snapshots
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [verifier] snapshot[0] needs run, the command (task.md)
+  error: [verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so an imported entry needs them added (task.md)
+  error: [verifier] snapshot[1] reads is a list of absolute paths, without .. (task.md)
+  error: [verifier] snapshot[1] timeout is a duration, such as "2m" (task.md)
+  FAILED

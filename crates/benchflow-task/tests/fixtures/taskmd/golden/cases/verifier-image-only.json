@@ -1,0 +1,32 @@
+{
+  "path": "verifier-image-only/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/verifier-image-only\"\nversion = \"1.0.0\"\n[verifier]\nisolation = \"separate\"\n\n[verifier.sandbox]\nimage = \"grader:1\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/verifier-image-only",
+    "version": "1.0.0",
+    "verifier": {
+      "isolation": "separate",
+      "sandbox": {
+        "image": "grader:1"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/verifier-image-only",
+  "ok": true
+}

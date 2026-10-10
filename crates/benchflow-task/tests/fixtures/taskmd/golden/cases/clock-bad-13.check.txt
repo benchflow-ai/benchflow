@@ -1,0 +1,10 @@
+clock-bad-13/task.md
+  mode: blocks
+  title: acme/clock-bad-13
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [sandbox] clock start is an RFC 3339 time with an offset, such as "2026-03-14T09:00:00-04:00" ({why}) (task.md)
+  FAILED

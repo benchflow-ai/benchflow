@@ -1,0 +1,52 @@
+{
+  "path": "evidence-no-workdir/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/evidence-no-workdir\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/evidence-no-workdir",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "/abs/report.md",
+          "rel.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "evidence /abs/report.md is an absolute path, and with no [sandbox] workdir and no outputs the checker cannot tell whether the runtime saves it: set workdir, or declare the path in outputs",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/evidence-no-workdir",
+  "ok": true
+}

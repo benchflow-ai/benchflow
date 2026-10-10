@@ -1,0 +1,67 @@
+{
+  "task_path": "hello-2",
+  "agent": "oracle",
+  "model": null,
+  "reasoning_effort": null,
+  "environment": "docker",
+  "acp_transport": "docker-stdio",
+  "environment_manifest": null,
+  "skill_mode": "no-skill",
+  "skill_source": "none",
+  "requested_skills_dir": null,
+  "effective_skills_dir": null,
+  "skills_sandbox_dir": null,
+  "include_task_skills": false,
+  "sandbox_user": "agent",
+  "sandbox_locked_paths": [
+    "/oracle",
+    "/solution",
+    "/verifier",
+    "/tests",
+    "/testbed_verify"
+  ],
+  "sandbox_setup_timeout": 120,
+  "skip_install": false,
+  "agent_install_timeout": null,
+  "context_root": null,
+  "base_image_override": null,
+  "timeout_sec": 600,
+  "concurrency": 3,
+  "agent_idle_timeout_sec": 600,
+  "started_at": "2026-09-29 12:46:15.557433",
+  "agent_env": {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "oracle",
+          "model": null,
+          "reasoning_effort": null,
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ],
+  "loop": {
+    "strategy": "single-shot"
+  },
+  "usage_tracking": {
+    "requested": "auto"
+  },
+  "task_digest": "sha256:46512101b38d51817a460f987ad0670c1c8ae8c5bf6cb30c2fbf88303a433dba"
+}

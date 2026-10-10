@@ -1,0 +1,51 @@
+{
+  "path": "stages-ok/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "review",
+      "info": "stage review",
+      "body": "Review it.",
+      "line": 3
+    },
+    {
+      "kind": "stage",
+      "arg": "ship",
+      "info": "stage ship",
+      "body": "Ship it.",
+      "line": 7
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/stages-ok\"\nversion = \"1.0.0\"\n[stages.intro]\nunlock = \"at_start\"\n\n[stages.review]\nunlock = \"on_submit\"\n\n[stages.ship]\nunlock = \"after:review\"",
+      "line": 11
+    }
+  ],
+  "config": {
+    "name": "acme/stages-ok",
+    "version": "1.0.0",
+    "stages": {
+      "intro": {
+        "unlock": "at_start"
+      },
+      "review": {
+        "unlock": "on_submit"
+      },
+      "ship": {
+        "unlock": "after:review"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/stages-ok",
+  "ok": true
+}

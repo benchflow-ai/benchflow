@@ -1,0 +1,69 @@
+# OpenCode's ACP server, as BenchFlow 0.8's `opencode`, without 0.8's LiteLLM
+# gateway wrapper (`opencode-proxy`, not ported): the agent talks to the
+# model's provider directly.
+name = "opencode"
+description = "OpenCode via ACP: open-source coding agent (TypeScript), or headless with opencode run"
+acp_registry = "opencode"
+# OpenCode reads global skills from ~/.config/opencode/skills (Harbor copies them there).
+skill_paths = ["$HOME/.config/opencode/skills"]
+home_dirs = [".opencode"]
+
+[install]
+npm = "opencode-ai@1.18.11"
+bin = "opencode"
+# opencode-ai can install its bin as a native executable rather than a Node
+# script; running a native file through Node crashes at startup, so the
+# launcher checks which one it got.
+launcher = "auto"
+
+[launch]
+args = ["acp"]
+
+[headless]
+# `opencode run --format json`: one event per line. `--auto` approves every
+# permission the config does not deny; the effort is OpenCode's variant.
+command = '''exec /opt/benchflow/bin/opencode run --format json --thinking --auto ${BENCHFLOW_RESUME:+--continue} ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} ${BENCHFLOW_EFFORT:+--variant "$BENCHFLOW_EFFORT"} -- "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null'''
+output = "opencode-json"
+
+[credentials]
+# OpenCode reads the key of the provider named in its `provider/model` id.
+family = "model"
+
+[model]
+select = "auto"
+format = "provider/model"
+
+# OpenCode's own provider ids would read the provider's key from the
+# environment, so a provider's endpoint is configured as a provider of its own
+# (OPENCODE_CONFIG_CONTENT is merged into OpenCode's config). The OpenAI one
+# uses @ai-sdk/openai-compatible (Chat Completions): OpenCode's built-in
+# `openai` provider calls the Responses API, which most providers lack (0.8's
+# opencode-proxy did the same). The small model is pinned to the same model so
+# OpenCode's title helper does not ask for one the provider lacks.
+[providers.openai]
+api = "chat"
+model = "benchflow/{model}"
+
+[providers.openai.env]
+OPENCODE_CONFIG_CONTENT = '{"provider": {"benchflow": {"npm": "@ai-sdk/openai-compatible", "name": "BenchFlow forwarder", "options": {"baseURL": "{base_url}", "apiKey": "{key}"}, "models": {"{model}": {"name": "{model}"}}}}, "model": "benchflow/{model}", "small_model": "benchflow/{model}"}'
+
+[providers.anthropic]
+model = "benchflow-anthropic/{model}"
+
+[providers.anthropic.env]
+# @ai-sdk/anthropic takes the base URL with its version.
+OPENCODE_CONFIG_CONTENT = '{"provider": {"benchflow-anthropic": {"npm": "@ai-sdk/anthropic", "name": "BenchFlow forwarder", "options": {"baseURL": "{base_url}/v1", "apiKey": "{key}"}, "models": {"{model}": {"name": "{model}"}}}}, "model": "benchflow-anthropic/{model}", "small_model": "benchflow-anthropic/{model}"}'
+
+# Sessions live under ~/.local/share/opencode. Over ACP a later stage loads
+# the previous stage's session (session/load); headless it continues the
+# last session (`--continue`), as Harbor does.
+[resume]
+acp = true
+headless = true
+session_dirs = [".local/share/opencode"]
+
+[options.version]
+type = "string"
+description = "OpenCode version to install."
+default = "1.18.11"
+install = "opencode-ai"

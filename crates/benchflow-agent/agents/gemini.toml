@@ -1,0 +1,57 @@
+# Google's Gemini CLI in its ACP mode, as BenchFlow 0.8's `gemini`.
+name = "gemini"
+aliases = ["gemini-cli"]
+description = "Google Gemini CLI via ACP, or headless with gemini --prompt"
+acp_registry = "gemini"
+skill_paths = ["$HOME/.gemini/skills"]
+
+[install]
+npm = "@google/gemini-cli@0.42.0"
+bin = "gemini"
+
+[launch]
+# BenchFlow isolates the agent in the sandbox and grants tool approval with
+# --yolo. Gemini CLI 0.42 also wants the workspace trusted before it honors
+# that mode, and a headless run cannot answer the trust prompt.
+args = ["--acp", "--yolo", "--skip-trust"]
+
+[headless]
+# Gemini CLI's prompt mode prints only its answer, as text.
+command = '''exec /opt/benchflow/bin/gemini --yolo --skip-trust ${BENCHFLOW_RESUME:+--resume latest} ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} --prompt "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null'''
+output = "gemini-text"
+env = { GEMINI_CLI_TRUST_WORKSPACE = "true" }
+
+[credentials]
+family = "gemini"
+
+[model]
+select = "auto"
+default = "gemini-2.5-flash"
+# The CLI takes bare Google model ids; `google/` is models.dev's prefix.
+strip_prefixes = ["google/"]
+
+# No [providers]: Gemini CLI speaks only Google's own API (it can take a base
+# URL for that, GOOGLE_GEMINI_BASE_URL), and no provider BenchFlow knows serves
+# it. A `<provider>/<model>` run with gemini is refused before any sandbox
+# starts.
+
+# Sessions live under ~/.gemini/tmp. Over ACP a later stage loads the
+# previous stage's session when the CLI offers session/load; headless it
+# runs `--resume latest`, as Harbor does.
+[resume]
+acp = true
+headless = true
+session_dirs = [".gemini/tmp"]
+
+[options.version]
+type = "string"
+description = "Gemini CLI version to install."
+default = "0.42.0"
+install = "@google/gemini-cli"
+
+[options.max_turns]
+type = "int"
+description = "Most turns in a session (Gemini CLI's model.maxSessionTurns setting)."
+min = 1
+file = ".gemini/settings.json"
+key = "model.maxSessionTurns"

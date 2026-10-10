@@ -1,0 +1,11 @@
+budget/task.md
+  mode: blocks
+  title: acme/budget
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [agent] budget tokens is a count: a whole number, or a string of a number and K (1,000) or M (1,000,000) that comes to a whole number, such as 400000, "400K", or "2M" (task.md)
+  error: [agent] budget tool_calls is a whole number, at least 1 (task.md)
+  FAILED

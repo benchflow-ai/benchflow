@@ -1,0 +1,67 @@
+# Snowflake Cortex Code in its ACP mode (`cortex acp serve`), installed from
+# the archive the public ACP registry lists for cortex-code 1.0.73, or
+# headless with `cortex --print` (Harbor's `cortex-code`) from the same
+# install. The executable sits in a versioned folder inside the archive.
+name = "cortex-code"
+aliases = ["cortex", "coco", "snowflake-cortex-code"]
+description = "Snowflake Cortex Code via ACP, or headless with cortex --print (needs a Snowflake account)"
+acp_registry = "cortex-code"
+home_dirs = [".snowflake"]
+
+[install.binary.linux-x86_64]
+archive = "https://sfc-repo.snowflakecomputing.com/cortex-code-cli/a4643c4278/1.0.73%2B180523.e6179a031de9/coco-1.0.73%2B180523.e6179a031de9-linux-amd64.tar.gz"
+cmd = "./coco-1.0.73+180523.e6179a031de9-linux-amd64/cortex"
+
+[install.binary.linux-aarch64]
+archive = "https://sfc-repo.snowflakecomputing.com/cortex-code-cli/a4643c4278/1.0.73%2B180523.e6179a031de9/coco-1.0.73%2B180523.e6179a031de9-linux-arm64.tar.gz"
+cmd = "./coco-1.0.73+180523.e6179a031de9-linux-arm64/cortex"
+
+[launch]
+args = ["acp", "serve"]
+
+[headless]
+# Harbor's run: the Snowflake connection is written to
+# ~/.snowflake/config.toml from the SNOWFLAKE_* variables (values
+# TOML-escaped, the file mode 600, removed when cortex exits), then
+# `cortex --print` with its stream-json output, which is Claude Code's
+# shape. The model is the last part of the id.
+command = '''e() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ]; then
+  echo "BenchFlow: Cortex Code needs SNOWFLAKE_ACCOUNT and SNOWFLAKE_USER; pass them with --env" >&2
+  exit 2
+fi
+mkdir -p "$HOME/.snowflake"
+c="$HOME/.snowflake/config.toml"
+(
+  umask 077
+  printf 'default_connection_name = "default"\n\n[connections.default]\naccount = "%s"\nuser = "%s"\n' "$(e "$SNOWFLAKE_ACCOUNT")" "$(e "$SNOWFLAKE_USER")"
+  [ -z "$SNOWFLAKE_HOST" ] || printf 'host = "%s"\n' "$(e "$SNOWFLAKE_HOST")"
+  if [ -n "$SNOWFLAKE_PAT" ]; then
+    printf 'authenticator = "programmatic_access_token"\ntoken = "%s"\n' "$(e "$SNOWFLAKE_PAT")"
+  elif [ "$(printf '%s' "$SNOWFLAKE_AUTHENTICATOR" | tr A-Z a-z)" = oauth ]; then
+    printf 'authenticator = "oauth"\ntoken = "%s"\n' "$(e "$SNOWFLAKE_PASSWORD")"
+  else
+    printf 'authenticator = "%s"\npassword = "%s"\n' "$(e "${SNOWFLAKE_AUTHENTICATOR:-snowflake}")" "$(e "$SNOWFLAKE_PASSWORD")"
+  fi
+  for v in ROLE WAREHOUSE DATABASE SCHEMA; do
+    eval "x=\${SNOWFLAKE_$v:-}"
+    [ -z "$x" ] || printf '%s = "%s"\n' "$(printf '%s' "$v" | tr A-Z a-z)" "$(e "$x")"
+  done
+) > "$c"
+m="${BENCHFLOW_MODEL##*/}"
+/opt/benchflow/bin/cortex-code --print "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" --dangerously-allow-all-tool-calls --auto-accept-plans --no-auto-update --output-format stream-json ${m:+--model "$m"} < /dev/null
+s=$?
+rm -f "$c"
+exit "$s"'''
+output = "claude-stream-json"
+env = { SF_SKIP_WARNING_FOR_READ_PERMISSIONS_ON_CONFIG_FILE = "true" }
+
+[credentials]
+family = "env"
+env = ["SNOWFLAKE_PAT", "SNOWFLAKE_PASSWORD"]
+account = "a Snowflake account with Cortex Code: set SNOWFLAKE_ACCOUNT and SNOWFLAKE_USER with --env, and a programmatic access token as SNOWFLAKE_PAT; Snowflake serves the models"
+
+[model]
+select = "auto"
+# Harbor passes only the last part of the model id.
+strip_prefixes = ["snowflake/", "cortex/"]

@@ -1,0 +1,45 @@
+{
+  "path": "rubric-scoring-shape/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-scoring-shape\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-scoring-shape",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "works",
+        "gate": true,
+        "judge": "test",
+        "check": "test_works",
+        "text": "It works.",
+        "stated": "Fix the bug"
+      }
+    ],
+    "scoring": "points"
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "scoring is an object",
+      "where": "verifier/rubric.json"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-scoring-shape",
+  "ok": false
+}

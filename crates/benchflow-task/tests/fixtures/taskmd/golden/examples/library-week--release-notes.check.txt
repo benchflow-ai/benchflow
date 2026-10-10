@@ -1,0 +1,11 @@
+library-week--release-notes/task.md
+  mode: blocks
+  title: Release notes for the week's changes
+  instruction: 23 words; starts 'Write `/repo/CHANGELOG.md` for datekit 0.4.0, covering every change ma'
+  blocks: toml task
+  config: block (agent, name, sandbox, title, version)
+  rubric: 3 criteria, 0 gates, 4 points; judges llm
+  grading needs a model: yes: llm judges 3 criteria
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 6m (llm 3 x 2m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  ok

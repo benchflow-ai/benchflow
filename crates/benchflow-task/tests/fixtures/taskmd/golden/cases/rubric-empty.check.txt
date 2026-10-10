@@ -1,0 +1,11 @@
+rubric-empty/task.md
+  mode: blocks
+  title: acme/rubric-empty
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 0 criteria, 0 gates, 0 points; judges 
+  grading needs a model: no (0 criteria decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: needs a non-empty criteria list (or extends) (verifier/rubric.json)
+  FAILED

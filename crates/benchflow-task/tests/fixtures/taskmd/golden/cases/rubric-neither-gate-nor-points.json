@@ -1,0 +1,43 @@
+{
+  "path": "rubric-neither-gate-nor-points/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-neither-gate-nor-points\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-neither-gate-nor-points",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "loose",
+        "judge": "test",
+        "check": "t",
+        "text": "L.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "set gate: true or give points",
+      "where": "verifier/rubric.json criteria[0]"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-neither-gate-nor-points",
+  "ok": false
+}

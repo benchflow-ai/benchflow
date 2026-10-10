@@ -1,0 +1,121 @@
+# Block's goose, installed from the release archive the public ACP registry
+# lists for goose 1.54.0: in its ACP mode (`goose acp`) by default, or
+# headless with `goose run --output-format stream-json`, as Harbor runs it.
+name = "goose"
+aliases = ["block-goose"]
+description = "goose (Block) via ACP, or headless with goose run; any provider whose key is set"
+acp_registry = "goose"
+skill_paths = ["$HOME/.config/goose/skills"]
+home_dirs = [".config/goose"]
+
+[install.binary.linux-x86_64]
+archive = "https://github.com/block/goose/releases/download/v1.54.0/goose-x86_64-unknown-linux-gnu.tar.bz2"
+cmd = "./goose"
+sha256 = "bf01cb6359f7a2b1acb54ca4827e1d059b18aabb3d2b75202e21066cfd3a3396"
+
+[install.binary.linux-aarch64]
+archive = "https://github.com/block/goose/releases/download/v1.54.0/goose-aarch64-unknown-linux-gnu.tar.bz2"
+cmd = "./goose"
+sha256 = "8c7ad233bdaf05f10a52ef36f3ce50f839cb1d2d1df5b31b172af7150c1c288e"
+
+[launch]
+# goose needs GOOSE_PROVIDER; pick it from the key the login set, as
+# Harbor's goose agent does from the model's provider. No keyring in a
+# sandbox.
+command = '''if [ -z "$GOOSE_PROVIDER" ]; then if [ -n "$ANTHROPIC_API_KEY" ]; then export GOOSE_PROVIDER=anthropic; elif [ -n "$OPENAI_API_KEY" ]; then export GOOSE_PROVIDER=openai; elif [ -n "$GOOGLE_API_KEY" ]; then export GOOSE_PROVIDER=google; fi; fi; exec /opt/benchflow/bin/goose acp'''
+env = { GOOSE_DISABLE_KEYRING = "true" }
+
+[headless]
+# The provider and model come from the `provider/model` id; Gemini keys are
+# accepted under any of their names. The instruction file is goose's
+# instructions file.
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"; GOOSE_PROVIDER="${GOOSE_PROVIDER:-$p}" GOOSE_MODEL="${GOOSE_MODEL:-$m}" GOOGLE_API_KEY="${GOOGLE_API_KEY:-${GEMINI_API_KEY:-$GOOGLE_GENERATIVE_AI_API_KEY}}" exec /opt/benchflow/bin/goose run -i "$BENCHFLOW_INSTRUCTION_FILE" ${BENCHFLOW_RESUME:+--resume} --output-format stream-json "$@" < /dev/null'''
+output = "goose-stream-json"
+env = { GOOSE_MODE = "auto", GOOSE_DISABLE_KEYRING = "1" }
+
+# Harbor's goose config: the developer, todo and summon extensions.
+[[headless.files]]
+path = ".config/goose/config.yaml"
+contents = '''
+extensions:
+  developer:
+    bundled: true
+    display_name: Developer
+    enabled: true
+    name: developer
+    timeout: 300
+    type: builtin
+  todo:
+    bundled: true
+    display_name: Todo
+    enabled: true
+    name: todo
+    type: platform
+  summon:
+    bundled: true
+    display_name: Summon
+    enabled: true
+    name: summon
+    type: platform
+'''
+
+[credentials]
+# goose reads the key of the provider it is set to (anthropic, openai,
+# google, ...): the model's provider decides.
+family = "model"
+
+[model]
+select = "auto"
+format = "provider/model"
+
+# Sessions live under ~/.local/share/goose. Over ACP a later stage loads the
+# previous stage's session when goose offers session/load; headless it runs
+# `goose run --resume`, as Harbor does.
+[resume]
+acp = true
+headless = true
+session_dirs = [".local/share/goose"]
+
+# Harbor's goose options. The release archive is pinned with its checksum,
+# so there is no version option; pin another release in a project manifest.
+[options.max_turns]
+type = "int"
+description = "Most agent turns."
+min = 1
+flag = "--max-turns"
+harnesses = ["headless"]
+
+[options.temperature]
+type = "float"
+description = "Model sampling temperature."
+min = 0.0
+max = 1.0
+env = "GOOSE_TEMPERATURE"
+
+[options.max_tokens]
+type = "int"
+description = "Most tokens per model response."
+min = 1
+max = 2147483647
+env = "GOOSE_MAX_TOKENS"
+
+[options.context_limit]
+type = "int"
+description = "The model's context limit, in tokens."
+min = 1
+env = "GOOSE_CONTEXT_LIMIT"
+
+[providers.openai]
+# goose's `openai` provider (Chat Completions) joins OPENAI_HOST and
+# OPENAI_BASE_PATH, so the host ends in `/` and the path is relative to it.
+# GOOSE_PROVIDER and GOOSE_MODEL win over the run's model in both commands,
+# so nothing is selected over ACP.
+key = "OPENAI_API_KEY"
+clear = ["OPENAI_BASE_URL"]
+model = ""
+
+[providers.openai.env]
+GOOSE_PROVIDER = "openai"
+GOOSE_MODEL = "{model}"
+OPENAI_HOST = "{base_url}/"
+OPENAI_BASE_PATH = "chat/completions"

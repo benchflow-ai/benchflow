@@ -1,0 +1,127 @@
+{
+  "path": "stages/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "a",
+      "info": "stage a",
+      "body": "A.",
+      "line": 3
+    },
+    {
+      "kind": "stage",
+      "arg": "e",
+      "info": "stage e",
+      "body": "E.",
+      "line": 7
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/stages\"\nversion = \"1.0.0\"\n[stages.a]\nunlock = \"at_start\"\n\n[stages.b]\nunlock = \"at_start\"\n\n[stages.c]\nsubmit = \"x\"\n\n[stages.d]\nunlock = \"whenever\"\n\n[stages.e]\nunlock = \"after:a\"\nready = { interval = \"x\" }\n\n[stages.e.agent]\ntimeout = 5\n\n[stages.e.verifier]\nfeedback = \"rationales\"\nsnapshot = [{ run = \"x\" }]",
+      "line": 11
+    }
+  ],
+  "config": {
+    "name": "acme/stages",
+    "version": "1.0.0",
+    "stages": {
+      "a": {
+        "unlock": "at_start"
+      },
+      "b": {
+        "unlock": "at_start"
+      },
+      "c": {
+        "submit": "x"
+      },
+      "d": {
+        "unlock": "whenever"
+      },
+      "e": {
+        "unlock": "after:a",
+        "ready": {
+          "interval": "x"
+        },
+        "agent": {
+          "timeout": 5
+        },
+        "verifier": {
+          "feedback": "rationales",
+          "snapshot": [
+            {
+              "run": "x"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[stages.e.verifier] feedback = \"rationales\" is cut: a trainable seat may be shown its verdicts, levels, and scores, never a judge's rationales. Write feedback = \"verdicts\" or \"none\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.d] unlock must be on_submit, on_request, at_start, after:<stage>, or at_turn:<n>",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.e.verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so an imported entry needs them added",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "only one stage can unlock at_start: its prompt is the instruction",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "stage a unlocks at_start, so its prompt is the instruction; remove its ```stage a block",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.c] needs unlock, when its prompt is revealed: on_submit, on_request, at_start, after:<stage>, or at_turn:<n>",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.c] has no ```stage c block",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.d] has no ```stage d block",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.e.agent] timeout must be a duration such as \"90s\", \"15m\", or \"1h30m\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.e] ready needs run, the command that must pass",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.e] ready interval must be a duration such as \"5s\" or \"1m\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/stages",
+  "ok": false
+}

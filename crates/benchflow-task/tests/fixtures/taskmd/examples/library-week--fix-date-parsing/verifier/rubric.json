@@ -1,0 +1,11 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    { "id": "tests-pass", "gate": true, "judge": "test", "check": "tests/test_parse.py",
+      "text": "The parse tests pass, including hidden cases with offsets and fractional seconds.",
+      "stated": ["Fix it so a trailing `Z` means UTC", "the failing test is `tests/test_parse.py::test_trailing_z`"] },
+    { "id": "api-unchanged", "gate": true, "judge": "test", "check": "test_public_api_unchanged",
+      "text": "The public names and signatures in datekit are unchanged.",
+      "stated": "Keep the public API unchanged" }
+  ]
+}

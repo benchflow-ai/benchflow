@@ -1,0 +1,35 @@
+{
+  "path": "durations-ok/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/durations-ok\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"1h30m\"\n\n[sandbox]\nbuild_timeout = \"0.5s\"\n\n[verifier]\ntimeout = \"90s\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/durations-ok",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "1h30m"
+    },
+    "sandbox": {
+      "build_timeout": "0.5s"
+    },
+    "verifier": {
+      "timeout": "90s"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/durations-ok",
+  "ok": true
+}

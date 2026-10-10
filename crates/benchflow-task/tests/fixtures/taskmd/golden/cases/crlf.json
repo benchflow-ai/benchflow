@@ -1,0 +1,34 @@
+{
+  "path": "crlf/task.md",
+  "mode": "blocks",
+  "instruction": "Fix it.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"\n\n[agent]\ntimout = \"1m\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/x",
+    "agent": {
+      "timout": "1m"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key [agent] timout; did you mean timeout? [agent] holds budget, network, network_reason, on_timeout, system_prompt_append, timeout, timeout_basis, user, or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix it.",
+  "title": "acme/x",
+  "ok": false
+}

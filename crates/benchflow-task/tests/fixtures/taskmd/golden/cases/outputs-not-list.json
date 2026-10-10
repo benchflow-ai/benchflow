@@ -1,0 +1,35 @@
+{
+  "path": "outputs-not-list/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/outputs-not-list\"\nversion = \"1.0.0\"\n[sandbox]\noutputs = \"/app\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/outputs-not-list",
+    "version": "1.0.0",
+    "sandbox": {
+      "outputs": "/app"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] outputs is a list of paths or { path, save_as, max_bytes } tables",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/outputs-not-list",
+  "ok": false
+}

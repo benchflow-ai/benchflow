@@ -1,0 +1,9 @@
+dotfiles-recipe-explain/task.md
+  mode: blocks
+  title: local/recipe-explain-clarity
+  instruction: 53 words; starts '# Task'
+  blocks: toml task
+  config: block (about, agent, authors, description, import, keywords, name, oracle, sandbox, verifier)
+  grading needs a model: yes (a script): [verifier] models = true; verifier/test.sh runs RewardKit, whose judges call a model
+  worst-case grading time: 20m (scripts 20m; in sequence, before retries)
+  ok

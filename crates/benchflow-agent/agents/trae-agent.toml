@@ -1,0 +1,56 @@
+# trae-agent (ByteDance), run headless with `trae-cli run`, as Harbor's
+# `trae-agent` agent runs it; its trajectory file is followed while it works.
+name = "trae-agent"
+description = "trae-agent (ByteDance), headless with trae-cli run"
+
+[install]
+# trae-agent is not on PyPI: its source at a pinned commit, installed with a
+# pinned uv as a tool with its own Python 3.12. Its `evaluation` extra holds
+# `docker` and `pexpect`, which trae-agent imports even when it runs locally.
+# Its dependencies resolve as of the commit's date: newer ones break it (mcp
+# 1.12.2 imports a pydantic internal that pydantic later removed).
+installer = '''
+set -eu
+case "$(uname -m)" in x86_64|amd64) a=x86_64 ;; aarch64|arm64) a=aarch64 ;; *) echo "BenchFlow: uv has no build for $(uname -m)" >&2; exit 1 ;; esac
+mkdir -p uv
+curl -fsSL "https://github.com/astral-sh/uv/releases/download/0.13.0/uv-$a-unknown-linux-musl.tar.gz" | tar -xz -C uv --strip-components=1 --no-same-owner
+export UV_PYTHON_INSTALL_DIR="$HOME/python" UV_PYTHON_PREFERENCE=only-managed UV_CACHE_DIR=/tmp/benchflow-uv-cache UV_NO_PROGRESS=1 UV_TOOL_DIR="$HOME/tools" UV_TOOL_BIN_DIR="$HOME/bin"
+uv/uv tool install --python 3.12 --exclude-newer 2026-02-06T00:00:00Z "trae-agent[evaluation] @ https://github.com/bytedance/trae-agent/archive/e839e559ac61bdd0e057c375dd1dee391fee797d.tar.gz"
+rm -rf /tmp/benchflow-uv-cache
+'''
+links = ["bin/trae-cli"]
+verify = "/opt/benchflow/bin/trae-cli --help > /dev/null"
+
+[headless]
+# The config names the provider and model from the `provider/model` id and
+# no key: trae-agent reads `<PROVIDER>_API_KEY` (and `<PROVIDER>_BASE_URL`)
+# from the environment ahead of the file. Settings are Harbor's defaults.
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+case "$p" in
+  anthropic|openai|google|openrouter|doubao|azure|ollama) ;;
+  *) echo "BenchFlow: trae-agent takes anthropic/, openai/, google/, openrouter/, doubao/, azure/ or ollama/ models, not '$BENCHFLOW_MODEL'" >&2; exit 2 ;;
+esac
+mkdir -p "$HOME/.benchflow"
+c="$HOME/.benchflow/trae_config.yaml"
+t="$HOME/.benchflow/trae-trajectory.json"
+printf 'agents:\n  trae_agent:\n    enable_lakeview: false\n    model: benchflow_model\n    max_steps: 200\n    tools: [bash, str_replace_based_edit_tool, sequentialthinking, task_done]\nmodel_providers:\n  %s:\n    provider: %s\n    api_key: read-from-environment\nmodels:\n  benchflow_model:\n    model_provider: %s\n    model: "%s"\n    max_tokens: 16384\n    temperature: 0.7\n    top_p: 0.95\n    top_k: 20\n    max_retries: 10\n    parallel_tool_calls: true\n' "$p" "$p" "$p" "$m" > "$c"
+d=/opt/benchflow/agents/trae-agent
+exec "$d/tools/trae-agent/bin/python" "$HOME/.benchflow/follow.py" "$t" agent_steps llm_messages -- \
+  "$d/bin/trae-cli" run --file "$BENCHFLOW_INSTRUCTION_FILE" --config-file "$c" --working-dir "$PWD" \
+  --trajectory-file "$t" --console-type simple'''
+output = "trae-trajectory"
+
+[credentials]
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# trae-agent's `openai` provider calls the Responses API, on
+# OPENAI_BASE_URL, which it reads ahead of its config file.
+api = "responses"
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"

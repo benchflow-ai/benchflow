@@ -1,0 +1,10 @@
+fence-after-blocks/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 2 words; starts 'Fix it.'
+  blocks: notes, toml task
+  config: block (name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: fenced block ```bash after the first task.md block: move it into the instruction (task.md:7)
+  FAILED

@@ -1,0 +1,55 @@
+{
+  "path": "library-week--triage-issues/task.md",
+  "mode": "blocks",
+  "instruction": "The issue tracker export for `datekit` is in `/repo/issues/`, one JSON file per open issue. Label every issue as `bug`, `feature`, or `question`, and pick the three most urgent bugs.\n\nWrite `/repo/triage.json` as `{\"labels\": {\"<issue id>\": \"<label>\"}, \"urgent\": [\"<id>\", \"<id>\", \"<id>\"]}`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/library-week-triage-issues\"\ntitle = \"Triage the open issues\"\nversion = \"1.0.0\"\n\n[agent]\ntimeout = \"20m\"\nnetwork = \"none\"\n\n[sandbox]\nimage = \"python:3.12-slim\"\nworkdir = \"/repo\"",
+      "line": 5
+    }
+  ],
+  "config": {
+    "name": "examples/library-week-triage-issues",
+    "title": "Triage the open issues",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "20m",
+      "network": "none"
+    },
+    "sandbox": {
+      "image": "python:3.12-slim",
+      "workdir": "/repo"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "labels",
+        "points": 2,
+        "judge": "test",
+        "check": "test_labels_match_reference",
+        "text": "At least 90% of labels match the maintainers' labels.",
+        "stated": "Label every issue as `bug`, `feature`, or `question`"
+      },
+      {
+        "id": "urgent",
+        "points": 1,
+        "judge": "test",
+        "check": "test_urgent_are_bugs_with_most_reports",
+        "text": "The three urgent issues are bugs, and at least two are among the three most reported.",
+        "stated": "pick the three most urgent bugs"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "The issue tracker export for `datekit` is in `/repo/issues/`, one JSON file per open issue. Label every issue as `bug`, `feature`, or `question`, and pick the three most urgent bugs.\n\nWrite `/repo/triage.json` as `{\"labels\": {\"<issue id>\": \"<label>\"}, \"urgent\": [\"<id>\", \"<id>\", \"<id>\"]}`.",
+  "title": "Triage the open issues",
+  "ok": true
+}

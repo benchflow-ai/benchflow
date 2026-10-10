@@ -1,0 +1,37 @@
+{
+  "path": "injection-shape/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/injection-shape\"\nversion = \"1.0.0\"\n[integrity.controls]\ninjection = \"known_bad\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/injection-shape",
+    "version": "1.0.0",
+    "integrity": {
+      "controls": {
+        "injection": "known_bad"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[integrity.controls] injection is a list of the controls to pair with injected twins, such as [\"known_bad\"]",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/injection-shape",
+  "ok": false
+}

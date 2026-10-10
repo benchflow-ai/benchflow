@@ -1,0 +1,10 @@
+grading-episodes/task.md
+  mode: blocks
+  title: acme/grading-episodes
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, training, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  episodes: fork false, max_concurrent unlimited
+  ok

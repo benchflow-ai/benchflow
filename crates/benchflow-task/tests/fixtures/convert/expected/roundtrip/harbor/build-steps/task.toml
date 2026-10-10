@@ -1,0 +1,30 @@
+schema_version = "1.4"
+multi_step_reward_strategy = "final"
+
+[task]
+name = "acme/build-steps"
+version = "2.1.0"
+
+[environment]
+docker_image = "ubuntu:24.04"
+network_mode = "no-network"
+
+# Configure first.
+[[steps]]
+name = "configure"
+min_reward = 1.0
+
+[steps.agent]
+timeout_sec = 300
+
+# Then build.
+[[steps]]
+name = "build"
+min_reward = { correctness = 0.5 }
+
+[steps.verifier]
+timeout_sec = 60
+environment_mode = "separate"
+
+[[steps.artifacts]]
+source = "/app/build.log"

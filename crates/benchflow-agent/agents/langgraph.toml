@@ -1,0 +1,41 @@
+# A LangGraph graph you write, run headless by BenchFlow's runner script
+# runners/run_langgraph.py. The project layout is Harbor's `langgraph`
+# agent's: a langgraph.json mapping graph ids to `./file.py:graph`, where the
+# graph is compiled or built by a factory from the run config.
+name = "langgraph"
+description = "your LangGraph graph (Python), headless through BenchFlow's runner; needs a langgraph.json in the task"
+
+[install]
+uv-venv = [
+  "langgraph==1.2.14",
+  "langchain==1.4.4",
+  "langchain-openai==1.7.0",
+  "langchain-anthropic==1.7.5",
+  "langchain-google-genai==4.4.0",
+  "python-dotenv==1.2.4",
+]
+python = "3.12"
+verify = "/opt/benchflow/agents/langgraph/venv/bin/python -c \"import importlib.metadata as m, langgraph.graph; print('langgraph', m.version('langgraph'))\""
+
+[headless]
+# The project comes from the task: LANGGRAPH_PROJECT=<folder holding
+# langgraph.json> (default: the working folder), LANGGRAPH_GRAPH=<id> when it
+# has several, LANGGRAPH_CONFIGURABLE (JSON). The graph gets the model as
+# config["configurable"]["model"] (`openai:gpt-5`). Python graphs only.
+command = '''exec /opt/benchflow/agents/langgraph/venv/bin/python -u "$HOME/.benchflow/runners/run_langgraph.py" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+
+[[headless.files]]
+path = ".benchflow/runners/bf_events.py"
+runner = "bf_events.py"
+
+[[headless.files]]
+path = ".benchflow/runners/run_langgraph.py"
+runner = "run_langgraph.py"
+
+[credentials]
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"

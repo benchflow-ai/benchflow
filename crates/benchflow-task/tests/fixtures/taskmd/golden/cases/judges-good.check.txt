@@ -1,0 +1,11 @@
+judges-good/task.md
+  mode: blocks
+  title: acme/judges-good
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  rubric: 1 criteria, 0 gates, 2 points; judges agent
+  grading needs a model: yes: agent judges 1 criterion
+  judge agent: model m, harness judge-loop@1, samples 3, aggregate median*, min_samples 3*, per rubric, timeout 10m, brief verifier/judge.md*, budget tokens 2M tool_calls 100; * marks a default
+  worst-case grading time: 30m (agent 3 x 10m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  ok

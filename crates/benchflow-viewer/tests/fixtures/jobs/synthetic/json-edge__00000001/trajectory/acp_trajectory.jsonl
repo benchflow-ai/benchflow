@@ -1,0 +1,17 @@
+{"type": "future", "big": 123456789012345678901234567890, "neg": -9223372036854775809, "f": [1.0, 1e16, 1E-5, 0.1, -0.0, 1e400, 5e-324, 2.5e+300, 123456789.125]}
+{"type": "future", "dup": 1, "dup": 2, "dup2": {"a": 1}, "dup2": [3]}
+{"type": "future", "esc": "tab\tnl\nnul\u0000ctl\u001fdel\u007f quote\" back\\ slash\/", "uni": "caf\u00e9 世界 🎉"}
+{"type": 5, "text": "numeric type"}
+{"type": null, "text": "null type"}
+{"type": ["user_message"], "text": "list type"}
+{"type": "agent_message", "text": 12345678901234567890}
+{"type": "agent_message", "text": 1.5e-7}
+{"type": "agent_message", "text": false}
+{"type": "agent_message", "text": {"structured": [1, {"b": null}]}}
+{"type": "agent_message"}
+[{"type": "agent_message", "text": "a list line"}]
+"just a string"
+{"type": "agent_message", "text": "trailing comma",}
+{"type": "agent_message", "text": "NaN value", "n": NaN, "i": -Infinity}
+  {"type": "agent_message", "text": "padded"}  
+{"type": "agent_thought", "text": "\ud800\udc00 pair at start"}

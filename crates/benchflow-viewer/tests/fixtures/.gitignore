@@ -1,0 +1,3 @@
+# The repository ignores jobs/ (where bench writes results); these job
+# folders are test fixtures and must be tracked.
+!jobs/

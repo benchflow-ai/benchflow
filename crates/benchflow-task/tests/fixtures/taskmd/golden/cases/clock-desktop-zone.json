@@ -1,0 +1,43 @@
+{
+  "path": "clock-desktop-zone/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-desktop-zone\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"20m\"\nnetwork = \"none\"\n\n[sandbox]\nclock = { start = \"2026-03-14T09:00:00-07:00\", advance = \"none\", enforce = \"world\" }\n\n[world]\nkind = \"virtual\"\n\n[world.desktop]\ntimezone = \"America/Los_Angeles\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-desktop-zone",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "20m",
+      "network": "none"
+    },
+    "sandbox": {
+      "clock": {
+        "start": "2026-03-14T09:00:00-07:00",
+        "advance": "none",
+        "enforce": "world"
+      }
+    },
+    "world": {
+      "kind": "virtual",
+      "desktop": {
+        "timezone": "America/Los_Angeles"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-desktop-zone",
+  "ok": true
+}

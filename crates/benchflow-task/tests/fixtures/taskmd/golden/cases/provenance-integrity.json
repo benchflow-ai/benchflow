@@ -1,0 +1,59 @@
+{
+  "path": "provenance-integrity/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/provenance-integrity\"\nversion = \"1.0.0\"\n[provenance]\ntrace = \"x\"\nauthor = \"y\"\n\n[integrity]\nprofile = \"shared-hardened\"\nlevel = 3\n\n[integrity.controls]\nno_op = \"controls/no-op.sh\"\nbad = \"x\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/provenance-integrity",
+    "version": "1.0.0",
+    "provenance": {
+      "trace": "x",
+      "author": "y"
+    },
+    "integrity": {
+      "profile": "shared-hardened",
+      "level": 3,
+      "controls": {
+        "no_op": "controls/no-op.sh",
+        "bad": "x"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key 'author' in [provenance]; it holds derived_from, failure_mode, human_review, method, scrubbed, source, trace, trace_turns, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'level' in [integrity]; it holds answers, canary, controls, forbidden_sources, intended_use, profile, residual_risks, resources, threat_model, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'bad' in [integrity.controls]; it holds cheats, injection, known_bad, near_miss, no_op, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[integrity.controls] bad names x, which is not a file in the package",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/provenance-integrity",
+  "ok": false
+}

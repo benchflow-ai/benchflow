@@ -1,0 +1,15 @@
+{"type": "tool_call", "tool_call_id": "c1", "kind": "other", "title": "ToolSearch", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c2", "kind": "delete", "title": "remove temp dir", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c3", "kind": "mystery", "title": "??", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c4", "kind": " Execute ", "title": "run", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c5", "kind": "agent", "title": "spawn", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c6", "kind": "switch_mode", "title": "Switch to plan mode", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c7", "kind": "other", "title": "browser_navigate", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c8", "kind": "other", "title": "NotebookEdit", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c9", "kind": "other", "title": "oracle", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c10", "kind": "other", "title": "list files", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c11", "kind": "think", "title": "Plan the next step", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c12", "kind": "THINK", "title": "Agent run", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c13", "kind": "other", "title": "Skill: pdf", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c14", "kind": "move", "title": "mv a b", "status": "completed"}
+{"type": "tool_call", "tool_call_id": "c15", "kind": "other", "title": "terminal command", "status": "completed"}

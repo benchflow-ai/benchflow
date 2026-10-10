@@ -1,0 +1,68 @@
+# fx (fx.sh), a coding agent on the Vercel AI Gateway, run headless with
+# `fx ask --json`, as Harbor's `fx` agent runs it.
+name = "fx"
+description = "fx coding agent on the Vercel AI Gateway, headless with fx ask --json"
+skill_paths = ["$HOME/.fx/skills"]
+
+[install]
+# fx's own installer drops one static binary in $HOME/.local/bin. fx drives
+# its shell tool through tmux, so the image needs it.
+installer = '''
+set -eu
+if ! command -v tmux >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq tmux bash;
+  elif command -v dnf >/dev/null 2>&1; then dnf -y install tmux bash;
+  elif command -v apk >/dev/null 2>&1; then apk add --no-cache tmux bash;
+  else echo 'BenchFlow: fx needs tmux, and the image has no apt-get, dnf or apk to add it' >&2; exit 127; fi
+fi
+curl -fsSL https://fx.sh/setup.sh | bash -s -- v0.0.13
+'''
+links = [".local/bin/fx"]
+verify = "/opt/benchflow/bin/fx --version"
+
+[headless]
+# fx reads the gateway key from AI_GATEWAY_API_KEY and the model from
+# FX_MODEL; the reasoning effort lives in ~/.fx/settings.json. `fx ask
+# --json` prints one summary when it ends, listing its tool calls without
+# their output, so the session's detail (`fx session <id> --json`: each
+# step's text, tool calls and results) is printed after it.
+command = '''if [ -n "$BENCHFLOW_EFFORT" ]; then mkdir -p "$HOME/.fx" && printf '{"effort": "%s"}\n' "$BENCHFLOW_EFFORT" > "$HOME/.fx/settings.json" && chmod 600 "$HOME/.fx/settings.json"; fi
+o="$HOME/.benchflow/fx-ask.json"
+mkdir -p "$HOME/.benchflow"
+AI_GATEWAY_API_KEY="${AI_GATEWAY_API_KEY:-$VERCEL_AI_GATEWAY_API_KEY}" FX_MODEL="${BENCHFLOW_MODEL:-$FX_MODEL}" /opt/benchflow/bin/fx ask --yolo --json -- "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null > "$o"
+s=$?
+cat "$o"
+printf '\n'
+id=$(sed -n 's/.*"session_id": *"\([A-Za-z0-9_-]*\)".*/\1/p' "$o" | head -n 1)
+[ -z "$id" ] || /opt/benchflow/bin/fx session "$id" --json < /dev/null 2> /dev/null
+exit "$s"'''
+output = "fx-json"
+env = { FX_AUTO_UPGRADE = "0", FX_SOUND = "0" }
+
+[credentials]
+family = "env"
+env = ["AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"]
+
+[model]
+# Gateway ids, `creator/model` (anthropic/claude-sonnet-4.6). BenchFlow's
+# `vercel/` provider prefix and Harbor's `vercel_ai_gateway/` are dropped.
+select = "none"
+strip_prefixes = ["vercel/", "vercel_ai_gateway/"]
+
+[providers.gateway]
+# The Vercel AI Gateway's own API, through BenchFlow's forwarder, which serves
+# it from its root so fx's own paths pass through as they are. fx 0.0.13 takes
+# the gateway's address from FX_GATEWAY_BASE_URL (its model list, credits and
+# usage lookups) and the language-model endpoint from FX_GATEWAY_CHAT_URL,
+# each only as a loopback http URL (its binary says "ignoring <variable>: not
+# loopback http" otherwise); with only the first set, fx sent its model calls
+# to the gateway itself (checked 2026-10-10). fx sends the placeholder key; the
+# other key variables are cleared so fx cannot fall back on them. fx reads its
+# model from FX_MODEL ($BENCHFLOW_MODEL), so nothing is selected here.
+base_url = "FX_GATEWAY_BASE_URL"
+key = "AI_GATEWAY_API_KEY"
+clear = ["VERCEL_AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"]
+model = ""
+
+[providers.gateway.env]
+FX_GATEWAY_CHAT_URL = "{base_url}/v4/ai/language-model"

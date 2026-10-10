@@ -1,0 +1,10 @@
+training-good/task.md
+  mode: blocks
+  title: acme/training-good
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, roles, training, verifier, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  episodes: fork false, max_concurrent 2
+  ok

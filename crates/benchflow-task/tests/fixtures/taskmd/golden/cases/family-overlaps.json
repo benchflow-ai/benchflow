@@ -1,0 +1,45 @@
+{
+  "path": "family-overlaps/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-overlaps\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/generate.py\"\n\n[family.splits]\ntrain = \"seed % 10 < 8\"\ntest = \"seed % 10 > 6\"\nvalidation = \"seed % 5 == 0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-overlaps",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/generate.py",
+      "splits": {
+        "train": "seed % 10 < 8",
+        "test": "seed % 10 > 6",
+        "validation": "seed % 5 == 0"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[family.splits] train and validation both select seed 0: no seed may fall in two splits",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] test and train both select seed 7: no seed may fall in two splits",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/family-overlaps",
+  "ok": false
+}

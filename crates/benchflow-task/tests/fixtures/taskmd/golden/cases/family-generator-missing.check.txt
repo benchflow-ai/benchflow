@@ -1,0 +1,10 @@
+family-generator-missing/task.md
+  mode: blocks
+  title: acme/family-generator-missing
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (family, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [family] generator names family/nope.py, which is not a file in the package (task.md)
+  FAILED

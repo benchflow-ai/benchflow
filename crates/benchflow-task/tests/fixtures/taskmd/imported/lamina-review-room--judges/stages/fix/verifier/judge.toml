@@ -1,0 +1,86 @@
+# Harbor RewardKit LLM-as-judge (issue #18).
+# No hardcoded semantic criteria — claim score is judge-only.
+
+[judge]
+judge = "openai/gpt-5.5"
+files = [
+  "/app/app.mjs",
+  "/app/ui.mjs",
+]
+reference = "judge-context.md"
+prompt_template = "prompt.md"
+timeout = 300
+weight = 1.0
+
+[[criterion]]
+name = "domain_system_structure"
+description = "Domain / system structure — brief entities and relationships expressed in code (types, models, modules); not a UI shell without domain logic. Evidence: concrete types/modules, not slogan comments."
+type = "likert"
+points = 5
+weight = 1.0
+
+[[criterion]]
+name = "invariants_product_rules"
+description = "Invariants and product rules — illegal states prevented or rejected in code; brief bans realized as absence or explicit rejection. Guards/validation/state machines — not comments alone."
+type = "likert"
+points = 5
+weight = 1.2
+
+[[criterion]]
+name = "actors_permissions"
+description = "Actors and permissions — personas/roles with authorization boundaries or data scoping visible in implementation (filters, role checks). Evidence required."
+type = "likert"
+points = 5
+weight = 1.1
+
+[[criterion]]
+name = "workflow_quality"
+description = "Workflow quality — primary brief journeys implemented end-to-end with coherent state transitions (not navigation stubs)."
+type = "likert"
+points = 5
+weight = 1.1
+
+[[criterion]]
+name = "scenario_edge_coverage"
+description = "Scenario / edge coverage — failure, recovery, empty, and edge paths handled in product behavior (errors, retries, empty states, unmet dependencies)."
+type = "likert"
+points = 5
+weight = 1.2
+
+[[criterion]]
+name = "systems_judgment"
+description = "Systems judgment — sensible product trade-offs realized in behavior; avoids traps like silent data loss or permission leaks."
+type = "likert"
+points = 5
+weight = 1.0
+
+[[criterion]]
+name = "ux_expression_under_rules"
+description = "UX expression under rules — UI or API surfaces reflect domain rules: errors, empty states, accessible names where UI exists. Score hooks/behavior, not a11y slogans."
+type = "likert"
+points = 5
+weight = 1.0
+
+[[criterion]]
+name = "brownfield_fit"
+description = "Brownfield fit — integrates sensibly with existing fixture code (N/A for greenfield → score internal consistency)."
+type = "likert"
+points = 5
+weight = 0.8
+
+[[criterion]]
+name = "implementation_readiness"
+description = "Implementation readiness — product implementation is coherent and buildable; clear entry points; not a stub-only scaffold."
+type = "likert"
+points = 5
+weight = 0.9
+
+[[criterion]]
+name = "overall_product_behavior"
+description = "Overall product-behavior quality — holistic judgment of product behavior vs brief + behavioral reference as realized in code (not documentation theater)."
+type = "likert"
+points = 5
+weight = 1.0
+
+[scoring]
+aggregation = "weighted_mean"

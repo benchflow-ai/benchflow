@@ -1,0 +1,49 @@
+{
+  "path": "grading-script-models/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/grading-script-models\"\nversion = \"1.0.0\"\n[verifier]\nenv = { OPENAI_API_KEY = \"${OPENAI_API_KEY}\", MODE = \"x\", K = \"${ANTHROPIC_BASE_URL:-http://x}\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/grading-script-models",
+    "version": "1.0.0",
+    "verifier": {
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "MODE": "x",
+        "K": "${ANTHROPIC_BASE_URL:-http://x}"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "verifier.env.OPENAI_API_KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "verifier.env.K resolves ${ANTHROPIC_BASE_URL} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "grading calls a model from a script ([verifier] env names ANTHROPIC_BASE_URL, OPENAI_API_KEY; verifier/test.sh runs RewardKit, whose judges call a model), but [verifier] models is not true: set [verifier] models = true, so the runtime gives the verifier a seat token and the proxy's URL. Without it the script cannot reach a model on a task.md runtime, and its judge calls fail",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/grading-script-models",
+  "ok": true
+}

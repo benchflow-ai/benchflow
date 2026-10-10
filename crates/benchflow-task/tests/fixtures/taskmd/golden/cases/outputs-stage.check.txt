@@ -1,0 +1,10 @@
+outputs-stage/task.md
+  mode: blocks
+  title: acme/outputs-stage
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: stage two, toml task
+  config: block (name, stages, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [stages.two] outputs[0] path rel is relative; an output's path is absolute, such as /work/rel (task.md)
+  FAILED

@@ -12,6 +12,8 @@
   </a>
 </div>
 
+> **This is the `bench-rs` branch.** BenchFlow's command line and run engine are being rebuilt in Rust as one binary, `bench`, in [`crates/`](./crates/). Start with [docs/rust/README.md](./docs/rust/README.md): build it, a ten-minute tour, and what changed from 0.8. The Python package below stays on this branch as the reference implementation until each part has a Rust port that matches it; [docs/rust/status.md](./docs/rust/status.md) says which parts do.
+
 ## What
 
 BenchFlow runs AI agents on tasks in sandboxes and scores them, with one hardened runtime for evaluation and training. **A benchmark is just a frozen environment**: point BenchFlow at a benchmark's tasks, drive them with any [ACP](https://agentclientprotocol.com) agent (Claude Code, Codex, Gemini CLI, OpenHands and more), and read rewards, costs and full trajectories from every run. The same tasks run single-agent, multi-agent or multi-round, on Docker (local or remote), Daytona or Modal.

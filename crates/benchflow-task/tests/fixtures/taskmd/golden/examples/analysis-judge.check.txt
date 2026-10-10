@@ -1,0 +1,11 @@
+analysis-judge/task.md
+  mode: blocks
+  title: Power-law tail of detector event sizes
+  instruction: 154 words; starts 'The file `/data/events.csv` holds the sizes of 4,000 events recorded b'
+  blocks: notes, toml task
+  config: block (about, agent, integrity, keywords, name, sandbox, title, verifier, version)
+  rubric: 9 criteria, 1 gates, 15 points; judges agent, test
+  grading needs a model: yes: agent judges 6 criteria
+  judge agent: model claude-opus-5-5, harness judge-loop@1*, samples 3, aggregate median*, min_samples 3*, per rubric*, timeout 20m*, brief verifier/judge.md*, budget tokens 2M tool_calls 60; * marks a default
+  worst-case grading time: 1h05m (scripts 5m + agent 3 x 20m; in sequence, before retries)
+  ok

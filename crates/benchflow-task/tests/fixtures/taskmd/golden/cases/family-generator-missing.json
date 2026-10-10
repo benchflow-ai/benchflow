@@ -1,0 +1,35 @@
+{
+  "path": "family-generator-missing/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-generator-missing\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/nope.py\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-generator-missing",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/nope.py"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[family] generator names family/nope.py, which is not a file in the package",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/family-generator-missing",
+  "ok": false
+}

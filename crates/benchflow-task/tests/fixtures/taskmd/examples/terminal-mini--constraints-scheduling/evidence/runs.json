@@ -1,0 +1,112 @@
+{
+ "runs": [
+  {
+   "kind": "oracle",
+   "agent": "oracle",
+   "reward": 1.0,
+   "date": "2026-09-28T15:30:28+00:00",
+   "trial": "constraints-scheduling__oracle__s0__68bf30c8c34d",
+   "format": "benchflow",
+   "result": {
+    "path": "constraints-scheduling__oracle__s0__68bf30c8c34d/result.json",
+    "sha256": "59af961c38f9441e6ec0b194a532128afd42ebe764419c7e35e488fbd729dced"
+   },
+   "tree_hash": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "no_op",
+   "agent": "noop",
+   "reward": 0.0,
+   "date": "2026-09-28T15:30:47+00:00",
+   "trial": "constraints-scheduling__noop__s0__68bf30c8c34d",
+   "format": "benchflow",
+   "result": {
+    "path": "constraints-scheduling__noop__s0__68bf30c8c34d/result.json",
+    "sha256": "dee4e15d59b152f4b44a8ff1622c11483da95ddb052fa609885fece6e48be1aa"
+   },
+   "tree_hash": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T17:06:44+00:00",
+   "trial": "constraints-scheduling__toolloop__s1__0d05e6568cc5",
+   "format": "benchflow",
+   "result": {
+    "path": "constraints-scheduling__toolloop__s1__0d05e6568cc5/result.json",
+    "sha256": "e077c69bad3257c3eecb99a15e634bc0445d5c072874ece9c819de344ec1bee2"
+   },
+   "tree_hash": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326"
+    }
+   },
+   "ingested": "2026-09-28T18:48:12+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T17:07:31+00:00",
+   "trial": "constraints-scheduling__toolloop__s2__ca3dfda4f3a6",
+   "format": "benchflow",
+   "result": {
+    "path": "constraints-scheduling__toolloop__s2__ca3dfda4f3a6/result.json",
+    "sha256": "1446c62345ab3956d634bd227037cba692fcc7cefbbb86724e4bd6488f9f8b56"
+   },
+   "tree_hash": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326"
+    }
+   },
+   "ingested": "2026-09-28T18:48:12+00:00"
+  }
+ ],
+ "trees": {
+  "sha256:d9ee227818f060cac559674271076e251b0a71c0ad235e23249e0bc3922b7326": {
+   "files": {
+    "oracle/solve.sh": "802d81ec064fad3050bbade95a2f847ac24e0b7f80fa69b0bcee0347dc92fe77",
+    "sandbox/Dockerfile": "7d9aba072a4a907229728b9739c8cf821fc2c98450babd64452682caf3759c84",
+    "sandbox/inputs/alice_calendar.ics": "5a5d45804bffd339c2479d49e76fe817b38244d14d389afe1de583443808ecbc",
+    "sandbox/inputs/bob_calendar.ics": "c97e85dbcdd756758f8a80f4db5fd5c1dcacee79298e4d2262f46de5ff680b50",
+    "sandbox/inputs/carol_calendar.ics": "32a0f8687637df0a12b8e5c56d49c4192bc3e790856943632d70f237c7c1363b",
+    "task.md": "b5e37e212c3228970fe69411713fa7cbadced2006ac0876881142176addd408e",
+    "verifier/test.sh": "4770437ea96c3cc84684b4f99d55fb148fcac09f9ea1e8ef49de487716e6c334",
+    "verifier/test_outputs.py": "1422b345ba3aacdfc4184e962811b6379988435896c50d8cf62903e70990c5d1"
+   },
+   "task_md": {
+    "instruction": "5ab491271935a6e9",
+    "config": {
+     "about": "597557d577e72e22",
+     "agent": "4b674640a9002a2d",
+     "sandbox": "e126d2cfd0df688f",
+     "verifier": "366ad71f3707ce06",
+     "oracle": "f101bf975b3a5a78",
+     "import": "61515f00e6720e76"
+    }
+   },
+   "no_op": null
+  }
+ }
+}

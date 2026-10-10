@@ -1,0 +1,12 @@
+imported-harbor/task.md
+  mode: blocks
+  title: acme/imported-harbor
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (import, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: [import.harbor] trajectory: Harbor seeds the agent's session with trajectory.json, an ATIF trajectory, before the agent starts; no task.md runtime loads it, so a task.md run starts without that context (task.md)
+  warning: [import.harbor] workdirs: before stage one starts, Harbor copies steps/one/workdir/ into the agent's working directory and runs its setup.sh; no task.md runtime does, so the stage starts without them (task.md)
+  warning: [import.harbor] workdirs: before stage two starts, Harbor copies steps/two/workdir/ into the agent's working directory; no task.md runtime does, so the stage starts without them (task.md)
+  ok

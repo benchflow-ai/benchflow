@@ -1,0 +1,28 @@
+# A task in the split layout, which Harbor and BenchFlow both read: this file
+# holds the config, instruction.md what the agent is asked to do,
+# environment/ the agent's container, tests/ the verifier, and solution/ a
+# reference solution. `bench import` converts it to a single task.md.
+schema_version = "1.4"
+
+# Who the task is: "org/name", and a version you bump when the task changes.
+[task]
+name = "{{name}}"
+version = "0.1.0"
+
+# The agent's phase: how long it may work, in seconds.
+[agent]
+timeout_sec = 300.0
+
+# Grading: tests/test.sh runs after the agent and writes the reward to
+# /logs/verifier/reward.txt.
+[verifier]
+timeout_sec = 60.0
+
+# The container the agent works in, built from environment/Dockerfile.
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+network_mode = "no-network"  # no network for the agent, and none for the verifier
+workdir = "/app"

@@ -1,0 +1,10 @@
+crlf/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 2 words; starts 'Fix it.'
+  blocks: toml task
+  config: block (agent, name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: unknown key [agent] timout; did you mean timeout? [agent] holds budget, network, network_reason, on_timeout, system_prompt_append, timeout, timeout_basis, user, or x- extensions (task.md)
+  FAILED

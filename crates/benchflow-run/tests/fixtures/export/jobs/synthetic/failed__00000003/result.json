@@ -1,0 +1,26 @@
+{
+  "task_name": "failed",
+  "rollout_name": "failed__00000003",
+  "task_id": "synthetic/failed",
+  "agent": "claude",
+  "agent_name": "claude",
+  "model": "openai/gpt-5",
+  "rewards": null,
+  "status": "errored",
+  "problem": {
+    "code": "R201",
+    "owner": "agent",
+    "phase": "agent",
+    "message": "the agent exited",
+    "next": "read agent/stderr.txt",
+    "transient": false
+  },
+  "started_at": "2026-10-10 09:00:00.000001",
+  "finished_at": "2026-10-10 09:05:00.000001",
+  "n_tool_calls": 3,
+  "n_prompts": 2,
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.9.0-dev.0"
+  }
+}

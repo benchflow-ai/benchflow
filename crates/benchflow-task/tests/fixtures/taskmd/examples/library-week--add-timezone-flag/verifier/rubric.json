@@ -1,0 +1,14 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    { "id": "converts", "gate": true, "judge": "test", "check": "tests/test_cli_tz.py",
+      "text": "--tz converts to the named zone, including across a daylight-saving change.",
+      "stated": "converts parsed dates to the given IANA time zone before printing" },
+    { "id": "default-unchanged", "gate": true, "judge": "test", "check": "test_output_without_tz_matches_previous_release",
+      "text": "Output without --tz is byte-identical to before.",
+      "stated": "Without `--tz`, output stays as it is today" },
+    { "id": "documented", "points": 1, "judge": "llm", "evidence": ["diff:README.md"],
+      "text": "README.md documents --tz with an example.",
+      "stated": "Document the option in `README.md`" }
+  ]
+}

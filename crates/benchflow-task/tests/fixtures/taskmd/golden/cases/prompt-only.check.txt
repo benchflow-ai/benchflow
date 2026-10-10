@@ -1,0 +1,5 @@
+prompt-only/task.md
+  mode: prompt-only
+  instruction: 7 words; starts 'Fix it. There is no config here.'
+  config: none
+  ok

@@ -1,0 +1,33 @@
+# GitHub Copilot CLI in its ACP mode (`copilot --acp`), the npm package the
+# public ACP registry lists for github-copilot-cli 1.0.95, or headless with
+# `copilot --prompt` (Harbor's `copilot-cli`) from the same install.
+name = "copilot"
+aliases = ["copilot-cli", "github-copilot-cli", "github-copilot"]
+description = "GitHub Copilot CLI via ACP, or headless with copilot --prompt (needs a Copilot subscription)"
+acp_registry = "github-copilot-cli"
+skill_paths = ["$HOME/.copilot/skills"]
+home_dirs = [".copilot"]
+
+[install]
+npm = "@github/copilot@1.0.95"
+bin = "copilot"
+launcher = "auto"
+
+[launch]
+args = ["--acp"]
+
+[headless]
+# Harbor's `copilot --prompt ... --yolo --output-format json`.
+command = '''exec /opt/benchflow/bin/copilot --prompt "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" --yolo ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} ${BENCHFLOW_EFFORT:+--effort "$BENCHFLOW_EFFORT"} --output-format json < /dev/null'''
+output = "copilot-json"
+
+[credentials]
+family = "env"
+env = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]
+account = "a GitHub Copilot subscription: a fine-grained GitHub token with the Copilot Requests permission, set as COPILOT_GITHUB_TOKEN; GitHub serves the models"
+
+[model]
+select = "auto"
+# Harbor keeps only the part after the last `/` (anthropic/claude-haiku-4-5
+# becomes claude-haiku-4-5).
+strip_prefixes = ["github/", "copilot/", "anthropic/", "openai/", "google/"]

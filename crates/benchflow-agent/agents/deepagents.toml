@@ -1,0 +1,36 @@
+# LangChain's deepagents through its own ACP server, the npm package the
+# public ACP registry lists for deepagents 0.1.7. BenchFlow 0.8 ran the
+# Python deepagents library through its own shim; the shim is not ported
+# now that LangChain ships an ACP server.
+name = "deepagents"
+aliases = ["deepagents-acp"]
+description = "deepagents (LangChain) via ACP; the model's provider decides the key"
+acp_registry = "deepagents"
+
+[install]
+npm = "deepagents-acp@0.1.7"
+bin = "deepagents-acp"
+# deepagents names models the LangChain way (`openai:<model>`) and loads the
+# provider's integration package, which it does not depend on.
+companions = ["@langchain/openai@1.6.2"]
+
+[launch]
+# deepagents-acp takes its model only on its command line.
+command = '''exec /opt/benchflow/bin/deepagents-acp ${BENCHFLOW_DEEPAGENTS_MODEL:+--model "$BENCHFLOW_DEEPAGENTS_MODEL"}'''
+
+[credentials]
+family = "model"
+
+[model]
+select = "auto"
+format = "provider/model"
+
+[providers.openai]
+# LangChain's `openai:<model>` (Chat Completions); the OpenAI SDK under it
+# reads OPENAI_BASE_URL and OPENAI_API_KEY.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = ""
+
+[providers.openai.env]
+BENCHFLOW_DEEPAGENTS_MODEL = "openai:{model}"

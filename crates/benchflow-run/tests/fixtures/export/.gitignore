@@ -1,0 +1,3 @@
+# Fixture jobs for the trace exporter (the repository ignores jobs/ folders).
+!jobs/
+__pycache__/

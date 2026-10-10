@@ -1,0 +1,11 @@
+clock-bad-17/task.md
+  mode: blocks
+  title: acme/clock-bad-17
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: [sandbox] clock start is at -04:00, but no timezone is set, so the sandbox keeps the image's zone (usually UTC), where it reads 13:00; set [sandbox] timezone (task.md)
+  warning: cannot tell whether the run crosses midnight in the image's zone: [agent] timeout is not set, so the run's length is the runtime's (task.md)
+  ok

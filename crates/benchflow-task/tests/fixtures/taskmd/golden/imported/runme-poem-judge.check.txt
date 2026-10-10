@@ -1,0 +1,10 @@
+runme-poem-judge/task.md
+  mode: blocks
+  title: runmedev/poem-judge
+  instruction: 35 words; starts '# Write a Funny Runme Poem'
+  blocks: toml task
+  config: block (about, agent, authors, description, import, keywords, name, oracle, sandbox, verifier)
+  grading needs a model: yes (a script): [verifier] models = true; [verifier] env names OPENAI_API_KEY; verifier/test.sh runs RewardKit, whose judges call a model
+  worst-case grading time: 15m (scripts 15m; in sequence, before retries)
+  warning: verifier.env.OPENAI_API_KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  ok

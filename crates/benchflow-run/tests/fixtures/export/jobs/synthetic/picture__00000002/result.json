@@ -1,0 +1,21 @@
+{
+  "task_name": "picture",
+  "rollout_name": "picture__00000002",
+  "task_id": "synthetic/picture",
+  "agent": "claude",
+  "agent_name": "claude",
+  "model": "anthropic/claude-sonnet-4-6",
+  "rewards": {
+    "reward": 0.0
+  },
+  "status": "scored",
+  "problem": null,
+  "started_at": "2026-10-10 09:00:00.000001",
+  "finished_at": "2026-10-10 09:05:00.000001",
+  "n_tool_calls": 3,
+  "n_prompts": 2,
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.9.0-dev.0"
+  }
+}

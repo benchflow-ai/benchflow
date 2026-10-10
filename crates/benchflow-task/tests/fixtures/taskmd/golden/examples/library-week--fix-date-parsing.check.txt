@@ -1,0 +1,10 @@
+library-week--fix-date-parsing/task.md
+  mode: blocks
+  title: Accept a trailing Z in ISO timestamps
+  instruction: 32 words; starts '`parse_date` in `/repo/datekit/parse.py` rejects ISO 8601 timestamps t'
+  blocks: toml task
+  config: block (agent, name, sandbox, title, version)
+  rubric: 2 criteria, 2 gates, 0 points; judges test
+  grading needs a model: no (2 criteria decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

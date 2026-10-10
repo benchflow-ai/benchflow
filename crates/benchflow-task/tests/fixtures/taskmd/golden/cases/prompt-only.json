@@ -1,0 +1,15 @@
+{
+  "path": "prompt-only/task.md",
+  "mode": "prompt-only",
+  "instruction": "Fix it. There is no config here.",
+  "blocks": [],
+  "config": {},
+  "config_source": "none",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix it. There is no config here.",
+  "title": null,
+  "ok": true
+}

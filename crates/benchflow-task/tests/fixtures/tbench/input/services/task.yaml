@@ -1,0 +1,6 @@
+instruction: |
+  Scrape the page served at http://server:8000 and write the titles to /app/titles.txt.
+author_name: Test Author
+category: data-science
+tags: [web-scraping]
+max_test_timeout_sec: 120

@@ -1,0 +1,15 @@
+{
+  "id": "regex-email-parser",
+  "question": "Write a Python function `parse_email_addresses(text: str) -> list[dict]` that extracts all email addresses from a block of text and returns structured data. For each email, return: `{'local': str, 'domain': str, 'full': str}`. Handle edge cases: emails in angle brackets `<user@domain.com>`, emails with dots and hyphens in local part, emails with subdomains.\n\nDo NOT match: strings without @ signs, emails with spaces, or emails ending with dots.\n\nExample:\n```python\ntext = 'Contact us at support@example.com or <sales@sub.domain.co.uk>'\nparse_email_addresses(text)\n# [{'local': 'support', 'domain': 'example.com', 'full': 'support@example.com'},\n#  {'local': 'sales', 'domain': 'sub.domain.co.uk', 'full': 'sales@sub.domain.co.uk'}]\n```",
+  "ground_truth": "A regex-based email parser that correctly handles: standard emails, angle-bracket emails, dotted local parts, hyphenated domains, subdomains, and rejects invalid patterns (spaces, trailing dots, no @ sign).",
+  "expected_behavior": [
+    "The agent produced a working parse_email_addresses function",
+    "The regex handles standard emails, angle brackets, and subdomains",
+    "Invalid emails are correctly rejected",
+    "The agent wrote tests covering edge cases",
+    "The function returns the structured dict format"
+  ],
+  "expected_skill": "code-specialist",
+  "expected_script": "",
+  "environment": {}
+}

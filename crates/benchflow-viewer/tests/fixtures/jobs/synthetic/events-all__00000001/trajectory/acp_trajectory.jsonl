@@ -1,0 +1,9 @@
+{"type": "user_message", "text": "do it", "ts": "2026-08-15T09:41:03+00:00"}
+{"type": "agent_thought", "text": "hmm", "ts": "2026-08-15T09:41:04.250000+00:00"}
+{"type": "tool_call", "tool_call_id": "c1", "kind": "execute", "title": "ls", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "out"}}], "started_at": "2026-08-15T09:41:05+00:00", "finished_at": "2026-08-15T09:41:07.500000+00:00"}
+{"type": "agent_message", "text": "done", "ts": "2026-08-15T09:41:08Z"}
+{"type": "agent_timeout", "reason": "wall_clock_timeout", "timeout_sec": 5.0, "pending_tool_call_ids": ["c1", 7, null], "terminal_trajectory_complete": false}
+{"type": "notice", "severity": "warning", "title": "Model fallback", "description": "gpt-x is unavailable; using gpt-y"}
+{"type": "notice", "title": "Plain notice"}
+{"type": "future_thing", "x": 1, "nested": {"a": [1, 2.5, null, true]}}
+{"type": "plan", "entries": [{"content": "step", "status": "pending"}]}

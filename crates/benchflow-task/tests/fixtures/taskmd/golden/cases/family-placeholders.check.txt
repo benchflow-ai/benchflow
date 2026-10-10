@@ -1,0 +1,10 @@
+family-placeholders/task.md
+  mode: blocks
+  title: acme/family-placeholders
+  instruction: 7 words; starts 'Count the {{ item }} in {{place}}.'
+  blocks: toml task
+  config: block (family, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: family/generate.py exited 0 but wrote no instance.json for seed 0: under family@1 the instance is malformed, and a runtime refuses every episode with generator-failed (family/generate.py)
+  FAILED

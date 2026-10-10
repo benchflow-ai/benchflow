@@ -1,0 +1,198 @@
+{
+  "path": "behaviors-more/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/behaviors-more\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/behaviors-more",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "works",
+        "gate": true,
+        "judge": "test",
+        "check": "test_works",
+        "text": "It works.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "watch": [
+      "not an object",
+      {
+        "id": "Bad",
+        "consequence": "explode",
+        "detect": "guess",
+        "scope": "everyone",
+        "scale": "1-5",
+        "paths": [
+          "rel"
+        ],
+        "severity": 1
+      },
+      {
+        "id": "process.x",
+        "definition": "X.",
+        "consequence": "invalid"
+      },
+      {
+        "id": "infra.down",
+        "definition": "Down.",
+        "consequence": "invalid"
+      },
+      {
+        "id": "process.y",
+        "definition": "Y.",
+        "consequence": "invalid",
+        "scope": "submission"
+      },
+      {
+        "id": "process.z",
+        "definition": "Z.",
+        "consequence": {
+          "penalty": 0.2
+        }
+      },
+      {
+        "id": "process.w",
+        "definition": "W.",
+        "scale": "0-3",
+        "consequence": {
+          "1": "report",
+          "2": "report",
+          "3": "invalid",
+          "4": "fail"
+        }
+      },
+      {
+        "definition": "No id.",
+        "detect": "rule",
+        "consequence": "report"
+      }
+    ],
+    "paired": [
+      {
+        "id": "x"
+      },
+      {
+        "id": "process.pair",
+        "definition": "P.",
+        "compare": [
+          "a",
+          "b"
+        ]
+      }
+    ],
+    "watchers": 1
+  },
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "a watched behavior is an object",
+      "where": "verifier/behaviors.json watch[0]"
+    },
+    {
+      "level": "error",
+      "message": "id must be a dotted taxonomy id such as process.overreach",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "definition is required: say what the behavior means in this task",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "consequence must be 'fail', 'invalid', 'report', {penalty: <negative number>}, or, for a 0-3 behavior, a severity map such as {\"1\": \"report\", \"2\": {\"penalty\": -0.2}, \"3\": \"fail\"}",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "detect must be 'rule', 'world', 'monitor', or 'human'",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "scope must be 'trial' or 'submission'",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "scale must be 'binary' or '0-3'",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "paths must be a non-empty list of absolute paths, as the agent's sandbox names them",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'severity'; a watched behavior has consequence, definition, detect, id, judge, paths, scale, scope, or x- extensions",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "consequence \"invalid\" takes a trial out of the count, which only a failure outside the agent may do: it is for infra.* behaviors, and for scope = \"submission\", where the whole submission is invalid. The solver's own conduct is graded: use \"fail\"",
+      "where": "verifier/behaviors.json watch[2]"
+    },
+    {
+      "level": "error",
+      "message": "consequence must be 'fail', 'invalid', 'report', {penalty: <negative number>}, or, for a 0-3 behavior, a severity map such as {\"1\": \"report\", \"2\": {\"penalty\": -0.2}, \"3\": \"fail\"}",
+      "where": "verifier/behaviors.json watch[5]"
+    },
+    {
+      "level": "error",
+      "message": "severity 4 is not on the 0-3 scale",
+      "where": "verifier/behaviors.json watch[6]"
+    },
+    {
+      "level": "error",
+      "message": "consequence \"invalid\" takes a trial out of the count, which only a failure outside the agent may do: it is for infra.* behaviors, and for scope = \"submission\", where the whole submission is invalid. The solver's own conduct is graded: use \"fail\"",
+      "where": "verifier/behaviors.json watch[6]"
+    },
+    {
+      "level": "error",
+      "message": "id must be a dotted taxonomy id such as process.overreach",
+      "where": "verifier/behaviors.json watch[7]"
+    },
+    {
+      "level": "error",
+      "message": "detect = \"rule\" is for the integrity family, whose rules are built into the detector (docs/behaviors.md, Protected paths): a task cannot state a rule of its own yet. Detect this behavior with \"monitor\", from its definition, or with \"world\"",
+      "where": "verifier/behaviors.json watch[7]"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'watchers'; did you mean watch?",
+      "where": "verifier/behaviors.json"
+    },
+    {
+      "level": "error",
+      "message": "a paired behavior needs a taxonomy id and a definition",
+      "where": "verifier/behaviors.json paired[0]"
+    },
+    {
+      "level": "error",
+      "message": "compare must name two cells, such as [\"honeypot\", \"base\"]",
+      "where": "verifier/behaviors.json paired[0]"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/behaviors-more",
+  "ok": false
+}

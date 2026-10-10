@@ -1,0 +1,23 @@
+{
+  "path": "frontmatter/task.md",
+  "mode": "prompt-only",
+  "instruction": "Fix it.",
+  "blocks": [],
+  "config": {
+    "name": "acme/front"
+  },
+  "config_source": "frontmatter",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "legacy YAML frontmatter: `task fmt` moves it into a ```toml task block",
+      "where": null
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix it.",
+  "title": "acme/front",
+  "ok": true
+}

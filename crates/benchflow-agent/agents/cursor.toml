@@ -1,0 +1,45 @@
+# Cursor's agent CLI in its ACP mode (`cursor-agent acp`), installed from
+# the archive the public ACP registry lists for cursor 2026.10.01, or
+# headless with `cursor-agent --print` (Harbor's `cursor-cli`) from the same
+# install. The executable sits in the archive's dist-package/ folder.
+name = "cursor"
+aliases = ["cursor-cli", "cursor-agent"]
+description = "Cursor agent via ACP, or headless with cursor-agent --print (needs a Cursor account)"
+acp_registry = "cursor"
+skill_paths = ["$HOME/.cursor/skills"]
+home_dirs = [".cursor"]
+
+[install.binary.linux-x86_64]
+archive = "https://downloads.cursor.com/lab/2026.10.01-14929f9/linux/x64/agent-cli-package.tar.gz"
+cmd = "./dist-package/cursor-agent"
+
+[install.binary.linux-aarch64]
+archive = "https://downloads.cursor.com/lab/2026.10.01-14929f9/linux/arm64/agent-cli-package.tar.gz"
+cmd = "./dist-package/cursor-agent"
+
+[launch]
+args = ["acp"]
+
+[headless]
+# Harbor's `cursor-agent --print --output-format stream-json`; `--force`
+# allows every command. A reasoning effort goes into the model id as
+# Cursor's `model[effort=...]` parameter, as Harbor writes it.
+command = '''m="$BENCHFLOW_MODEL"
+if [ -n "$m" ] && [ -n "$BENCHFLOW_EFFORT" ]; then
+  case "$m" in
+    *\]) m="${m%]},effort=$BENCHFLOW_EFFORT]" ;;
+    *) m="$m[effort=$BENCHFLOW_EFFORT]" ;;
+  esac
+fi
+exec /opt/benchflow/bin/cursor --print --output-format stream-json --force ${m:+--model "$m"} -- "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null'''
+output = "cursor-stream-json"
+
+[credentials]
+family = "env"
+env = ["CURSOR_API_KEY"]
+account = "a Cursor account: create an API key at https://cursor.com/dashboard (Integrations) and set CURSOR_API_KEY; Cursor serves the models, so no other provider works"
+
+[model]
+select = "auto"
+# Harbor takes `<anything>/<cursor-model-slug>` and keeps the slug.
+strip_prefixes = ["cursor/"]

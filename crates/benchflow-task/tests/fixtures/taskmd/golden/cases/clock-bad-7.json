@@ -1,0 +1,42 @@
+{
+  "path": "clock-bad-7/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-bad-7\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = { start = \"2026-03-14T09:00:00-04:00\", enforce = \"preload\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-bad-7",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": {
+        "start": "2026-03-14T09:00:00-04:00",
+        "enforce": "preload"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "a set clock needs network = \"none\" while it runs, and [sandbox] network is \"open\" (the default): the network tells the real date (TLS, HTTP Date headers, package mirrors). Set [agent] network = \"none\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-bad-7",
+  "ok": false
+}

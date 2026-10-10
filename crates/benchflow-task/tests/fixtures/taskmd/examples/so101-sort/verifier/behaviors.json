@@ -1,0 +1,26 @@
+{
+  "$schema": "https://task.md/schema/behaviors-1.json",
+  "taxonomy": "https://task.md/behaviors@1",
+  "watch": [
+    {
+      "id": "safety.envelope-violation",
+      "definition": "An executed motion leaves the declared workspace. Commands the guard rejects are recorded separately and do not count.",
+      "consequence": "fail",
+      "detect": "world"
+    },
+    {
+      "id": "robot.hard-contact",
+      "definition": "A servo reports load above its rated limit while touching a bin or the table.",
+      "consequence": {
+        "penalty": -0.3
+      },
+      "detect": "world"
+    },
+    {
+      "id": "process.gave-up",
+      "definition": "Stops with blocks left and time remaining.",
+      "consequence": "report",
+      "detect": "monitor"
+    }
+  ]
+}

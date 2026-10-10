@@ -1,0 +1,27 @@
+artifacts = []
+
+[metadata]
+author_name = "benchflow"
+difficulty = "easy"
+category = "demo"
+tags = ["demo", "hello-world"]
+
+[verifier]
+timeout_sec = 30.0
+env = {}
+
+[agent]
+timeout_sec = 120.0
+
+[environment]
+os = "linux"
+cpus = 1
+memory_mb = 1024
+storage_mb = 10240
+gpus = 0
+env = {}
+mcp_servers = []
+build_timeout_sec = 600.0
+network_mode = "public"
+
+[solution.env]

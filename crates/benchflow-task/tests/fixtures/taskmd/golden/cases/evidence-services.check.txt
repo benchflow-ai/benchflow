@@ -1,0 +1,13 @@
+evidence-services/task.md
+  mode: blocks
+  title: acme/evidence-services
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, sandbox, version)
+  rubric: 1 criteria, 0 gates, 2 points; judges agent
+  grading needs a model: yes: agent judges 1 criterion
+  judge agent: model from the run, harness judge-loop@1*, samples 1*, per rubric*, timeout 20m*, no token budget (the timeout bounds it); * marks a default
+  worst-case grading time: 20m (agent 1 x 20m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  error: evidence /data/x.csv reads /data/x.csv, which no [sandbox] outputs entry saves: add { path = "/data/x.csv" } to outputs, or a folder that holds it (verifier/rubric.json criteria[0])
+  warning: the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = "rl" and delivery grade require one (task.md)
+  FAILED

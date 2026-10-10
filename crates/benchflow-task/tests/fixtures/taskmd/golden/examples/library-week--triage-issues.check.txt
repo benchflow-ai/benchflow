@@ -1,0 +1,10 @@
+library-week--triage-issues/task.md
+  mode: blocks
+  title: Triage the open issues
+  instruction: 41 words; starts 'The issue tracker export for `datekit` is in `/repo/issues/`, one JSON'
+  blocks: toml task
+  config: block (agent, name, sandbox, title, version)
+  rubric: 2 criteria, 0 gates, 3 points; judges test
+  grading needs a model: no (2 criteria decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

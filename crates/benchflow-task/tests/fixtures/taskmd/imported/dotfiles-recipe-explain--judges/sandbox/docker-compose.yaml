@@ -1,0 +1,7 @@
+services:
+  main:
+    volumes:
+      - type: bind
+        source: ./codex-auth
+        target: /run/codex-auth-source
+        read_only: true

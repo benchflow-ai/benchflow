@@ -1,0 +1,106 @@
+P001 error: not a task: no task.md or task.toml here
+  at .
+  help: a task is a folder with task.md (or Harbor's task.toml); `bench new <name>` creates one
+
+P002 error: cannot read a file of the package: environment/data/fixtures.db: Permission denied (os error 13)
+  at .
+  help: make it readable (`chmod a+r <file>`), or remove it if it does not belong to the task
+
+X100 warning: unknown key `network_mod` in [environment] is ignored
+  at task.toml:7
+  label: did you mean `network_mode`?
+  note: [environment] holds: network_mode, allowed_hosts, build_timeout_sec, docker_image, os, cpus, memory_mb, storage_mb, gpus, gpu_types, tpu, mcp_servers, env, skills_dir, healthcheck, workdir, allow_internet, memory, storage, blocked_urls, blocked_hosts, image, setup_commands, bugswarm_image_tag
+  fix: rename `network_mod` to `network_mode`
+
+X101 warning: `cpus` belongs in [environment], not [agent]; here it is ignored
+  at task.toml:8
+  note: it is also read in [verifier.environment] and [steps.verifier.environment]
+  note: [agent] holds: timeout_sec, user, network_mode, allowed_hosts, prompt_prefix
+  help: move it to [environment]
+
+X102 note: `memory` in [environment] is a deprecated spelling; it is read as memory_mb = 4096
+  at task.toml:8
+  fix: replace `memory = "4G"` with `memory_mb = 4096`
+
+X103 warning: `allow_internet` in [environment] is ignored because `network_mode` or `allowed_hosts` is set
+  at task.toml:8
+  help: remove `allow_internet`
+
+X104 warning: `sandbox` is BenchFlow 0.8's spelling of `environment`; Harbor ignores it
+  at task.toml:6
+  help: rename it to `environment` so every harness reads it
+
+X110 error: task.toml is not valid TOML: string values must be quoted, expected literal string
+  at task.toml:4
+
+X111 error: invalid `name` in [task]: "fix-parser" is not "org/name" (letters, digits, '.', '_', '-', starting with a letter or digit, no '..')
+  at task.toml:4
+
+X112 error: missing instruction.md: the agent's instruction
+  at instruction.md
+  help: write the task's instruction in instruction.md beside task.toml
+
+X113 error: missing tests/test.sh: the script that scores the agent's work
+  at tests/test.sh
+  help: write a script that checks the agent's work and writes /logs/verifier/reward.txt
+
+X114 error: no environment/ folder and no docker_image: nothing to build or pull
+  at environment
+  help: add environment/Dockerfile, or set docker_image in [environment]
+
+X200 error: task.md frontmatter is not valid YAML: mapping values are not allowed in this context at task.md line 5 column 30
+  at task.md:5
+  help: a value with `: ` in it needs quotes (`description: "Fix it: now"`)
+
+X201 error: unknown key `timeout` in `agent`
+  at task.md:6
+  note: `agent` holds: timeout_sec, user, network_mode, allowed_hosts, prompt_prefix
+  help: did you mean `timeout_sec`?
+
+X202 error: invalid `timeout_sec` in [agent]: expected a number, found "10m"
+  at task.md:6
+
+X203 error: the `environment` key was renamed to `sandbox`
+  at task.md:5
+  help: rename it to `sandbox`, which BenchFlow 0.8 reads
+
+X204 error: task.md has the section ## prompt twice
+  at task.md:10
+  help: merge the two sections into one
+
+X205 error: unknown task.md profile "code-changes"; did you mean "code-change"? known profiles: acceptance-live, code-change, harbor-compatible, leaderboard-local, multi-agent, reward-kit
+  at task.md:2
+
+X206 error: verifier/verifier.md is invalid: verifier.default_strategy "tests" must name one of verifier.strategies: deterministic
+  at verifier/verifier.md
+
+X207 warning: task.toml beside task.md is ignored: task.md is the task
+  at task.toml
+  help: remove task.toml, or move what it says into task.md, which is what runs
+
+X208 error: missing environment/: the folder the sandbox is built from
+  at environment
+  help: add environment/Dockerfile, or name a prebuilt image with `image:`
+
+X209 error: scenes[0].roles references unknown role "solvr"
+  at task.md:9
+
+X209 error: turns[0].role references unknown role "solvr"
+  at task.md:9
+
+X210 error: task.md still holds a [REPLACE: ...] placeholder
+  at task.md
+  help: replace the placeholders with the task's own text
+
+X211 warning: `allow_internet` in [sandbox] is ignored because `network_mode` or `allowed_hosts` is set
+  at task.md:7
+  help: remove `allow_internet`
+
+X212 note: `allow_internet` in [sandbox] is a deprecated spelling; it is read as network_mode: public
+  at task.md:7
+  help: write `network_mode: public` instead
+
+X213 error: a robouse task: BenchFlow 0.8 builds its sandbox and verifier with the robouse task format before reading it
+  at task.md:5
+  note: task formats (benchflow.task_formats plugins) are not supported by this runtime yet
+  help: run it with BenchFlow 0.8 and the robouse package installed

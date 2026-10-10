@@ -1,0 +1,42 @@
+{
+  "path": "clock-bad-16/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-bad-16\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\nnetwork = \"none\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = { advance = \"environment\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-bad-16",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m",
+      "network": "none"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": {
+        "advance": "environment"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] clock needs enforce: \"preload\" (a library in the sandbox; fidelity, not protection), \"vm\" (a guest with its own clock), or \"world\" (the task's own services hold the time)",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-bad-16",
+  "ok": false
+}

@@ -1,0 +1,10 @@
+rubric-stated-prompts/task.md
+  mode: blocks
+  title: acme/rubric-stated-prompts
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: stage two, user, toml task
+  config: block (name, stages, version)
+  rubric: 2 criteria, 2 gates, 0 points; judges test
+  grading needs a model: no (2 criteria decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

@@ -1,0 +1,8 @@
+terminal-mini--constraints-scheduling/task.md
+  mode: blocks
+  instruction: 360 words; starts 'Find a 1-hour meeting slot for Alice, Bob, and Carol during January 15'
+  blocks: toml task
+  config: block (about, agent, import, oracle, sandbox, verifier)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: 20m (scripts 20m; in sequence, before retries)
+  ok

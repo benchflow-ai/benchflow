@@ -1,0 +1,35 @@
+{
+  "path": "world-missing-kind/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/world-missing-kind\"\nversion = \"1.0.0\"\n[world]\nprofile = \"lab@1\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/world-missing-kind",
+    "version": "1.0.0",
+    "world": {
+      "profile": "lab@1"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[world] kind must be one of ['physical', 'simulated', 'virtual']",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/world-missing-kind",
+  "ok": false
+}

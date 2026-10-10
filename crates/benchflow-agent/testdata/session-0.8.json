@@ -1,0 +1,943 @@
+{
+ "_about": "A scripted ACP session recorded by BenchFlow 0.8's ACPSession (src/benchflow/acp/session.py at 3842ed22) with deterministic receipt times; `jsonl` is the exact acp_trajectory.jsonl text 0.8 writes. Every token is fake.",
+ "steps": [
+  {
+   "prompt": "Do the task.\nIt's caf\u00e9 time.",
+   "ns": 1791545737137001013
+  },
+  {
+   "update": {
+    "sessionUpdate": "available_commands_update",
+    "availableCommands": [
+     {
+      "name": "init",
+      "description": "x"
+     }
+    ]
+   },
+   "ns": 1791545738137002026
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_thought_chunk",
+    "content": {
+     "type": "text",
+     "text": "Reading the task. "
+    }
+   },
+   "ns": 1791545739137003039
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_thought_chunk",
+    "content": {
+     "type": "text",
+     "text": "Plan: list files."
+    }
+   },
+   "ns": 1791545740137004052
+  },
+  {
+   "update": {
+    "sessionUpdate": "plan",
+    "entries": [
+     {
+      "content": "List files",
+      "priority": "high",
+      "status": "pending"
+     }
+    ]
+   },
+   "ns": 1791545741137005065
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "I'll look "
+    }
+   },
+   "ns": 1791545742137006078
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "around \u2014 caf\u00e9 \u2615 \ud83d\ude00."
+    }
+   },
+   "ns": 1791545743000000000
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "image",
+     "data": "aGk=",
+     "mimeType": "image/png"
+    }
+   },
+   "ns": 1791545744137008104
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "toolu_01",
+    "title": "Terminal",
+    "kind": "execute",
+    "status": "pending",
+    "rawInput": {},
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Bash"
+     }
+    }
+   },
+   "ns": 1791545745137009117
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_01",
+    "title": "ls -la /app",
+    "rawInput": {
+     "command": "ls -la /app",
+     "description": "List files"
+    },
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Bash"
+     }
+    }
+   },
+   "ns": 1791545746137010130
+  },
+  {
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 1200,
+    "size": 200000,
+    "cost": {
+     "amount": 0.01,
+     "currency": "USD"
+    }
+   },
+   "ns": 1791545747137011143
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_01",
+    "status": "in_progress"
+   },
+   "ns": 1791545748137012156
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_01",
+    "status": "completed",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "```console\nREADME.md\nsrc\n```"
+      }
+     }
+    ],
+    "rawOutput": "README.md\nsrc\nGITHUB_TOKEN=plainvaluewithnoprefix12345\n"
+   },
+   "ns": 1791545749137013169
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_01",
+    "status": "completed"
+   },
+   "ns": 1791545750000000000
+  },
+  {
+   "update": {
+    "sessionUpdate": "notice",
+    "severity": "warning",
+    "title": "Model metadata for `gpt-5.4` not found."
+   },
+   "ns": 1791545751137015195
+  },
+  {
+   "update": {
+    "sessionUpdate": "notice",
+    "severity": "warning"
+   },
+   "ns": 1791545752137016208
+  },
+  {
+   "update": {
+    "sessionUpdate": "notice",
+    "severity": "info",
+    "title": "  Model fallback ",
+    "description": "claude-opus-5-5 declined; retried with claude-sonnet-4-6."
+   },
+   "ns": 1791545753137017221
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "toolu_task",
+    "title": "Task",
+    "kind": "think",
+    "status": "pending",
+    "rawInput": {
+     "description": "Check design",
+     "prompt": "Review the plan.",
+     "subagent_type": "Plan"
+    },
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Task"
+     }
+    }
+   },
+   "ns": 1791545754137018234
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "Child says hi. "
+    },
+    "_meta": {
+     "claudeCode": {
+      "parentToolUseId": "toolu_task"
+     }
+    }
+   },
+   "ns": 1791545755137019247
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "Root interleaves."
+    }
+   },
+   "ns": 1791545756137020260
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "Child again."
+    },
+    "_meta": {
+     "claudeCode": {
+      "parentToolUseId": "toolu_task"
+     }
+    }
+   },
+   "ns": 1791545757000000000
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "toolu_child",
+    "title": "Read /app/plan.md",
+    "kind": "read",
+    "status": "pending",
+    "rawInput": {
+     "file_path": "/app/plan.md"
+    },
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Read",
+      "parentToolUseId": "toolu_task"
+     }
+    }
+   },
+   "ns": 1791545758137022286
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_child",
+    "status": "completed",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "1\t# Plan"
+      }
+     }
+    ],
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Read",
+      "parentToolUseId": "toolu_task"
+     }
+    }
+   },
+   "ns": 1791545759137023299
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_task",
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Task",
+      "parentToolUseId": "toolu_task"
+     }
+    }
+   },
+   "ns": 1791545760137024312
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_task",
+    "status": "completed",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "Plan looks fine."
+      }
+     }
+    ]
+   },
+   "ns": 1791545761137025325
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "call_shell",
+    "name": "exec_command",
+    "kind": "execute",
+    "title": "echo hello; exit 3",
+    "status": "in_progress",
+    "content": [
+     {
+      "type": "terminal",
+      "terminalId": "call_shell"
+     }
+    ],
+    "rawInput": {
+     "command": "echo hello; exit 3",
+     "cwd": "/app"
+    },
+    "_meta": {
+     "terminal_info": {
+      "cwd": "/app",
+      "terminal_id": "call_shell"
+     }
+    }
+   },
+   "ns": 1791545762137026338
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "call_shell",
+    "_meta": {
+     "terminal_output_delta": {
+      "data": "hello\n",
+      "terminal_id": "call_shell"
+     }
+    }
+   },
+   "ns": 1791545763137027351
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "call_shell",
+    "status": "failed",
+    "_meta": {
+     "terminal_exit": {
+      "exit_code": 3,
+      "signal": null,
+      "terminal_id": "call_shell"
+     }
+    }
+   },
+   "ns": 1791545764000000000
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "call_read",
+    "kind": "read",
+    "title": "Read file '/app/x.txt'",
+    "status": "in_progress",
+    "locations": [
+     {
+      "path": "/app/x.txt"
+     }
+    ]
+   },
+   "ns": 1791545765137029377
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "call_read",
+    "status": "completed",
+    "rawOutput": {
+     "exit_code": 0
+    },
+    "_meta": {
+     "terminal_output_delta": {
+      "data": "line 1\n",
+      "terminal_id": "call_read"
+     }
+    }
+   },
+   "ns": 1791545766137030390
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "call_edit",
+    "title": "Editing files",
+    "kind": "edit",
+    "status": "completed",
+    "content": [
+     {
+      "type": "diff",
+      "path": "/app/a.py",
+      "oldText": null,
+      "newText": "x = 1\n"
+     }
+    ]
+   },
+   "ns": 1791545767137031403
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "ghost",
+    "status": "completed",
+    "title": "late"
+   },
+   "ns": 1791545768137032416
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "odd",
+    "title": "t",
+    "kind": "other",
+    "status": "not-a-status"
+   },
+   "ns": 1791545769137033429
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "skill_1",
+    "title": "Skill",
+    "kind": "other",
+    "status": "pending"
+   },
+   "ns": 1791545770137034442
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "skill_2",
+    "title": "Run",
+    "kind": "other",
+    "status": "pending"
+   },
+   "ns": 1791545771000000000
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "skill_2",
+    "status": "completed",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "Launching skill: pdf"
+      }
+     }
+    ]
+   },
+   "ns": 1791545772137036468
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "toolu_01",
+    "title": "again",
+    "kind": "execute"
+   },
+   "ns": 1791545773137037481
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_01",
+    "status": "cancelled"
+   },
+   "ns": 1791545774137038494
+  },
+  {
+   "update": {
+    "sessionUpdate": "text_update",
+    "text": "Whole text, "
+   },
+   "ns": 1791545775137039507
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_thought",
+    "text": "whole thought"
+   },
+   "ns": 1791545776137040520
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": ""
+    }
+   },
+   "ns": 1791545777137041533
+  },
+  {
+   "update": {
+    "sessionUpdate": "current_mode_update",
+    "currentModeId": "default"
+   },
+   "ns": 1791545778000000000
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "Key sk-ant-api03-QQQQQQQQQQQQQQQQQQQQQQQQ leaked."
+    }
+   },
+   "ns": 1791545779137043559
+  },
+  {
+   "finish_prompt": true
+  },
+  {
+   "prompt": "Continue.",
+   "ns": 1791545780137044572
+  },
+  {
+   "update": {
+    "sessionUpdate": "agent_thought_chunk",
+    "content": {
+     "type": "text",
+     "text": "Still going"
+    }
+   },
+   "ns": 1791545781137045585
+  },
+  {
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "slow",
+    "title": "sleep 999",
+    "kind": "execute",
+    "status": "in_progress"
+   },
+   "ns": 1791545782137046598
+  },
+  {
+   "timeout_sec": 600.0,
+   "ns": 1791545783137047611
+  }
+ ],
+ "jsonl": "{\"type\": \"user_message\", \"text\": \"Do the task.\\nIt's caf\\u00e9 time.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545737137001013\", \"last_observed_ns\": \"1791545737137001013\"}, \"ts\": \"2026-10-09T11:35:37.137001+00:00\"}\n{\"type\": \"agent_thought\", \"text\": \"Reading the task. Plan: list files.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545739137003039\", \"last_observed_ns\": \"1791545740137004052\"}, \"ts\": \"2026-10-09T11:35:39.137003+00:00\"}\n{\"type\": \"agent_message\", \"text\": \"I'll look around \\u2014 caf\\u00e9 \\u2615 \\ud83d\\ude00.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545742137006078\", \"last_observed_ns\": \"1791545743000000000\"}, \"ts\": \"2026-10-09T11:35:42.137006+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"toolu_01\", \"kind\": \"execute\", \"title\": \"ls -la /app\", \"status\": \"completed\", \"content\": [{\"type\": \"content\", \"content\": {\"type\": \"text\", \"text\": \"```console\\nREADME.md\\nsrc\\n```\"}}], \"raw_input\": {\"command\": \"ls -la /app\", \"description\": \"List files\"}, \"raw_output\": \"README.md\\nsrc\\nGITHUB_TOKEN=***REDACTED***\\n\", \"tool_name\": \"Bash\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545745137009117\", \"last_observed_ns\": \"1791545749137013169\"}, \"started_at\": \"2026-10-09T11:35:45.137009+00:00\", \"finished_at\": \"2026-10-09T11:35:49.137013+00:00\"}\n{\"type\": \"notice\", \"severity\": \"warning\", \"title\": \"Model metadata for `gpt-5.4` not found.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545751137015195\", \"last_observed_ns\": \"1791545751137015195\"}, \"ts\": \"2026-10-09T11:35:51.137015+00:00\"}\n{\"type\": \"notice\", \"severity\": \"info\", \"title\": \"Model fallback\", \"description\": \"claude-opus-5-5 declined; retried with claude-sonnet-4-6.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545753137017221\", \"last_observed_ns\": \"1791545753137017221\"}, \"ts\": \"2026-10-09T11:35:53.137017+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"toolu_task\", \"kind\": \"think\", \"title\": \"Task\", \"status\": \"completed\", \"content\": [{\"type\": \"content\", \"content\": {\"type\": \"text\", \"text\": \"Plan looks fine.\"}}], \"raw_input\": {\"description\": \"Check design\", \"prompt\": \"Review the plan.\", \"subagent_type\": \"Plan\"}, \"tool_name\": \"Task\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545754137018234\", \"last_observed_ns\": \"1791545761137025325\"}, \"started_at\": \"2026-10-09T11:35:54.137018+00:00\", \"finished_at\": \"2026-10-09T11:36:01.137025+00:00\"}\n{\"type\": \"agent_message\", \"text\": \"Child says hi. \", \"parent_tool_call_id\": \"toolu_task\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545755137019247\", \"last_observed_ns\": \"1791545755137019247\"}, \"ts\": \"2026-10-09T11:35:55.137019+00:00\"}\n{\"type\": \"agent_message\", \"text\": \"Root interleaves.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545756137020260\", \"last_observed_ns\": \"1791545756137020260\"}, \"ts\": \"2026-10-09T11:35:56.137020+00:00\"}\n{\"type\": \"agent_message\", \"text\": \"Child again.\", \"parent_tool_call_id\": \"toolu_task\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545757000000000\", \"last_observed_ns\": \"1791545757000000000\"}, \"ts\": \"2026-10-09T11:35:57+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"toolu_child\", \"kind\": \"read\", \"title\": \"Read /app/plan.md\", \"status\": \"completed\", \"content\": [{\"type\": \"content\", \"content\": {\"type\": \"text\", \"text\": \"1\\t# Plan\"}}], \"raw_input\": {\"file_path\": \"/app/plan.md\"}, \"parent_tool_call_id\": \"toolu_task\", \"tool_name\": \"Read\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545758137022286\", \"last_observed_ns\": \"1791545759137023299\"}, \"started_at\": \"2026-10-09T11:35:58.137022+00:00\", \"finished_at\": \"2026-10-09T11:35:59.137023+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"call_shell\", \"kind\": \"execute\", \"title\": \"echo hello; exit 3\", \"status\": \"failed\", \"content\": [{\"type\": \"terminal\", \"terminalId\": \"call_shell\"}], \"raw_input\": {\"command\": \"echo hello; exit 3\", \"cwd\": \"/app\"}, \"raw_output\": {\"formatted_output\": \"hello\\n\", \"exit_code\": 3}, \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545762137026338\", \"last_observed_ns\": \"1791545764000000000\"}, \"started_at\": \"2026-10-09T11:36:02.137026+00:00\", \"finished_at\": \"2026-10-09T11:36:04+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"call_read\", \"kind\": \"read\", \"title\": \"Read file '/app/x.txt'\", \"status\": \"completed\", \"content\": [], \"raw_output\": {\"formatted_output\": \"line 1\\n\", \"exit_code\": 0}, \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545765137029377\", \"last_observed_ns\": \"1791545766137030390\"}, \"started_at\": \"2026-10-09T11:36:05.137029+00:00\", \"finished_at\": \"2026-10-09T11:36:06.137030+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"call_edit\", \"kind\": \"edit\", \"title\": \"Editing files\", \"status\": \"completed\", \"content\": [{\"type\": \"diff\", \"path\": \"/app/a.py\", \"oldText\": null, \"newText\": \"x = 1\\n\"}], \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545767137031403\", \"last_observed_ns\": \"1791545767137031403\"}, \"started_at\": \"2026-10-09T11:36:07.137031+00:00\", \"finished_at\": \"2026-10-09T11:36:07.137031+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"ghost\", \"kind\": \"tool\", \"title\": \"late\", \"status\": \"completed\", \"content\": [], \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545768137032416\", \"last_observed_ns\": \"1791545768137032416\"}, \"started_at\": \"2026-10-09T11:36:08.137032+00:00\", \"finished_at\": \"2026-10-09T11:36:08.137032+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"odd\", \"kind\": \"other\", \"title\": \"t\", \"status\": \"pending\", \"content\": [], \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545769137033429\", \"last_observed_ns\": \"1791545769137033429\"}, \"started_at\": \"2026-10-09T11:36:09.137033+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"skill_1\", \"kind\": \"skill\", \"title\": \"Skill\", \"status\": \"pending\", \"content\": [], \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545770137034442\", \"last_observed_ns\": \"1791545770137034442\"}, \"started_at\": \"2026-10-09T11:36:10.137034+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"skill_2\", \"kind\": \"skill\", \"title\": \"Run\", \"status\": \"completed\", \"content\": [{\"type\": \"content\", \"content\": {\"type\": \"text\", \"text\": \"Launching skill: pdf\"}}], \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545771000000000\", \"last_observed_ns\": \"1791545772137036468\"}, \"started_at\": \"2026-10-09T11:36:11+00:00\", \"finished_at\": \"2026-10-09T11:36:12.137036+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"toolu_01\", \"kind\": \"execute\", \"title\": \"again\", \"status\": \"cancelled\", \"content\": [], \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545773137037481\", \"last_observed_ns\": \"1791545774137038494\"}, \"started_at\": \"2026-10-09T11:36:13.137037+00:00\", \"finished_at\": \"2026-10-09T11:36:14.137038+00:00\"}\n{\"type\": \"agent_message\", \"text\": \"Whole text, \", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545775137039507\", \"last_observed_ns\": \"1791545775137039507\"}, \"ts\": \"2026-10-09T11:36:15.137039+00:00\"}\n{\"type\": \"agent_thought\", \"text\": \"whole thought\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545776137040520\", \"last_observed_ns\": \"1791545776137040520\"}, \"ts\": \"2026-10-09T11:36:16.137040+00:00\"}\n{\"type\": \"agent_message\", \"text\": \"Key ***REDACTED*** leaked.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545777137041533\", \"last_observed_ns\": \"1791545779137043559\"}, \"ts\": \"2026-10-09T11:36:17.137041+00:00\"}\n{\"type\": \"user_message\", \"text\": \"Continue.\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545780137044572\", \"last_observed_ns\": \"1791545780137044572\"}, \"ts\": \"2026-10-09T11:36:20.137044+00:00\"}\n{\"type\": \"agent_thought\", \"text\": \"Still going\", \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545781137045585\", \"last_observed_ns\": \"1791545781137045585\"}, \"ts\": \"2026-10-09T11:36:21.137045+00:00\"}\n{\"type\": \"tool_call\", \"tool_call_id\": \"slow\", \"kind\": \"execute\", \"title\": \"sleep 999\", \"status\": \"in_progress\", \"content\": [], \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545782137046598\", \"last_observed_ns\": \"1791545782137046598\"}, \"started_at\": \"2026-10-09T11:36:22.137046+00:00\"}\n{\"type\": \"agent_timeout\", \"reason\": \"wall_clock_timeout\", \"timeout_sec\": 600.0, \"pending_tool_call_ids\": [\"odd\", \"skill_1\", \"slow\"], \"terminal_trajectory_complete\": false, \"receipt\": {\"source\": \"benchflow_host\", \"clock\": \"unix\", \"first_observed_ns\": \"1791545783137047611\", \"last_observed_ns\": \"1791545783137047611\"}, \"ts\": \"2026-10-09T11:36:23.137047+00:00\"}",
+ "n_tool_calls": 12,
+ "n_skill_invocations": 2,
+ "trajectory_summary": {
+  "steps": 26,
+  "tool_call_steps": 12,
+  "user_message_steps": 2,
+  "agent_message_steps": 6,
+  "agent_thought_steps": 3,
+  "other_steps": 3,
+  "event_type_counts": {
+   "user_message": 2,
+   "agent_thought": 3,
+   "agent_message": 6,
+   "tool_call": 12,
+   "notice": 2,
+   "agent_timeout": 1
+  },
+  "tool_call_status_counts": {
+   "completed": 7,
+   "failed": 1,
+   "pending": 2,
+   "cancelled": 1,
+   "in_progress": 1
+  },
+  "partial_trajectory": true,
+  "trajectory_source": "acp"
+ },
+ "atif_0_8": {
+  "schema_version": "ATIF-v1.7",
+  "session_id": "trial-1",
+  "agent": {
+   "name": "claude",
+   "version": "unknown"
+  },
+  "steps": [
+   {
+    "step_id": 1,
+    "source": "user",
+    "message": "Do the task.\nIt's caf\u00e9 time."
+   },
+   {
+    "step_id": 2,
+    "source": "agent",
+    "message": "I'll look around \u2014 caf\u00e9 \u2615 \ud83d\ude00.",
+    "reasoning_content": "Reading the task. Plan: list files."
+   },
+   {
+    "step_id": 3,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "toolu_01",
+      "function_name": "execute",
+      "arguments": {},
+      "extra": {
+       "title": "ls -la /app",
+       "status": "completed"
+      }
+     }
+    ],
+    "observation": {
+     "results": [
+      {
+       "source_call_id": "toolu_01",
+       "content": "```console\nREADME.md\nsrc\n```"
+      }
+     ]
+    }
+   },
+   {
+    "step_id": 4,
+    "source": "system",
+    "message": "Model metadata for `gpt-5.4` not found.",
+    "extra": {
+     "notice": {
+      "severity": "warning"
+     }
+    }
+   },
+   {
+    "step_id": 5,
+    "source": "system",
+    "message": "Model fallback\n\nclaude-opus-5-5 declined; retried with claude-sonnet-4-6.",
+    "extra": {
+     "notice": {
+      "severity": "info"
+     }
+    }
+   },
+   {
+    "step_id": 6,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "toolu_task",
+      "function_name": "think",
+      "arguments": {},
+      "extra": {
+       "title": "Task",
+       "status": "completed"
+      }
+     }
+    ],
+    "observation": {
+     "results": [
+      {
+       "source_call_id": "toolu_task",
+       "content": "Plan looks fine.",
+       "subagent_trajectory_ref": [
+        {
+         "trajectory_id": "subagent:toolu_task"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "step_id": 7,
+    "source": "agent",
+    "message": "Root interleaves."
+   },
+   {
+    "step_id": 8,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "call_shell",
+      "function_name": "execute",
+      "arguments": {},
+      "extra": {
+       "title": "echo hello; exit 3",
+       "status": "failed"
+      }
+     }
+    ]
+   },
+   {
+    "step_id": 9,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "call_read",
+      "function_name": "read",
+      "arguments": {},
+      "extra": {
+       "title": "Read file '/app/x.txt'",
+       "status": "completed"
+      }
+     }
+    ]
+   },
+   {
+    "step_id": 10,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "call_edit",
+      "function_name": "edit",
+      "arguments": {},
+      "extra": {
+       "title": "Editing files",
+       "status": "completed"
+      }
+     }
+    ]
+   },
+   {
+    "step_id": 11,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "ghost",
+      "function_name": "tool",
+      "arguments": {},
+      "extra": {
+       "title": "late",
+       "status": "completed"
+      }
+     }
+    ]
+   },
+   {
+    "step_id": 12,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "odd",
+      "function_name": "other",
+      "arguments": {},
+      "extra": {
+       "title": "t",
+       "status": "pending"
+      }
+     }
+    ]
+   },
+   {
+    "step_id": 13,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "skill_1",
+      "function_name": "skill",
+      "arguments": {},
+      "extra": {
+       "title": "Skill",
+       "status": "pending"
+      }
+     }
+    ]
+   },
+   {
+    "step_id": 14,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "skill_2",
+      "function_name": "skill",
+      "arguments": {},
+      "extra": {
+       "title": "Run",
+       "status": "completed"
+      }
+     }
+    ],
+    "observation": {
+     "results": [
+      {
+       "source_call_id": "skill_2",
+       "content": "Launching skill: pdf"
+      }
+     ]
+    }
+   },
+   {
+    "step_id": 15,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "toolu_01",
+      "function_name": "execute",
+      "arguments": {},
+      "extra": {
+       "title": "again",
+       "status": "cancelled"
+      }
+     }
+    ]
+   },
+   {
+    "step_id": 16,
+    "source": "agent",
+    "message": "Whole text, "
+   },
+   {
+    "step_id": 17,
+    "source": "agent",
+    "message": "Key ***REDACTED*** leaked.",
+    "reasoning_content": "whole thought"
+   },
+   {
+    "step_id": 18,
+    "source": "user",
+    "message": "Continue."
+   },
+   {
+    "step_id": 19,
+    "source": "agent",
+    "message": "",
+    "tool_calls": [
+     {
+      "tool_call_id": "slow",
+      "function_name": "execute",
+      "arguments": {},
+      "extra": {
+       "title": "sleep 999",
+       "status": "in_progress"
+      }
+     }
+    ],
+    "reasoning_content": "Still going"
+   }
+  ],
+  "final_metrics": {
+   "total_steps": 19
+  },
+  "extra": {
+   "acp_projection": {
+    "scope": "root_with_embedded_subagents",
+    "attributed_child_events": 3,
+    "embedded_subagent_trajectories": 1,
+    "unlinked_subagent_trajectories": 0,
+    "excluded_attributed_child_events": 0,
+    "max_subagent_depth": 8,
+    "source_artifact": "trajectory/acp_trajectory.jsonl",
+    "child_transcript_completeness": "unknown",
+    "outcome_and_usage_scope": "rollout_not_partitioned_by_agent"
+   }
+  },
+  "subagent_trajectories": [
+   {
+    "schema_version": "ATIF-v1.7",
+    "trajectory_id": "subagent:toolu_task",
+    "agent": {
+     "name": "claude",
+     "version": "unknown",
+     "extra": {
+      "subagent_type": "Plan"
+     }
+    },
+    "steps": [
+     {
+      "step_id": 1,
+      "source": "user",
+      "message": "Review the plan."
+     },
+     {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Child says hi. "
+     },
+     {
+      "step_id": 3,
+      "source": "agent",
+      "message": "Child again."
+     },
+     {
+      "step_id": 4,
+      "source": "agent",
+      "message": "",
+      "tool_calls": [
+       {
+        "tool_call_id": "toolu_child",
+        "function_name": "read",
+        "arguments": {},
+        "extra": {
+         "title": "Read /app/plan.md",
+         "status": "completed"
+        }
+       }
+      ],
+      "observation": {
+       "results": [
+        {
+         "source_call_id": "toolu_child",
+         "content": "1\t# Plan"
+        }
+       ]
+      }
+     }
+    ],
+    "final_metrics": {
+     "total_steps": 4
+    },
+    "extra": {
+     "parent_tool_call_id": "toolu_task",
+     "prompt_source": "parent_tool_call.raw_input.prompt"
+    }
+   }
+  ]
+ }
+}

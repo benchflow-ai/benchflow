@@ -1,0 +1,75 @@
+# aider, run headless with `aider --message-file`, as Harbor's `aider` agent
+# runs it, from PyPI instead of aider's install script.
+name = "aider"
+description = "aider pair-programming CLI, headless with aider --message-file"
+
+[install]
+uv-tool = "aider-chat==0.86.2"
+bin = "aider"
+python = "3.12"
+verify = "/opt/benchflow/bin/aider --version"
+
+[headless]
+# aider edits files it tracks in git, so a workspace that is not a work tree
+# is committed first (Harbor's snapshot). The model is a LiteLLM id
+# (`openai/gpt-5`, `anthropic/claude-sonnet-4-6`).
+command = '''if command -v git >/dev/null 2>&1 && ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then { git init -q && git add -A && git -c user.name=benchflow -c user.email=benchflow@localhost commit -q --no-verify --allow-empty -m 'Task files before agent run'; } || echo 'BenchFlow: could not snapshot the workspace for aider' >&2; fi; exec /opt/benchflow/bin/aider --yes-always --no-pretty --no-stream --no-check-update --no-show-release-notes --no-show-model-warnings --analytics-disable ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} ${BENCHFLOW_EFFORT:+--reasoning-effort "$BENCHFLOW_EFFORT"} "$@" --message-file "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "aider-text"
+
+[credentials]
+# aider reads the key of the provider in the model's `provider/model` id.
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+# Harbor's aider options. aider keeps its chat history in the working folder,
+# not its home, so it does not resume across stages here.
+[options.version]
+type = "string"
+description = "aider version to install."
+default = "0.86.2"
+install = "aider-chat"
+
+[options.thinking_tokens]
+type = "int"
+description = "Thinking token budget."
+min = 0
+flag = "--thinking-tokens"
+
+[options.cache_prompts]
+type = "bool"
+description = "Cache prompts."
+flag = "--cache-prompts"
+
+[options.auto_lint]
+type = "bool"
+description = "Lint after edits."
+flag = "--auto-lint"
+
+[options.auto_test]
+type = "bool"
+description = "Run tests after edits."
+flag = "--auto-test"
+
+[options.test_cmd]
+type = "string"
+description = "The test command for auto_test."
+flag = "--test-cmd"
+
+[options.map_tokens]
+type = "int"
+description = "Repo map token budget."
+min = 0
+flag = "--map-tokens"
+
+[providers.openai]
+# LiteLLM's `openai/<model>` (Chat Completions) on OPENAI_API_BASE, the name
+# aider documents; OPENAI_BASE_URL too, which LiteLLM also reads.
+base_url = "OPENAI_API_BASE"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"
+
+[providers.openai.env]
+OPENAI_BASE_URL = "{base_url}"

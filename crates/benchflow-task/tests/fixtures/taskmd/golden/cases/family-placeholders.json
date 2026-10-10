@@ -1,0 +1,29 @@
+{
+  "path": "family-placeholders/task.md",
+  "mode": "blocks",
+  "instruction": "Count the {{ item }} in {{place}}.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-placeholders\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/generate.py\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-placeholders",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/generate.py"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Count the {{ item }} in {{place}}.",
+  "title": "acme/family-placeholders",
+  "ok": true
+}

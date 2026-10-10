@@ -1,0 +1,21 @@
+# DeepSeek's own API: OpenAI-compatible chat completions, and the
+# Anthropic-compatible endpoint DeepSeek documents for Claude Code. Not run
+# live by BenchFlow yet; the routes answer 401 without a key.
+name = "deepseek"
+description = "DeepSeek's API"
+
+[openai]
+base_url = "https://api.deepseek.com"
+apis = ["chat"]
+
+[anthropic]
+base_url = "https://api.deepseek.com/anthropic"
+auth = "bearer"
+
+[key]
+env = ["DEEPSEEK_API_KEY"]
+
+[check]
+# The account balance: needs a valid key, spends nothing.
+endpoint = "openai"
+path = "/user/balance"

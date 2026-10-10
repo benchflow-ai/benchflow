@@ -1,0 +1,12 @@
+matrix-preference/task.md
+  mode: blocks
+  title: acme/matrix-preference
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (matrix, name, preference, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: unknown key 'cells' in [matrix]; it holds accept, axes, pair_on, report, trials_per_cell, or x- extensions (task.md)
+  error: unknown key 'raters' in [preference]; did you mean rater_pool? it holds aggregate, answers, blind, compare, directions, export_pairs, gold_pairs, min_agreement, protocol, randomize_sides, rater_brief, rater_pool, raters_per_pair, or x- extensions (task.md)
+  error: unknown key 'threshold' in [preference.min_agreement]; it holds metric, value, or x- extensions (task.md)
+  FAILED

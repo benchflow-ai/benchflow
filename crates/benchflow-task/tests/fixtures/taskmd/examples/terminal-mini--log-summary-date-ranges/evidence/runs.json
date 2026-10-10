@@ -1,0 +1,131 @@
+{
+ "runs": [
+  {
+   "kind": "oracle",
+   "agent": "oracle",
+   "reward": 1.0,
+   "date": "2026-09-28T15:29:27+00:00",
+   "trial": "log-summary-date-ranges__oracle__s0__c08644d31b8a",
+   "format": "benchflow",
+   "result": {
+    "path": "log-summary-date-ranges__oracle__s0__c08644d31b8a/result.json",
+    "sha256": "7e8a5549a937282ed65937686b78bd952619a406d6c85fd356060698d2dcb211"
+   },
+   "tree_hash": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "no_op",
+   "agent": "noop",
+   "reward": 0.0,
+   "date": "2026-09-28T15:29:58+00:00",
+   "trial": "log-summary-date-ranges__noop__s0__c08644d31b8a",
+   "format": "benchflow",
+   "result": {
+    "path": "log-summary-date-ranges__noop__s0__c08644d31b8a/result.json",
+    "sha256": "1ac3ada574343afc30af99e707b0ca483b17e50c87806578ebfcd5606d828a9f"
+   },
+   "tree_hash": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T16:13:55+00:00",
+   "trial": "log-summary-date-ranges__toolloop__s1__7eae3a9d8109",
+   "format": "benchflow",
+   "result": {
+    "path": "log-summary-date-ranges__toolloop__s1__7eae3a9d8109/result.json",
+    "sha256": "d105e3797d17af0a88f2c06e83183b5d5af27663d42612dbca076c34908ebd91"
+   },
+   "tree_hash": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc"
+    }
+   },
+   "ingested": "2026-09-28T18:48:12+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "error": "infra_error",
+   "date": "2026-09-28T16:54:38+00:00",
+   "trial": "log-summary-date-ranges__toolloop__s2__52d629e9933b",
+   "format": "benchflow",
+   "result": {
+    "path": "log-summary-date-ranges__toolloop__s2__52d629e9933b/result.json",
+    "sha256": "f28717987b68f18a591064091ade97a6cd26791aab4ed892daa4d216338353fc"
+   },
+   "tree_hash": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc"
+    }
+   },
+   "ingested": "2026-09-28T18:48:12+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T19:06:00+00:00",
+   "trial": "log-summary-date-ranges__toolloop__s2__52d629e9933b",
+   "format": "benchflow",
+   "result": {
+    "path": "log-summary-date-ranges__toolloop__s2__52d629e9933b/result.json",
+    "sha256": "8367882f63bad66e8d8345a4d578709e1c2ffa099e705e890b7a60d7e2f2152d"
+   },
+   "tree_hash": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc"
+    }
+   },
+   "ingested": "2026-09-28T19:07:46+00:00"
+  }
+ ],
+ "trees": {
+  "sha256:c30f69b23dfe7d49ae74cdf2022f7c23dae2c66f14db2c2988e9d772126eb7bc": {
+   "files": {
+    "oracle/solve.sh": "9f6a8ee8947bdf1c0f31b530b6194ae998d66841a3b785fa2e246ee840350ab6",
+    "sandbox/Dockerfile": "b479f6e987b63a6ec118fa1691b8bb85c437b2a6a0fe63feab5ed7154957fdfc",
+    "sandbox/log_generator_deterministic.py": "beb6eff59979e9aa0be63ce8a0f1b0df1178f92871f04ba9f76fa70cf8beb81c",
+    "task.md": "214f4b4203452aa9481f1d1b8ae5d48dcb280f283f67c0e016ec28077554835f",
+    "verifier/test.sh": "4770437ea96c3cc84684b4f99d55fb148fcac09f9ea1e8ef49de487716e6c334",
+    "verifier/test_outputs.py": "2fc06a6ce1944ad82f84fb437395fa75ed8c0eadd385b92e375c27e5bc9cb2b4"
+   },
+   "task_md": {
+    "instruction": "b8b959422108eacb",
+    "config": {
+     "about": "6f48bac1b5009d18",
+     "agent": "9ad34afc3bdd7503",
+     "sandbox": "ba6fe65091941986",
+     "verifier": "3f6bc3f8291673f6",
+     "oracle": "f101bf975b3a5a78",
+     "import": "61515f00e6720e76"
+    }
+   },
+   "no_op": null
+  }
+ }
+}

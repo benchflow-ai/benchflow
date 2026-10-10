@@ -1,0 +1,15 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "m1",
+      "points": 2,
+      "judge": "llm",
+      "evidence": [
+        "report.md"
+      ],
+      "text": "The method is sound.",
+      "stated": "Fix the bug"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    { "id": "covers-changes", "points": 3, "judge": "llm", "evidence": ["CHANGELOG.md", "diff:."],
+      "text": "Mentions the trailing-Z fix, the --tz option, and that the CLI refactor changes no behavior.",
+      "stated": "covering every change made to the repository this week",
+      "levels": { "0": "Misses two or more changes.", "2": "Misses one change.", "3": "Covers all three accurately." } },
+    { "id": "user-facing", "points": 1, "judge": "llm", "evidence": ["CHANGELOG.md"],
+      "text": "Written for users of the library: what changed for them, not how the code changed.",
+      "stated": "Readers are users of the library, not its maintainers" },
+    { "id": "no-invented-changes", "outcome": "bad", "points": -2, "judge": "llm", "evidence": ["CHANGELOG.md", "diff:."],
+      "text": "Describes a change that was not made.",
+      "implicit": "Release notes that invent changes mislead users; this is the release-notes version of an unsupported claim." }
+  ]
+}

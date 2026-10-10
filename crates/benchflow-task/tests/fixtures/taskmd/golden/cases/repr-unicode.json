@@ -1,0 +1,73 @@
+{
+  "path": "repr-unicode/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/repr-unicode\"\nversion = \"1.0.0\"\n[user]\n\"m\u00e4x_turns\" = 1\n\"max\u200b_turns\" = 2\n\"it's\" = 3\n\n[family.splits]\nholdout = \"seed \u00e9 3\"\n\n[sandbox]\ntimezone = \"UTC\"\nenv = { TZ = 5 }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/repr-unicode",
+    "version": "1.0.0",
+    "user": {
+      "m\u00e4x_turns": 1,
+      "max\u200b_turns": 2,
+      "it's": 3
+    },
+    "family": {
+      "splits": {
+        "holdout": "seed \u00e9 3"
+      }
+    },
+    "sandbox": {
+      "timezone": "UTC",
+      "env": {
+        "TZ": 5
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key 'm\u00e4x_turns' in [user]; did you mean max_turns? it holds isolation, max_turns, model, residual_risk, stop, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'max\\u200b_turns' in [user]; did you mean max_turns? it holds isolation, max_turns, model, residual_risk, stop, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key \"it's\" in [user]; it holds isolation, max_turns, model, residual_risk, stop, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "[sandbox] env sets TZ to 5, which differs; [sandbox] timezone wins over it, so remove TZ from env",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] holdout needs a role: write [family.splits.holdout] with rule = \"seed \\u00e9 3\" and role = \"train\", \"validation\", or \"test\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] holdout: the rule 'seed \u00e9 3' is not valid: unexpected '\u00e9 3'",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/repr-unicode",
+  "ok": false
+}

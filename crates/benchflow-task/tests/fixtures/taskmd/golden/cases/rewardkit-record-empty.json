@@ -1,0 +1,33 @@
+{
+  "path": "rewardkit-record-empty/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rewardkit-record-empty\"\nversion = \"1.0.0\"\n[import.harbor.rewardkit]\nversion = \"0.1.7\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rewardkit-record-empty",
+    "version": "1.0.0",
+    "import": {
+      "harbor": {
+        "rewardkit": {
+          "version": "0.1.7"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rewardkit-record-empty",
+  "ok": true
+}

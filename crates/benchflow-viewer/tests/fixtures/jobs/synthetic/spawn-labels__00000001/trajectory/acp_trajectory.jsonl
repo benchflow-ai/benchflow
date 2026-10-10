@@ -1,0 +1,7 @@
+{"type": "tool_call", "kind": "think", "status": "completed", "tool_call_id": "claude", "title": "Task"}
+{"type": "tool_call", "kind": "think", "status": "completed", "tool_call_id": "claude-described", "title": "Create child.txt", "raw_input": {"description": "Create child.txt", "prompt": "go"}}
+{"type": "tool_call", "kind": "think", "status": "completed", "tool_call_id": "opencode", "title": "task"}
+{"type": "tool_call", "kind": "think", "status": "completed", "tool_call_id": "opencode-args", "title": "task {\"description\": \"Read the 2024 filings\"}"}
+{"type": "tool_call", "kind": "think", "status": "completed", "tool_call_id": "plan", "title": "Plan the next step"}
+{"type": "tool_call", "kind": "think", "status": "completed", "tool_call_id": "typed", "title": "x", "raw_input": {"prompt": "p", "subagent_type": "general"}}
+{"type": "tool_call", "kind": "think", "status": "completed", "tool_call_id": "prompt-only", "title": "x", "raw_input": {"prompt": "p"}}

@@ -1,0 +1,111 @@
+{
+  "task_name": "citation-check",
+  "rollout_name": "citation-check__2fa9c417",
+  "rewards": {
+    "reward": 0.0
+  },
+  "agent": "nop",
+  "agent_name": "nop",
+  "model": null,
+  "skill_mode": "no-skill",
+  "skill_source": "none",
+  "requested_skills_dir": null,
+  "effective_skills_dir": null,
+  "skills_sandbox_dir": null,
+  "include_task_skills": false,
+  "n_tool_calls": 0,
+  "n_skill_invocations": 0,
+  "n_prompts": 1,
+  "agent_result": {
+    "n_tool_calls": 0,
+    "n_skill_invocations": 0,
+    "n_prompts": 1,
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable",
+    "price_source": null
+  },
+  "final_metrics": {
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0,
+    "total_cost_usd": null
+  },
+  "trajectory_summary": {
+    "steps": 1,
+    "tool_call_steps": 0,
+    "user_message_steps": 0,
+    "agent_message_steps": 0,
+    "agent_thought_steps": 0,
+    "other_steps": 1,
+    "event_type_counts": {
+      "nop": 1
+    },
+    "tool_call_status_counts": {},
+    "partial_trajectory": false,
+    "trajectory_source": null
+  },
+  "usage_tracking": {
+    "requested": "auto",
+    "status": "unavailable",
+    "environment": "daytona",
+    "endpoint_kind": "none",
+    "usage_source": "unavailable"
+  },
+  "error": null,
+  "error_category": null,
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "export_error": null,
+  "idle_timeout_info": null,
+  "agent_timeout_info": null,
+  "sandbox_startup_info": null,
+  "transport_error_info": null,
+  "verifier_timeout_info": null,
+  "api_error_info": null,
+  "suspected_api_error_info": null,
+  "integration_failure_info": null,
+  "partial_trajectory": false,
+  "trajectory_source": null,
+  "started_at": "2026-10-02 02:41:33.482228",
+  "finished_at": "2026-10-02 02:41:56.854792",
+  "timing": {
+    "environment_setup": 1.4,
+    "verifier": 17.4,
+    "total": 23.4
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "nop",
+          "model": null,
+          "reasoning_effort": null,
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ],
+  "loop": {
+    "strategy": "single-shot"
+  },
+  "task_digest": "sha256:2452374f8a66005dc4e0d3983a5c62afb0bdb9e5076ff7f0f3d1ac2228129143",
+  "sandbox_id": "b6c48a1d-f58a-49a4-86f5-435732e1d8b8"
+}

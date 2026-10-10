@@ -1,0 +1,3 @@
+# The repository's Python ignore list has `MANIFEST`, which matches this
+# crate's src/manifest/ folder on case-insensitive file systems (macOS).
+!/src/manifest/

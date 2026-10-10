@@ -1,0 +1,12 @@
+metaworld-push/task.md
+  mode: blocks
+  title: Push a puck to a target (simulated arm)
+  instruction: 70 words; starts 'A robot arm stands at a table with a puck and a green target marker. P'
+  blocks: toml task
+  config: block (agent, keywords, name, sandbox, title, version, world)
+  rubric: 2 criteria, 1 gates, 1 points; judges test, world
+  behaviors: robot.hard-contact, process.gave-up
+  grading needs a model: yes: llm judges 2 behaviors
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 4m (llm 2 x 2m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  ok

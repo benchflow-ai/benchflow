@@ -1,0 +1,45 @@
+{
+  "path": "harbor-network/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/harbor-network\"\nversion = \"1.0.0\"\n[sandbox]\nallow_internet = false\n\n[agent]\nallowed_hosts = [\"pypi.org\"]",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/harbor-network",
+    "version": "1.0.0",
+    "sandbox": {
+      "allow_internet": false
+    },
+    "agent": {
+      "allowed_hosts": [
+        "pypi.org"
+      ]
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] allow_internet is Harbor's name; task.md uses network (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[agent] allowed_hosts is Harbor's name; task.md uses network (a list of hosts) (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/harbor-network",
+  "ok": false
+}

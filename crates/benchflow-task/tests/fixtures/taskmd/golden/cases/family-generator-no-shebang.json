@@ -1,0 +1,35 @@
+{
+  "path": "family-generator-no-shebang/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-generator-no-shebang\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/gen.py\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-generator-no-shebang",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/gen.py"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "family/gen.py needs a first line naming its interpreter, such as #!/usr/bin/env python3: family@1 runs it by that line",
+      "where": "family/gen.py"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/family-generator-no-shebang",
+  "ok": false
+}

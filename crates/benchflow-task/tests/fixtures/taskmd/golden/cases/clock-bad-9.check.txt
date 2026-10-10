@@ -1,0 +1,10 @@
+clock-bad-9/task.md
+  mode: blocks
+  title: acme/clock-bad-9
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, variants, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: variant online: a set clock needs network = "none" while it runs, and [agent] network is "open": the network tells the real date (TLS, HTTP Date headers, package mirrors). Set [agent] network = "none" (task.md)
+  FAILED

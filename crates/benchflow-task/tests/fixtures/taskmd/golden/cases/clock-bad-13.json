@@ -1,0 +1,43 @@
+{
+  "path": "clock-bad-13/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-bad-13\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\nnetwork = \"none\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = { start = \"noon\", enforce = \"vm\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-bad-13",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m",
+      "network": "none"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": {
+        "start": "noon",
+        "enforce": "vm"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] clock start is an RFC 3339 time with an offset, such as \"2026-03-14T09:00:00-04:00\" ({why})",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-bad-13",
+  "ok": false
+}

@@ -1,0 +1,8 @@
+terminal-mini--openssl-selfsigned-cert/task.md
+  mode: blocks
+  instruction: 197 words; starts 'Your company needs a self-signed TLS certificate for an internal devel'
+  blocks: toml task
+  config: block (about, agent, import, oracle, sandbox, verifier)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: 15m (scripts 15m; in sequence, before retries)
+  ok

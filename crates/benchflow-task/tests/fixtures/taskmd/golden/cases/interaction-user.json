@@ -1,0 +1,44 @@
+{
+  "path": "interaction-user/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/interaction-user\"\nversion = \"1.0.0\"\n[interaction]\nmode = \"parallel\"\n\n[user]\nisolation = \"vm\"\nmax_turns = 3",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/interaction-user",
+    "version": "1.0.0",
+    "interaction": {
+      "mode": "parallel"
+    },
+    "user": {
+      "isolation": "vm",
+      "max_turns": 3
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[interaction] mode must be one of 'sequential', 'turns', 'concurrent'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[user] isolation must be one of 'process', 'container'",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/interaction-user",
+  "ok": false
+}

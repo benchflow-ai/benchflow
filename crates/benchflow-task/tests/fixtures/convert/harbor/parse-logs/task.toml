@@ -1,0 +1,50 @@
+# A task about parsing logs.
+version = "1.0"
+source = "terminal-bench"
+
+[task]
+name = "acme/parse-logs"
+description = "Parse a web server log"
+authors = [{ name = "Ada Lovelace", email = "ada@example.com" }, { name = "Grace Hopper" }]
+keywords = ["logs", "parsing"]
+# Misplaced: Harbor ignores this here.
+multi_step_reward_strategy = "mean"
+
+[metadata]
+difficulty = "medium"
+category = "data-processing"
+tags = ["logs", "regex"]
+
+[verifier]
+timeout_sec = 120.0 # two minutes
+user = "root"
+
+[verifier.env]
+OPENAI_API_KEY = "${OPENAI_API_KEY}"
+MODE = "strict"
+
+[agent]
+timeout_sec = 900.0
+network_mode = "allowlist"
+allowed_hosts = ["pypi.org", "files.pythonhosted.org"]
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 2
+memory = "4G"
+storage_mb = 10240
+allow_internet = false
+workdir = "/app"
+
+# The service must be up before the agent starts.
+[environment.healthcheck]
+command = "test -f /app/ready"
+interval_sec = 2.0
+retries = 5
+
+[solution.env]
+SEED = "42"
+
+[[artifacts]]
+source = "/app/out"
+destination = "out"

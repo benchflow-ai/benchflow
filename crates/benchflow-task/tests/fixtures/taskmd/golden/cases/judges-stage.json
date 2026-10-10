@@ -1,0 +1,82 @@
+{
+  "path": "judges-stage/task.md",
+  "mode": "blocks",
+  "instruction": "Fix it.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "two",
+      "info": "stage two",
+      "body": "Two.",
+      "line": 3
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/judges-stage\"\nversion = \"1.0.0\"\n[stages.two]\nunlock = \"on_submit\"\n\n[stages.two.verifier.judges]\nsamples = 2\nmin_samples = 3\n\n[stages.two.verifier.judges.llm]\nbrief = \"verifier/judge.md\"",
+      "line": 7
+    }
+  ],
+  "config": {
+    "name": "acme/judges-stage",
+    "version": "1.0.0",
+    "stages": {
+      "two": {
+        "unlock": "on_submit",
+        "verifier": {
+          "judges": {
+            "samples": 2,
+            "min_samples": 3,
+            "llm": {
+              "brief": "verifier/judge.md"
+            }
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "stated quote not found in what the agent is told: 'Fix the bug'",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "[stages.two.verifier.judges] min_samples is at most samples",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[stages.two.verifier.judges.llm] brief verifier/judge.md must be a file under stages/two/verifier/, which only grading sees; anywhere else the agent could read it",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix it.",
+  "title": "acme/judges-stage",
+  "ok": false
+}

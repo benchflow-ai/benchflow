@@ -1,0 +1,7 @@
+{"type": "start", "agent": "langgraph", "framework": "langgraph", "version": "1.2.14", "model": "openai:mock-model"}
+{"type": "tool_call", "id": "call_9e88e2468a", "name": "bash", "input": {"command": "echo benchflow > bf_mock_out.txt && cat bf_mock_out.txt"}}
+{"type": "usage", "input_tokens": 100, "output_tokens": 10}
+{"type": "tool_result", "id": "call_9e88e2468a", "output": "benchflow\n", "failed": false}
+{"type": "message", "text": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}
+{"type": "usage", "input_tokens": 200, "output_tokens": 20}
+{"type": "done", "answer": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}

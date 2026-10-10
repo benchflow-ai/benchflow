@@ -1,0 +1,10 @@
+bracket-fea/task.md
+  mode: blocks
+  title: A light bracket that passes FEA
+  instruction: 97 words; starts 'Design an aluminum (6061-T6) wall bracket in CadQuery that holds a 12 '
+  blocks: toml task
+  config: block (about, agent, conventions, keywords, name, sandbox, title, verifier, version)
+  rubric: 6 criteria, 4 gates, 3 points; judges replay, test
+  grading needs a model: no (6 criteria decided by tests, rules, the world, or replay)
+  worst-case grading time: 20m (scripts 20m; in sequence, before retries)
+  ok

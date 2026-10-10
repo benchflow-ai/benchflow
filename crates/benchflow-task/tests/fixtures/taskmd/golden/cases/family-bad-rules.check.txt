@@ -1,0 +1,16 @@
+family-bad-rules/task.md
+  mode: blocks
+  title: acme/family-bad-rules
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (family, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: [family] database is not read under family@1: the generator writes an instance's files into agent/ and verifier/ (docs/runtime/episodes.md) (task.md)
+  error: [family.splits] train: the rule 'seed < 5' is not valid: a rule reads one variable, n, not 'seed' (task.md)
+  error: [family.splits] test: the rule 'n $ 3' is not valid: unexpected '$ 3' (task.md)
+  error: [family.splits] validation: the rule 'n + 1' is not valid: a rule is a comparison, or comparisons combined with and, or, and not (task.md)
+  error: [family.splits] odd is a rule, or a table with rule and role (task.md)
+  error: [family.splits] extra: the rule '(n < 3' is not valid: expected ')', found 'the end' (task.md)
+  error: family/generate.py exited 0 but wrote no instance.json for seed 0: under family@1 the instance is malformed, and a runtime refuses every episode with generator-failed (family/generate.py)
+  FAILED

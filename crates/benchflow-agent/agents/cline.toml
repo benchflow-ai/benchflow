@@ -1,0 +1,61 @@
+# Cline's CLI in its ACP mode (`cline --acp`), the npm package the public
+# ACP registry lists for cline 3.0.70, or headless with `cline --json
+# --yolo` (Harbor's `cline-cli`) from the same install.
+name = "cline"
+aliases = ["cline-cli"]
+description = "Cline CLI via ACP, or headless with cline --json; the model's provider decides the key"
+acp_registry = "cline"
+skill_paths = ["$HOME/.cline/skills"]
+home_dirs = [".cline"]
+
+[install]
+npm = "cline@3.0.70"
+bin = "cline"
+launcher = "auto"
+
+[launch]
+args = ["--acp"]
+
+[headless]
+# Harbor's `cline -P <provider> -k <key> -m <model> --json --yolo`, the key
+# being the model's provider's (`vercel/` is Cline's vercel-ai-gateway).
+# After cline exits, its newest session's messages file is printed for the
+# parser, as one line.
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+v="$(printf '%s' "$p" | tr 'a-z-' 'A-Z_')_API_KEY"
+k=$(printenv "$v")
+case "$p" in
+  google|gemini) k="${k:-${GEMINI_API_KEY:-$GOOGLE_API_KEY}}"; p=gemini ;;
+  vercel) k="${k:-$AI_GATEWAY_API_KEY}"; p=vercel-ai-gateway ;;
+esac
+mkdir -p "$HOME/.cline/data"
+printf '{"welcomeViewCompleted": true, "isNewUser": false}' > "$HOME/.cline/data/globalState.json"
+if [ -n "$BENCHFLOW_CLINE_BASE_URL" ]; then /opt/benchflow/bin/cline auth -p openai-compatible -k "$OPENAI_API_KEY" -m "$BENCHFLOW_CLINE_MODEL" -b "$BENCHFLOW_CLINE_BASE_URL" < /dev/null > /dev/null || { echo "BenchFlow: cline auth for the provider failed" >&2; exit 1; }; fi
+/opt/benchflow/bin/cline ${p:+-P "$p"} ${k:+-k "$k"} ${m:+-m "$m"} --json --yolo -- "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null
+s=$?
+f=$(ls -t "$HOME"/.cline/data/sessions/*/*.messages.json 2> /dev/null | head -n 1)
+[ -z "$f" ] || /opt/benchflow/node/bin/node -e 'const fs = require("fs"); process.stdout.write(JSON.stringify({"@bf": "messages", item: JSON.parse(fs.readFileSync(process.argv[1], "utf8"))}) + "\n")' "$f"
+exit "$s"'''
+output = "cline-json"
+
+[credentials]
+# Harbor maps the provider to ANTHROPIC_API_KEY, OPENAI_API_KEY,
+# OPENROUTER_API_KEY, GEMINI_API_KEY, XAI_API_KEY, ...
+family = "model"
+
+[model]
+select = "auto"
+format = "provider/model"
+
+[providers.openai]
+# Cline's `openai-compatible` provider (Chat Completions), saved with `cline
+# auth` by the headless command before cline starts; the command then names
+# no provider or model. Over ACP, cline 3.0.70 takes a model only from its
+# own catalog for the provider (any other id falls back to the catalog's
+# default, gpt-4o), so on a provider only the headless route works.
+key = "OPENAI_API_KEY"
+model = ""
+
+[providers.openai.env]
+BENCHFLOW_CLINE_BASE_URL = "{base_url}"
+BENCHFLOW_CLINE_MODEL = "{model}"

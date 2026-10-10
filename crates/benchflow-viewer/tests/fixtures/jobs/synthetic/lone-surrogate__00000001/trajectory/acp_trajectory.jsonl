@@ -1,0 +1,6 @@
+{"type":"agent_message","text":"lead \ud800 tail"}
+{"type":"agent_message","text":"low \udc00 only"}
+{"type":"agent_message","text":"pair \ud83d\ude00 ok"}
+{"type":"agent_message","text":"high then A \ud800\u0041"}
+{"type":"agent_message","text":"bad hex \ud800\uZZZZ"}
+{"type":"agent_message","text":"\ud83d"}

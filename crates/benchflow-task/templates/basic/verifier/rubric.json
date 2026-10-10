@@ -1,0 +1,17 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "hello-line",
+      "gate": true,
+      "text": "/app/hello.txt holds exactly the line \"Hello, world!\" and one newline.",
+      "stated": "Write the line `Hello, world!` to `/app/hello.txt`",
+      "judge": "test",
+      "check": "*"
+    }
+  ]
+}

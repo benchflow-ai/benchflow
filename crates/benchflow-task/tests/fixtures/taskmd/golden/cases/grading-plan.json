@@ -1,0 +1,95 @@
+{
+  "path": "grading-plan/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/grading-plan\"\nversion = \"1.0.0\"\n[verifier]\ntimeout = \"5m\"\n\n[verifier.judges]\nsamples = 3\n\n[verifier.judges.agent]\ntimeout = \"10m\"\nbudget = { tokens = \"1M\" }\n\n[verifier.judges.vlm]\nsamples = 1",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/grading-plan",
+    "version": "1.0.0",
+    "verifier": {
+      "timeout": "5m",
+      "judges": {
+        "samples": 3,
+        "agent": {
+          "timeout": "10m",
+          "budget": {
+            "tokens": "1M"
+          }
+        },
+        "vlm": {
+          "samples": 1
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "method-2",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "fig",
+        "points": 1,
+        "judge": "vlm",
+        "evidence": [
+          "fig.png"
+        ],
+        "text": "F.",
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "fig-2",
+        "points": 1,
+        "judge": "vlm",
+        "evidence": [
+          "fig.png"
+        ],
+        "text": "G.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "watch": [
+      {
+        "id": "process.loop",
+        "definition": "Repeats.",
+        "detect": "monitor",
+        "consequence": "report"
+      }
+    ]
+  },
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/grading-plan",
+  "ok": true
+}

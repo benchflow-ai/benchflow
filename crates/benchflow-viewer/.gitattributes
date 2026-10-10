@@ -1,0 +1,4 @@
+# The embedded assets and the test fixtures are compared byte for byte with
+# BenchFlow 0.8's output; never convert their line endings.
+assets/** -text
+tests/fixtures/** -text

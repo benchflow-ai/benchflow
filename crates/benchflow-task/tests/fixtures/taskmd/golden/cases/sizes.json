@@ -1,0 +1,52 @@
+{
+  "path": "sizes/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/sizes\"\nversion = \"1.0.0\"\n[sandbox]\nmemory = 4096\ndisk = \"10gb\"\n\n[verifier.sandbox]\nmemory = \"4G\"\n\n[verifier]\nisolation = \"separate\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/sizes",
+    "version": "1.0.0",
+    "sandbox": {
+      "memory": 4096,
+      "disk": "10gb"
+    },
+    "verifier": {
+      "sandbox": {
+        "memory": "4G"
+      },
+      "isolation": "separate"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] memory must be a size such as \"512 MB\" or \"4 GB\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] disk must be a size such as \"512 MB\" or \"4 GB\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.sandbox] memory must be a size such as \"512 MB\" or \"4 GB\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/sizes",
+  "ok": false
+}

@@ -1,0 +1,1 @@
+{"results": {"tests": [{"name": "test_a", "status": "passed", "duration": 12}, {"name": "test_b", "status": "FAILED ", "duration": 3.5}, {"name": "test_c", "status": "skipped", "duration": "7"}, {"name": "test_d", "status": "pending"}, {"name": "test_e", "status": "other", "duration": null}, {"status": "passed"}]}}

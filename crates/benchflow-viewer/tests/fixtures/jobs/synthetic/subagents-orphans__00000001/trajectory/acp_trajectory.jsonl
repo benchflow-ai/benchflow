@@ -1,0 +1,5 @@
+{"type": "agent_message", "text": "root first"}
+{"type": "agent_message", "text": "orphan one", "parent_tool_call_id": "toolu_missing"}
+{"type": "tool_call", "tool_call_id": "child_call", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "toolu_missing"}
+{"type": "agent_message", "text": "grandchild", "parent_tool_call_id": "child_call"}
+{"type": "agent_message", "text": "root last"}

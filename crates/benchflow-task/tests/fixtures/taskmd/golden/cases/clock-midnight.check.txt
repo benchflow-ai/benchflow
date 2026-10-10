@@ -1,0 +1,10 @@
+clock-midnight/task.md
+  mode: blocks
+  title: acme/clock-midnight
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: the run can cross midnight in America/New_York: it starts at 23:40 and may run 30m, so the agent's date can change during the run while TASKMD_CLOCK_START keeps the start's date. Start earlier in the day, or have the verifier read TASKMD_CLOCK_HANDOFF (task.md)
+  ok

@@ -1,0 +1,9 @@
+toml-error/task.md
+  mode: blocks
+  instruction: 2 words; starts 'Fix it.'
+  blocks: toml task
+  config: block
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: config block is not valid TOML: Expected newline or end of document after a statement (at line 4, column 13) (task.md:3)
+  FAILED

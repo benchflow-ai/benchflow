@@ -1,0 +1,26 @@
+[judge]
+judge = "codex"
+model = "gpt-5.5"
+cwd = "/app"
+isolated = false
+timeout = 600
+
+[[criterion]]
+name = "requirements"
+description = "Inspect /app/solution.md. Does it define a good recipe explain answer as read-only metadata that covers scopes, named locations, managed/unmanaged settings, optional groups, lifecycle, redaction, and native operation summaries?"
+type = "binary"
+weight = 2.0
+
+[[criterion]]
+name = "mental_model"
+description = "Rate whether the explanation gives users a clear support model without making settings groups or schema internals mandatory public concepts."
+type = "likert"
+points = 5
+weight = 1.0
+
+[[criterion]]
+name = "metadata_safety"
+description = "Rate whether the answer preserves the no-live-read, no-desired-payload, no-native-execution, no-secret-value boundary for recipe explain."
+type = "likert"
+points = 5
+weight = 1.0

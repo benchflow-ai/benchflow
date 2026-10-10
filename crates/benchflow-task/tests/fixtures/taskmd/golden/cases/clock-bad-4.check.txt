@@ -1,0 +1,10 @@
+clock-bad-4/task.md
+  mode: blocks
+  title: acme/clock-bad-4
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [sandbox] clock sets nothing: with no start and advance = "real" it is the real clock. Give a start, or remove the clock (task.md)
+  FAILED

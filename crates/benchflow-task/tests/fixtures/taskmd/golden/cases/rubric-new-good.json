@@ -1,0 +1,82 @@
+{
+  "path": "rubric-new-good/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-new-good\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-new-good",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "g",
+        "points": -2,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "Adds a dependency.",
+        "stated": "Fix the bug",
+        "outcome": "bad"
+      },
+      {
+        "id": "s",
+        "points": 3,
+        "judge": "llm",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "Quality, 0 to 100.",
+        "stated": "Fix the bug",
+        "score": {
+          "min": 0,
+          "max": 100
+        },
+        "cite": "independent"
+      },
+      {
+        "id": "n",
+        "points": 1,
+        "judge": "agent",
+        "evidence": [
+          "x.md"
+        ],
+        "text": "Never deletes data.",
+        "stated": "Fix the bug",
+        "outcome": "bad",
+        "missing": "no-penalty"
+      }
+    ],
+    "scoring": {
+      "method": "sum"
+    }
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "cite is \"independent\", but an llm judge cites only its evidence, and every item here is the solver's: add tests or a runtime-recorded item (request-record, screenshots, video, a world stream), or judge it with an agent that can run the work",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-new-good",
+  "ok": true
+}

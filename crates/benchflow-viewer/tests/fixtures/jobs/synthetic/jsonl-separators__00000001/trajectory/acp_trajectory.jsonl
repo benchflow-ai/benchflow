@@ -1,0 +1,6 @@
+﻿{"type": "agent_message", "text": "first"}
+{"type": "agent_message", "text": "crlf"}
+  
+	
+{"type": "agent_message", "text": "cr"}{"type": "agent_message", "text": "vt"}{"type": "agent_message", "text": "ff"}{"type": "agent_message", "text": "fs"}{"type": "agent_message", "text": "nel"}{"type": "agent_message", "text": "ls"} {"type": "agent_message", "text": "raw   inside"}
+{"type": "agent_message", "text": "after"}   

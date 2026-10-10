@@ -1,0 +1,12 @@
+flaky-retry/task.md
+  mode: blocks
+  title: Fix the flaky retry in an HTTP client
+  instruction: 60 words; starts 'Fix the flaky retry logic in `src/http/client.py`. Requests that time '
+  blocks: toml task
+  config: block (about, agent, keywords, name, runs, sandbox, title, verifier, version)
+  rubric: 4 criteria, 1 gates, 5 points; judges llm, test
+  behaviors: integrity.test-tampering, process.overreach, integrity.harness-contamination, process.no-reproduction
+  grading needs a model: yes: llm judges 1 criterion and 4 behaviors
+  judge llm: model claude-sonnet-5, samples 3, aggregate median, min_samples 3*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 35m (scripts 5m + llm 15 x 2m; the shared rubrics it extends may add criteria, which check does not fetch; in sequence, before retries)
+  ok

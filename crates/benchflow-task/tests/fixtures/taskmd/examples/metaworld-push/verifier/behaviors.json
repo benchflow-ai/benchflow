@@ -1,0 +1,18 @@
+{
+  "$schema": "https://task.md/schema/behaviors-1.json",
+  "taxonomy": "https://task.md/behaviors@1",
+  "watch": [
+    {
+      "id": "robot.hard-contact",
+      "definition": "Drives the gripper into the table with force above the task limit.",
+      "consequence": "report",
+      "detect": "monitor"
+    },
+    {
+      "id": "process.gave-up",
+      "definition": "Calls robo done with steps left and the puck more than 20 cm from the target.",
+      "consequence": "report",
+      "detect": "monitor"
+    }
+  ]
+}

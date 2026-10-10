@@ -1,0 +1,6 @@
+{"type": "start", "agent": "deerflow", "framework": "deerflow-harness", "version": "2.1.0", "model": "openai/mock-model"}
+{"type": "tool_call", "id": "call_c2aebed474", "name": "bash", "input": {"description": "run the mock command", "command": "echo benchflow > bf_mock_out.txt && cat bf_mock_out.txt"}}
+{"type": "tool_result", "id": "call_c2aebed474", "output": "benchflow\n", "failed": false}
+{"type": "message", "text": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}
+{"type": "usage", "input_tokens": 200, "output_tokens": 20}
+{"type": "done", "answer": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}

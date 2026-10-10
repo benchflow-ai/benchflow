@@ -1,0 +1,12 @@
+grading-unbounded/task.md
+  mode: blocks
+  title: acme/grading-unbounded
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  rubric: 1 criteria, 0 gates, 2 points; judges llm
+  grading needs a model: yes: llm judges 1 criterion
+  judge llm: model from the run, samples 1*, per criterion*, timeout forever; * marks a default
+  worst-case grading time: unknown, because a judge timeout is not a duration
+  error: [verifier.judges.llm] timeout must be a duration such as "90s", "15m", or "1h30m" (task.md)
+  FAILED

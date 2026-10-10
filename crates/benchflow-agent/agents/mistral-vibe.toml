@@ -1,0 +1,99 @@
+# Mistral Vibe from PyPI's mistral-vibe 2.26.1, the release the public ACP
+# registry lists (Harbor's `vibe`, Karotte's `mistral-vibe`): its ACP server
+# (`vibe-acp`) by default, or headless with `vibe --prompt` from the same
+# install. The registry's archive holds only vibe-acp; the package has both.
+name = "mistral-vibe"
+aliases = ["vibe"]
+description = "Mistral Vibe via ACP, or headless with vibe --prompt"
+acp_registry = "mistral-vibe"
+home_dirs = [".vibe"]
+# Vibe's global skills folder (under VIBE_HOME); a config.toml BenchFlow
+# writes also lists it under `skill_paths`, as Harbor's does, so it is found
+# when a task moves VIBE_HOME.
+skill_paths = ["$HOME/.vibe/skills"]
+skills_via = "Vibe's global skills folder, also listed as `skill_paths` in the config.toml BenchFlow writes"
+
+[install]
+uvx = "mistral-vibe==2.26.1"
+bin = "vibe-acp"
+python = "3.12"
+
+[launch]
+# On a provider, config.toml comes from the [providers] table (see below)
+# before vibe-acp starts; otherwise vibe-acp starts on its own config.
+command = '''h="${VIBE_HOME:-$HOME/.vibe}"; if [ -n "$BENCHFLOW_VIBE_CONFIG" ]; then { mkdir -p "$h" && { [ -z "$BENCHFLOW_SKILLS_DIR" ] || printf 'skill_paths = ["%s"]\n' "$BENCHFLOW_SKILLS_DIR"; printf '%s' "$BENCHFLOW_VIBE_CONFIG"; } > "$h/config.toml"; } || { echo "BenchFlow: cannot write $h/config.toml" >&2; exit 1; }; fi; exec /opt/benchflow/bin/mistral-vibe'''
+
+[headless]
+# Harbor's run: a config.toml for the model on Mistral's API (the key from
+# MISTRAL_API_KEY), then `vibe --auto-approve --trust`. Vibe 2.26 keeps its
+# sessions in a journal, not the messages.jsonl older releases wrote, so the
+# steps come from `--output streaming` (one JSON line per finished history
+# entry, a tool call with its result in one), unbuffered so they arrive as
+# vibe works, and the token counts from the run's export (`--output-dir`),
+# printed trimmed after vibe exits. Delivered skills come first in
+# config.toml, as `skill_paths`, before any table.
+command = '''h="${VIBE_HOME:-$HOME/.vibe}"
+m="$BENCHFLOW_MODEL"
+mkdir -p "$h"
+{ [ -z "$BENCHFLOW_SKILLS_DIR" ] || printf 'skill_paths = ["%s"]\n' "$BENCHFLOW_SKILLS_DIR"
+if [ -n "$BENCHFLOW_VIBE_CONFIG" ]; then printf '%s' "$BENCHFLOW_VIBE_CONFIG"; else
+  printf 'enable_telemetry = false\nenable_update_checks = false\nenable_auto_update = false\nenable_notifications = false\n'
+  if [ -n "$m" ]; then
+    printf 'active_model = "%s"\n\n[[providers]]\nname = "mistral"\napi_base = "https://api.mistral.ai/v1"\napi_key_env_var = "MISTRAL_API_KEY"\nbackend = "mistral"\n\n[[models]]\nname = "%s"\nprovider = "mistral"\nalias = "%s"\n' "$m" "$m" "$m"
+  fi
+fi; } > "$h/config.toml"
+d=/opt/benchflow/agents/mistral-vibe
+o="$HOME/.benchflow/vibe-run"
+rm -rf "$o"
+PYTHONUNBUFFERED=1 "$d/bin/vibe" --auto-approve --trust --output streaming --output-dir "$o" --prompt "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null
+s=$?
+[ ! -f "$o/export.json" ] || "$d/tools/mistral-vibe/bin/python" -I -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        export = json.load(f)
+except (OSError, ValueError):
+    sys.exit(0)
+if isinstance(export, dict):
+    keep = ("outcome", "stop_reason", "error", "session_id", "usage", "cost_usd", "steps")
+    print(json.dumps({"vibe_export": {k: export.get(k) for k in keep}}))
+' "$o/export.json"
+exit "$s"'''
+output = "vibe-streaming"
+
+[credentials]
+family = "env"
+env = ["MISTRAL_API_KEY"]
+account = "a Mistral API key from https://console.mistral.ai, set as MISTRAL_API_KEY"
+
+[model]
+select = "auto"
+# Harbor and Karotte drop the text before the first `/`.
+strip_prefixes = ["mistral/"]
+
+[providers.openai]
+# Harbor's `generic` backend: an OpenAI-style provider (Chat Completions) on
+# the forwarder, its key read from OPENAI_API_KEY, in a config.toml both
+# commands write, with the model active; nothing is selected over ACP.
+key = "OPENAI_API_KEY"
+model = ""
+
+[providers.openai.env]
+BENCHFLOW_VIBE_CONFIG = '''enable_telemetry = false
+enable_update_checks = false
+enable_auto_update = false
+enable_notifications = false
+active_model = "{model}"
+
+[[providers]]
+name = "benchflow"
+api_base = "{base_url}"
+api_key_env_var = "OPENAI_API_KEY"
+api_style = "openai"
+backend = "generic"
+
+[[models]]
+name = "{model}"
+provider = "benchflow"
+alias = "{model}"
+'''

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "loads",
+      "gate": true,
+      "text": "/work/site/index.html loads without console errors and uses only local assets.",
+      "stated": ["Build it as static HTML, CSS, and JavaScript in `/work/site/`", "Use the photos in `/assets/`; do not use stock imagery"],
+      "implicit": "A page that throws console errors is broken, whatever the brief says.",
+      "judge": "test",
+      "check": "test_loads"
+    },
+    {
+      "id": "content",
+      "gate": true,
+      "text": "The page shows all three product lines, the class schedule, and a mailing-list form.",
+      "stated": "It should show their three product lines, their weekend class schedule, and a way to join the mailing list",
+      "judge": "test",
+      "check": "test_content"
+    },
+    {
+      "id": "visual-quality",
+      "points": 5,
+      "text": "Visual quality: typography, spacing, and color feel deliberate and fit the brief.",
+      "stated": "Design and build a single-page website for Oda Clay",
+      "judge": "human"
+    },
+    {
+      "id": "calm-and-handmade",
+      "points": 5,
+      "text": "It feels calm and handmade rather than template-like, as the owners asked.",
+      "stated": "The owners want it to feel calm and handmade, not like a template",
+      "judge": "human"
+    },
+    {
+      "id": "works-on-phones",
+      "points": 3,
+      "text": "Works on a phone-sized screen.",
+      "stated": "It has to work on a phone as well as on a laptop",
+      "judge": "vlm",
+      "evidence": [
+        "screenshots#mobile"
+      ]
+    }
+  ]
+}

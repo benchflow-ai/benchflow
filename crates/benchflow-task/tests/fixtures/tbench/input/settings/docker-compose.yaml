@@ -1,0 +1,12 @@
+services:
+  client:
+    build:
+      context: .
+    environment:
+      - TEST_DIR=${T_BENCH_TEST_DIR}
+      - MODE=test
+    working_dir: /srv
+    expose:
+      - 8080
+    entrypoint: ["python", "-m", "http.server"]
+    platform: linux/amd64

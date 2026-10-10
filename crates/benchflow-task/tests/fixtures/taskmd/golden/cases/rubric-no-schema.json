@@ -1,0 +1,32 @@
+{
+  "path": "rubric-no-schema/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-no-schema\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-no-schema",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "no task.md $schema (https://task.md/schema/rubric-1.json), so this is read as a file for the verifier's scripts, not as the task's rubric",
+      "where": "verifier/rubric.json"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-no-schema",
+  "ok": true
+}

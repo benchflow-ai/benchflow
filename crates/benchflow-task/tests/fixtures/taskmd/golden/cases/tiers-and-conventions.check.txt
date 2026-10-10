@@ -1,0 +1,11 @@
+tiers-and-conventions/task.md
+  mode: blocks
+  title: acme/tiers-and-conventions
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (conventions, name, tiers, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: unknown key 'notes' in [tiers.bench]; it holds gate, kind, profile, record, supervision, or x- extensions (task.md)
+  error: unknown key 'color' in [conventions]; it holds frames, material, units, or x- extensions (task.md)
+  FAILED

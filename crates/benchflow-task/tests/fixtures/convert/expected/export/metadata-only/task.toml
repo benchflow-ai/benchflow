@@ -1,0 +1,4 @@
+source = "acme-bench"
+
+[task]
+name = "acme/word-count"

@@ -1,0 +1,10 @@
+clock-bad-19/task.md
+  mode: blocks
+  title: acme/clock-bad-19
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: stage two, toml task
+  config: block (agent, name, sandbox, stages, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: a set clock needs network = "none" while it runs, and [stages.two.agent] network is ["pypi.org"]: the network tells the real date (TLS, HTTP Date headers, package mirrors). Set [agent] network = "none" (task.md)
+  FAILED

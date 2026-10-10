@@ -1,0 +1,29 @@
+{
+  "path": "compose-fine/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/compose-fine\"\nversion = \"1.0.0\"\n[sandbox]\ncompose = \"sandbox/docker-compose.yaml\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/compose-fine",
+    "version": "1.0.0",
+    "sandbox": {
+      "compose": "sandbox/docker-compose.yaml"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/compose-fine",
+  "ok": true
+}

@@ -1,0 +1,65 @@
+{
+  "path": "rubric-stated-prompts/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "two",
+      "info": "stage two",
+      "body": "Now write the changelog.",
+      "line": 3
+    },
+    {
+      "kind": "user",
+      "arg": null,
+      "info": "user",
+      "body": "The user prefers short answers.",
+      "line": 7
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-stated-prompts\"\nversion = \"1.0.0\"\n[stages.two]\nunlock = \"on_submit\"",
+      "line": 11
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-stated-prompts",
+    "version": "1.0.0",
+    "stages": {
+      "two": {
+        "unlock": "on_submit"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "s",
+        "gate": true,
+        "judge": "test",
+        "check": "t",
+        "text": "S.",
+        "stated": "write the changelog"
+      },
+      {
+        "id": "u",
+        "gate": true,
+        "judge": "test",
+        "check": "t",
+        "text": "U.",
+        "stated": "PREFERS SHORT ANSWERS"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-stated-prompts",
+  "ok": true
+}

@@ -1,0 +1,16 @@
+# Anthropic's own API. Claude Code runs `anthropic/<model>` on its own logins
+# (its manifest strips the prefix), so this provider serves the other agents.
+name = "anthropic"
+description = "Anthropic's API"
+
+[anthropic]
+base_url = "https://api.anthropic.com"
+auth = "x-api-key"
+
+[key]
+env = ["ANTHROPIC_API_KEY"]
+
+[check]
+endpoint = "anthropic"
+path = "/v1/models"
+headers = { anthropic-version = "2023-06-01" }

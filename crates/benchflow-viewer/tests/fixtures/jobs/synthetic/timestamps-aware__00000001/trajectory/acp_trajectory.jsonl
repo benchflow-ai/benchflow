@@ -1,0 +1,10 @@
+{"type": "user_message", "text": "go", "ts": "2026-08-15T09:41:03+00:00"}
+{"type": "tool_call", "tool_call_id": "c1", "kind": "execute", "title": "ls", "status": "completed", "content": [], "started_at": "2026-08-15T09:41:05+00:00", "finished_at": "2026-08-15T09:41:07.500000+00:00"}
+{"type": "tool_call", "tool_call_id": "c2", "kind": "execute", "title": "ls", "status": "completed", "ts": "2026-08-15T11:41:05+02:00", "finished_at": "2026-08-15T09:41:05.25Z"}
+{"type": "tool_call", "tool_call_id": "c3", "kind": "execute", "title": "backwards", "status": "completed", "started_at": "2026-08-15T09:41:09+00:00", "finished_at": "2026-08-15T09:41:08+00:00"}
+{"type": "agent_message", "text": "epoch", "ts": 1786786863.5}
+{"type": "agent_message", "text": "epoch int", "ts": 1786786864}
+{"type": "agent_message", "text": "week date", "ts": "2026-W33-6T09:41:03-0530"}
+{"type": "agent_message", "text": "basic", "ts": "20260815T094103.123456789+0000"}
+{"type": "agent_message", "text": "epoch string", "ts": "1786786863"}
+{"type": "agent_thought", "text": "offset seconds", "ts": "2026-08-15T09:41:03+05:30:15.5"}

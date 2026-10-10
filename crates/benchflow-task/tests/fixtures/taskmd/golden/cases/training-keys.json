@@ -1,0 +1,78 @@
+{
+  "path": "training-keys/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/training-keys\"\nversion = \"1.0.0\"\n[roles.critic]\npolicy = \"yes\"\n\n[training]\nfork = \"no\"\nmax_concurrent = 0\nlearnable_band = [0.9, 0.1]\nadmit = 3\ndifficulty = 5\nreward = \"binary\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/training-keys",
+    "version": "1.0.0",
+    "roles": {
+      "critic": {
+        "policy": "yes"
+      }
+    },
+    "training": {
+      "fork": "no",
+      "max_concurrent": 0,
+      "learnable_band": [
+        0.9,
+        0.1
+      ],
+      "admit": 3,
+      "difficulty": 5,
+      "reward": "binary"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "[training] reward \"binary\" is spelled \"strict\", the rubric's name for the all-or-nothing score: write reward = \"strict\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[training] learnable_band is [low, high], two pass rates with 0 <= low < high <= 1",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[training] fork is true (the default: a runtime may start episodes from a snapshot) or false (every episode is set up from scratch)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[training] max_concurrent is a whole number of episodes, at least 1",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[training] admit is a table: { max_pass_rate, models, reasoning_effort }",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[training] difficulty names an evidence file, such as \"evidence/difficulty.json\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[roles.critic] policy is true for a trainable role, or false (the default)",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/training-keys",
+  "ok": false
+}

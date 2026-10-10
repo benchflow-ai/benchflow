@@ -1,0 +1,109 @@
+{
+ "runs": [
+  {
+   "kind": "oracle",
+   "agent": "oracle",
+   "reward": 1.0,
+   "date": "2026-09-28T15:30:07+00:00",
+   "trial": "openssl-selfsigned-cert__oracle__s0__22ac32fe9e4f",
+   "format": "benchflow",
+   "result": {
+    "path": "openssl-selfsigned-cert__oracle__s0__22ac32fe9e4f/result.json",
+    "sha256": "00bb545be4d0f88cd437b956b75667610c70e0afc9ea3f8c6414f087262b0f29"
+   },
+   "tree_hash": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "no_op",
+   "agent": "noop",
+   "reward": 0.0,
+   "date": "2026-09-28T15:30:18+00:00",
+   "trial": "openssl-selfsigned-cert__noop__s0__22ac32fe9e4f",
+   "format": "benchflow",
+   "result": {
+    "path": "openssl-selfsigned-cert__noop__s0__22ac32fe9e4f/result.json",
+    "sha256": "7a726de9e7cf03ca2bb836b2cecdfffff443b5ea40b8d8c05ae7a5bb8a45ef6b"
+   },
+   "tree_hash": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T17:04:11+00:00",
+   "trial": "openssl-selfsigned-cert__toolloop__s1__930c7fa9834f",
+   "format": "benchflow",
+   "result": {
+    "path": "openssl-selfsigned-cert__toolloop__s1__930c7fa9834f/result.json",
+    "sha256": "f0e27be931de11633de4e691a932aee2c7eca9b6ce6be5964062236de95cc221"
+   },
+   "tree_hash": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524"
+    }
+   },
+   "ingested": "2026-09-28T18:48:12+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T17:04:55+00:00",
+   "trial": "openssl-selfsigned-cert__toolloop__s2__bbdc202ed4c3",
+   "format": "benchflow",
+   "result": {
+    "path": "openssl-selfsigned-cert__toolloop__s2__bbdc202ed4c3/result.json",
+    "sha256": "82947edc0772c523b8baf3de21fd8739f04ca75d4b5f4600bb20b5e65eda36e4"
+   },
+   "tree_hash": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524"
+    }
+   },
+   "ingested": "2026-09-28T18:48:12+00:00"
+  }
+ ],
+ "trees": {
+  "sha256:bd79642e90c67c75f6fbd350fd60516d5f64fe4726ce852668a7559e655c5524": {
+   "files": {
+    "oracle/solve.sh": "58cf3c844e907745cd81fb4bd75efb3d080e2f0e82b589c56c954ae6e1756510",
+    "sandbox/Dockerfile": "f590b523038be43afcaf5291d7b9e8ed1333c48d9994e77b8dee2f2c352f0f40",
+    "task.md": "5f02055d9d823724a8536fa44d3876be38463c0f4654a848662858bf4b32f7cb",
+    "verifier/test.sh": "4770437ea96c3cc84684b4f99d55fb148fcac09f9ea1e8ef49de487716e6c334",
+    "verifier/test_outputs.py": "90970bb3c372e8e7fb6bb9ac5f649ba73eb38e1a5ea2e922a9057a72b6b4192d"
+   },
+   "task_md": {
+    "instruction": "c4fcf07670d3ebd8",
+    "config": {
+     "about": "f5a7cc11fa879807",
+     "agent": "9ad34afc3bdd7503",
+     "sandbox": "99d798f2a0042143",
+     "verifier": "3f6bc3f8291673f6",
+     "oracle": "f101bf975b3a5a78",
+     "import": "61515f00e6720e76"
+    }
+   },
+   "no_op": null
+  }
+ }
+}

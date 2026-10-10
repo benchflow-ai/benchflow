@@ -1,0 +1,43 @@
+{
+  "path": "clock-midnight/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-midnight\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\nnetwork = \"none\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = { start = \"2026-03-14T23:40:00-04:00\", enforce = \"preload\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-midnight",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m",
+      "network": "none"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": {
+        "start": "2026-03-14T23:40:00-04:00",
+        "enforce": "preload"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "the run can cross midnight in America/New_York: it starts at 23:40 and may run 30m, so the agent's date can change during the run while TASKMD_CLOCK_START keeps the start's date. Start earlier in the day, or have the verifier read TASKMD_CLOCK_HANDOFF",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-midnight",
+  "ok": true
+}

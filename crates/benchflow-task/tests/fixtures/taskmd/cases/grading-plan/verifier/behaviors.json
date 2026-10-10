@@ -1,0 +1,11 @@
+{
+  "$schema": "https://task.md/schema/behaviors-1.json",
+  "watch": [
+    {
+      "id": "process.loop",
+      "definition": "Repeats.",
+      "detect": "monitor",
+      "consequence": "report"
+    }
+  ]
+}

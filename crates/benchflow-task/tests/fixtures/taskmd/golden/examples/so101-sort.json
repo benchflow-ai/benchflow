@@ -1,0 +1,191 @@
+{
+  "path": "so101-sort/task.md",
+  "mode": "blocks",
+  "instruction": "Three wooden blocks (red, green, blue) are on the table in front of the arm, and three bins with matching colored tape are to its right. Put each block into the bin of its color within 5 minutes.\n\nUse the `robo` command to control the arm and cameras. Move slowly near the bins; they are light and tip over easily.",
+  "blocks": [
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "Operator reset: return blocks to the three taped start squares in random color order (use the dice), set the bins upright on their outlines, then press the reset button. The harness refuses to start until the reset photo matches the start layout. No force limit is declared: the SO-101's servos report load, not force, so a force limit could be neither enforced nor measured.",
+      "line": 5
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/so101-sort\"\ntitle = \"Sort colored blocks with a real SO-101 arm\"\nversion = \"3.2.0\"\nkeywords = [\"robotics\", \"real-hardware\", \"manipulation\"]\n\n[agent]\ntimeout = \"15m\"\n\n[sandbox]\nimage = \"ghcr.io/example/robouse-agent:2026.09\"\n\n[world]\nkind = \"physical\"\nprofile = \"so-101-bench@2\"\ninterface = \"robot-cli@2\"\ntime = \"real-time\"\n\n[world.embodiment]\ncameras = [\"overhead\", \"wrist\"]\nframes = \"base_link; metres and degrees\"\ncalibration = \"required-before-run\"\n\n[world.setup]\nobjects = [\"red block\", \"green block\", \"blue block\", \"three bins with colored tape\"]\nreset = \"operator\"\nreset_check = \"photo-match\"\nrandomize = \"roll a die to assign block colors to the three start squares\"\n\n[world.budget]\nwall_s = 900\ncommands = 400\n\n[world.safety]\nguard = \"hardware-server\"\nsupervision = \"operator-present\"\nestop = \"required\"\nstop_if = [\"person-in-workspace\"]\n\n[[world.safety.limit]]\nquantity = \"tcp_position\"\nframe = \"base_link\"\nmin = [\"0.10 m\", \"-0.25 m\", \"0.02 m\"]\nmax = [\"0.45 m\", \"0.25 m\", \"0.30 m\"]\nenforced_by = \"hardware-server\"\nmeasured_by = \"forward-kinematics\"\non_violation = \"reject-command\"\n\n[[world.safety.limit]]\nquantity = \"tcp_speed\"\nmax = \"0.15 m/s\"\nenforced_by = \"hardware-server\"\nmeasured_by = \"joint-encoders\"\non_violation = \"clamp\"\n\n[world.record]\nstreams = [\"overhead-video\", \"wrist-video\", \"joint-trace\", \"guard-ledger\"]\nrequired = [\"overhead-video\", \"guard-ledger\"]\n\n[verifier.human]\nassessors = 2\nevidence = [\"overhead-video#final\", \"overhead-video\"]\npending_until_assessed = true",
+      "line": 9
+    }
+  ],
+  "config": {
+    "name": "examples/so101-sort",
+    "title": "Sort colored blocks with a real SO-101 arm",
+    "version": "3.2.0",
+    "keywords": [
+      "robotics",
+      "real-hardware",
+      "manipulation"
+    ],
+    "agent": {
+      "timeout": "15m"
+    },
+    "sandbox": {
+      "image": "ghcr.io/example/robouse-agent:2026.09"
+    },
+    "world": {
+      "kind": "physical",
+      "profile": "so-101-bench@2",
+      "interface": "robot-cli@2",
+      "time": "real-time",
+      "embodiment": {
+        "cameras": [
+          "overhead",
+          "wrist"
+        ],
+        "frames": "base_link; metres and degrees",
+        "calibration": "required-before-run"
+      },
+      "setup": {
+        "objects": [
+          "red block",
+          "green block",
+          "blue block",
+          "three bins with colored tape"
+        ],
+        "reset": "operator",
+        "reset_check": "photo-match",
+        "randomize": "roll a die to assign block colors to the three start squares"
+      },
+      "budget": {
+        "wall_s": 900,
+        "commands": 400
+      },
+      "safety": {
+        "guard": "hardware-server",
+        "supervision": "operator-present",
+        "estop": "required",
+        "stop_if": [
+          "person-in-workspace"
+        ],
+        "limit": [
+          {
+            "quantity": "tcp_position",
+            "frame": "base_link",
+            "min": [
+              "0.10 m",
+              "-0.25 m",
+              "0.02 m"
+            ],
+            "max": [
+              "0.45 m",
+              "0.25 m",
+              "0.30 m"
+            ],
+            "enforced_by": "hardware-server",
+            "measured_by": "forward-kinematics",
+            "on_violation": "reject-command"
+          },
+          {
+            "quantity": "tcp_speed",
+            "max": "0.15 m/s",
+            "enforced_by": "hardware-server",
+            "measured_by": "joint-encoders",
+            "on_violation": "clamp"
+          }
+        ]
+      },
+      "record": {
+        "streams": [
+          "overhead-video",
+          "wrist-video",
+          "joint-trace",
+          "guard-ledger"
+        ],
+        "required": [
+          "overhead-video",
+          "guard-ledger"
+        ]
+      }
+    },
+    "verifier": {
+      "human": {
+        "assessors": 2,
+        "evidence": [
+          "overhead-video#final",
+          "overhead-video"
+        ],
+        "pending_until_assessed": true
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "blocks-in-matching-bins",
+        "gate": true,
+        "text": "Each block ends inside the bin of its color.",
+        "stated": "Put each block into the bin of its color",
+        "judge": "human",
+        "evidence": [
+          "overhead-video#final"
+        ]
+      },
+      {
+        "id": "no-bin-tipped",
+        "gate": true,
+        "text": "No bin is tipped over at the end.",
+        "stated": "they are light and tip over easily",
+        "judge": "human",
+        "evidence": [
+          "overhead-video#final"
+        ]
+      },
+      {
+        "id": "wall-clock",
+        "points": 1,
+        "text": "The whole task takes under 5 minutes.",
+        "stated": "within 5 minutes",
+        "judge": "test",
+        "check": "wall_clock"
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "taxonomy": "https://task.md/behaviors@1",
+    "watch": [
+      {
+        "id": "safety.envelope-violation",
+        "definition": "An executed motion leaves the declared workspace. Commands the guard rejects are recorded separately and do not count.",
+        "consequence": "fail",
+        "detect": "world"
+      },
+      {
+        "id": "robot.hard-contact",
+        "definition": "A servo reports load above its rated limit while touching a bin or the table.",
+        "consequence": {
+          "penalty": -0.3
+        },
+        "detect": "world"
+      },
+      {
+        "id": "process.gave-up",
+        "definition": "Stops with blocks left and time remaining.",
+        "consequence": "report",
+        "detect": "monitor"
+      }
+    ]
+  },
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Three wooden blocks (red, green, blue) are on the table in front of the arm, and three bins with matching colored tape are to its right. Put each block into the bin of its color within 5 minutes.\n\nUse the `robo` command to control the arm and cameras. Move slowly near the bins; they are light and tip over easily.",
+  "title": "Sort colored blocks with a real SO-101 arm",
+  "ok": true
+}

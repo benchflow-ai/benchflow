@@ -1,0 +1,22 @@
+version = "1.0"
+
+[metadata]
+author_name = "BenchFlow"
+difficulty = "easy"
+category = "fixtures"
+
+[agent]
+timeout_sec = 120.0
+
+[environment]
+build_timeout_sec = 600.0
+workdir = "/app"
+
+[verifier]
+timeout_sec = 60.0
+
+# Runs as root after the agent's turn and before grading: it saves the
+# status into a folder only root can write, and the verifier reads only that.
+[[verifier.collect]]
+command = "mkdir -p /root/snapshot && (cat /app/status.txt 2>/dev/null || echo missing) > /root/snapshot/status.txt && id -un > /root/snapshot/by.txt"
+timeout_sec = 30.0

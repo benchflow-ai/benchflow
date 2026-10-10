@@ -1,0 +1,33 @@
+{
+  "path": "unknown-top-no-match/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/unknown-top-no-match\"\nversion = \"1.0.0\"\nzzzz = 1",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/unknown-top-no-match",
+    "version": "1.0.0",
+    "zzzz": 1
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key zzzz. The config block holds the identity keys authors, description, keywords, name, title, version, then the tables [about], [agent], [conventions], [family], [import], [integrity], [interaction], [matrix], [oracle], [preference], [provenance], [roles], [runs], [sandbox], [stages], [tiers], [training], [trajectory], [user], [variants], [verifier], [world] and [[credits]], or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/unknown-top-no-match",
+  "ok": false
+}

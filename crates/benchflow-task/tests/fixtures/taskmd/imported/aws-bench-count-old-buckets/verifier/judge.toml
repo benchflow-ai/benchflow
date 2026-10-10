@@ -1,0 +1,18 @@
+[judge]
+judge = "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+files = [
+    "/logs/agent/agent-output.txt",
+    "/tests/ground_truth.json",
+]
+prompt_template = "judge_prompt.md"
+mode = "batched"
+
+[[criterion]]
+name = "s3_buckets_older_than_one_day"
+description = "Per the rubric, does the junior engineer's answer support this claim (wording may differ, substance must match): You have {{c480b808-BucketCount}} S3 buckets that were created more than a day ago."
+type = "binary"
+
+[[criterion]]
+name = "no_extraneous_or_contradicting_facts"
+description = "Per the rubric's Fail-If and Clarifications rules, does the junior engineer's answer AVOID both of the following: (1) stating any fact that contradicts the reference answer's stated infrastructure state (e.g. a different count, the wrong resource, an opposite status), and (2) claiming the existence of additional resources, findings, or facts beyond what the reference answer states, UNSUPPORTED by concrete evidence, in a way that would mislead a practitioner into a different conclusion or action. Judge the junior's answer as a whole against the entire reference answer for this, not any single claim. IMPORTANT: an additional finding that cites specific, concrete evidence (a resource ID, an exact error/log message, an API response, or a well-established AWS behavior) and does not contradict anything the reference states is a legitimate supplementary discovery, not a violation of this criterion, even if the reference answer doesn't mention it -- the reference answer is not guaranteed to be exhaustive. Only answer 'no' for extra claims that are vague, unsupported by any cited evidence, or that directly contradict a fact the reference explicitly states. Answer 'yes' if the junior's answer contains no such contradiction or unsupported extra claim; answer 'no' if it does."
+type = "binary"

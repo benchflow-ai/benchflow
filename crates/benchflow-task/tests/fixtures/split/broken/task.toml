@@ -1,0 +1,7 @@
+schema_version = "1.4"
+
+[agent]
+timeout_sec = "ten minutes"
+
+[environment]
+network_mode = "allowlist"

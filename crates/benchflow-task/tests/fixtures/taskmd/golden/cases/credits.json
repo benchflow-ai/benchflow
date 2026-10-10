@@ -1,0 +1,56 @@
+{
+  "path": "credits/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/credits\"\nversion = \"1.0.0\"\n[[credits]]\nname = \"Ada\"\nrole = \"authr\"\n\n[[credits]]\nrole = \"author\"\n\n[[credits]]\nname = \"Bo\"\nrole = \"advisor\"\ncompany = \"x\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/credits",
+    "version": "1.0.0",
+    "credits": [
+      {
+        "name": "Ada",
+        "role": "authr"
+      },
+      {
+        "role": "author"
+      },
+      {
+        "name": "Bo",
+        "role": "advisor",
+        "company": "x"
+      }
+    ]
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "each [[credits]] entry has a name and a role: author, advisor, domain-reviewer, or technical-reviewer",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "each [[credits]] entry has a name and a role: author, advisor, domain-reviewer, or technical-reviewer",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'company' in [credits]; it holds conflicts, name, organization, role, or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/credits",
+  "ok": false
+}

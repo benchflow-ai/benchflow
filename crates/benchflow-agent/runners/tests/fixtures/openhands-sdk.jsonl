@@ -1,0 +1,8 @@
+{"type": "start", "agent": "openhands-sdk", "framework": "openhands-sdk", "version": "1.54.0", "model": "openai/mock-model"}
+{"type": "usage", "input_tokens": 100, "output_tokens": 10}
+{"type": "tool_call", "id": "call_aa4c713652", "name": "terminal", "input": {"command": "echo benchflow > bf_mock_out.txt && cat bf_mock_out.txt"}}
+{"type": "tool_result", "id": "call_aa4c713652", "output": "benchflow", "failed": false}
+{"type": "usage", "input_tokens": 200, "output_tokens": 20}
+{"type": "message", "text": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}
+{"type": "usage", "input_tokens": 200, "output_tokens": 20}
+{"type": "done", "answer": "BF-MOCK-DONE: bf_mock_out.txt says benchflow."}

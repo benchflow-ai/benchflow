@@ -1,0 +1,19 @@
+rubric-stated-files/task.md
+  mode: blocks
+  title: acme/rubric-stated-files
+  instruction: 8 words; starts 'Fix the bug in `app.py`, as `spec.md` describes.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 1 criteria, 1 gates, 0 points; judges test
+  grading needs a model: no (1 criterion decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: stated quote not found in sandbox/spec.md: 'not in the file' (verifier/rubric.json criteria[0])
+  error: stated file verifier/answers.md is in a folder the agent never sees (verifier/rubric.json criteria[0])
+  warning: the agent is never told about missing.md; name the file in the instruction (verifier/rubric.json criteria[0])
+  error: stated file sandbox/missing.md not found in the package (verifier/rubric.json criteria[0])
+  warning: the agent is never told about blob.bin; name the file in the instruction (verifier/rubric.json criteria[0])
+  warning: cannot check a quote inside sandbox/blob.bin, which is not text; a reviewer must (verifier/rubric.json criteria[0])
+  warning: the agent is never told about other.md; name the file in the instruction (verifier/rubric.json criteria[0])
+  error: a stated file entry needs a file path and a quote (verifier/rubric.json criteria[0])
+  error: a stated file entry needs a file path and a quote (verifier/rubric.json criteria[0])
+  FAILED

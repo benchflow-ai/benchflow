@@ -1,0 +1,12 @@
+kreek-api-error-contract/task.md
+  mode: blocks
+  title: consult/api-error-contract
+  instruction: 58 words; starts '# User Lookup Response Bug'
+  blocks: toml task
+  config: block (about, agent, description, import, name, verifier)
+  grading needs a model: yes (a script): [verifier] models = true; verifier/test.sh runs RewardKit, whose judges call a model
+  worst-case grading time: 10m (scripts 10m; in sequence, before retries)
+  warning: verifier.env.CLAUDE_CODE_OAUTH_TOKEN resolves ${CLAUDE_CODE_OAUTH_TOKEN} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  warning: verifier.env.REWARDKIT_FORCE_SUBSCRIPTION resolves ${REWARDKIT_FORCE_SUBSCRIPTION} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  warning: verifier.env.REWARDKIT_JUDGE resolves ${CONSULT_EVAL_JUDGE} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead (task.md)
+  ok

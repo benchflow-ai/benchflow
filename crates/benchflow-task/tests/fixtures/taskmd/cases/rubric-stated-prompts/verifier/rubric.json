@@ -1,0 +1,21 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "s",
+      "gate": true,
+      "judge": "test",
+      "check": "t",
+      "text": "S.",
+      "stated": "write the changelog"
+    },
+    {
+      "id": "u",
+      "gate": true,
+      "judge": "test",
+      "check": "t",
+      "text": "U.",
+      "stated": "PREFERS SHORT ANSWERS"
+    }
+  ]
+}

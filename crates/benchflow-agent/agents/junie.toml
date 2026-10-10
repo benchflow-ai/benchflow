@@ -1,0 +1,71 @@
+# JetBrains Junie in its ACP mode (`junie --acp=true`), installed from the
+# archive the public ACP registry lists for junie 3579.5.0, or headless with
+# `junie --task` (Harbor's `junie`) from the same install. The launcher
+# sits in the archive's junie-app/bin/ folder.
+name = "junie"
+aliases = ["jetbrains-junie"]
+description = "JetBrains Junie via ACP, or headless with junie --task (needs a JetBrains AI account or a provider key)"
+acp_registry = "junie"
+skill_paths = ["$HOME/.junie/skills"]
+home_dirs = [".junie"]
+
+[install.binary.linux-x86_64]
+archive = "https://github.com/JetBrains/junie-acp-release/releases/download/3579.5/junie-release-3579.5-linux-amd64.zip"
+cmd = "./junie-app/bin/junie"
+
+[install.binary.linux-aarch64]
+archive = "https://github.com/JetBrains/junie-acp-release/releases/download/3579.5/junie-release-3579.5-linux-aarch64.zip"
+cmd = "./junie-app/bin/junie"
+
+[launch]
+# On a provider, the [providers] table's model profile (see below) is
+# written first and selected on the command line.
+command = '''if [ -n "$BENCHFLOW_JUNIE_PROFILE" ]; then j="${JUNIE_HOME:-$HOME/.junie}/models"; { mkdir -p "$j" && printf '%s' "$BENCHFLOW_JUNIE_PROFILE" > "$j/benchflow.json"; } || { echo "BenchFlow: cannot write Junie's model profile in $j" >&2; exit 1; }; fi
+exec /opt/benchflow/bin/junie --acp=true ${BENCHFLOW_JUNIE_MODEL:+--model "$BENCHFLOW_JUNIE_MODEL"}'''
+
+[headless]
+# Harbor's run: a `provider/model` id selects Junie's bring-your-own-key
+# provider (JUNIE_LLM_PROVIDER) and passes the bare model; a bare id is a
+# JetBrains-hosted model. Junie prints its progress and answer as text,
+# and says little about a failure; its log says why it stopped.
+command = '''if [ -n "$BENCHFLOW_JUNIE_PROFILE" ]; then j="${JUNIE_HOME:-$HOME/.junie}/models"; { mkdir -p "$j" && printf '%s' "$BENCHFLOW_JUNIE_PROFILE" > "$j/benchflow.json"; } || { echo "BenchFlow: cannot write Junie's model profile in $j" >&2; exit 1; }; fi
+m="${BENCHFLOW_MODEL:-$BENCHFLOW_JUNIE_MODEL}"
+case "$m" in
+  */*)
+    case "${m%%/*}" in
+      anthropic|claude) export JUNIE_LLM_PROVIDER=anthropic ;;
+      openai|gpt) export JUNIE_LLM_PROVIDER=openai ;;
+      google|gemini) export JUNIE_LLM_PROVIDER=google ;;
+      xai|grok) export JUNIE_LLM_PROVIDER=xai ;;
+      openrouter) export JUNIE_LLM_PROVIDER=openrouter ;;
+      *) echo "BenchFlow: Junie takes anthropic/, openai/, google/, xai/ or openrouter/ models with a provider key, or a bare JetBrains model name, not '$m'" >&2; exit 2 ;;
+    esac
+    m="${m#*/}" ;;
+esac
+/opt/benchflow/bin/junie --skip-update-check ${m:+--model "$m"} --task "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null
+s=$?
+if [ "$s" -ne 0 ]; then
+  l=$(ls -t "$HOME"/.junie/logs/*.log 2> /dev/null | head -n 1)
+  if [ -n "$l" ]; then echo "BenchFlow: Junie's log $l says:" >&2; grep -E ' (ERROR|WARN) |Caused by|Exception: ' "$l" | grep -v ANALYTICS | tail -n 20 | cut -c 1-1000 >&2; fi
+fi
+exit "$s"'''
+output = "text"
+
+[credentials]
+# Harbor's order: Junie's own key, then bring-your-own provider keys.
+family = "env"
+env = ["JUNIE_API_KEY", "JUNIE_ANTHROPIC_API_KEY", "JUNIE_OPENAI_API_KEY", "JUNIE_GOOGLE_API_KEY", "JUNIE_OPENROUTER_API_KEY"]
+account = "a JetBrains AI account: create a Junie API key at https://junie.jetbrains.com and set JUNIE_API_KEY (or bring a provider key as JUNIE_ANTHROPIC_API_KEY, JUNIE_OPENAI_API_KEY, ...)"
+
+[model]
+select = "auto"
+
+[providers.openai]
+# A Junie custom model profile (OpenAICompletion, the full Chat Completions
+# URL) in $JUNIE_HOME/models/benchflow.json, which both commands write and
+# select as `custom:benchflow`; nothing is selected over ACP.
+model = ""
+
+[providers.openai.env]
+BENCHFLOW_JUNIE_PROFILE = '{"id": "{model}", "baseUrl": "{base_url}/chat/completions", "apiType": "OpenAICompletion", "apiKey": "{key}", "displayName": "{model}", "providerName": "BenchFlow forwarder"}'
+BENCHFLOW_JUNIE_MODEL = "custom:benchflow"

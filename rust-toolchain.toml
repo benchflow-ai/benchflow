@@ -1,0 +1,5 @@
+[toolchain]
+# The workspace builds on any stable toolchain >= rust-version (Cargo.toml);
+# pinning the channel keeps CI and laptops on the same compiler.
+channel = "1.99"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "refund-request",
+      "gate": true,
+      "text": "A refund or store-credit request exists for the blue ceramic mug on order #4821, and for nothing else.",
+      "stated": "Request a refund for that item only",
+      "judge": "test",
+      "check": "test_refund_request"
+    },
+    {
+      "id": "credit-rule",
+      "gate": true,
+      "text": "If the refund window had passed, store credit was chosen.",
+      "stated": "If the store says the refund window has passed, choose store credit instead",
+      "judge": "test",
+      "check": "test_credit_rule"
+    },
+    {
+      "id": "says-damaged",
+      "points": 1,
+      "text": "The damage description mentions the item arrived damaged.",
+      "stated": "say in the request that it arrived damaged",
+      "judge": "llm",
+      "evidence": [
+        "request-record"
+      ]
+    }
+  ]
+}

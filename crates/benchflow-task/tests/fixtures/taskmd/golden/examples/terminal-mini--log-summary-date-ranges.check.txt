@@ -1,0 +1,8 @@
+terminal-mini--log-summary-date-ranges/task.md
+  mode: blocks
+  instruction: 175 words; starts 'You are given multiple log files stored in /app/logs. Each log file na'
+  blocks: toml task
+  config: block (about, agent, import, oracle, sandbox, verifier)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: 15m (scripts 15m; in sequence, before retries)
+  ok

@@ -1,0 +1,52 @@
+# Pi through its ACP adapter, as BenchFlow 0.8's `pi-acp` (registry
+# pi-acp 0.0.34), or headless with `pi --print --mode json` (Harbor's `pi`)
+# on the CLI the same install carries. The adapter runs the `pi` CLI it
+# finds on PATH and needs pi 0.81 or newer, which ships as
+# @earendil-works/pi-coding-agent (0.8 installed the older @mariozechner
+# name, unpinned).
+name = "pi"
+aliases = ["pi-acp", "pi-coding-agent"]
+description = "Pi coding agent via ACP, or headless with pi --print; the model's provider decides the key"
+acp_registry = "pi-acp"
+skill_paths = ["$HOME/.pi/agent/skills", "$HOME/.agents/skills"]
+home_dirs = [".pi"]
+
+[install]
+npm = "pi-acp@0.0.34"
+bin = "pi-acp"
+companions = ["@earendil-works/pi-coding-agent@1.1.0"]
+verify = "/opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/pi --version"
+
+[launch]
+# On a provider, models.json and settings.json come from the [providers]
+# table's variables first (see below).
+command = '''d="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; if [ -n "$BENCHFLOW_PI_MODELS_JSON" ]; then { mkdir -p "$d" && printf '%s' "$BENCHFLOW_PI_MODELS_JSON" > "$d/models.json" && printf '%s' "$BENCHFLOW_PI_SETTINGS_JSON" > "$d/settings.json"; } || { echo "BenchFlow: cannot write pi's models.json in $d" >&2; exit 1; }; fi
+PATH="/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" exec /opt/benchflow/bin/pi-acp'''
+
+[headless]
+# Harbor's `pi --print --mode json --provider P --model M`; the reasoning
+# effort is pi's --thinking level.
+command = '''d="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; if [ -n "$BENCHFLOW_PI_MODELS_JSON" ]; then { mkdir -p "$d" && printf '%s' "$BENCHFLOW_PI_MODELS_JSON" > "$d/models.json" && printf '%s' "$BENCHFLOW_PI_SETTINGS_JSON" > "$d/settings.json"; } || { echo "BenchFlow: cannot write pi's models.json in $d" >&2; exit 1; }; fi
+p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+PATH="/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" exec pi --print --mode json ${p:+--provider "$p"} ${m:+--model "$m"} ${BENCHFLOW_EFFORT:+--thinking "$BENCHFLOW_EFFORT"} -- "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null'''
+output = "pi-json"
+
+[credentials]
+family = "model"
+
+[model]
+select = "auto"
+format = "provider/model"
+
+[providers.openai]
+# Harbor's custom endpoint for pi: a provider of its own in models.json
+# (openai-completions), its key read from OPENAI_API_KEY, and settings.json
+# making it and the model the default, so both harnesses start on it and
+# nothing is selected over ACP or named on the command line.
+key = "OPENAI_API_KEY"
+clear = ["OPENAI_BASE_URL"]
+model = ""
+
+[providers.openai.env]
+BENCHFLOW_PI_MODELS_JSON = '{"providers": {"benchflow": {"baseUrl": "{base_url}", "apiKey": "$OPENAI_API_KEY", "api": "openai-completions", "models": [{"id": "{model}"}]}}}'
+BENCHFLOW_PI_SETTINGS_JSON = '{"defaultProvider": "benchflow", "defaultModel": "{model}"}'

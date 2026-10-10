@@ -1,0 +1,75 @@
+{
+  "path": "identity-shapes/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/identity-shapes\"\nversion = \"1.0.0\"\ntitle = { a = 1 }\ncredits = \"Ada\"\nabout = 3\nauthors = [\"Ada <ada@example.com>\", { name = \"Bo\" }, 5, { email = \"x\" }]\n\n[roles]\ncritic = \"x\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/identity-shapes",
+    "version": "1.0.0",
+    "title": {
+      "a": 1
+    },
+    "credits": "Ada",
+    "about": 3,
+    "authors": [
+      "Ada <ada@example.com>",
+      {
+        "name": "Bo"
+      },
+      5,
+      {
+        "email": "x"
+      }
+    ],
+    "roles": {
+      "critic": "x"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "title is an identity key, not a table",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "credits must be written as [[credits]] tables",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[about] must be a table",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "authors entries are \"Name <email>\" strings or { name, email } tables",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "authors entries are \"Name <email>\" strings or { name, email } tables",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[roles.critic] is a table of the role's settings",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": null,
+  "ok": false
+}

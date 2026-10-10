@@ -1,0 +1,51 @@
+{
+  "path": "unknown-keys/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/unknown-keys\"\nversion = \"1.0.0\"\n[sandbx]\nimage = \"x\"\n\n[sandbox]\nimagee = \"x\"\n\n[user]\nmax_turn = 3",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/unknown-keys",
+    "version": "1.0.0",
+    "sandbx": {
+      "image": "x"
+    },
+    "sandbox": {
+      "imagee": "x"
+    },
+    "user": {
+      "max_turn": 3
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key sandbx; did you mean sandbox? The config block holds the identity keys authors, description, keywords, name, title, version, then the tables [about], [agent], [conventions], [family], [import], [integrity], [interaction], [matrix], [oracle], [preference], [provenance], [roles], [runs], [sandbox], [stages], [tiers], [training], [trajectory], [user], [variants], [verifier], [world] and [[credits]], or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key [sandbox] imagee; did you mean image? [sandbox] holds boundary, build_timeout, clock, compose, cpus, disk, env, gpu_types, gpus, image, mcp, memory, mounts, network, os, outputs, ready, services, skills, timezone, tpu, workdir, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'max_turn' in [user]; did you mean max_turns? it holds isolation, max_turns, model, residual_risk, stop, or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/unknown-keys",
+  "ok": false
+}

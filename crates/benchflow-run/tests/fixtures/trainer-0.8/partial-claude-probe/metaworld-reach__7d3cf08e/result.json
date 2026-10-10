@@ -1,0 +1,141 @@
+{
+  "task_name": "metaworld-reach",
+  "rollout_name": "metaworld-reach__7d3cf08e",
+  "rewards": null,
+  "agent": "claude-agent-acp",
+  "agent_name": "@agentclientprotocol/claude-agent-acp",
+  "model": "claude-sonnet-5",
+  "skill_mode": "no-skill",
+  "skill_source": "none",
+  "requested_skills_dir": null,
+  "effective_skills_dir": null,
+  "skills_sandbox_dir": null,
+  "include_task_skills": false,
+  "n_tool_calls": 0,
+  "n_skill_invocations": 0,
+  "n_prompts": 1,
+  "agent_result": {
+    "n_tool_calls": 0,
+    "n_skill_invocations": 0,
+    "n_prompts": 1,
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable",
+    "price_source": null
+  },
+  "final_metrics": {
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0,
+    "total_cost_usd": null
+  },
+  "trajectory_summary": {
+    "steps": 1,
+    "tool_call_steps": 0,
+    "user_message_steps": 1,
+    "agent_message_steps": 0,
+    "agent_thought_steps": 0,
+    "other_steps": 0,
+    "event_type_counts": {
+      "user_message": 1
+    },
+    "tool_call_status_counts": {},
+    "partial_trajectory": true,
+    "trajectory_source": "partial_acp"
+  },
+  "usage_tracking": {
+    "requested": "auto",
+    "status": "unavailable",
+    "environment": "docker",
+    "endpoint_kind": "none",
+    "usage_source": "unavailable"
+  },
+  "error": "ACP error -32603: Internal error: You've hit your weekly limit \u00b7 resets Oct 2, 4pm (UTC)",
+  "error_category": "acp_error",
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "export_error": null,
+  "idle_timeout_info": null,
+  "agent_timeout_info": null,
+  "sandbox_startup_info": null,
+  "transport_error_info": null,
+  "verifier_timeout_info": null,
+  "api_error_info": null,
+  "suspected_api_error_info": null,
+  "partial_trajectory": true,
+  "trajectory_source": "partial_acp",
+  "started_at": "2026-09-28 03:18:53.431943",
+  "finished_at": "2026-09-28 03:34:33.974562",
+  "timing": {
+    "environment_setup": 890.4,
+    "agent_setup": 1.0,
+    "total": 940.5
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "claude-agent-acp",
+          "model": "claude-sonnet-5",
+          "reasoning_effort": null,
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ],
+  "loop": {
+    "strategy": "single-shot"
+  },
+  "source": {
+    "type": "github",
+    "repo": "benchflow-ai/robohub",
+    "requested_ref": "9e672aa1e7f0e8fb9e085a8982754fd20f1732bf",
+    "resolved_sha": "9e672aa1e7f0e8fb9e085a8982754fd20f1732bf",
+    "path": "datasets/robouse-core/metaworld-reach",
+    "dirty": false,
+    "file_hashes": {
+      "environment/Dockerfile": "sha256:e50eb1f090e9b8311a2b22a740abf0061b887f0f81f3aa784ff72ec4743b5d44",
+      "environment/docker-compose.yaml": "sha256:54f9c47a6a7945016ad724f57e16b3de6240b25e8dc79a6044e3e766334b3fda",
+      "environment/robo": "sha256:ac64bb2fbbd85c0f7b56b947bb025709137226644b7f0a8c3961287418209ede",
+      "oracle/solve.sh": "sha256:5db74491bdc1938af1d796a5e7dc6c182bcf6ee877374858e8c650b01bbea425",
+      "oracle/vendor/metaworld/__init__.py": "sha256:5b25565b1b803b3fcb626891a00a4011d94efa4ad2d12a1dc4d71725c248ea72",
+      "oracle/vendor/metaworld/policies/__init__.py": "sha256:42e769bb9957d08ee6152f1222308a8ce2536e77472ebf63e7af7153b4d56dce",
+      "oracle/vendor/metaworld/policies/action.py": "sha256:0d4bf73b0505bf4e4e95e683bd0371111db7a5e25b1e255db9be9fdde606058e",
+      "oracle/vendor/metaworld/policies/policy.py": "sha256:bf07b7d6511a2973c125993e7d598ab2d9705fd21588d42b5c9e449e2580c208",
+      "oracle/vendor/metaworld/policies/sawyer_reach_v3_policy.py": "sha256:8c70876789e42c68a016104cde5e9cba466210b25db7b9c821631ed1a9ab290f",
+      "oracle/vendor/robouse/__init__.py": "sha256:ed71a0aa758d3d46317cd4cf50566ef103773b3538253035876e5d4a1edaaefb",
+      "oracle/vendor/robouse/agent_cli.py": "sha256:88357f1120ec625151906482232c747cb2b6306a7253e7079ca1e0352d155d82",
+      "oracle/vendor/robouse/backends/__init__.py": "sha256:4710a2924b47fd655cc7a34e9527f517acf37922d9157278ab2cbfbe9653147c",
+      "oracle/vendor/robouse/backends/base.py": "sha256:d8c9b15f6586229867db00d0a6759d7d44a06dc447419206c41bbf74b4273ce7",
+      "oracle/vendor/robouse/backends/metaworld_backend.py": "sha256:fed30a914f9346fb16582ce9dee67f3db6321b46059955d43ea891aeb6b437ca",
+      "oracle/vendor/robouse/backends/robosuite_backend.py": "sha256:f3133729676f815d1313a41cfa2974238df60180eff448d3450cdb2d7b300530",
+      "oracle/vendor/robouse/backends/robosuite_oracle.py": "sha256:8eea230966bd2fcd34e547d79ff2ab0e40f3cfb7494f5f03b2a0161a12fad04f",
+      "oracle/vendor/robouse/oracle.py": "sha256:f8da83d9486040d8d2bd858504edc0c4988502bcd34c06455216540f0f64345b",
+      "task.md": "sha256:764068b39ce254205b1a8083ea1dd8bdb313f3bc01a93c44725beb4e05743cee",
+      "verifier/test.sh": "sha256:361ca75af655725aa0b5875fc6165974f7bace12ba03ea9bc9aba3416e2d34b0",
+      "verifier/verifier.md": "sha256:ea5371ad153428c6107584c59ec2533014b8ad8e6e6736e8b7cac4ec8963f444",
+      "verifier/verify.py": "sha256:70482a91a6051a0da84702f036b4b3c3d7c33df65182bafa5219e457aacd9e88"
+    }
+  },
+  "dataset_name": "robouse-core",
+  "dataset_version": "0.1",
+  "task_digest": "sha256:06ad7b18efe029050587696f2097596f8852b4f5e968b21ddf4da373d5e4af2e",
+  "sandbox_id": null
+}

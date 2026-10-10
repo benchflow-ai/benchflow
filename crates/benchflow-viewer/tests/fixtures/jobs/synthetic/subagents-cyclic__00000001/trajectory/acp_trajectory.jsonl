@@ -1,0 +1,4 @@
+{"type": "agent_message", "text": "root"}
+{"type": "tool_call", "tool_call_id": "x", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "y"}
+{"type": "tool_call", "tool_call_id": "y", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "x"}
+{"type": "tool_call", "tool_call_id": "self", "kind": "think", "title": "Task", "status": "completed", "content": [], "parent_tool_call_id": "self"}

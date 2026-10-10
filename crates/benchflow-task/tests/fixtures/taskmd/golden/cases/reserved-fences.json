@@ -1,0 +1,36 @@
+{
+  "path": "reserved-fences/task.md",
+  "mode": "blocks",
+  "instruction": "Fix it.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"",
+      "line": 11
+    }
+  ],
+  "config": {
+    "name": "acme/x"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "```rubric blocks are no longer part of task.md: move them to verifier/rubric.json",
+      "where": "task.md:3"
+    },
+    {
+      "level": "error",
+      "message": "```behaviors blocks are no longer part of task.md: move them to verifier/behaviors.json",
+      "where": "task.md:7"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix it.",
+  "title": "acme/x",
+  "ok": false
+}

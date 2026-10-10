@@ -1,0 +1,47 @@
+{
+  "path": "rubric-threshold-bad/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-threshold-bad\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-threshold-bad",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "works",
+        "gate": true,
+        "judge": "test",
+        "check": "test_works",
+        "text": "It works.",
+        "stated": "Fix the bug"
+      }
+    ],
+    "scoring": {
+      "pass_threshold": true
+    }
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "scoring.pass_threshold is a fraction from 0 to 1 under method points, and a number of points, at least 0, under method sum",
+      "where": "verifier/rubric.json"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-threshold-bad",
+  "ok": false
+}

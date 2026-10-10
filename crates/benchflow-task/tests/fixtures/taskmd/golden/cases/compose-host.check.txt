@@ -1,0 +1,19 @@
+compose-host/task.md
+  mode: blocks
+  title: acme/compose-host
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: Compose service helper asks for privileged mode (privileged); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task (sandbox/docker-compose.yaml)
+  error: Compose service helper asks for the host's network (network_mode); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task (sandbox/docker-compose.yaml)
+  error: Compose service helper asks for the host's process namespace (pid); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task (sandbox/docker-compose.yaml)
+  error: Compose service helper asks for added capabilities (cap_add); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task (sandbox/docker-compose.yaml)
+  error: Compose service helper asks for security options (security_opt); a runtime refuses settings that weaken isolation from the host unless its operator allows them for this task (sandbox/docker-compose.yaml)
+  error: Compose service helper mounts /var/run/docker.sock from the host; mounts must stay inside the package or in folders the runtime provides (sandbox/docker-compose.yaml)
+  error: Compose service helper mounts ${HOME} from the host; mounts must stay inside the package or in folders the runtime provides (sandbox/docker-compose.yaml)
+  error: Compose service helper mounts ~/x from the host; mounts must stay inside the package or in folders the runtime provides (sandbox/docker-compose.yaml)
+  error: Compose service helper mounts ../up from the host; mounts must stay inside the package or in folders the runtime provides (sandbox/docker-compose.yaml)
+  error: Compose service helper mounts /etc from the host; mounts must stay inside the package or in folders the runtime provides (sandbox/docker-compose.yaml)
+  FAILED

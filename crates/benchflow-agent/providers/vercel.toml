@@ -1,0 +1,41 @@
+# Vercel AI Gateway: one key for hundreds of models from many labs.
+# Checked live on 2026-10-10: chat completions, the Responses API, and the
+# Anthropic Messages API under /claude-code all answer with the key as a
+# bearer token.
+name = "vercel"
+description = "Vercel AI Gateway: hundreds of models from many labs behind one key"
+
+[openai]
+base_url = "https://ai-gateway.vercel.sh/v1"
+apis = ["chat", "responses"]
+
+[anthropic]
+# The endpoint Vercel documents for Claude Code, which sends the key as
+# ANTHROPIC_AUTH_TOKEN (a bearer token).
+base_url = "https://ai-gateway.vercel.sh/claude-code"
+auth = "bearer"
+
+[gateway]
+# The gateway's own API (the AI SDK protocol under /v4/ai/...), which fx
+# speaks; served from the gateway's root.
+base_url = "https://ai-gateway.vercel.sh"
+auth = "bearer"
+
+[key]
+# VERCEL_AI_GATEWAY_API_KEY is the older name; a Vercel OIDC token is taken
+# as a bearer token the same way.
+env = ["AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"]
+files = ["~/.config/benchflow/vercel-ai-gateway.env"]
+
+[check]
+# The key's credit balance: needs a valid key, spends nothing.
+endpoint = "openai"
+path = "/credits"
+
+[routing]
+# The gateway sends each request to one of the providers serving its model.
+# BenchFlow reads that list (no key needed), drops the denied providers
+# (baseten always; more with BENCHFLOW_DENY_UPSTREAMS), and names the rest in
+# every request (providerOptions.gateway.only).
+endpoints = "https://ai-gateway.vercel.sh/v1/models/{model}/endpoints"
+deny = []

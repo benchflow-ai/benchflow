@@ -1,0 +1,43 @@
+{
+  "path": "clock-bad-10/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-bad-10\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\nnetwork = \"none\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = { start = \"2026-03-14T09:00:00-07:00\", enforce = \"vm\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-bad-10",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m",
+      "network": "none"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": {
+        "start": "2026-03-14T09:00:00-07:00",
+        "enforce": "vm"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] clock start 2026-03-14T09:00:00-07:00 is at -07:00, but America/New_York is at -04:00 at that instant, so the agent would see 12:00; write start = \"2026-03-14T12:00:00-04:00\", or the time you meant with -04:00",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-bad-10",
+  "ok": false
+}

@@ -1,0 +1,4 @@
+services:
+  main: {}
+  db:
+    image: postgres:16

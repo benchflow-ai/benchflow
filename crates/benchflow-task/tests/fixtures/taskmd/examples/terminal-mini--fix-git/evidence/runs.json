@@ -1,0 +1,112 @@
+{
+ "runs": [
+  {
+   "kind": "oracle",
+   "agent": "oracle",
+   "reward": 1.0,
+   "date": "2026-09-28T15:28:23+00:00",
+   "trial": "fix-git__oracle__s0__63361b15c504",
+   "format": "benchflow",
+   "result": {
+    "path": "fix-git__oracle__s0__63361b15c504/result.json",
+    "sha256": "d81fe9bf999cd47e787058003b7872c0b9a3250abfe8c454be10e55799344a68"
+   },
+   "tree_hash": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "no_op",
+   "agent": "noop",
+   "reward": 0.0,
+   "date": "2026-09-28T15:28:39+00:00",
+   "trial": "fix-git__noop__s0__63361b15c504",
+   "format": "benchflow",
+   "result": {
+    "path": "fix-git__noop__s0__63361b15c504/result.json",
+    "sha256": "45c6f8f561234280b41a36655b245e44ee57d51791a5ef6e7155b54bb604639d"
+   },
+   "tree_hash": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251"
+    }
+   },
+   "ingested": "2026-09-28T15:33:51+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T15:36:34+00:00",
+   "trial": "fix-git__toolloop__s1__3027159c73ce",
+   "format": "benchflow",
+   "result": {
+    "path": "fix-git__toolloop__s1__3027159c73ce/result.json",
+    "sha256": "9d2cc6d2b1e9ff3cbbe54274ddc4426e49252c620efd37362aeea40432754d01"
+   },
+   "tree_hash": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251"
+    }
+   },
+   "ingested": "2026-09-28T18:48:11+00:00"
+  },
+  {
+   "kind": "model",
+   "agent": "taskmd-dogfood toolloop 0.1",
+   "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+   "reward": 1.0,
+   "date": "2026-09-28T15:38:07+00:00",
+   "trial": "fix-git__toolloop__s2__8a17ce74ca32",
+   "format": "benchflow",
+   "result": {
+    "path": "fix-git__toolloop__s2__8a17ce74ca32/result.json",
+    "sha256": "301b733a1989cbe732e8f28affdc55ce25b2682d96089191479711e755783e5a"
+   },
+   "tree_hash": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251",
+   "bound": "run",
+   "digests": {
+    "tree": {
+     "recorded": "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251"
+    }
+   },
+   "ingested": "2026-09-28T18:48:11+00:00"
+  }
+ ],
+ "trees": {
+  "sha256:055b8c5e5f953034021d65ea7ed1789a8a5bb4f849ed91d3f62d88da25595251": {
+   "files": {
+    "oracle/solve.sh": "4789fa74e92e5b7b893c4b8637c26db2b6458b2136edfc3e686cc278dfc23630",
+    "sandbox/Dockerfile": "dfd64a46955909f58d1b562ea233c3cace75195bbef5d75cd6b599f3b8967bb7",
+    "sandbox/resources/patch_files/about.md": "2e09260b011012f9f7f491cd02809903449924cf8f825acd369fb8990b04e768",
+    "sandbox/resources/patch_files/default.html": "fb3fad17b83338002f5fd6a99ea1ec3a662cea570f9fff9240b8abc1861be655",
+    "sandbox/setup.sh": "99125cf2e362f2f4a864ba2f55c2f0e9f0aa0641fed588cef588184fcc192de2",
+    "task.md": "c98f365c7017ce5f07d29a9e15a97f10f0d35a0d86dc29dae25807221bf828b6",
+    "verifier/test.sh": "4770437ea96c3cc84684b4f99d55fb148fcac09f9ea1e8ef49de487716e6c334",
+    "verifier/test_outputs.py": "a8a6f51eb0d7c4ebdf0813c8f0b645edf29c995f1f9faf2aca3886a6713043f3"
+   },
+   "task_md": {
+    "instruction": "96a4e0be07c3093c",
+    "config": {
+     "about": "9529e81055da45ac",
+     "agent": "9ad34afc3bdd7503",
+     "sandbox": "4e02f84e716eb075",
+     "verifier": "3f6bc3f8291673f6",
+     "oracle": "f101bf975b3a5a78",
+     "import": "61515f00e6720e76"
+    }
+   },
+   "no_op": null
+  }
+ }
+}

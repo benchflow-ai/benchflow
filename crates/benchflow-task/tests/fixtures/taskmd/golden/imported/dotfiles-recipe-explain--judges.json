@@ -1,0 +1,209 @@
+{
+  "path": "dotfiles-recipe-explain--judges/task.md",
+  "mode": "blocks",
+  "instruction": "# Task\n\nRead `/app/context.md`. Produce `/app/solution.md` that explains what\na good `recipe explain <target>` answer should tell a normal user and\nreviewer.\n\nCover scopes, named locations, managed/unmanaged values, optional\nsettings groups, lifecycle, redaction/sensitivity, native\nexport/import summaries, and the read-only metadata boundary.\n\nDo not run live app commands, read live values, or implement code.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"local/recipe-explain-clarity\"\ndescription = \"Harbor agent test case: Recipe explain clarity\"\nauthors = [\"Harbor Agent Tests\"]\nkeywords = [\"harbor-agent-tests\", \"dotfiles-manager-v2\", \"release-readiness\"]\n\n[about]\nissue = \"121\"\npurpose = \"Evaluate whether recipe/support explanations are understandable, metadata-only, and complete for scopes, named locations, managed values, optional groups, lifecycle, redaction, and native summaries.\"\n\n[agent]\ntimeout = \"20m\"\n\n[sandbox]\nos = \"linux\"\ncpus = 1\nmemory = \"4 GB\"\ndisk = \"10 GB\"\ngpus = 0\nnetwork = \"open\"\nenv = {}\nmcp = []\nbuild_timeout = \"30m\"\noutputs = []\ncompose = \"sandbox/docker-compose.yaml\"\n\n[verifier]\ntimeout = \"20m\"\nuser = \"root\"\nmount = \"/tests\"\n\n[verifier.env]\nCODEX_AUTH_SOURCE = \"/run/codex-auth-source\"\nVERIFIER_CODEX_HOME = \"/tmp/verifier-codex-home\"\n\n# From verifier/review.toml by tools/convert.py --convert-judges. RewardKit 0.2.1, the newest release (the task does not pin RewardKit): its defaults for per are written out.\n[verifier.judges.agent]\nmodel = \"gpt-5.5\"\nharness = \"codex@0.130.0\"\nper = \"rubric\"\nsamples = 1\ntimeout = \"10m\"\n\n[oracle.env]\n\n[import.harbor]\nschema_version = \"1.2\"\n\n[import.harbor.rewardkit]\ninstalls = \"harbor-rewardkit\"\nscripts = [\"verifier/test.sh\"]\njudges = []\nconverted = [\"verifier/review.toml\"]\ndefaults = \"0.2.1\"\n\n[import.harbor.rewardkit.kept]\n\"tests/test.sh\" = \"sha256:af031b515783dcfd3439526cb22aa3cdfa56f9b9d3379b4c8b2c8cc523416e50\"\n\"tests/review.toml\" = \"sha256:4337d364ec68f7561ff74f2c13de69803716869c2b5b40ca05310ae0b8c31e36\"\n\n[import.harbor.rewardkit.wrote]\n\"verifier/judge.md\" = \"sha256:a4dbe92f221cc05bed634e4cc5e71f5249703df26d701f19b213b283b5717f46\"\n\"verifier/rubric.json\" = \"sha256:b43a148f864c1cfb202caeb85742024225530e094f6cb4de35240bc631b526d2\"\n\"verifier/test.sh\" = \"sha256:3be330cd5b6dacf709f4a06cedc8493b10574f69ec47b76a0ddb5ee9878e046a\"\n\"verifier.judges.agent\" = \"sha256:05dfc747e58e948bb166b2e12be1bb8345cd798655e69fdcd2a794336c84bf9e\"\n\n[import.harbor.originals.\"task.toml\"]\noriginal = \"sha256:63add7de62c8029f0be653ba46a6a5a57c472eddad775e87f5c2572de31de4c9\"\nconverted = \"sha256:c5a25b3d237e2dd26de829c52b76f8f88fb870e3bff4e9babc0171c6c0846434\"\n\n[import.harbor.originals.\"instruction.md\"]\noriginal = \"sha256:54f80ab21ce4476009b10ae6a355196ed25410c7133192b5756c3f39acc909e9\"\nconverted = \"sha256:54f80ab21ce4476009b10ae6a355196ed25410c7133192b5756c3f39acc909e9\"",
+      "line": 13
+    }
+  ],
+  "config": {
+    "name": "local/recipe-explain-clarity",
+    "description": "Harbor agent test case: Recipe explain clarity",
+    "authors": [
+      "Harbor Agent Tests"
+    ],
+    "keywords": [
+      "harbor-agent-tests",
+      "dotfiles-manager-v2",
+      "release-readiness"
+    ],
+    "about": {
+      "issue": "121",
+      "purpose": "Evaluate whether recipe/support explanations are understandable, metadata-only, and complete for scopes, named locations, managed values, optional groups, lifecycle, redaction, and native summaries."
+    },
+    "agent": {
+      "timeout": "20m"
+    },
+    "sandbox": {
+      "os": "linux",
+      "cpus": 1,
+      "memory": "4 GB",
+      "disk": "10 GB",
+      "gpus": 0,
+      "network": "open",
+      "env": {},
+      "mcp": [],
+      "build_timeout": "30m",
+      "outputs": [],
+      "compose": "sandbox/docker-compose.yaml"
+    },
+    "verifier": {
+      "timeout": "20m",
+      "user": "root",
+      "mount": "/tests",
+      "env": {
+        "CODEX_AUTH_SOURCE": "/run/codex-auth-source",
+        "VERIFIER_CODEX_HOME": "/tmp/verifier-codex-home"
+      },
+      "judges": {
+        "agent": {
+          "model": "gpt-5.5",
+          "harness": "codex@0.130.0",
+          "per": "rubric",
+          "samples": 1,
+          "timeout": "10m"
+        }
+      }
+    },
+    "oracle": {
+      "env": {}
+    },
+    "import": {
+      "harbor": {
+        "schema_version": "1.2",
+        "rewardkit": {
+          "installs": "harbor-rewardkit",
+          "scripts": [
+            "verifier/test.sh"
+          ],
+          "judges": [],
+          "converted": [
+            "verifier/review.toml"
+          ],
+          "defaults": "0.2.1",
+          "kept": {
+            "tests/test.sh": "sha256:af031b515783dcfd3439526cb22aa3cdfa56f9b9d3379b4c8b2c8cc523416e50",
+            "tests/review.toml": "sha256:4337d364ec68f7561ff74f2c13de69803716869c2b5b40ca05310ae0b8c31e36"
+          },
+          "wrote": {
+            "verifier/judge.md": "sha256:a4dbe92f221cc05bed634e4cc5e71f5249703df26d701f19b213b283b5717f46",
+            "verifier/rubric.json": "sha256:b43a148f864c1cfb202caeb85742024225530e094f6cb4de35240bc631b526d2",
+            "verifier/test.sh": "sha256:3be330cd5b6dacf709f4a06cedc8493b10574f69ec47b76a0ddb5ee9878e046a",
+            "verifier.judges.agent": "sha256:05dfc747e58e948bb166b2e12be1bb8345cd798655e69fdcd2a794336c84bf9e"
+          }
+        },
+        "originals": {
+          "task.toml": {
+            "original": "sha256:63add7de62c8029f0be653ba46a6a5a57c472eddad775e87f5c2572de31de4c9",
+            "converted": "sha256:c5a25b3d237e2dd26de829c52b76f8f88fb870e3bff4e9babc0171c6c0846434"
+          },
+          "instruction.md": {
+            "original": "sha256:54f80ab21ce4476009b10ae6a355196ed25410c7133192b5756c3f39acc909e9",
+            "converted": "sha256:54f80ab21ce4476009b10ae6a355196ed25410c7133192b5756c3f39acc909e9"
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "scoring": {
+      "method": "points",
+      "headline": "partial"
+    },
+    "criteria": [
+      {
+        "id": "requirements",
+        "text": "Inspect /app/solution.md. Does it define a good recipe explain answer as read-only metadata that covers scopes, named locations, managed/unmanaged settings, optional groups, lifecycle, redaction, and native operation summaries?",
+        "judge": "agent",
+        "points": 2,
+        "evidence": [
+          "/app"
+        ],
+        "x-rewardkit": {
+          "name": "requirements",
+          "type": "binary"
+        }
+      },
+      {
+        "id": "mental-model",
+        "text": "Rate whether the explanation gives users a clear support model without making settings groups or schema internals mandatory public concepts.",
+        "judge": "agent",
+        "points": 1,
+        "score": {
+          "min": 1,
+          "max": 5
+        },
+        "evidence": [
+          "/app"
+        ],
+        "x-rewardkit": {
+          "name": "mental_model",
+          "type": "likert",
+          "points": 5
+        }
+      },
+      {
+        "id": "metadata-safety",
+        "text": "Rate whether the answer preserves the no-live-read, no-desired-payload, no-native-execution, no-secret-value boundary for recipe explain.",
+        "judge": "agent",
+        "points": 1,
+        "score": {
+          "min": 1,
+          "max": 5
+        },
+        "evidence": [
+          "/app"
+        ],
+        "x-rewardkit": {
+          "name": "metadata_safety",
+          "type": "likert",
+          "points": 5
+        }
+      }
+    ],
+    "x-rewardkit": {
+      "source": "verifier/review.toml",
+      "release": "0.2.1",
+      "judge": "codex"
+    }
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "evidence /app is an absolute path, and with no [sandbox] workdir and no outputs the checker cannot tell whether the runtime saves it: set workdir, or declare the path in outputs",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "'requirements' does not say where the agent is told about it: quote the instruction in stated, or explain in implicit why the agent should know",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "evidence /app is an absolute path, and with no [sandbox] workdir and no outputs the checker cannot tell whether the runtime saves it: set workdir, or declare the path in outputs",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "warning",
+      "message": "'mental-model' does not say where the agent is told about it: quote the instruction in stated, or explain in implicit why the agent should know",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "warning",
+      "message": "evidence /app is an absolute path, and with no [sandbox] workdir and no outputs the checker cannot tell whether the runtime saves it: set workdir, or declare the path in outputs",
+      "where": "verifier/rubric.json criteria[2]"
+    },
+    {
+      "level": "warning",
+      "message": "'metadata-safety' does not say where the agent is told about it: quote the instruction in stated, or explain in implicit why the agent should know",
+      "where": "verifier/rubric.json criteria[2]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 10m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "# Task\n\nRead `/app/context.md`. Produce `/app/solution.md` that explains what\na good `recipe explain <target>` answer should tell a normal user and\nreviewer.\n\nCover scopes, named locations, managed/unmanaged values, optional\nsettings groups, lifecycle, redaction/sensitivity, native\nexport/import summaries, and the read-only metadata boundary.\n\nDo not run live app commands, read live values, or implement code.",
+  "title": "local/recipe-explain-clarity",
+  "ok": true
+}

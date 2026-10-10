@@ -1,0 +1,169 @@
+{
+  "path": "calc-quarterly/task.md",
+  "mode": "blocks",
+  "instruction": "In LibreOffice Calc, open `~/Documents/q3_sales.xlsx`. Add a sheet named `Summary` that shows total revenue per region, sorted from highest to lowest, and a bar chart of those totals titled \"Q3 revenue by region\". Save the workbook as `~/Documents/q3_summary.xlsx` and leave the original file unchanged.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/calc-quarterly\"\ntitle = \"Summarize quarterly sales in a spreadsheet\"\nversion = \"3.1.0\"\nkeywords = [\"computer-use\", \"spreadsheet\", \"libreoffice\"]\n\n[about]\ndifficulty = \"easy\"\ncategory = \"computer-use\"\n\n[agent]\ntimeout = \"20m\"\nnetwork = \"none\"\n\n[sandbox]\nclock = { start = \"2026-03-14T09:00:00-07:00\", advance = \"none\", enforce = \"world\" }\n\n[world]\nkind = \"virtual\"\nprofile = \"bf-desktop@0.5.1\"\ninterface = \"computer@1\"\n\n[world.desktop]\nos = \"ubuntu-24.04\"\nimage = \"ghcr.io/example/bf-desktop@sha256:9a3f71c2\"\ndisplay = { width = 1920, height = 1080, depth = 24, dpi = 96 }\nlocale = \"en_US.UTF-8\"\ntimezone = \"America/Los_Angeles\"\napps_required = [\"libreoffice-calc\"]\napps_available = [\"firefox\", \"gedit\"]\nsetup = [{ phase = \"root\", run = \"world/setup-root.sh\" }, { phase = \"user\", run = \"world/setup.sh\" }, { phase = \"lock\" }]\nready = { window = \"LibreOffice Calc\", first_screenshot = \"not-blank\" }\nobservations = [\"screenshot\", \"accessibility-tree\"]\nmodality = \"gui-only\"\n\n[world.record]\nstreams = [\"video\", \"screenshots\", \"input-events\"]\nrequired = [\"screenshots\"]",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "examples/calc-quarterly",
+    "title": "Summarize quarterly sales in a spreadsheet",
+    "version": "3.1.0",
+    "keywords": [
+      "computer-use",
+      "spreadsheet",
+      "libreoffice"
+    ],
+    "about": {
+      "difficulty": "easy",
+      "category": "computer-use"
+    },
+    "agent": {
+      "timeout": "20m",
+      "network": "none"
+    },
+    "sandbox": {
+      "clock": {
+        "start": "2026-03-14T09:00:00-07:00",
+        "advance": "none",
+        "enforce": "world"
+      }
+    },
+    "world": {
+      "kind": "virtual",
+      "profile": "bf-desktop@0.5.1",
+      "interface": "computer@1",
+      "desktop": {
+        "os": "ubuntu-24.04",
+        "image": "ghcr.io/example/bf-desktop@sha256:9a3f71c2",
+        "display": {
+          "width": 1920,
+          "height": 1080,
+          "depth": 24,
+          "dpi": 96
+        },
+        "locale": "en_US.UTF-8",
+        "timezone": "America/Los_Angeles",
+        "apps_required": [
+          "libreoffice-calc"
+        ],
+        "apps_available": [
+          "firefox",
+          "gedit"
+        ],
+        "setup": [
+          {
+            "phase": "root",
+            "run": "world/setup-root.sh"
+          },
+          {
+            "phase": "user",
+            "run": "world/setup.sh"
+          },
+          {
+            "phase": "lock"
+          }
+        ],
+        "ready": {
+          "window": "LibreOffice Calc",
+          "first_screenshot": "not-blank"
+        },
+        "observations": [
+          "screenshot",
+          "accessibility-tree"
+        ],
+        "modality": "gui-only"
+      },
+      "record": {
+        "streams": [
+          "video",
+          "screenshots",
+          "input-events"
+        ],
+        "required": [
+          "screenshots"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "output-exists",
+        "gate": true,
+        "text": "~/Documents/q3_summary.xlsx exists and opens.",
+        "stated": "Save the workbook as `~/Documents/q3_summary.xlsx`",
+        "judge": "test",
+        "check": "test_output_exists"
+      },
+      {
+        "id": "summary-values",
+        "gate": true,
+        "text": "The Summary sheet has one row per region with the correct totals, highest first.",
+        "stated": "Add a sheet named `Summary` that shows total revenue per region, sorted from highest to lowest",
+        "judge": "test",
+        "check": "test_summary_values"
+      },
+      {
+        "id": "original-untouched",
+        "gate": true,
+        "text": "~/Documents/q3_sales.xlsx is byte-identical to the original.",
+        "stated": "leave the original file unchanged",
+        "judge": "test",
+        "check": "test_original_untouched"
+      },
+      {
+        "id": "bar-chart",
+        "points": 3,
+        "text": "The chart is a bar chart titled \"Q3 revenue by region\" whose bars match the totals.",
+        "stated": "a bar chart of those totals titled \"Q3 revenue by region\"",
+        "judge": "vlm",
+        "evidence": [
+          "screenshots#final",
+          "q3_summary.xlsx"
+        ]
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "taxonomy": "https://task.md/behaviors@1",
+    "watch": [
+      {
+        "id": "cua.destructive-action",
+        "definition": "Overwrites or deletes the original workbook.",
+        "consequence": "fail",
+        "detect": "monitor"
+      },
+      {
+        "id": "process.loop",
+        "definition": "Repeats the same click or keystroke sequence three or more times without progress.",
+        "consequence": "report",
+        "detect": "monitor"
+      },
+      {
+        "id": "cua.wrong-app",
+        "definition": "Solves the task with a script or another application instead of Calc.",
+        "consequence": "report",
+        "detect": "monitor"
+      }
+    ]
+  },
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "In LibreOffice Calc, open `~/Documents/q3_sales.xlsx`. Add a sheet named `Summary` that shows total revenue per region, sorted from highest to lowest, and a bar chart of those totals titled \"Q3 revenue by region\". Save the workbook as `~/Documents/q3_summary.xlsx` and leave the original file unchanged.",
+  "title": "Summarize quarterly sales in a spreadsheet",
+  "ok": true
+}

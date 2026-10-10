@@ -1,0 +1,42 @@
+{
+  "path": "networks-ok/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/networks-ok\"\nversion = \"1.0.0\"\n[sandbox]\nnetwork = [\"pypi.org\", \"*.github.com\"]\n\n[agent]\nnetwork = \"none\"\n\n[verifier]\nnetwork = { block = [\"x.com\"] }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/networks-ok",
+    "version": "1.0.0",
+    "sandbox": {
+      "network": [
+        "pypi.org",
+        "*.github.com"
+      ]
+    },
+    "agent": {
+      "network": "none"
+    },
+    "verifier": {
+      "network": {
+        "block": [
+          "x.com"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/networks-ok",
+  "ok": true
+}

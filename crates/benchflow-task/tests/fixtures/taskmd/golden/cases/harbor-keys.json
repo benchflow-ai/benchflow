@@ -1,0 +1,81 @@
+{
+  "path": "harbor-keys/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/harbor-keys\"\nversion = \"1.0.0\"\n[agent]\ntimeout_sec = 600\n\n[sandbox]\nmemory_mb = 4096\nstorage_mb = 1536\nnetwork_mode = \"no-network\"\nbuild_timeout_sec = 90\ndocker_image = \"python:3.12\"\n\n[verifier]\ntimeout_sec = 120.5\nenvironment_mode = \"separate\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/harbor-keys",
+    "version": "1.0.0",
+    "agent": {
+      "timeout_sec": 600
+    },
+    "sandbox": {
+      "memory_mb": 4096,
+      "storage_mb": 1536,
+      "network_mode": "no-network",
+      "build_timeout_sec": 90,
+      "docker_image": "python:3.12"
+    },
+    "verifier": {
+      "timeout_sec": 120.5,
+      "environment_mode": "separate"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[sandbox] memory_mb is Harbor's name; task.md uses memory (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] storage_mb is Harbor's name; task.md uses disk (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] network_mode is Harbor's name; task.md uses network (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] build_timeout_sec is Harbor's name; task.md uses build_timeout (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[sandbox] docker_image is Harbor's name; task.md uses image (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[agent] timeout_sec is Harbor's name; task.md uses timeout (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] timeout_sec is Harbor's name; task.md uses timeout (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier] environment_mode is Harbor's name; task.md uses isolation (tools/convert.py import converts Harbor tasks)",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/harbor-keys",
+  "ok": false
+}

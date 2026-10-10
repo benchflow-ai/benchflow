@@ -1,0 +1,56 @@
+{
+  "path": "evidence-workdir/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/evidence-workdir\"\nversion = \"1.0.0\"\n[sandbox]\nworkdir = \"/app\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/evidence-workdir",
+    "version": "1.0.0",
+    "sandbox": {
+      "workdir": "/app"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "report.md",
+          "/app/sub/x.txt",
+          "/etc/passwd"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "evidence /etc/passwd is outside [sandbox] workdir /app, the folder the runtime saves when no outputs are declared: declare the path in [sandbox] outputs",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/evidence-workdir",
+  "ok": false
+}

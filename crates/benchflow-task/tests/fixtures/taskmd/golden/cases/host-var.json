@@ -1,0 +1,78 @@
+{
+  "path": "host-var/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "two",
+      "info": "stage two",
+      "body": "Two.",
+      "line": 3
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/host-var\"\nversion = \"1.0.0\"\n[sandbox]\nenv = { KEY = \"${OPENAI_API_KEY}\", MODE = \"fast\", BOTH = \"${A}${B:-x}\" }\n\n[[sandbox.services]]\nname = \"db\"\nimage = \"postgres\"\nenv = { P = \"${PGPASS}\" }\n\n[stages.two]\nunlock = \"on_submit\"\n\n[stages.two.agent]\nnetwork = \"none\"",
+      "line": 7
+    }
+  ],
+  "config": {
+    "name": "acme/host-var",
+    "version": "1.0.0",
+    "sandbox": {
+      "env": {
+        "KEY": "${OPENAI_API_KEY}",
+        "MODE": "fast",
+        "BOTH": "${A}${B:-x}"
+      },
+      "services": [
+        {
+          "name": "db",
+          "image": "postgres",
+          "env": {
+            "P": "${PGPASS}"
+          }
+        }
+      ]
+    },
+    "stages": {
+      "two": {
+        "unlock": "on_submit",
+        "agent": {
+          "network": "none"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "sandbox.env.KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "sandbox.env.BOTH resolves ${A} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "sandbox.env.BOTH resolves ${B} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "sandbox.services.0.env.P resolves ${PGPASS} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/host-var",
+  "ok": true
+}

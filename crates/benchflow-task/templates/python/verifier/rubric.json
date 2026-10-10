@@ -1,0 +1,41 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "summary-object",
+      "gate": true,
+      "text": "/app/summary.json holds a JSON object.",
+      "stated": "Write `/app/summary.json`: a JSON object",
+      "judge": "test",
+      "check": "test_summary_is_an_object"
+    },
+    {
+      "id": "count",
+      "points": 1,
+      "text": "count is the number of students, 5.",
+      "stated": "`count`, the number of students",
+      "judge": "test",
+      "check": "test_count"
+    },
+    {
+      "id": "mean",
+      "points": 2,
+      "text": "mean is the mean score, 81.4.",
+      "stated": "`mean`, the mean score",
+      "judge": "test",
+      "check": "test_mean"
+    },
+    {
+      "id": "max",
+      "points": 1,
+      "text": "max names Grace, with a score of 97.",
+      "stated": "`max`, the student with the highest score",
+      "judge": "test",
+      "check": "test_max"
+    }
+  ]
+}

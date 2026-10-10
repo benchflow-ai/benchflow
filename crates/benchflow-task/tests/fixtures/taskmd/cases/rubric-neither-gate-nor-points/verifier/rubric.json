@@ -1,0 +1,12 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "loose",
+      "judge": "test",
+      "check": "t",
+      "text": "L.",
+      "stated": "Fix the bug"
+    }
+  ]
+}

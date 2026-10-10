@@ -1,0 +1,17 @@
+# Z.ai (GLM models), pay-as-you-go API. Its OpenAI-compatible API serves chat
+# completions; its Anthropic-compatible endpoint is the one Z.ai documents for
+# Claude Code. Not run live by BenchFlow yet; the routes answer 401 without a
+# key. There is no check: no Z.ai request that needs a key is known to be free.
+name = "zai"
+description = "Z.ai: GLM models"
+
+[openai]
+base_url = "https://api.z.ai/api/paas/v4"
+apis = ["chat"]
+
+[anthropic]
+base_url = "https://api.z.ai/api/anthropic"
+auth = "bearer"
+
+[key]
+env = ["ZAI_API_KEY"]

@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "kind": "benchflow-branch-tree",
+  "nodes": [
+    {
+      "id": "root",
+      "parent": null,
+      "step_id": null
+    },
+    {
+      "id": "n1",
+      "parent": "root",
+      "step_id": null
+    },
+    {
+      "id": "n2",
+      "parent": "root",
+      "step_id": null
+    },
+    {
+      "id": "n3",
+      "parent": "root",
+      "step_id": null
+    },
+    {
+      "id": "n4",
+      "parent": "root",
+      "step_id": null
+    }
+  ],
+  "forks": [
+    {
+      "id": "f4a68c24ee874c3ca23f1104c99249f2",
+      "rollout": null,
+      "parent_node": "root",
+      "requested_children": 2,
+      "snapshot": {
+        "requested_layers": [
+          "environment"
+        ],
+        "captured_layers": [
+          "environment"
+        ],
+        "environment": {
+          "id": "first",
+          "kind": null,
+          "paths": []
+        },
+        "sandbox": null,
+        "excluded": [
+          "agent_session",
+          "process_memory",
+          "mounted_contents",
+          "external_services",
+          "physical_state"
+        ],
+        "agent_session": "fresh",
+        "lifetime": "provider_local",
+        "restore_available": null,
+        "retention": null
+      },
+      "status": "completed",
+      "parent_restore": "restored",
+      "timing_sec": {
+        "checkpoint": 0.0,
+        "child_restore": [
+          0.0,
+          0.0
+        ],
+        "children": 0.005,
+        "parent_restore": 0.0
+      },
+      "value": 0.5,
+      "error": null,
+      "parent_restore_error": null,
+      "artifact_error": null,
+      "children": [
+        {
+          "index": 0,
+          "node_id": "n1",
+          "status": "scored",
+          "reward": 1.0,
+          "reward_source": "runner_return",
+          "error": null,
+          "cleanup_error": null,
+          "intervention": {
+            "label": "baseline",
+            "requested": null,
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/f4a68c24ee874c3ca23f1104c99249f2/children/n1"
+          },
+          "attempts": 1,
+          "cost": {
+            "tokens": 0,
+            "usd": null,
+            "sandbox_seconds": 0.002
+          },
+          "usage": {
+            "n_input_tokens": 0,
+            "n_output_tokens": 0,
+            "n_cache_read_tokens": 0,
+            "n_cache_creation_tokens": 0,
+            "total_tokens": 0
+          },
+          "timing_sec": {}
+        },
+        {
+          "index": 1,
+          "node_id": "n2",
+          "status": "scored",
+          "reward": 0.0,
+          "reward_source": "runner_return",
+          "error": null,
+          "cleanup_error": null,
+          "intervention": {
+            "label": "hint: off-by-one",
+            "requested": null,
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/f4a68c24ee874c3ca23f1104c99249f2/children/n2"
+          },
+          "attempts": 1,
+          "cost": {
+            "tokens": 0,
+            "usd": null,
+            "sandbox_seconds": 0.002
+          },
+          "usage": {
+            "n_input_tokens": 0,
+            "n_output_tokens": 0,
+            "n_cache_read_tokens": 0,
+            "n_cache_creation_tokens": 0,
+            "total_tokens": 0
+          },
+          "timing_sec": {}
+        }
+      ],
+      "children_mode": {
+        "isolated": false,
+        "concurrency": 1,
+        "prewarm": 0,
+        "child_retries": 0,
+        "continue_after_child_failure": false
+      },
+      "cost": {
+        "tokens": 0,
+        "usd": null,
+        "usd_known": false,
+        "wall_seconds": 0.007,
+        "parent_sandbox_seconds": 0.007,
+        "children_sandbox_seconds": 0.0,
+        "sandbox_seconds": 0.007
+      },
+      "value_stderr": 0.5
+    },
+    {
+      "id": "6e317397806c42528cb1d006206ee268",
+      "rollout": null,
+      "parent_node": "root",
+      "requested_children": 2,
+      "snapshot": {
+        "requested_layers": [
+          "environment"
+        ],
+        "captured_layers": [
+          "environment"
+        ],
+        "environment": {
+          "id": "second",
+          "kind": null,
+          "paths": []
+        },
+        "sandbox": null,
+        "excluded": [
+          "agent_session",
+          "process_memory",
+          "mounted_contents",
+          "external_services",
+          "physical_state"
+        ],
+        "agent_session": "fresh",
+        "lifetime": "provider_local",
+        "restore_available": null,
+        "retention": null
+      },
+      "status": "partial",
+      "parent_restore": "restored",
+      "timing_sec": {
+        "checkpoint": 0.0,
+        "child_restore": [
+          0.0,
+          0.0
+        ],
+        "children": 0.005,
+        "parent_restore": 0.0
+      },
+      "value": null,
+      "error": {
+        "type": "UnscoredChildError",
+        "code": "missing_verifier_reward"
+      },
+      "parent_restore_error": null,
+      "artifact_error": null,
+      "children": [
+        {
+          "index": 0,
+          "node_id": "n3",
+          "status": "scored",
+          "reward": 1.0,
+          "reward_source": "runner_return",
+          "error": null,
+          "cleanup_error": null,
+          "intervention": {
+            "label": null,
+            "requested": null,
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/6e317397806c42528cb1d006206ee268/children/n3"
+          },
+          "attempts": 1,
+          "cost": {
+            "tokens": 0,
+            "usd": null,
+            "sandbox_seconds": 0.002
+          },
+          "usage": {
+            "n_input_tokens": 0,
+            "n_output_tokens": 0,
+            "n_cache_read_tokens": 0,
+            "n_cache_creation_tokens": 0,
+            "total_tokens": 0
+          },
+          "timing_sec": {}
+        },
+        {
+          "index": 1,
+          "node_id": "n4",
+          "status": "unscored",
+          "reward": null,
+          "reward_source": null,
+          "error": {
+            "type": "UnscoredChildError",
+            "code": "missing_verifier_reward"
+          },
+          "cleanup_error": null,
+          "intervention": {
+            "label": null,
+            "requested": null,
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/6e317397806c42528cb1d006206ee268/children/n4"
+          },
+          "attempts": 1,
+          "cost": {
+            "tokens": 0,
+            "usd": null,
+            "sandbox_seconds": 0.002
+          },
+          "usage": {
+            "n_input_tokens": 0,
+            "n_output_tokens": 0,
+            "n_cache_read_tokens": 0,
+            "n_cache_creation_tokens": 0,
+            "total_tokens": 0
+          },
+          "timing_sec": {}
+        }
+      ],
+      "children_mode": {
+        "isolated": false,
+        "concurrency": 1,
+        "prewarm": 0,
+        "child_retries": 0,
+        "continue_after_child_failure": false
+      },
+      "cost": {
+        "tokens": 0,
+        "usd": null,
+        "usd_known": false,
+        "wall_seconds": 0.006,
+        "parent_sandbox_seconds": 0.006,
+        "children_sandbox_seconds": 0.0,
+        "sandbox_seconds": 0.006
+      }
+    }
+  ]
+}

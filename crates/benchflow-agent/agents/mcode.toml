@@ -1,0 +1,90 @@
+# MiniMax Code (npm @minimax-ai/code), run headless with `mcode exec
+# --output-format stream-json`, as Harbor's `mcode` agent runs it, or over
+# ACP with `mcode acp` from the same install. Headless stays the default:
+# it is Harbor's route, and mcode's ACP server takes its model only from
+# its config.
+name = "mcode"
+aliases = ["minimax-code"]
+description = "MiniMax Code, headless with mcode exec, or via ACP (mcode acp)"
+harness = "headless"
+# MiniMax Code reads user skills from $MINIMAX_DATA_DIR/skills; the command
+# keeps that folder at ~/.mcode (Harbor copies them to its own data folder).
+skill_paths = ["$HOME/.mcode/skills"]
+
+[install]
+npm = "@minimax-ai/code@0.6.7"
+bin = "mcode"
+verify = "/opt/benchflow/bin/mcode --version"
+
+[launch]
+# The headless command's provider setup (the model as an mcode custom
+# provider, its default model, web search off), then `mcode acp`, which
+# reads that config. With no model (an ACP check), mcode starts on its own.
+command = '''export MINIMAX_DATA_DIR="$HOME/.mcode"
+[ -n "$BENCHFLOW_MODEL" ] || exec /opt/benchflow/bin/mcode acp
+p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+case "$p" in
+  anthropic) f=anthropic-messages; u="${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}"; k=ANTHROPIC_API_KEY ;;
+  minimax) f=anthropic-messages; u="${MINIMAX_BASE_URL:-https://api.minimax.io/anthropic}"; k=MINIMAX_API_KEY ;;
+  openai) f=openai-completions; u="${OPENAI_BASE_URL:-https://api.openai.com/v1}"; k=OPENAI_API_KEY ;;
+  deepseek) f=openai-completions; u="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"; k=DEEPSEEK_API_KEY ;;
+  *) echo "BenchFlow: mcode takes anthropic/, minimax/, openai/ or deepseek/ models, not '$BENCHFLOW_MODEL'" >&2; exit 2 ;;
+esac
+mkdir -p "$MINIMAX_DATA_DIR"
+c="$MINIMAX_DATA_DIR/config.yaml"
+if ! /opt/benchflow/bin/mcode provider add --name "BenchFlow $p" --base-url "$u" --api-format "$f" --model "$m" --api-key-env "$k" < /dev/null > "$MINIMAX_DATA_DIR/provider-add.txt" 2>&1; then
+  cat "$MINIMAX_DATA_DIR/provider-add.txt" >&2
+  echo "BenchFlow: mcode provider add failed" >&2
+  exit 1
+fi
+x="custom_provider:benchflow-$p/$m"
+if grep -q '^defaultModel:' "$c"; then sed -i "s|^defaultModel:.*|defaultModel: $x|" "$c"; else printf 'defaultModel: %s\n' "$x" >> "$c"; fi
+grep -q '^agents:' "$c" || printf '\nagents:\n  default:\n    features:\n      webSearch: false\n' >> "$c"
+exec /opt/benchflow/bin/mcode acp'''
+
+[headless]
+# The `provider/model` id becomes an mcode custom provider (Harbor's
+# `mcode provider add`), keyed by `<PROVIDER>_API_KEY`. Web search needs an
+# mcode login, so it is off.
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"
+case "$p" in
+  anthropic) f=anthropic-messages; u="${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}"; k=ANTHROPIC_API_KEY ;;
+  minimax) f=anthropic-messages; u="${MINIMAX_BASE_URL:-https://api.minimax.io/anthropic}"; k=MINIMAX_API_KEY ;;
+  openai) f=openai-completions; u="${OPENAI_BASE_URL:-https://api.openai.com/v1}"; k=OPENAI_API_KEY ;;
+  deepseek) f=openai-completions; u="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"; k=DEEPSEEK_API_KEY ;;
+  *) echo "BenchFlow: mcode takes anthropic/, minimax/, openai/ or deepseek/ models, not '$BENCHFLOW_MODEL'" >&2; exit 2 ;;
+esac
+export MINIMAX_DATA_DIR="$HOME/.mcode"
+mkdir -p "$MINIMAX_DATA_DIR"
+c="$MINIMAX_DATA_DIR/config.yaml"
+r="$MINIMAX_DATA_DIR/benchflow-config.yaml"
+if ! /opt/benchflow/bin/mcode provider add --name "BenchFlow $p" --base-url "$u" --api-format "$f" --model "$m" --api-key-env "$k" < /dev/null > "$MINIMAX_DATA_DIR/provider-add.txt" 2>&1; then
+  cat "$MINIMAX_DATA_DIR/provider-add.txt" >&2
+  echo "BenchFlow: mcode provider add failed" >&2
+  exit 1
+fi
+x="custom_provider:benchflow-$p/$m"
+if grep -q '^defaultModel:' "$c"; then sed -i "s|^defaultModel:.*|defaultModel: $x|" "$c"; else printf 'defaultModel: %s\n' "$x" >> "$c"; fi
+cp "$c" "$r"
+printf '\nagents:\n  default:\n    features:\n      webSearch: false\n' >> "$r"
+exec /opt/benchflow/bin/mcode exec --model "$x" --config "$r" --permission full ${BENCHFLOW_EFFORT:+--effort "$BENCHFLOW_EFFORT"} \
+  --output-format stream-json "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null'''
+output = "mcode-stream-json"
+
+[credentials]
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# An `openai/` model becomes an mcode custom provider on OPENAI_BASE_URL
+# (openai-completions). Both commands read the model from $BENCHFLOW_MODEL,
+# which an ACP run on a provider does not otherwise set.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"
+
+[providers.openai.env]
+BENCHFLOW_MODEL = "openai/{model}"

@@ -1,0 +1,56 @@
+[package]
+name = "benchflow-cli"
+description = "bench: run agents on tasks in sandboxes, and score them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
+[dependencies]
+benchflow-task.workspace = true
+benchflow-sandbox.workspace = true
+benchflow-agent.workspace = true
+benchflow-run.workspace = true
+benchflow-viewer.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
+anyhow.workspace = true
+annotate-snippets.workspace = true
+async-trait.workspace = true
+globset.workspace = true
+chrono.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+dirs.workspace = true
+indexmap.workspace = true
+open.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+strsim.workspace = true
+terminal_size.workspace = true
+tokio.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+unicode-width.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+insta.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+
+[lints]
+workspace = true

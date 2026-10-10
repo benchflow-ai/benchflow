@@ -1,0 +1,37 @@
+judges-values/task.md
+  mode: blocks
+  title: acme/judges-values
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  rubric: 1 criteria, 0 gates, 2 points; judges agent
+  grading needs a model: yes: agent judges 1 criterion
+  judge agent: model , harness judge-loop, samples 0, per task, timeout 600, budget tokens 0 tool_calls -1
+  worst-case grading time: unknown, because a judge timeout is not a duration
+  error: [verifier.judges] aggregate must be one of 'median', 'mean', 'majority', 'min' (task.md)
+  error: [verifier.judges] unverified is gone: a verdict with no verified citation is always flagged no-verified-citation, and at delivery grade the runtime judges that sample once more (docs/judges.md). Remove the key (task.md)
+  error: [verifier.judges] samples is a whole number, at least 1 (task.md)
+  error: [verifier.judges] min_samples is a whole number, at least 1 (task.md)
+  error: [verifier.judges] lazy is true (the default) or false (task.md)
+  error: [verifier.judges] llm is a model name, or a table [verifier.judges.llm] (task.md)
+  error: [verifier.judges] vlm is a model name, or a table [verifier.judges.vlm] (task.md)
+  error: [verifier.judges.agent] model names a model (task.md)
+  error: [verifier.judges.agent] effort is the model's reasoning effort, such as "high" (task.md)
+  error: [verifier.judges.agent] aggregate must be one of 'median', 'mean', 'majority', 'min' (task.md)
+  error: [verifier.judges.agent] per is "rubric" (one session grades all of the role's criteria) or "criterion" (one session each) (task.md)
+  error: [verifier.judges.agent] timeout must be a duration such as "90s", "15m", or "1h30m" (task.md)
+  error: [verifier.judges.agent] budget tokens is a count: a whole number, or a string of a number and K (1,000) or M (1,000,000) that comes to a whole number, such as 400000, "400K", or "2M" (task.md)
+  error: [verifier.judges.agent] budget tool_calls is a whole number, at least 1 (task.md)
+  error: [verifier.judges.agent] harness names a harness and its version, such as "judge-loop@1": conformance is per harness version (task.md)
+  error: unknown key 'cpu' in [verifier.judges.agent] resources; did you mean cpus? it holds cpus, disk, gpu_types, gpus, memory, tpu (task.md)
+  error: [verifier.judges.agent] resources memory must be a size such as "512 MB" or "4 GB" (task.md)
+  error: [verifier.judges.agent] services is true (the task's services run for the judge too) or false (task.md)
+  error: [verifier.judges.agent] views[0] is a bare path, '/logs/agent/t.json', which meant format "atif": ATIF views are cut, since no page defines their bytes. Write { path = "/logs/agent/t.json", format = "trajectory-1" } (task.md)
+  error: [verifier.judges.agent] views[1] is a table { path, format = "trajectory-1" } (task.md)
+  error: [verifier.judges.agent] views[2] needs a path: the absolute path the judge reads it at, such as "/logs/agent/trajectory.json" (task.md)
+  error: [verifier.judges.agent] views[2] format "atif" is cut, since no page defines an ATIF view's bytes: write format = "trajectory-1", the solver's trajectory in the runtime's own record (task.md)
+  error: unknown key 'pth' in [verifier.judges.agent] views[3]; did you mean path? a view holds path and format (task.md)
+  error: [verifier.judges.agent] views[3] needs a path: the absolute path the judge reads it at, such as "/logs/agent/trajectory.json" (task.md)
+  error: [verifier.judges.agent] views[4] format is "trajectory-1", the solver's trajectory in the runtime's own record (task.md)
+  warning: the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 600, but purpose = "rl" and delivery grade require one (task.md)
+  FAILED

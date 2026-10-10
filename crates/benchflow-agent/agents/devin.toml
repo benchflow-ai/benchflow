@@ -1,0 +1,76 @@
+# Devin CLI (Cognition), run headless with `devin --print`, as Harbor's
+# `devin` agent runs it. It needs a Devin account; the models are
+# Cognition's.
+name = "devin"
+description = "Devin CLI (Cognition), headless with devin --print, or via ACP (devin acp); needs a Devin account"
+harness = "headless"
+
+[install]
+# Cognition's versioned setup script, which checks the release's SHA-256,
+# without its last step: `devin setup`, an interactive login (the key
+# reaches the agent at run time, never the image).
+installer = '''
+set -eu
+if ! command -v bash > /dev/null 2>&1; then
+  if command -v apt-get > /dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq bash;
+  elif command -v dnf > /dev/null 2>&1; then dnf -y install bash;
+  elif command -v apk > /dev/null 2>&1; then apk add --no-cache bash;
+  else echo 'BenchFlow: the Devin installer needs bash, and the image has no apt-get, dnf or apk to add it' >&2; exit 127; fi
+fi
+curl -fsSL -o setup.sh https://static.devin.ai/cli/3000.11.3/setup.sh
+step='"$VERSION_DIR/bin/$COMPILED_BIN_NAME" setup'
+grep -qxF "$step" setup.sh || { echo 'BenchFlow: the Devin setup script changed; its login step was not found' >&2; exit 1; }
+grep -vxF "$step" setup.sh > install.sh
+bash install.sh < /dev/null
+rm -f setup.sh install.sh
+'''
+links = [".local/bin/devin"]
+verify = "/opt/benchflow/bin/devin version"
+
+[launch]
+# The key goes where the headless command puts it, then Devin's ACP server.
+command = '''d="${XDG_DATA_HOME:-$HOME/.local/share}/devin"
+mkdir -p "$d"
+(
+  umask 077
+  printf 'windsurf_api_key = "%s"\n' "$DEVIN_API_KEY" > "$d/credentials.toml"
+  [ -z "$DEVIN_API_SERVER_URL" ] || printf 'api_server_url = "%s"\n' "$DEVIN_API_SERVER_URL" >> "$d/credentials.toml"
+)
+c="${XDG_CONFIG_HOME:-$HOME/.config}/devin"
+mkdir -p "$c"
+[ -f "$c/config.json" ] || printf '{"shell":{"setup_complete":true}}' > "$c/config.json"
+exec /opt/benchflow/bin/devin acp'''
+
+[headless]
+# The key goes where `devin auth login` puts it (credentials.toml, mode
+# 600). The model is the last part of the id (`devin/claude-opus-4.7` runs
+# `claude-opus-4.7`).
+command = '''d="${XDG_DATA_HOME:-$HOME/.local/share}/devin"
+mkdir -p "$d"
+(
+  umask 077
+  printf 'windsurf_api_key = "%s"\n' "$DEVIN_API_KEY" > "$d/credentials.toml"
+  [ -z "$DEVIN_API_SERVER_URL" ] || printf 'api_server_url = "%s"\n' "$DEVIN_API_SERVER_URL" >> "$d/credentials.toml"
+)
+m="${BENCHFLOW_MODEL##*/}"
+/opt/benchflow/bin/devin ${m:+--model "$m"} --permission-mode yolo --print --respect-workspace-trust false -- "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null
+s=$?
+if [ "$s" -ne 0 ]; then
+  # Devin says little on stderr; its log says why it stopped.
+  l=$(find "$d" "${XDG_CONFIG_HOME:-$HOME/.config}/devin" -type f -name '*.log' 2> /dev/null | xargs ls -t 2> /dev/null | head -n 1)
+  if [ -n "$l" ]; then echo "BenchFlow: the end of Devin's log $l:" >&2; tail -n 30 "$l" >&2; fi
+fi
+exit "$s"'''
+output = "text"
+
+# Marks the CLI's first-run shell setup as done, as Harbor does.
+[[headless.files]]
+path = ".config/devin/config.json"
+contents = '{"shell":{"setup_complete":true}}'
+
+[credentials]
+env = ["DEVIN_API_KEY"]
+account = "a Devin (Cognition) account: copy its API key in Devin Desktop (command palette, \"Devin: copy api key to clipboard\") or from ~/.local/share/devin/credentials.toml after `devin auth login`, then `export DEVIN_API_KEY=<key>`"
+
+[model]
+select = "none"

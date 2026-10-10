@@ -1,0 +1,40 @@
+{
+  "path": "family-splits-good/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-splits-good\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/generate.py\"\n\n[family.splits]\ntrain = \"seed % 10 < 8\"\n\n[family.splits.iid]\nrule = \"seed % 10 == 8\"\nrole = \"validation\"\n\n[family.splits.ood]\nrole = \"test\"\nrule = \"seed % 10 == 9\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-splits-good",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/generate.py",
+      "splits": {
+        "train": "seed % 10 < 8",
+        "iid": {
+          "rule": "seed % 10 == 8",
+          "role": "validation"
+        },
+        "ood": {
+          "role": "test",
+          "rule": "seed % 10 == 9"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/family-splits-good",
+  "ok": true
+}

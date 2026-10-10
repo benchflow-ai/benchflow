@@ -1,0 +1,14 @@
+repr-floats/task.md
+  mode: blocks
+  title: acme/repr-floats
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 1 criteria, 1 gates, 0 points; judges test
+  behaviors: process.x
+  grading needs a model: no (1 criterion decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: severity 1 maps to 0.5; a level's consequence is 'fail', 'invalid', 'report', or {penalty: <negative number>} (verifier/behaviors.json watch[0])
+  error: severity 2 maps to {'penalty': 1e-05}; a level's consequence is 'fail', 'invalid', 'report', or {penalty: <negative number>} (verifier/behaviors.json watch[0])
+  error: severity 3 maps to [1e+16, -0.0]; a level's consequence is 'fail', 'invalid', 'report', or {penalty: <negative number>} (verifier/behaviors.json watch[0])
+  FAILED

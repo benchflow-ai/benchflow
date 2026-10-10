@@ -1,0 +1,57 @@
+{
+  "path": "closed-table-typos/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/closed-table-typos\"\nversion = \"1.0.0\"\n[agent]\ntimout = \"10m\"\nnetwrok = \"none\"\n\n[oracle]\nenvv = {}\n\n[runs]\ntrails = 3",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/closed-table-typos",
+    "version": "1.0.0",
+    "agent": {
+      "timout": "10m",
+      "netwrok": "none"
+    },
+    "oracle": {
+      "envv": {}
+    },
+    "runs": {
+      "trails": 3
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key [agent] timout; did you mean timeout? [agent] holds budget, network, network_reason, on_timeout, system_prompt_append, timeout, timeout_basis, user, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key [agent] netwrok; did you mean network? [agent] holds budget, network, network_reason, on_timeout, system_prompt_append, timeout, timeout_basis, user, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key [oracle] envv; did you mean env? [oracle] holds env, mount, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key [runs] trails; did you mean trials? [runs] holds disclose, errored, pinned, retries, trajectory, trials, or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/closed-table-typos",
+  "ok": false
+}

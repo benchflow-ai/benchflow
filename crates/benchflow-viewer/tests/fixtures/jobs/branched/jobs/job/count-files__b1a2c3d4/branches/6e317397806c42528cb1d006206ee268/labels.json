@@ -1,0 +1,20 @@
+{
+  "kind": "benchflow-branch-labels",
+  "fork_id": "6e317397806c42528cb1d006206ee268",
+  "children": [
+    {
+      "label": null,
+      "node_id": "n3",
+      "folder": "n3",
+      "status": "scored",
+      "reward": 1.0
+    },
+    {
+      "label": null,
+      "node_id": "n4",
+      "folder": "n4",
+      "status": "unscored",
+      "reward": null
+    }
+  ]
+}

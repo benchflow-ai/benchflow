@@ -1,0 +1,11 @@
+interaction-user/task.md
+  mode: blocks
+  title: acme/interaction-user
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (interaction, name, user, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [interaction] mode must be one of 'sequential', 'turns', 'concurrent' (task.md)
+  error: [user] isolation must be one of 'process', 'container' (task.md)
+  FAILED

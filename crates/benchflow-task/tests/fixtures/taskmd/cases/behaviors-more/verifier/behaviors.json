@@ -1,0 +1,70 @@
+{
+  "$schema": "https://task.md/schema/behaviors-1.json",
+  "watch": [
+    "not an object",
+    {
+      "id": "Bad",
+      "consequence": "explode",
+      "detect": "guess",
+      "scope": "everyone",
+      "scale": "1-5",
+      "paths": [
+        "rel"
+      ],
+      "severity": 1
+    },
+    {
+      "id": "process.x",
+      "definition": "X.",
+      "consequence": "invalid"
+    },
+    {
+      "id": "infra.down",
+      "definition": "Down.",
+      "consequence": "invalid"
+    },
+    {
+      "id": "process.y",
+      "definition": "Y.",
+      "consequence": "invalid",
+      "scope": "submission"
+    },
+    {
+      "id": "process.z",
+      "definition": "Z.",
+      "consequence": {
+        "penalty": 0.2
+      }
+    },
+    {
+      "id": "process.w",
+      "definition": "W.",
+      "scale": "0-3",
+      "consequence": {
+        "1": "report",
+        "2": "report",
+        "3": "invalid",
+        "4": "fail"
+      }
+    },
+    {
+      "definition": "No id.",
+      "detect": "rule",
+      "consequence": "report"
+    }
+  ],
+  "paired": [
+    {
+      "id": "x"
+    },
+    {
+      "id": "process.pair",
+      "definition": "P.",
+      "compare": [
+        "a",
+        "b"
+      ]
+    }
+  ],
+  "watchers": 1
+}

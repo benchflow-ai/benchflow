@@ -1,0 +1,10 @@
+clock-no-zone-offset/task.md
+  mode: blocks
+  title: acme/clock-no-zone-offset
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  warning: [sandbox] clock start is at +05:30, but no timezone is set, so the sandbox keeps the image's zone (usually UTC), where it reads 03:30; set [sandbox] timezone (task.md)
+  ok

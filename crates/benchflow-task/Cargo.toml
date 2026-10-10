@@ -1,0 +1,32 @@
+[package]
+name = "benchflow-task"
+description = "Task packages for BenchFlow: parse, check, score, import and export task.md and compatible layouts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+indexmap.workspace = true
+jiff.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+shlex.workspace = true
+hex.workspace = true
+strsim.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+walkdir.workspace = true
+globset.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,56 @@
+{
+  "path": "family-splits/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-splits\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/generate.py\"\n\n[family.splits]\ntrain = \"seed % 10 < 8\"\nholdout = \"seed % 10 == 9\"\n\n[family.splits.iid]\nrule = \"seed % 10 == 8\"\nrole = \"dev\"\n\n[family.splits.ood]\nrole = \"test\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-splits",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/generate.py",
+      "splits": {
+        "train": "seed % 10 < 8",
+        "holdout": "seed % 10 == 9",
+        "iid": {
+          "rule": "seed % 10 == 8",
+          "role": "dev"
+        },
+        "ood": {
+          "role": "test"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[family.splits.iid] role must be one of 'train', 'validation', 'test'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] holdout needs a role: write [family.splits.holdout] with rule = \"seed % 10 == 9\" and role = \"train\", \"validation\", or \"test\"",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits.ood] needs a rule over the seed, such as \"seed % 10 == 9\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/family-splits",
+  "ok": false
+}

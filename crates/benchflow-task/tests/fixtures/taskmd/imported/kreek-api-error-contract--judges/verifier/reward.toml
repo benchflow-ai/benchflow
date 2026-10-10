@@ -1,0 +1,9 @@
+# Synced from eval/verifier/shared/reward.code.toml. Do not edit in tests/.
+# Deterministic share 0.55 (verification 0.5, proof 0.35, change_quality 0.15
+# of that) and judge share 0.45, matching the previous scorer. The two readouts
+# skill_triggering and non_interruption carry zero weight on purpose: the bare
+# baseline reads no skills by construction.
+[[reward]]
+name = "reward"
+aggregation = "weighted-mean"
+weights = { verification = 0.275, proof = 0.1925, change_quality = 0.0825, judge = 0.45, skill_triggering = 0.0, non_interruption = 0.0 }

@@ -1,0 +1,10 @@
+compose-no-services/task.md
+  mode: blocks
+  title: acme/compose-no-services
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: the Compose file asks for host privileges (privileged mode, the host's network or processes, or the Docker socket); a runtime refuses them unless its operator allows them for this task (sandbox/docker-compose.yaml)
+  FAILED

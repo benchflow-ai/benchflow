@@ -1,0 +1,77 @@
+# Code Puppy, run headless with `code-puppy --prompt`, as Harbor's
+# `code-puppy` agent runs it.
+name = "code-puppy"
+description = "Code Puppy, headless with code-puppy --prompt"
+
+[install]
+uv-tool = "code-puppy==0.0.909"
+bin = "code-puppy"
+python = "3.13"
+verify = "/opt/benchflow/bin/code-puppy --version"
+
+[headless]
+# The model is registered under its `provider/model` id: anthropic, openai
+# and google natively, providers with an OpenAI-compatible endpoint as a
+# custom endpoint whose key Code Puppy reads from CODE_PUPPY_API_KEY. An
+# instruction that starts with `!` or `/` is framed so Code Puppy does not
+# run it as a shell or slash command. Code Puppy exits 0 after a model or
+# login error it swallowed, so a missing usage file fails the run.
+command = '''p="${BENCHFLOW_MODEL%%/*}"; m="${BENCHFLOW_MODEL#*/}"; u=""
+case "$p" in
+  openai) if [ -n "$OPENAI_BASE_URL" ]; then u="$OPENAI_BASE_URL"; else e="{\"type\": \"openai\", \"name\": \"$m\"}"; fi ;;
+  anthropic) e="{\"type\": \"$p\", \"name\": \"$m\"}" ;;
+  google|gemini) e="{\"type\": \"gemini\", \"name\": \"$m\"}" ;;
+  openrouter) u=https://openrouter.ai/api/v1 ;;
+  deepseek) u=https://api.deepseek.com ;;
+  groq) u=https://api.groq.com/openai/v1 ;;
+  mistral) u=https://api.mistral.ai/v1 ;;
+  together) u=https://api.together.xyz/v1 ;;
+  xai) u=https://api.x.ai/v1 ;;
+  nvidia) u=https://integrate.api.nvidia.com/v1 ;;
+  moonshot) u=https://api.moonshot.ai/v1 ;;
+  *) echo "BenchFlow: Code Puppy takes anthropic/, openai/, google/, openrouter/, deepseek/, groq/, mistral/, together/, xai/, nvidia/ or moonshot/ models, not '$BENCHFLOW_MODEL'" >&2; exit 2 ;;
+esac
+if [ -n "$u" ]; then
+  v=$(printf '%s_API_KEY' "$p" | tr 'a-z-' 'A-Z_')
+  eval "export CODE_PUPPY_API_KEY=\"\${$v}\""
+  e="{\"type\": \"custom_openai\", \"name\": \"$m\", \"custom_endpoint\": {\"url\": \"$u\", \"api_key\": \"\$CODE_PUPPY_API_KEY\"}}"
+fi
+mkdir -p "$HOME/.code_puppy" "$HOME/.benchflow"
+printf '{"%s": %s}\n' "$BENCHFLOW_MODEL" "$e" > "$HOME/.code_puppy/extra_models.json"
+c="$HOME/.code_puppy/puppy.cfg"
+printf '[puppy]\npuppy_name = BenchFlowPup\nowner_name = BenchFlow\nauto_save_session = false\n' > "$c"
+if [ -n "$BENCHFLOW_EFFORT" ]; then
+  printf 'model_settings_%s_reasoning_effort = %s\n' "$(printf '%s' "$BENCHFLOW_MODEL" | tr 'A-Z./-' 'a-z___')" "$BENCHFLOW_EFFORT" >> "$c"
+fi
+chmod 600 "$HOME/.code_puppy/extra_models.json" "$c"
+t=$(cat "$BENCHFLOW_INSTRUCTION_FILE")
+case "$(printf '%s' "$t" | tr -d ' \t\r\n' | cut -c1)" in
+  '!'|'/') t="Task request:
+$t" ;;
+esac
+f="$HOME/.benchflow/code-puppy-usage.json"
+/opt/benchflow/bin/code-puppy --yolo true --disable-ask-user-question --usage-file "$f" --model "$BENCHFLOW_MODEL" --prompt "$t" < /dev/null
+s=$?
+if [ -s "$f" ]; then
+  printf '{"@bf":"usage","item":'; tr -d '\n' < "$f"; printf '}\n'
+elif [ "$s" -eq 0 ]; then
+  echo 'BenchFlow: Code Puppy exited 0 without writing its usage file, which it does after a model or login error it reported above' >&2
+  s=1
+fi
+exit "$s"'''
+output = "code-puppy-text"
+
+[credentials]
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# An `openai/` model with OPENAI_BASE_URL set is a custom_openai endpoint
+# (Chat Completions) whose key Code Puppy reads from CODE_PUPPY_API_KEY,
+# which the command copies from OPENAI_API_KEY.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"

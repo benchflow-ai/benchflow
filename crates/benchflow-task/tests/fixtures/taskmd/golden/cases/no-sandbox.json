@@ -1,0 +1,32 @@
+{
+  "path": "no-sandbox/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/no-sandbox\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/no-sandbox",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/no-sandbox",
+  "ok": false
+}

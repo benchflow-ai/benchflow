@@ -1,0 +1,74 @@
+# OpenHands' CLI in its ACP mode (`openhands acp`), as BenchFlow 0.8's
+# `openhands`, or headless with `openhands --headless --json` from the same
+# install. 0.8 installed the CLI from a git commit with uv; this installs
+# the same CLI's PyPI release, pinned, with uv. Its model comes from
+# LLM_MODEL (else the run's model), LLM_API_KEY, and LLM_BASE_URL
+# (OpenHands does not take session/set_model), written to its settings at
+# launch as 0.8 did.
+name = "openhands"
+aliases = ["oh", "openhands-cli"]
+description = "OpenHands via ACP, or headless with openhands --headless; the model is a LiteLLM id"
+skill_paths = ["$HOME/.agents/skills", "$WORKSPACE/.agents/skills"]
+home_dirs = [".openhands"]
+
+[install]
+uvx = "openhands==1.16.0"
+python = "3.12"
+
+[launch]
+command = '''mkdir -p "$HOME/.openhands" && { printf '{"llm":{"model":"%s","api_key":"%s"' "${LLM_MODEL:-${BENCHFLOW_MODEL:-placeholder}}" "${LLM_API_KEY:-placeholder}"; if [ -n "$LLM_BASE_URL" ]; then printf ',"base_url":"%s"' "$LLM_BASE_URL"; fi; printf '}}'; } > "$HOME/.openhands/agent_settings.json" && exec /opt/benchflow/bin/openhands acp --always-approve --override-with-envs'''
+
+[headless]
+# The CLI's own headless mode: the same settings file, then the task file
+# as the first message, every event printed as JSON.
+command = '''export LLM_MODEL="${LLM_MODEL:-$BENCHFLOW_MODEL}"
+mkdir -p "$HOME/.openhands" && { printf '{"llm":{"model":"%s","api_key":"%s"' "${LLM_MODEL:-placeholder}" "${LLM_API_KEY:-placeholder}"; if [ -n "$LLM_BASE_URL" ]; then printf ',"base_url":"%s"' "$LLM_BASE_URL"; fi; printf '}}'; } > "$HOME/.openhands/agent_settings.json" || exit 1
+exec /opt/benchflow/bin/openhands --headless --json --always-approve --override-with-envs --file "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "openhands-json"
+
+[credentials]
+family = "env"
+env = ["LLM_API_KEY"]
+
+[model]
+# OpenHands reads LLM_MODEL: --env LLM_MODEL=<provider/model>, else the
+# run's model (`-m`), given to its settings at launch.
+select = "none"
+
+# Harbor's openhands options that the CLI reads from its environment with
+# --override-with-envs.
+[options.version]
+type = "string"
+description = "OpenHands CLI version to install."
+default = "1.16.0"
+install = "openhands"
+
+[options.max_iterations]
+type = "int"
+description = "Most agent iterations."
+min = 1
+env = "MAX_ITERATIONS"
+
+[options.temperature]
+type = "float"
+description = "LLM sampling temperature."
+min = 0.0
+max = 2.0
+env = "LLM_TEMPERATURE"
+
+[options.num_retries]
+type = "int"
+description = "LLM request retries."
+min = 0
+env = "LLM_NUM_RETRIES"
+
+[providers.openai]
+# LiteLLM's `openai/<model>` on LLM_BASE_URL (Chat Completions), which both
+# commands write into OpenHands' settings; LLM_MODEL carries the model on
+# both harnesses, so nothing is selected over ACP.
+base_url = "LLM_BASE_URL"
+key = "LLM_API_KEY"
+model = ""
+
+[providers.openai.env]
+LLM_MODEL = "openai/{model}"

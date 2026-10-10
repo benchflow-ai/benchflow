@@ -1,0 +1,130 @@
+/* compare, outcomes, and Pareto views (new in the Rust viewer): tables and controls
+   built from the theme tokens above, so both color themes apply. */
+
+#vcontrols {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: 10px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 18px;
+}
+#vcontrols .vfield { display: flex; align-items: center; gap: 6px; }
+#vcontrols .vlabel {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint);
+}
+#vcontrols select, #vcontrols input[type="search"] {
+  background: var(--card); border: 1px solid var(--border); color: var(--foreground);
+  font: inherit; font-size: 12px; border-radius: 9999px; padding: 3px 12px; max-width: 100%;
+}
+#vcontrols input[type="search"] { width: 200px; }
+#vcontrols input[type="search"]::placeholder { color: var(--faint); }
+#vcontrols button.vtoggle {
+  background: var(--card); border: 1px solid var(--border); color: var(--ink-secondary);
+  font-size: 12px; border-radius: 9999px; padding: 3px 11px; cursor: pointer;
+}
+#vcontrols button.vtoggle:hover { border-color: var(--rule-strong); color: var(--foreground); }
+#vcontrols button.vtoggle[aria-pressed="true"] { background: var(--foreground); color: var(--background); border-color: var(--foreground); }
+#vcontrols :focus-visible { outline: 2px solid var(--foreground); outline-offset: 1px; }
+#vcontrols details.vjobs { position: relative; }
+#vcontrols details.vjobs summary {
+  cursor: pointer; font-size: 12px; color: var(--ink-secondary); list-style: none;
+  border: 1px solid var(--border); border-radius: 9999px; padding: 3px 12px; background: var(--card);
+}
+#vcontrols details.vjobs summary::-webkit-details-marker { display: none; }
+#vcontrols details.vjobs .vjoblist {
+  position: absolute; z-index: 10; top: calc(100% + 6px); left: 0; min-width: 320px; max-width: min(720px, 90vw);
+  max-height: 60vh; overflow: auto; background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px 12px; box-shadow: 0 6px 24px rgba(10, 10, 10, 0.12);
+}
+.vjoblist label { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 12.5px; cursor: pointer; }
+.vjoblist label .vcount { color: var(--faint); font-family: var(--font-mono); font-size: 11px; margin-left: auto; padding-left: 12px; }
+.vjoblist .vjobname { overflow-wrap: anywhere; }
+#vcontrols .vstatus { font-size: 12px; color: var(--faint); margin-left: auto; }
+
+#vbody { padding-bottom: 90px; }
+.vsection { margin-bottom: 30px; }
+.vsection h2 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 4px; }
+.vsection .vnote { font-size: 12px; color: var(--muted-foreground); margin-bottom: 10px; max-width: 820px; }
+.vwarn {
+  background: var(--warn-bg); border: 1px solid var(--warn-line); border-left: 3px solid var(--warn-strip);
+  border-radius: var(--radius); padding: 8px 14px; font-size: 12.5px; margin-bottom: 14px; color: var(--ink-secondary);
+}
+.vempty { color: var(--faint); padding: 30px 0; text-align: center; font-size: 13px; }
+
+.vscroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+table.vtable { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.vtable th, .vtable td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.vtable tbody tr:last-child td { border-bottom: none; }
+.vtable th {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--faint); background: var(--secondary); white-space: nowrap;
+}
+.vtable th.vcol { text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--ink-secondary); white-space: normal; min-width: 110px; }
+.vtable th.vcol .varm { display: block; color: var(--faint); font-weight: 500; }
+.vtable td.num, .vtable th.num { text-align: right; white-space: nowrap; }
+.vtable td.vtask { font-weight: 500; overflow-wrap: anywhere; min-width: 160px; }
+.vtable td.vmono { font-family: var(--font-mono); font-size: 11.5px; }
+.vtable td.vmsg { color: var(--ink-secondary); overflow-wrap: anywhere; min-width: 240px; }
+.vtable td .vsub { display: block; color: var(--faint); font-size: 11px; }
+.vtable tr.vdisagree td.vtask { box-shadow: inset 3px 0 0 var(--warn-strip); }
+.vtable td.vpos { color: var(--success); font-weight: 600; }
+.vtable td.vneg { color: var(--destructive); font-weight: 600; }
+
+.vcell { display: flex; flex-wrap: wrap; gap: 4px; }
+a.vchip {
+  display: inline-flex; align-items: center; gap: 5px; text-decoration: none; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 9999px; padding: 1px 8px; color: var(--ink-secondary);
+}
+a.vchip:hover { border-color: var(--rule-strong); color: var(--foreground); }
+a.vchip:focus-visible { outline: 2px solid var(--foreground); outline-offset: 1px; }
+a.vchip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+a.vchip.passed { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok-ink); }
+a.vchip.passed::before { background: var(--success); }
+a.vchip.failed { background: var(--bad-bg); border-color: var(--bad-line); color: var(--bad-ink); }
+a.vchip.failed::before { background: var(--destructive); }
+a.vchip.errored { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-ink); }
+a.vchip.errored::before { background: var(--warning); }
+a.vchip.unscored { background: var(--secondary); color: var(--muted-foreground); }
+.vmissing { color: var(--faint); }
+
+.vbar { display: flex; height: 8px; min-width: 160px; border-radius: 9999px; overflow: hidden; background: var(--secondary); }
+.vbar span { display: block; height: 100%; }
+.vbar .passed { background: var(--success); }
+.vbar .failed { background: var(--destructive); }
+.vbar .unscored { background: var(--rule-strong); }
+.vbar .errored { background: var(--warning); }
+.vlegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted-foreground); margin: 0 0 8px; }
+.vlegend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+.vlegend .passed::before { background: var(--success); }
+.vlegend .failed::before { background: var(--destructive); }
+.vlegend .unscored::before { background: var(--rule-strong); }
+.vlegend .errored::before { background: var(--warning); }
+
+details.vtrials summary { cursor: pointer; color: var(--muted-foreground); font-size: 11.5px; white-space: nowrap; }
+details.vtrials[open] { min-width: 260px; }
+details.vtrials .vcell { margin-top: 6px; }
+
+@media (max-width: 720px) {
+  #vcontrols .vstatus { margin-left: 0; width: 100%; }
+  #vcontrols input[type="search"] { width: 100%; }
+}
+
+/* Pareto charts: recessive grid and axes, thin marks; the frontier is
+   filled and joined by a staircase, other jobs are hollow. */
+.vchartbox { padding: 6px 4px 2px; }
+svg.vchart { display: block; width: 100%; max-width: 860px; height: auto; font-family: var(--font-mono); }
+svg.vchart .vgrid { stroke: var(--border); stroke-width: 1; }
+svg.vchart .vaxis { stroke: var(--rule-strong); stroke-width: 1; }
+svg.vchart .vtick { fill: var(--faint); font-size: 10px; }
+svg.vchart .vaxistitle { fill: var(--muted-foreground); font-size: 10.5px; font-family: var(--font-sans, inherit); }
+svg.vchart .vfront { fill: none; stroke: var(--foreground); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.55; }
+svg.vchart .vci { stroke: var(--muted-foreground); stroke-width: 2; stroke-linecap: round; opacity: 0.45; }
+svg.vchart .vdot { fill: var(--card); stroke: var(--muted-foreground); stroke-width: 2; }
+svg.vchart .vpoint.on .vdot { fill: var(--foreground); stroke: var(--card); stroke-width: 2; }
+svg.vchart .vpoint.on .vci { stroke: var(--foreground); }
+svg.vchart .vlabel { fill: var(--ink-secondary); font-size: 11px; font-weight: 600; }
+svg.vchart .vhit { fill: transparent; cursor: default; }
+svg.vchart .vpoint:hover .vdot { stroke-width: 3; }
+.vpareto-legend .on::before { background: var(--foreground); border-radius: 50%; }
+.vpareto-legend .off::before { background: transparent; border: 2px solid var(--muted-foreground); border-radius: 50%; width: 6px; height: 6px; }
+.vpareto-legend .ci::before { background: var(--muted-foreground); width: 2px; height: 10px; border-radius: 1px; }
+.vtable td.vfrontier { font-weight: 600; color: var(--foreground); }

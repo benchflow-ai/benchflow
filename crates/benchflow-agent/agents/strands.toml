@@ -1,0 +1,36 @@
+# A Strands agent you write, run headless by BenchFlow's runner script
+# runners/run_strands.py. The factory contract is Harbor's `strands` agent's:
+# `create_agent(sandbox, model=None, **kwargs)` returns a strands.Agent.
+name = "strands"
+aliases = ["strands-agents"]
+description = "your Strands agent factory (Python), headless through BenchFlow's runner; needs --env STRANDS_FACTORY"
+
+[install]
+uv-venv = ["strands-agents[openai,anthropic,litellm,gemini]==1.59.0"]
+python = "3.12"
+verify = "/opt/benchflow/agents/strands/venv/bin/python -c \"import importlib.metadata as m, strands; print('strands-agents', m.version('strands-agents'))\""
+
+[headless]
+# The factory comes from the task: STRANDS_FACTORY=<file.py or module>:<function>
+# (required), STRANDS_FACTORY_PATH=<folder> (default: the working folder),
+# STRANDS_FACTORY_KWARGS and STRANDS_MODEL_KWARGS (JSON objects). It may import
+# what the venv has: strands-agents with its openai, anthropic, litellm and
+# gemini extras.
+command = '''exec /opt/benchflow/agents/strands/venv/bin/python -u "$HOME/.benchflow/runners/run_strands.py" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+
+[[headless.files]]
+path = ".benchflow/runners/bf_events.py"
+runner = "bf_events.py"
+
+[[headless.files]]
+path = ".benchflow/runners/run_strands.py"
+runner = "run_strands.py"
+
+[credentials]
+# The model's provider: anthropic/, openai/, google/, bedrock/, or any LiteLLM provider.
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"

@@ -1,0 +1,10 @@
+stl-mass/task.md
+  mode: blocks
+  title: Mass of a 3D-printed part from a tagged STL scan
+  instruction: 119 words; starts 'You need to calculate the mass of a 3D printed part. The input (`/root'
+  blocks: toml task
+  config: block (about, agent, authors, keywords, name, sandbox, title, verifier, version)
+  rubric: 2 criteria, 2 gates, 0 points; judges test
+  grading needs a model: no (2 criteria decided by tests, rules, the world, or replay)
+  worst-case grading time: 15m (scripts 15m; in sequence, before retries)
+  ok

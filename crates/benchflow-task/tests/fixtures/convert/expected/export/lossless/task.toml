@@ -1,0 +1,29 @@
+[task]
+name = "acme/lossless"
+version = "1.0.0"
+description = "Export keeps everything"
+keywords = ["export"]
+
+[[task.authors]]
+name = "Ada Lovelace"
+email = "ada@example.com"
+
+[metadata]
+difficulty = "easy"
+
+[verifier]
+timeout_sec = 90.0
+
+[agent]
+timeout_sec = 300.0  # five minutes
+user = "agent"
+
+[environment]
+memory_mb = 2048
+workdir = "/app"
+env = { MODE = "fast" }
+network_mode = "allowlist"
+allowed_hosts = ["pypi.org"]
+
+[solution.env]
+SEED = "1"

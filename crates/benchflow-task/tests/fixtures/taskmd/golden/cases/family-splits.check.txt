@@ -1,0 +1,13 @@
+family-splits/task.md
+  mode: blocks
+  title: acme/family-splits
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (family, name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [family.splits.iid] role must be one of 'train', 'validation', 'test' (task.md)
+  error: [family.splits] holdout needs a role: write [family.splits.holdout] with rule = "seed % 10 == 9" and role = "train", "validation", or "test" (task.md)
+  error: [family.splits.ood] needs a rule over the seed, such as "seed % 10 == 9" (task.md)
+  error: family/generate.py exited 0 but wrote no instance.json for seed 0: under family@1 the instance is malformed, and a runtime refuses every episode with generator-failed (family/generate.py)
+  FAILED

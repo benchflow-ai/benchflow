@@ -1,0 +1,14 @@
+rubric-new-good/task.md
+  mode: blocks
+  title: acme/rubric-new-good
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 3 criteria, 0 gates, 4 points; judges agent, llm
+  grading needs a model: yes: agent judges 1 criterion; llm judges 2 criteria
+  judge agent: model from the run, harness judge-loop@1*, samples 1*, per rubric*, timeout 20m*, no token budget (the timeout bounds it); * marks a default
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 24m (agent 1 x 20m + llm 2 x 2m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  warning: cite is "independent", but an llm judge cites only its evidence, and every item here is the solver's: add tests or a runtime-recorded item (request-record, screenshots, video, a world stream), or judge it with an agent that can run the work (verifier/rubric.json criteria[1])
+  warning: the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = "rl" and delivery grade require one (task.md)
+  ok

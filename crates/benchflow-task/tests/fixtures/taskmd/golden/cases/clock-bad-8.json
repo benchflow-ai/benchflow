@@ -1,0 +1,51 @@
+{
+  "path": "clock-bad-8/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-bad-8\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"30m\"\nnetwork = \"none\"\n\n[sandbox]\ntimezone = \"America/New_York\"\nclock = { start = \"2026-03-14T09:00:00-04:00\", enforce = \"preload\" }\n\n[verifier.sandbox]\nclock = { start = \"2026-03-14T09:00:00-04:00\", enforce = \"vm\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-bad-8",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "30m",
+      "network": "none"
+    },
+    "sandbox": {
+      "timezone": "America/New_York",
+      "clock": {
+        "start": "2026-03-14T09:00:00-04:00",
+        "enforce": "preload"
+      }
+    },
+    "verifier": {
+      "sandbox": {
+        "clock": {
+          "start": "2026-03-14T09:00:00-04:00",
+          "enforce": "vm"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier.sandbox] takes no clock: the clock covers the agent's and the oracle's phases and the task's services, never grading. The verifier receives TASKMD_CLOCK_START, TASKMD_CLOCK_HANDOFF, and TASKMD_TIMEZONE instead",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-bad-8",
+  "ok": false
+}

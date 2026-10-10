@@ -1,0 +1,10 @@
+rubric-not-json/task.md
+  mode: blocks
+  title: acme/rubric-not-json
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: not valid JSON: Expecting value: line 2 column 16 (char 32) (rubric.json)
+  FAILED

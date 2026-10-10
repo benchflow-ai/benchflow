@@ -1,0 +1,11 @@
+rubric-neither-gate-nor-points/task.md
+  mode: blocks
+  title: acme/rubric-neither-gate-nor-points
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 1 criteria, 0 gates, 0 points; judges test
+  grading needs a model: no (1 criterion decided by tests, rules, the world, or replay)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: set gate: true or give points (verifier/rubric.json criteria[0])
+  FAILED

@@ -1,0 +1,76 @@
+# OpenClaw, run headless with `openclaw agent --local --json`, as Harbor's
+# `openclaw` agent runs it; its session transcript, which OpenClaw 2026.9
+# keeps in SQLite, is followed while it works.
+name = "openclaw"
+description = "OpenClaw, headless with openclaw agent --local --json"
+# OpenClaw reads skills from ~/.openclaw/skills, where Harbor copies them.
+skill_paths = ["$HOME/.openclaw/skills"]
+
+[install]
+# OpenClaw 2026.9.3 and later need Node 24.16+, newer than BenchFlow's
+# shared Node.js 22, so it gets a pinned Node 24 of its own in its home,
+# and a launcher that runs it there.
+installer = '''
+set -eu
+case "$(uname -m)" in x86_64|amd64) a=x64 ;; aarch64|arm64) a=arm64 ;; *) echo "BenchFlow: Node.js has no build for $(uname -m)" >&2; exit 1 ;; esac
+rm -rf node && mkdir -p node bin
+curl -fsSL "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-$a.tar.gz" | tar -xz -C node --strip-components=1 --no-same-owner
+PATH="$HOME/node/bin:$PATH" npm install -g --prefix "$HOME/npm" --no-fund --no-audit openclaw@2026.9.9
+rm -rf .npm
+printf '#!/bin/sh\nPATH="%s/node/bin:$PATH" exec %s/node/bin/node %s/npm/lib/node_modules/openclaw/openclaw.mjs "$@"\n' "$HOME" "$HOME" "$HOME" > bin/openclaw
+chmod +x bin/openclaw
+'''
+links = ["bin/openclaw"]
+verify = "/opt/benchflow/bin/openclaw --version"
+
+[headless]
+# `setup --baseline` creates OpenClaw's folders without its interactive
+# wizard; the config (Harbor's headless one) then replaces its own. The
+# model is `anthropic/`, `openai/` or `nvidia/<model>`, keyed by
+# `<PROVIDER>_API_KEY`.
+command = '''mkdir -p "$HOME/.benchflow"
+if ! /opt/benchflow/bin/openclaw setup --baseline --workspace . < /dev/null > "$HOME/.benchflow/openclaw-setup.txt" 2>&1; then
+  cat "$HOME/.benchflow/openclaw-setup.txt" >&2
+  echo 'BenchFlow: openclaw setup --baseline failed' >&2
+  exit 1
+fi
+if [ -n "$BENCHFLOW_OPENCLAW_CONFIG" ]; then printf '%s' "$BENCHFLOW_OPENCLAW_CONFIG" > "$HOME/.openclaw/openclaw.json"; else cp "$HOME/.benchflow/openclaw.json" "$HOME/.openclaw/openclaw.json"; fi
+exec /opt/benchflow/agents/openclaw/node/bin/node "$HOME/.benchflow/follow-sqlite.js" \
+  "${OPENCLAW_STATE_DIR:-$HOME/.openclaw}/agents/main/agent/openclaw-agent.sqlite" agent:main:main -- \
+  /opt/benchflow/bin/openclaw agent --local --json --agent main ${BENCHFLOW_EFFORT:+--thinking "$BENCHFLOW_EFFORT"} \
+  --model "$BENCHFLOW_MODEL" --message "$(cat "$BENCHFLOW_INSTRUCTION_FILE")"'''
+output = "openclaw-json"
+
+# Harbor's headless config: the workspace is the task folder, the gateway
+# is local, and the messaging tool (no channel in --local runs) is denied.
+[[headless.files]]
+path = ".benchflow/openclaw.json"
+contents = '''
+{
+  "agents": {"defaults": {"workspace": "."}},
+  "gateway": {"mode": "local"},
+  "tools": {"deny": ["message"]}
+}
+'''
+
+# OpenClaw 2026.9.9 was killed for lack of memory (exit 137) about 25 s into
+# a run at Daytona's default sandbox size, and passed with 4 GB (T7.1), so a
+# task that asks for less gets 4 GB.
+[resources]
+min_memory = "4 GB"
+
+[credentials]
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# A custom OpenClaw provider (openai-completions) on the forwarder, added to
+# the headless config above, which the command writes in its place.
+key = "OPENAI_API_KEY"
+model = "benchflow/{model}"
+
+[providers.openai.env]
+BENCHFLOW_OPENCLAW_CONFIG = '{"agents": {"defaults": {"workspace": "."}}, "gateway": {"mode": "local"}, "tools": {"deny": ["message"]}, "models": {"providers": {"benchflow": {"baseUrl": "{base_url}", "apiKey": "{key}", "api": "openai-completions", "models": [{"id": "{model}", "name": "{model}"}]}}}}'

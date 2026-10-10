@@ -1,0 +1,25 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "puck-at-target",
+      "gate": true,
+      "text": "The puck's center reaches within 5 cm of the target before the step budget runs out.",
+      "stated": "Push the puck onto the target",
+      "judge": "world",
+      "check": "distance(puck, goal) <= 0.05 m at the success step"
+    },
+    {
+      "id": "step-count",
+      "points": 1,
+      "text": "The episode ends in 150 steps or fewer.",
+      "stated": "finishing in 150 or fewer earns extra credit",
+      "judge": "test",
+      "check": "step_count"
+    }
+  ]
+}

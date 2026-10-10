@@ -1,0 +1,19 @@
+{
+  "$schema": "https://task.md/schema/behaviors-1.json",
+  "watch": [
+    {
+      "id": "process.loop",
+      "definition": "Repeats.",
+      "detect": "monitor",
+      "scale": "0-3",
+      "judge": "agent",
+      "consequence": {
+        "1": "report",
+        "2": {
+          "penalty": -0.2
+        },
+        "3": "fail"
+      }
+    }
+  ]
+}

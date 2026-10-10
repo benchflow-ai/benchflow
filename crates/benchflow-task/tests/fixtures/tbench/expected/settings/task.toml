@@ -1,0 +1,29 @@
+schema_version = "1.4"
+artifacts = []
+
+[metadata]
+author_name = "unknown"
+author_email = "unknown"
+difficulty = "medium"
+category = "software_engineering"
+tags = [ "web",]
+estimated_duration_sec = 120.0
+
+[verifier]
+timeout_sec = 60.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 600.0
+os = "linux"
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

@@ -1,0 +1,49 @@
+# Alibaba's Qwen Code in its ACP mode, the npm package the public ACP
+# registry lists for qwen-code 0.25.0, or headless with `qwen --prompt`
+# (Harbor's `qwen-coder`) from the same install.
+name = "qwen-code"
+aliases = ["qwen-coder", "qwen"]
+description = "Qwen Code (Alibaba) via ACP, or headless with qwen --prompt; any OpenAI-compatible endpoint"
+acp_registry = "qwen-code"
+skill_paths = ["$HOME/.qwen/skills"]
+home_dirs = [".qwen"]
+
+[install]
+npm = "@qwen-code/qwen-code@0.25.0"
+bin = "qwen"
+
+[launch]
+args = ["--acp", "--experimental-skills"]
+
+[headless]
+# Harbor's `qwen --yolo --auth-type openai --chat-recording --prompt`: the
+# key and endpoint come from OPENAI_API_KEY and OPENAI_BASE_URL (OpenAI's
+# when unset, as Harbor defaults it; Qwen's own default is DashScope). Its
+# chat recording is followed for the steps; the console is its answer.
+command = '''export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+exec sh "$HOME/.benchflow/follow.sh" "$HOME/.qwen/projects/*/chats/*.jsonl" \
+  /opt/benchflow/bin/qwen --yolo --auth-type openai --chat-recording ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} \
+  --prompt "$(cat "$BENCHFLOW_INSTRUCTION_FILE")"'''
+output = "qwen-session"
+
+[credentials]
+# Qwen Code speaks the OpenAI API: OPENAI_API_KEY with OPENAI_BASE_URL and
+# OPENAI_MODEL (Harbor runs it with --auth-type openai).
+family = "env"
+env = ["OPENAI_API_KEY"]
+
+[model]
+select = "auto"
+# Harbor strips one provider prefix: the endpoint decides the provider.
+strip_prefixes = ["openai/", "qwen/", "dashscope/"]
+
+[providers.openai]
+# Qwen Code takes any OpenAI-compatible endpoint (Chat Completions) from
+# OPENAI_BASE_URL and OPENAI_API_KEY, and its model from OPENAI_MODEL on
+# both harnesses, so nothing is selected over ACP.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = ""
+
+[providers.openai.env]
+OPENAI_MODEL = "{model}"

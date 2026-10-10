@@ -1,0 +1,41 @@
+{
+  "path": "clock-zone-mismatch/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/clock-zone-mismatch\"\nversion = \"1.0.0\"\n[sandbox]\ntimezone = \"UTC\"\n\n[world]\nkind = \"virtual\"\n\n[world.browser]\ntimezone = \"Europe/Paris\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/clock-zone-mismatch",
+    "version": "1.0.0",
+    "sandbox": {
+      "timezone": "UTC"
+    },
+    "world": {
+      "kind": "virtual",
+      "browser": {
+        "timezone": "Europe/Paris"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "[sandbox] timezone 'UTC' and [world.browser] timezone 'Europe/Paris' differ; the agent should see one zone",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/clock-zone-mismatch",
+  "ok": true
+}

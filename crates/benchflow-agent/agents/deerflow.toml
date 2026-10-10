@@ -1,0 +1,45 @@
+# ByteDance's DeerFlow (a LangGraph super-agent harness), run headless by
+# BenchFlow's runner script runners/run_deerflow.py with the config of
+# Harbor's `deerflow` agent: one model, DeerFlow's standard tools, its local
+# sandbox with host bash and the task's folder mounted at its own path.
+name = "deerflow"
+aliases = ["deer-flow"]
+description = "ByteDance DeerFlow harness (Python), headless through BenchFlow's runner"
+
+[install]
+# The harness package of the commit Harbor validated (deerflow-harness 2.1.0).
+uv-venv = ["deerflow-harness @ https://github.com/bytedance/deer-flow/archive/7a6c4a994a86583d2a3c056ee9d0f157d4f030c2.tar.gz#subdirectory=backend/packages/harness"]
+python = "3.12"
+verify = "/opt/benchflow/agents/deerflow/venv/bin/python -c \"import importlib.metadata as m, deerflow.client; print('deerflow-harness', m.version('deerflow-harness'))\""
+timeout = 1800
+
+[headless]
+# Models: openai/, anthropic/, deepseek/, google/ or gemini/, openrouter/;
+# others through an OpenAI-compatible client. Options: DEERFLOW_CONFIG (a
+# DeerFlow YAML config in the sandbox), DEERFLOW_SUBAGENT, DEERFLOW_THINKING,
+# DEERFLOW_PLAN_MODE, DEERFLOW_SUMMARIZE, DEERFLOW_NO_WEB,
+# DEERFLOW_RECURSION_LIMIT. Search keys (TAVILY_API_KEY, ...) pass with --env.
+command = '''exec /opt/benchflow/agents/deerflow/venv/bin/python -u "$HOME/.benchflow/runners/run_deerflow.py" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+
+[[headless.files]]
+path = ".benchflow/runners/bf_events.py"
+runner = "bf_events.py"
+
+[[headless.files]]
+path = ".benchflow/runners/run_deerflow.py"
+runner = "run_deerflow.py"
+
+[credentials]
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# The runner's `openai/` models: langchain_openai's ChatOpenAI (Chat
+# Completions) on OPENAI_BASE_URL.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"

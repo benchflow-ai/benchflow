@@ -1,0 +1,1 @@
+{"results": {"tests": [{"name": {"nested": "name"}, "status": "<style>bad</style>", "duration": Infinity}, "not-an-object", {"name": null, "status": "Passed", "duration": true}]}}

@@ -1,0 +1,4 @@
+{
+  "instruction": "How many S3 buckets were created more than a day ago?",
+  "expected_answer": "You have {{c480b808-BucketCount}} S3 buckets that were created more than a day ago."
+}

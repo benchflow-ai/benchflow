@@ -1,0 +1,2 @@
+{"type": "agent_timeout", "reason": "x", "timeout_sec": 1.0, "pending_tool_call_ids": "not-a-list", "terminal_trajectory_complete": false}
+{"type": "agent_timeout", "timeout_sec": "12", "terminal_trajectory_complete": "yes"}

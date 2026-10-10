@@ -1,0 +1,10 @@
+outputs-not-list/task.md
+  mode: blocks
+  title: acme/outputs-not-list
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, sandbox, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [sandbox] outputs is a list of paths or { path, save_as, max_bytes } tables (task.md)
+  FAILED

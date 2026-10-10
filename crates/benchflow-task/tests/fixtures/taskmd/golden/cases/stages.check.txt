@@ -1,0 +1,20 @@
+stages/task.md
+  mode: blocks
+  title: acme/stages
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: stage a, stage e, toml task
+  config: block (name, stages, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [stages.e.verifier] feedback = "rationales" is cut: a trainable seat may be shown its verdicts, levels, and scores, never a judge's rationales. Write feedback = "verdicts" or "none" (task.md)
+  error: [stages.d] unlock must be on_submit, on_request, at_start, after:<stage>, or at_turn:<n> (task.md)
+  error: [stages.e.verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so an imported entry needs them added (task.md)
+  error: only one stage can unlock at_start: its prompt is the instruction (task.md)
+  error: stage a unlocks at_start, so its prompt is the instruction; remove its ```stage a block (task.md)
+  error: [stages.c] needs unlock, when its prompt is revealed: on_submit, on_request, at_start, after:<stage>, or at_turn:<n> (task.md)
+  error: [stages.c] has no ```stage c block (task.md)
+  error: [stages.d] has no ```stage d block (task.md)
+  error: [stages.e.agent] timeout must be a duration such as "90s", "15m", or "1h30m" (task.md)
+  error: [stages.e] ready needs run, the command that must pass (task.md)
+  error: [stages.e] ready interval must be a duration such as "5s" or "1m" (task.md)
+  FAILED

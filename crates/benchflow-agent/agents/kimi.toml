@@ -1,0 +1,86 @@
+# Moonshot AI's Kimi CLI in its ACP mode (`kimi acp`), installed from the
+# release archive the public ACP registry lists for kimi 1.52.0, or headless
+# with `kimi --print` from the same install.
+name = "kimi"
+aliases = ["kimi-cli"]
+description = "Kimi CLI (Moonshot AI) via ACP, or headless with kimi --print"
+acp_registry = "kimi"
+skill_paths = ["$HOME/.kimi/skills"]
+home_dirs = [".kimi"]
+
+[install.binary.linux-x86_64]
+archive = "https://github.com/MoonshotAI/kimi-cli/releases/download/1.52.0/kimi-1.52.0-x86_64-unknown-linux-gnu.tar.gz"
+cmd = "./kimi"
+sha256 = "a676204f7804ed5dae87652a9d66f578e0718d5026c9cb1bfa32b9a5eace4208"
+
+[install.binary.linux-aarch64]
+archive = "https://github.com/MoonshotAI/kimi-cli/releases/download/1.52.0/kimi-1.52.0-aarch64-unknown-linux-gnu.tar.gz"
+cmd = "./kimi"
+sha256 = "9e06eea96273600aed485b1f0bedda95b7084db4f22cf28614fe20138933507a"
+
+[launch]
+args = ["acp"]
+
+[headless]
+# kimi-cli's print mode, whose stream-json is Kimi Code's (Harbor drives the
+# same CLI over its wire protocol instead). A model id (`kimi/` or
+# `moonshot/` dropped) becomes an inline config of one Moonshot model; the
+# key comes from KIMI_API_KEY, which kimi reads over the config. After kimi
+# exits, its session journal's usage records are printed for the parser.
+command = '''m="$BENCHFLOW_MODEL"
+case "$m" in kimi/*|moonshot/*) m="${m#*/}" ;; esac
+[ -n "$KIMI_API_KEY" ] || export KIMI_API_KEY="$MOONSHOT_API_KEY"
+export KIMI_SHARE_DIR="$HOME/.kimi"
+if [ -n "$BENCHFLOW_KIMI_CONFIG" ]; then { mkdir -p "$HOME/.kimi" && printf '%s' "$BENCHFLOW_KIMI_CONFIG" > "$HOME/.kimi/config.toml"; } || { echo "BenchFlow: cannot write $HOME/.kimi/config.toml" >&2; exit 1; }; fi
+if [ -n "$m" ]; then
+  set -- --config "$(printf '{"default_model":"benchflow","default_yolo":true,"providers":{"benchflow":{"type":"kimi","base_url":"%s","api_key":""}},"models":{"benchflow":{"provider":"benchflow","model":"%s","max_context_size":262144}}}' "${KIMI_BASE_URL:-https://api.moonshot.ai/v1}" "$m")"
+else
+  set --
+fi
+/opt/benchflow/bin/kimi --print --yolo --output-format stream-json "$@" --prompt "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" < /dev/null
+s=$?
+for f in "$KIMI_SHARE_DIR"/sessions/*/*/wire.jsonl; do
+  [ -f "$f" ] && grep '"token_usage"' "$f" | sed -e 's/^/{"@bf":"wire","item":/' -e 's/$/}/'
+done
+exit "$s"'''
+output = "kimi-stream-json"
+# kimi's console wraps its error messages at the terminal's width.
+env = { COLUMNS = "4096" }
+
+[credentials]
+family = "env"
+env = ["KIMI_API_KEY", "MOONSHOT_API_KEY"]
+account = "a Moonshot AI (Kimi) API key from https://platform.moonshot.ai, set as KIMI_API_KEY; Kimi's own `kimi login` sign-in cannot be copied into a sandbox"
+
+[model]
+select = "auto"
+
+[providers.openai]
+# kimi's `openai_legacy` provider type (Chat Completions) as the default
+# model in config.toml, which the headless command writes (kimi reads it
+# from ~/.kimi); kimi lets OPENAI_API_KEY and OPENAI_BASE_URL override that
+# type's key and URL, so they carry the placeholder and the forwarder too.
+# Thinking is on: off, kimi sends `reasoning_effort: null`, which the Vercel
+# AI Gateway refuses (HTTP 400). kimi's ACP server starts no session
+# without a Kimi Code sign-in, whatever its config says, so on a provider
+# only the headless route works.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = ""
+
+[providers.openai.env]
+BENCHFLOW_KIMI_CONFIG = '''default_model = "benchflow"
+default_yolo = true
+default_thinking = true
+
+[providers.benchflow]
+type = "openai_legacy"
+base_url = "{base_url}"
+api_key = "{key}"
+
+[models.benchflow]
+provider = "benchflow"
+model = "{model}"
+max_context_size = 131072
+capabilities = ["thinking"]
+'''

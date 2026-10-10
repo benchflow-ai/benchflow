@@ -1,0 +1,11 @@
+empty-instruction/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 0 words; starts ''
+  canary: canary 1234 (stripped from the agent view)
+  blocks: toml task
+  config: block (name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: the instruction is empty: task.md must start with the task itself
+  FAILED

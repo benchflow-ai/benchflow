@@ -1,0 +1,25 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "3.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "runs",
+      "gate": true,
+      "text": "answer.sql holds one query that runs against this instance's hidden database without errors, within 10 seconds.",
+      "stated": "Save the query to `/work/answer.sql`. It will be run against another database with the same tables",
+      "judge": "test",
+      "check": "test_runs"
+    },
+    {
+      "id": "rows",
+      "gate": true,
+      "text": "The query's rows match the reference rows exactly, in order: the right customers, the right metric values, highest first, ties broken by the lower customer id.",
+      "stated": "Return two columns, `customer_id` and `{{metric}}`, highest first, breaking ties by customer id, lowest first.",
+      "judge": "test",
+      "check": "test_rows"
+    }
+  ]
+}

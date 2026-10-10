@@ -1,0 +1,49 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "simulator-run",
+      "gate": true,
+      "text": "The protocol runs to completion on the liquid-handler simulator with no errors.",
+      "stated": "Write and run a protocol for the liquid handler",
+      "judge": "test",
+      "check": "test_simulator_run"
+    },
+    {
+      "id": "volumes",
+      "gate": true,
+      "text": "Every well in A1 to A8 receives its intended volume within ±5%.",
+      "stated": "200 µL final volume in each",
+      "judge": "test",
+      "check": "test_volumes"
+    },
+    {
+      "id": "tip-changes",
+      "points": 3,
+      "text": "Uses a fresh tip for every transfer that could carry dye between concentrations.",
+      "implicit": "Standard liquid-handling practice: dye carried from one concentration into the next invalidates the series.",
+      "judge": "test",
+      "check": "test_tip_changes"
+    },
+    {
+      "id": "report",
+      "points": 2,
+      "text": "report.csv includes the plate map and the 630 nm reading for each well.",
+      "stated": "save the readings with your plate map to `/work/report.csv`",
+      "judge": "test",
+      "check": "test_report"
+    },
+    {
+      "id": "dilution-curve",
+      "points": 2,
+      "text": "Absorbance falls by roughly half from each well to the next.",
+      "stated": "makes a 1:2 serial dilution of the dye stock across row A",
+      "judge": "test",
+      "check": "test_dilution_curve"
+    }
+  ]
+}

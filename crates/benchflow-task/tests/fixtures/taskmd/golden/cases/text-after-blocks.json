@@ -1,0 +1,38 @@
+{
+  "path": "text-after-blocks/task.md",
+  "mode": "blocks",
+  "instruction": "Fix it.",
+  "blocks": [
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "A note.",
+      "line": 3
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x\"",
+      "line": 8
+    }
+  ],
+  "config": {
+    "name": "acme/x"
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "text after the first task.md block: move it into the instruction or a notes block",
+      "where": "task.md:6"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix it.",
+  "title": "acme/x",
+  "ok": false
+}

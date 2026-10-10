@@ -1,0 +1,11 @@
+[environment]
+memory = 4096
+network_mode = "offline"
+cpus = "two"
+
+[agent]
+timeout_sec = "soon"
+user = "agent"
+
+[verifier]
+timeout_sec = 0.5

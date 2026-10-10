@@ -1,0 +1,146 @@
+{
+  "task_name": "hello",
+  "rollout_name": "hello__5af89adc",
+  "rewards": {
+    "partial": 1.0,
+    "reward": 1.0,
+    "strict": 1.0
+  },
+  "agent": "claude",
+  "agent_name": "claude",
+  "model": "vercel/deepseek/deepseek-v4-flash-0731",
+  "skill_mode": "no-skill",
+  "n_tool_calls": 2,
+  "n_prompts": 1,
+  "agent_result": {
+    "n_tool_calls": 2,
+    "n_prompts": 1,
+    "n_input_tokens": 17036,
+    "n_output_tokens": 491,
+    "n_cache_read_tokens": 33664,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 51191,
+    "cost_usd": null,
+    "usage_source": "acp"
+  },
+  "trajectory_summary": {
+    "steps": 7,
+    "tool_call_steps": 2,
+    "user_message_steps": 1,
+    "agent_message_steps": 2,
+    "agent_thought_steps": 2,
+    "other_steps": 0,
+    "event_type_counts": {
+      "user_message": 1,
+      "agent_thought": 2,
+      "tool_call": 2,
+      "agent_message": 2
+    },
+    "tool_call_status_counts": {
+      "completed": 2
+    },
+    "partial_trajectory": false,
+    "trajectory_source": "acp"
+  },
+  "error": null,
+  "error_category": null,
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "started_at": "2026-10-10 05:37:38.402901",
+  "finished_at": "2026-10-10 05:38:08.423555",
+  "timing": {
+    "environment_setup": 5.3898252079999995,
+    "agent_execution": 21.050739458,
+    "verifier": 3.477563917,
+    "total": 30.020422583,
+    "image": 1.815824208
+  },
+  "task_digest": "sha256:76fe5d4c665fabb1e5cecd7e1fa3bd38a3627e0cbfd978f5ee4301533342efeb",
+  "sandbox_id": "85b753bb-5235-4ed4-b89d-74441c23c99f",
+  "task_id": "fixtures/hello",
+  "status": "scored",
+  "passed": true,
+  "timed_out": false,
+  "problem": null,
+  "defenses": {
+    "agent_user": {
+      "name": "agent_user",
+      "state": "enforced",
+      "note": "agent, uid 1001"
+    },
+    "clean_verifier_logs": {
+      "name": "clean_verifier_logs",
+      "state": "enforced"
+    },
+    "hidden_verifier": {
+      "name": "hidden_verifier",
+      "state": "enforced",
+      "note": "the verifier and oracle are uploaded only when needed"
+    },
+    "kill_before_grading": {
+      "name": "kill_before_grading",
+      "state": "enforced",
+      "note": "0 processes"
+    },
+    "locked_system_path": {
+      "name": "locked_system_path",
+      "state": "enforced",
+      "note": "the folders on PATH are root's alone"
+    },
+    "planted_file_cleanup": {
+      "name": "planted_file_cleanup",
+      "state": "enforced"
+    },
+    "process_limit": {
+      "name": "process_limit",
+      "state": "not-supported",
+      "note": "the daytona backend cannot cap the number of processes (BenchFlow asks for 4096)"
+    },
+    "special_file_custody": {
+      "name": "special_file_custody",
+      "state": "enforced"
+    },
+    "trusted_path": {
+      "name": "trusted_path",
+      "state": "enforced",
+      "note": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+    }
+  },
+  "login": "AI_GATEWAY_API_KEY in ~/.config/benchflow/vercel-ai-gateway.env, held by BenchFlow's forwarder for vercel's Anthropic-compatible endpoint",
+  "verifier_exit_code": 0,
+  "rubric": {
+    "$schema": "https://task.md/schema/review-1.json",
+    "record": "verifier",
+    "rubric_version": "1.0.0",
+    "summary": {
+      "pass": 1
+    },
+    "verdicts": [
+      {
+        "id": "hello",
+        "verdict": "pass",
+        "score": null,
+        "check": "test_hello",
+        "gate": true,
+        "judge": {
+          "role": "test",
+          "tool": "test.sh",
+          "rubric_version": "1.0.0"
+        },
+        "rationale": "all 1 matching tests passed"
+      }
+    ],
+    "x-benchflow": {
+      "raw": 1.0,
+      "earned": 0.0,
+      "maximum": 0.0,
+      "failed_gates": [],
+      "partial": 1.0,
+      "strict": true
+    }
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.9.0-dev.0"
+  }
+}

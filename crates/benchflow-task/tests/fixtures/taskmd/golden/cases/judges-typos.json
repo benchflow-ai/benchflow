@@ -1,0 +1,96 @@
+{
+  "path": "judges-typos/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/judges-typos\"\nversion = \"1.0.0\"\n[verifier.judges.agent]\nmodel = \"m\"\nbudgett = { tokens = \"2M\" }\ntimout = \"10m\"\nreasoning = false\n\n[verifier.judges.llm]\nharness = \"claude-code@2\"\nbudget = { tool_calls = 5 }\nmin_samples = 3\nsamples = 2",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/judges-typos",
+    "version": "1.0.0",
+    "verifier": {
+      "judges": {
+        "agent": {
+          "model": "m",
+          "budgett": {
+            "tokens": "2M"
+          },
+          "timout": "10m",
+          "reasoning": false
+        },
+        "llm": {
+          "harness": "claude-code@2",
+          "budget": {
+            "tool_calls": 5
+          },
+          "min_samples": 3,
+          "samples": 2
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier.judges.llm] harness is for the agent role only: an llm judge is one model call with the evidence inline",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.llm] min_samples is at most samples",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.llm] budget tool_calls is for the agent role only: an llm judge makes one call and uses no tools",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'budgett' in [verifier.judges.agent]; did you mean budget? it holds aggregate, brief, budget, effort, harness, min_samples, model, per, resources, samples, services, timeout, views, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'timout' in [verifier.judges.agent]; did you mean timeout? it holds aggregate, brief, budget, effort, harness, min_samples, model, per, resources, samples, services, timeout, views, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[verifier.judges.agent] reasoning is gone: the evidence items trajectory and trajectory:reasoning say, criterion by criterion, whether a judge reads the solver's reasoning",
+      "where": "task.md"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/judges-typos",
+  "ok": false
+}

@@ -1,0 +1,102 @@
+{
+  "path": "evidence-outputs/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/evidence-outputs\"\nversion = \"1.0.0\"\n[sandbox]\nworkdir = \"/app\"\noutputs = [{ path = \"/app/out\" }, { path = \"/app/fit.json\", max_bytes = \"10 MB\" }]\n\n[world]\nkind = \"virtual\"\n\n[world.record]\nstreams = [\"camera\"]",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/evidence-outputs",
+    "version": "1.0.0",
+    "sandbox": {
+      "workdir": "/app",
+      "outputs": [
+        {
+          "path": "/app/out"
+        },
+        {
+          "path": "/app/fit.json",
+          "max_bytes": "10 MB"
+        }
+      ]
+    },
+    "world": {
+      "kind": "virtual",
+      "record": {
+        "streams": [
+          "camera"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "agent",
+        "evidence": [
+          "out/report.md",
+          "diff:/app/out/fit.py",
+          "trajectory",
+          "trajectory:reasoning",
+          "tests",
+          "report.md",
+          "trajectory:steps",
+          "diff:",
+          "",
+          "screenshots#3",
+          "camera",
+          "camera:front"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "evidence report.md reads /app/report.md, which no [sandbox] outputs entry saves: add { path = \"/app/report.md\" } to outputs, or a folder that holds it",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "evidence trajectory:steps: trajectory takes no argument (trajectory:reasoning is the one exception)",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "diff: names a file item, such as diff:src/app.py",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "an evidence item is a non-empty string",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "evidence camera:front: camera takes no argument (trajectory:reasoning is the one exception)",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/evidence-outputs",
+  "ok": false
+}

@@ -1,0 +1,9 @@
+nested-fence-instruction/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 11 words; starts 'Write a rubric block, like this:'
+  blocks: toml task
+  config: block (name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

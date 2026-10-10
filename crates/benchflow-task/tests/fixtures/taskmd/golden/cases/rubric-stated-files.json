@@ -1,0 +1,115 @@
+{
+  "path": "rubric-stated-files/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`, as `spec.md` describes.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-stated-files\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-stated-files",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "f",
+        "gate": true,
+        "judge": "test",
+        "check": "t",
+        "text": "F.",
+        "stated": [
+          {
+            "file": "sandbox/spec.md",
+            "quote": "The API returns JSON"
+          },
+          {
+            "file": "sandbox/spec.md",
+            "quote": "not in the file"
+          },
+          {
+            "file": "verifier/answers.md",
+            "quote": "x"
+          },
+          {
+            "file": "sandbox/missing.md",
+            "quote": "x"
+          },
+          {
+            "file": "sandbox/blob.bin",
+            "quote": "x"
+          },
+          {
+            "file": "sandbox/other.md",
+            "quote": "Other"
+          },
+          {
+            "file": "sandbox/spec.md"
+          },
+          {
+            "quote": "x"
+          }
+        ]
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "stated quote not found in sandbox/spec.md: 'not in the file'",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "stated file verifier/answers.md is in a folder the agent never sees",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent is never told about missing.md; name the file in the instruction",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "stated file sandbox/missing.md not found in the package",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent is never told about blob.bin; name the file in the instruction",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "cannot check a quote inside sandbox/blob.bin, which is not text; a reviewer must",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent is never told about other.md; name the file in the instruction",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "a stated file entry needs a file path and a quote",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "a stated file entry needs a file path and a quote",
+      "where": "verifier/rubric.json criteria[0]"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`, as `spec.md` describes.",
+  "title": "acme/rubric-stated-files",
+  "ok": false
+}

@@ -1,0 +1,36 @@
+schema_version = "1.4"
+
+[task]
+name = "acme/full"
+version = "2.1.0"
+description = "A task with the common keys of every table"
+
+[metadata]
+difficulty = "medium"
+category = "data"
+
+[agent]
+timeout_sec = 900.0
+user = "agent"
+
+[verifier]
+timeout_sec = 120.0
+env = { API_URL = "http://localhost:8000" }
+
+[environment]
+build_timeout_sec = 300.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+network_mode = "allowlist"
+allowed_hosts = ["pypi.org", "*.github.com"]
+workdir = "/workspace"
+env = { LANG = "C.UTF-8" }
+
+[environment.healthcheck]
+command = "test -f /workspace/ready"
+interval_sec = 2.0
+retries = 5
+
+[solution]
+env = { HINT = "1" }

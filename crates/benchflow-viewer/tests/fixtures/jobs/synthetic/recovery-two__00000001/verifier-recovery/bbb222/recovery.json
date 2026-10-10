@@ -1,0 +1,1 @@
+{"attempt": "verifier-recovery/bbb222", "status": "failed", "original_error": "[solver-preserved] verifier_wedge: gone", "evidence": "workspace-only", "solver_replayed": false, "timing": {"verifier": 12.5}, "rewards": null, "error": "verifier crashed: boom", "admission": "admitted", "cleanup_error": ""}

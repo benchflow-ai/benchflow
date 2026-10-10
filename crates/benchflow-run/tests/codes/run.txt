@@ -1,0 +1,170 @@
+R000 · your setup's problem · running the agent · an interactive session the user chose not to grade
+  not graded, as asked
+  next: run it again without --no-grade to grade it
+
+R001 · your setup's problem · running the agent · Ctrl-C while the agent works
+  stopped before it finished
+  next: rerun the same command to resume the job
+
+R101 · the task's problem · preparing the image · the task's Dockerfile fails to build
+  the task's Dockerfile failed to build (RUN pip install numpy==9.9). This is a problem in the task: fix the Dockerfile
+  next: fix the failing step in the task's Dockerfile (or the image it names); image.log in the trial folder has the build output
+  detail: ERROR: No matching distribution found for numpy==9.9
+
+R101 · the task's problem · preparing the image · the task's Dockerfile fails under a model agent's install layers
+  the task's Dockerfile failed to build (RUN pip install numpy==9.9). This is a problem in the task: fix the Dockerfile
+  next: fix the failing step in the task's Dockerfile (or the image it names); image.log in the trial folder has the build output
+  detail: ERROR: No matching distribution found for numpy==9.9
+
+R102 · the sandbox's problem · preparing the image · the backend cannot prepare the image
+  the image for codes could not be prepared: `docker build` failed for a reason outside the task (failed to fetch oauth token: dial tcp: i/o timeout). Check the network and the docker host, then run again.
+  next: retry; if it keeps failing, run `bench doctor`
+  detail: dial tcp: i/o timeout
+
+R103 · the sandbox's problem · starting the sandbox · the container fails to start
+  the sandbox did not start: the container exited at once: exec /entrypoint.sh: no such file or directory
+  next: retry, or lower --concurrency; `bench doctor` checks the backend
+
+R103 · the sandbox's problem · handing off to the verifier · the connection to the sandbox drops before grading
+  the sandbox failed while handing off to the verifier: the sandbox's API stopped answering (connection reset by peer)
+  next: retry; if it keeps failing, run `bench doctor`
+
+R104 · the task's problem · setting up the sandbox · the image has no useradd or adduser
+  could not create the agent user `agent`
+  next: the image needs a shell and useradd (or adduser); or set [agent] user = "root"
+  detail: sh: 1: useradd: not found
+
+R108 · the task's problem · setting up the sandbox · a blocklist on an image with no iptables to enforce it
+  the task's image has no iptables, and BenchFlow could not install it (the image has no apt-get, apk, dnf, or yum that worked), so the network policy cannot be enforced
+  next: add iptables to the task's Dockerfile
+  detail: BF fw-error no-iptables
+
+R109 · a BenchFlow bug · setting up the sandbox · the firewall self-test reaches a blocked address
+  the network self-test failed, so the agent did not run: reached the blocked 192.0.2.50:443
+  next: report it with the trial folder; the phase did not run, so no score was affected
+  detail: BF canary block reached 192.0.2.50:443
+
+R105 · the task's problem · setting up the sandbox · the readiness check never passes
+  the readiness check `check-ready` failed 3 times
+  next: try the command by hand in `bench shell <task>` (Docker or Podman); if the service is only slow to start, give `ready` a start_period or more retries
+  detail: curl: (7) Failed to connect to localhost port 8080
+
+R107 · your setup's problem · verifying · the verifier's files cannot be read on this machine
+  reading <tmp>/codes/verifier to upload it failed on this machine: permission denied
+  next: fix what the message names (a missing or unreadable file, a full disk, a container CLI not on PATH), then run again
+
+R201 · the agent's problem · preparing the image · the agent's install layer fails on a task image that builds
+  fake could not be installed on top of the task's image, which builds on its own
+  next: image.log in the trial folder has the failing step; the install needs network access and curl, tar, and xz in the image (`bench agents fake` shows the install script)
+  detail: installing the agent on top of the task image failed (npm ERR! 404 Not Found - GET https://registry.npmjs.org/@fake%2fagent). The agent's install step or the network is at fault, not the task; the log tail shows the failing command.
+
+R202 · the agent's problem · running the agent · the agent exits before the ACP handshake
+  Agent process closed stdout (exit code 1); its stderr ends with: fatal: no such file: /opt/fake/config.json
+  next: its stderr says why; see agent/fake.txt and agent/stderr.txt in the trial folder
+  detail: fatal: no such file: /opt/fake/config.json
+
+R203 · the agent's problem · running the agent · the agent goes silent during the prompt
+  Agent idle for 1s with no new tool call, message, or thought (last activity 1s ago, 0 tool calls so far)
+  next: read the agent log in the trial's agent/ folder; if the task runs long silent commands, raise --idle-timeout
+
+R204 · the agent's problem · running the agent · the agent crashes during the prompt
+  Agent process closed stdout (exit code 101); its stderr ends with: thread 'main' panicked at src/agent.rs:88: index out of bounds
+  next: its stderr says why; see agent/fake.txt and agent/stderr.txt in the trial folder
+  detail: thread 'main' panicked at src/agent.rs:88: index out of bounds
+
+R205 · the agent's problem · running the agent · the agent answers the prompt with an error of its own
+  ACP error -32603: Internal error: tool registry is empty
+  next: read the agent log in the trial's agent/ folder
+
+R206 · the agent's problem · running the agent · the agent does nothing before its time runs out
+  fake did nothing before its time ran out (no tool call, message, thought, or output token)
+  next: read agent/fake.txt in the trial folder: the agent may never have reached its model
+
+R211 · your setup's problem · setting up the sandbox · no login for the agent on this machine
+  no login for agent `fake`: looked for FAKE_API_KEY
+  next: `export FAKE_API_KEY=<key>`
+
+R212 · the model provider's problem · running the agent · the provider rejects the key
+  ACP error -32603: Invalid API key · Fix external API key
+  next: the model provider rejected the login; `bench doctor` shows which credential the agent used
+
+R213 · the model provider's problem · running the agent · the login's usage limit is reached
+  usage limit reached on login FAKE_API_KEY (environment): resets 2026-10-03 17:05 UTC (You've hit your usage limit. Upgrade to Pro or try again at Oct 3rd, 2026 5:05 PM.)
+  next: switch to another login or wait for the reset; `bench doctor` shows each login
+
+R214 · the model provider's problem · running the agent · the provider rate-limits the agent
+  ACP error -32603: API Error: 429 rate limit exceeded
+  next: the provider is rate limiting; retry later or lower --concurrency
+
+R215 · your setup's problem · running the agent · the agent does not offer the model the run names
+  agent integration failure [agent_model]: fake does not offer model 'other-model' for this login; it offers: fake-model
+  next: pick one of the models it offers: fake-model
+
+R215 · your setup's problem · running the agent · the run asks for a reasoning effort the agent lacks
+  reasoning effort `high` was requested for agent `fake`, but it declares no effort option and its session offers none
+  next: drop the setting, or pick an agent that supports it
+
+R301 · the task's problem · verifying · the verifier writes no reward
+  the verifier wrote no reward (no reward.json or reward.txt in /logs/verifier)
+  next: make the verifier write /logs/verifier/reward.txt (one number) or reward.json (an object of numbers), or give the task a rubric so the reward is computed
+  detail: 1 passed
+
+R302 · the task's problem · verifying · the verifier writes a reward that is not a number
+  verifier/reward.txt is not a reward: "passed" is not a number
+  next: reward.txt holds one finite number; reward.json holds an object of finite numbers, or a numeric "reward" beside other keys
+  detail: 1 passed
+
+R303 · the task's problem · verifying · the verifier runs past its timeout
+  the verifier ran past its 60s timeout
+  next: install test dependencies in the image rather than in test.sh, or raise [verifier] timeout
+  detail: collecting ...
+
+R304 · the task's problem · verifying · the verifier exits with an error and writes no reward
+  the verifier exited with code 2 and wrote no reward
+  next: make the verifier write a reward on every path, even when tests fail; verifier/test-stdout.txt in the trial folder has its output
+  detail: /verifier/test.sh: line 3: pytest: command not found
+
+R305 · the sandbox's problem · handing off to the verifier · agent processes survive the kill before grading
+  agent processes survived the kill before grading, so the trial was not graded
+  next: retry; if it repeats for this task, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder
+  detail: BF survivors 4242 sleep
+
+R306 · the task's problem · setting up the sandbox · --agent oracle on a task without a reference solution
+  codes has no oracle (oracle/solve.sh or solution/solve.sh)
+  next: add a reference solution, or run a model agent instead of the oracle
+
+R307 · the task's problem · handing off to the verifier · a program on the image's PATH answers in place of the shell
+  the kill before grading ran but did not report back, so the trial was not graded: a program on the image's PATH (sh, bash, or a tool BenchFlow's checks use) answered in its place
+  next: make the folders on the image's PATH root-owned and not writable by others (no `chmod 777 /usr/local/bin`); `bench explain R307` has more
+
+R309 · the sandbox's problem · handing off to the verifier · /etc/ld.so.preload cannot be put back before grading
+  /etc/ld.so.preload changed during the agent's turn and could not be restored, so the trial was not graded (every program the verifier starts would load what it names)
+  next: retry; if it repeats for this task, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder
+  detail: BF preload unrestorable
+
+R310 · the task's problem · verifying · the image's PATH holds a folder others can write
+  the verifier's environment could not be made clean, so the trial was not graded: PATH holds folders someone other than root could write: /usr/local/bin drwxrwxrwx
+  next: make every folder on the image's PATH owned by root and not writable by group or others (RUN chmod go-w <folder> in the Dockerfile), or set [verifier] env PATH to root-owned folders
+  detail: BF venv-safepath 1
+
+R311 · the task's problem · handing off to the verifier · a hook before grading fails
+  hook 1 before grading failed with exit code 2
+  next: hooks/1.txt in the trial folder has its output; fix the command in the task
+  detail: cp: cannot stat '/app/status.txt': No such file or directory
+
+R106 · the task's problem · starting the sandbox · a service beside the sandbox exits as it starts
+  service api did not start: api exited at once (exit code 1): Error: Cannot find module '/srv/server.js'
+  next: check the service's image, command, and readiness check in the task; the trial's services/ folder has its log
+
+R401 · your setup's problem · starting the sandbox · the backend has no GPUs for a task that asks for one
+  codes--fc331f3a asks for 1 GPU(s), and BenchFlow's Daytona backend has none; run it with `--sandbox docker` on a host with GPUs
+  next: run it on a backend that supports it (`--sandbox docker`), or remove the setting
+
+R401 · your setup's problem · setting up the sandbox · the task asks for a feature this runner lacks
+  codes asks for what this runner cannot do yet: [sandbox] clock (a fixed clock is not in the Rust runner yet)
+  next: run it with BenchFlow 0.8 (`bench eval run`), or remove the field
+
+R901 · a BenchFlow bug · running the agent · a bug in an agent harness: it panics
+  a bug in BenchFlow stopped the trial while running the agent: index out of bounds: the len is 0 but the index is 0
+  next: please report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder
+

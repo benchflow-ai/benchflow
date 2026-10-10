@@ -1,0 +1,73 @@
+{
+  "path": "family-bad-rules/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/family-bad-rules\"\nversion = \"1.0.0\"\n[family]\ngenerator = \"family/generate.py\"\nseed_param = \"n\"\ndatabase = \"x.db\"\n\n[family.splits]\ntrain = \"seed < 5\"\ntest = \"n $ 3\"\nvalidation = \"n + 1\"\nx-note = \"ignored\"\nodd = 5\n\n[family.splits.extra]\nrule = \"(n < 3\"\nrole = \"test\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/family-bad-rules",
+    "version": "1.0.0",
+    "family": {
+      "generator": "family/generate.py",
+      "seed_param": "n",
+      "database": "x.db",
+      "splits": {
+        "train": "seed < 5",
+        "test": "n $ 3",
+        "validation": "n + 1",
+        "x-note": "ignored",
+        "odd": 5,
+        "extra": {
+          "rule": "(n < 3",
+          "role": "test"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "[family] database is not read under family@1: the generator writes an instance's files into agent/ and verifier/ (docs/runtime/episodes.md)",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] train: the rule 'seed < 5' is not valid: a rule reads one variable, n, not 'seed'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] test: the rule 'n $ 3' is not valid: unexpected '$ 3'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] validation: the rule 'n + 1' is not valid: a rule is a comparison, or comparisons combined with and, or, and not",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] odd is a rule, or a table with rule and role",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[family.splits] extra: the rule '(n < 3' is not valid: expected ')', found 'the end'",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/family-bad-rules",
+  "ok": false
+}

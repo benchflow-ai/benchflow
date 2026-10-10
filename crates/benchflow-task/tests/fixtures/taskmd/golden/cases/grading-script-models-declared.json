@@ -1,0 +1,29 @@
+{
+  "path": "grading-script-models-declared/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/grading-script-models-declared\"\nversion = \"1.0.0\"\n[verifier]\nmodels = true",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/grading-script-models-declared",
+    "version": "1.0.0",
+    "verifier": {
+      "models": true
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/grading-script-models-declared",
+  "ok": true
+}

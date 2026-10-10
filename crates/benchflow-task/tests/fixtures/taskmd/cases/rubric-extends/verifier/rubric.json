@@ -1,0 +1,1 @@
+{"$schema": "https://task.md/schema/rubric-1.json", "extends": ["https://task.md/rubrics/code-change@1"], "criteria": [{"id": "minimal-diff", "remove": true}, {"id": "method", "points": 2, "judge": "agent", "evidence": ["report.md"], "text": "The method is sound.", "stated": "Fix the bug"}]}

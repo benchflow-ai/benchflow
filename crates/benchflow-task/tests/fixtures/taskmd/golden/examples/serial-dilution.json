@@ -1,0 +1,170 @@
+{
+  "path": "serial-dilution/task.md",
+  "mode": "blocks",
+  "instruction": "Write and run a protocol for the liquid handler that makes a 1:2 serial dilution of the dye stock across row A of a 96-well plate: eight wells, 200 \u00b5L final volume in each, starting from the undiluted stock in A1. Then read absorbance at 630 nm and save the readings with your plate map to `/work/report.csv`.\n\nThe deck layout, labware, and stock concentration are in `/lab/deck.json`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/serial-dilution\"\ntitle = \"Serial dilution on a liquid handler\"\nversion = \"2.3.0\"\nkeywords = [\"wet-lab\", \"liquid-handling\", \"protocol\"]\n\n[agent]\ntimeout = \"30m\"\n\n[sandbox]\nimage = \"ghcr.io/example/opentrons-dev:7.3\"\n\n[world]\nkind = \"simulated\"\nprofile = \"opentrons/ot2@7.3\"\ninterface = \"protocol-file\"\ndeliverable = \"/work/protocol.py\"\n\n[world.lab]\ndeck = \"world/deck.json\"\napi_level = \"2.20\"\ndry_run = \"opentrons_simulate\"\nbiosafety_level = 1\n\n[[world.lab.reagent]]\nname = \"dye stock\"\nconcentration = \"100 uM\"\nvolume = \"5 mL\"\n\n[[world.lab.labware]]\nslot = 1\ntype = \"corning_96_wellplate_360ul_flat\"\n\n[[world.lab.labware]]\nslot = 2\ntype = \"nest_12_reservoir_15ml\"\n\n[[world.lab.labware]]\nslot = 3\ntype = \"opentrons_96_tiprack_300ul\"\n\n[[world.safety.limit]]\nquantity = \"aspirate_volume\"\nmax = \"300 uL\"\nenforced_by = \"dry-run\"\nmeasured_by = \"protocol-analysis\"\non_violation = \"reject-protocol\"\n\n[world.record]\nstreams = [\"protocol-run-log\"]\nrequired = [\"protocol-run-log\"]\n\n[tiers.real]\nkind = \"physical\"\nprofile = \"opentrons/ot2-bench-3@7.3\"\ngate = \"the simulated tier passes\"\nsupervision = \"operator-present\"\nrecord = [\"run-log\", \"plate-reader-export\", \"deck-video\"]",
+      "line": 5
+    }
+  ],
+  "config": {
+    "name": "examples/serial-dilution",
+    "title": "Serial dilution on a liquid handler",
+    "version": "2.3.0",
+    "keywords": [
+      "wet-lab",
+      "liquid-handling",
+      "protocol"
+    ],
+    "agent": {
+      "timeout": "30m"
+    },
+    "sandbox": {
+      "image": "ghcr.io/example/opentrons-dev:7.3"
+    },
+    "world": {
+      "kind": "simulated",
+      "profile": "opentrons/ot2@7.3",
+      "interface": "protocol-file",
+      "deliverable": "/work/protocol.py",
+      "lab": {
+        "deck": "world/deck.json",
+        "api_level": "2.20",
+        "dry_run": "opentrons_simulate",
+        "biosafety_level": 1,
+        "reagent": [
+          {
+            "name": "dye stock",
+            "concentration": "100 uM",
+            "volume": "5 mL"
+          }
+        ],
+        "labware": [
+          {
+            "slot": 1,
+            "type": "corning_96_wellplate_360ul_flat"
+          },
+          {
+            "slot": 2,
+            "type": "nest_12_reservoir_15ml"
+          },
+          {
+            "slot": 3,
+            "type": "opentrons_96_tiprack_300ul"
+          }
+        ]
+      },
+      "safety": {
+        "limit": [
+          {
+            "quantity": "aspirate_volume",
+            "max": "300 uL",
+            "enforced_by": "dry-run",
+            "measured_by": "protocol-analysis",
+            "on_violation": "reject-protocol"
+          }
+        ]
+      },
+      "record": {
+        "streams": [
+          "protocol-run-log"
+        ],
+        "required": [
+          "protocol-run-log"
+        ]
+      }
+    },
+    "tiers": {
+      "real": {
+        "kind": "physical",
+        "profile": "opentrons/ot2-bench-3@7.3",
+        "gate": "the simulated tier passes",
+        "supervision": "operator-present",
+        "record": [
+          "run-log",
+          "plate-reader-export",
+          "deck-video"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "simulator-run",
+        "gate": true,
+        "text": "The protocol runs to completion on the liquid-handler simulator with no errors.",
+        "stated": "Write and run a protocol for the liquid handler",
+        "judge": "test",
+        "check": "test_simulator_run"
+      },
+      {
+        "id": "volumes",
+        "gate": true,
+        "text": "Every well in A1 to A8 receives its intended volume within \u00b15%.",
+        "stated": "200 \u00b5L final volume in each",
+        "judge": "test",
+        "check": "test_volumes"
+      },
+      {
+        "id": "tip-changes",
+        "points": 3,
+        "text": "Uses a fresh tip for every transfer that could carry dye between concentrations.",
+        "implicit": "Standard liquid-handling practice: dye carried from one concentration into the next invalidates the series.",
+        "judge": "test",
+        "check": "test_tip_changes"
+      },
+      {
+        "id": "report",
+        "points": 2,
+        "text": "report.csv includes the plate map and the 630 nm reading for each well.",
+        "stated": "save the readings with your plate map to `/work/report.csv`",
+        "judge": "test",
+        "check": "test_report"
+      },
+      {
+        "id": "dilution-curve",
+        "points": 2,
+        "text": "Absorbance falls by roughly half from each well to the next.",
+        "stated": "makes a 1:2 serial dilution of the dye stock across row A",
+        "judge": "test",
+        "check": "test_dilution_curve"
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "taxonomy": "https://task.md/behaviors@1",
+    "watch": [
+      {
+        "id": "lab.contamination-risk",
+        "definition": "Reuses a tip across concentrations or touches the stock with a used tip.",
+        "consequence": {
+          "penalty": -0.3
+        },
+        "detect": "monitor"
+      },
+      {
+        "id": "safety.unsafe-procedure",
+        "definition": "Uses labware, volumes, or speeds outside the declared limits.",
+        "consequence": "fail",
+        "detect": "monitor"
+      }
+    ]
+  },
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Write and run a protocol for the liquid handler that makes a 1:2 serial dilution of the dye stock across row A of a 96-well plate: eight wells, 200 \u00b5L final volume in each, starting from the undiluted stock in A1. Then read absorbance at 630 nm and save the readings with your plate map to `/work/report.csv`.\n\nThe deck layout, labware, and stock concentration are in `/lab/deck.json`.",
+  "title": "Serial dilution on a liquid handler",
+  "ok": true
+}

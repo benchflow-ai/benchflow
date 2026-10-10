@@ -1,0 +1,5 @@
+The prompt templates in this folder (computer-1-json.txt, timeout.txt) are copied
+unchanged from Harbor's computer-1 agent (https://github.com/laude-institute/harbor,
+src/harbor/agents/computer_1/templates, harbor 0.24.0, commit f789b24), licensed under the Apache License, Version 2.0
+(http://www.apache.org/licenses/LICENSE-2.0). They are kept byte for byte so computer-1
+runs from BenchFlow and from Harbor see the same prompt.

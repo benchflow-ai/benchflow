@@ -1,0 +1,50 @@
+# An Eve app you write (Vercel's agent framework), run headless by
+# BenchFlow's runner script runners/run_eve.mjs as Harbor's `eve` agent runs
+# it: install the app's dependencies, `eve build`, `eve start` on loopback,
+# and one session through the app's eve/client.
+name = "eve"
+description = "your Eve app (Node.js 24), headless through BenchFlow's runner; needs an Eve app in the task"
+# Skills land here first; the runner copies each into the app's skills
+# folder (agent/skills/, or skills/ for a flat app) as benchflow_<name>
+# before it builds the app, as Harbor does with its `harbor_` prefix.
+skill_paths = ["$HOME/.benchflow/eve-skills"]
+skills_via = "then the runner copies each into the app's agent/skills/ (skills/ for a flat app) as benchflow_<name>"
+
+[install]
+# Node.js 24 (Eve needs 24 or later) for glibc Linux, in this agent's home;
+# the app brings its own eve version.
+installer = '''
+set -eu
+case "$(uname -m)" in x86_64|amd64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) echo "BenchFlow: Node.js 24 has no build for $(uname -m)" >&2; exit 1 ;; esac
+if command -v ldd >/dev/null 2>&1 && { ldd --version 2>&1 || true; } | grep -qi musl; then echo 'BenchFlow: eve needs Node.js 24 built for glibc, and this image uses musl (Alpine); use a glibc image' >&2; exit 1; fi
+curl -fsSLo node.tar.gz "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-$arch.tar.gz"
+rm -rf node && mkdir node && tar -xzf node.tar.gz -C node --strip-components=1 --no-same-owner && rm -f node.tar.gz
+mkdir -p bin
+# \044 is `$`: Daytona's image builder replaces a literal $PATH with the
+# base image's value while it builds.
+printf '#!/bin/sh\nexport PATH="/opt/benchflow/agents/eve/node/bin:\044PATH"\nexec /opt/benchflow/agents/eve/node/bin/node "\044@"\n' > bin/eve-node
+chmod 755 bin/eve-node
+'''
+links = ["bin/eve-node"]
+verify = "/opt/benchflow/bin/eve-node --version"
+timeout = 600
+
+[headless]
+# The app comes from the task: EVE_PROJECT=<folder> (default: the working
+# folder) holds a package.json depending on eve and an agent/ folder. The app
+# picks its model; the run's model reaches it as $BENCHFLOW_MODEL and
+# $HARBOR_MODEL. Options: EVE_INSTALL_COMMAND, EVE_SKIP_BUILD, EVE_PORT,
+# EVE_STARTUP_TIMEOUT_MS.
+command = '''exec /opt/benchflow/bin/eve-node "$HOME/.benchflow/runners/run_eve.mjs" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+
+[[headless.files]]
+path = ".benchflow/runners/run_eve.mjs"
+runner = "run_eve.mjs"
+
+[credentials]
+env = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+account = "the key its app's model reads: AI_GATEWAY_API_KEY (a Vercel account) for AI Gateway model ids, Eve's default, or OPENAI_API_KEY / ANTHROPIC_API_KEY for eve's direct helpers"
+
+[model]
+select = "none"

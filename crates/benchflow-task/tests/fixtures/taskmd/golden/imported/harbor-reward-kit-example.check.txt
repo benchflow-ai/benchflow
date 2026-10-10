@@ -1,0 +1,8 @@
+harbor-reward-kit-example/task.md
+  mode: blocks
+  instruction: 97 words; starts 'Create a text statistics module and analysis script.'
+  blocks: toml task
+  config: block (about, agent, import, oracle, sandbox, verifier)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: 2m (scripts 2m; in sequence, before retries)
+  ok

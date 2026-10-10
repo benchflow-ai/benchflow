@@ -1,0 +1,17 @@
+harbor-keys/task.md
+  mode: blocks
+  title: acme/harbor-keys
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (agent, name, sandbox, verifier, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: [sandbox] memory_mb is Harbor's name; task.md uses memory (tools/convert.py import converts Harbor tasks) (task.md)
+  error: [sandbox] storage_mb is Harbor's name; task.md uses disk (tools/convert.py import converts Harbor tasks) (task.md)
+  error: [sandbox] network_mode is Harbor's name; task.md uses network (tools/convert.py import converts Harbor tasks) (task.md)
+  error: [sandbox] build_timeout_sec is Harbor's name; task.md uses build_timeout (tools/convert.py import converts Harbor tasks) (task.md)
+  error: [sandbox] docker_image is Harbor's name; task.md uses image (tools/convert.py import converts Harbor tasks) (task.md)
+  error: [agent] timeout_sec is Harbor's name; task.md uses timeout (tools/convert.py import converts Harbor tasks) (task.md)
+  error: [verifier] timeout_sec is Harbor's name; task.md uses timeout (tools/convert.py import converts Harbor tasks) (task.md)
+  error: [verifier] environment_mode is Harbor's name; task.md uses isolation (tools/convert.py import converts Harbor tasks) (task.md)
+  FAILED

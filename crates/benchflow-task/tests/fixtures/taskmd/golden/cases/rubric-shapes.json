@@ -1,0 +1,285 @@
+{
+  "path": "rubric-shapes/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/rubric-shapes\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/rubric-shapes",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      "not an object",
+      {
+        "id": "Bad_ID",
+        "text": "",
+        "judge": "robot",
+        "gate": true,
+        "points": 1
+      },
+      {
+        "id": "dup",
+        "judge": "rule",
+        "points": 1,
+        "text": "R.",
+        "implicit": "Obvious."
+      },
+      {
+        "id": "dup",
+        "judge": "panel",
+        "gate": true,
+        "text": "P.",
+        "levels": [],
+        "stated": [
+          "Fix the bug",
+          ""
+        ]
+      },
+      {
+        "judge": "test",
+        "check": "x",
+        "points": 1,
+        "text": "No id.",
+        "stated": 5
+      },
+      {
+        "id": "rm",
+        "remove": true
+      },
+      {
+        "id": "rm2",
+        "remove": "yes",
+        "text": "x"
+      },
+      {
+        "id": "miss",
+        "points": 1,
+        "judge": "agent",
+        "evidence": "report.md",
+        "text": "M.",
+        "missing": "skip",
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "miss-good",
+        "points": 1,
+        "judge": "agent",
+        "evidence": [
+          "r.md"
+        ],
+        "text": "M.",
+        "missing": "no-penalty",
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "score-shape",
+        "points": 1,
+        "judge": "human",
+        "text": "S.",
+        "score": [
+          0,
+          1
+        ],
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "gate-score",
+        "gate": true,
+        "judge": "llm",
+        "evidence": [
+          "r.md"
+        ],
+        "text": "G.",
+        "score": {
+          "min": 0,
+          "max": 1
+        },
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "vlm-cite",
+        "points": 1,
+        "judge": "vlm",
+        "evidence": [
+          "fig.png",
+          "camera"
+        ],
+        "text": "V.",
+        "cite": "independent",
+        "stated": "Fix the bug"
+      },
+      {
+        "id": "agent-cite",
+        "points": 1,
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "A.",
+        "cite": "independent",
+        "stated": "Fix the bug"
+      }
+    ],
+    "scoring": {
+      "method": "points",
+      "headline": "both",
+      "pass_threshold": 2,
+      "pased": 1,
+      "x-note": 1
+    },
+    "extra_key": 1,
+    "x_ok": 1
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key 'extra_key'; a rubric holds $schema, criteria, extends, scoring, validation, version, or x- extensions",
+      "where": "verifier/rubric.json"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'x_ok'; a rubric holds $schema, criteria, extends, scoring, validation, version, or x- extensions",
+      "where": "verifier/rubric.json"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'pased' in scoring; it holds headline, method, pass_threshold, or x- extensions",
+      "where": "verifier/rubric.json"
+    },
+    {
+      "level": "error",
+      "message": "scoring.headline is \"partial\" or \"strict\"",
+      "where": "verifier/rubric.json"
+    },
+    {
+      "level": "error",
+      "message": "scoring.pass_threshold is a fraction from 0 to 1 under method points, and a number of points, at least 0, under method sum",
+      "where": "verifier/rubric.json"
+    },
+    {
+      "level": "error",
+      "message": "criterion must be an object",
+      "where": "verifier/rubric.json criteria[0]"
+    },
+    {
+      "level": "error",
+      "message": "id must be lowercase letters, digits, and hyphens",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "error",
+      "message": "text is required",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "error",
+      "message": "a criterion is a gate or carries points, not both",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "error",
+      "message": "judge is required: one of ['agent', 'human', 'llm', 'panel', 'replay', 'rule', 'test', 'vlm', 'world']",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "warning",
+      "message": "'Bad_ID' does not say where the agent is told about it: quote the instruction in stated, or explain in implicit why the agent should know",
+      "where": "verifier/rubric.json criteria[1]"
+    },
+    {
+      "level": "error",
+      "message": "judge 'rule' needs a check (a test id, rule, world predicate, or replay recipe)",
+      "where": "verifier/rubric.json criteria[2]"
+    },
+    {
+      "level": "error",
+      "message": "duplicate id 'dup'",
+      "where": "verifier/rubric.json criteria[3]"
+    },
+    {
+      "level": "error",
+      "message": "a model-judged criterion needs an evidence list: what the judge reads, and all a verdict may cite",
+      "where": "verifier/rubric.json criteria[3]"
+    },
+    {
+      "level": "error",
+      "message": "levels must map scores to anchor descriptions",
+      "where": "verifier/rubric.json criteria[3]"
+    },
+    {
+      "level": "error",
+      "message": "stated must be a quote, or a list of quotes, from what the agent is told",
+      "where": "verifier/rubric.json criteria[3]"
+    },
+    {
+      "level": "error",
+      "message": "id must be lowercase letters, digits, and hyphens",
+      "where": "verifier/rubric.json criteria[4]"
+    },
+    {
+      "level": "error",
+      "message": "stated must be a quote, or a list of quotes, from what the agent is told",
+      "where": "verifier/rubric.json criteria[4]"
+    },
+    {
+      "level": "error",
+      "message": "remove drops a criterion from a shared rubric, so it needs extends",
+      "where": "verifier/rubric.json criteria[5]"
+    },
+    {
+      "level": "error",
+      "message": "a removal entry is exactly {\"id\": ..., \"remove\": true}",
+      "where": "verifier/rubric.json criteria[6]"
+    },
+    {
+      "level": "error",
+      "message": "remove drops a criterion from a shared rubric, so it needs extends",
+      "where": "verifier/rubric.json criteria[6]"
+    },
+    {
+      "level": "error",
+      "message": "missing is \"no-penalty\"",
+      "where": "verifier/rubric.json criteria[7]"
+    },
+    {
+      "level": "error",
+      "message": "evidence is a list of items",
+      "where": "verifier/rubric.json criteria[7]"
+    },
+    {
+      "level": "warning",
+      "message": "missing = \"no-penalty\" changes only outcome = \"bad\" criteria: a good-outcome criterion whose evidence is missing fails",
+      "where": "verifier/rubric.json criteria[8]"
+    },
+    {
+      "level": "error",
+      "message": "score is a continuous range, {\"min\": <number>, \"max\": <number>}, with min below max",
+      "where": "verifier/rubric.json criteria[9]"
+    },
+    {
+      "level": "error",
+      "message": "a gate passes or fails, so it has no continuous score; give the criterion points",
+      "where": "verifier/rubric.json criteria[10]"
+    },
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/rubric-shapes",
+  "ok": false
+}

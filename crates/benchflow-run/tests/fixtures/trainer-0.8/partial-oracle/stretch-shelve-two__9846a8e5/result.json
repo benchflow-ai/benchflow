@@ -1,0 +1,104 @@
+{
+  "task_name": "stretch-shelve-two",
+  "rollout_name": "stretch-shelve-two__9846a8e5",
+  "rewards": null,
+  "agent": "oracle",
+  "agent_name": "",
+  "model": null,
+  "skill_mode": "no-skill",
+  "skill_source": "none",
+  "requested_skills_dir": null,
+  "effective_skills_dir": null,
+  "skills_sandbox_dir": null,
+  "include_task_skills": false,
+  "n_tool_calls": 0,
+  "n_skill_invocations": 0,
+  "n_prompts": 1,
+  "agent_result": {
+    "n_tool_calls": 0,
+    "n_skill_invocations": 0,
+    "n_prompts": 1,
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable",
+    "price_source": null
+  },
+  "final_metrics": {
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0,
+    "total_cost_usd": null
+  },
+  "trajectory_summary": {
+    "steps": 0,
+    "tool_call_steps": 0,
+    "user_message_steps": 0,
+    "agent_message_steps": 0,
+    "agent_thought_steps": 0,
+    "other_steps": 0,
+    "event_type_counts": {},
+    "tool_call_status_counts": {},
+    "partial_trajectory": false,
+    "trajectory_source": null
+  },
+  "usage_tracking": {
+    "requested": "auto",
+    "status": "unavailable",
+    "environment": "docker",
+    "endpoint_kind": "none",
+    "usage_source": "unavailable"
+  },
+  "error": "RuntimeError: Docker compose command failed for environment stretch-shelve-two. Command: docker compose --project-name stretch-shelve-two__9846a8e5 --project-directory /Users/lixiangyi/benchflow/scratch/robohub-embodiments/datasets/robouse-mobile-manip/stretch-shelve-two/environment -f /Users/lixiangyi/.local/share/uv/tools/benchflow/lib/python3.12/site-packages/benchflow/sandbox/_compose_files/docker-compose-base.yaml -f /Users/lixiangyi/.local/share/uv/tools/benchflow/lib/python3.12/site-packages/benchflow/sandbox/_compose_files/docker-compose-build.yaml -f /Users/lixiangyi/benchflow/scratch/robohub-embodiments/datasets/robouse-mobile-manip/stretch-shelve-two/environment/docker-compose.yaml up --detach --wait. Return code: 1. Stdout:  Image bf__stretch-shelve-two Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 1.38kB done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile\n#2 transferring dockerfile: 857B done\n#2 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\n#3 DONE 0.0s\n\n#4 [internal] load .dockerignore\n#4 transferring context: 2B done\n#4 DONE 0.0s\n\n#5 [1/5] FROM docker.io/library/python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e\n#5 resolve docker.io/library/python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e 0.0s done\n#5 DONE 0.0s\n\n#6 [internal] load build context\n#6 transferring context: 26B done\n#6 DONE 0.0s\n\n#7 [3/5] COPY robo /usr/local/bin/robo\n#7 CACHED\n\n#8 [4/5] RUN chmod 755 /usr/local/bin/robo && mkdir -p /app /logs/agent /logs/verifier /logs/artifacts\n#8 CACHED\n\n#9 [2/5] RUN apt-get update  && apt-get install -y --no-install-recommends curl ca-certificates xz-utils  && rm -rf /var/lib/apt/lists/*  && pip install --no-cache-dir numpy==2.5.3\n#9 CACHED\n\n#10 [5/5] WORKDIR /app\n#10 CACHED\n\n#11 exporting to image\n#11 exporting layers done\n#11 exporting manifest sha256:f74468c166cdf06d95c5da36b9a24680ed20867c9b62d01ebc661ccf1ebe190e done\n#11 exporting config sha256:8d592b5dc8c025c6bb4ef9d35a920e649f1833cb506f8aa77076e16f86f74ee4 done\n#11 exporting attestation manifest sha256:489e78ea254dbff46800dd63eb18284a02641531f9a896d442998c5d724d6590 0.0s done\n#11 exporting manifest list sha256:1e0be250d7b3a3882db719f47053a4c584e6f661bb472a32c123e928a56cfa56 0.0s done\n#11 naming to docker.io/library/bf__stretch-shelve-two:latest done\n#11 unpacking to docker.io/library/bf__stretch-shelve-two:latest done\n#11 DONE 0.1s\n\n#12 resolving provenance for metadata file\n#12 DONE 0.0s\n Image bf__stretch-shelve-two Built \n Network stretch-shelve-two__9846a8e5_default Creating \n Network stretch-shelve-two__9846a8e5_default Creating \n Volume stretch-shelve-two__9846a8e5_rpc Creating \n Volume stretch-shelve-two__9846a8e5_rpc Creating \n Volume stretch-shelve-two__9846a8e5_episode Creating \n Volume stretch-shelve-two__9846a8e5_episode Creating \n Volume stretch-shelve-two__9846a8e5_rpc Created \n Volume stretch-shelve-two__9846a8e5_rpc Created \n Volume stretch-shelve-two__9846a8e5_episode Created \n Volume stretch-shelve-two__9846a8e5_episode Created \n Container stretch-shelve-two__9846a8e5-simulator-1 Creating \n Network stretch-shelve-two__9846a8e5_default Created \n Network stretch-shelve-two__9846a8e5_default Created \n Container stretch-shelve-two__9846a8e5-simulator-1 Created \n Container stretch-shelve-two__9846a8e5-main-1 Creating \n Container stretch-shelve-two__9846a8e5-main-1 Created \n Container stretch-shelve-two__9846a8e5-simulator-1 Starting \n Container stretch-shelve-two__9846a8e5-simulator-1 Started \n Container stretch-shelve-two__9846a8e5-simulator-1 Waiting \n Container stretch-shelve-two__9846a8e5-simulator-1 Healthy \n Container stretch-shelve-two__9846a8e5-main-1 Starting \nError response from daemon: No such container: 662902d2301017c9b9db1d38687ea96a16542dadb80966ea5a52a6e445539c6b\n. Stderr: None.",
+  "error_category": "other",
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "export_error": null,
+  "idle_timeout_info": null,
+  "agent_timeout_info": null,
+  "sandbox_startup_info": null,
+  "transport_error_info": null,
+  "verifier_timeout_info": null,
+  "api_error_info": null,
+  "suspected_api_error_info": null,
+  "partial_trajectory": false,
+  "trajectory_source": null,
+  "started_at": "2026-09-29 04:25:54.626182",
+  "finished_at": "2026-09-29 04:26:07.177919",
+  "timing": {
+    "total": 12.6
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "oracle",
+          "model": null,
+          "reasoning_effort": null,
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ],
+  "loop": {
+    "strategy": "single-shot"
+  },
+  "task_digest": "sha256:7fb183b3cbf33d88100eabe81ed4a9fb7233cf521994b9466c46627433718315",
+  "sandbox_id": null
+}

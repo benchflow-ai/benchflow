@@ -1,0 +1,36 @@
+{
+  "path": "x-extensions/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/x-extensions\"\nversion = \"1.0.0\"\n[x-acme]\nanything = 1\n\n[agent]\nx-retries = 3\ntimeout = \"1m\"\n\n[sandbox]\nx-gpu = \"a100\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/x-extensions",
+    "version": "1.0.0",
+    "x-acme": {
+      "anything": 1
+    },
+    "agent": {
+      "x-retries": 3,
+      "timeout": "1m"
+    },
+    "sandbox": {
+      "x-gpu": "a100"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/x-extensions",
+  "ok": true
+}

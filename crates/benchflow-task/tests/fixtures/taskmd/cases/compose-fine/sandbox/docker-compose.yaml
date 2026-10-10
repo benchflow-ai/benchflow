@@ -1,0 +1,15 @@
+{
+  "services": {
+    "main": {
+      "image": "python:3.12",
+      "network_mode": "bridge",
+      "privileged": false,
+      "volumes": [
+        "./data:/data",
+        "cache:/cache",
+        "${HOST_AGENT_LOGS_PATH}:/logs/agent",
+        "${CONTEXT_DIR}/messages:/m"
+      ]
+    }
+  }
+}

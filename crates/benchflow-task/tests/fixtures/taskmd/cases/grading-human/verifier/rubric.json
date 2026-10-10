@@ -1,0 +1,20 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "criteria": [
+    {
+      "id": "works",
+      "gate": true,
+      "judge": "test",
+      "check": "test_works",
+      "text": "It works.",
+      "stated": "Fix the bug"
+    },
+    {
+      "id": "look",
+      "points": 1,
+      "judge": "human",
+      "text": "L.",
+      "stated": "Fix the bug"
+    }
+  ]
+}

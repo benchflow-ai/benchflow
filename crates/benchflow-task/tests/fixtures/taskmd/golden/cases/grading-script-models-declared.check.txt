@@ -1,0 +1,9 @@
+grading-script-models-declared/task.md
+  mode: blocks
+  title: acme/grading-script-models-declared
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  grading needs a model: yes (a script): [verifier] models = true; verifier/test.sh runs RewardKit, whose judges call a model
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

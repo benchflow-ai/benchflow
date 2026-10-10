@@ -1,0 +1,12 @@
+version = "1.0"
+
+[metadata]
+author_name = "benchflow"
+author_email = "xiangyi@benchflow.ai"
+tags = ["multi-agent", "contract-review", "nanofirm"]
+
+[agent]
+timeout_sec = 300
+
+[verifier]
+timeout_sec = 60

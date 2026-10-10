@@ -1,0 +1,132 @@
+{
+  "task_name": "arc-gravity",
+  "rollout_name": "arc-gravity__20862819",
+  "rewards": null,
+  "agent": "codex-acp",
+  "agent_name": "",
+  "model": "gpt-6-astra",
+  "skill_mode": "no-skill",
+  "skill_source": "none",
+  "requested_skills_dir": null,
+  "effective_skills_dir": null,
+  "skills_sandbox_dir": null,
+  "include_task_skills": false,
+  "n_tool_calls": 0,
+  "n_skill_invocations": 0,
+  "n_prompts": 1,
+  "agent_result": {
+    "n_tool_calls": 0,
+    "n_skill_invocations": 0,
+    "n_prompts": 1,
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable",
+    "price_source": null
+  },
+  "final_metrics": {
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0,
+    "total_cost_usd": null
+  },
+  "trajectory_summary": {
+    "steps": 0,
+    "tool_call_steps": 0,
+    "user_message_steps": 0,
+    "agent_message_steps": 0,
+    "agent_thought_steps": 0,
+    "other_steps": 0,
+    "event_type_counts": {},
+    "tool_call_status_counts": {},
+    "partial_trajectory": false,
+    "trajectory_source": null
+  },
+  "usage_tracking": {
+    "requested": "auto",
+    "status": "unavailable",
+    "environment": "docker",
+    "endpoint_kind": "none",
+    "usage_source": "unavailable"
+  },
+  "error": "RuntimeError: Docker compose command failed for environment arc-gravity. Command: docker compose --project-name arc-gravity__20862819 --project-directory /Users/lixiangyi/benchflow/robohub-dogfood/.cache/datasets/benchflow-ai/robohub__snapshots/9e672aa1e7f0e8fb9e085a8982754fd20f1732bf/datasets/robouse-core/arc-gravity/environment -f /Users/lixiangyi/.cache/robouse/bfdev-venv/lib/python3.12/site-packages/benchflow/sandbox/_compose_files/docker-compose-base.yaml -f /Users/lixiangyi/.cache/robouse/bfdev-venv/lib/python3.12/site-packages/benchflow/sandbox/_compose_files/docker-compose-build.yaml -f /Users/lixiangyi/benchflow/robohub-dogfood/.cache/datasets/benchflow-ai/robohub__snapshots/9e672aa1e7f0e8fb9e085a8982754fd20f1732bf/datasets/robouse-core/arc-gravity/environment/docker-compose.yaml up --detach --wait. Return code: 1. Stdout:  Image bf__arc-gravity Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 1.62kB done\n#1 DONE 0.0s\n\n#2 [1/5] FROM docker.io/library/python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e\n#2 resolve docker.io/library/python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e 0.1s done\n#2 CACHED\n\n#3 [internal] load build definition from Dockerfile\n#3 transferring dockerfile: 857B done\n#3 DONE 0.0s\n\n#4 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\n#4 DONE 0.0s\n\n#5 [internal] load .dockerignore\n#5 transferring context: 2B done\n#5 DONE 0.0s\n\n#6 [internal] load build context\n#6 transferring context: 26B done\n#6 DONE 0.0s\n\n#7 [2/5] RUN apt-get update  && apt-get install -y --no-install-recommends curl ca-certificates xz-utils  && rm -rf /var/lib/apt/lists/*  && pip install --no-cache-dir numpy==2.5.3\n#7 CACHED\n\n#8 [3/5] COPY robo /usr/local/bin/robo\n#8 CACHED\n\n#9 [4/5] RUN chmod 755 /usr/local/bin/robo && mkdir -p /app /logs/agent /logs/verifier /logs/artifacts\n#9 CACHED\n\n#10 [5/5] WORKDIR /app\n#10 CACHED\n\n#11 exporting to image\n#11 exporting layers done\n#11 exporting manifest sha256:5cd43c9b13f1844231e8faebe10fa30932b807a0656772e2dcaa7590c4ab503c done\n#11 exporting config sha256:813a420f5e11c51ce7f4b7763674fe97325fb12e4690f30141097e84a64a89af done\n#11 exporting attestation manifest sha256:bf3dcd8c703b0aa9b436f93ec59226d95a9d5b7bd673f12bf3c7bb2ee7bad83d 0.0s done\n#11 exporting manifest list sha256:a54191194a04512e66f375275d51546ff1697bf7528e6e7961900d32d69c12b6 done\n#11 naming to docker.io/library/bf__arc-gravity:latest done\n#11 unpacking to docker.io/library/bf__arc-gravity:latest done\n#11 DONE 0.1s\n\n#12 resolving provenance for metadata file\n#12 DONE 0.0s\n Image bf__arc-gravity Built \n Volume arc-gravity__20862819_rpc Creating \n Volume arc-gravity__20862819_rpc Creating \n Network arc-gravity__20862819_default Creating \n Volume arc-gravity__20862819_episode Creating \n Network arc-gravity__20862819_default Creating \n Volume arc-gravity__20862819_episode Creating \n Volume arc-gravity__20862819_rpc Created \n Volume arc-gravity__20862819_rpc Created \n Volume arc-gravity__20862819_episode Created \n Volume arc-gravity__20862819_episode Created \n Container arc-gravity__20862819-simulator-1 Creating \n Network arc-gravity__20862819_default Created \n Network arc-gravity__20862819_default Created \n Container arc-gravity__20862819-simulator-1 Created \n Container arc-gravity__20862819-main-1 Creating \n Container arc-gravity__20862819-main-1 Created \n Container arc-gravity__20862819-simulator-1 Starting \n Container arc-gravity__20862819-simulator-1 Started \n Container arc-gravity__20862819-simulator-1 Waiting \n Container arc-gravity__20862819-simulator-1 Healthy \n Container arc-gravity__20862819-main-1 Starting \nError response from daemon: No such container: 7a5e79aade1f627c5e97f21808128efae3a03b9f04188cbbcc846c77f29dc981\n. Stderr: None.",
+  "error_category": "other",
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "export_error": null,
+  "idle_timeout_info": null,
+  "agent_timeout_info": null,
+  "sandbox_startup_info": null,
+  "transport_error_info": null,
+  "verifier_timeout_info": null,
+  "api_error_info": null,
+  "suspected_api_error_info": null,
+  "partial_trajectory": false,
+  "trajectory_source": null,
+  "started_at": "2026-09-28 03:34:58.383961",
+  "finished_at": "2026-09-28 03:35:03.529317",
+  "timing": {
+    "total": 5.1
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "codex-acp",
+          "model": "gpt-6-astra",
+          "reasoning_effort": null,
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ],
+  "loop": {
+    "strategy": "single-shot"
+  },
+  "source": {
+    "type": "github",
+    "repo": "benchflow-ai/robohub",
+    "requested_ref": "9e672aa1e7f0e8fb9e085a8982754fd20f1732bf",
+    "resolved_sha": "9e672aa1e7f0e8fb9e085a8982754fd20f1732bf",
+    "path": "datasets/robouse-core/arc-gravity",
+    "dirty": false,
+    "file_hashes": {
+      "environment/Dockerfile": "sha256:e50eb1f090e9b8311a2b22a740abf0061b887f0f81f3aa784ff72ec4743b5d44",
+      "environment/docker-compose.yaml": "sha256:f57d456bd2b51cc6225522bb5eebfa36142886d8fe0efd0522197fca94d53b8d",
+      "environment/robo": "sha256:ac64bb2fbbd85c0f7b56b947bb025709137226644b7f0a8c3961287418209ede",
+      "oracle/solve.sh": "sha256:da074920ccc31abc49cede8ae3be9f0bde400943408787cdedbbb31619e29af2",
+      "oracle/vendor/robouse/__init__.py": "sha256:ed71a0aa758d3d46317cd4cf50566ef103773b3538253035876e5d4a1edaaefb",
+      "oracle/vendor/robouse/agent_cli.py": "sha256:88357f1120ec625151906482232c747cb2b6306a7253e7079ca1e0352d155d82",
+      "oracle/vendor/robouse/backends/__init__.py": "sha256:4710a2924b47fd655cc7a34e9527f517acf37922d9157278ab2cbfbe9653147c",
+      "oracle/vendor/robouse/backends/base.py": "sha256:d8c9b15f6586229867db00d0a6759d7d44a06dc447419206c41bbf74b4273ce7",
+      "oracle/vendor/robouse/backends/robosuite_backend.py": "sha256:f3133729676f815d1313a41cfa2974238df60180eff448d3450cdb2d7b300530",
+      "oracle/vendor/robouse/backends/robosuite_oracle.py": "sha256:8eea230966bd2fcd34e547d79ff2ab0e40f3cfb7494f5f03b2a0161a12fad04f",
+      "oracle/vendor/robouse/backends/tabletop.py": "sha256:08dcdd89c94a3c39a6cb256e0c270eb58d6d4c34462bc86b8eaaeb60e2510330",
+      "oracle/vendor/robouse/oracle.py": "sha256:f8da83d9486040d8d2bd858504edc0c4988502bcd34c06455216540f0f64345b",
+      "task.md": "sha256:cd18fc472864cff8c2993e07fa9e0ebe6277ebc9ea7c91a497f0bde33ccb3e44",
+      "verifier/test.sh": "sha256:361ca75af655725aa0b5875fc6165974f7bace12ba03ea9bc9aba3416e2d34b0",
+      "verifier/verifier.md": "sha256:ea5371ad153428c6107584c59ec2533014b8ad8e6e6736e8b7cac4ec8963f444",
+      "verifier/verify.py": "sha256:70482a91a6051a0da84702f036b4b3c3d7c33df65182bafa5219e457aacd9e88"
+    }
+  },
+  "dataset_name": "robouse-core",
+  "dataset_version": "0.1",
+  "task_digest": "sha256:d34bc7ded8119e570926185157d8c38cf44de159eb36e7cf1e634b52d536c91a",
+  "sandbox_id": null
+}

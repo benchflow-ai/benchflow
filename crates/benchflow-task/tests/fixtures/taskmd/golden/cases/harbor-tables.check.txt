@@ -1,0 +1,13 @@
+harbor-tables/task.md
+  mode: blocks
+  title: acme/harbor-tables
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (environment, metadata, name, schema_version, solution, version)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: schema_version is Harbor's name; task.md uses nothing (task.md has no schema version key) (tools/convert.py import converts Harbor tasks) (task.md)
+  error: environment is Harbor's name; task.md uses [sandbox] (tools/convert.py import converts Harbor tasks) (task.md)
+  error: solution is Harbor's name; task.md uses [oracle] (tools/convert.py import converts Harbor tasks) (task.md)
+  error: metadata is Harbor's name; task.md uses [about] (tools/convert.py import converts Harbor tasks) (task.md)
+  FAILED

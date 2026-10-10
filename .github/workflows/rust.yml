@@ -1,0 +1,212 @@
+name: rust
+
+# The Rust workspace (crates/, one binary: bench). Pull requests and pushes
+# that touch it run fmt, clippy, and the tests on Linux and macOS. A v* tag
+# (or a manual run) also builds the release binaries and uploads them, with
+# checksums, as workflow artifacts; nothing is published.
+on:
+  push:
+    branches: [main, bench-rs]
+    # Path filters are not applied to tag pushes, so every v* tag runs.
+    tags: ["v*"]
+    paths:
+      - "crates/**"
+      - "Cargo.*"
+      - "rust-toolchain.toml"
+      - "install.sh"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.*"
+      - "rust-toolchain.toml"
+      - "install.sh"
+      - ".github/workflows/rust.yml"
+  workflow_dispatch:
+
+# Cancel superseded runs on a PR branch; never cancel pushes or tags.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege: artifacts upload with the runtime token, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (the channel in rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal -c rustfmt --no-self-update
+          rustup show active-toolchain
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  check:
+    name: clippy and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (the channel in rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal -c clippy --no-self-update
+          rustc --version && cargo --version
+
+      # Pushes to main and bench-rs save the cache; pull requests only read it.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  install-script:
+    name: install.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Lint install.sh as POSIX sh
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+          shellcheck --version
+          shellcheck -s sh install.sh
+          dash -n install.sh
+
+  release:
+    name: release (${{ matrix.target }})
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: [fmt, check, install-script]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # The oldest hosted Ubuntu: a glibc build needs the glibc it was
+          # built against or newer (2.34+ when built on 22.04).
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          # Static: runs on any x86_64 Linux. install.sh picks it on Linux.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      TARGET: ${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (the channel in rust-toolchain.toml) for ${{ matrix.target }}
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target "$TARGET" --no-self-update
+          rustc --version && cargo --version
+
+      # aws-lc-sys (rustls's crypto) compiles C, so musl needs a musl C compiler.
+      - name: Install musl-tools
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Read the version, and check the tag matches it
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "benchflow-cli") | .version')
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the Cargo workspace version v$version. Set [workspace.package] version in Cargo.toml to ${GITHUB_REF_NAME#v} and tag again."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=bench-$version-$TARGET" >> "$GITHUB_OUTPUT"
+
+      - name: Build (cargo build --profile dist)
+        run: cargo build --locked --profile dist --target "$TARGET" -p benchflow-cli
+
+      - name: Check the binary runs and names its commit
+        run: |
+          bin="target/$TARGET/dist/bench"
+          ls -l "$bin"
+          file "$bin"
+          "$bin" --help > /dev/null
+          "$bin" --version | tee version.txt
+          grep -Eq '^bench [^ ]+ \([0-9a-f]{9,} [0-9]{4}-[0-9]{2}-[0-9]{2}\)$' version.txt ||
+            { echo "::error::bench --version does not name a commit and date"; exit 1; }
+          case "$TARGET" in
+            *-musl)
+              libs=$(ldd "$bin" 2>&1 || true)
+              echo "ldd: $libs"
+              case "$libs" in
+                *"=>"*) echo "::error::the musl build links shared libraries"; exit 1 ;;
+              esac ;;
+            *-linux-gnu)
+              echo "needs glibc $(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -t. -k2,2n -k3,3n -u | tail -n 1)" ;;
+          esac
+
+      - name: Package bench-<version>-<target>.tar.gz and its .sha256
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          mkdir -p "dist/$NAME"
+          cp "target/$TARGET/dist/bench" LICENSE "dist/$NAME/"
+          cd dist
+          # COPYFILE_DISABLE keeps macOS tar from adding ._ metadata files.
+          COPYFILE_DISABLE=1 tar -czf "$NAME.tar.gz" "$NAME"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          else
+            shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          fi
+          ls -l "$NAME.tar.gz" "$NAME.tar.gz.sha256"
+          cat "$NAME.tar.gz.sha256"
+
+      - name: Install it with install.sh
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          sh install.sh --from "dist/$NAME.tar.gz"
+          "$HOME/.local/bin/bench" --version
+
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: ${{ steps.version.outputs.name }}
+          path: |
+            dist/${{ steps.version.outputs.name }}.tar.gz
+            dist/${{ steps.version.outputs.name }}.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0

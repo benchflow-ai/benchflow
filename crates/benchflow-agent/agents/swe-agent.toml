@@ -1,0 +1,73 @@
+# SWE-agent 1.1, run headless as Harbor's `swe-agent` agent runs it: `sweagent
+# run` on the task folder with the local deployment and the default config.
+# Its `.traj` file is followed while it works. SWE-agent writes its tools and
+# state under /root, so it runs only on tasks whose agent user is root.
+name = "swe-agent"
+description = "SWE-agent 1.1, headless with sweagent run (needs a root agent user)"
+
+[install]
+# SWE-agent is not on PyPI: its release source, installed editable with a
+# pinned uv into its own Python 3.12 venv, so its config/ and tools/ folders
+# stay beside the package. Its tools run in bash, and it resets the
+# repository it works in with git. The venv has pip and the edit tool's
+# tree-sitter packages, because the tool bundles `pip install` them as they
+# start, with the venv first on PATH.
+installer = '''
+set -eu
+if ! command -v git > /dev/null 2>&1 || ! command -v bash > /dev/null 2>&1; then
+  if command -v apt-get > /dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq git bash;
+  elif command -v dnf > /dev/null 2>&1; then dnf -y install git bash;
+  elif command -v apk > /dev/null 2>&1; then apk add --no-cache git bash;
+  else echo 'BenchFlow: SWE-agent needs git and bash, and the image has no apt-get, dnf or apk to add them' >&2; exit 127; fi
+fi
+case "$(uname -m)" in x86_64|amd64) a=x86_64 ;; aarch64|arm64) a=aarch64 ;; *) echo "BenchFlow: uv has no build for $(uname -m)" >&2; exit 1 ;; esac
+mkdir -p uv
+curl -fsSL "https://github.com/astral-sh/uv/releases/download/0.13.0/uv-$a-unknown-linux-musl.tar.gz" | tar -xz -C uv --strip-components=1 --no-same-owner
+rm -rf SWE-agent-1.1.0
+curl -fsSL https://github.com/SWE-agent/SWE-agent/archive/refs/tags/v1.1.0.tar.gz | tar -xz --no-same-owner
+export UV_PYTHON_INSTALL_DIR="$HOME/python" UV_PYTHON_PREFERENCE=only-managed UV_CACHE_DIR=/tmp/benchflow-uv-cache UV_NO_PROGRESS=1
+uv/uv venv --seed --python 3.12 venv
+VIRTUAL_ENV="$HOME/venv" uv/uv pip install -e ./SWE-agent-1.1.0 'tree-sitter==0.21.3' tree-sitter-languages
+rm -rf /tmp/benchflow-uv-cache
+'''
+links = ["venv/bin/sweagent"]
+verify = "/opt/benchflow/bin/sweagent --help > /dev/null"
+
+[headless]
+# SWE-agent checks out and cleans the repository it works in, so a
+# workspace that is not a git work tree is committed first. The model is a
+# LiteLLM id; cost limits are off (BenchFlow's budgets are time limits, and
+# LiteLLM cannot price every model).
+command = '''if [ "$(id -u)" != 0 ]; then
+  echo "BenchFlow: SWE-agent writes its tools and state under /root, so it runs only as root, and this task runs its agent as $(id -un). Set [agent] user = \"root\" in the task, or use mini-swe-agent." >&2
+  exit 2
+fi
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  { git init -q && git add -A && git -c user.name=benchflow -c user.email=benchflow@localhost commit -q --no-verify --allow-empty -m 'Task files before agent run'; } || echo 'BenchFlow: could not commit the workspace for SWE-agent' >&2
+fi
+d=/opt/benchflow/agents/swe-agent
+o="$HOME/.benchflow/swe-agent"
+export PATH="$d/venv/bin:$PATH"
+exec "$d/venv/bin/python" "$HOME/.benchflow/follow.py" "$o/task/task.traj" trajectory query,messages -- \
+  "$d/venv/bin/sweagent" run --config="$d/SWE-agent-1.1.0/config/default.yaml" \
+  --agent.model.name="$BENCHFLOW_MODEL" --agent.model.per_instance_cost_limit=0 --agent.model.total_cost_limit=0 \
+  --problem_statement.path="$BENCHFLOW_INSTRUCTION_FILE" --problem_statement.id=task \
+  --env.deployment.type=local --env.repo.type=preexisting --env.repo.repo_name="${PWD#/}" --output_dir="$o"'''
+output = "swe-agent-trajectory"
+
+[credentials]
+family = "model"
+
+[model]
+select = "none"
+format = "provider/model"
+
+[providers.openai]
+# LiteLLM's `openai/<model>` (Chat Completions) on OPENAI_BASE_URL, which
+# LiteLLM also reads as OPENAI_API_BASE.
+base_url = "OPENAI_BASE_URL"
+key = "OPENAI_API_KEY"
+model = "openai/{model}"
+
+[providers.openai.env]
+OPENAI_API_BASE = "{base_url}"

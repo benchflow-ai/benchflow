@@ -1,0 +1,36 @@
+# Google's Antigravity SDK agent, run headless by BenchFlow's runner script
+# runners/run_antigravity_sdk.py with the settings of Harbor's
+# `antigravity-sdk` agent. The SDK calls the Gemini API with a key from a
+# Google account.
+name = "antigravity-sdk"
+aliases = ["google-antigravity"]
+description = "Google Antigravity SDK agent (Python); needs a Gemini API key from a Google account"
+skill_paths = ["$HOME/.gemini/skills"]
+
+[install]
+uv-venv = ["google-antigravity==0.1.21"]
+python = "3.12"
+verify = "/opt/benchflow/agents/antigravity-sdk/venv/bin/python -c \"import importlib.metadata as m, google.antigravity; print('google-antigravity', m.version('google-antigravity'))\""
+
+[headless]
+# The model is a Gemini model (`google/gemini-3.5-flash`); the reasoning
+# effort is Gemini's thinking level. GOOGLE_GEMINI_BASE_URL and
+# ANTIGRAVITY_SKILL_PATHS pass with --env.
+command = '''exec /opt/benchflow/agents/antigravity-sdk/venv/bin/python -u "$HOME/.benchflow/runners/run_antigravity_sdk.py" "$BENCHFLOW_INSTRUCTION_FILE" < /dev/null'''
+output = "benchflow-runner"
+
+[[headless.files]]
+path = ".benchflow/runners/bf_events.py"
+runner = "bf_events.py"
+
+[[headless.files]]
+path = ".benchflow/runners/run_antigravity_sdk.py"
+runner = "run_antigravity_sdk.py"
+
+[credentials]
+env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+account = "a Google account: sign in at https://aistudio.google.com/apikey and create a Gemini API key"
+
+[model]
+select = "none"
+default = "google/gemini-3.5-flash"

@@ -1,0 +1,91 @@
+{
+  "path": "world/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/world\"\nversion = \"1.0.0\"\n[world]\nkind = \"simulted\"\ntime = \"fast\"\n\n[world.episode]\nsuccess = \"last\"\nsettle = 3\n\n[world.safety]\n[[world.safety.limit]]\nquantity = \"speed\"\non_violation = \"explode\"\nunit = \"m/s\"\n\n[world.desktop]\nmodality = \"voice\"\ndisplay = { width = 1, colors = 3 }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/world",
+    "version": "1.0.0",
+    "world": {
+      "kind": "simulted",
+      "time": "fast",
+      "episode": {
+        "success": "last",
+        "settle": 3
+      },
+      "safety": {
+        "limit": [
+          {
+            "quantity": "speed",
+            "on_violation": "explode",
+            "unit": "m/s"
+          }
+        ]
+      },
+      "desktop": {
+        "modality": "voice",
+        "display": {
+          "width": 1,
+          "colors": 3
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[world] time must be one of 'decision-synchronous', 'real-time'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[world.episode] success must be one of 'first', 'final'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'settle' in [world.episode]; did you mean settle_steps? it holds hidden_seeds, public_seeds, settle_steps, success, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[world.safety.limit] on_violation must be one of 'reject-command', 'reject-protocol', 'clamp', 'stop', 'end-episode'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'unit' in [world.safety.limit]; did you mean quantity? it holds enforced_by, frame, max, measured_by, min, on_violation, proxy, quantity, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[world.desktop] modality must be one of 'gui-only', 'gui-preferred', 'any'",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'colors' in [world.desktop.display]; it holds depth, dpi, height, width, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "[world] kind must be one of ['physical', 'simulated', 'virtual']",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/world",
+  "ok": false
+}

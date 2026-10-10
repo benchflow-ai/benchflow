@@ -1,0 +1,12 @@
+behaviors-good/task.md
+  mode: blocks
+  title: acme/behaviors-good
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, verifier, version)
+  rubric: 1 criteria, 1 gates, 0 points; judges test
+  behaviors: process.loop
+  grading needs a model: yes: agent judges 1 behavior
+  judge agent: model from the run, harness judge-loop@1*, samples 1*, per rubric*, timeout 20m*, budget tokens 1M; * marks a default
+  worst-case grading time: 20m (agent 1 x 20m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  ok

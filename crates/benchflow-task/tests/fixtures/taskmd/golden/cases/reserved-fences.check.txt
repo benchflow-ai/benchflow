@@ -1,0 +1,11 @@
+reserved-fences/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 2 words; starts 'Fix it.'
+  blocks: toml task
+  config: block (name)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  error: ```rubric blocks are no longer part of task.md: move them to verifier/rubric.json (task.md:3)
+  error: ```behaviors blocks are no longer part of task.md: move them to verifier/behaviors.json (task.md:7)
+  FAILED

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "criteria": [
+    {
+      "id": "memo-clear",
+      "points": 1,
+      "judge": "agent",
+      "evidence": ["memo.md"],
+      "text": "The memo says what failed and when.",
+      "stated": "Write a short memo about the outage"
+    }
+  ]
+}

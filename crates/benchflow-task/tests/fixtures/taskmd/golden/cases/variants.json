@@ -1,0 +1,55 @@
+{
+  "path": "variants/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/variants\"\nversion = \"1.0.0\"\n[agent]\ntimeout = \"10m\"\n\n[variants.fast]\ndescription = \"Less time.\"\nsandbx = {}\n\n[variants.fast.agent]\ntimeout = \"1m\"\ntimout = \"2m\"\n\n[variants.slow.verifier]\ntimeout = \"nope\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/variants",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "10m"
+    },
+    "variants": {
+      "fast": {
+        "description": "Less time.",
+        "sandbx": {},
+        "agent": {
+          "timeout": "1m",
+          "timout": "2m"
+        }
+      },
+      "slow": {
+        "verifier": {
+          "timeout": "nope"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "unknown key 'sandbx' in [variants.fast]; did you mean sandbox? it holds about, agent, conventions, credits, description, family, import, integrity, interaction, matrix, oracle, preference, provenance, roles, runs, sandbox, stages, tiers, training, trajectory, user, variants, verifier, world, or x- extensions",
+      "where": "task.md"
+    },
+    {
+      "level": "error",
+      "message": "unknown key 'timout' in [variants.fast.agent]; did you mean timeout? it holds budget, network, network_reason, on_timeout, system_prompt_append, timeout, timeout_basis, user, or x- extensions",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/variants",
+  "ok": false
+}

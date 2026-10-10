@@ -1,0 +1,44 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "tests-pass",
+      "gate": true,
+      "text": "All existing tests pass, and the new config tests pass.",
+      "stated": "Move it to `config.toml`: read TOML with the standard library",
+      "implicit": "A migration that breaks the existing tests is not finished.",
+      "judge": "test",
+      "check": "tests/"
+    },
+    {
+      "id": "yaml-fallback",
+      "gate": true,
+      "text": "A config.yaml from the previous release still loads, with a deprecation warning.",
+      "stated": "keep reading `config.yaml` for one release with a deprecation warning",
+      "judge": "test",
+      "check": "test_yaml_fallback"
+    },
+    {
+      "id": "docs-cover-every-setting",
+      "points": 3,
+      "text": "Every setting documented for YAML is documented for TOML.",
+      "stated": "update the docs",
+      "judge": "llm",
+      "evidence": [
+        "diff:."
+      ]
+    },
+    {
+      "id": "settings-preserved",
+      "points": -3,
+      "text": "Drops or renames a setting.",
+      "stated": "Existing users must not lose any setting",
+      "judge": "test",
+      "check": "test_settings_preserved"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+rubric-shapes/task.md
+  mode: blocks
+  title: acme/rubric-shapes
+  instruction: 5 words; starts 'Fix the bug in `app.py`.'
+  blocks: toml task
+  config: block (name, version)
+  rubric: 10 criteria, 3 gates, 8 points; judges agent, human, llm, panel, robot, rule, test, vlm
+  grading needs a model: yes: agent judges 3 criteria; llm judges 1 criterion; panel judges 1 criterion; vlm judges 1 criterion; 1 criterion wait for human raters
+  judge agent: model from the run, harness judge-loop@1*, samples 1*, per rubric*, timeout 20m*, no token budget (the timeout bounds it); * marks a default
+  judge llm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  judge panel: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  judge vlm: model from the run, samples 1*, per criterion*, timeout 2m*; * marks a default
+  worst-case grading time: 26m (agent 1 x 20m + llm 1 x 2m + panel 1 x 2m + vlm 1 x 2m; in sequence, before retries), plus the scripts of the task, which no [verifier] timeout bounds
+  error: unknown key 'extra_key'; a rubric holds $schema, criteria, extends, scoring, validation, version, or x- extensions (verifier/rubric.json)
+  error: unknown key 'x_ok'; a rubric holds $schema, criteria, extends, scoring, validation, version, or x- extensions (verifier/rubric.json)
+  error: unknown key 'pased' in scoring; it holds headline, method, pass_threshold, or x- extensions (verifier/rubric.json)
+  error: scoring.headline is "partial" or "strict" (verifier/rubric.json)
+  error: scoring.pass_threshold is a fraction from 0 to 1 under method points, and a number of points, at least 0, under method sum (verifier/rubric.json)
+  error: criterion must be an object (verifier/rubric.json criteria[0])
+  error: id must be lowercase letters, digits, and hyphens (verifier/rubric.json criteria[1])
+  error: text is required (verifier/rubric.json criteria[1])
+  error: a criterion is a gate or carries points, not both (verifier/rubric.json criteria[1])
+  error: judge is required: one of ['agent', 'human', 'llm', 'panel', 'replay', 'rule', 'test', 'vlm', 'world'] (verifier/rubric.json criteria[1])
+  warning: 'Bad_ID' does not say where the agent is told about it: quote the instruction in stated, or explain in implicit why the agent should know (verifier/rubric.json criteria[1])
+  error: judge 'rule' needs a check (a test id, rule, world predicate, or replay recipe) (verifier/rubric.json criteria[2])
+  error: duplicate id 'dup' (verifier/rubric.json criteria[3])
+  error: a model-judged criterion needs an evidence list: what the judge reads, and all a verdict may cite (verifier/rubric.json criteria[3])
+  error: levels must map scores to anchor descriptions (verifier/rubric.json criteria[3])
+  error: stated must be a quote, or a list of quotes, from what the agent is told (verifier/rubric.json criteria[3])
+  error: id must be lowercase letters, digits, and hyphens (verifier/rubric.json criteria[4])
+  error: stated must be a quote, or a list of quotes, from what the agent is told (verifier/rubric.json criteria[4])
+  error: remove drops a criterion from a shared rubric, so it needs extends (verifier/rubric.json criteria[5])
+  error: a removal entry is exactly {"id": ..., "remove": true} (verifier/rubric.json criteria[6])
+  error: remove drops a criterion from a shared rubric, so it needs extends (verifier/rubric.json criteria[6])
+  error: missing is "no-penalty" (verifier/rubric.json criteria[7])
+  error: evidence is a list of items (verifier/rubric.json criteria[7])
+  warning: missing = "no-penalty" changes only outcome = "bad" criteria: a good-outcome criterion whose evidence is missing fails (verifier/rubric.json criteria[8])
+  error: score is a continuous range, {"min": <number>, "max": <number>}, with min below max (verifier/rubric.json criteria[9])
+  error: a gate passes or fails, so it has no continuous score; give the criterion points (verifier/rubric.json criteria[10])
+  warning: the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = "rl" and delivery grade require one (task.md)
+  FAILED

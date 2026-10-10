@@ -1,0 +1,35 @@
+{
+  "path": "snapshots-shape/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/snapshots-shape\"\nversion = \"1.0.0\"\n[verifier]\nsnapshot = \"x\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/snapshots-shape",
+    "version": "1.0.0",
+    "verifier": {
+      "snapshot": "x"
+    }
+  },
+  "config_source": "block",
+  "rubric": null,
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier] snapshot is a list of tables: [[verifier.snapshot]] with run and reads",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/snapshots-shape",
+  "ok": false
+}

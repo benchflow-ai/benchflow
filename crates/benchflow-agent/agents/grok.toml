@@ -1,0 +1,99 @@
+# xAI's Grok Build agent over ACP (`grok agent stdio`), the npm package the
+# public ACP registry lists for grok-build 1.0.51, or headless with `grok
+# --single` (Harbor's `grok-build`) from the same install.
+name = "grok"
+aliases = ["grok-build", "grok-cli"]
+description = "Grok Build (xAI) via ACP, or headless with grok --single"
+acp_registry = "grok-build"
+skill_paths = ["$HOME/.grok/skills"]
+home_dirs = [".grok"]
+
+[install]
+npm = "@xai-official/grok@1.0.51"
+bin = "grok"
+# The package's bin may be a native executable.
+launcher = "auto"
+
+[launch]
+# On a provider, config.toml comes from the [providers] table (see below).
+command = '''if [ -n "$BENCHFLOW_GROK_CONFIG" ]; then { mkdir -p "$HOME/.grok" && printf '%s' "$BENCHFLOW_GROK_CONFIG" > "$HOME/.grok/config.toml"; } || { echo "BenchFlow: cannot write $HOME/.grok/config.toml" >&2; exit 1; }; fi
+exec /opt/benchflow/bin/grok agent stdio'''
+
+[headless]
+# Harbor's `grok --single ... --output-format streaming-json` with a fresh
+# session id, so the session's chat_history.jsonl can be followed for the
+# steps (the stream carries the usage). grok's own log goes to a file, off
+# the stream.
+command = '''s=$(cat /proc/sys/kernel/random/uuid 2> /dev/null || printf 'benchflow-%s' "$(date +%s)")
+if [ -n "$BENCHFLOW_GROK_CONFIG" ]; then { mkdir -p "$HOME/.grok" && printf '%s' "$BENCHFLOW_GROK_CONFIG" > "$HOME/.grok/config.toml"; } || { echo "BenchFlow: cannot write $HOME/.grok/config.toml" >&2; exit 1; }; fi
+mkdir -p "$HOME/.benchflow"
+export GROK_LOG_FILE="$HOME/.benchflow/grok.log"
+exec sh "$HOME/.benchflow/follow.sh" "$HOME/.grok/sessions/*/$s/chat_history.jsonl" \
+  /opt/benchflow/bin/grok --no-auto-update --single "$(cat "$BENCHFLOW_INSTRUCTION_FILE")" --always-approve \
+  --output-format streaming-json --session-id "$s" ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} \
+  ${BENCHFLOW_EFFORT:+--reasoning-effort "$BENCHFLOW_EFFORT"}'''
+output = "grok-streaming-json"
+env = { GROK_DISABLE_AUTOUPDATER = "1", RUST_LOG = "warn" }
+
+# Harbor's config: no auto-update, telemetry or codebase upload, and no
+# server-side web search.
+[[headless.files]]
+path = ".grok/config.toml"
+contents = '''
+disable_web_search = true
+
+[cli]
+auto_update = false
+
+[features]
+telemetry = false
+
+[harness]
+disable_codebase_upload = true
+'''
+
+[credentials]
+family = "env"
+env = ["XAI_API_KEY"]
+account = "an xAI API key from https://console.x.ai, set as XAI_API_KEY"
+
+[model]
+select = "auto"
+# Harbor and Karotte strip the `xai/` prefix.
+strip_prefixes = ["xai/"]
+
+[providers.openai]
+# Harbor's config for a non-xAI endpoint: the model as a `[model.<slug>]`
+# entry on the forwarder (chat_completions, the key read from
+# OPENAI_API_KEY), and grok's helper models pinned to it so nothing asks
+# xAI. Both commands write it over Harbor's config above; it is grok's
+# default model, so nothing is selected over ACP or named on the command
+# line.
+key = "OPENAI_API_KEY"
+model = ""
+
+[providers.openai.env]
+BENCHFLOW_GROK_CONFIG = '''disable_web_search = true
+
+[cli]
+auto_update = false
+
+[features]
+telemetry = false
+
+[harness]
+disable_codebase_upload = true
+
+[models]
+default = "{model}"
+session_summary = "{model}"
+image_description = "{model}"
+web_search = "{model}"
+
+[model."{model}"]
+name = "{model}"
+model = "{model}"
+base_url = "{base_url}"
+env_key = "OPENAI_API_KEY"
+api_backend = "chat_completions"
+'''

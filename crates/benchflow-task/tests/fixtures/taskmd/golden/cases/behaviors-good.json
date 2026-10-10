@@ -1,0 +1,65 @@
+{
+  "path": "behaviors-good/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/behaviors-good\"\nversion = \"1.0.0\"\n[verifier.judges.agent]\nbudget = { tokens = \"1M\" }",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/behaviors-good",
+    "version": "1.0.0",
+    "verifier": {
+      "judges": {
+        "agent": {
+          "budget": {
+            "tokens": "1M"
+          }
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "works",
+        "gate": true,
+        "judge": "test",
+        "check": "test_works",
+        "text": "It works.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "watch": [
+      {
+        "id": "process.loop",
+        "definition": "Repeats.",
+        "detect": "monitor",
+        "scale": "0-3",
+        "judge": "agent",
+        "consequence": {
+          "1": "report",
+          "2": {
+            "penalty": -0.2
+          },
+          "3": "fail"
+        }
+      }
+    ]
+  },
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/behaviors-good",
+  "ok": true
+}

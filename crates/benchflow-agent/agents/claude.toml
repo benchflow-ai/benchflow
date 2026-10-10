@@ -1,0 +1,154 @@
+# Claude Code through its ACP adapter, as BenchFlow 0.8's `claude-agent-acp`.
+name = "claude"
+aliases = ["claude-agent-acp", "claude-code"]
+description = "Claude Code via ACP (Anthropic's Agent Client Protocol), or headless with claude -p"
+acp_registry = "claude-acp"
+skill_paths = ["$HOME/.claude/skills"]
+home_dirs = [".claude"]
+
+[install]
+# Stay on the 0.81 adapter line: 0.82.0 changed the tool-call contract.
+npm = "@agentclientprotocol/claude-agent-acp@0.81.2"
+bin = "claude-agent-acp"
+# The Claude Code CLI the adapter drives, pinned apart from the adapter.
+# Models set a minimum CLI version (claude-opus-5-5 refuses Claude Code older
+# than 2.1.280), and the CLI bundled with the adapter's SDK only moves with an
+# adapter release. The launcher hands this CLI to the adapter through
+# CLAUDE_CODE_EXECUTABLE.
+companions = ["@anthropic-ai/claude-code@2.1.280"]
+launcher_env = { CLAUDE_CODE_EXECUTABLE = "/opt/benchflow/js-agents/bin/claude" }
+# Fail the install unless the pinned CLI runs and reports its pin: an install
+# that skipped the package's postinstall fails here, not on the first model
+# call. Keep the version in step with the companion pin above.
+verify = '''( v="$(/opt/benchflow/js-agents/bin/claude --version 2>&1)"; [ "$v" = '2.1.280 (Claude Code)' ] || { echo "BenchFlow: /opt/benchflow/js-agents/bin/claude is not Claude Code 2.1.280: $v" >&2; exit 1; } )'''
+
+[launch]
+# 0.8 set these for every agent; only Claude Code reads them.
+env = { CLAUDE_CODE_MAX_OUTPUT_TOKENS = "128000", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+
+[headless]
+# Claude Code's print mode, on the CLI pinned above: one stream-json event per
+# line, the instruction on stdin. The sandbox (a non-root user, BenchFlow's
+# firewall) owns isolation, so tools run without permission prompts. The CLI
+# is a Node script on some platforms, so BenchFlow's Node goes on PATH.
+command = '''PATH="/opt/benchflow/node/bin:$PATH" exec /opt/benchflow/js-agents/bin/claude -p --verbose --output-format stream-json --permission-mode bypassPermissions ${BENCHFLOW_RESUME:+--continue} ${BENCHFLOW_MODEL:+--model "$BENCHFLOW_MODEL"} ${BENCHFLOW_EFFORT:+--effort "$BENCHFLOW_EFFORT"} "$@" < "$BENCHFLOW_INSTRUCTION_FILE"'''
+output = "claude-stream-json"
+env = { CLAUDE_CODE_MAX_OUTPUT_TOKENS = "128000", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+
+[credentials]
+family = "anthropic"
+
+[model]
+# claude-agent-acp 0.81 has no session/set_model; model and effort are session
+# config options. The ids are coupled to the adapter pin.
+select = "config-option"
+config_id = "model"
+effort_config_id = "effort"
+# 0.8's default model for its default agent (claude-agent-acp).
+default = "claude-haiku-4-5-20251001"
+# `anthropic/<model>` runs on Claude Code's own logins, as a bare id.
+strip_prefixes = ["anthropic/"]
+
+[acp]
+# Verified against claude-agent-acp 0.81.2: a spent subscription arrives as a
+# typed session failure instead of an opaque -32603.
+typed_failures = true
+subagent_transcript = true
+
+[providers.anthropic]
+# Claude Code sends ANTHROPIC_AUTH_TOKEN as a bearer token, and prefers
+# ANTHROPIC_API_KEY and an OAuth token over it, so those are cleared.
+base_url = "ANTHROPIC_BASE_URL"
+key = "ANTHROPIC_AUTH_TOKEN"
+clear = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+model = ""
+
+[providers.anthropic.env]
+# The provider's model is the session's model, and Claude Code's opus, sonnet
+# and haiku aliases, its small fast model and its subagents all map to it, so
+# nothing asks the provider for a Claude model it may not serve (or bill for
+# one). claude-agent-acp 0.81.2 then lists the aliases as custom models and
+# not the id itself, so BenchFlow selects no model over ACP (`model = ""`).
+ANTHROPIC_MODEL = "{model}"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}"
+ANTHROPIC_SMALL_FAST_MODEL = "{model}"
+CLAUDE_CODE_SUBAGENT_MODEL = "{model}"
+
+# Sessions live under ~/.claude/projects. Over ACP a later stage loads the
+# previous stage's session (session/load); headless it continues the most
+# recent session in the working folder (--continue), as Harbor does.
+[resume]
+acp = true
+headless = true
+session_dirs = [".claude/projects"]
+# bench run --load-trajectory places a session file of this format.
+load = "claude-jsonl"
+
+# Harbor's claude-code options. The flags are Claude Code's print-mode
+# flags, so they reach the headless harness only; the ACP adapter starts
+# the CLI itself.
+[options.version]
+type = "string"
+description = "Claude Code CLI version to install (the ACP adapter drives it too)."
+default = "2.1.280"
+install = "@anthropic-ai/claude-code"
+
+[options.max_turns]
+type = "int"
+description = "Most agent turns."
+min = 1
+flag = "--max-turns"
+harnesses = ["headless"]
+
+[options.max_thinking_tokens]
+type = "int"
+description = "Most thinking tokens per response."
+min = 1024
+env = "MAX_THINKING_TOKENS"
+
+[options.max_budget_usd]
+type = "float"
+description = "Stop when the session has spent this many US dollars."
+min = 0
+flag = "--max-budget-usd"
+harnesses = ["headless"]
+
+[options.fallback_model]
+type = "string"
+description = "Model to fall back to when the main one is overloaded."
+flag = "--fallback-model"
+harnesses = ["headless"]
+
+[options.append_system_prompt]
+type = "string"
+description = "Text appended to the system prompt."
+flag = "--append-system-prompt"
+harnesses = ["headless"]
+
+[options.allowed_tools]
+type = "string"
+description = "Comma-separated tools allowed without asking."
+flag = "--allowedTools"
+harnesses = ["headless"]
+
+[options.disallowed_tools]
+type = "string"
+description = "Comma-separated tools the agent may not use."
+flag = "--disallowedTools"
+harnesses = ["headless"]
+
+[options.disable_web_search]
+type = "bool"
+description = "Disallow the WebSearch and WebFetch tools."
+default = false
+flag = "--disallowedTools WebSearch,WebFetch"
+harnesses = ["headless"]
+
+[options.thinking_display]
+type = "enum"
+description = "How thinking is shown in the transcript."
+choices = ["summarized", "omitted"]
+flag = "--thinking-display"
+harnesses = ["headless"]

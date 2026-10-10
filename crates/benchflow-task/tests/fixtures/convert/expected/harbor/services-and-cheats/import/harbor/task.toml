@@ -1,0 +1,30 @@
+version = "1.2"
+
+[environment]
+docker_image = "ghcr.io/acme/web:1"
+gpus = 1
+gpu_types = ["H100"]
+
+[environment.tpu]
+type = "v6e"
+topology = "2x4"
+
+[[environment.mcp_servers]]
+name = "browser"
+transport = "http"
+url = "http://browser:3000/mcp"
+
+[verifier]
+environment_mode = "separate"
+
+[verifier.environment]
+docker_image = "ghcr.io/acme/grader:1"
+cpus = 1
+
+[[verifier.collect]]
+command = "pg_dump app > /logs/artifacts/db.sql"
+service = "db"
+timeout_sec = 30
+
+[agent]
+user = 1000

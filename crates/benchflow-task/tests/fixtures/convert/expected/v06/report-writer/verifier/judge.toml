@@ -1,0 +1,7 @@
+[judge]
+judge = "anthropic/claude-sonnet-5"
+files = ["/app/report.md"]
+
+[[criterion]]
+description = "The report states the row count of /app/data.csv."
+type = "binary"

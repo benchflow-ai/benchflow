@@ -1,0 +1,53 @@
+{
+  "path": "grading-unbounded/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/grading-unbounded\"\nversion = \"1.0.0\"\n[verifier.judges.llm]\ntimeout = \"forever\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/grading-unbounded",
+    "version": "1.0.0",
+    "verifier": {
+      "judges": {
+        "llm": {
+          "timeout": "forever"
+        }
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "method",
+        "points": 2,
+        "judge": "llm",
+        "evidence": [
+          "report.md"
+        ],
+        "text": "The method is sound.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "[verifier.judges.llm] timeout must be a duration such as \"90s\", \"15m\", or \"1h30m\"",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/grading-unbounded",
+  "ok": false
+}

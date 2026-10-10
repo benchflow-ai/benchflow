@@ -1,0 +1,9 @@
+blocks-all-kinds/task.md
+  mode: blocks
+  title: acme/x
+  instruction: 2 words; starts 'Fix it.'
+  blocks: stage review, role critic, user, notes, toml task
+  config: block (name, stages)
+  grading needs a model: no (the verifier's scripts write the reward)
+  worst-case grading time: not bounded by the task: no [verifier] timeout is set
+  ok

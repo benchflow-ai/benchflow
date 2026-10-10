@@ -1,0 +1,136 @@
+{
+  "path": "behaviors-maps/task.md",
+  "mode": "blocks",
+  "instruction": "Fix the bug in `app.py`.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"acme/behaviors-maps\"\nversion = \"1.0.0\"",
+      "line": 3
+    }
+  ],
+  "config": {
+    "name": "acme/behaviors-maps",
+    "version": "1.0.0"
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "criteria": [
+      {
+        "id": "works",
+        "gate": true,
+        "judge": "test",
+        "check": "test_works",
+        "text": "It works.",
+        "stated": "Fix the bug"
+      }
+    ]
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "watch": [
+      {
+        "id": "integrity.answer-lookup",
+        "definition": "Reads /oracle.",
+        "detect": "rule",
+        "consequence": {
+          "1": "report",
+          "2": "fail"
+        }
+      },
+      {
+        "id": "process.loop",
+        "definition": "Repeats.",
+        "detect": "monitor",
+        "scale": "0-3",
+        "consequence": {
+          "1": "report",
+          "2": "fail"
+        }
+      },
+      {
+        "id": "process.overreach",
+        "definition": "Edits more.",
+        "detect": "monitor",
+        "scale": "0-3",
+        "consequence": {
+          "0": "report",
+          "1": "report",
+          "2": {
+            "penalty": -0.2
+          },
+          "3": "fail"
+        }
+      },
+      {
+        "id": "process.gave-up",
+        "definition": "Stops.",
+        "detect": "rule",
+        "judge": "agent",
+        "consequence": "report"
+      },
+      {
+        "id": "process.no-plan",
+        "definition": "No plan.",
+        "detect": "monitor",
+        "judge": "human",
+        "consequence": "report"
+      },
+      {
+        "id": "research.fabrication",
+        "definition": "Makes up data.",
+        "detect": "monitor",
+        "scale": "0-3",
+        "consequence": {
+          "1": "report",
+          "2": "zero",
+          "3": "fail"
+        }
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "level": "error",
+      "message": "a severity map needs scale = \"0-3\": a binary behavior is detected or not, so it carries one consequence",
+      "where": "verifier/behaviors.json watch[0]"
+    },
+    {
+      "level": "error",
+      "message": "the severity map must cover the whole 0-3 scale: add '3'",
+      "where": "verifier/behaviors.json watch[1]"
+    },
+    {
+      "level": "error",
+      "message": "severity 0 means not detected, so it carries no consequence: map \"1\" to \"3\"",
+      "where": "verifier/behaviors.json watch[2]"
+    },
+    {
+      "level": "error",
+      "message": "detect = \"rule\" is for the integrity family, whose rules are built into the detector (docs/behaviors.md, Protected paths): a task cannot state a rule of its own yet. Detect process.gave-up with \"monitor\", from its definition, or with \"world\"",
+      "where": "verifier/behaviors.json watch[3]"
+    },
+    {
+      "level": "error",
+      "message": "judge applies only to behaviors with detect = \"monitor\", which a model tags",
+      "where": "verifier/behaviors.json watch[3]"
+    },
+    {
+      "level": "error",
+      "message": "judge is \"llm\" (the default), \"vlm\", or \"agent\"",
+      "where": "verifier/behaviors.json watch[4]"
+    },
+    {
+      "level": "error",
+      "message": "severity 2 maps to 'zero'; a level's consequence is 'fail', 'invalid', 'report', or {penalty: <negative number>}",
+      "where": "verifier/behaviors.json watch[5]"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "Fix the bug in `app.py`.",
+  "title": "acme/behaviors-maps",
+  "ok": false
+}

@@ -1,0 +1,27 @@
+{
+  "split-defaults": {
+    "harbor": "sha256:76f8abe6c9d2e1562da003ac52c123e4f93a30670ef79d587f223dda337d8710",
+    "tree": "sha256:4b10dc412e20ab485e300f66b6114e7e319abd06835d6338c05f50dca0abea76",
+    "benchflow": "sha256:4b10dc412e20ab485e300f66b6114e7e319abd06835d6338c05f50dca0abea76"
+  },
+  "split-gitignore": {
+    "harbor": "sha256:825a3612b3eb2f55403fedd2f0f2bd9335896b593f093dc2090ef13acaf5b670",
+    "tree": "sha256:59ce207afd28140e8f0147a4bc981852720f25e68a41a7914bb2cc9312983047",
+    "benchflow": "sha256:59ce207afd28140e8f0147a4bc981852720f25e68a41a7914bb2cc9312983047"
+  },
+  "split-gitignore-crlf": {
+    "harbor": "sha256:a7d4d08cabe22f346309c713f79aee11915efa48a2bfa06e6b84a3b274ef3afc",
+    "tree": "sha256:c471d634316bbb342d44142a2f4e3f043519ef0d5d38b5ca856ba7e68d66fd59",
+    "benchflow": "sha256:c471d634316bbb342d44142a2f4e3f043519ef0d5d38b5ca856ba7e68d66fd59"
+  },
+  "taskmd": {
+    "harbor": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tree": "sha256:02076ee08615bf6ef89e8433bea4d6baca123f499ef9f4fa68a91fbee1025608",
+    "benchflow": "sha256:ed0aedaa159599b2a14300a34ec0eada205d8e05466c94ec3031e2e4af919043"
+  },
+  "v06": {
+    "harbor": "sha256:b3ae102d06c6af341e9af4464326406bd041a69850c07c32ed5e64acc65df3e6",
+    "tree": "sha256:6e2ff9393ed6d867758fcd8a7200518920fb57d76257f0427783bdfa216e6ff1",
+    "benchflow": "sha256:e7f272957113ad52944979c2281574709a0dc22aa8aaa6b47ad7ff90940c280b"
+  }
+}
