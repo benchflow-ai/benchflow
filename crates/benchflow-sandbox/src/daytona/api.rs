@@ -168,6 +168,19 @@ impl From<ApiError> for SandboxError {
                  side and usually passes; run again, with lower concurrency if it keeps happening.",
                 tries(attempts)
             )),
+            // The sandbox is gone (deleted, or reclaimed by Daytona) or
+            // not in a state to answer: the backend lost it, which no
+            // setting of the run's could fix.
+            ApiError::Status {
+                status: status @ (404 | 409 | 410),
+                message,
+                what,
+                ..
+            } => SandboxError::Transport(format!(
+                "Daytona lost the sandbox while {what} (HTTP {status}: {message}). It was deleted \
+                 or stopped outside this run; run again, and check the Daytona dashboard if it \
+                 keeps happening."
+            )),
             ApiError::Status {
                 status,
                 message,
@@ -599,6 +612,14 @@ mod tests {
             SandboxError::from(status(400, "bad")),
             SandboxError::Unsupported(_)
         ));
+        // Seen live: a sandbox deleted while its verifier ran was R401,
+        // "your setup's problem".
+        let err = SandboxError::from(status(
+            404,
+            "not found: sandbox a6e91758-44db-44bc-8ea0-ffd3c61d1768 not found",
+        ));
+        assert!(err.is_transient(), "{err}");
+        assert!(err.to_string().contains("lost the sandbox"), "{err}");
         assert!(matches!(
             SandboxError::from(ApiError::NoKey),
             SandboxError::Unavailable { .. }

@@ -94,6 +94,7 @@ static PATTERNS: LazyLock<Vec<(Regex, Signal)>> = LazyLock::new(|| {
         (
             re(concat!(
                 r"(?i)API Error: 500 Internal server error|API Error: Server error mid-response|",
+                r"API Error: 5\d\d\b|API Error: Request timed out|API Error: Connection error|",
                 r"API Error: Overloaded|ServiceUnavailableError|overloaded_error|",
                 r"unexpected status 50[0234]\b|\bHTTP 50[0234]\b|provider unavailable|",
                 r"API Error: (?:Connection closed|Connection lost) mid-response|",

@@ -27,6 +27,14 @@ const TRANSIENT: &[&str] = &[
     "504 gateway time",
     "hash sum mismatch",
     "context deadline exceeded",
+    // A registry or mirror that cannot be reached (BuildKit's words for a
+    // `FROM` it could not look up, which also say "failed to resolve source
+    // metadata").
+    "no such host",
+    "network is unreachable",
+    "no route to host",
+    "server misbehaving",
+    "tls: handshake failure",
 ];
 
 /// Output that means the Dockerfile (or the image it names) is at fault.
@@ -116,6 +124,23 @@ mod tests {
         );
         assert_eq!(r.transient, Some("connection timed out"));
         assert!(!r.task_fault);
+    }
+
+    #[test]
+    fn an_unreachable_registry_is_not_the_tasks_fault() {
+        for text in [
+            "ERROR: failed to solve: ubuntu:24.04: failed to resolve source metadata for docker.io/library/ubuntu:24.04: failed to do request: Head \"https://registry-1.docker.io/v2/library/ubuntu/manifests/24.04\": dial tcp: lookup registry-1.docker.io on 127.0.0.11:53: no such host",
+            "ERROR: failed to solve: failed to resolve source metadata for ghcr.io/x/y:1: dial tcp 140.82.112.34:443: connect: network is unreachable",
+        ] {
+            let r = read(text);
+            assert!(r.transient.is_some(), "{text}");
+            assert!(!r.task_fault, "{text}");
+        }
+        // An image that does not exist still is.
+        let r = read(
+            "ERROR: failed to solve: ubuntu:99.04: failed to resolve source metadata for docker.io/library/ubuntu:99.04: docker.io/library/ubuntu:99.04: not found: manifest unknown",
+        );
+        assert!(r.task_fault);
     }
 
     #[test]

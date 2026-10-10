@@ -343,7 +343,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R301",
         title: "the verifier wrote no reward",
         owner: Owner::Task,
-        body: "The verifier finished but `/logs/verifier` holds neither `reward.json` nor `reward.txt` (nor a `ctrf.json` for a rubric).\n\n`verifier/test-stdout.txt` in the trial folder has the verifier's output. A test.sh that exits early (set -e on a failing install) is the usual cause: write the reward on every path, even when tests fail.",
+        body: "The verifier finished but `/logs/verifier` holds neither `reward.json` nor `reward.txt`. (A task with a rubric is different: with no `ctrf.json`, every test criterion fails and the trial is graded, as the task.md format says.)\n\n`verifier/test-stdout.txt` in the trial folder has the verifier's output. A test.sh that exits early (set -e on a failing install) is the usual cause: write the reward on every path, even when tests fail.",
     },
     Explanation {
         code: "R302",
@@ -397,7 +397,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R311",
         title: "a hook before grading failed",
         owner: Owner::Task,
-        body: "A command the task runs after the agent's turn and before grading (Harbor's `[[verifier.collect]]`, task.md's `[[verifier.snapshot]]`) exited with an error or ran past its timeout, so the state it saves is missing and the trial was not graded.\n\nThe trial's `hooks/<n>.txt` has the command and its output.",
+        body: "A command the task runs after the agent's turn and before grading (task.toml's `[[verifier.collect]]`, task.md's `[[verifier.snapshot]]`) exited with an error or ran past its timeout, so the state it saves is missing and the trial was not graded.\n\nThe trial's `hooks/<n>.txt` has the command and its output.",
     },
     Explanation {
         code: "R401",

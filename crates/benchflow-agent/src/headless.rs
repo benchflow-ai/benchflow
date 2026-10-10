@@ -23,7 +23,7 @@
 //!   and BenchFlow 0.8's error patterns), the rest is a crash or an agent
 //!   error with stderr's tail as evidence.
 
-mod classify;
+pub(crate) mod classify;
 mod error;
 mod parser;
 mod parsers;

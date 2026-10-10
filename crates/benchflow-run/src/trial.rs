@@ -235,6 +235,15 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
             ))),
         }
     };
+    // A stop names the phase it interrupted.
+    let driven = driven.map(|r| {
+        r.map_err(|mut p| {
+            if p.code == "R001" {
+                p.phase = t.phase;
+            }
+            p
+        })
+    });
     let result = driven.unwrap_or_else(|panic| {
         Err(Problem::new(
             "R901",
@@ -308,8 +317,10 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
         }
         Err(p) => {
             rec.status = match (p.phase, p.owner) {
+                // The task's verifier or image failed after the agent ran.
+                // A sandbox that failed before grading (R305, R309) is
+                // infrastructure: errored, so a resumed job runs it again.
                 (Phase::Verify | Phase::Handoff, Owner::Task) => Status::Unscored,
-                (Phase::Handoff, Owner::Sandbox) => Status::Unscored,
                 _ => Status::Errored,
             };
             rec.problem = Some(p);
@@ -537,7 +548,36 @@ impl<'a> Trial<'a> {
         // Attempt.
         self.enter(Phase::Agent);
         let agent_clock = Instant::now();
-        let attempted = self.attempt().await;
+        let mut attempted = self.attempt().await;
+        // An agent that exited, went silent, or broke off because its
+        // sandbox died did not fail on its own.
+        if let Err(p) = &attempted
+            && p.owner == Owner::Agent
+        {
+            if let Some(e) = self.unreachable().await {
+                let what = format!("the agent stopped ({})", p.message);
+                attempted =
+                    Err(lost(Phase::Agent, &what, e).detail(p.detail.clone().unwrap_or_default()));
+            } else if let Some(n) = self.oom_kills().await
+                && let Err(p) = &mut attempted
+            {
+                // Killed for memory, not broken: say so, and how to fix it.
+                p.message = format!(
+                    "{} (the sandbox's out-of-memory killer ended {n} process{}: the agent most likely ran out of memory)",
+                    p.message,
+                    if n == 1 { "" } else { "es" }
+                );
+                p.next = "give the trial more memory: the task's `[sandbox] memory`, or the agent's memory floor, then rerun the same command".into();
+            }
+        }
+        // An agent that ran out of time while the provider refused its
+        // requests was not measured: the provider spent its budget.
+        if attempted.is_ok()
+            && self.agent.timed_out
+            && let Some(p) = throttled(&self.spec.dir.join("agent"))
+        {
+            attempted = Err(p);
+        }
         self.timing.agent_execution = agent_clock.elapsed().as_secs_f64();
         self.save_session(true).await;
         attempted?;
@@ -1540,7 +1580,8 @@ impl<'a> Trial<'a> {
         self.verifier_exit = Some(out.exit_code);
         let vdir = self.spec.dir.join("verifier");
         let _ = std::fs::create_dir_all(&vdir);
-        if let Err(e) = self.sb().download("/logs/verifier", &vdir).await {
+        let downloaded = self.sb().download("/logs/verifier", &vdir).await;
+        if let Err(e) = &downloaded {
             self.rt.events.log(
                 self.name(),
                 format!("could not download /logs/verifier: {e}"),
@@ -1563,6 +1604,13 @@ impl<'a> Trial<'a> {
         match scoring::score(&task, &vdir) {
             Ok(score) => Ok(score),
             Err(mut p) => {
+                // No reward, because the sandbox died under the verifier (or
+                // before its folder could be fetched), is not the task's.
+                if p.code == "R301"
+                    && let Some(gone) = self.sandbox_gone(downloaded.err()).await
+                {
+                    return Err(gone.detail(out.tail(1500)));
+                }
                 if out.exit_code != 0 && p.code == "R301" {
                     p = Problem::new(
                         "R304",
@@ -1575,9 +1623,53 @@ impl<'a> Trial<'a> {
                         "make the verifier write a reward on every path, even when tests fail; verifier/test-stdout.txt in the trial folder has its output",
                     );
                 }
+                // A full disk is not a verifier bug: say so.
+                if matches!(p.code.as_str(), "R301" | "R304")
+                    && out.combined().contains("No space left on device")
+                {
+                    p.message.push_str(" (the sandbox's disk was full)");
+                    p.next = "give the task more disk (`[sandbox] disk`), or see what filled it: the agent's files are in the trial's outputs when saved".into();
+                }
                 Err(p.detail(out.tail(1500)))
             }
         }
+    }
+
+    /// When no reward came back because of the sandbox, the problem that
+    /// says so: the verifier's folder (which BenchFlow made) could not be
+    /// fetched, or the sandbox no longer runs a command.
+    async fn sandbox_gone(&self, download: Option<SandboxError>) -> Option<Problem> {
+        let e = match download {
+            Some(e) => e,
+            None => self.unreachable().await?,
+        };
+        Some(lost(
+            Phase::Verify,
+            "no reward came back from the verifier",
+            e,
+        ))
+    }
+
+    /// How many processes the out-of-memory killer ended, if any.
+    async fn oom_kills(&self) -> Option<u64> {
+        let out = self
+            .root(hardening::oom_kills(), Duration::from_secs(30))
+            .await
+            .ok()?;
+        let n: u64 = Report::parse(&out.stdout)
+            .all("oom-kill")
+            .iter()
+            .filter_map(|v| v.trim().parse::<u64>().ok())
+            .sum();
+        (n > 0).then_some(n)
+    }
+
+    /// The error a trivial command gets when the sandbox no longer answers.
+    async fn unreachable(&self) -> Option<SandboxError> {
+        self.sandbox.as_ref()?;
+        self.root("true".into(), Duration::from_secs(30))
+            .await
+            .err()
     }
 
     /// Run the verifier in a fresh sandbox that holds only the agent's
@@ -1873,6 +1965,70 @@ pub(crate) fn sandbox_problem(phase: Phase, e: SandboxError) -> Problem {
     if transient { p.transient() } else { p }
 }
 
+/// When at least a quarter of an agent's model requests (and three or
+/// more) were refused with 429 or a 5xx, the provider's problem: the agent
+/// that timed out spent its time waiting, so its score would measure the
+/// provider. The requests are a native agent's `model_calls.jsonl`, or the
+/// provider forwarder's log for an agent behind it (its model calls are
+/// the `POST`s the forwarder passed on, not its own refusals).
+pub fn throttled(agent_dir: &Path) -> Option<Problem> {
+    let mut text = String::new();
+    for name in ["model_calls.jsonl", "forwarder.log"] {
+        text.push_str(&std::fs::read_to_string(agent_dir.join(name)).unwrap_or_default());
+        text.push('\n');
+    }
+    let (mut total, mut refused) = (0u64, 0u64);
+    let mut statuses = BTreeMap::new();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(s) = v.get("status").and_then(Value::as_u64) else {
+            continue;
+        };
+        let method = v.get("method").and_then(Value::as_str);
+        if method.is_some_and(|m| m != "POST") || v.get("note").is_some() {
+            continue;
+        }
+        total += 1;
+        if s == 429 || (500..600).contains(&s) {
+            refused += 1;
+            *statuses.entry(s).or_insert(0u64) += 1;
+        }
+    }
+    if refused < 3 || refused * 4 < total {
+        return None;
+    }
+    let seen: Vec<String> = statuses
+        .iter()
+        .map(|(s, n)| format!("{n} × HTTP {s}"))
+        .collect();
+    Some(
+        Problem::new(
+            "R214",
+            Owner::Model,
+            Phase::Agent,
+            format!(
+                "the agent ran out of time while the model provider refused {refused} of its {total} requests ({})",
+                seen.join(", ")
+            ),
+            "lower --concurrency or use a provider plan with a higher rate limit, then rerun the same command to resume the job; agent/model_calls.jsonl or agent/forwarder.log in the trial folder has each answer",
+        )
+        .transient(),
+    )
+}
+
+/// A failure that happened because the sandbox stopped answering: the
+/// sandbox's, and worth a retry.
+fn lost(phase: Phase, what: &str, e: SandboxError) -> Problem {
+    let mut p = sandbox_problem(phase, e);
+    if p.owner == Owner::Sandbox {
+        p.message = format!("{what}: {}", p.message);
+        p = p.transient();
+    }
+    p
+}
+
 fn write_trajectory(dir: &Path, events: &[Value]) {
     let _ = std::fs::create_dir_all(dir);
     let text: String = events
@@ -2078,6 +2234,35 @@ mod tests {
     /// a root-owned folder inside it aside. BenchFlow's root-only state must
     /// never be inside a workdir the runner hands out: the image's
     /// WORKDIR, its `/root` fallback, or a declared one.
+    #[test]
+    fn throttling_is_read_from_native_calls_and_the_forwarders_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let fwd = [
+            r#"{"pin": "deepseek"}"#,
+            r#"{"method": "GET", "status": 429}"#,
+            r#"{"method": "POST", "status": 200}"#,
+            r#"{"method": "POST", "status": 429}"#,
+            r#"{"method": "POST", "status": 403, "note": "a model this run may not use"}"#,
+            r#"{"method": "POST", "status": 529}"#,
+        ]
+        .join("\n");
+        std::fs::write(dir.path().join("forwarder.log"), &fwd).unwrap();
+        // Two refusals: not enough to say.
+        assert!(throttled(dir.path()).is_none());
+        std::fs::write(
+            dir.path().join("forwarder.log"),
+            format!("{fwd}\n{}", r#"{"method": "POST", "status": 503}"#),
+        )
+        .unwrap();
+        let p = throttled(dir.path()).expect("3 of 4 model calls refused");
+        assert_eq!((p.code.as_str(), p.owner), ("R214", Owner::Model));
+        assert!(p.message.contains("3 of its 4"), "{}", p.message);
+        // A run whose provider mostly answered is the agent's to lose.
+        let ok: Vec<String> = (0..20).map(|_| r#"{"status": 200}"#.to_string()).collect();
+        std::fs::write(dir.path().join("model_calls.jsonl"), ok.join("\n")).unwrap();
+        assert!(throttled(dir.path()).is_none());
+    }
+
     #[test]
     fn root_only_state_is_never_inside_the_workdir() {
         for pwd in [

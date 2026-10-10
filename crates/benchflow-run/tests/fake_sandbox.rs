@@ -1773,3 +1773,48 @@ async fn a_sandbox_being_made_when_the_run_stops_is_removed() {
     assert_eq!(worlds.len(), 1);
     assert!(worlds[0].lock().unwrap().destroyed);
 }
+
+#[tokio::test]
+async fn a_second_run_of_a_running_job_is_refused_and_resumes_after() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("delta"), "delta"));
+    let spec = || JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("shared".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let provider = || {
+        Arc::new(FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        })
+    };
+    // Another process holds the job (a run that is still going).
+    let dir = tmp.path().join("jobs/shared");
+    std::fs::create_dir_all(&dir).unwrap();
+    let other = job::hold(&dir).unwrap();
+    let refused = provider();
+    let Err(e) = job::run(spec(), runtime(refused.clone())).await else {
+        panic!("a second run of a running job must be refused");
+    };
+    assert_eq!(e.kind(), std::io::ErrorKind::WouldBlock);
+    assert!(e.to_string().contains("--job"), "{e}");
+    assert!(
+        refused.worlds.lock().unwrap().is_empty(),
+        "no sandbox started"
+    );
+    // It ends (or crashes: the lock goes with the process); the job runs.
+    drop(other);
+    let out = job::run(spec(), runtime(provider())).await.unwrap();
+    assert_eq!(out.records[0].status, Status::Scored);
+    // And a later run resumes it without running the trial again.
+    let p = provider();
+    let again = job::run(spec(), runtime(p.clone())).await.unwrap();
+    assert_eq!(again.records[0].reward, Some(1.0));
+    assert!(p.worlds.lock().unwrap().is_empty(), "the trial was reused");
+}

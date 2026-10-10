@@ -248,7 +248,22 @@ pub async fn run_job(
         job::run(spec, rt)
     })
     .await;
-    outcome.map_err(|e| CliError::bug("writing the job folder", e))
+    outcome.map_err(job_folder_error)
+}
+
+/// A job folder that could not be used: another run holds it, or this
+/// machine cannot write it (the user's to fix); anything else is a bug.
+pub fn job_folder_error(e: std::io::Error) -> CliError {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        WouldBlock => CliError::not_ready(e.to_string()),
+        StorageFull | PermissionDenied | ReadOnlyFilesystem | QuotaExceeded => CliError::failed(
+            format!("the job folder could not be written: {e}"),
+        )
+        .owner(Owner::You)
+        .next("free disk space or fix the folder's permissions, then rerun the same command to resume the job"),
+        _ => CliError::bug("writing the job folder", e),
+    }
 }
 
 /// Run `work` on a fresh runtime with the live view. The first Ctrl-C stops
@@ -620,5 +635,22 @@ mod report_tests {
         let errored = cause_heading(Status::Errored, "R201", Owner::Agent, 1);
         assert!(errored.starts_with("1 trial errored "), "{errored}");
         assert!(errored.contains("[R201]"), "{errored}");
+    }
+}
+
+#[cfg(test)]
+mod job_folder_tests {
+    use super::*;
+
+    #[test]
+    fn a_busy_or_unwritable_job_folder_is_not_a_bug() {
+        let busy = job_folder_error(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "another bench run is running the job",
+        ));
+        assert_eq!(busy.owner, Some(Owner::You));
+        let full = job_folder_error(std::io::Error::from(std::io::ErrorKind::StorageFull));
+        assert_eq!(full.owner, Some(Owner::You));
+        assert!(full.next.is_some());
     }
 }

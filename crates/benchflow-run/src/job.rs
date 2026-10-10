@@ -171,6 +171,49 @@ fn latest_run(jobs_dir: &Path, fingerprint: &str) -> Option<PathBuf> {
     })
 }
 
+/// The file a running `bench run` holds locked in its job folder.
+pub const RUNNING_FILE: &str = ".bench-run.lock";
+
+/// Lock the job folder for this process: trial folders are named the same
+/// in every run of a job, so two runs at once would write the same trials.
+/// The lock goes with the process, so a crashed run leaves nothing to clear.
+pub fn hold(dir: &Path) -> std::io::Result<std::fs::File> {
+    let path = dir.join(RUNNING_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .read(true)
+        .open(&path)?;
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.set_len(0);
+            let _ = std::io::Write::write_all(
+                &mut &file,
+                format!("{}\n", std::process::id()).as_bytes(),
+            );
+            Ok(file)
+        }
+        Err(std::fs::TryLockError::WouldBlock) => {
+            let pid = std::fs::read_to_string(&path).unwrap_or_default();
+            let pid = pid.trim();
+            let by = if pid.is_empty() {
+                String::new()
+            } else {
+                format!(" (process {pid})")
+            };
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!(
+                    "another bench run{by} is running the job in {}; wait for it to finish, or name a new job with --job",
+                    dir.display()
+                ),
+            ))
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
 /// A stable name for trial `index` of `attempt` on `task` in `job`.
 pub fn trial_name(job: &str, task: &TaskPackage, attempt: &Attempt, index: usize) -> String {
     let mut h = Sha256::new();
@@ -217,6 +260,7 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
     let fp = fingerprint(&spec);
     let (dir, resumed) = job_dir(&spec, &fp);
     std::fs::create_dir_all(&dir)?;
+    let _running = hold(&dir)?;
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

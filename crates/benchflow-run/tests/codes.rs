@@ -87,6 +87,27 @@ enum Fault {
     VerifierTimeout,
     /// The verifier exits with an error and writes no reward.
     VerifierFails,
+    /// The connection to the sandbox drops while it sets up.
+    SetupGone,
+    /// The sandbox hangs while it sets up (for a Ctrl-C there).
+    SetupHangs,
+    /// The connection to the sandbox drops while the verifier runs.
+    VerifierGone,
+    /// The sandbox is killed under the verifier (exit 137) and is gone.
+    VerifierKilled,
+    /// The verifier runs, but its folder cannot be fetched.
+    DownloadFails,
+    /// The verifier hangs (for a Ctrl-C while grading).
+    VerifierHangs,
+    /// The verifier fails on a full disk and writes no reward.
+    DiskFull,
+    /// The out-of-memory killer ends the agent mid-prompt.
+    AgentOom,
+    /// The sandbox cannot start the agent's process: it is gone.
+    AgentSpawnGone,
+    /// The sandbox goes away while the agent works (the agent's process
+    /// ends with it).
+    AgentGone,
 }
 
 /// What the scripted ACP agent does.
@@ -109,6 +130,12 @@ enum Act {
 #[derive(Default)]
 struct World {
     solved: bool,
+    /// The sandbox is gone: every later command fails.
+    gone: bool,
+}
+
+fn gone() -> SandboxError {
+    SandboxError::Transport("the sandbox's API stopped answering (connection reset by peer)".into())
 }
 
 struct FakeSandbox {
@@ -138,7 +165,43 @@ impl Sandbox for FakeSandbox {
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
         let c = exec.command;
         let silent = self.fault == Fault::Shadowed;
-        Ok(if c.contains("jump_new") {
+        if self.world.lock().unwrap().gone {
+            return Err(gone());
+        }
+        let verifier = c.contains("/verifier/test.sh") || c.contains("/tests/test.sh");
+        match self.fault {
+            Fault::SetupGone if c.contains("useradd") => return Err(gone()),
+            Fault::SetupHangs if c.contains("useradd") => {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            Fault::VerifierGone if verifier => return Err(gone()),
+            Fault::VerifierHangs if verifier => {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            Fault::DiskFull if verifier => {
+                return Ok(output(
+                    1,
+                    "",
+                    "OSError: [Errno 28] No space left on device: '/logs/verifier/reward.txt'\n",
+                ));
+            }
+            Fault::VerifierKilled if verifier => {
+                self.world.lock().unwrap().gone = true;
+                return Ok(output(137, "", "Killed\n"));
+            }
+            _ => {}
+        }
+        Ok(if c.contains("BF oom-kill") {
+            output(
+                0,
+                if self.fault == Fault::AgentOom {
+                    "BF oom-kill 1\n"
+                } else {
+                    "BF oom-kill 0\n"
+                },
+                "",
+            )
+        } else if c.contains("jump_new") {
             // The network policy's firewall install.
             if self.fault == Fault::NoIptables {
                 output(0, "BF fw-error no-iptables\n", "")
@@ -255,6 +318,15 @@ impl Sandbox for FakeSandbox {
         })
     }
     async fn spawn(&self, _exec: Exec) -> Result<Process, SandboxError> {
+        match self.fault {
+            Fault::AgentSpawnGone => return Err(gone()),
+            Fault::AgentOom => return Ok(fake_acp_agent(Act::Crash, self.world.clone())),
+            Fault::AgentGone => {
+                self.world.lock().unwrap().gone = true;
+                return Ok(fake_acp_agent(Act::Crash, self.world.clone()));
+            }
+            _ => {}
+        }
         Ok(fake_acp_agent(self.act, self.world.clone()))
     }
     async fn upload(&self, local: &Path, _remote: &str) -> Result<(), SandboxError> {
@@ -271,10 +343,16 @@ impl Sandbox for FakeSandbox {
     }
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
         if remote == "/logs/verifier" {
+            if self.world.lock().unwrap().gone || self.fault == Fault::DownloadFails {
+                return Err(gone());
+            }
             std::fs::create_dir_all(local).unwrap();
             let solved = self.world.lock().unwrap().solved;
             match self.fault {
-                Fault::NoReward | Fault::VerifierFails | Fault::VerifierTimeout => {}
+                Fault::NoReward
+                | Fault::VerifierFails
+                | Fault::VerifierTimeout
+                | Fault::DiskFull => {}
                 Fault::BadReward => std::fs::write(local.join("reward.txt"), "passed\n").unwrap(),
                 _ => std::fs::write(local.join("reward.txt"), if solved { "1\n" } else { "0\n" })
                     .unwrap(),
@@ -597,6 +675,43 @@ impl ModelAgent for NoGrade {
     }
 }
 
+/// A native-style agent whose provider rate-limited it until its time ran
+/// out: its model calls log holds four 429s among six calls.
+struct Throttled;
+
+#[async_trait]
+impl ModelAgent for Throttled {
+    fn name(&self) -> &str {
+        "throttled"
+    }
+    fn model(&self) -> Option<&str> {
+        None
+    }
+    fn install_layers(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn fingerprint(&self) -> String {
+        String::new()
+    }
+    fn preflight(&self) -> Result<(), Problem> {
+        Ok(())
+    }
+    async fn run(&self, ctx: AgentContext<'_>) -> AgentOutput {
+        let dir = ctx.trial_dir.join("agent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let calls: String = [200, 429, 429, 200, 429, 429]
+            .iter()
+            .map(|s| format!("{{\"seq\":1,\"status\":{s}}}\n"))
+            .collect();
+        std::fs::write(dir.join("model_calls.jsonl"), calls).unwrap();
+        AgentOutput {
+            timed_out: true,
+            tool_calls: 2,
+            ..AgentOutput::default()
+        }
+    }
+}
+
 /// An agent harness with a bug: it panics.
 struct Panics;
 
@@ -696,6 +811,7 @@ enum Who {
     AcpNoLogin,
     NoGrade,
     Panics,
+    Throttled,
 }
 
 struct Case {
@@ -979,6 +1095,7 @@ async fn run(case: &Case) -> Option<TrialRecord> {
         ))),
         Who::NoGrade => Attempt::Model(Arc::new(NoGrade)),
         Who::Panics => Attempt::Model(Arc::new(Panics)),
+        Who::Throttled => Attempt::Model(Arc::new(Throttled)),
     };
     let mut options = RunOptions {
         retries: 0,
@@ -1107,6 +1224,177 @@ async fn every_run_code_is_triggered_and_reads_as_written() {
         if want != golden {
             failures.push(format!(
                 "tests/codes/run.txt is stale; run with UPDATE_GOLDEN=1 and review the diff. Got:\n{golden}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Failures beyond one per code: the status each records, and that a
+/// sandbox or BenchFlow problem is never a score or the task's fault.
+#[tokio::test]
+async fn failures_record_the_right_status_owner_and_phase() {
+    use Owner::*;
+    use benchflow_run::outcome::{Phase, Status};
+    let mut cases: Vec<(Case, Status, Phase)> = vec![
+        (
+            Case::new("R103", Sandbox, "the sandbox goes away during setup")
+                .fault(Fault::SetupGone),
+            Status::Errored,
+            Phase::Setup,
+        ),
+        (
+            Case::new("R103", Sandbox, "the sandbox cannot start the agent")
+                .act(Act::Solve)
+                .fault(Fault::AgentSpawnGone),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the sandbox goes away while the agent works",
+            )
+            .act(Act::Solve)
+            .fault(Fault::AgentGone),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new("R001", You, "Ctrl-C while the verifier runs").fault(Fault::VerifierHangs),
+            Status::Skipped,
+            Phase::Verify,
+        ),
+        (
+            Case::new("R304", Task, "the verifier fails on a full disk").fault(Fault::DiskFull),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        (
+            Case::new("R214", Model, "429s use up the agent's time").who(Who::Throttled),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new("R204", Agent, "the out-of-memory killer ends the agent")
+                .act(Act::Solve)
+                .fault(Fault::AgentOom),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the connection drops while the verifier runs",
+            )
+            .fault(Fault::VerifierGone),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new("R103", Sandbox, "the sandbox is killed under the verifier")
+                .fault(Fault::VerifierKilled),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new("R103", Sandbox, "the verifier's folder cannot be fetched")
+                .fault(Fault::DownloadFails),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "agent processes survive the kill before grading",
+            )
+            .fault(Fault::Survivors),
+            Status::Errored,
+            Phase::Handoff,
+        ),
+        (
+            Case::new("R309", Sandbox, "/etc/ld.so.preload cannot be put back")
+                .fault(Fault::PreloadStuck),
+            Status::Errored,
+            Phase::Handoff,
+        ),
+        (
+            Case::new("R301", Task, "the verifier writes no reward").fault(Fault::NoReward),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        (
+            Case::new("R001", You, "Ctrl-C while the sandbox is set up").fault(Fault::SetupHangs),
+            Status::Skipped,
+            Phase::Setup,
+        ),
+        (
+            Case::new("R212", Model, "the provider answers 401").act(Act::Error(
+                "API Error: 401 {\"error\":{\"message\":\"Invalid API key\"}}",
+            )),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new("R214", Model, "the provider answers 500")
+                .act(Act::Error("API Error: 500 Internal Server Error")),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new("R214", Model, "the provider times out")
+                .act(Act::Error("API Error: Request timed out.")),
+            Status::Errored,
+            Phase::Agent,
+        ),
+    ];
+    for (c, _, _) in &mut cases {
+        if matches!(c.fault, Fault::SetupHangs | Fault::VerifierHangs) {
+            c.stop_after = Some(Duration::from_millis(400));
+        }
+    }
+    let mut failures = Vec::new();
+    for (case, status, phase) in &cases {
+        let rec = run(case).await.expect("a trial record");
+        let p = rec.problem.as_ref().expect("a problem");
+        if p.code != case.code
+            || p.owner != case.owner
+            || rec.status != *status
+            || p.phase != *phase
+        {
+            failures.push(format!(
+                "{}: want {} {:?} {:?} {:?}, got {} {:?} {:?} {:?}: {}",
+                case.what,
+                case.code,
+                case.owner,
+                status,
+                phase,
+                p.code,
+                p.owner,
+                rec.status,
+                p.phase,
+                p.message
+            ));
+        }
+        if case.fault == Fault::DiskFull && !p.message.contains("disk was full") {
+            failures.push(format!("{}: the full disk is not named: {p:?}", case.what));
+        }
+        if case.fault == Fault::AgentOom
+            && !(p.message.contains("out-of-memory killer") && p.next.contains("memory"))
+        {
+            failures.push(format!(
+                "{}: the memory kill is not named: {p:?}",
+                case.what
+            ));
+        }
+        if p.owner != Task && rec.reward.is_some() {
+            failures.push(format!(
+                "{}: scored though {}",
+                case.what,
+                p.owner.problem()
             ));
         }
     }

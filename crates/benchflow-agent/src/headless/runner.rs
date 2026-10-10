@@ -340,6 +340,14 @@ impl Runner {
                 fix: f.fix.as_deref().map(redact),
             };
         }
+        // BenchFlow's own launch wrapper refused the run's settings (a
+        // missing variable, a model the agent cannot take): the user's to fix.
+        if let Some(line) = wrapper_refusal(stderr) {
+            return HeadlessError::Setup {
+                message: cap(&redact(line)),
+                fix: None,
+            };
+        }
         let noise_text: Vec<&str> = noise.iter().map(String::as_str).collect();
         let candidates = fatal
             .map(|f| f.message.clone())
@@ -587,5 +595,35 @@ async fn read_stderr(
                 line: text,
             });
         }
+    }
+}
+
+/// A line in which a manifest's launch command refuses the run's settings:
+/// `BenchFlow: Cortex Code needs SNOWFLAKE_ACCOUNT ...; pass them with
+/// --env`, `BenchFlow: mcode takes anthropic/ ... models, not 'x'`. Other
+/// `BenchFlow:` lines (a log the wrapper prints) are not refusals.
+fn wrapper_refusal(stderr: &str) -> Option<&str> {
+    stderr.lines().map(str::trim).find(|l| {
+        l.strip_prefix("BenchFlow: ")
+            .is_some_and(|rest| rest.contains(" needs ") || rest.contains(" takes "))
+    })
+}
+
+#[cfg(test)]
+mod wrapper_tests {
+    use super::wrapper_refusal;
+
+    #[test]
+    fn a_wrappers_refusal_is_found_and_its_log_lines_are_not() {
+        let cortex = "BenchFlow: Cortex Code needs SNOWFLAKE_ACCOUNT and SNOWFLAKE_USER; pass them with --env\n";
+        assert!(
+            wrapper_refusal(cortex)
+                .unwrap()
+                .contains("SNOWFLAKE_ACCOUNT")
+        );
+        let mcode = "x\nBenchFlow: mcode takes anthropic/, minimax/, openai/ or deepseek/ models, not 'qwen/q'\n";
+        assert!(wrapper_refusal(mcode).is_some());
+        assert!(wrapper_refusal("BenchFlow: Junie's log /tmp/j.log says:\nERROR boom\n").is_none());
+        assert!(wrapper_refusal("cortex needs a newer glibc\n").is_none());
     }
 }

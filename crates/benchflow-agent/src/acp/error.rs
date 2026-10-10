@@ -251,7 +251,17 @@ impl AcpError {
         } else if any(&PROVIDER_REJECTED_MARKERS) {
             Some(ProviderSignal::Rejected)
         } else {
-            None
+            // Beyond 0.8's markers: the provider errors the headless agents
+            // are read for (Claude's `API Error: 500 ...`, `rate_limit_error`,
+            // `Request timed out`), so a provider's failure is not the agent's.
+            use crate::headless::classify::{Signal, classify};
+            match classify(&format!("{message}\n{details}"), Utc::now())?.0 {
+                Signal::Login => Some(ProviderSignal::Auth),
+                Signal::RateLimit => Some(ProviderSignal::RateLimit),
+                Signal::Unavailable => Some(ProviderSignal::Unavailable),
+                Signal::Rejected => Some(ProviderSignal::Rejected),
+                Signal::UsageLimit(_) | Signal::Model => None,
+            }
         }
     }
 
@@ -396,6 +406,37 @@ mod tests {
                 Owner::ModelProvider,
             ),
             ("Internal error", "acp_error", Owner::Agent),
+            // Claude Code's own words, which 0.8's markers miss.
+            (
+                "API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"}}",
+                "infra_failure",
+                Owner::ModelProvider,
+            ),
+            (
+                "API Error: 529 Overloaded",
+                "infra_failure",
+                Owner::ModelProvider,
+            ),
+            (
+                "API Error: Request timed out.",
+                "infra_failure",
+                Owner::ModelProvider,
+            ),
+            (
+                "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}",
+                "provider_rate_limit",
+                Owner::ModelProvider,
+            ),
+            (
+                "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}",
+                "provider_auth",
+                Owner::Login,
+            ),
+            (
+                "Internal error: tool registry is empty",
+                "acp_error",
+                Owner::Agent,
+            ),
         ];
         for (message, category, owner) in cases {
             let err = agent_error(message, None);

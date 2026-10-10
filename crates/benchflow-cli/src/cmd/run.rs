@@ -737,7 +737,7 @@ fn source_error(e: source::SourceError) -> CliError {
         source::SourceError::NoGit(_) => CliError::not_ready(e.to_string()).next("install git, then run again"),
         source::SourceError::Fetch { .. } => CliError::failed(e.to_string())
             .owner(Owner::You)
-            .next("check the repository name, the path, and the ref; private repositories need git credentials"),
+            .next("check the network, then the repository name, the path, and the ref; private repositories need git credentials"),
     }
 }
 

@@ -707,6 +707,17 @@ true"#
         .to_string()
 }
 
+/// Print how many processes the sandbox's out-of-memory killer ended:
+/// `BF oom-kill <n>` from the memory cgroup (v2 `memory.events`, or v1
+/// `memory.oom_control` on kernels that count), nothing when neither says.
+pub fn oom_kills() -> String {
+    r#"for f in /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory/memory.oom_control; do
+  [ -r "$f" ] && while read -r k v; do [ "$k" = oom_kill ] && echo "BF oom-kill $v"; done < "$f"
+done
+true"#
+        .to_string()
+}
+
 /// Environment variables that change how programs load or start: the
 /// dynamic loader's (`LD_PRELOAD`, `LD_LIBRARY_PATH`, ...), glibc's
 /// (`GCONV_PATH`, ...), and the shells' start-up files (`BASH_ENV`, `ENV`).
