@@ -839,7 +839,9 @@ AGENTS: dict[str, AgentConfig] = {
         name="opencode",
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
-        home_dirs=[".opencode"],
+        # OpenCode reads its config from ~/.config/opencode; declaring that
+        # subdir copies an image-provided config without all of ~/.config.
+        home_dirs=[".opencode", ".config/opencode"],
         install_cmd=(
             _js_agent_install("opencode", "opencode-ai@1.18.11")
             + " && "
@@ -1141,10 +1143,12 @@ AGENT_INSTALLERS: dict[str, str] = {name: a.install_cmd for name, a in AGENTS.it
 AGENT_LAUNCH: dict[str, str] = {name: a.launch_cmd for name, a in AGENTS.items()}
 
 
-def get_sandbox_home_dirs() -> set[str]:
+def get_sandbox_home_dirs(agents: list[str] | None = None) -> set[str]:
     """Collect user home config/auth dirs BenchFlow may materialize for the sandbox user.
 
-    Derives from three sources across all registered agents:
+    Derives from three sources across the registered agents named in
+    ``agents`` (all registered agents when ``agents`` is None; names that are
+    not registered contribute nothing):
     - credential_files: {home}/.foo/... → ".foo"
     - subscription_auth.files: {home}/.foo/... → ".foo"
     - home_dirs: explicit extras (e.g. ".openclaw")
@@ -1153,7 +1157,11 @@ def get_sandbox_home_dirs() -> set[str]:
     shared skills tree instead of relying on sandbox-home copies.
     """
     dirs: set[str] = set()
-    for cfg in AGENTS.values():
+    if agents is None:
+        cfgs = list(AGENTS.values())
+    else:
+        cfgs = [AGENTS[name] for name in agents if name in AGENTS]
+    for cfg in cfgs:
         for cf in cfg.credential_files:
             # path uses {home}/.foo/... placeholder
             path = cf.path

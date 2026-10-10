@@ -157,6 +157,7 @@ class _FakePlanes:
         sandbox_user: str,
         *,
         workspace: str,
+        agents: list[str] | None = None,
         timeout_sec: int = 120,
     ) -> str:
         return workspace

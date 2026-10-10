@@ -88,6 +88,7 @@ class RolloutPlanes(Protocol):
         sandbox_user: str,
         *,
         workspace: str,
+        agents: list[str] | None = None,
         timeout_sec: int = 120,
     ) -> str: ...
 
