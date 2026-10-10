@@ -21,7 +21,7 @@ Results go to stdout; progress, notes, and diagnostics go to stderr, so `bench r
 | Code | Meaning |
 |---|---|
 | 0 | Done. For `run`: every trial was scored and every gate held. For `check`: no errors. For `test`: every task proved itself |
-| 1 | Done, but something failed: a check found errors, a trial went unscored or errored, a probe got through, or a `--fail-under` gate failed |
+| 1 | Done, but something failed: a check found errors, a trial went unscored or errored or was stopped (Ctrl-C), a probe got through, or a `--fail-under` gate failed |
 | 2 | A usage error: a bad flag, a missing path, an invalid `bench.toml`; nothing ran |
 | 3 | The machine is not ready: no sandbox backend, or no login for the agent |
 | 130 | Stopped with a second Ctrl-C |

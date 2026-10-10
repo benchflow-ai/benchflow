@@ -89,7 +89,10 @@ pub async fn render(
                         println!("{line}");
                     }
                 match ev {
-                    Event::JobStarted { total, reused, .. } => {
+                    Event::JobStarted { dir, total, reused, resumed } => {
+                        if resumed && !u.json && u.verbosity > super::Verbosity::Quiet {
+                            let _ = writeln!(stderr, "{}", resuming_line(&dir, total, reused));
+                        }
                         tally.total = total;
                         tally.reused = reused;
                         tally.done = reused;
@@ -173,6 +176,20 @@ pub async fn render(
         clear(&mut stderr, drawn);
     }
     tally
+}
+
+/// Said once when a run picks up a job an earlier run left (the same
+/// command run again after Ctrl-C), so the user knows nothing was lost,
+/// and how to start over when that is what they meant.
+fn resuming_line(dir: &std::path::Path, total: usize, reused: usize) -> String {
+    format!(
+        "  {} {}: {reused} of {} kept, {} to run {}",
+        dim("resuming"),
+        super::path(dir),
+        super::plural(total, "trial"),
+        total - reused,
+        dim("· --fresh starts a new job")
+    )
 }
 
 fn clear(out: &mut impl Write, lines: usize) {
@@ -341,5 +358,20 @@ pub fn human_count(n: u64) -> String {
         0..=999 => n.to_string(),
         1_000..=999_999 => format!("{:.1}K", n as f64 / 1e3),
         _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resumed_job_says_what_it_kept() {
+        let line = resuming_line(std::path::Path::new("jobs/2026-10-10__13-37-53"), 2, 0);
+        assert!(
+            line.contains("jobs/2026-10-10__13-37-53: 0 of 2 trials kept, 2 to run"),
+            "{line}"
+        );
+        assert!(line.contains("--fresh starts a new job"), "{line}");
     }
 }

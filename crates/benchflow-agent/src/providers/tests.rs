@@ -1528,3 +1528,45 @@ fn code_puppy_registers_an_openai_model_on_the_forwarder_as_a_custom_endpoint() 
     let native = extra_models(None);
     assert_eq!(native[key]["type"], "openai");
 }
+
+#[test]
+fn a_misspelled_model_is_answered_with_the_closest_listed_one() {
+    use super::routing::{closest_model, models_url, parse_model_ids};
+    assert_eq!(
+        models_url("https://ai-gateway.vercel.sh/v1/models/{model}/endpoints").as_deref(),
+        Some("https://ai-gateway.vercel.sh/v1/models")
+    );
+    let ids = parse_model_ids(&serde_json::json!({"data": [
+        {"id": "deepseek/deepseek-v4-flash"},
+        {"id": "deepseek/deepseek-v4-flash-0731"},
+        {"id": "deepseek/deepseek-v4-pro"},
+    ]}));
+    assert_eq!(ids.len(), 3);
+    let close = closest_model("deepseek/deepseek-v4-flsh", &ids);
+    assert_eq!(close.as_deref(), Some("deepseek/deepseek-v4-flash"));
+    assert_eq!(closest_model("qwen/qwen3-coder", &ids), None);
+    let e = PinError::NotServed {
+        provider: "vercel".into(),
+        model: "deepseek/deepseek-v4-flsh".into(),
+        close,
+        list: Some("https://ai-gateway.vercel.sh/v1/models".into()),
+    };
+    assert_eq!(
+        e.to_string(),
+        "vercel serves no model `deepseek/deepseek-v4-flsh`"
+    );
+    assert_eq!(
+        e.next_step(),
+        "did you mean `vercel/deepseek/deepseek-v4-flash`?"
+    );
+    let e = PinError::NotServed {
+        provider: "vercel".into(),
+        model: "x".into(),
+        close: None,
+        list: Some("https://ai-gateway.vercel.sh/v1/models".into()),
+    };
+    assert_eq!(
+        e.next_step(),
+        "check the model id; https://ai-gateway.vercel.sh/v1/models lists every model vercel serves"
+    );
+}

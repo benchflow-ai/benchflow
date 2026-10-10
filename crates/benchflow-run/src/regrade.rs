@@ -454,6 +454,7 @@ pub async fn run(
         dir: dir.clone(),
         total: specs.len(),
         reused: 0,
+        resumed: false,
     });
 
     let sem = Arc::new(Semaphore::new(concurrency.max(1)));

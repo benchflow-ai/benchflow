@@ -257,6 +257,24 @@ pub fn first_ready_agent() -> Option<String> {
         .map(|m| m.name.clone())
 }
 
+/// The agents with no login of their own that run on a provider key here,
+/// each with the provider it would use, for `bench doctor`.
+pub fn keyed_agents() -> Vec<(String, String)> {
+    let Ok(registry) = registry() else {
+        return Vec::new();
+    };
+    let host = HostEnv::from_process();
+    registry
+        .agents()
+        .iter()
+        .filter(|m| !login_status(m, None, &host).ready())
+        .filter_map(|m| {
+            let (provider, _) = keyed_providers(m, &host).into_iter().next()?;
+            Some((m.name.clone(), provider))
+        })
+        .collect()
+}
+
 /// One line per agent login for `bench doctor`: (name, ready, summary, fix).
 pub fn login_lines() -> Vec<(String, bool, String, Option<String>)> {
     let Ok(registry) = registry() else {
@@ -334,7 +352,7 @@ fn list(registry: &Registry) -> Result<Exit> {
         let login = if status.ready() {
             format!("{} {}", ok_mark(), chosen_login(&status))
         } else {
-            format!("{} no login", fail_mark())
+            login_cell(m, &host)
         };
         rows.push(AgentRow {
             name: m.name.clone(),
@@ -490,6 +508,45 @@ fn day(date: &str) -> &str {
     date.get(..10).unwrap_or(date)
 }
 
+/// The providers this agent can run on whose key is on this machine, in the
+/// order the agent prefers them, each with the variable or file it came
+/// from: an agent with no login of its own still runs with
+/// `-m <provider>/<model>` on one of these.
+pub fn keyed_providers(m: &AgentManifest, host: &HostEnv) -> Vec<(String, String)> {
+    let registry = ProviderRegistry::builtin();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for spec in &m.providers {
+        for provider in registry.providers() {
+            if provider.usable_by(spec).is_none() || found.iter().any(|(n, _)| *n == provider.name)
+            {
+                continue;
+            }
+            if let Ok(key) = find_provider_key(provider, host) {
+                found.push((provider.name.clone(), key.source));
+            }
+        }
+    }
+    found
+}
+
+/// A model to suggest on a provider: the one BenchFlow's own docs and
+/// defaults use on the Vercel AI Gateway, else a placeholder.
+fn example_model(provider: &str) -> String {
+    match provider {
+        "vercel" => benchflow_run::review::DEFAULT_MODEL.to_string(),
+        other => format!("{other}/<model>"),
+    }
+}
+
+/// The login cell for an agent with no login of its own: the provider it
+/// can run on with a key here, or "no login".
+fn login_cell(m: &AgentManifest, host: &HostEnv) -> String {
+    match keyed_providers(m, host).first() {
+        Some((provider, _)) => format!("{} -m {provider}/…", ok_mark()),
+        None => format!("{} no login", fail_mark()),
+    }
+}
+
 /// The chosen login's name, without notes.
 fn chosen_login(status: &benchflow_agent::credentials::LoginStatus) -> String {
     status
@@ -616,8 +673,25 @@ fn show(m: &AgentManifest) {
     let status = login_status(m, None, &host);
     say!("");
     say!("{}", bold("Logins, in the order the agent prefers them"));
+    let keyed = keyed_providers(m, &host);
     if status.sources.is_empty() {
         say!("  {}", dim("none found"));
+    }
+    if !status.ready()
+        && let Some((provider, source)) = keyed.first()
+    {
+        say!(
+            "{}",
+            wrap(
+                &format!("  {} ", ok_mark()),
+                &format!(
+                    "it runs without one on a provider key here: {source} reaches {provider}, so pass -m {provider}/<model>, such as -m {}",
+                    example_model(provider)
+                ),
+                4,
+                wrap_width()
+            )
+        );
     }
     for (i, source) in status.sources.iter().enumerate() {
         let mark = if Some(i) == status.chosen {
@@ -635,7 +709,19 @@ fn show(m: &AgentManifest) {
     if let Some(fix) = &status.fix {
         say!(
             "{}",
-            wrap(&format!("  {} ", dim("to log in:")), fix, 4, wrap_width())
+            wrap(
+                &format!(
+                    "  {} ",
+                    dim(if keyed.is_empty() {
+                        "to log in:"
+                    } else {
+                        "or log in:"
+                    })
+                ),
+                fix,
+                4,
+                wrap_width()
+            )
         );
     }
     let registry = ProviderRegistry::builtin();
@@ -1237,6 +1323,28 @@ mod tests {
                 what: m.description.clone(),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_provider_key_lets_an_agent_without_a_login_run() {
+        let registry = registry().unwrap();
+        let claude = registry.find("claude").unwrap();
+        let home = std::env::temp_dir().join("bench-keyed-providers-empty-home");
+        let bare = HostEnv::new(BTreeMap::new(), Some(home.clone()));
+        assert!(keyed_providers(claude, &bare).is_empty());
+        assert!(plain(&login_cell(claude, &bare)).contains("no login"));
+        let gateway = HostEnv::new(
+            BTreeMap::from([("AI_GATEWAY_API_KEY".to_string(), "k".to_string())]),
+            Some(home),
+        );
+        let keyed = keyed_providers(claude, &gateway);
+        assert_eq!(keyed[0].0, "vercel");
+        assert!(keyed[0].1.starts_with("AI_GATEWAY_API_KEY"), "{keyed:?}");
+        assert_eq!(plain(&login_cell(claude, &gateway)), "✓ -m vercel/…");
+        assert_eq!(
+            example_model("vercel"),
+            "vercel/deepseek/deepseek-v4-flash-0731"
+        );
     }
 
     #[test]

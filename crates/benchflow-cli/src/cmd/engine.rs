@@ -335,6 +335,28 @@ async fn stop_signal() -> bool {
     tokio::signal::ctrl_c().await.is_ok()
 }
 
+/// A failure group's heading: "2 trials errored [R201] · the agent's
+/// problem". Trials Ctrl-C stopped say so, without blaming a setup.
+fn cause_heading(status: Status, code: &str, owner: Owner, n: usize) -> String {
+    let kind = match status {
+        Status::Unscored => "unscored",
+        Status::Skipped if code == "R001" => {
+            return format!(
+                "{} stopped {}",
+                plural(n, "trial"),
+                dim(format!("[{code}] · you stopped the run"))
+            );
+        }
+        Status::Skipped => "not run",
+        _ => "errored",
+    };
+    format!(
+        "{} {kind} {}",
+        plural(n, "trial"),
+        dim(format!("[{code}] · {}", owner.problem()))
+    )
+}
+
 /// The end-of-run report: the score, failures grouped by cause with whose
 /// problem each is, usage, and where to look next.
 pub fn report(outcome: &JobOutcome) {
@@ -352,7 +374,9 @@ pub fn report(outcome: &JobOutcome) {
     let rate = Rate::new(passed, total);
     say!("");
     let mut score = format!("  {} {}/{} passed", bold("Score"), passed, total);
-    if total > 0 {
+    // With nothing scored (a run stopped at once), a pass rate and its
+    // interval say nothing.
+    if total > 0 && scored > 0 {
         score.push_str(&format!(" · {}", rate.display()));
     }
     let rewards: Vec<f64> = agent_recs.iter().filter_map(|r| r.reward).collect();
@@ -378,17 +402,10 @@ pub fn report(outcome: &JobOutcome) {
     }
     for ((owner, code), rs) in &causes {
         let p = rs[0].problem.as_ref().expect("grouped by problem");
-        let kind = match rs[0].status {
-            Status::Unscored => "unscored",
-            Status::Skipped => "not run",
-            _ => "errored",
-        };
         say!(
-            "  {} {} {} {}",
+            "  {} {}",
             warn_mark(),
-            plural(rs.len(), "trial"),
-            kind,
-            dim(format!("[{code}] · {}", owner.problem()))
+            cause_heading(rs[0].status, code, *owner, rs.len())
         );
         say!("{}", ui::wrap("      ", &p.message, 6, ui::width()));
         let names: Vec<&str> = rs.iter().take(3).map(|r| r.rollout_name.as_str()).collect();
@@ -458,7 +475,7 @@ pub fn report(outcome: &JobOutcome) {
             parts.join(", "),
             recs.len() - outcome.reused - outcome.carried_regraded
         );
-    } else if outcome.reused > 0 {
+    } else if outcome.resumed || outcome.reused > 0 {
         say!(
             "  {}  resumed {}: {} reused, {} ran now",
             dim("Job  "),
@@ -516,5 +533,21 @@ mod tests {
         terminate_self();
         let quit = tokio::time::timeout(Duration::from_secs(5), quit).await;
         assert!(quit.expect("the second kill quits").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn stopped_trials_are_not_blamed_on_a_setup() {
+        let stopped = cause_heading(Status::Skipped, "R001", Owner::You, 2);
+        assert!(stopped.starts_with("2 trials stopped "), "{stopped}");
+        assert!(stopped.contains("you stopped the run"), "{stopped}");
+        assert!(!stopped.contains("problem"), "{stopped}");
+        let errored = cause_heading(Status::Errored, "R201", Owner::Agent, 1);
+        assert!(errored.starts_with("1 trial errored "), "{errored}");
+        assert!(errored.contains("[R201]"), "{errored}");
     }
 }

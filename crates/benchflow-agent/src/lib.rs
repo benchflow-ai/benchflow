@@ -38,7 +38,7 @@ pub mod trajectory;
 
 mod model_id;
 mod shell;
-mod suggest;
+pub mod suggest;
 
 pub use manifest::{AgentManifest, ManifestError, Registry, UnknownAgent};
 

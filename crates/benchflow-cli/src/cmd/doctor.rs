@@ -32,6 +32,27 @@ fn soften(lines: &mut [Line], missing: &[usize]) {
     }
 }
 
+/// One line for the agents with no login of their own that run on a
+/// provider key here: without it, a new user with only a gateway key reads
+/// "no login" beside Claude Code and Codex and thinks they cannot run them.
+fn keyed_line(keyed: &[(String, String)]) -> Option<Line> {
+    let (_, first) = keyed.first()?;
+    let mut providers: Vec<&str> = keyed.iter().map(|(_, p)| p.as_str()).collect();
+    providers.dedup();
+    let names: Vec<&str> = keyed.iter().map(|(n, _)| n.as_str()).collect();
+    Some(Line {
+        name: "agents".into(),
+        level: Level::Ok,
+        summary: format!(
+            "{} run on your {} key with -m {first}/<model>: {}",
+            names.len(),
+            providers.join(", "),
+            crate::ui::truncate(&names.join(", "), 120)
+        ),
+        fix: None,
+    })
+}
+
 struct Line {
     name: String,
     level: Level,
@@ -142,14 +163,17 @@ pub async fn run(args: DoctorArgs) -> Result<Exit> {
         });
     }
 
-    // Agent logins: each agent that has one, then one line for the rest.
+    // Agent logins: each agent that has one, one line for the agents that
+    // run on a provider key here, then one line for the rest.
     // Most of the 40-odd agents have no login on a given machine, and a
     // warning per agent would bury the checks that matter.
     let logins = crate::cmd::agents::login_lines();
+    let keyed = crate::cmd::agents::keyed_agents();
     let without: Vec<String> = logins
         .iter()
         .filter(|(_, ready, _, _)| !ready)
         .map(|(name, _, _, _)| name.trim_start_matches("agent ").to_string())
+        .filter(|name| !keyed.iter().any(|(k, _)| k == name))
         .collect();
     let ready = logins.len() - without.len();
     for (name, level, summary, fix) in logins.into_iter().filter(|(_, ready, _, _)| *ready) {
@@ -159,6 +183,9 @@ pub async fn run(args: DoctorArgs) -> Result<Exit> {
             summary,
             fix,
         });
+    }
+    if let Some(line) = keyed_line(&keyed) {
+        lines.push(line);
     }
     if !without.is_empty() {
         lines.push(Line {
@@ -382,6 +409,21 @@ mod tests {
             summary: String::new(),
             fix: None,
         }
+    }
+
+    #[test]
+    fn agents_on_a_provider_key_are_one_ready_line() {
+        assert!(keyed_line(&[]).is_none());
+        let l = keyed_line(&[
+            ("claude".into(), "vercel".into()),
+            ("codex".into(), "vercel".into()),
+        ])
+        .unwrap();
+        assert!(l.level == Level::Ok);
+        assert_eq!(
+            l.summary,
+            "2 run on your vercel key with -m vercel/<model>: claude, codex"
+        );
     }
 
     #[test]

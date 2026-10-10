@@ -134,14 +134,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             .await
             .map_err(registry_error)?;
         let listed = d.tasks.len();
-        note!(
-            "  {} {}@{} · {} · {}",
-            dim("dataset"),
-            d.name,
-            d.version,
-            plural(d.tasks.len(), "task"),
-            dim(&d.registry)
-        );
+        note!("{}", dataset_line(&d, ui::width()));
         if let Some(range) = &d.bench_version {
             note!(
                 "  {} the registry says this dataset was validated with bench {range}",
@@ -427,18 +420,12 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         );
     }
 
-    // Exit code: unscored or errored trials, and the gate.
+    // Exit code: trials not scored, and the gate.
     let recs = &outcome.records;
     let total = recs.len();
     let passed = recs.iter().filter(|r| r.passed == Some(true)).count();
-    let broken = recs
-        .iter()
-        .any(|r| matches!(r.status, Status::Unscored | Status::Errored));
-    let mut exit = if broken || outcome.not_started > 0 {
-        Exit::Failed
-    } else {
-        Exit::Ok
-    };
+    let statuses: Vec<Status> = recs.iter().map(|r| r.status).collect();
+    let mut exit = run_exit(&statuses, outcome.not_started);
     if let Some(f) = fail_under {
         let rate = if total == 0 {
             0.0
@@ -456,6 +443,18 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         }
     }
     Ok(exit)
+}
+
+/// 0 only when every trial was scored: an unscored or errored trial, one
+/// stopped by Ctrl-C or a budget (skipped), or one never started is a 1, so
+/// `bench run … && next` does not go on after a stopped run.
+fn run_exit(statuses: &[Status], not_started: usize) -> Exit {
+    let broken = statuses.iter().any(|s| *s != Status::Scored);
+    if broken || not_started > 0 {
+        Exit::Failed
+    } else {
+        Exit::Ok
+    }
 }
 
 /// The `--skill` folders' skills, checked before anything starts: each
@@ -755,6 +754,7 @@ fn filter_dataset(
     };
     let inc = compile(include)?;
     let exc = compile(exclude)?;
+    let names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
     let mut out: Vec<registry::DatasetTask> = tasks
         .into_iter()
         .filter(|t| inc.as_ref().is_none_or(|g| g.is_match(&t.name)))
@@ -765,11 +765,58 @@ fn filter_dataset(
         out.truncate(n);
     }
     if out.is_empty() {
-        return Err(CliError::usage(
-            "no dataset tasks left after --include, --exclude, and --limit",
-        ));
+        return Err(no_tasks_left(&names, include));
     }
     Ok(out)
+}
+
+/// The dataset line a run starts with; the registry goes on its own line
+/// when the whole does not fit the terminal.
+fn dataset_line(d: &registry::Dataset, width: usize) -> String {
+    ui::fit_or_break(
+        &format!(
+            "  {} {}@{} · {}",
+            dim("dataset"),
+            d.name,
+            d.version,
+            plural(d.tasks.len(), "task")
+        ),
+        " · ",
+        &dim(&d.registry),
+        10,
+        width,
+    )
+}
+
+/// Nothing left after --include and the rest: name each --include that
+/// matched no task, with the task it most likely meant.
+fn no_tasks_left(names: &[String], include: &[String]) -> CliError {
+    let unmatched: Vec<String> = include
+        .iter()
+        .filter(|p| {
+            globset::Glob::new(p)
+                .map(|g| g.compile_matcher())
+                .is_ok_and(|g| !names.iter().any(|n| g.is_match(n)))
+        })
+        .map(|p| {
+            match benchflow_agent::suggest::did_you_mean(p, names.iter().map(String::as_str)) {
+                Some(close) => format!("`{p}` (did you mean `{close}`?)"),
+                None => format!("`{p}`"),
+            }
+        })
+        .collect();
+    let message = if unmatched.is_empty() {
+        "no dataset tasks left after --include, --exclude, and --limit".to_string()
+    } else {
+        format!(
+            "no task in the dataset matches --include {}",
+            unmatched.join(", ")
+        )
+    };
+    CliError::usage(message).next(format!(
+        "check the names (globs such as 'fix-*' work); --dry-run --json without --include lists all {} of the dataset's tasks",
+        names.len()
+    ))
 }
 
 /// Say once how the registry's digests were checked.
@@ -915,7 +962,7 @@ fn dataset_plan(d: &registry::Dataset, listed: usize, resolved: &JobFile) -> Res
     );
     say!("  dataset  {}@{}", d.name, d.version);
     if let Some(desc) = &d.description {
-        say!("           {}", dim(desc));
+        say!("{}", dim(ui::wrap("           ", desc, 11, ui::width())));
     }
     say!(
         "  agent    {}{}",
@@ -934,7 +981,65 @@ fn dataset_plan(d: &registry::Dataset, listed: usize, resolved: &JobFile) -> Res
         say!("    {} {}", dim("·"), t.name);
     }
     if d.tasks.len() > 20 {
-        say!("    {}", dim(format!("… and {} more", d.tasks.len() - 20)));
+        say!(
+            "    {}",
+            dim(format!(
+                "… and {} more (--json lists them all)",
+                d.tasks.len() - 20
+            ))
+        );
     }
     Ok(Exit::Ok)
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+
+    #[test]
+    fn the_dataset_line_fits_100_columns() {
+        let d = registry::Dataset {
+            name: "terminal-bench".into(),
+            version: "2.0".into(),
+            description: None,
+            registry: "https://raw.githubusercontent.com/laude-institute/harbor/main/registry.json"
+                .into(),
+            bench_version: None,
+            tasks: Vec::new(),
+        };
+        let wide = dataset_line(&d, usize::MAX);
+        assert_eq!(wide.lines().count(), 1, "{wide}");
+        let narrow = dataset_line(&d, 100);
+        assert_eq!(narrow.lines().count(), 2, "{narrow}");
+        for line in narrow.lines() {
+            assert!(ui::visible_width(line) <= 100, "{line}");
+        }
+    }
+
+    #[test]
+    fn an_include_that_matches_no_task_names_the_closest() {
+        let names: Vec<String> = ["fix-git", "regex-log"].map(String::from).to_vec();
+        let e = no_tasks_left(&names, &["fix-gti".into(), "regex-*".into()]);
+        let text = format!("{e:?}");
+        assert!(
+            text.contains(
+                "no task in the dataset matches --include `fix-gti` (did you mean `fix-git`?)"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("regex-*"), "{text}");
+        assert!(
+            text.contains("lists all 2 of the dataset's tasks"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn only_a_run_whose_every_trial_was_scored_exits_0() {
+        assert!(run_exit(&[Status::Scored, Status::Scored], 0) == Exit::Ok);
+        assert!(run_exit(&[Status::Scored, Status::Skipped], 0) == Exit::Failed);
+        assert!(run_exit(&[Status::Unscored], 0) == Exit::Failed);
+        assert!(run_exit(&[Status::Errored], 0) == Exit::Failed);
+        assert!(run_exit(&[Status::Scored], 1) == Exit::Failed);
+    }
 }

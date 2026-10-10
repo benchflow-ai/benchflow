@@ -223,7 +223,15 @@ pub enum PinError {
         excluded: Vec<String>,
     },
     /// The router lists no upstream for the model (an unknown model id).
-    NotServed { provider: String, model: String },
+    NotServed {
+        provider: String,
+        model: String,
+        /// The router's closest model id, when its model list could be read
+        /// and one is close enough to be a likely typo.
+        close: Option<String>,
+        /// Where the router lists its models.
+        list: Option<String>,
+    },
     /// The list could not be read; BenchFlow sends nothing it cannot pin.
     Unlisted {
         provider: String,
@@ -242,9 +250,20 @@ impl PinError {
                 "pick a model another provider serves (BenchFlow never uses {}); `bench run` names every upstream it allows",
                 ALWAYS_DENIED.join(", ")
             ),
-            Self::NotServed { provider, .. } => {
-                format!("check the model id; {provider}'s model list names the ones it serves")
-            }
+            Self::NotServed {
+                provider,
+                close,
+                list,
+                ..
+            } => match (close, list) {
+                (Some(close), _) => format!("did you mean `{provider}/{close}`?"),
+                (None, Some(list)) => {
+                    format!("check the model id; {list} lists every model {provider} serves")
+                }
+                (None, None) => {
+                    format!("check the model id; {provider}'s model list names the ones it serves")
+                }
+            },
             Self::Unlisted { .. } => {
                 "check the network and run again; BenchFlow sends no gateway request it cannot pin to allowed upstreams"
                     .to_string()
@@ -268,8 +287,10 @@ impl fmt::Display for PinError {
                 "no upstream {provider} could send `{model}` to is allowed: it is served only by {}, which BenchFlow does not use",
                 excluded.join(", ")
             ),
-            Self::NotServed { provider, model } => {
-                write!(f, "{provider} lists no upstream serving `{model}`")
+            Self::NotServed {
+                provider, model, ..
+            } => {
+                write!(f, "{provider} serves no model `{model}`")
             }
             Self::Unlisted {
                 provider,
@@ -366,6 +387,42 @@ async fn upstreams(endpoints: &str, model: &str) -> Result<Vec<String>, ListErro
     Ok(names)
 }
 
+/// Where a router lists its models: its per-model endpoints URL up to the
+/// model (`https://ai-gateway.vercel.sh/v1/models/{model}/endpoints` gives
+/// `https://ai-gateway.vercel.sh/v1/models`).
+pub(crate) fn models_url(endpoints: &str) -> Option<String> {
+    let (base, _) = endpoints.split_once("/{model}")?;
+    Some(base.to_string())
+}
+
+/// The model ids a router lists (`data[].id`), or `None` when the list
+/// cannot be read. Only for a suggestion, so it never stops a run.
+async fn model_ids(url: &str) -> Option<Vec<String>> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(LIST_TIMEOUT)
+        .user_agent(concat!("benchflow/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+    let body: Value = client.get(url).send().await.ok()?.json().await.ok()?;
+    Some(parse_model_ids(&body))
+}
+
+/// `data[].id` of a model list.
+pub(crate) fn parse_model_ids(body: &Value) -> Vec<String> {
+    body.get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+/// The listed model a misspelled one most likely meant.
+pub(crate) fn closest_model(model: &str, ids: &[String]) -> Option<String> {
+    crate::suggest::did_you_mean(model, ids.iter().map(String::as_str))
+}
+
 fn short_error(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         format!("no answer within {}s", LIST_TIMEOUT.as_secs())
@@ -416,13 +473,35 @@ pub async fn pin(
                 ListError::NotFound => PinError::NotServed {
                     provider: provider.to_string(),
                     model: model.to_string(),
+                    close: None,
+                    list: models_url(endpoints),
                 },
                 ListError::Failed(detail) => PinError::Unlisted {
                     provider: provider.to_string(),
                     model: model.to_string(),
                     detail,
                 },
-            })?;
+            });
+            let serving = match serving {
+                Err(PinError::NotServed {
+                    provider,
+                    model,
+                    list: Some(list),
+                    ..
+                }) => {
+                    let close = match model_ids(&list).await {
+                        Some(ids) => closest_model(&model, &ids),
+                        None => None,
+                    };
+                    return Err(PinError::NotServed {
+                        provider,
+                        model,
+                        close,
+                        list: Some(list),
+                    });
+                }
+                other => other?,
+            };
             choose(provider, model, &serving, &denied)
         }
     }
@@ -439,6 +518,8 @@ pub(crate) fn choose(
         return Err(PinError::NotServed {
             provider: provider.to_string(),
             model: model.to_string(),
+            close: None,
+            list: None,
         });
     }
     let (excluded, only): (Vec<String>, Vec<String>) = serving

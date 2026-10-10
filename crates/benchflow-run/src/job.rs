@@ -69,15 +69,9 @@ pub fn job_dir(spec: &JobSpec, fingerprint: &str) -> (PathBuf, bool) {
         return (dir, resumed);
     }
     if !spec.fresh
-        && let Some((latest, evaluation)) = latest_run(&spec.jobs_dir)
+        && let Some(latest) = latest_run(&spec.jobs_dir, fingerprint)
     {
-        let same = evaluation
-            .pointer("/engine/fingerprint")
-            .and_then(Value::as_str)
-            .is_some_and(|f| f == fingerprint);
-        if same {
-            return (latest, true);
-        }
+        return (latest, true);
     }
     let name = Local::now().format("%Y-%m-%d__%H-%M-%S").to_string();
     let mut dir = spec.jobs_dir.join(&name);
@@ -101,10 +95,11 @@ pub fn latest_job(jobs_dir: &Path) -> Option<PathBuf> {
     dirs.pop()
 }
 
-/// The latest job a `bench run` could resume, with its evaluation.json:
-/// regrades (`<job>-regrade-<n>`, which sort after their job) are passed
-/// over.
-fn latest_run(jobs_dir: &Path) -> Option<(PathBuf, Value)> {
+/// The latest job a `bench run` with this fingerprint could resume: the
+/// newest job folder with the same settings, not only the newest folder, so
+/// a command run again after another job still resumes its own. Regrades
+/// (`<job>-regrade-<n>`, which sort after their job) are passed over.
+fn latest_run(jobs_dir: &Path, fingerprint: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(jobs_dir)
         .ok()?
         .filter_map(Result::ok)
@@ -115,7 +110,11 @@ fn latest_run(jobs_dir: &Path) -> Option<(PathBuf, Value)> {
     dirs.into_iter().rev().find_map(|d| {
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(d.join("evaluation.json")).ok()?).ok()?;
-        v.get("regrade_of").is_none().then_some((d, v))
+        let same = v
+            .pointer("/engine/fingerprint")
+            .and_then(Value::as_str)
+            .is_some_and(|f| f == fingerprint);
+        (v.get("regrade_of").is_none() && same).then_some(d)
     })
 }
 
@@ -263,6 +262,7 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
         dir: dir.clone(),
         total: todo.len() + reused,
         reused,
+        resumed,
     });
 
     // Run.
@@ -793,5 +793,36 @@ mod tests {
             source: Value::Null,
         };
         assert_eq!(job_dir(&spec, "fp"), (job, true));
+    }
+
+    #[test]
+    fn a_later_job_with_other_settings_does_not_hide_a_job_from_resume() {
+        let d = tempfile::tempdir().unwrap();
+        let first = d.path().join("2026-10-10__09-00-00");
+        let other = d.path().join("2026-10-10__10-00-00");
+        for (dir, fp) in [(&first, "fp"), (&other, "other")] {
+            std::fs::create_dir_all(dir).unwrap();
+            write_json(
+                &dir.join("evaluation.json"),
+                &json!({"engine": {"fingerprint": fp}}),
+            )
+            .unwrap();
+        }
+        let mut spec = JobSpec {
+            carry: Vec::new(),
+            units: Vec::new(),
+            trials: 1,
+            jobs_dir: d.path().to_path_buf(),
+            job_name: None,
+            fresh: false,
+            concurrency: 1,
+            source: Value::Null,
+        };
+        assert_eq!(job_dir(&spec, "fp"), (first, true));
+        assert_eq!(job_dir(&spec, "other"), (other, true));
+        let (new, resumed) = job_dir(&spec, "third");
+        assert!(!resumed && new.parent() == Some(d.path()));
+        spec.fresh = true;
+        assert!(!job_dir(&spec, "fp").1);
     }
 }

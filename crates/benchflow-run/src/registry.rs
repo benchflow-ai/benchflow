@@ -265,6 +265,19 @@ pub fn select(
     })
 }
 
+/// What a dataset missing from every default registry adds to its error:
+/// the similar names they hold (a typo), and the registries not read.
+fn not_found_hint(similar: &[String], unreadable: &[String]) -> String {
+    let mut hint = String::new();
+    if !similar.is_empty() {
+        hint.push_str(&format!("; similar names: {}", similar.join(", ")));
+    }
+    if !unreadable.is_empty() {
+        hint.push_str(&format!(" ({})", unreadable.join("; ")));
+    }
+    hint
+}
+
 fn similar_names(entries: &[RegistryEntry], name: &str) -> Vec<String> {
     let lower = name.to_ascii_lowercase();
     let mut all: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
@@ -577,6 +590,7 @@ pub async fn resolve(
         return select(&entries, &wanted, reg);
     }
     let mut unreadable = Vec::new();
+    let mut similar: Vec<String> = Vec::new();
     for reg in DEFAULT_REGISTRIES {
         match load(reg, cache).await {
             Ok(entries) => match select(&entries, &wanted, reg) {
@@ -587,7 +601,13 @@ pub async fn resolve(
                 {
                     return Err(e);
                 }
-                Err(_) => {}
+                Err(_) => {
+                    for name in similar_names(&entries, &wanted.name) {
+                        if !similar.contains(&name) {
+                            similar.push(name);
+                        }
+                    }
+                }
             },
             Err(e) => unreadable.push(e.to_string()),
         }
@@ -596,11 +616,7 @@ pub async fn resolve(
     Err(RegistryError::NotFound {
         wanted: wanted.to_string(),
         searched,
-        hint: if unreadable.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", unreadable.join("; "))
-        },
+        hint: not_found_hint(&similar, &unreadable),
     })
 }
 
@@ -913,5 +929,15 @@ mod tests {
         );
         assert_eq!(commit.len(), 40);
         assert!(d.tasks.iter().all(|t| t.digest.is_none()));
+    }
+
+    #[test]
+    fn a_dataset_missing_everywhere_names_similar_ones() {
+        assert_eq!(not_found_hint(&[], &[]), "");
+        assert_eq!(
+            not_found_hint(&["terminal-bench".into()], &[]),
+            "; similar names: terminal-bench"
+        );
+        assert_eq!(not_found_hint(&[], &["offline".into()]), " (offline)");
     }
 }

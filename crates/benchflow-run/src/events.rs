@@ -35,6 +35,8 @@ pub enum Event {
         total: usize,
         /// Trials already finished in an earlier run of this job.
         reused: usize,
+        /// Whether this run picked up a job folder an earlier run left.
+        resumed: bool,
     },
     TrialStarted {
         trial: String,
