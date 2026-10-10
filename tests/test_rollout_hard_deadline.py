@@ -82,6 +82,35 @@ class TestDeadlineComputation:
         assert base is not None and raised is not None
         assert raised >= base + 7200 - 60
 
+    @pytest.mark.parametrize(
+        ("overlay", "added_sec"),
+        [
+            ({"agent": {"timeout_sec": 7200}}, 7200 - 60),
+            ({"sandbox": {"build_timeout_sec": 1800}}, 1800 - 600),
+        ],
+        ids=["agent-timeout", "build-timeout"],
+    )
+    def test_config_override_budgets_dominate_task_budget(
+        self, tmp_path, monkeypatch, overlay, added_sec
+    ):
+        """A run's ``config_override`` (``--config-override``) is merged into
+        the task config in ``Rollout.setup()``, so the raised budget is the one
+        the phase enforces; the backstop must be derived from it as well.
+
+        Guards the fix for #1134: the deadline from #949 re-read the task
+        budgets without the override introduced in 0a645223, and killed runs
+        that were still inside their raised budget.
+        """
+        monkeypatch.delenv("BENCHFLOW_ROLLOUT_HARD_DEADLINE", raising=False)
+        _write_task(tmp_path / "t")
+        base = hard_deadline_sec(RolloutConfig(task_path=tmp_path / "t"))
+        raised = hard_deadline_sec(
+            RolloutConfig(task_path=tmp_path / "t", config_override=overlay)
+        )
+        assert base is not None
+        # Exact, so the unreadable-task fallback cannot pass for the result.
+        assert raised == base + added_sec
+
     def test_user_loop_rounds_dominate(self, tmp_path, monkeypatch):
         """A user-loop run legitimately spends max_user_rounds x (agent +
         soft-verify); the backstop must cover it, not fire mid-loop."""
