@@ -557,10 +557,12 @@ def test_bedrock_patch_recognizes_bedrock_opus_48_as_adaptive_thinking():
     # recognizes 4-6/4-7 natively, so the patch must not regress those — it
     # delegates to the original — and must not over-trigger on plain models.)
     assert (
-        AnthropicConfig._is_adaptive_thinking_model("us.anthropic.claude-opus-4-8")
+        AnthropicConfig._is_adaptive_thinking_model(
+            "us.anthropic.claude-opus-4-8", "bedrock"
+        )
         is True
     )
-    assert AnthropicConfig._is_adaptive_thinking_model("gpt-4o") is False
+    assert AnthropicConfig._is_adaptive_thinking_model("gpt-4o", "bedrock") is False
 
 
 def test_bedrock_patch_flags_cost_map_when_entry_present():
@@ -691,6 +693,37 @@ def test_bedrock_patch_preflight_fails_closed_when_patch_not_loaded(tmp_path):
     )
     assert result.returncode != 0
     assert "inactive" in result.stdout
+
+
+def test_bedrock_patch_preflight_rejects_gate_without_provider_argument(tmp_path):
+    """Guards PR #668's preflight (issue #602) across the LiteLLM 1.103 bump: the
+    Bedrock transforms now call the adaptive-thinking gate with the provider as a
+    second argument, so a gate that only accepts the model must fail the
+    preflight instead of raising TypeError on every proxied Bedrock request."""
+    import os
+    import subprocess
+    import sys
+
+    (tmp_path / "sitecustomize.py").write_text(
+        "from litellm.llms.anthropic.chat.transformation import AnthropicConfig\n"
+        "from litellm.llms.bedrock.chat.converse_transformation import (\n"
+        "    AmazonConverseConfig,\n"
+        ")\n"
+        "AnthropicConfig._is_adaptive_thinking_model = staticmethod(lambda model: True)\n"
+        "AmazonConverseConfig._handle_reasoning_effort_parameter"
+        ".__benchflow_bedrock_patch__ = True\n"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-c", preflight_mod.BEDROCK_PATCH_PREFLIGHT_SOURCE],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "anthropic transform unavailable" in result.stdout
 
 
 @pytest.mark.asyncio
