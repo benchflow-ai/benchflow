@@ -298,7 +298,11 @@ class ACPClient:
         return self._initialize_result
 
     async def session_new(
-        self, cwd: str = "/app", mcp_servers: list[McpServerSpec] | None = None
+        self,
+        cwd: str = "/app",
+        mcp_servers: list[McpServerSpec] | None = None,
+        *,
+        metadata: dict[str, Any] | None = None,
     ) -> ACPSession:
         """Create a new agent session.
 
@@ -307,13 +311,15 @@ class ACPClient:
         is projected to its per-transport wire shape by
         :meth:`McpServerSpec.to_new_session_param`. ``None`` attaches no
         servers — the historical benchmark default.
+        ``metadata`` carries explicitly selected adapter extensions through the
+        standard ACP ``_meta`` field; it does not replace the task prompt.
         """
         server_params = [spec.to_new_session_param() for spec in mcp_servers or []]
         # Validate through model_validate (not the constructor) so the SDK's
         # discriminated mcp_servers union coerces each per-transport dict and
         # catches invalid task-authored MCP wire shapes before the agent sees them.
         params = NewSessionParams.model_validate(
-            {"cwd": cwd, "mcpServers": server_params}
+            {"cwd": cwd, "mcpServers": server_params, "_meta": metadata}
         )
         result = await self._send_request(
             "session/new", params.model_dump(by_alias=True, exclude_none=True)

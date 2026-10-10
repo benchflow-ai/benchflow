@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -364,6 +365,50 @@ def test_reviewer_child_never_recursively_preflights(monkeypatch):
         SimpleNamespace(_config=SimpleNamespace(purpose="reviewer"))
     )
     prepare.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "agent,expected", [("oracle", "author_control"), ("codex-acp", "agent")]
+)
+def test_control_review_subject_comes_only_from_host_config(
+    prepared, monkeypatch, agent, expected
+):
+    """Guards PR516: trusted author controls are not model-agent oracle copying."""
+    monkeypatch.setattr(_review, "prepare_review", Mock(return_value=prepared))
+    rollout = SimpleNamespace(
+        _config=SimpleNamespace(
+            purpose="task",
+            skip_verify=False,
+            task_path=prepared.task_path,
+            reviewer=prepared.config,
+            task_digest=None,
+            primary_agent=agent,
+        )
+    )
+    _review.prepare_terminal_review(rollout)
+    assert rollout._review_plan.subject == expected
+    assert rollout._review_plan.metadata()["subject"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trusted_control", [False, True])
+async def test_control_context_does_not_trust_solver_self_declaration(
+    prepared, saved, monkeypatch, trusted_control
+):
+    """Guards PR516: self-declaring oracle never relaxes an agent's review."""
+    _edit_solver(saved, agent="oracle", review_subject="author_control")
+    plan = replace(prepared, subject="author_control") if trusted_control else prepared
+    fake = FakeRun(review_payload=good_weighted_review(saved.name))
+    monkeypatch.setattr(benchflow, "run", fake)
+    scoring = await automatic.finish_review(plan, saved)
+    assert scoring.status == "complete"
+    prompts = list(saved.glob("reviews/*/runtime/**/reviewer-task.md"))
+    assert len(prompts) == 1
+    prompt = prompts[0].read_text()
+    assert ("non-model author/reference control" in prompt) is trusted_control
+    assert "Guidance:" in prompt
+    if trusted_control:
+        assert "does not waive scientific validity" in prompt
 
 
 def test_commit_failure_never_publishes_partial_parent(saved, monkeypatch):

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import benchflow.review.evidence as evidence_module
 from benchflow.agents.credentials import credential_evidence_overrides
 from benchflow.review.evidence import (
     EvidenceError,
@@ -63,6 +64,65 @@ class LocalTransport:
         if self.corrupt_download:
             with dst.open("ab") as output:
                 output.write(b"corrupted transport")
+
+
+@pytest.mark.parametrize("names", [("Tectonic", "tectonic"), ("Cache/a", "cache/b")])
+def test_case_aliases_fail_before_any_partial_extraction(tmp_path, monkeypatch, names):
+    """Guards PR516: Linux filenames must not collapse on a Mac evidence disk."""
+    monkeypatch.setattr(
+        evidence_module, "_case_sensitive_filesystem", lambda _: False, raising=False
+    )
+    archive = tmp_path / "workspace.tar"
+    with tarfile.open(archive, "w") as stream:
+        for name in names:
+            member = tarfile.TarInfo(name)
+            member.size = 1
+            stream.addfile(member, io.BytesIO(b"x"))
+    destination = tmp_path / "workspace"
+    with pytest.raises(EvidenceError, match=r"case-sensitive.*Linux runner"):
+        _extract_archive(archive, destination, "/root", max_bytes=100, max_entries=10)
+    assert not destination.exists() or not list(destination.iterdir())
+
+
+def test_case_insensitive_disk_still_accepts_representable_names(tmp_path, monkeypatch):
+    """Guards PR516: ordinary exports remain valid on case-insensitive hosts."""
+    monkeypatch.setattr(
+        evidence_module, "_case_sensitive_filesystem", lambda _: False, raising=False
+    )
+    archive = tmp_path / "workspace.tar"
+    with tarfile.open(archive, "w") as stream:
+        for name in ("paper.pdf", "results.json"):
+            member = tarfile.TarInfo(name)
+            member.size = 1
+            stream.addfile(member, io.BytesIO(b"x"))
+    entries = _extract_archive(
+        archive, tmp_path / "workspace", "/root", max_bytes=100, max_entries=10
+    )
+    assert [entry.path for entry in entries] == ["paper.pdf", "results.json"]
+
+
+def test_case_sensitive_volume_preserves_distinct_linux_names(tmp_path):
+    """Guards PR516: the Linux runner retains all original names and bytes."""
+    if not evidence_module._case_sensitive_filesystem(tmp_path):
+        pytest.skip("exact case-sensitive preservation requires a Linux/APFSX volume")
+    originals = {
+        "Tectonic/a": b"upper",
+        "tectonic/b": b"lower",
+        "Cache/x": b"first",
+        "cache/y": b"second",
+    }
+    archive = tmp_path / "workspace.tar"
+    with tarfile.open(archive, "w") as stream:
+        for name, contents in originals.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(contents)
+            stream.addfile(member, io.BytesIO(contents))
+    destination = tmp_path / "workspace"
+    entries = _extract_archive(
+        archive, destination, "/root", max_bytes=100, max_entries=10
+    )
+    assert {entry.path for entry in entries} == originals.keys()
+    assert {name: (destination / name).read_bytes() for name in originals} == originals
 
 
 @pytest.mark.asyncio

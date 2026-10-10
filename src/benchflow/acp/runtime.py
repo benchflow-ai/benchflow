@@ -689,8 +689,23 @@ async def connect_acp(
             )
             logger.info(f"ACP agent: {agent_name}")
 
+            # Official Claude adapter options pass extraArgs to its native SDK
+            # CLI. Disable all bundled/custom skills only for an explicit
+            # no-skills control; retain OAuth, native tools and safeguards.
+            session_options = {}
+            if (
+                agent == "claude-agent-acp"
+                and agent_env.get("BENCHFLOW_CLAUDE_DISABLE_SKILLS") == "1"
+            ):
+                session_options["metadata"] = {
+                    "claudeCode": {
+                        "options": {"extraArgs": {"disable-slash-commands": None}}
+                    }
+                }
             session = await _wait_for_acp_handshake(
-                acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
+                acp_client.session_new(
+                    cwd=agent_cwd, mcp_servers=mcp_servers, **session_options
+                ),
                 phase="session_new",
             )
             logger.info(f"Session: {session.session_id}")

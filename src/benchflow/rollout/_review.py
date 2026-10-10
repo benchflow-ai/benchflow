@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,10 @@ def prepare_terminal_review(rollout: Rollout) -> None:
         return
     rollout._review_plan = prepare_review(cfg.task_path, cfg.reviewer)
     if rollout._review_plan is not None:
+        if cfg.primary_agent == "oracle":
+            rollout._review_plan = replace(
+                rollout._review_plan, subject="author_control"
+            )
         digest = rollout._review_plan.task_digest
         if cfg.task_digest is not None and cfg.task_digest != digest:
             raise ValueError(

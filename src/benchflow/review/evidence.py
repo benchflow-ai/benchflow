@@ -18,6 +18,7 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import unicodedata
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Literal, Self
@@ -219,6 +220,36 @@ def _link_target(member: tarfile.TarInfo, workspace: str) -> str:
     return str(target)
 
 
+def _case_sensitive_filesystem(parent: Path) -> bool:
+    """Probe the actual output volume without altering any existing file."""
+    with tempfile.TemporaryDirectory(
+        prefix=".evidence-case-probe-", dir=parent
+    ) as temporary:
+        probe = Path(temporary)
+        (probe / "BenchFlowProbe").touch(exist_ok=False)
+        return not (probe / "benchflowprobe").exists()
+
+
+def _require_representable_paths(names: set[PurePosixPath], destination: Path) -> None:
+    """Reject filename aliasing before extraction, never rename or drop bytes."""
+    parent = destination if destination.is_dir() else destination.parent
+    if _case_sensitive_filesystem(parent):
+        return
+    aliases: dict[str, PurePosixPath] = {}
+    for name in sorted(names):
+        for path in (name, *name.parents):
+            if path == PurePosixPath("."):
+                continue
+            key = unicodedata.normalize("NFD", str(path)).casefold()
+            previous = aliases.setdefault(key, path)
+            if previous != path:
+                raise EvidenceError(
+                    "Evidence needs a case-sensitive output filesystem: "
+                    f"{previous} and {path} alias here. Use a case-sensitive volume "
+                    "or a Linux runner; names and bytes must not be renamed or omitted."
+                )
+
+
 def _extract_archive(
     archive_path: Path,
     destination: Path,
@@ -254,6 +285,7 @@ def _extract_archive(
         for name in names:
             if any(parent in links for parent in name.parents):
                 raise EvidenceError(f"Evidence entry is below a symlink: {name}")
+        _require_representable_paths(names, destination)
         for member in sorted(
             members,
             key=lambda item: (item.issym(), len(PurePosixPath(item.name).parts)),
