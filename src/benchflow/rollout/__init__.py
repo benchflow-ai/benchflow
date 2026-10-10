@@ -1563,6 +1563,12 @@ class Rollout:
         if session is None:
             return
         try:
+            # Ending the prompt publishes any streamed growth the live sink
+            # held back; a cancelled run never reaches write_final, so nothing
+            # else would. A session with no events yet (no prompt sent) has
+            # nothing to publish.
+            if session.events:
+                session.mark_prompt_end()
             captured = _capture_session_trajectory(session)
         except Exception as e:
             logger.warning(f"Partial trajectory capture failed: {e}")

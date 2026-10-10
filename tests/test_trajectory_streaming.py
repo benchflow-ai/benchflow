@@ -256,6 +256,230 @@ class TestMultiSceneCumulativeStreaming:
         assert [e.get("text") for e in snapshot] == ["prior", "current"]
 
 
+class _Clock:
+    """Manually advanced clock for the live sink's write interval."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _chunk(kind: str, text: str) -> dict:
+    return {"sessionUpdate": kind, "content": {"type": "text", "text": text}}
+
+
+class _CountingWriter(TrajectoryWriter):
+    """Counts the live sink's snapshot writes."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.writes = 0
+
+    def write_events(self, events: list[dict]) -> None:
+        self.writes += 1
+        super().write_events(events)
+
+
+class TestLiveSinkCoalescing:
+    """The live sink writes event boundaries at once and coalesces the
+    streamed growth of an event, so the cost of a long streamed thought does
+    not grow with its chunk count."""
+
+    def test_streamed_chunks_do_not_each_rewrite_the_file(self, tmp_path: Path) -> None:
+        """Guards the live sink from PR #566 against rewriting the whole
+        trajectory on every streamed chunk, which made a long thought
+        quadratic and left the ACP read loop behind the agent."""
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        writer = _CountingWriter(traj_path)
+        session = ACPSession("s1")
+        session.on_change = make_trajectory_sink(writer, [], clock=_Clock())
+
+        session.record_user_prompt("Solve")
+        for _ in range(1000):
+            session.handle_update(_chunk("agent_thought_chunk", "x"))
+        assert writer.writes == 2, "the prompt and the thought's first chunk only"
+        assert _read_jsonl(traj_path)[1] == {"type": "agent_thought", "text": "x"}
+
+        session.mark_prompt_end()
+        assert writer.writes == 3
+        assert _read_jsonl(traj_path) == [
+            {"type": "user_message", "text": "Solve"},
+            {"type": "agent_thought", "text": "x" * 1000},
+        ]
+
+    def test_boundaries_are_written_at_once_and_growth_per_interval(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards the live sink from PR #566: coalescing streamed growth must
+        not delay a new event, a tool status change, or the end of a prompt."""
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        clock = _Clock()
+        session = ACPSession("s1")
+        session.on_change = make_trajectory_sink(
+            TrajectoryWriter(traj_path), [], min_interval_sec=2.0, clock=clock
+        )
+
+        session.record_user_prompt("Solve")
+        session.handle_update(_chunk("agent_thought_chunk", "a"))
+        session.handle_update(_chunk("agent_thought_chunk", "b"))
+        assert _read_jsonl(traj_path)[-1] == {"type": "agent_thought", "text": "a"}
+        clock.now = 2.0
+        session.handle_update(_chunk("agent_thought_chunk", "c"))
+        assert _read_jsonl(traj_path)[-1] == {"type": "agent_thought", "text": "abc"}
+        session.handle_update(_chunk("agent_thought_chunk", "d"))
+
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "make",
+                "kind": "execute",
+            }
+        )
+        snap = _read_jsonl(traj_path)
+        assert snap[1] == {"type": "agent_thought", "text": "abcd"}
+        assert snap[2]["status"] == "pending"
+
+        def output(status: str, text: str) -> dict:
+            return {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": status,
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": text}}
+                ],
+            }
+
+        session.handle_update(output("in_progress", "line 1"))
+        assert len(_read_jsonl(traj_path)[2]["content"]) == 1
+        session.handle_update(output("in_progress", "line 2"))
+        assert len(_read_jsonl(traj_path)[2]["content"]) == 1
+        session.handle_update(output("completed", "line 3"))
+        snap = _read_jsonl(traj_path)
+        assert snap[2]["status"] == "completed"
+        assert len(snap[2]["content"]) == 3
+
+        session.handle_update(_chunk("agent_message_chunk", "Do"))
+        session.handle_update(_chunk("agent_message_chunk", "ne"))
+        assert _read_jsonl(traj_path)[-1] == {"type": "agent_message", "text": "Do"}
+        session.mark_prompt_end()
+        assert _read_jsonl(traj_path) == _capture_session_trajectory(session)
+
+    def test_scene_sinks_keep_prior_scenes_once_while_coalescing(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards PR #566's cumulative multi-scene sink: with coalescing, the
+        file holds the prior scenes' events exactly once, both mid-stream and
+        after the prompt ends."""
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        clock = _Clock()
+        scene1 = ACPSession("s1")
+        scene1.on_change = make_trajectory_sink(
+            TrajectoryWriter(traj_path), [], clock=clock
+        )
+        scene1.record_user_prompt("scene 1")
+        scene1.handle_update(_chunk("agent_message_chunk", "one"))
+        scene1.mark_prompt_end()
+        prior = _capture_session_trajectory(scene1)
+
+        scene2 = ACPSession("s2")
+        scene2.on_change = make_trajectory_sink(
+            TrajectoryWriter(traj_path), prior, clock=clock
+        )
+        scene2.record_user_prompt("scene 2")
+        scene2.handle_update(_chunk("agent_message_chunk", "t"))
+        scene2.handle_update(_chunk("agent_message_chunk", "wo"))
+        assert _read_jsonl(traj_path) == [
+            *prior,
+            {"type": "user_message", "text": "scene 2"},
+            {"type": "agent_message", "text": "t"},
+        ]
+        scene2.mark_prompt_end()
+        assert _read_jsonl(traj_path) == prior + _capture_session_trajectory(scene2)
+
+    def test_tool_kind_change_is_written_at_once(self, tmp_path: Path) -> None:
+        """Guards the live sink from PR #566: an update that reclassifies a
+        running tool call as a skill (issue #507) is a boundary, not growth."""
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        session = ACPSession("s1")
+        session.on_change = make_trajectory_sink(
+            TrajectoryWriter(traj_path), [], clock=_Clock()
+        )
+        session.record_user_prompt("Solve")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Load PDF skill",
+                "kind": "other",
+                "status": "in_progress",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "in_progress",
+                "content": [
+                    {
+                        "type": "content",
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                    }
+                ],
+            }
+        )
+        assert _read_jsonl(traj_path)[1]["kind"] == "skill"
+
+
+class _NoConcatText(str):
+    """Text chunk that fails when merged by pairwise concatenation."""
+
+    def __add__(self, other: str) -> str:
+        raise AssertionError("text chunks merged with + instead of one join")
+
+
+class TestPendingTextMerge:
+    def test_text_runs_are_merged_with_one_join(self) -> None:
+        """Guards the pending-text merge from commit b588c9e8 and PR #566:
+        growing a run with ``+=`` copied the whole run again on every chunk,
+        quadratic in the chunk count of a long streamed thought."""
+        session = ACPSession("s1")
+        session.record_user_prompt("Solve")
+        for text in ("Hel", "lo", " world"):
+            session.handle_update(_chunk("agent_thought_chunk", _NoConcatText(text)))
+        session.handle_update(_chunk("agent_message_chunk", _NoConcatText("o")))
+        session.handle_update(_chunk("agent_message_chunk", _NoConcatText("k")))
+        expected = [
+            {"type": "user_message", "text": "Solve"},
+            {"type": "agent_thought", "text": "Hello world"},
+            {"type": "agent_message", "text": "ok"},
+        ]
+
+        assert _snapshot_session_trajectory(session) == expected
+        assert len(session._pending_text) == 5
+        session.mark_prompt_end()
+        assert _capture_session_trajectory(session) == expected
+
+    def test_lone_chunk_is_kept_as_sent(self) -> None:
+        """Guards the pending-text merge from PR #566: a run of one chunk is
+        copied as is, so a null text stays null instead of raising."""
+        session = ACPSession("s1")
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": None},
+            }
+        )
+        assert _snapshot_session_trajectory(session) == [
+            {"type": "agent_message", "text": None}
+        ]
+
+
 class TestHandleUpdateUnknownType:
     """Unknown sessionUpdate types should not trigger on_change — no state
     mutated, no reason to re-snapshot.
@@ -550,3 +774,41 @@ class TestMultiScenePartialCaptureFix:
         r._capture_partial_acp_trajectory()
         assert r._trajectory == prior
         assert r._partial_trajectory is False
+
+    def test_partial_capture_publishes_coalesced_stream(self, tmp_path: Path) -> None:
+        """Guards PR #566's partial capture once the live sink coalesces
+        streamed chunks: a cancelled run skips write_final, so teardown must
+        publish what the sink held back."""
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        session = ACPSession("s1")
+        session.on_change = make_trajectory_sink(
+            TrajectoryWriter(traj_path), [], clock=_Clock()
+        )
+        session.record_user_prompt("solve")
+        for text in ("thinking", " about", " it"):
+            session.handle_update(_chunk("agent_thought_chunk", text))
+        assert _read_jsonl(traj_path)[-1]["text"] == "thinking"
+
+        r = _build_rollout(
+            prior_trajectory=[], active_session=session, session_traj_count=0
+        )
+        r._capture_partial_acp_trajectory()
+        assert _read_jsonl(traj_path) == [
+            {"type": "user_message", "text": "solve"},
+            {"type": "agent_thought", "text": "thinking about it"},
+        ]
+        assert _read_jsonl(traj_path) == r._trajectory
+
+    def test_partial_capture_without_a_prompt_writes_no_file(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards PR #566's partial capture: teardown of a session that never
+        got a prompt must not create an empty live trajectory."""
+        traj_path = tmp_path / "acp_trajectory.jsonl"
+        session = ACPSession("s1")
+        session.on_change = make_trajectory_sink(TrajectoryWriter(traj_path), [])
+        r = _build_rollout(
+            prior_trajectory=[], active_session=session, session_traj_count=0
+        )
+        r._capture_partial_acp_trajectory()
+        assert not traj_path.exists()
