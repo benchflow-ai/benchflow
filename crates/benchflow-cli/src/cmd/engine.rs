@@ -357,6 +357,50 @@ fn cause_heading(status: Status, code: &str, owner: Owner, n: usize) -> String {
     )
 }
 
+/// Tokens and model cost over some trials: `549.7K in · 18.4K out ·
+/// $0.14`, or None when they used no tokens and recorded no cost (the
+/// oracle, a scripted run).
+pub fn usage(recs: &[&TrialRecord]) -> Option<String> {
+    let input: u64 = recs
+        .iter()
+        .map(|r| r.usage.input_tokens + r.usage.cache_read_tokens + r.usage.cache_write_tokens)
+        .sum();
+    let output: u64 = recs.iter().map(|r| r.usage.output_tokens).sum();
+    let costs: Vec<Option<f64>> = recs.iter().map(|r| r.usage.cost_usd).collect();
+    if input + output == 0 && costs.iter().all(Option::is_none) {
+        return None;
+    }
+    Some(format!(
+        "{} in · {} out · {}",
+        ui::live::human_count(input),
+        ui::live::human_count(output),
+        ui::cost(&costs)
+    ))
+}
+
+/// The summary's Usage line: what the trials run now used, and, after a
+/// resume, that the kept trials are not counted.
+fn usage_line(now: &[&TrialRecord], kept: &[&TrialRecord]) -> Option<String> {
+    let spent = usage(now);
+    if kept.is_empty() {
+        return spent.map(|u| format!("  {}  {u}", dim("Usage")));
+    }
+    let mut parts = vec![format!(
+        "  {}  {} this run",
+        dim("Usage"),
+        spent.unwrap_or_else(|| "none".into())
+    )];
+    let earlier = match usage(kept) {
+        Some(u) => format!("{u} earlier"),
+        None => "nothing earlier".into(),
+    };
+    parts.push(format!(
+        "not counted: the {} kept, {earlier}",
+        plural(kept.len(), "trial")
+    ));
+    Some(ui::join_fitting(&parts, 9, ui::width()))
+}
+
 /// The end-of-run report: the score, failures grouped by cause with whose
 /// problem each is, usage, and where to look next.
 pub fn report(outcome: &JobOutcome) {
@@ -432,31 +476,23 @@ pub fn report(outcome: &JobOutcome) {
             plural(outcome.not_started, "trial")
         );
     }
-    // Usage and time.
-    let input: u64 = recs
+    // Usage and time. A resumed run counts only the trials it ran: the
+    // kept ones were paid for by the earlier run.
+    let now: Vec<&TrialRecord> = recs
         .iter()
-        .map(|r| r.usage.input_tokens + r.usage.cache_read_tokens + r.usage.cache_write_tokens)
-        .sum();
-    let output: u64 = recs.iter().map(|r| r.usage.output_tokens).sum();
-    let cost: f64 = recs.iter().filter_map(|r| r.usage.cost_usd).sum();
+        .filter(|r| !outcome.earlier.contains(&r.rollout_name))
+        .collect();
+    let kept: Vec<&TrialRecord> = recs
+        .iter()
+        .filter(|r| outcome.earlier.contains(&r.rollout_name))
+        .collect();
     let elapsed = outcome
         .summary
         .get("elapsed_sec")
         .and_then(serde_json::Value::as_f64)
         .unwrap_or(0.0);
-    let mut usage = Vec::new();
-    if input + output > 0 {
-        usage.push(format!(
-            "{} in · {} out",
-            ui::live::human_count(input),
-            ui::live::human_count(output)
-        ));
-    }
-    if cost > 0.0 {
-        usage.push(ui::usd(cost));
-    }
-    if !usage.is_empty() {
-        say!("  {}  {}", dim("Usage"), usage.join(" · "));
+    if let Some(line) = usage_line(&now, &kept) {
+        say!("{line}");
     }
     say!("  {}   {}", dim("Time"), ui::secs(elapsed));
     if outcome.carried_reused + outcome.carried_regraded > 0 {
@@ -539,6 +575,41 @@ mod tests {
 #[cfg(test)]
 mod report_tests {
     use super::*;
+
+    fn trial(name: &str, input: u64, cost: Option<f64>) -> TrialRecord {
+        let v = serde_json::json!({
+            "task_name": "t", "trial_name": name, "status": "scored",
+            "agent_result": {"n_input_tokens": input, "n_output_tokens": 10, "cost_usd": cost},
+            "started_at": "2026-10-10 13:32:40.000000",
+            "finished_at": "2026-10-10 13:33:40.000000",
+        });
+        benchflow_run::read::record_from_json(&v, std::path::Path::new(name)).expect("a record")
+    }
+
+    #[test]
+    fn a_resumed_run_counts_only_what_it_spent() {
+        let kept = [trial("a", 549_700, Some(0.14))];
+        let now = [trial("b", 1_000, Some(0.02))];
+        let line = usage_line(
+            &now.iter().collect::<Vec<_>>(),
+            &kept.iter().collect::<Vec<_>>(),
+        )
+        .expect("a line");
+        assert!(line.contains("1.0K in · 10 out · $0.02 this run"), "{line}");
+        assert!(
+            line.contains("the 1 trial kept, 549.7K in · 10 out · $0.14 earlier"),
+            "{line}"
+        );
+        // Nothing ran now (`--rerun failed` with no failures).
+        let line = usage_line(&[], &kept.iter().collect::<Vec<_>>()).expect("a line");
+        assert!(line.contains("none this run"), "{line}");
+        // A fresh run reads as before.
+        let line = usage_line(&now.iter().collect::<Vec<_>>(), &[]).expect("a line");
+        assert!(line.ends_with("1.0K in · 10 out · $0.02"), "{line}");
+        let unpriced = [trial("c", 1_000, None)];
+        let line = usage_line(&unpriced.iter().collect::<Vec<_>>(), &[]).expect("a line");
+        assert!(line.ends_with("cost not recorded"), "{line}");
+    }
 
     #[test]
     fn stopped_trials_are_not_blamed_on_a_setup() {

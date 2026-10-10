@@ -436,11 +436,11 @@ impl Provider for DaytonaProvider {
             };
         }
         match count_running(&self.api).await {
-            Ok(n) => ProviderStatus {
+            Ok((n, here)) => ProviderStatus {
                 ok: true,
                 summary: format!(
-                    "Daytona: signed in, {n} sandbox{} running{}",
-                    if n == 1 { "" } else { "es" },
+                    "Daytona: signed in, {}{}",
+                    running_summary(n, here, &owner::scope()),
                     if self.api.base() == DEFAULT_API_URL {
                         String::new()
                     } else {
@@ -699,15 +699,23 @@ async fn is_stale(sandbox: &SandboxDto, now: DateTime<Utc>) -> bool {
 }
 
 /// Count the organization's running sandboxes (read-only).
-async fn count_running(api: &Api) -> Result<usize, ApiError> {
-    let mut count = 0;
+/// BenchFlow's running sandboxes on the account: the ones with this owner
+/// scope's label, and how many of them this machine started. Others on a
+/// shared account (people, other tools) are not counted.
+async fn count_running(api: &Api) -> Result<(usize, usize), ApiError> {
+    let filter = serde_json::json!({ OWNER_LABEL: owner::scope() }).to_string();
+    let mut count = (0, 0);
     let mut cursor: Option<String> = None;
     for _ in 0..20 {
         let page: SandboxPage = api
             .json("listing sandboxes", Retry::Safe, |http| {
                 let mut request = http
                     .get(api.url("/sandbox"))
-                    .query(&[("states", "started"), ("limit", "200")])
+                    .query(&[
+                        ("states", "started"),
+                        ("labels", filter.as_str()),
+                        ("limit", "200"),
+                    ])
                     .timeout(Duration::from_secs(30));
                 if let Some(c) = &cursor {
                     request = request.query(&[("cursor", c.as_str())]);
@@ -715,13 +723,45 @@ async fn count_running(api: &Api) -> Result<usize, ApiError> {
                 Ok(request)
             })
             .await?;
-        count += page.items.iter().filter(|s| s.state() == "started").count();
+        let (n, here) = count_ours(&page.items, &owner::scope(), owner::hostname());
+        count = (count.0 + n, count.1 + here);
         match page.next_cursor.filter(|c| !c.is_empty()) {
             Some(next) => cursor = Some(next),
             None => break,
         }
     }
     Ok(count)
+}
+
+/// Of `items`, the started sandboxes with owner label `scope`, and of
+/// those, the ones started from `host`.
+fn count_ours(items: &[SandboxDto], scope: &str, host: &str) -> (usize, usize) {
+    let ours: Vec<&SandboxDto> = items
+        .iter()
+        .filter(|s| s.state() == "started")
+        .filter(|s| s.labels.get(OWNER_LABEL).map(String::as_str) == Some(scope))
+        .collect();
+    let here = ours
+        .iter()
+        .filter(|s| s.labels.get(crate::HOST_LABEL).map(String::as_str) == Some(host))
+        .count();
+    (ours.len(), here)
+}
+
+/// `bench doctor`'s count: "2 BenchFlow sandboxes running, 1 from this
+/// machine", naming the owner scope when `BENCHFLOW_OWNER` set another.
+fn running_summary(n: usize, here: usize, scope: &str) -> String {
+    let mut s = format!(
+        "{n} BenchFlow sandbox{} running",
+        if n == 1 { "" } else { "es" }
+    );
+    if n > 0 {
+        s.push_str(&format!(", {here} from this machine"));
+    }
+    if scope != "bench" {
+        s.push_str(&format!(" (owner {scope})"));
+    }
+    s
 }
 
 /// Make the root-only staging folder (and the workdir), retrying while the
@@ -1036,6 +1076,46 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, SandboxError::Unavailable { .. }));
         assert_eq!(provider.sweep().await.unwrap(), 0);
+    }
+
+    #[test]
+    fn doctor_counts_only_benchflows_own_sandboxes() {
+        let sandbox = |state: &str, owner: Option<&str>, host: &str| SandboxDto {
+            id: "s".into(),
+            state: Some(state.into()),
+            error_reason: None,
+            labels: owner
+                .map(|o| {
+                    BTreeMap::from([
+                        (OWNER_LABEL.to_string(), o.to_string()),
+                        (crate::HOST_LABEL.to_string(), host.to_string()),
+                    ])
+                })
+                .unwrap_or_default(),
+            toolbox_proxy_url: None,
+            created_at: None,
+            last_activity_at: None,
+        };
+        let items = [
+            sandbox("started", Some("bench"), "mac"),
+            sandbox("started", Some("bench"), "other"),
+            sandbox("stopped", Some("bench"), "mac"),
+            sandbox("started", Some("team-b"), "mac"),
+            sandbox("started", None, "mac"),
+        ];
+        assert_eq!(count_ours(&items, "bench", "mac"), (2, 1));
+        assert_eq!(
+            running_summary(2, 1, "bench"),
+            "2 BenchFlow sandboxes running, 1 from this machine"
+        );
+        assert_eq!(
+            running_summary(0, 0, "bench"),
+            "0 BenchFlow sandboxes running"
+        );
+        assert_eq!(
+            running_summary(1, 1, "team-b"),
+            "1 BenchFlow sandbox running, 1 from this machine (owner team-b)"
+        );
     }
 
     #[tokio::test]

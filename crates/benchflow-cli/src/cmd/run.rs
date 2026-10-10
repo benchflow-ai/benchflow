@@ -129,11 +129,12 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
     let mut sources = Vec::new();
     let mut targets: Vec<String> = resolved.targets.clone();
     let mut dataset: Option<(registry::Dataset, Vec<registry::FetchedTask>)> = None;
+    let mut listed = 0;
     if let Some(spec) = &resolved.dataset {
         let mut d = registry::resolve(spec, resolved.registry.as_deref(), &cache)
             .await
             .map_err(registry_error)?;
-        let listed = d.tasks.len();
+        listed = d.tasks.len();
         note!("{}", dataset_line(&d, ui::width()));
         if let Some(range) = &d.bench_version {
             note!(
@@ -151,8 +152,13 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
                 listed
             );
         }
-        if args.dry_run && args.diff.is_empty() {
-            return dataset_plan(&d, listed, &resolved);
+        // A dry run fetches nothing unless it must, to tell whether the
+        // run would resume a job: that needs the tasks' digests.
+        if args.dry_run
+            && args.diff.is_empty()
+            && !may_resume(&st.jobs_dir, args.job.as_deref(), args.fresh)
+        {
+            return dataset_plan(&d, listed, &resolved, None);
         }
         let fetched = registry::fetch(&d, &cache, &|m: &str| {
             note!("  {} {}", dim("fetching"), m);
@@ -293,6 +299,28 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         return Ok(Exit::Ok);
     }
     if args.dry_run {
+        let mut options =
+            engine::options_for(&st, st.sandbox.as_deref().unwrap_or(""), args.sandbox.keep)?;
+        apply_flags(&mut options, &args, rerun);
+        options.skills = skills;
+        options.task_skills = resolved.run.task_skills.unwrap_or(true);
+        options.load_trajectory = load_trajectory;
+        let preview = benchflow_run::job::preview(
+            &JobSpec {
+                carry: Vec::new(),
+                units: units.clone(),
+                trials,
+                jobs_dir: st.jobs_dir.clone(),
+                job_name: args.job.clone(),
+                fresh: args.fresh,
+                concurrency: st.concurrency,
+                source: Value::Null,
+            },
+            &options,
+        );
+        if let Some((d, _)) = &dataset {
+            return dataset_plan(d, listed, &resolved, Some(&preview));
+        }
         let plan = json!({
             "agent": attempt.label(),
             "model": attempt.model(),
@@ -303,6 +331,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             "tasks": tasks.iter().map(|t| json!({"name": t.name, "id": t.id, "path": t.root, "digest": t.digest, "format": t.format})).collect::<Vec<_>>(),
             "refused": refused.iter().map(|(t, m)| json!({"task": t, "reason": m})).collect::<Vec<_>>(),
             "sources": sources,
+            "job": job_json(Some(&preview)),
         });
         if ui().json {
             println!(
@@ -330,6 +359,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
                 st.sandbox.clone().unwrap_or_else(|| "auto".into()),
                 st.concurrency
             );
+            say!("  job      {}", job_text(Some(&preview)));
             for t in tasks.iter().take(20) {
                 say!("    {} {}", dim("·"), t.name);
             }
@@ -931,7 +961,48 @@ fn plan_task_lines(d: &registry::Dataset, listed: usize) -> Vec<String> {
 
 /// `--dry-run` with a dataset: its tasks as the registry lists them,
 /// without fetching anything.
-fn dataset_plan(d: &registry::Dataset, listed: usize, resolved: &JobFile) -> Result<Exit> {
+/// Whether a run could resume a job here, judged without the tasks: false
+/// when the run would surely start a new job (`--fresh`, a `--job` name not
+/// used yet, or no job in the jobs folder).
+fn may_resume(jobs_dir: &Path, job: Option<&str>, fresh: bool) -> bool {
+    if let Some(name) = job {
+        return jobs_dir.join(name).join("evaluation.json").is_file();
+    }
+    !fresh
+        && std::fs::read_dir(jobs_dir).is_ok_and(|mut dirs| {
+            dirs.any(|e| e.is_ok_and(|e| e.path().join("evaluation.json").is_file()))
+        })
+}
+
+/// The plan's job line: whether the run would resume a job, and how much of
+/// it, or start a new one. No preview: it would surely start a new one.
+fn job_text(p: Option<&benchflow_run::job::Preview>) -> String {
+    match p {
+        Some(p) if p.resumed => format!(
+            "would resume {} ({} of {} kept)",
+            ui::path(&p.dir),
+            p.kept,
+            plural(p.total, "trial")
+        ),
+        _ => "would start a new job".into(),
+    }
+}
+
+fn job_json(p: Option<&benchflow_run::job::Preview>) -> Value {
+    match p {
+        Some(p) if p.resumed => {
+            json!({"resume": true, "dir": p.dir, "kept": p.kept, "trials": p.total})
+        }
+        _ => json!({"resume": false}),
+    }
+}
+
+fn dataset_plan(
+    d: &registry::Dataset,
+    listed: usize,
+    resolved: &JobFile,
+    preview: Option<&benchflow_run::job::Preview>,
+) -> Result<Exit> {
     let tasks: Vec<Value> = d
         .tasks
         .iter()
@@ -949,6 +1020,7 @@ fn dataset_plan(d: &registry::Dataset, listed: usize, resolved: &JobFile) -> Res
             "model": resolved.run.model,
             "trials_per_task": resolved.run.trials,
             "tasks": tasks,
+            "job": job_json(preview),
         });
         println!(
             "{}",
@@ -956,9 +1028,14 @@ fn dataset_plan(d: &registry::Dataset, listed: usize, resolved: &JobFile) -> Res
         );
         return Ok(Exit::Ok);
     }
+    // With a preview, the tasks were fetched to tell whether it resumes.
     say!(
         "{}",
-        bold("Plan (nothing runs or is fetched with --dry-run)")
+        bold(if preview.is_some() {
+            "Plan (nothing runs with --dry-run)"
+        } else {
+            "Plan (nothing runs or is fetched with --dry-run)"
+        })
     );
     say!("  dataset  {}@{}", d.name, d.version);
     if let Some(desc) = &d.description {
@@ -977,6 +1054,7 @@ fn dataset_plan(d: &registry::Dataset, listed: usize, resolved: &JobFile) -> Res
     for line in plan_task_lines(d, listed) {
         say!("{line}");
     }
+    say!("  job      {}", job_text(preview));
     for t in d.tasks.iter().take(20) {
         say!("    {} {}", dim("·"), t.name);
     }

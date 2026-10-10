@@ -8,10 +8,10 @@ use benchflow_run::job::task_stats;
 use benchflow_run::metrics::{Rate, paired, pass_at_k_table};
 use benchflow_run::outcome::Status;
 use benchflow_run::read::{self, JobView};
-use benchflow_run::record::fmt_reward;
+use benchflow_run::record::{TrialRecord, fmt_reward};
 use serde_json::json;
 
-use super::review;
+use super::{engine, review};
 use crate::cli::ResultsArgs;
 use crate::context;
 use crate::error::{CliError, Exit, Result};
@@ -238,6 +238,10 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
         total,
         rate.display()
     );
+    let all: Vec<&TrialRecord> = v.records.iter().collect();
+    if let Some(u) = engine::usage(&all) {
+        say!("  {}  {u}", dim("Usage"));
+    }
     let pak = pass_at_k_table(&stats);
     if pak.len() > 1 {
         let s: Vec<String> = pak
@@ -247,23 +251,26 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
         say!("  {}", dim(s.join(" · ")));
     }
     if list_trials {
-        let mut t = Table::new(&["trial", "status", "reward", "time", "reason"])
+        let mut t = Table::new(&["trial", "status", "reward", "time", "cost", "reason"])
             .align(2, Align::Right)
-            .align(3, Align::Right);
+            .align(3, Align::Right)
+            .align(4, Align::Right);
         for r in &v.records {
             t.row(vec![
                 r.rollout_name.clone(),
                 status_cell(r.status, r.passed),
                 r.reward.map(fmt_reward).unwrap_or_else(|| "–".into()),
                 ui::secs(r.timing.total),
+                cost_cell(&[r]),
                 r.reason().map(|s| ui::truncate(&s, 60)).unwrap_or_default(),
             ]);
         }
         say!("\n{}", t.render(2));
     } else {
-        let mut t = Table::new(&["task", "passed", "mean reward"])
+        let mut t = Table::new(&["task", "passed", "mean reward", "cost"])
             .align(1, Align::Right)
-            .align(2, Align::Right);
+            .align(2, Align::Right)
+            .align(3, Align::Right);
         for (task, s) in &stats {
             let mark = if s.passed == s.trials {
                 ok_mark()
@@ -278,6 +285,12 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
                 s.mean_reward()
                     .map(fmt_reward)
                     .unwrap_or_else(|| "–".into()),
+                cost_cell(
+                    &v.records
+                        .iter()
+                        .filter(|r| r.task_name == *task)
+                        .collect::<Vec<_>>(),
+                ),
             ]);
         }
         say!("\n{}", t.render(2));
@@ -392,6 +405,25 @@ fn compare(views: &[JobView]) -> Result<Exit> {
     Ok(Exit::Ok)
 }
 
+/// A table cell for some trials' model cost: the sum (with how many
+/// recorded one, when some did not), `not recorded` when none did, `–` for trials with no model (the oracle).
+fn cost_cell(recs: &[&TrialRecord]) -> String {
+    let costs: Vec<Option<f64>> = recs.iter().map(|r| r.usage.cost_usd).collect();
+    let tokens: u64 = recs
+        .iter()
+        .map(|r| r.usage.input_tokens + r.usage.output_tokens)
+        .sum();
+    match costs.iter().flatten().copied().reduce(|a, b| a + b) {
+        Some(sum) if costs.iter().all(Option::is_some) => ui::usd(sum),
+        Some(sum) => {
+            let n = costs.iter().flatten().count();
+            format!("{} ({n} of {})", ui::usd(sum), costs.len())
+        }
+        None if tokens > 0 => "not recorded".into(),
+        None => "–".into(),
+    }
+}
+
 fn status_cell(s: Status, passed: Option<bool>) -> String {
     match (s, passed) {
         (Status::Scored, Some(true)) => format!("{} passed", ok_mark()),
@@ -414,5 +446,9 @@ fn job_json(v: &JobView) -> serde_json::Value {
         "passed": passed,
         "pass_rate": rate,
         "scored": v.records.iter().filter(|r| r.status == Status::Scored).count(),
+        // What the trials that recorded a cost cost, and how many did:
+        // null, not 0, when none did.
+        "cost_usd": v.records.iter().filter_map(|r| r.usage.cost_usd).reduce(|a, b| a + b),
+        "cost_recorded": v.records.iter().filter(|r| r.usage.cost_usd.is_some()).count(),
     })
 }

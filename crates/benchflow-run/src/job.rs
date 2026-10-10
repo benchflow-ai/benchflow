@@ -58,6 +58,59 @@ pub struct JobOutcome {
     pub not_started: usize,
     pub summary: Value,
     pub resumed: bool,
+    /// The trials whose agent did not run now (kept from an earlier run of
+    /// this job, copied, or regraded), by name: their usage was spent
+    /// earlier.
+    pub earlier: std::collections::BTreeSet<String>,
+}
+
+/// What a run of a job would do with its folder, worked out as [`run`]
+/// does but writing nothing (`bench run --dry-run`).
+pub struct Preview {
+    pub dir: PathBuf,
+    /// Whether it would resume an earlier job.
+    pub resumed: bool,
+    /// Trials that job finished and the run would keep.
+    pub kept: usize,
+    /// Trials the job plans.
+    pub total: usize,
+}
+
+/// Preview a run of `spec` with `opts`: the folder it would use, and how
+/// many of the trials there it would keep.
+pub fn preview(spec: &JobSpec, opts: &RunOptions) -> Preview {
+    let (dir, resumed) = job_dir(spec, &fingerprint(spec));
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let (mut kept, mut total) = (0, 0);
+    for (task, attempts) in &spec.units {
+        for attempt in attempts {
+            for i in 0..spec.trials.max(1) {
+                total += 1;
+                if !resumed {
+                    continue;
+                }
+                let tname = trial_name(&name, task, attempt, i);
+                let t = TrialSpec {
+                    task: task.clone(),
+                    attempt: attempt.clone(),
+                    dir: dir.join(&tname),
+                    name: tname,
+                };
+                if load_finished(&t, &opts.rerun, opts).is_some() {
+                    kept += 1;
+                }
+            }
+        }
+    }
+    Preview {
+        dir,
+        resumed,
+        kept,
+        total,
+    }
 }
 
 /// The job folder to use: a named one, the latest matching one (resume), or
@@ -218,6 +271,7 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
     let scratch = tempfile::tempdir()?;
     let (mut carried_reused, mut carried_regraded) = (0, 0);
     let mut reused_records = Vec::new();
+    let mut earlier = std::collections::BTreeSet::new();
     let mut todo: Vec<(TrialSpec, Option<trial::Regrade>)> = Vec::new();
     for (t, carry) in planned.into_iter().zip(carried) {
         if let Some(rec) = load_finished(&t, &rt.options.rerun, &rt.options) {
@@ -243,6 +297,7 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
                 match regrade_input(c, &t, scratch.path()) {
                     Ok(r) => {
                         crate::regrade::copy_agent_files(&c.dir, &t.dir);
+                        earlier.insert(t.name.clone());
                         // The agent does not run: no agent layers.
                         let spec = TrialSpec {
                             attempt: Attempt::Nop,
@@ -258,6 +313,7 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
         }
     }
     let reused = reused_records.len();
+    earlier.extend(reused_records.iter().map(|r| r.rollout_name.clone()));
     rt.events.send(Event::JobStarted {
         dir: dir.clone(),
         total: todo.len() + reused,
@@ -322,6 +378,7 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
         not_started,
         summary,
         resumed,
+        earlier,
     })
 }
 

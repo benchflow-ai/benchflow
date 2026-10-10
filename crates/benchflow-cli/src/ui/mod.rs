@@ -341,6 +341,27 @@ pub fn usd(x: f64) -> String {
     }
 }
 
+/// The model cost of some trials, from each one's recorded cost (what the
+/// provider billed, when the forwarder saw it): the sum, with how many
+/// recorded one when some did not, or "not recorded" when none did, so a
+/// missing cost never reads as $0.
+pub fn cost(costs: &[Option<f64>]) -> String {
+    let recorded: Vec<f64> = costs.iter().flatten().copied().collect();
+    if recorded.is_empty() {
+        return "cost not recorded".into();
+    }
+    let sum = usd(recorded.iter().sum());
+    if recorded.len() == costs.len() {
+        sum
+    } else {
+        format!(
+            "{sum} ({} of {} recorded a cost)",
+            recorded.len(),
+            plural(costs.len(), "trial")
+        )
+    }
+}
+
 /// `1 task`, `3 tasks`.
 pub fn plural(n: usize, word: &str) -> String {
     if n == 1 {
@@ -407,6 +428,18 @@ mod tests {
         );
         assert_eq!(usd(0.000634), "$0.0006");
         assert_eq!(usd(1.5), "$1.50");
+    }
+
+    #[test]
+    fn a_cost_not_recorded_is_not_zero() {
+        assert_eq!(cost(&[Some(0.1), Some(0.04)]), "$0.14");
+        assert_eq!(cost(&[None, None]), "cost not recorded");
+        assert_eq!(cost(&[]), "cost not recorded");
+        assert_eq!(
+            cost(&[Some(0.1), None, Some(0.04)]),
+            "$0.14 (2 of 3 trials recorded a cost)"
+        );
+        assert_eq!(cost(&[Some(0.0)]), "$0.00");
     }
 
     #[test]

@@ -680,3 +680,123 @@ fn export_writes_a_jobs_traces_and_refuses_mixed_flags() {
         .code(2)
         .stderr(predicate::str::contains("is not a job folder"));
 }
+
+/// `bench results` shows each trial's and the job's model cost when the
+/// trials recorded one, and "not recorded" (never $0) when they did not.
+#[test]
+fn results_show_the_cost_the_trials_recorded() {
+    let d = tempfile::tempdir().unwrap();
+    let job = d.path().join("jobs/j");
+    for (task, cost) in [("a", Some(0.1)), ("b", Some(0.04)), ("c", None)] {
+        let trial = job.join(format!("{task}__00000001"));
+        std::fs::create_dir_all(&trial).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            serde_json::json!({
+                "task_name": task, "agent": "claude", "model": "vercel/x",
+                "status": "scored", "rewards": {"reward": 1.0},
+                "agent_result": {"n_input_tokens": 1000, "n_output_tokens": 50, "cost_usd": cost},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    std::fs::write(job.join("evaluation.json"), "{}").unwrap();
+    let results = |extra: &[&str]| {
+        let out = bench(d.path(), &d.path().join("cache"))
+            .arg("results")
+            .arg(&job)
+            .args(extra)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let out = results(&[]);
+    assert!(
+        out.contains("Usage  3.0K in · 150 out · $0.14 (2 of 3 trials recorded a cost)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("$0.10") && out.contains("not recorded"),
+        "{out}"
+    );
+    assert!(!out.contains("$0.00"), "{out}");
+    let out = results(&["--trials"]);
+    assert!(
+        out.contains("$0.04") && out.contains("not recorded"),
+        "{out}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&results(&["--json"])).unwrap();
+    assert_eq!(v["cost_recorded"], 2);
+    assert!((v["cost_usd"].as_f64().unwrap() - 0.14).abs() < 1e-9);
+}
+
+/// `--dry-run` says whether the run would resume a job, by the rule the
+/// run uses, and how many of its trials it would keep.
+#[test]
+fn a_dry_run_says_whether_it_would_resume_a_job() {
+    use benchflow_run::Attempt;
+    use benchflow_run::job::{JobSpec, fingerprint, trial_name};
+    let d = tempfile::tempdir().unwrap();
+    let task = d.path().join("tasks/hello");
+    copy_dir(&fixture_task(), &task);
+    let dry = |extra: &[&str]| {
+        let mut args = vec![
+            "run",
+            "tasks/hello",
+            "-a",
+            "oracle",
+            "-s",
+            "daytona",
+            "--dry-run",
+        ];
+        args.extend_from_slice(extra);
+        let out = bench(d.path(), &d.path().join("cache"))
+            .args(&args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    assert!(dry(&[]).contains("job      would start a new job"));
+    // An earlier job of this command, with its one trial finished.
+    let t = std::sync::Arc::new(benchflow_task::load(&task).unwrap());
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: d.path().join("jobs"),
+        job_name: None,
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::Value::Null,
+    };
+    let job = d.path().join("jobs/2026-10-10__09-00-00");
+    std::fs::create_dir_all(&job).unwrap();
+    std::fs::write(
+        job.join("evaluation.json"),
+        serde_json::json!({"engine": {"fingerprint": fingerprint(&spec)}}).to_string(),
+    )
+    .unwrap();
+    let out = dry(&[]);
+    assert!(
+        out.contains("job      would resume jobs/2026-10-10__09-00-00 (0 of 1 trial kept)"),
+        "{out}"
+    );
+    let name = trial_name("2026-10-10__09-00-00", &t, &Attempt::Oracle, 0);
+    std::fs::create_dir_all(job.join(&name)).unwrap();
+    std::fs::write(
+        job.join(&name).join("result.json"),
+        serde_json::json!({"task_name": "hello", "rollout_name": name, "agent": "oracle", "status": "scored", "rewards": {"reward": 1.0}, "task_digest": t.digest}).to_string(),
+    )
+    .unwrap();
+    let out = dry(&[]);
+    assert!(out.contains("(1 of 1 trial kept)"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&dry(&["--json"])).unwrap();
+    assert_eq!(v["job"]["resume"], true);
+    assert_eq!(v["job"]["kept"], 1);
+    assert!(dry(&["--fresh"]).contains("would start a new job"));
+    assert!(dry(&["--job", "other"]).contains("would start a new job"));
+}

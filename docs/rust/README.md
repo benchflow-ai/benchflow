@@ -227,7 +227,7 @@ name = "fix-the-parser"        # the folder ./fix-the-parser (or ./tasks/fix-the
 digest = "sha256:…"            # optional; `path = "…"` names another folder
 ```
 
-`--include`, `--exclude`, and `--limit` narrow the dataset before anything is fetched, and `--dry-run` lists its tasks without fetching. Every trial's `result.json` records `dataset_name`, `dataset_version`, and the digest the registry pins (`registry_digest`), and the job's `lock.json` records the commit each task was fetched at. This build records registry digests but cannot check them yet, and says so when it runs.
+`--include`, `--exclude`, and `--limit` narrow the dataset before anything is fetched, and `--dry-run` lists its tasks and says whether the run would resume an earlier job (`would resume jobs/<job> (3 of 3 trials kept)`) or start a new one; it fetches nothing unless the jobs folder holds a job the run could resume, since telling needs the tasks' digests. Every trial's `result.json` records `dataset_name`, `dataset_version`, and the digest the registry pins (`registry_digest`), and the job's `lock.json` records the commit each task was fetched at. This build records registry digests but cannot check them yet, and says so when it runs.
 
 ## Regrading
 
