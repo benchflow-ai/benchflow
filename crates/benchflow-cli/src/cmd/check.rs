@@ -307,8 +307,41 @@ fn check_paths(
             .for_each(benchflow_task::keep_schema_only);
     } else {
         reports.iter_mut().for_each(warn_credentials);
+        reports.iter_mut().for_each(check_judge);
     }
     reports
+}
+
+/// Check the settings of the rubric's model judge: its model and the
+/// references it reads.
+fn check_judge(r: &mut CheckReport) {
+    let Some(task) = r.package.as_ref() else {
+        return;
+    };
+    match benchflow_run::judge::plan(task, None) {
+        Ok(Some(plan)) => {
+            let with_reference = plan
+                .items
+                .iter()
+                .filter(|i| i.reference.is_some() || plan.reference.is_some())
+                .count();
+            r.facts.push(format!(
+                "model-judged criteria: {} (judge {}; {} with a reference)",
+                plan.items.len(),
+                plan.model,
+                with_reference
+            ));
+        }
+        Ok(None) => {}
+        Err(e) => r.diagnostics.push(
+            Diagnostic::error(
+                "P004",
+                format!("the rubric's judge settings cannot be used: {e}"),
+            )
+            .in_file(std::path::Path::new("verifier/rubric.json"))
+            .help("`bench explain P004` says how to name the judge model and its references"),
+        ),
+    }
 }
 
 /// Warn about credential files in the task's build folder, by path and

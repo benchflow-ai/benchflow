@@ -37,7 +37,7 @@ What the Rust `bench` does today, what it does not do yet, and how each part was
 | Split layout (`task.toml`, schema 1.0 to 1.4) | Read and checked, with warnings for keys other runners ignore silently; `bench import` and `bench export` convert both ways |
 | Terminal-Bench v1 (`task.yaml`, `run-tests.sh`, `docker-compose.yaml`) | `bench import` converts it through the split layout (checked on synthetic fixtures and 9 real tasks). `solution.yaml` is refused |
 
-Fields the Rust runner reads but cannot honor yet are refused by name before a trial starts (`R401`), never skipped. Today that covers: wildcard hosts in a network allowlist or blocklist, `network = "none"` or an allowlist with a model agent (its own traffic to its model would be refused), rubric criteria judged by models or people, clocks, worlds, simulated users, roles, and per-output caps.
+Fields the Rust runner reads but cannot honor yet are refused by name before a trial starts (`R401`), never skipped. Today that covers: wildcard hosts in a network allowlist or blocklist, `network = "none"` or an allowlist with a model agent (its own traffic to its model would be refused), rubric criteria judged by `agent`, `vlm`, `panel`, or a person (`llm` criteria are judged on the host: [rubrics.md](rubrics.md)), clocks, worlds, simulated users, roles, and per-output caps.
 
 ## Task runtime features
 

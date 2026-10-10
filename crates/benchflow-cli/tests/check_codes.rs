@@ -60,6 +60,55 @@ fn a_credential_file_in_the_build_folder_is_named_not_shown() {
     assert!(!all.contains(SECRET), "the file's content is never shown");
 }
 
+/// P004: a rubric's model judge reads a reference the package lacks. The
+/// error names the criterion and the file; with the file in place, the
+/// check passes and says which model judges how many criteria.
+#[test]
+fn a_judge_reference_the_package_lacks_is_an_error() {
+    let d = tempfile::tempdir().unwrap();
+    let task = d.path().join("t");
+    write(
+        &task,
+        "task.md",
+        "Write `/app/memo.md`.\n\n```toml task\nname = \"acme/t\"\nversion = \"1.0.0\"\n\n[sandbox]\nworkdir = \"/app\"\n```\n",
+    );
+    write(&task, "sandbox/Dockerfile", "FROM ubuntu:24.04\n");
+    write(&task, "verifier/test.sh", "true\n");
+    write(&task, "oracle/solve.sh", "true\n");
+    write(
+        &task,
+        "verifier/rubric.json",
+        r#"{"$schema": "https://task.md/schema/rubric-1.json", "x-judge": {"model": "vercel/judge/model"},
+            "criteria": [{"id": "memo", "text": "The memo names the total.", "judge": "llm", "points": 1,
+            "stated": "Write `/app/memo.md`", "evidence": ["/app/memo.md"], "reference": "verifier/answers.md"}]}"#,
+    );
+    let check = || {
+        let out = Command::cargo_bin("bench")
+            .unwrap()
+            .current_dir(d.path())
+            .env("HOME", d.path())
+            .env("BENCHFLOW_CACHE_DIR", d.path().join(".cache"))
+            .env("NO_COLOR", "1")
+            .args(["check", "t"])
+            .output()
+            .unwrap();
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    };
+    let all = check();
+    assert!(all.contains("error[P004]"), "{all}");
+    assert!(
+        all.contains("memo: reference: verifier/answers.md cannot be read"),
+        "{all}"
+    );
+    write(&task, "verifier/answers.md", "The total is 42.\n");
+    let all = check();
+    assert!(!all.contains("P004"), "{all}");
+}
+
 /// A split-layout task named by a relative path: the warning shows its line
 /// of task.toml (once `t/`, not `t/t/`), and `--fix` applies the rename
 /// rather than failing as a BenchFlow bug.

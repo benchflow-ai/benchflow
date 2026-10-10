@@ -189,6 +189,53 @@ impl Reviewer {
         &self.client.endpoint().key_label
     }
 
+    /// One model call, nothing parsed: `system` and every message are
+    /// redacted first (what was sent is returned, for records), then sent
+    /// with `temperature`. The reply's text, whether it was cut off at the
+    /// output limit, and what it cost.
+    pub async fn call(
+        &self,
+        system: &str,
+        messages: &[Message],
+        max_tokens: u32,
+        temperature: Option<f64>,
+    ) -> Result<Call, ReviewError> {
+        let system = self.redactor.redact(system).into_owned();
+        let messages: Vec<Message> = messages
+            .iter()
+            .map(|m| match m {
+                Message::User(text) => Message::User(self.redactor.redact(text).into_owned()),
+                other => other.clone(),
+            })
+            .collect();
+        let req = ChatRequest {
+            system: Some(system.clone()),
+            messages: messages.clone(),
+            max_tokens: Some(max_tokens),
+            temperature,
+            ..ChatRequest::default()
+        };
+        let response = self.client.chat(&req, "judge").await.map_err(|e| {
+            ReviewError::new(
+                ReviewErrorKind::Provider,
+                format!("the model call failed: {e}"),
+                format!(
+                    "the provider's problem; try again later or pass another judge model ({})",
+                    self.key_label()
+                ),
+            )
+        })?;
+        let mut spend = Spend::default();
+        spend.add_usage(&response.usage);
+        Ok(Call {
+            system,
+            messages,
+            reply: response.message.text,
+            cut_off: response.finish == FinishReason::Length,
+            spend,
+        })
+    }
+
     /// Ask for one JSON object with the `required` keys. A reply without
     /// one gets one more try with the reason; a reply cut off at the output
     /// limit gets one more try with twice the limit (reasoning models can
@@ -275,6 +322,19 @@ impl Reviewer {
         }
         unreachable!("the loop returns on its second attempt")
     }
+}
+
+/// One model call as it was sent and answered.
+#[derive(Debug, Clone)]
+pub struct Call {
+    /// The system prompt sent, after redaction.
+    pub system: String,
+    /// The messages sent, after redaction.
+    pub messages: Vec<Message>,
+    pub reply: String,
+    /// The reply stopped at the output limit.
+    pub cut_off: bool,
+    pub spend: Spend,
 }
 
 /// The most output tokens a retry asks for.

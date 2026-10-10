@@ -27,6 +27,7 @@ pub mod headless_agent;
 pub mod images;
 pub mod job;
 pub mod jobfile;
+pub mod judge;
 pub mod lock;
 pub mod metrics;
 pub mod native_agent;

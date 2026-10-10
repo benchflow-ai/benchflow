@@ -45,6 +45,15 @@ it in the image where the agent can read it, and anyone with the image can. Benc
 prints its content. Move it out of the build folder, or list it in .dockerignore; pass secrets a build needs as \
 build secrets (RUN --mount=type=secret). `bench test` also scans the built image.",
     },
+    Explanation {
+        code: "P004",
+        title: "the rubric's judge settings cannot be used",
+        body: "Rubric criteria with judge \"llm\" are judged on the host by a model, one call per criterion. \
+The rubric's `x-judge` names the model as {\"model\": \"<provider>/<model>\"}; its `x-reference`, and each \
+criterion's `reference`, is text or a file in a private folder of the package (verifier/reference.md, or \
+verifier/answers.toml#total for one value of a TOML or JSON file), which the agent never sees. One of them \
+could not be used; the message says which. A run would stop on it with R313.",
+    },
 ];
 
 /// Folders [`discover`] never enters.

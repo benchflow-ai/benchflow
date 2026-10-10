@@ -538,6 +538,10 @@ pub struct RunArgs {
     #[arg(long, value_name = "N")]
     pub max_tokens: Option<u64>,
 
+    /// The model that judges rubric criteria with judge "llm", as <provider>/<model> (default: the rubric's x-judge.model, else vercel/deepseek/deepseek-v4-flash-0731)
+    #[arg(long, value_name = "MODEL")]
+    pub judge_model: Option<String>,
+
     /// Exit 1 when the pass rate is below this (0 to 1)
     #[arg(long, value_name = "RATE")]
     pub fail_under: Option<f64>,

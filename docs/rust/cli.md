@@ -166,6 +166,7 @@ bench run [OPTIONS] [TARGETS]...
 | `--idle-timeout` `<DURATION>` | Abort a prompt when the agent is silent this long (e.g. 10m) |
 | `--max-tool-calls` `<N>` | Stop the agent after N tool calls (native harnesses) |
 | `--max-tokens` `<N>` | Stop the agent after N tokens, input plus output (native harnesses) |
+| `--judge-model` `<MODEL>` | The model that judges rubric criteria with judge "llm", as <provider>/<model> (default: the rubric's x-judge.model, else vercel/deepseek/deepseek-v4-flash-0731) |
 | `--fail-under` `<RATE>` | Exit 1 when the pass rate is below this (0 to 1) |
 | `--extra-instruction` `<TEXT>` | Text appended to every task's instruction |
 | `--save-outputs` | Save each trial's workdir (or declared outputs) in its folder |

@@ -811,6 +811,21 @@ fn task(root: &Path) -> TaskPackage {
     }
 }
 
+/// Give the task a rubric with one criterion a model judges.
+fn judged_rubric(t: &mut TaskPackage, reference: Option<&str>) {
+    let mut c = json!({"id": "memo", "text": "The memo names the total.", "judge": "llm",
+        "points": 1, "evidence": ["memo.md"]});
+    if let Some(r) = reference {
+        c["reference"] = json!(r);
+    }
+    t.verifier.rubric = Some(
+        benchflow_task::rubric::Rubric::from_value(&json!({
+            "$schema": "https://task.md/schema/rubric-1.json", "criteria": [c]
+        }))
+        .unwrap(),
+    );
+}
+
 /// Who attempts the task in a case.
 enum Who {
     Oracle,
@@ -1041,6 +1056,28 @@ fn cases() -> Vec<Case> {
         Case::new("R311", Task, "a hook before grading fails")
             .fixture("snapshot-hook")
             .fault(Fault::HookFails),
+        Case::new("R312", Model, "the rubric's model judge cannot be reached")
+            .tweak(|t| judged_rubric(t, None))
+            .options(|o| {
+                o.judge_model = Some("vercel/judge/model".into());
+                o.judge_env = benchflow_run::config::JudgeEnv(BTreeMap::from([
+                    (
+                        "AI_GATEWAY_API_KEY".to_string(),
+                        "vck_codes_test_key".to_string(),
+                    ),
+                    // Nothing listens on the discard port.
+                    (
+                        "BENCHFLOW_NATIVE_BASE_URL".to_string(),
+                        "http://127.0.0.1:9/v1".to_string(),
+                    ),
+                ]));
+            }),
+        Case::new(
+            "R313",
+            Task,
+            "a rubric's reference names a file the package lacks",
+        )
+        .tweak(|t| judged_rubric(t, Some("verifier/answers.md"))),
         Case::new(
             "R106",
             Task,

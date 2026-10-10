@@ -400,6 +400,18 @@ pub static EXPLANATIONS: &[Explanation] = &[
         body: "A command the task runs after the agent's turn and before grading (task.toml's `[[verifier.collect]]`, task.md's `[[verifier.snapshot]]`) exited with an error or ran past its timeout, so the state it saves is missing and the trial was not graded.\n\nThe trial's `hooks/<n>.txt` has the command and its output.",
     },
     Explanation {
+        code: "R312",
+        title: "the rubric's model judge could not decide a criterion",
+        owner: Owner::Model,
+        body: "Rubric criteria with `judge: \"llm\"` are judged on the host after the agent's turn, one model call per criterion. A criterion whose calls failed, or whose replies were not the verdict asked for after three tries, is not judged, and a rubric with an undecided criterion has no reward: the trial is unscored rather than given a 0 it did not earn.\n\nThe trial's `verifier/judgments.jsonl` has every call, its reply, and why it could not be used. Run again, or pick another judge with `bench run --judge-model <provider>/<model>`.",
+    },
+    Explanation {
+        code: "R313",
+        title: "the rubric's judge settings cannot be used",
+        owner: Owner::Task,
+        body: "A rubric's `x-judge` names the judge model as `{\"model\": \"<provider>/<model>\"}`, and its `x-reference` and each criterion's `reference` are text or a file in a private folder of the package (`verifier/reference.md`, `verifier/answers.toml#total`). One of them could not be used: the message says which.\n\n`bench check` reports the same before a run.",
+    },
+    Explanation {
         code: "R401",
         title: "the task asks for something this runner cannot do yet",
         owner: Owner::You,

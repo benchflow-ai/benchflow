@@ -290,6 +290,7 @@ dependencies = [
  "benchflow-task",
  "chrono",
  "dirs",
+ "flate2",
  "futures",
  "globset",
  "hex",

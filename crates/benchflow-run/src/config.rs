@@ -93,6 +93,25 @@ pub struct RunOptions {
     /// (`bench test` turns this on).
     #[serde(default)]
     pub scan_credentials: bool,
+    /// The model that judges `llm` rubric criteria (`--judge-model`); the
+    /// task's `x-judge.model` when unset.
+    #[serde(default)]
+    pub judge_model: Option<String>,
+    /// Variables for the judge's provider settings that win over this
+    /// process's environment (tests point it at a fake server). Never
+    /// saved.
+    #[serde(skip)]
+    pub judge_env: JudgeEnv,
+}
+
+/// Variables for the judge; their values never print.
+#[derive(Clone, Default)]
+pub struct JudgeEnv(pub BTreeMap<String, String>);
+
+impl std::fmt::Debug for JudgeEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
+    }
 }
 
 fn one() -> f64 {
@@ -217,6 +236,8 @@ impl Default for RunOptions {
             bench_version: None,
             runtime: None,
             scan_credentials: false,
+            judge_model: None,
+            judge_env: JudgeEnv::default(),
         }
     }
 }

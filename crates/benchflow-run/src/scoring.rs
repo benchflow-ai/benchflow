@@ -15,6 +15,7 @@ use benchflow_task::ctrf::Ctrf;
 use benchflow_task::reward::{RewardError, read_rewards};
 use serde_json::Value;
 
+use crate::judge::Judged;
 use crate::outcome::{Owner, Phase, Problem};
 
 /// A scored verifier run.
@@ -27,12 +28,44 @@ pub struct Score {
     pub rubric: Option<Value>,
 }
 
-/// Score a trial from its downloaded verifier folder.
-pub fn score(task: &TaskPackage, verifier_dir: &Path) -> Result<Score, Problem> {
+/// Score a trial from its downloaded verifier folder. `judged` holds the
+/// model judge's verdicts on the rubric's `llm` criteria, and its model.
+pub fn score(
+    task: &TaskPackage,
+    verifier_dir: &Path,
+    judged: Option<(&Judged, &str)>,
+) -> Result<Score, Problem> {
     if let Some(rubric) = &task.verifier.rubric {
         let ctrf = Ctrf::from_path(&verifier_dir.join("ctrf.json"));
-        let s = rubric.grade(&ctrf, &BTreeMap::new());
-        let review = s.review_json();
+        let empty = Judged::default();
+        let (j, model) = judged.unwrap_or((&empty, ""));
+        let mut s = rubric.grade(&ctrf, &j.verdicts);
+        for c in &mut s.criteria {
+            if let Some(reason) = j.reasons.get(&c.id) {
+                c.rationale = Some(reason.chars().take(600).collect());
+            }
+        }
+        let mut review = s.review_json();
+        if let Some(verdicts) = review.get_mut("verdicts").and_then(Value::as_array_mut) {
+            for v in verdicts {
+                let id = v.get("id").and_then(Value::as_str).unwrap_or("");
+                if j.verdicts.contains_key(id)
+                    && let Some(judge) = v.get_mut("judge").and_then(Value::as_object_mut)
+                {
+                    judge.insert("model".into(), Value::String(model.to_string()));
+                }
+            }
+        }
+        if judged.is_some() {
+            review["x-benchflow"]["judge"] = serde_json::json!({
+                "model": model,
+                "calls": j.spend.calls,
+                "input_tokens": j.spend.input_tokens,
+                "output_tokens": j.spend.output_tokens,
+                "cost_usd": j.spend.cost_usd,
+                "record": "verifier/judgments.jsonl",
+            });
+        }
         let _ = std::fs::write(
             verifier_dir.join("review.json"),
             serde_json::to_string_pretty(&review).unwrap_or_default(),

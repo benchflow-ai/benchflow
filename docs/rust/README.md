@@ -7,6 +7,7 @@ This branch rebuilds BenchFlow's command line and run engine in Rust. It is one 
 - [cli.md](./cli.md): every command, flag, exit code, environment variable, and `bench.toml` key
 - [viewer.md](./viewer.md): `bench view`'s pages: the run list, compare, outcomes, and the Pareto view
 - [testing-tasks.md](./testing-tasks.md): how `bench test` proves a task, and every exploit probe
+- [rubrics.md](./rubrics.md): rubric criteria a model judges on the host, one clean call per criterion, against the task's reference
 - [harnesses.md](./harnesses.md): agents and how they are driven: manifests, options, skills, sessions, providers
 - [status.md](./status.md): what is ported, what is not yet, and how each part was verified
 

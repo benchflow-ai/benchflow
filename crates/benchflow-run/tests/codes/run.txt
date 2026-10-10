@@ -152,6 +152,14 @@ R311 · the task's problem · handing off to the verifier · a hook before gradi
   next: hooks/1.txt in the trial folder has its output; fix the command in the task
   detail: cp: cannot stat '/app/status.txt': No such file or directory
 
+R312 · the model provider's problem · verifying · the rubric's model judge cannot be reached
+  the rubric judge vercel/judge/model could not be reached, so no model-judged criterion was decided: could not list the upstreams vercel would send `judge/model` to (http://127.0.0.1:9/v1/models/judge/model/endpoints: could not connect)
+  next: check the network and run again; BenchFlow sends no gateway request it cannot pin to allowed upstreams
+
+R313 · the task's problem · verifying · a rubric's reference names a file the package lacks
+  the rubric's judge settings cannot be used: memo: reference: verifier/answers.md cannot be read (No such file or directory (os error 2)); put the reference there, or write it inline
+  next: fix verifier/rubric.json (`bench check` checks the judge settings)
+
 R106 · the task's problem · starting the sandbox · a service beside the sandbox exits as it starts
   service api did not start: api exited at once (exit code 1): Error: Cannot find module '/srv/server.js'
   next: check the service's image, command, and readiness check in the task; the trial's services/ folder has its log

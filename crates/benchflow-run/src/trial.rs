@@ -118,13 +118,19 @@ pub fn refusal(task: &TaskPackage, attempt: &Attempt) -> Option<Problem> {
         .collect();
     fields.extend(crate::features::refused(task));
     fields.extend(netpolicy::refusals(task, model));
-    if task
-        .verifier
-        .rubric
-        .as_ref()
-        .is_some_and(|r| r.needs_model())
-    {
-        fields.push("rubric criteria judged by a model or a person (only test-judged criteria run in Rust yet)".into());
+    if let Some(r) = &task.verifier.rubric {
+        let roles: std::collections::BTreeSet<&str> = r
+            .criteria
+            .iter()
+            .filter(|c| c.judge.is_model() && c.judge != benchflow_task::rubric::Judge::Llm)
+            .map(|c| c.judge.as_str())
+            .collect();
+        if !roles.is_empty() {
+            fields.push(format!(
+                "rubric criteria judged by {} (only test- and llm-judged criteria run in Rust yet)",
+                roles.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
     }
     if matches!(attempt, Attempt::Oracle) && task.oracle.is_none() {
         return Some(Problem::new(
@@ -322,6 +328,9 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
                 // A sandbox that failed before grading (R305, R309) is
                 // infrastructure: errored, so a resumed job runs it again.
                 (Phase::Verify | Phase::Handoff, Owner::Task) => Status::Unscored,
+                // The rubric's model judge could not decide: nothing is
+                // known about the agent's work.
+                (Phase::Verify, Owner::Model) => Status::Unscored,
                 _ => Status::Errored,
             };
             rec.problem = Some(p);
@@ -1610,7 +1619,8 @@ impl<'a> Trial<'a> {
             )
             .detail(out.tail(1500)));
         }
-        match scoring::score(&task, &vdir) {
+        let judged = self.judge_rubric(&vdir).await?;
+        match scoring::score(&task, &vdir, judged.as_ref().map(|(j, m)| (j, m.as_str()))) {
             Ok(score) => Ok(score),
             Err(mut p) => {
                 // No reward, because the sandbox died under the verifier (or
@@ -1679,6 +1689,70 @@ impl<'a> Trial<'a> {
         self.root("true".into(), Duration::from_secs(30))
             .await
             .err()
+    }
+
+    /// Judge the rubric's `llm` criteria on the host: fetch their evidence
+    /// from the sandbox, then one model call per criterion. `None` when the
+    /// rubric has none. A criterion left undecided leaves the trial
+    /// unscored (R312); judge settings the task got wrong are R313.
+    async fn judge_rubric(
+        &mut self,
+        vdir: &Path,
+    ) -> Result<Option<(crate::judge::Judged, String)>, Problem> {
+        let task = self.spec.task.clone();
+        let plan =
+            crate::judge::plan(&task, self.rt.options.judge_model.as_deref()).map_err(|e| {
+                Problem::new(
+                    "R313",
+                    Owner::Task,
+                    Phase::Verify,
+                    format!("the rubric's judge settings cannot be used: {e}"),
+                    "fix verifier/rubric.json (`bench check` checks the judge settings)",
+                )
+            })?;
+        let Some(plan) = plan else {
+            return Ok(None);
+        };
+        self.rt.events.log(
+            self.name(),
+            format!(
+                "judging {} rubric criteria with {}",
+                plan.items.len(),
+                plan.model
+            ),
+        );
+        let evidence = crate::judge::fetch(self.sb(), &self.workdir, &plan).await;
+        let reviewer = crate::judge::connect(&plan, &self.rt.options.judge_env.0)
+            .await
+            .map_err(|e| {
+                Problem::new(
+                    "R312",
+                    Owner::Model,
+                    Phase::Verify,
+                    format!(
+                        "the rubric judge {} could not be reached, so no model-judged criterion was decided: {}",
+                        plan.model, e.message
+                    ),
+                    e.next,
+                )
+            })?;
+        let judged = crate::judge::judge(&plan, &evidence, &reviewer, vdir).await;
+        if !judged.failures.is_empty() {
+            let (id, why) = &judged.failures[0];
+            return Err(Problem::new(
+                "R312",
+                Owner::Model,
+                Phase::Verify,
+                format!(
+                    "the rubric judge {} decided {} of {} criteria, so the trial is not scored; {id}: {why}",
+                    plan.model,
+                    judged.verdicts.len(),
+                    plan.items.len()
+                ),
+                "verifier/judgments.jsonl in the trial folder has every call; run again, or pass --judge-model with another model",
+            ));
+        }
+        Ok(Some((judged, plan.model)))
     }
 
     /// Run the verifier in a fresh sandbox that holds only the agent's

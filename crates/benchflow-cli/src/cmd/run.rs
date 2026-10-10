@@ -577,6 +577,7 @@ fn apply_flags(o: &mut benchflow_run::RunOptions, args: &RunArgs, rerun: Rerun) 
     o.rerun = rerun;
     o.max_tool_calls = args.max_tool_calls;
     o.max_tokens = args.max_tokens;
+    o.judge_model = args.judge_model.clone();
 }
 
 /// `--diff` jobs: folders as given, else names in the jobs folder.

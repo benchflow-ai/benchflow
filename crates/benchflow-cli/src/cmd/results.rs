@@ -266,6 +266,16 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
             ]);
         }
         say!("\n{}", t.render(2));
+        // Each rubric criterion's verdict, model-judged ones marked.
+        let width = crate::ui::width();
+        for r in &v.records {
+            if let Some(line) = r.rubric.as_ref().and_then(rubric_verdicts) {
+                say!(
+                    "{}",
+                    crate::ui::wrap(&format!("  {} ", dim(&r.rollout_name)), &line, 4, width)
+                );
+            }
+        }
     } else {
         let mut t = Table::new(&["task", "passed", "mean reward", "cost"])
             .align(1, Align::Right)
@@ -422,6 +432,31 @@ fn cost_cell(recs: &[&TrialRecord]) -> String {
         None if tokens > 0 => "not recorded".into(),
         None => "–".into(),
     }
+}
+
+/// A rubric review's verdicts on one line: `written pass · cause fail
+/// (llm)`.
+fn rubric_verdicts(review: &serde_json::Value) -> Option<String> {
+    let verdicts = review.get("verdicts")?.as_array()?;
+    let parts: Vec<String> = verdicts
+        .iter()
+        .map(|v| {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+            let verdict = match v.get("verdict").and_then(|x| x.as_str()) {
+                Some("level") => format!("level {}", v["level"].as_str().unwrap_or("?")),
+                Some("value") => format!("{}", v["value"]),
+                Some(w) => w.to_string(),
+                None => "?".into(),
+            };
+            let role = v["judge"]["role"].as_str().unwrap_or("");
+            if role == "test" || role.is_empty() {
+                format!("{id} {verdict}")
+            } else {
+                format!("{id} {verdict} ({role})")
+            }
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 fn status_cell(s: Status, passed: Option<bool>) -> String {

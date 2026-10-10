@@ -710,7 +710,7 @@ fn every_explained_code_has_a_case() {
     }
     // Codes `bench check` emits itself, after this crate's check: they are
     // triggered through the binary (crates/benchflow-cli/tests/check_codes.rs).
-    const CLI_CODES: &[&str] = &["P003"];
+    const CLI_CODES: &[&str] = &["P003", "P004"];
     for code in explained.difference(&tested) {
         if !CLI_CODES.contains(code) {
             failures.push(format!("{code} is explained, but no case triggers it"));

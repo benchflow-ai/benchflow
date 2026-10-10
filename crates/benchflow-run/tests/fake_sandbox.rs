@@ -134,6 +134,13 @@ impl Sandbox for FakeSandbox {
         } else if c.contains("BF locked") && self.id.contains("ships") {
             // An image that ships its own /solution.
             "BF locked /solution\n".to_string()
+        } else if c.contains("BF missing") {
+            // The rubric judge's probe: the solved answer is a 6-byte file.
+            if w.solved && c.contains("/app/answer.txt") {
+                "BF file 6 /app/answer.txt\n".to_string()
+            } else {
+                "BF missing\n".to_string()
+            }
         } else if c.contains(&self.solve_marker) {
             w.solved = true;
             String::new()
@@ -189,6 +196,9 @@ impl Sandbox for FakeSandbox {
                     .unwrap();
             }
             b.finish().unwrap();
+        }
+        if remote == "/app/answer.txt" {
+            std::fs::write(local, "SOLVED").unwrap();
         }
         if remote == "/logs/verifier" {
             std::fs::create_dir_all(local).unwrap();
@@ -1884,4 +1894,124 @@ async fn a_second_run_of_a_running_job_is_refused_and_resumes_after() {
     let again = job::run(spec(), runtime(p.clone())).await.unwrap();
     assert_eq!(again.records[0].reward, Some(1.0));
     assert!(p.worlds.lock().unwrap().is_empty(), "the trial was reused");
+}
+
+/// A judge that says `answered` holds when the request shows the solved
+/// answer and nothing else holds, answering like the Vercel AI Gateway.
+async fn fake_judge() -> (Arc<Mutex<Vec<serde_json::Value>>>, BTreeMap<String, String>) {
+    use axum::routing::{get, post};
+    let seen: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let log = seen.clone();
+    let app = axum::Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let log = log.clone();
+                async move {
+                    let seen = body.to_string();
+                    // Only the answer criterion's statement holds of a solved run.
+                    let solved = seen.contains("SOLVED") && seen.contains("CRITERION `answered`");
+                    log.lock().unwrap().push(body);
+                    let text = serde_json::json!({"holds": solved, "reason": if solved { "The answer is there." } else { "No answer file." }, "quotes": []});
+                    axum::Json(serde_json::json!({"choices": [{"finish_reason": "stop",
+                        "message": {"role": "assistant", "content": text.to_string()}}],
+                        "usage": {"prompt_tokens": 500, "completion_tokens": 20, "cost": 0.0002}}))
+                }
+            }),
+        )
+        .route(
+            "/v1/models/{*path}",
+            get(|| async { axum::Json(serde_json::json!({"data": {"endpoints": [{"provider_name": "novita"}]}})) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let vars = BTreeMap::from([
+        (
+            "AI_GATEWAY_API_KEY".to_string(),
+            "vck_fake_judge_key_0123".to_string(),
+        ),
+        (
+            "BENCHFLOW_NATIVE_BASE_URL".to_string(),
+            format!("http://{addr}/v1"),
+        ),
+    ]);
+    (seen, vars)
+}
+
+#[tokio::test]
+async fn a_model_judged_rubric_scores_oracle_and_nop_on_the_host() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut t = task(&tmp.path().join("judged"), "judged");
+    t.verifier.rubric = Some(
+        benchflow_task::rubric::Rubric::from_value(&serde_json::json!({
+            "$schema": "https://task.md/schema/rubric-1.json",
+            "x-judge": {"model": "vercel/judge/model"},
+            "criteria": [
+                {"id": "answered", "text": "The answer file holds the answer.", "judge": "llm",
+                 "points": 2, "evidence": ["/app/answer.txt"]},
+                {"id": "no-junk", "text": "The agent left junk files.", "judge": "llm", "outcome": "bad",
+                 "points": 1, "evidence": ["/app/answer.txt"]}
+            ]
+        }))
+        .unwrap(),
+    );
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let (seen, vars) = fake_judge().await;
+    let options = RunOptions {
+        judge_env: benchflow_run::config::JudgeEnv(vars),
+        ..RunOptions::default()
+    };
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(Arc::new(t), vec![Attempt::Oracle, Attempt::Nop])],
+        trials: 1,
+        jobs_dir: jobs_dir(tmp.path()),
+        job_name: Some("judged".into()),
+        fresh: true,
+        concurrency: 2,
+        source: serde_json::json!({"path": tmp.path()}),
+    };
+    let out = job::run(spec, runtime_with(provider, options))
+        .await
+        .unwrap();
+    assert_eq!(out.records.len(), 2);
+    for r in &out.records {
+        assert_eq!(r.status, Status::Scored, "{:?}", r.problem);
+        let oracle = r.agent == "oracle";
+        // Oracle: 2 + 1 of 3; nop: 0 + 1 (no junk) of 3.
+        let want = if oracle { 1.0 } else { 1.0 / 3.0 };
+        assert!(
+            (r.reward.unwrap() - want).abs() < 1e-9,
+            "{} {:?}",
+            r.agent,
+            r.reward
+        );
+        let dir = out.dir.join(&r.rollout_name);
+        let lines = std::fs::read_to_string(dir.join("verifier/judgments.jsonl")).unwrap();
+        assert_eq!(lines.lines().count(), 2);
+        assert!(!lines.contains("vck_fake_judge_key"));
+        let review: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("verifier/review.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            review["verdicts"][0]["judge"]["model"],
+            "vercel/judge/model"
+        );
+        assert_eq!(
+            review["verdicts"][0]["verdict"],
+            if oracle { "pass" } else { "fail" }
+        );
+        assert!(review["verdicts"][0]["rationale"].as_str().unwrap().len() > 3);
+        assert_eq!(review["x-benchflow"]["judge"]["calls"], 2);
+        let result = std::fs::read_to_string(dir.join("result.json")).unwrap();
+        assert!(!result.contains("vck_fake_judge_key"));
+        let config = std::fs::read_to_string(dir.join("config.json")).unwrap();
+        assert!(!config.contains("vck_fake_judge_key"));
+    }
+    assert_eq!(seen.lock().unwrap().len(), 4);
 }
