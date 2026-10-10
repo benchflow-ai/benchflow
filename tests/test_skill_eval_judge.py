@@ -35,6 +35,9 @@ _STUBS = {
             def create(self, model, **kwargs):
                 with open(os.environ["STUB_LOG"], "a") as log:
                     log.write(json.dumps(["anthropic", model]) + "\\n")
+                if os.environ.get("STUB_KWARGS_LOG"):
+                    with open(os.environ["STUB_KWARGS_LOG"], "w") as out:
+                        json.dump(kwargs, out)
                 if os.environ.get("STUB_ANTHROPIC_RAISE"):
                     raise RuntimeError("overloaded")
                 blocks = json.loads(os.environ["STUB_ANTHROPIC_CONTENT"])
@@ -333,6 +336,11 @@ def test_fenced_json_reply_is_scored_with_provenance(tmp_path):
     [
         pytest.param('{"items": [], "score": NaN}', id="nan"),
         pytest.param('{"items": [], "score": Infinity}', id="infinity"),
+        # The score is valid, so only the NaN rejection in the parser fails it.
+        pytest.param('{"items": [NaN], "score": 0.5}', id="nan-outside-the-score"),
+        pytest.param(
+            '{"items": [1e999], "score": 0.5}', id="overflow-outside-the-score"
+        ),
         pytest.param('{"items": [], "score": 85}', id="out-of-range"),
         pytest.param('{"items": [], "score": -0.5}', id="negative"),
         pytest.param('{"items": [], "score": true}', id="bool"),
@@ -401,6 +409,58 @@ def test_gemini_reply_cut_off_at_the_token_limit_is_a_verifier_error(tmp_path):
             '```json\n{"score": 1}\n```\n```json\n{"score": 0}\n```',
             id="two-json-fences",
         ),
+        pytest.param(
+            '{"score": 1}\n```json\n{"score": 0.2}\n```', id="an-object-and-a-fence"
+        ),
+        pytest.param('Result: [{"score": 1}]', id="object-inside-an-array"),
+        pytest.param(
+            'Example: {"score": 1}. Actual verdict: {"score": 0, "rea',
+            id="truncated-verdict-after-an-example",
+        ),
+        pytest.param('Example: {"score": 1}. Verdict: {', id="reply-ends-at-a-brace"),
+        pytest.param(
+            'Example: {"score": 1}. Verdict: {"reasoning"}',
+            id="keyless-object-after-an-example",
+        ),
+        pytest.param("[" * 100_000, id="nesting-too-deep-to-parse"),
+        pytest.param('Scores: [0.5, {"score": 1}]', id="object-later-in-an-array"),
+        pytest.param(
+            'Format: {"score": 1}\nMy verdict: [{"score": 0.2}]',
+            id="verdict-in-an-array-beside-an-example",
+        ),
+        pytest.param(
+            '[["}"],' * 500 + '{"score": 1}', id="broken-array-wrapping-a-verdict"
+        ),
+        pytest.param(
+            'Format {"score": 1}\nVerdict: {score: 0}',
+            id="unquoted-keys-verdict-after-an-example",
+        ),
+        pytest.param(
+            'Example: {"score": 1}\nVerdict: [{"score": 0}, oops]',
+            id="broken-array-after-an-example",
+        ),
+        pytest.param('Verdict: {"score": 0, "score": 1}', id="duplicate-score-keys"),
+        pytest.param(
+            '```python``` was misused.\n{"score": 0}\nFormat:\n```\n{"score": 1}\n```',
+            id="inline-backticks-at-a-line-start",
+        ),
+        pytest.param(
+            '```python\nfoo()\n{"score": 0}\nFormat:\n```\n{"score": 1}\n```',
+            id="unclosed-fence-before-the-verdict",
+        ),
+        pytest.param(
+            'Example:\n```python\nd = {"score": 1}\n```\n{"score": 0}',
+            id="dict-in-a-code-fence-beside-the-verdict",
+        ),
+        pytest.param(
+            "Format: {\"score\": 1}. My verdict: {'score': 0}",
+            id="non-json-verdict-after-an-example",
+        ),
+        pytest.param(
+            'The agent left an unterminated ``` in README.\n{"score": 0}\n'
+            'Expected format:\n```json\n{"score": 1}\n```',
+            id="stray-backticks-before-the-verdict",
+        ),
     ],
 )
 def test_an_ambiguous_or_broken_verdict_is_a_verifier_error(tmp_path, reply):
@@ -431,6 +491,43 @@ def test_an_ambiguous_or_broken_verdict_is_a_verifier_error(tmp_path, reply):
         pytest.param(
             'Done.\n```python\nprint(1)\n```\n```json\n{"score": 0.8}\n```',
             id="json-fence-beside-a-code-fence",
+        ),
+        pytest.param(
+            '{"items": [], "score": 0.8}\nLet me know if you need more.',
+            id="verdict-then-prose",
+        ),
+        pytest.param('[PASS] item 1\n{"score": 0.8}', id="item-list-then-verdict"),
+        pytest.param(
+            'The agent used the f-string {name}. Verdict: {"score": 0.8}',
+            id="prose-braces-before-the-verdict",
+        ),
+        pytest.param(
+            'It returned an empty dict {} on error.\n{"score": 0.8}',
+            id="empty-braces-before-the-verdict",
+        ),
+        pytest.param('Done, {"score": 0.8}', id="comma-before-the-verdict"),
+        pytest.param(
+            '```json\n{"score": 0.8, "reasoning": "it used ```py fences"}\n```',
+            id="backticks-inside-a-fenced-verdict",
+        ),
+        pytest.param(
+            '```json title="verdict"\n{"score": 0.8}\n```', id="fence-info-string"
+        ),
+        pytest.param(
+            '[x] item 1 [ ] item 2 [1/3] passed\n{"score": 0.8}',
+            id="checklist-brackets-before-the-verdict",
+        ),
+        pytest.param(
+            'The template [uses {name}] placeholders.\n{"score": 0.8}',
+            id="prose-braces-inside-prose-brackets",
+        ),
+        pytest.param(
+            "[" * 5000 + "]" * 5000 + '\n{"score": 0.8}',
+            id="deep-but-valid-array-before-the-verdict",
+        ),
+        pytest.param(
+            'The agent ran:\n```\nls -la\n```\n{"score": 0.8}',
+            id="untagged-command-fence-before-the-verdict",
         ),
     ],
 )
@@ -483,4 +580,47 @@ def test_a_reply_that_did_not_finish_normally_is_a_verifier_error(
     proc, _, verifier = _run_judge(tmp_path, judge_model, ALL_KEYS, **stub_env)
     assert proc.returncode == 1
     assert "did not finish normally" in proc.stderr
+    assert not (verifier / "reward.txt").exists()
+
+
+def test_claude_judge_leaves_room_for_thinking(tmp_path):
+    """Thinking counts against max_tokens, so 2048 could cut off the verdict.
+
+    4096 is the largest output budget every Claude model accepts.
+    """
+    kwargs_log = tmp_path / "kwargs.json"
+    proc, _, _ = _run_judge(
+        tmp_path,
+        "claude-sonnet-5-5",
+        ALL_KEYS,
+        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": '{"score": 1}'}]),
+        STUB_KWARGS_LOG=str(kwargs_log),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(kwargs_log.read_text())["max_tokens"] == 4096
+
+
+def test_a_malformed_fenced_verdict_beside_an_example_is_not_scored(tmp_path):
+    """Skipping the broken object would leave the example as the only verdict."""
+    reply = 'Example: {"score": 1}. Actual verdict:\n```json\n{"score": 0,\n```'
+    proc, _, verifier = _run_judge(
+        tmp_path,
+        "claude-sonnet-5-5",
+        ALL_KEYS,
+        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": reply}]),
+    )
+    assert proc.returncode == 1
+    assert "malformed or truncated JSON object" in proc.stderr
+    assert not (verifier / "reward.txt").exists()
+
+
+def test_deeply_nested_json_is_a_verifier_error_not_a_traceback(tmp_path):
+    proc, _, verifier = _run_judge(
+        tmp_path,
+        "claude-sonnet-5-5",
+        ALL_KEYS,
+        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": "[" * 100_000}]),
+    )
+    assert proc.returncode == 1
+    assert "nests JSON too deeply" in proc.stderr
     assert not (verifier / "reward.txt").exists()
