@@ -438,7 +438,7 @@ pub struct RunArgs {
     pub agent: Option<String>,
 
     /// The model, in the agent's own naming, or `<provider>/<model>` to run on a
-    /// provider's key (vercel, openai, anthropic, openrouter, zai, deepseek)
+    /// provider's key (vercel, openai, anthropic, openrouter, zai, deepseek, mimo)
     #[arg(short, long)]
     pub model: Option<String>,
 

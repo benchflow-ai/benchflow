@@ -44,7 +44,7 @@ fn host(vars: &[(&str, &str)], home: Option<PathBuf>) -> HostEnv {
 }
 
 #[test]
-fn builtins_are_the_six_providers_with_their_endpoints() {
+fn builtins_are_the_seven_providers_with_their_endpoints() {
     let names: Vec<String> = Provider::builtins().into_iter().map(|p| p.name).collect();
     assert_eq!(
         names,
@@ -54,7 +54,8 @@ fn builtins_are_the_six_providers_with_their_endpoints() {
             "anthropic",
             "openrouter",
             "zai",
-            "deepseek"
+            "deepseek",
+            "mimo"
         ]
     );
     let registry = providers();
@@ -115,6 +116,18 @@ fn builtins_are_the_six_providers_with_their_endpoints() {
             .apis,
         [OpenAiApi::Chat]
     );
+    // MiMo's token plan serves both OpenAI APIs and Anthropic's, on one host.
+    let mimo = registry.find("mimo").unwrap();
+    assert_eq!(
+        mimo.openai.as_ref().unwrap().base_url,
+        "https://token-plan-sgp.xiaomimimo.com/v1"
+    );
+    assert_eq!(
+        mimo.openai.as_ref().unwrap().apis,
+        [OpenAiApi::Chat, OpenAiApi::Responses]
+    );
+    assert_eq!(mimo.anthropic.as_ref().unwrap().auth, Auth::XApiKey);
+    assert_eq!(mimo.key.env, ["MIMO_API_KEY"]);
     assert_eq!(
         ManifestSource::BuiltinProvider("vercel.toml").to_string(),
         "built-in providers/vercel.toml"
@@ -191,7 +204,7 @@ fn a_project_provider_replaces_a_builtin_of_the_same_name() {
     )
     .unwrap();
     let registry = ProviderRegistry::with_files([dir.path()]).unwrap();
-    assert_eq!(registry.providers().len(), 7);
+    assert_eq!(registry.providers().len(), 8);
     let vercel = registry.find("vercel").unwrap();
     assert_eq!(vercel.key.env, ["MY_GATEWAY_KEY"]);
     assert!(vercel.anthropic.is_none());
@@ -365,7 +378,7 @@ fn an_agent_that_cannot_use_the_provider_is_refused_with_its_options() {
     );
     assert_eq!(
         error.next_step(),
-        "pick another agent, or a provider `codex` can use: vercel, openai, openrouter"
+        "pick another agent, or a provider `codex` can use: vercel, openai, openrouter, mimo"
     );
 
     let error = route(&agent("claude"), Some("vercel/"), &providers()).unwrap_err();

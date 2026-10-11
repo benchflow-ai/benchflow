@@ -1,0 +1,24 @@
+# Xiaomi MiMo's token plan (Singapore): MiMo models (mimo-v2.6-flash,
+# mimo-v2.6-pro, mimo-v2.5, mimo-v2.5-pro). Run live on 2026-10-10: the
+# OpenAI-compatible API answered Chat Completions and the Responses API, the
+# Anthropic-compatible one Messages with an x-api-key, and `/models` lists the
+# models for a valid key. A plan key works only on this host (the pay-as-you-go
+# api.xiaomimimo.com and the China plan host reject it), and a plan whose
+# quota is spent answers 429 "quota exhausted".
+name = "mimo"
+description = "Xiaomi MiMo token plan: MiMo models"
+
+[openai]
+base_url = "https://token-plan-sgp.xiaomimimo.com/v1"
+apis = ["chat", "responses"]
+
+[anthropic]
+base_url = "https://token-plan-sgp.xiaomimimo.com/anthropic"
+
+[key]
+env = ["MIMO_API_KEY"]
+
+[check]
+# The model list: needs a valid key, spends nothing.
+endpoint = "openai"
+path = "/models"

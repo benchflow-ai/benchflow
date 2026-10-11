@@ -58,6 +58,39 @@ pub struct View {
     pub still: bool,
 }
 
+/// How a trial finished, for the tally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Passed,
+    Failed,
+    Unscored,
+    Errored,
+}
+
+impl Tally {
+    fn slot(&mut self, kind: Kind) -> &mut usize {
+        match kind {
+            Kind::Passed => &mut self.passed,
+            Kind::Failed => &mut self.failed,
+            Kind::Unscored => &mut self.unscored,
+            Kind::Errored => &mut self.errored,
+        }
+    }
+
+    /// Count a finished attempt. A trial that is retried finishes once per
+    /// attempt; it is one trial done, counted as its latest attempt ended.
+    fn finish(&mut self, finished: &mut BTreeMap<String, Kind>, trial: &str, kind: Kind) {
+        match finished.insert(trial.to_string(), kind) {
+            Some(before) => {
+                let n = self.slot(before);
+                *n = n.saturating_sub(1);
+            }
+            None => self.done += 1,
+        }
+        *self.slot(kind) += 1;
+    }
+}
+
 /// Render events until the channel closes. Returns the tally.
 pub async fn render(
     mut rx: mpsc::UnboundedReceiver<Event>,
@@ -80,6 +113,8 @@ pub async fn render(
     let mut started_count: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut numbers: BTreeMap<String, usize> = BTreeMap::new();
     let mut job_started = false;
+    // How each trial last finished: a retried trial finishes once per attempt.
+    let mut finished: BTreeMap<String, Kind> = BTreeMap::new();
     loop {
         tokio::select! {
             ev = rx.recv() => {
@@ -132,16 +167,16 @@ pub async fn render(
                     }
                     Event::TrialFinished(s) => {
                         running.remove(&s.trial);
-                        tally.done += 1;
                         // In a test plan, a check mark is what the plan expects.
                         let flip = expects_failure(&s, view);
-                        match (s.status, s.passed) {
-                            (Status::Scored, Some(p)) if p != flip => tally.passed += 1,
-                            (Status::Scored, None) if flip => tally.passed += 1,
-                            (Status::Scored, _) => tally.failed += 1,
-                            (Status::Unscored, _) => tally.unscored += 1,
-                            _ => tally.errored += 1,
-                        }
+                        let kind = match (s.status, s.passed) {
+                            (Status::Scored, Some(p)) if p != flip => Kind::Passed,
+                            (Status::Scored, None) if flip => Kind::Passed,
+                            (Status::Scored, _) => Kind::Failed,
+                            (Status::Unscored, _) => Kind::Unscored,
+                            _ => Kind::Errored,
+                        };
+                        tally.finish(&mut finished, &s.trial, kind);
                         if !u.json && u.verbosity > super::Verbosity::Quiet {
                             if live { clear(&mut stderr, drawn); drawn = 0; }
                             let number = numbers.get(&s.trial).copied();
@@ -364,6 +399,22 @@ pub fn human_count(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A trial retried after an errored attempt is one trial done, not two
+    /// (a run showed "12/15 done" with 9 trials finished).
+    #[test]
+    fn a_retried_trial_is_counted_once() {
+        let mut tally = Tally {
+            total: 3,
+            ..Tally::default()
+        };
+        let mut finished = BTreeMap::new();
+        tally.finish(&mut finished, "fix-git__1", Kind::Errored);
+        tally.finish(&mut finished, "fix-git__1", Kind::Errored);
+        tally.finish(&mut finished, "regex-log__2", Kind::Errored);
+        tally.finish(&mut finished, "regex-log__2", Kind::Passed);
+        assert_eq!((tally.done, tally.errored, tally.passed), (2, 1, 1));
+    }
 
     #[test]
     fn a_resumed_job_says_what_it_kept() {

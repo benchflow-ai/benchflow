@@ -137,7 +137,7 @@ bench run [OPTIONS] [TARGETS]...
 |---|---|
 | `<TARGETS>` | Task folders, folders of tasks, or GitHub repositories (org/repo[/path][@ref]) |
 | `-a`, `--agent` `<AGENT>` | The agent: claude, codex, gemini, opencode, builtin, terminus-2, a project agent, oracle, nop, or script:<file> (your own script, run like the oracle) |
-| `-m`, `--model` `<MODEL>` | The model, in the agent's own naming, or `<provider>/<model>` to run on a provider's key (vercel, openai, anthropic, openrouter, zai, deepseek) |
+| `-m`, `--model` `<MODEL>` | The model, in the agent's own naming, or `<provider>/<model>` to run on a provider's key (vercel, openai, anthropic, openrouter, zai, deepseek, mimo) |
 | `-e`, `--effort` `<LEVEL>` | Reasoning effort, when the agent exposes one (low, medium, high, max, ...) |
 | `--harness` `<HARNESS>` | How to drive the agent: acp or headless (default: the agent's own; `bench agents` lists each agent's); one of `acp`, `headless` |
 | `--backend` `<URL>` | For `-a external`: the service that decides each step (an HTTP backend protocol) |

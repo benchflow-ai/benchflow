@@ -137,6 +137,34 @@ pub fn job_of(id: &str) -> &str {
     id.rsplit_once('/').map_or(ROOT_JOB, |(job, _)| job)
 }
 
+/// The file a running `bench run` holds locked in its job folder.
+const RUNNING_FILE: &str = ".bench-run.lock";
+
+/// Whether a `bench run` is still running this trial: it has no
+/// `result.json` yet, and a live process holds its job folder's
+/// `.bench-run.lock`. The views leave such trials out, as `bench results`
+/// does, instead of counting them as errored; a trial without a result in a
+/// job no run holds stopped without one, and stays errored.
+pub fn in_progress(run: &Run) -> bool {
+    if run.dir.join("result.json").exists() {
+        return false;
+    }
+    let Some(job) = run.dir.parent() else {
+        return false;
+    };
+    let Ok(file) = std::fs::File::open(job.join(RUNNING_FILE)) else {
+        return false;
+    };
+    match file.try_lock_shared() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
 /// Read one trial's `result.json` and timing.
 pub fn read_trial(run: &Run) -> Trial {
     let result = load_object(&run.dir.join("result.json"));
@@ -974,6 +1002,32 @@ mod tests {
             ],
             "ties stay on the frontier; nothing beats the cheapest"
         );
+    }
+
+    /// A trial a live `bench run` has not finished is left out; once no
+    /// run holds the job, a trial without a result is a real error again.
+    #[test]
+    fn a_trial_still_running_is_not_counted_as_errored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = tmp.path().join("job");
+        let run = Run {
+            id: "job/t__1".into(),
+            dir: job.join("t__1"),
+        };
+        std::fs::create_dir_all(run.dir.join("trajectory")).unwrap();
+        assert!(!in_progress(&run), "no run lock: not running");
+        let lock = std::fs::File::create(job.join(RUNNING_FILE)).unwrap();
+        lock.lock().unwrap();
+        assert!(in_progress(&run), "a run holds the job");
+        std::fs::write(run.dir.join("result.json"), r#"{"status": "scored"}"#).unwrap();
+        assert!(!in_progress(&run), "finished trials always count");
+        std::fs::remove_file(run.dir.join("result.json")).unwrap();
+        drop(lock);
+        assert!(
+            !in_progress(&run),
+            "the run is gone: the trial stopped without a result"
+        );
+        assert_eq!(read_trial(&run).outcome, Outcome::Errored);
     }
 
     #[test]

@@ -213,6 +213,13 @@ impl DaytonaProvider {
     }
 }
 
+/// A build Daytona reports as `context canceled`: one canceled before (a
+/// run stopped while it built), which Daytona keeps for that content.
+fn canceled_build(err: &SandboxError) -> bool {
+    matches!(err, SandboxError::Image { message, task_fault: false, .. }
+        if message.contains("context canceled"))
+}
+
 /// Give an image error the image's name.
 fn name_image_error(err: SandboxError, name: &str) -> SandboxError {
     match err {
@@ -532,7 +539,20 @@ impl Provider for DaytonaProvider {
                 duration: started.elapsed(),
             });
         }
-        let fresh = self.build_now(spec, &recipe, log).await?;
+        let fresh = match self.build_now(spec, &recipe, log).await {
+            Err(err) if canceled_build(&err) => {
+                log(
+                    "Daytona answered with a canceled earlier build of this image; building it again under a new label",
+                );
+                let again = recipe.relabeled(&uuid::Uuid::new_v4().simple().to_string());
+                self.recipes
+                    .lock()
+                    .expect("lock")
+                    .insert(reference.clone(), again.clone());
+                self.build_now(spec, &again, log).await?
+            }
+            other => other?,
+        };
         *built = true;
         log(&format!("image ready: {reference}"));
         Ok(Image {
@@ -1149,6 +1169,45 @@ mod tests {
             .labels
             .insert(OWNER_LABEL.into(), "someone-else".into());
         assert!(!is_stale(&foreign, now).await);
+    }
+
+    #[test]
+    fn a_canceled_build_is_rebuilt_under_a_new_key() {
+        // What Daytona answered for an image whose first build a stopped
+        // run had canceled: every later build of it, in any process.
+        let canceled = build_failure(
+            "t",
+            Failure {
+                state: "build_failed".into(),
+                reason: "context canceled".into(),
+                log_tail: Vec::new(),
+                timed_out: false,
+                api: None,
+            },
+            Duration::from_secs(60),
+        );
+        assert!(canceled_build(&canceled), "{canceled:?}");
+        let other = build_failure(
+            "t",
+            Failure {
+                state: "build_failed".into(),
+                reason: "build failed".into(),
+                log_tail: vec!["dial tcp: i/o timeout".into()],
+                timed_out: false,
+                api: None,
+            },
+            Duration::from_secs(60),
+        );
+        assert!(!canceled_build(&other), "{other:?}");
+        let recipe = Recipe::new("FROM ubuntu:24.04\n", &["echo hi".into()], Vec::new());
+        let again = recipe.relabeled("abc");
+        assert_ne!(again.key(), recipe.key());
+        assert!(again.dockerfile.starts_with(&recipe.dockerfile));
+        assert!(
+            again
+                .dockerfile
+                .ends_with("LABEL ai.benchflow.rebuild=\"abc\"\n")
+        );
     }
 
     #[test]

@@ -4,8 +4,8 @@
 //! A model is named `<provider>/<model>` (`vercel/deepseek/deepseek-v4-flash-0731`,
 //! `anthropic/claude-haiku-4-5`). [`EndpointResolver`] turns that name into
 //! an [`Endpoint`]. [`BuiltinProviders`] knows the providers BenchFlow ships
-//! with until the provider registry (`providers/`) replaces it behind the
-//! same trait.
+//! with, and falls back to the provider registry (`providers/`) for the
+//! rest.
 
 use std::fmt;
 
@@ -97,14 +97,12 @@ impl EndpointError {
         match self {
             EndpointError::NoProvider { .. } | EndpointError::UnknownProvider { .. } => format!(
                 "name the model as <provider>/<model> with one of: {}",
-                BUILTIN
-                    .iter()
-                    .map(|p| p.name)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                known_providers().join(", ")
             ),
+            // Not `--env`: those values reach the agent's sandbox, and a
+            // native loop's key must stay on this machine.
             EndpointError::NoKey { wanted, .. } => {
-                format!("export {wanted}=<key> (or pass --env {wanted}=<key>), then run again")
+                format!("export {wanted}=<key> in this shell, then run again")
             }
         }
     }
@@ -186,10 +184,7 @@ impl EndpointResolver for BuiltinProviders {
             });
         };
         let Some(spec) = BUILTIN.iter().find(|p| p.name == provider) else {
-            return Err(EndpointError::UnknownProvider {
-                provider: provider.to_string(),
-                model: model.to_string(),
-            });
+            return resolve_from_registry(provider, rest, model, host);
         };
         let found = spec.keys.iter().find_map(|name| {
             host.get(name)
@@ -236,6 +231,65 @@ impl EndpointResolver for BuiltinProviders {
             upstreams: None,
         })
     }
+}
+
+/// A provider the native loops have no entry for, from the provider
+/// registry (`zai/`, `deepseek/`, `mimo/`): its OpenAI-compatible endpoint
+/// when it takes a bearer key, else its Anthropic-compatible one when it takes
+/// `x-api-key`, the way the native clients send keys.
+fn resolve_from_registry(
+    provider: &str,
+    rest: &str,
+    model: &str,
+    host: &HostEnv,
+) -> Result<Endpoint, EndpointError> {
+    use crate::providers::{Auth, ProviderRegistry};
+    let unknown = || EndpointError::UnknownProvider {
+        provider: provider.to_string(),
+        model: model.to_string(),
+    };
+    let registry = ProviderRegistry::builtin();
+    let p = registry.find(provider).ok_or_else(unknown)?;
+    let (api, base_url) = if let Some(e) = p.openai.as_ref().filter(|e| e.auth == Auth::Bearer) {
+        (Api::OpenAiChat, e.base_url.clone())
+    } else if let Some(e) = p.anthropic.as_ref().filter(|e| e.auth == Auth::XApiKey) {
+        // The registry's Anthropic base URL stops before the version.
+        (Api::AnthropicMessages, format!("{}/v1", e.base_url))
+    } else {
+        return Err(unknown());
+    };
+    let key = crate::providers::find_provider_key(p, host)
+        .ok()
+        .filter(|k| !k.value().trim().is_empty())
+        .ok_or_else(|| EndpointError::NoKey {
+            provider: provider.to_string(),
+            wanted: p.key.env.join(" or "),
+        })?;
+    let base_url = host
+        .get(BASE_URL_OVERRIDE_ENV)
+        .map(|(v, _)| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or(base_url);
+    Ok(Endpoint {
+        api,
+        base_url: base_url.trim_end_matches('/').to_string(),
+        key: ApiKey::new(key.value()),
+        model: rest.to_string(),
+        provider: provider.to_string(),
+        key_label: key.source.clone(),
+        upstreams: None,
+    })
+}
+
+/// Every provider a native loop can name: its own, then the registry's.
+fn known_providers() -> Vec<String> {
+    let mut names: Vec<String> = BUILTIN.iter().map(|p| p.name.to_string()).collect();
+    for p in crate::providers::ProviderRegistry::builtin().providers() {
+        if !names.contains(&p.name) {
+            names.push(p.name.clone());
+        }
+    }
+    names
 }
 
 #[cfg(test)]
@@ -330,6 +384,44 @@ mod tests {
             .resolve("bare-model", &host(&[]))
             .unwrap_err();
         assert!(matches!(err, EndpointError::NoProvider { .. }));
+    }
+
+    #[test]
+    fn registry_providers_work_for_native_loops_too() {
+        // MiMo's token plan: OpenAI-compatible with a bearer key.
+        let e = BuiltinProviders
+            .resolve(
+                "mimo/mimo-v2.6-flash",
+                &host(&[("MIMO_API_KEY", "k-123456789")]),
+            )
+            .unwrap();
+        assert_eq!(e.api, Api::OpenAiChat);
+        assert_eq!(
+            e.url(),
+            "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions"
+        );
+        assert_eq!(e.model, "mimo-v2.6-flash");
+        assert_eq!(e.key_label, "MIMO_API_KEY (environment)");
+        // Z.ai and DeepSeek, which were refused before.
+        for (model, var) in [
+            ("zai/glm-5.3", "ZAI_API_KEY"),
+            ("deepseek/deepseek-chat", "DEEPSEEK_API_KEY"),
+        ] {
+            let e = BuiltinProviders
+                .resolve(model, &host(&[(var, "k-123456789")]))
+                .unwrap();
+            assert_eq!(e.api, Api::OpenAiChat, "{model}");
+        }
+        let err = BuiltinProviders
+            .resolve("mimo/mimo-v2.6-flash", &host(&[]))
+            .unwrap_err();
+        assert!(
+            err.next_step().contains("MIMO_API_KEY"),
+            "{}",
+            err.next_step()
+        );
+        let err = BuiltinProviders.resolve("nope/x", &host(&[])).unwrap_err();
+        assert!(err.next_step().contains("mimo"), "{}", err.next_step());
     }
 
     #[test]

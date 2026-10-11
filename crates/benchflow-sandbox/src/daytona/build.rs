@@ -66,6 +66,18 @@ impl Recipe {
         }
     }
 
+    /// The same recipe under a new content key: a label no build reads.
+    /// Daytona keeps a build that was canceled (a run stopped while it
+    /// built) and answers every later build of the same content with
+    /// `context canceled`; a relabeled recipe builds afresh.
+    pub(crate) fn relabeled(&self, salt: &str) -> Self {
+        let mut again = self.clone();
+        again
+            .dockerfile
+            .push_str(&format!("LABEL ai.benchflow.rebuild=\"{salt}\"\n"));
+        again
+    }
+
     /// A content key for this recipe.
     pub(crate) fn key(&self) -> String {
         let mut h = Sha256::new();

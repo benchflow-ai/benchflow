@@ -2,7 +2,7 @@
 //!
 //! A provider is a TOML file that says where its endpoints are, where its key
 //! comes from, and how to check the key. The built-in providers (`vercel`,
-//! `openai`, `anthropic`, `openrouter`, `zai`, `deepseek`) are embedded in
+//! `openai`, `anthropic`, `openrouter`, `zai`, `deepseek`, `mimo`) are embedded in
 //! the binary from `crates/benchflow-agent/providers/`; a project adds or
 //! replaces providers with its own files ([`ProviderRegistry::with_files`]).
 //!
@@ -364,6 +364,7 @@ const BUILTINS: &[(&str, &str)] = &[
     ),
     ("zai.toml", include_str!("../providers/zai.toml")),
     ("deepseek.toml", include_str!("../providers/deepseek.toml")),
+    ("mimo.toml", include_str!("../providers/mimo.toml")),
 ];
 
 /// Every provider a run knows: the built-ins, then the project's.

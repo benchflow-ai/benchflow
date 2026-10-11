@@ -188,12 +188,17 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
     }
     let (tasks, bad) = context::load_tasks(&roots)?;
     for r in &bad {
-        let errs = r.diagnostics.iter().filter(|d| d.is_error()).count();
+        let errs: Vec<(&str, &str)> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| (d.code, d.message.as_str()))
+            .collect();
         note!(
             "  {} skipping {}: {} ({})",
             warn_mark(),
             ui::path(&r.root),
-            plural(errs, "error"),
+            skip_reason(&errs),
             dim(format!("bench check {}", ui::path(&r.root)))
         );
     }
@@ -414,10 +419,11 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
     let what = format!(
         "{} {} on {}",
         bold("Running"),
-        match &model {
-            Some(m) => format!("{} ({m})", attempt.label()),
-            None => attempt.label(),
-        },
+        attempt_title(
+            &attempt.label(),
+            model.as_deref(),
+            attempt.model().as_deref()
+        ),
         plural(tasks.len() * trials, "trial"),
     );
     let place = format!("{} · {} at a time", provider.name(), st.concurrency);
@@ -1120,5 +1126,62 @@ mod exit_tests {
         assert!(run_exit(&[Status::Unscored], 0) == Exit::Failed);
         assert!(run_exit(&[Status::Errored], 0) == Exit::Failed);
         assert!(run_exit(&[Status::Scored], 1) == Exit::Failed);
+    }
+}
+
+/// Why a task was skipped, on its one line: the first error itself, so a
+/// dataset whose tasks all fail the same way says how without a `bench
+/// check` per task.
+fn skip_reason(errors: &[(&str, &str)]) -> String {
+    match errors {
+        [] => "it did not load".to_string(),
+        [(code, message)] => format!("[{code}] {message}"),
+        [(code, message), rest @ ..] => {
+            let more = if rest.len() == 1 { "error" } else { "errors" };
+            format!("[{code}] {message} (and {} more {more})", rest.len())
+        }
+    }
+}
+
+/// What runs, for the `Running ...` line: the agent and its model. With no
+/// `-m`, the agent's own default model (Claude Code's is Haiku), which
+/// nothing else on screen names.
+fn attempt_title(label: &str, asked: Option<&str>, running: Option<&str>) -> String {
+    match (asked, running) {
+        (Some(m), _) => format!("{label} ({m})"),
+        (None, Some(m)) => format!("{label} ({m}, its default)"),
+        (None, None) => label.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::attempt_title;
+
+    #[test]
+    fn a_skipped_task_says_its_first_error() {
+        let renamed = ("X203", "the `environment` key was renamed to `sandbox`");
+        assert_eq!(
+            super::skip_reason(&[renamed]),
+            "[X203] the `environment` key was renamed to `sandbox`"
+        );
+        assert_eq!(
+            super::skip_reason(&[renamed, ("X201", "x"), ("X201", "y")]),
+            "[X203] the `environment` key was renamed to `sandbox` (and 2 more errors)"
+        );
+        assert_eq!(super::skip_reason(&[]), "it did not load");
+    }
+
+    #[test]
+    fn the_running_line_names_a_default_model() {
+        assert_eq!(
+            attempt_title("builtin", Some("mimo/x"), Some("mimo/x")),
+            "builtin (mimo/x)"
+        );
+        assert_eq!(
+            attempt_title("claude", None, Some("claude-haiku-4-5-20251001")),
+            "claude (claude-haiku-4-5-20251001, its default)"
+        );
+        assert_eq!(attempt_title("oracle", None, None), "oracle");
     }
 }

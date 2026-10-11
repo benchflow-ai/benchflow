@@ -154,9 +154,44 @@ async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     }
 }
 
+/// Hold an exclusive lock on `<dir>.lock` while a checkout in `dir` is
+/// created or changed: two runs started together on the same repository
+/// and ref would otherwise race on git's own lock files and one would fail
+/// ("Unable to create .../sparse-checkout.lock: File exists"). The lock is
+/// released when the file is dropped, or when the process dies.
+async fn lock_checkout(dir: &Path) -> std::io::Result<std::fs::File> {
+    let mut name = dir.as_os_str().to_owned();
+    name.push(".lock");
+    let path = PathBuf::from(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
+        file.lock()?;
+        Ok(file)
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
 /// Clone (or update) a blobless, sparse checkout of the repository into the
 /// cache and return the folder asked for.
 async fn fetch(remote: &mut Remote, cache: &Path) -> Result<PathBuf, SourceError> {
+    let url = format!("https://github.com/{}.git", remote.repo);
+    fetch_from(remote, cache, &url).await
+}
+
+/// Whether a ref could be a commit sha, full or abbreviated (`414014c`).
+fn looks_like_sha(reference: &str) -> bool {
+    (7..=40).contains(&reference.len()) && reference.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+async fn fetch_from(remote: &mut Remote, cache: &Path, url: &str) -> Result<PathBuf, SourceError> {
     if which("git").is_none() {
         return Err(SourceError::NoGit(remote.repo.clone()));
     }
@@ -167,15 +202,15 @@ async fn fetch(remote: &mut Remote, cache: &Path) -> Result<PathBuf, SourceError
         .join("github.com")
         .join(&remote.repo)
         .join(sanitize(&reference));
-    let url = format!("https://github.com/{}.git", remote.repo);
     let err = |message: String| SourceError::Fetch {
         repo: remote.repo.clone(),
         message,
     };
+    let _lock = lock_checkout(&dir).await.map_err(|e| err(e.to_string()))?;
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(&dir).map_err(|e| err(e.to_string()))?;
         git(&["init", "-q"], Some(&dir)).await.map_err(err)?;
-        git(&["remote", "add", "origin", &url], Some(&dir))
+        git(&["remote", "add", "origin", url], Some(&dir))
             .await
             .map_err(err)?;
     }
@@ -195,7 +230,7 @@ async fn fetch(remote: &mut Remote, cache: &Path) -> Result<PathBuf, SourceError
     } else {
         let _ = git(&["sparse-checkout", "disable"], Some(&dir)).await;
     }
-    git(
+    let shallow = git(
         &[
             "fetch",
             "-q",
@@ -207,17 +242,37 @@ async fn fetch(remote: &mut Remote, cache: &Path) -> Result<PathBuf, SourceError
         ],
         Some(&dir),
     )
-    .await
-    .map_err(|m| {
-        err(if m.contains("couldn't find remote ref") {
-            format!("no branch, tag, or commit named `{reference}`")
-        } else {
-            m
-        })
-    })?;
-    git(&["checkout", "-q", "--force", "FETCH_HEAD"], Some(&dir))
-        .await
-        .map_err(err)?;
+    .await;
+    match shallow {
+        Ok(_) => git(&["checkout", "-q", "--force", "FETCH_HEAD"], Some(&dir))
+            .await
+            .map_err(err)?,
+        // A commit by an abbreviated sha cannot be fetched by name: fetch the
+        // history (still without file contents) and find it there.
+        Err(m) if m.contains("couldn't find remote ref") && looks_like_sha(&reference) => {
+            git(&["fetch", "-q", "--filter=blob:none", "origin"], Some(&dir))
+                .await
+                .map_err(err)?;
+            git(
+                &[
+                    "checkout",
+                    "-q",
+                    "--force",
+                    &format!("{reference}^{{commit}}"),
+                ],
+                Some(&dir),
+            )
+            .await
+            .map_err(|_| err(format!("no branch, tag, or commit named `{reference}`")))?
+        }
+        Err(m) => {
+            return Err(err(if m.contains("couldn't find remote ref") {
+                format!("no branch, tag, or commit named `{reference}`")
+            } else {
+                m
+            }));
+        }
+    };
     remote.commit = git(&["rev-parse", "HEAD"], Some(&dir)).await.ok();
     let path = match &remote.path {
         Some(p) => dir.join(p),
@@ -275,6 +330,7 @@ pub async fn fetch_git(
     if url.starts_with('-') {
         return Err(err(format!("`{url}` is not a git URL")));
     }
+    let _lock = lock_checkout(&dir).await.map_err(|e| err(e.to_string()))?;
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(&dir).map_err(|e| err(e.to_string()))?;
         git(&["init", "-q"], Some(&dir)).await.map_err(err)?;
@@ -537,6 +593,72 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.to_string().contains("no folder tasks/zzz"), "{e}");
+
+        // Two runs started together on a new cache both get their folders,
+        // instead of one failing on git's sparse-checkout.lock.
+        let cache = tmp.path().join("cache-2");
+        let fetches = (0..6).map(|i| {
+            let (url, sha, cache) = (url.clone(), sha.clone(), cache.clone());
+            let path = ["tasks/a", "tasks/b", "tasks/c"][i % 3].to_string();
+            tokio::spawn(async move { fetch_git(&url, &sha, &[path], &cache).await })
+        });
+        for f in fetches.collect::<Vec<_>>() {
+            f.await.unwrap().unwrap();
+        }
+        assert!(cache.join("sources/git").is_dir());
+    }
+
+    /// `org/repo/path@<short sha>`: an abbreviated commit, as people write
+    /// it, cannot be fetched by name, so the history is fetched and the
+    /// commit found there.
+    #[tokio::test]
+    async fn a_target_at_an_abbreviated_commit_is_found() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        std::fs::create_dir_all(repo.join("tasks/a")).unwrap();
+        std::fs::write(repo.join("tasks/a/task.md"), "old").unwrap();
+        run(&["init", "-q"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "old"]);
+        let old = run(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("tasks/a/task.md"), "new").unwrap();
+        run(&["commit", "-q", "-am", "new"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let mut remote = parse_remote(&format!("o/r/tasks@{}", &old[..7])).unwrap();
+        let path = fetch_from(&mut remote, &cache, &url).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.join("a/task.md")).unwrap(),
+            "old"
+        );
+        assert_eq!(remote.commit.as_deref(), Some(old.as_str()));
+        // A ref that is not there still says so.
+        let mut remote = parse_remote("o/r/tasks@abcdef0").unwrap();
+        let e = fetch_from(&mut remote, &cache, &url).await.unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("no branch, tag, or commit named `abcdef0`"),
+            "{e}"
+        );
     }
 
     /// A registry names the commit, the URL, and the paths; none of them may

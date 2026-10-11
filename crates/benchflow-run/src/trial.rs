@@ -383,10 +383,11 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
     let mut config = trial_config(spec, rt, &t, &started);
     config["agent"] = json!(label);
     config["model"] = json!(model);
-    if let Err(e) = rec.write(&spec.dir, &config) {
+    let unsaved = rec.write(&spec.dir, &config).err().map(|e| {
         rt.events
             .log(&spec.name, format!("could not write the trial record: {e}"));
-    }
+        unsaved_reason(&e)
+    });
     for e in crate::trainer::write_trial(&spec.dir, &rec) {
         rt.events.log(&spec.name, e.to_string());
     }
@@ -398,11 +399,20 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
         reward: rec.reward,
         passed: rec.passed,
         timed_out: rec.timed_out,
-        reason: rec.reason(),
+        reason: unsaved.or_else(|| rec.reason()),
         seconds: rec.timing.total,
         dir: spec.dir.clone(),
     }));
     rec
+}
+
+/// What the finished line says when the trial's record could not be
+/// written (a full disk): without it the trial reads as done, yet `bench
+/// results` never sees it and a rerun of the job runs it again.
+fn unsaved_reason(e: &std::io::Error) -> String {
+    format!(
+        "its result.json could not be written ({e}); bench results will not count it, and rerunning the job runs it again"
+    )
 }
 
 fn trial_config(
@@ -2349,6 +2359,23 @@ pub fn no_usage() -> Usage {
 
 #[cfg(test)]
 mod tests {
+
+    /// A record the disk would not take (`No space left on device` on
+    /// 2026-10-10) was a verbose-only log line while the run showed the trial
+    /// as scored; the finished line now says it.
+    #[test]
+    fn an_unsaved_record_is_said_on_the_finished_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-folder");
+        std::fs::write(&file, "x").unwrap();
+        let err = crate::record::write_json(&file.join("result.json"), &json!({})).unwrap_err();
+        let why = unsaved_reason(&err);
+        assert!(
+            why.starts_with("its result.json could not be written ("),
+            "{why}"
+        );
+        assert!(why.ends_with("rerunning the job runs it again"), "{why}");
+    }
     use super::*;
 
     #[test]

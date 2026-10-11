@@ -381,7 +381,11 @@ fn view_response(
     let query = view_query(query.as_deref());
     stream(if page { HTML } else { JSON }, move |writer| {
         let (runs, capped) = state.listed();
-        let trials: Vec<views::Trial> = runs.iter().map(views::read_trial).collect();
+        let trials: Vec<views::Trial> = runs
+            .iter()
+            .filter(|run| !views::in_progress(run))
+            .map(views::read_trial)
+            .collect();
         let title = state.title();
         let data = match view {
             View::Compare => views::compare(&trials, &title, capped, &query),

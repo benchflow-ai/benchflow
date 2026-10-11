@@ -185,7 +185,19 @@ pub fn hold(dir: &Path) -> std::io::Result<std::fs::File> {
         .write(true)
         .read(true)
         .open(&path)?;
-    match file.try_lock() {
+    // `bench view` probes the lock with a shared lock it drops at once, so a
+    // refusal is retried briefly before it is believed.
+    let mut tries = 0;
+    let locked = loop {
+        match file.try_lock() {
+            Err(std::fs::TryLockError::WouldBlock) if tries < 10 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            other => break other,
+        }
+    };
+    match locked {
         Ok(()) => {
             let _ = file.set_len(0);
             let _ = std::io::Write::write_all(

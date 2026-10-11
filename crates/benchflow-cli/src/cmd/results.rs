@@ -392,11 +392,10 @@ fn compare(views: &[JobView]) -> Result<Exit> {
             Some(p) => {
                 let parts = [
                     format!(
-                        "  A − {b}: {:+.3} mean reward over {} (95% CI {:+.3} to {:+.3})",
+                        "  A − {b}: {:+.3} mean reward over {} ({})",
                         p.diff,
                         plural(p.tasks, "shared task"),
-                        p.low,
-                        p.high
+                        paired_interval(p.tasks, p.low, p.high)
                     ),
                     format!(
                         "A better on {}, {b} better on {}, tied on {}",
@@ -486,4 +485,29 @@ fn job_json(v: &JobView) -> serde_json::Value {
         "cost_usd": v.records.iter().filter_map(|r| r.usage.cost_usd).reduce(|a, b| a + b),
         "cost_recorded": v.records.iter().filter(|r| r.usage.cost_usd.is_some()).count(),
     })
+}
+
+/// The paired difference's interval, or why there is none: one shared task
+/// has no spread to make one from (the bounds would both be the difference).
+fn paired_interval(tasks: usize, low: f64, high: f64) -> String {
+    if tasks < 2 {
+        "no interval from one task".to_string()
+    } else {
+        format!("95% CI {low:+.3} to {high:+.3}")
+    }
+}
+
+#[cfg(test)]
+mod paired_tests {
+    #[test]
+    fn one_shared_task_gives_no_interval() {
+        assert_eq!(
+            super::paired_interval(1, 0.0, 0.0),
+            "no interval from one task"
+        );
+        assert_eq!(
+            super::paired_interval(3, -0.5, 0.25),
+            "95% CI -0.500 to +0.250"
+        );
+    }
 }
