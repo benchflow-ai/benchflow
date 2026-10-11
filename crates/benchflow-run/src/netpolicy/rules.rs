@@ -117,7 +117,7 @@ fingerprint() {{
 fn pin_hosts(lines: &str) -> String {
     format!(
         r#"mkdir -p {state}; chmod 700 {state}
-sed '/^# BEGIN benchflow network$/,/^# END benchflow network$/d' /etc/hosts > {state}/hosts.tmp
+(umask 077; sed '/^# BEGIN benchflow network$/,/^# END benchflow network$/d' /etc/hosts > {state}/hosts.tmp)
 pins={lines}
 {{ cat {state}/hosts.tmp; if [ -n "$pins" ]; then printf '# BEGIN benchflow network\n%s# END benchflow network\n' "$pins"; fi; }} > /etc/hosts
 rm -f {state}/hosts.tmp

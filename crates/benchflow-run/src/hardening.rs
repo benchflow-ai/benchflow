@@ -48,6 +48,15 @@ pub const IMAGE_PATH_VAR: &str = "BENCHFLOW_IMAGE_PATH";
 /// runner refuses a workdir that holds it ([`holds_state`]).
 pub const STATE_DIR: &str = "/var/lib/benchflow";
 
+/// The first line of every root program that writes into [`STATE_DIR`]
+/// (the handoff, which also restores files elsewhere, and the network
+/// policy's hosts pinning set it only around their own writes there): what
+/// it makes is root's alone whatever umask the backend's exec starts with (a
+/// Docker daemon's `docker exec` can start at `0000`, and the handoff then
+/// found the baseline writable by others and stopped every trial of a
+/// rootless agent with R314).
+const STATE_UMASK: &str = "umask 077";
+
 /// Whether giving the agent user `workdir` would give it the folder that
 /// holds [`STATE_DIR`]: the workdir is `/`, the state folder, or one of the
 /// folders above it.
@@ -422,7 +431,8 @@ true"#,
 /// already in the temp folders.
 pub fn baseline() -> String {
     format!(
-        r#"b={state}/baseline
+        r#"{umask}
+b={state}/baseline
 rm -rf "$b"; mkdir -p "$b"; chmod 700 {state} "$b"
 find / -xdev {prune} -o {names} -print 2>/dev/null | LC_ALL=C sort > "$b/list"
 : > "$b/sums"
@@ -434,6 +444,7 @@ find /tmp /var/tmp -xdev -name '*.py' -type f -print 2>/dev/null | while IFS= re
   s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1) && printf '%s  %s\n' "$s" "$f"
 done > "$b/tmp-sums"
 echo "BF baseline $(wc -l < "$b/list" | tr -d ' ')""#,
+        umask = STATE_UMASK,
         state = q(STATE_DIR),
         prune = prune_expr(),
         names = steering_find_expr(),
@@ -565,7 +576,7 @@ for d in "$w" {outputs}; do
   find "$d" -xdev -type f -size +1048576k -print 2>/dev/null | while IFS= read -r f; do echo "BF large $f"; done
 done
 if [ -f "$b/list" ]; then
-  find / -xdev {prune} -o -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; -o {names} -print 2>/dev/null | LC_ALL=C sort > "$b/after"
+  find / -xdev {prune} -o -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; -o {names} -print 2>/dev/null | ({umask}; LC_ALL=C sort > "$b/after")
   while IFS= read -r f; do
     if ! grep -Fxq -- "$f" "$b/list"; then {skip}; echo "BF planted $f"; rm -f "$f"; fi
   done < "$b/after"
@@ -586,6 +597,7 @@ done
 echo "BF handoff done""#,
         workdir = q(workdir),
         state = q(STATE_DIR),
+        umask = STATE_UMASK,
         state_mode = if strict_state {
             r#"note() { printf 'BF state-owner %s\n' "$1"; }
 stop() { echo "BF handoff stopped"; exit 0; }"#
@@ -655,7 +667,8 @@ pub const SYSTEM_DIRS_NAMED: usize = 20;
 pub fn lock_system_dirs(workdir: &str, home: &str, user: &str) -> String {
     let dirs: Vec<String> = SYSTEM_DIRS.iter().map(|d| q(d)).collect();
     format!(
-        r#"w={workdir}; h={home}; l={state}/syswrite
+        r#"{umask}
+w={workdir}; h={home}; l={state}/syswrite
 mkdir -p {state}; chmod 700 {state}
 scan() {{
   for r in {dirs}; do
@@ -687,6 +700,7 @@ if id -u "$u" >/dev/null 2>&1; then
   echo "BF sysowned-count $n"
   rm -f "$l"
 fi"#,
+        umask = STATE_UMASK,
         workdir = q(workdir),
         home = q(home),
         user = q(user),
@@ -702,7 +716,8 @@ fi"#,
 /// Prints `BF preload absent` or `BF preload present <lines>`.
 pub fn preload_snapshot() -> String {
     format!(
-        r#"b={state}/preload; p=/etc/ld.so.preload
+        r#"{umask}
+b={state}/preload; p=/etc/ld.so.preload
 mkdir -p {state}; chmod 700 {state}; rm -rf "$b" "$b.sum"
 if [ -e "$p" ] || [ -L "$p" ]; then
   cp -P "$p" "$b" && {{ sha256sum < "$p" 2>/dev/null | cut -d' ' -f1; }} > "$b.sum"
@@ -710,6 +725,7 @@ if [ -e "$p" ] || [ -L "$p" ]; then
 else
   echo absent > "$b.sum"; echo "BF preload absent"
 fi"#,
+        umask = STATE_UMASK,
         state = q(STATE_DIR),
     )
 }
@@ -729,7 +745,7 @@ if [ "$now" = "$before" ]; then
   exit 0
 fi
 rm -rf "$p"
-[ "$before" = absent ] || cp -P "$b" "$p"
+[ "$before" = absent ] || {{ cp -P "$b" "$p" && {{ [ -L "$p" ] || chmod 644 "$p"; }}; }}
 if [ "$(sum)" = "$before" ]; then echo "BF preload restored"; else echo "BF preload stuck"; exit 1; fi"#,
         state = q(STATE_DIR),
     )
@@ -894,7 +910,8 @@ pub fn pack_into(paths: &[String], tar: &str) -> String {
 fn pack_capped(paths: &[String], tar: &str, total: u64) -> String {
     let list: Vec<String> = paths.iter().map(|p| q(p)).collect();
     format!(
-        r#"{links}
+        r#"{umask}
+{links}
 o={state}; mkdir -p "$o"; chmod 700 "$o"; l="$o/outputs.list"; : > "$l"; rm -f {tar}
 nl='
 '
@@ -916,6 +933,7 @@ mv "$l.fit" "$l"
 sed 's|^/||' "$l" > "$l.rel"
 if [ -s "$l.rel" ]; then (cd / && tar -cf {tar} -T "$l.rel") 2>/dev/null || {{ echo "BF error tar"; exit 1; }}; else tar -cf {tar} -T /dev/null; fi
 echo "BF packed $(wc -l < "$l.rel" | tr -d ' ') $(wc -c < {tar} | tr -d ' ')""#,
+        umask = STATE_UMASK,
         links = FOREIGN_LINKS,
         state = q(STATE_DIR),
         tar = q(tar),
@@ -1284,6 +1302,107 @@ mod tests {
             app.join("helper.py").exists(),
             "the link's target, the agent's own module, was removed: {out}"
         );
+    }
+
+    /// Under an exec umask of 0 (`docker exec` on the campaign's
+    /// Docker-in-Docker daemon starts there), what setup's baseline and
+    /// preload snapshot, the packed outputs, and a first handoff write into
+    /// the state folder is still root's alone: a strict handoff after them
+    /// (the next stage's, or a rootless agent's) runs to its end instead of
+    /// stopping with R314.
+    #[cfg(unix)]
+    #[test]
+    fn state_files_are_root_only_whatever_the_umask() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let r = root.to_str().unwrap();
+        let app = root.join("app");
+        for d in ["app", "tmp", "var/tmp", "logs"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::write(app.join("conftest.py"), "x").unwrap();
+        std::fs::write(app.join("out.txt"), "y").unwrap();
+        // Each writer is an exec of its own in a trial, and each starts at
+        // the backend's umask: one shell for all four would let the first
+        // writer's umask cover the others.
+        let mut out = String::new();
+        for writer in [
+            baseline(),
+            preload_snapshot(),
+            pack_outputs(&[format!("{r}/app/out.txt")]),
+            handoff(app.to_str().unwrap(), None, false),
+        ] {
+            let writer = writer
+                .replace("/logs/verifier", &format!("{r}/logs/verifier"))
+                .replace(STATE_DIR, &format!("{r}/state"))
+                .replace("find / -xdev", &format!("find {r}/app -xdev"))
+                .replace("/tmp /var/tmp", &format!("{r}/tmp {r}/var/tmp"))
+                .replace("p=/etc/ld.so.preload", &format!("p={r}/no-preload"))
+                .replace(
+                    &OUTPUT_DIRS.join(" "),
+                    &OUTPUT_DIRS.map(|d| format!("{r}{d}")).join(" "),
+                );
+            assert!(!writer.contains(STATE_DIR));
+            let o = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("umask 000\n{writer}"))
+                .output()
+                .unwrap();
+            out.push_str(&String::from_utf8_lossy(&o.stdout));
+        }
+        assert!(out.contains("BF baseline 1"), "{out}");
+        assert!(out.contains("BF packed 1"), "{out}");
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        for f in [
+            "baseline/list",
+            "baseline/after",
+            "preload.sum",
+            "outputs.tar",
+        ] {
+            assert!(root.join("state").join(f).is_file(), "{f}: {out}");
+        }
+        // The strict check, with the test's user standing in for root.
+        let out = handoff_with(&root, &app, true, true);
+        assert!(!out.contains("BF state-owner"), "{out}");
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        // The system-folder lock keeps its scan in the state folder while it
+        // runs: stopped there by its timeout, what it leaves is root's alone.
+        assert!(lock_system_dirs("/w", "/h", "agent").starts_with(STATE_UMASK));
+    }
+
+    /// A restored `/etc/ld.so.preload` stays readable by every user, as the
+    /// loader needs it to be, whatever the umask of the snapshot's exec.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_preload_file_stays_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let r = root.to_str().unwrap();
+        let preload = root.join("ld.so.preload");
+        std::fs::write(&preload, "/usr/lib/libshim.so\n").unwrap();
+        std::fs::set_permissions(&preload, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let run = |script: String| {
+            let script = script
+                .replace(STATE_DIR, &format!("{r}/state"))
+                .replace("p=/etc/ld.so.preload", &format!("p={r}/ld.so.preload"));
+            let o = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("umask 000\n{script}"))
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        };
+        assert!(run(preload_snapshot()).contains("BF preload present"));
+        std::fs::write(&preload, "/tmp/evil.so\n").unwrap();
+        let out = run(preload_check());
+        assert!(out.contains("BF preload restored"), "{out}");
+        assert_eq!(
+            std::fs::read_to_string(&preload).unwrap(),
+            "/usr/lib/libshim.so\n"
+        );
+        let mode = std::fs::metadata(&preload).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "{out}");
     }
 
     /// A path with a line break in it must not split into two paths for the
