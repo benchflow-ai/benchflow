@@ -145,7 +145,7 @@ class TestSetupSandboxUser:
 
     @pytest.mark.asyncio
     async def test_setup_command_copies_only_the_running_agents_dirs(self):
-        """Guards against copying every agent's home dirs into one sandbox.
+        """PR #1163 guards against copying every agent's home dirs into one sandbox.
 
         That union dates back to the hard-coded list in 28d9acdf and became
         registry-derived in 39d9b829. Each copied dir is a recursive ``cp -a``
@@ -165,7 +165,7 @@ class TestSetupSandboxUser:
 
     @pytest.mark.asyncio
     async def test_setup_command_copies_opencode_config_without_all_of_config(self):
-        """Guards the OpenCode config dir once ~/.config stopped being copied.
+        """PR #1163 guards the OpenCode config dir once ~/.config stopped being copied.
 
         Before scoping, OpenCode received an image-provided ~/.config/opencode
         only because the whole of /root/.config was copied for every agent.

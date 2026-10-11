@@ -257,7 +257,7 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
 async def test_install_agent_scopes_sandbox_home_to_rollout_agents(
     tmp_path, monkeypatch, scene_roles, skip_agent_install, expected_agents
 ):
-    """Guards against copying every agent's home dirs into one sandbox.
+    """PR #1163 guards against copying every agent's home dirs into one sandbox.
 
     That union dates back to the hard-coded list in 28d9acdf and became
     registry-derived in 39d9b829. The sandbox user's home is prepared once,

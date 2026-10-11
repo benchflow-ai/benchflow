@@ -89,7 +89,7 @@ class TestSandboxDirs:
             del AGENTS["_test_agent_subscription_auth"]
 
     def test_named_agents_get_only_their_own_dirs(self):
-        """Guards against copying every agent's home dirs into one sandbox.
+        """PR #1163 guards against copying every agent's home dirs into one sandbox.
 
         That union dates back to the hard-coded list in 28d9acdf and became
         registry-derived in 39d9b829. A sandbox running some agents must not
