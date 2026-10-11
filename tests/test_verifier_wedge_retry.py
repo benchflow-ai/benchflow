@@ -324,7 +324,7 @@ def _sandbox_with_verifier_tree(tmp_path, **kwargs):
 
 @pytest.mark.asyncio
 async def test_slow_verifier_with_empty_stdout_is_not_retried(tmp_path):
-    """Guards the zero-output retry from PR #949 against a slow verifier.
+    """PR #1164 guards the zero-output retry from PR #949 against a slow verifier.
 
     test.sh is still running and pytest writes to its own log, so
     test-stdout.txt is empty. That is a slow verifier, not a wedge: it must
@@ -347,7 +347,7 @@ async def test_slow_verifier_with_empty_stdout_is_not_retried(tmp_path):
 
 @pytest.mark.asyncio
 async def test_probe_output_survives_a_process_exiting_mid_scan(tmp_path):
-    """Guards the zero-output retry from PR #949 against shell noise.
+    """PR #1164 guards the zero-output retry from PR #949 against shell noise.
 
     A process that exits between the /proc listing and the read makes the
     shell report an error, and the Docker sandbox merges stderr into the
@@ -365,7 +365,7 @@ async def test_probe_output_survives_a_process_exiting_mid_scan(tmp_path):
 
 @pytest.mark.asyncio
 async def test_wedge_retry_first_kills_the_whole_verifier_tree(tmp_path):
-    """Guards the orphan kill from PR #949 against leaving test.sh's children.
+    """PR #1164 guards the orphan kill from PR #949 against leaving test.sh's children.
 
     When the probe cannot tell (its exec fails) the retry goes ahead, so the
     first attempt must go down with all of its descendants, including a
@@ -389,7 +389,7 @@ async def test_wedge_retry_first_kills_the_whole_verifier_tree(tmp_path):
 
 @pytest.mark.asyncio
 async def test_wedge_retry_kills_children_whose_parent_exits_mid_kill(tmp_path):
-    """Guards the orphan kill from PR #949 against stopped orphans.
+    """PR #1164 guards the orphan kill from PR #949 against stopped orphans.
 
     The exec wrapper exits on its own just before the stop reaches it, so
     test.sh is reparented to PID 1. It and its children were already found
@@ -406,7 +406,7 @@ async def test_wedge_retry_kills_children_whose_parent_exits_mid_kill(tmp_path):
 
 @pytest.mark.asyncio
 async def test_wedge_kill_leaves_a_verifier_started_after_its_scan(tmp_path):
-    """Guards the orphan kill from PR #949 against killing the retry.
+    """PR #1164 guards the orphan kill from PR #949 against killing the retry.
 
     The kill only follows the process tree it found on its first scan. A new
     verifier wrapper that starts while it works (the retry, if the kill's
@@ -427,7 +427,7 @@ async def test_wedge_kill_leaves_a_verifier_started_after_its_scan(tmp_path):
 
 @pytest.mark.asyncio
 async def test_wedge_with_no_verifier_process_left_still_retries(tmp_path):
-    """Guards the zero-output retry from PR #949: a real wedge still retries.
+    """PR #1164 guards the zero-output retry from PR #949: a real wedge still retries.
 
     No verifier process and an empty test-stdout.txt is the wedge signature.
     The probe's own shell is in the process table and must not count.
@@ -472,7 +472,7 @@ def _busybox_verifier_tree(tmp_path, **kwargs):
 
 @pytest.mark.asyncio
 async def test_slow_verifier_without_a_wrapper_is_not_retried(tmp_path):
-    """Guards the zero-output retry from PR #949 on shells that exec in place.
+    """PR #1164 guards the zero-output retry from PR #949 on shells that exec in place.
 
     With no wrapper naming the capture file, the probe falls back to test.sh
     itself, so a slow verifier is still told apart from a wedge.
@@ -489,7 +489,7 @@ async def test_slow_verifier_without_a_wrapper_is_not_retried(tmp_path):
 
 @pytest.mark.asyncio
 async def test_wedge_kill_without_a_wrapper_takes_the_test_sh_tree(tmp_path):
-    """Guards the orphan kill from PR #949 on shells that exec in place.
+    """PR #1164 guards the orphan kill from PR #949 on shells that exec in place.
 
     main's ``pkill -f '/verifier/test.sh'`` killed test.sh there; the tree
     kill must find it too and take its children with it, but leave a task
@@ -506,7 +506,7 @@ async def test_wedge_kill_without_a_wrapper_takes_the_test_sh_tree(tmp_path):
 
 @pytest.mark.asyncio
 async def test_wedge_kill_ignores_a_command_name_posing_as_a_record(tmp_path):
-    """Guards the orphan kill from PR #949 against a crafted command name.
+    """PR #1164 guards the orphan kill from PR #949 against a crafted command name.
 
     A process in the verifier tree names itself so that its raw ``stat``
     line reads as a second record making PID 2 (an unrelated service) its
