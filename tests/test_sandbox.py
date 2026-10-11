@@ -88,6 +88,30 @@ class TestSandboxDirs:
         finally:
             del AGENTS["_test_agent_subscription_auth"]
 
+    def test_named_agents_get_only_their_own_dirs(self):
+        """PR #1163 guards against copying every agent's home dirs into one sandbox.
+
+        That union dates back to the hard-coded list in 28d9acdf and became
+        registry-derived in 39d9b829. A sandbox running some agents must not
+        be handed the config/auth dirs of every other registered agent.
+        """
+        AGENTS["_test_agent_home_dirs"] = AgentConfig(
+            name="_test_agent_home_dirs",
+            install_cmd="true",
+            launch_cmd="true",
+            home_dirs=[".testagent", ".config/testagent"],
+        )
+        try:
+            assert get_sandbox_home_dirs(["codex-acp"]) == {".codex"}
+            assert get_sandbox_home_dirs(["codex-acp", "_test_agent_home_dirs"]) == {
+                ".codex",
+                ".testagent",
+                ".config/testagent",
+            }
+            assert get_sandbox_home_dirs(["oracle", "not-registered"]) == set()
+        finally:
+            del AGENTS["_test_agent_home_dirs"]
+
     def test_workspace_paths_excluded(self):
         """$WORKSPACE paths are not included (only $HOME paths)."""
         dirs = get_sandbox_home_dirs()

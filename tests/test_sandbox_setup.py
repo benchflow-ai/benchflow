@@ -12,12 +12,15 @@ from benchflow.sandbox.setup import override_dockerfile_base_image
 
 
 async def _run_setup_sandbox_user(
-    *, sandbox_user: str = "agent", workspace: str = "/app"
+    *,
+    sandbox_user: str = "agent",
+    workspace: str = "/app",
+    agents: list[str] | None = None,
 ):
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
 
-    await setup_sandbox_user(env, sandbox_user, workspace)
+    await setup_sandbox_user(env, sandbox_user, workspace, agents=agents)
 
     env.exec.assert_awaited_once()
     return env.exec.call_args.args[0], env.exec.call_args.kwargs
@@ -139,6 +142,36 @@ class TestSetupSandboxUser:
         assert ".claude" in copy_loop_dirs
         assert "mkdir -p /home/agent/$d && if [ -d /root/$d ]; then" in cmd
         assert "chown -R agent:agent /home/agent" in cmd
+
+    @pytest.mark.asyncio
+    async def test_setup_command_copies_only_the_running_agents_dirs(self):
+        """PR #1163 guards against copying every agent's home dirs into one sandbox.
+
+        That union dates back to the hard-coded list in 28d9acdf and became
+        registry-derived in 39d9b829. Each copied dir is a recursive ``cp -a``
+        of root-only state into a home the sandbox user owns, so a Codex
+        rollout must not receive other agents' trees such as /root/.claude or
+        the shared /root/.config. The other dirs are still created empty, so
+        root-run uploads into them (e.g. Vertex ADC under ~/.config/gcloud)
+        keep a user-owned parent.
+        """
+        cmd, _ = await _run_setup_sandbox_user(agents=["codex-acp"])
+        assert _get_copy_loop_dirs(cmd) == [".codex"]
+        empty_dirs = " ".join(sorted(get_sandbox_home_dirs() - {".codex", ".local"}))
+        assert f"for d in {empty_dirs}; do mkdir -p /home/agent/$d; done" in cmd
+
+        cmd, _ = await _run_setup_sandbox_user(agents=["codex-acp", "claude-agent-acp"])
+        assert _get_copy_loop_dirs(cmd) == [".claude", ".codex"]
+
+    @pytest.mark.asyncio
+    async def test_setup_command_copies_opencode_config_without_all_of_config(self):
+        """PR #1163 guards the OpenCode config dir once ~/.config stopped being copied.
+
+        Before scoping, OpenCode received an image-provided ~/.config/opencode
+        only because the whole of /root/.config was copied for every agent.
+        """
+        cmd, _ = await _run_setup_sandbox_user(agents=["opencode"])
+        assert _get_copy_loop_dirs(cmd) == [".config/opencode", ".opencode"]
 
     @pytest.mark.asyncio
     async def test_setup_command_does_not_copy_heavy_tool_trees_into_home(self):

@@ -1193,12 +1193,20 @@ class Rollout:
 
         await prepare_capture_runtime(self)
 
+        # All roles share one sandbox user whose home is prepared here, before
+        # later roles connect, so it receives /root's config/auth dirs for
+        # every role's agent and for no other agent.
+        role_agents = [
+            role.agent for scene in cfg.effective_scenes for role in scene.roles
+        ]
+
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
                 await self._planes.setup_sandbox_user(
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
+                    agents=role_agents,
                     timeout_sec=cfg.sandbox_setup_timeout,
                 )
             await self._planes.snapshot_build_config(
@@ -1239,6 +1247,7 @@ class Rollout:
                 self._env,
                 cfg.sandbox_user,
                 workspace=self._agent_cwd,
+                agents=role_agents,
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
         cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"

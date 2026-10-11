@@ -224,16 +224,35 @@ def _legacy_root_tool_link_cmd(source: str, dest: str) -> str:
 
 
 async def setup_sandbox_user(
-    env, sandbox_user: str, workspace: str, *, timeout_sec: int = 120
+    env,
+    sandbox_user: str,
+    workspace: str,
+    *,
+    agents: list[str] | None = None,
+    timeout_sec: int = 120,
 ) -> str:
-    """Create non-root sandbox user, grant workspace access. Return agent_cwd."""
+    """Create non-root sandbox user, grant workspace access. Return agent_cwd.
+
+    ``agents`` names the agents that will run as this user. Only their home
+    config/auth dirs are filled from /root; None fills every registered
+    agent's.
+    """
     if not re.match(r"^[a-z_][a-z0-9_-]*$", sandbox_user):
         raise ValueError(
             f"Invalid sandbox_user: {sandbox_user!r} (must be alphanumeric)"
         )
     logger.info(f"Setting up sandbox user: {sandbox_user}")
     home = f"/home/{sandbox_user}"
-    home_dirs = sorted(d for d in get_sandbox_home_dirs() if d != ".local")
+    home_dirs = sorted(d for d in get_sandbox_home_dirs(agents) if d != ".local")
+    # Other agents' dirs are still created, just empty: later root-run setup
+    # such as the Vertex ADC upload into ~/.config/gcloud creates missing
+    # parents as root, so they must already exist and belong to the user.
+    empty_dirs = sorted(get_sandbox_home_dirs() - set(home_dirs) - {".local"})
+    create_empty_dirs = (
+        f"for d in {' '.join(empty_dirs)}; do mkdir -p {home}/$d; done && "
+        if empty_dirs
+        else ""
+    )
     await env.exec(
         f"id -u {sandbox_user} >/dev/null 2>&1 || "
         f"useradd -m -s /bin/bash {sandbox_user} && "
@@ -243,6 +262,7 @@ async def setup_sandbox_user(
         f"mkdir -p {home}/$d && "
         f"if [ -d /root/$d ]; then "
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
+        f"{create_empty_dirs}"
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
         f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)} && "
         f"for d in /output /outputs; do "

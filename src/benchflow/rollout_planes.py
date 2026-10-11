@@ -137,12 +137,14 @@ class DefaultRolloutPlanes:
         sandbox_user: str,
         *,
         workspace: str,
+        agents: list[str] | None = None,
         timeout_sec: int = 120,
     ) -> str:
         return await setup_sandbox_user(
             env,
             sandbox_user,
             workspace=workspace,
+            agents=agents,
             timeout_sec=timeout_sec,
         )
 

@@ -8,7 +8,7 @@ import pytest
 
 from benchflow.agents.install import effective_install_timeout, install_agent
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS
-from benchflow.rollout import Rollout, RolloutConfig, _write_config
+from benchflow.rollout import Role, Rollout, RolloutConfig, Scene, _write_config
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_WITH_SKILL,
@@ -234,6 +234,64 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
     await trial.install_agent()
 
     assert order == ["sandbox", "credentials", "web-policy"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scene_roles", "skip_agent_install", "expected_agents"),
+    [
+        ([[("solver", "codex-acp")]], False, ["codex-acp"]),
+        ([[("solver", "claude-agent-acp")]], True, ["claude-agent-acp"]),
+        (
+            [[("coder", "codex-acp")], [("reviewer", "claude-agent-acp")]],
+            False,
+            ["codex-acp", "claude-agent-acp"],
+        ),
+        (
+            [[("reference", "oracle"), ("solver", "codex-acp")]],
+            False,
+            ["oracle", "codex-acp"],
+        ),
+    ],
+)
+async def test_install_agent_scopes_sandbox_home_to_rollout_agents(
+    tmp_path, monkeypatch, scene_roles, skip_agent_install, expected_agents
+):
+    """PR #1163 guards against copying every agent's home dirs into one sandbox.
+
+    That union dates back to the hard-coded list in 28d9acdf and became
+    registry-derived in 39d9b829. The sandbox user's home is prepared once,
+    before later roles connect, so the scope must cover the agent of every
+    role in every scene and must not depend on the installer having run.
+    """
+    trial = _make_trial(tmp_path, agent="codex-acp", sandbox_setup_timeout=41)
+    trial._config = RolloutConfig(
+        task_path=tmp_path / "task",
+        scenes=[
+            Scene(roles=[Role(name=name, agent=agent) for name, agent in roles])
+            for roles in scene_roles
+        ],
+        sandbox_user="agent",
+        skip_agent_install=skip_agent_install,
+    )
+    setup_sandbox_user_mock = AsyncMock(return_value="/home/agent")
+    for plane in (
+        "install_agent",
+        "write_credential_files",
+        "upload_subscription_auth",
+        "apply_web_tool_policy",
+        "snapshot_build_config",
+        "seed_verifier_workspace",
+        "deploy_skills",
+        "lockdown_paths",
+    ):
+        monkeypatch.setattr(trial._planes, plane, AsyncMock())
+    monkeypatch.setattr(trial._planes, "setup_sandbox_user", setup_sandbox_user_mock)
+
+    await trial.install_agent()
+
+    setup_sandbox_user_mock.assert_awaited_once()
+    assert setup_sandbox_user_mock.await_args.kwargs["agents"] == expected_agents
 
 
 def _write_config_for(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> dict:
