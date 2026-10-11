@@ -127,7 +127,10 @@ impl Selection {
             return;
         }
         match self.command.as_deref().and_then(script_entry) {
-            Some(entry) => layout.verifier_entry = entry,
+            Some(entry) => {
+                layout.verifier_entry = entry;
+                layout.verifier_starts_in_mount = true;
+            }
             None => refused.push(Unsupported {
                 field,
                 reason: format!(
@@ -415,6 +418,38 @@ mod tests {
         assert!(parse(&missing_role).unwrap_err().contains("role"));
         let bad_default = DOC.replace("default_strategy: deterministic", "default_strategy: other");
         assert!(parse(&bad_default).is_err());
+    }
+
+    /// BenchFlow 0.8 runs a script strategy as `cd <verifier folder> &&
+    /// <command>`, so it starts there, not in the agent's workdir; a task
+    /// without `verifier.md` starts in the workdir.
+    #[test]
+    fn a_script_strategy_starts_in_the_verifier_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut layout = Layout::detect(dir.path(), false);
+        assert!(!layout.verifier_starts_in_mount);
+        let mut refused = Vec::new();
+        parse(DOC)
+            .unwrap()
+            .apply("verifier", &mut layout, &mut refused);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(layout.verifier_entry, "test.sh");
+        assert!(layout.verifier_starts_in_mount);
+
+        let mut layout = Layout::detect(dir.path(), false);
+        let judge = DOC.replace("default_strategy: deterministic", "default_strategy: judge");
+        parse(&judge)
+            .unwrap()
+            .apply("verifier", &mut layout, &mut refused);
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(!layout.verifier_starts_in_mount);
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/convert/v06");
+        let pkg = crate::load(&fixtures.join("3d-scan-calc")).unwrap();
+        assert!(
+            pkg.verifier.starts_in_mount,
+            "a 0.8 task.md with verifier.md"
+        );
     }
 
     #[test]

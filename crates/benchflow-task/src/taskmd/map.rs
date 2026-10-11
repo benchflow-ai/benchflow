@@ -338,6 +338,7 @@ fn verifier(
         dir: root.join("verifier"),
         mount: "/verifier".into(),
         entry: "test.sh".into(),
+        starts_in_mount: false,
         timeout: seconds(v.get("timeout")),
         user: v.get("user").and_then(Value::as_str).map(str::to_string),
         env: literal_env(refusals, "[verifier] env", v.get("env")),

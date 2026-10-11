@@ -14,7 +14,8 @@
 //!    and [`lock_system_dirs`]: remove group and other write permission
 //!    from system folders (`/usr`, `/etc`, `/opt`, ...).
 //! 3. [`baseline`]: snapshot the files that steer test runners
-//!    (`conftest.py`, `pytest.ini`, `sitecustomize.py`, `.pth`, ...), and
+//!    (`conftest.py`, `pytest.ini`, `sitecustomize.py`, `.pth`, pytest
+//!    plugin entry points, ...), and
 //!    [`preload_snapshot`]: snapshot `/etc/ld.so.preload`.
 //! 4. The agent works, every command it runs prefixed by [`oom_prefix`] so
 //!    the kernel stops its processes first when memory runs out.
@@ -89,20 +90,38 @@ pub const DEFAULT_USER: &str = "agent";
 /// `tox.ini`, JS test configs) are not here: they are often the answer
 /// itself ("write a Makefile", "fix the build"), and removing or restoring
 /// them undid correct work. BenchFlow 0.8 never touched them either.
+///
+/// `entry_points.txt` counts only when it mentions `pytest11` anywhere, the
+/// group pytest loads plugins from on its own (Python's own reader also takes
+/// `[[pytest11]]` and other spellings a line match would miss): [`handoff`]
+/// keeps every other one the agent's installs wrote. BenchFlow 0.8 refuses
+/// such plugins with its pytest plugin guard.
+///
+/// A link with one of these names counts as the file would: pytest and
+/// Python follow it.
 const STEERING_FILES: &[&str] = &[
     "conftest.py",
     "pytest.ini",
     "sitecustomize.py",
     "usercustomize.py",
     "*.pth",
+    "entry_points.txt",
 ];
 
+/// Shell: `continue` the enclosing loop over `$f` unless `$f` steers
+/// pytest. Every steering file does, except an `entry_points.txt` that never
+/// mentions `pytest11`.
+const SKIP_UNLESS_STEERING: &str =
+    r#"case "$f" in */entry_points.txt) grep -Fq pytest11 "$f" 2>/dev/null || continue;; esac"#;
+
+/// `find` tests for a steering file: one of [`STEERING_FILES`]' names, a
+/// regular file or a link.
 fn steering_find_expr() -> String {
     let names: Vec<String> = STEERING_FILES
         .iter()
         .map(|n| format!("-name {}", q(n)))
         .collect();
-    format!("\\( {} \\)", names.join(" -o "))
+    format!("\\( -type f -o -type l \\) \\( {} \\)", names.join(" -o "))
 }
 
 /// The folders the steering-file scan skips: kernel filesystems, the package
@@ -405,7 +424,7 @@ pub fn baseline() -> String {
     format!(
         r#"b={state}/baseline
 rm -rf "$b"; mkdir -p "$b"; chmod 700 {state} "$b"
-find / -xdev {prune} -o -type f {names} -print 2>/dev/null | LC_ALL=C sort > "$b/list"
+find / -xdev {prune} -o {names} -print 2>/dev/null | LC_ALL=C sort > "$b/list"
 : > "$b/sums"
 while IFS= read -r f; do
   s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1) && printf '%s  %s\n' "$s" "$f" >> "$b/sums"
@@ -546,14 +565,15 @@ for d in "$w" {outputs}; do
   find "$d" -xdev -type f -size +1048576k -print 2>/dev/null | while IFS= read -r f; do echo "BF large $f"; done
 done
 if [ -f "$b/list" ]; then
-  find / -xdev {prune} -o -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; -o -type f {names} -print 2>/dev/null | LC_ALL=C sort > "$b/after"
+  find / -xdev {prune} -o -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; -o {names} -print 2>/dev/null | LC_ALL=C sort > "$b/after"
   while IFS= read -r f; do
-    if ! grep -Fxq -- "$f" "$b/list"; then echo "BF planted $f"; rm -f "$f"; fi
+    if ! grep -Fxq -- "$f" "$b/list"; then {skip}; echo "BF planted $f"; rm -f "$f"; fi
   done < "$b/after"
   while IFS= read -r line; do
     s=${{line%%  *}}; f=${{line#*  }}
     now=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
     if [ "$now" != "$s" ]; then
+      {skip}
       rm -rf "$f"; tar -xf "$b/files.tar" -C / "${{f#/}}" 2>/dev/null && echo "BF restored $f" || echo "BF lost $f"
     fi
   done < "$b/sums"
@@ -576,6 +596,7 @@ stop() { :; }"#
         chown = chown,
         prune = prune_expr(),
         names = steering_find_expr(),
+        skip = SKIP_UNLESS_STEERING,
         outputs = OUTPUT_DIRS.join(" "),
     )
 }
@@ -1056,7 +1077,7 @@ mod tests {
             std::fs::write(dir.path().join(n), "").unwrap();
         }
         let script = format!(
-            "find {} -type f {} -print | sed 's|.*/||' | LC_ALL=C sort",
+            "find {} {} -print | sed 's|.*/||' | LC_ALL=C sort",
             q(&dir.path().display().to_string()),
             steering_find_expr()
         );
@@ -1137,6 +1158,132 @@ mod tests {
             .output()
             .expect("sh");
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Run [`baseline`] on the host under `root`, as [`handoff_under`] does.
+    fn baseline_under(root: &std::path::Path) -> String {
+        let r = root.to_str().unwrap();
+        let script = baseline()
+            .replace(STATE_DIR, &format!("{r}/state"))
+            .replace("find / -xdev", &format!("find {r} -xdev"))
+            .replace("/tmp /var/tmp", &format!("{r}/tmp {r}/var/tmp"));
+        assert!(!script.contains("find / "), "the test would touch the host");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("sh");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// pytest loads every `[pytest11]` entry point it finds, so a plugin the
+    /// agent registers in a package folder the verifier's pytest reads
+    /// steers grading as a `conftest.py` would (BenchFlow 0.8's plugin guard
+    /// refuses them). Found comparing the engines on Terminal-Bench 2's
+    /// `mailman`. Other entry points are the agent's installs and stay.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_drops_planted_pytest_plugins_and_keeps_other_entry_points() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["tmp", "var/tmp", "logs", "state"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let app = root.join("app");
+        let site = app.join(".venv/lib/python3.12/site-packages");
+        let shipped = site.join("tool-1.0.dist-info");
+        std::fs::create_dir_all(&shipped).unwrap();
+        let shipped_eps = "[console_scripts]\ntool = tool:main\n";
+        std::fs::write(shipped.join("entry_points.txt"), shipped_eps).unwrap();
+        let out = baseline_under(&root);
+        assert!(out.contains("BF baseline 1"), "{out}");
+
+        // The agent's turn: a new pytest plugin, a new package with a
+        // console script, and a pytest plugin added to the shipped package.
+        let plugin = site.join("helper-0.1.dist-info");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("entry_points.txt"),
+            "[pytest11]\nhelper = helper\n",
+        )
+        .unwrap();
+        let cli = site.join("cli-2.0.dist-info");
+        std::fs::create_dir_all(&cli).unwrap();
+        std::fs::write(
+            cli.join("entry_points.txt"),
+            "[console_scripts]\ncli = cli:main\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shipped.join("entry_points.txt"),
+            format!("{shipped_eps}\n[pytest11]\ntool = tool.plugin\n"),
+        )
+        .unwrap();
+
+        let out = handoff_under(&root, &app);
+        assert!(out.contains("BF handoff done"), "{out}");
+        assert!(
+            !plugin.join("entry_points.txt").exists(),
+            "the planted pytest plugin survived: {out}"
+        );
+        assert!(
+            cli.join("entry_points.txt").exists(),
+            "a console-script entry point was removed: {out}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(shipped.join("entry_points.txt")).unwrap(),
+            shipped_eps,
+            "the edited entry points were not restored: {out}"
+        );
+    }
+
+    /// Python's entry-point reader takes more than a `[pytest11]` line
+    /// (`[[pytest11]]` loads the same plugin), and pytest and Python follow a
+    /// link named like a steering file: each of these is planted too.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_drops_plugins_however_spelled_and_linked_steering_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["tmp", "var/tmp", "logs", "state"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let app = root.join("app");
+        let site = app.join(".venv/lib/python3.12/site-packages");
+        std::fs::create_dir_all(&site).unwrap();
+        let out = baseline_under(&root);
+        assert!(out.contains("BF baseline 0"), "{out}");
+
+        // The agent's turn: a plugin under a doubled header, a linked
+        // entry_points.txt that registers one, and a conftest.py that is a
+        // link to a module of its own.
+        let doubled = site.join("a-0.1.dist-info");
+        std::fs::create_dir_all(&doubled).unwrap();
+        std::fs::write(doubled.join("entry_points.txt"), "[[pytest11]]\na = a\n").unwrap();
+        let linked = site.join("b-0.1.dist-info");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(site.join("b.txt"), "[pytest11]\nb = b\n").unwrap();
+        std::os::unix::fs::symlink(site.join("b.txt"), linked.join("entry_points.txt")).unwrap();
+        std::fs::write(app.join("helper.py"), "x = 1\n").unwrap();
+        std::os::unix::fs::symlink("helper.py", app.join("conftest.py")).unwrap();
+
+        let out = handoff_under(&root, &app);
+        assert!(out.contains("BF handoff done"), "{out}");
+        for planted in [
+            doubled.join("entry_points.txt"),
+            linked.join("entry_points.txt"),
+            app.join("conftest.py"),
+        ] {
+            assert!(
+                std::fs::symlink_metadata(&planted).is_err(),
+                "{} survived: {out}",
+                planted.display()
+            );
+        }
+        assert!(
+            app.join("helper.py").exists(),
+            "the link's target, the agent's own module, was removed: {out}"
+        );
     }
 
     /// A path with a line break in it must not split into two paths for the

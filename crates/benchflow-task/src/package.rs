@@ -145,6 +145,11 @@ pub struct VerifierPolicy {
     pub mount: String,
     /// The script to run, relative to `mount` (`test.sh`).
     pub entry: String,
+    /// Start the script in `mount` instead of the workdir, as BenchFlow 0.8
+    /// runs a `verifier.md` script strategy. Left out of records when false,
+    /// so earlier records read the same.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub starts_in_mount: bool,
     pub timeout: Option<Duration>,
     pub user: Option<String>,
     pub env: BTreeMap<String, String>,

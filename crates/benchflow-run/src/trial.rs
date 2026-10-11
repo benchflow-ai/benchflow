@@ -1721,9 +1721,14 @@ impl<'a> Trial<'a> {
             let _ = self.root(legacy_tests_link(&v.mount), SETUP_TIMEOUT).await;
         }
         let entry = format!("{}/{}", v.mount.trim_end_matches('/'), v.entry);
-        let cwd = match task.format {
-            Format::TaskMdV06 => v.mount.clone(),
-            _ => self.workdir.clone(),
+        // The verifier starts in the workdir, as 0.8 runs test.sh in the
+        // sandbox's working folder (verifiers open the agent's outputs by
+        // relative path); a `verifier.md` script strategy starts in its own
+        // folder, as 0.8 runs it with `cd <verifier folder> && <command>`.
+        let cwd = if v.starts_in_mount {
+            v.mount.clone()
+        } else {
+            self.workdir.clone()
         };
         let timeout = self
             .rt
@@ -1980,6 +1985,14 @@ impl<'a> Trial<'a> {
             )
             .detail(out.tail(1500)));
         }
+        // The verifier starts in the workdir, which the verifier's image may
+        // not have when the outputs live elsewhere; 0.8 makes it first too.
+        let _ = self
+            .root(
+                format!("mkdir -p {}", shell::quote(&self.workdir)),
+                SETUP_TIMEOUT,
+            )
+            .await;
         defense(
             &mut self.defenses,
             "separate_verifier",

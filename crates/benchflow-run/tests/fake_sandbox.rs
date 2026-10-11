@@ -319,6 +319,7 @@ fn task(root: &Path, name: &str) -> TaskPackage {
             dir: root.join("verifier"),
             mount: "/verifier".into(),
             entry: "test.sh".into(),
+            starts_in_mount: false,
             timeout: Some(Duration::from_secs(60)),
             user: None,
             env: BTreeMap::new(),
@@ -1482,6 +1483,103 @@ async fn confinement_is_recorded_and_a_user_script_runs_as_the_agent() {
     let lock: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(out.dir.join("lock.json")).unwrap()).unwrap();
     assert_eq!(lock["trials"][0]["attempt"]["kind"], "script");
+}
+
+/// The verifier runs in the workdir in every task format, as BenchFlow 0.8
+/// runs `test.sh` (in the sandbox's working folder). SkillsBench's
+/// `video-silence-remover` (a 0.8 task.md) opens `compressed_video.mp4` by
+/// relative path from `/root`; run from `/verifier` it failed the oracle.
+#[tokio::test]
+async fn the_verifier_runs_in_the_workdir_in_every_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let units = [Format::TaskMd, Format::TaskMdV06, Format::Split]
+        .into_iter()
+        .enumerate()
+        .map(|(i, format)| {
+            let mut t = task(&tmp.path().join(format!("t{i}")), &format!("t{i}"));
+            t.format = format;
+            t.sandbox.workdir = None;
+            (Arc::new(t), vec![Attempt::Oracle])
+        })
+        .collect();
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units,
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("verifier-cwd".into()),
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({"path": tmp.path()}),
+    };
+    job::run(spec, runtime(provider.clone())).await.unwrap();
+    let worlds = provider.worlds.lock().unwrap();
+    assert_eq!(worlds.len(), 3);
+    for w in worlds.iter() {
+        let w = w.lock().unwrap();
+        let cwd_of = |needle: &str| {
+            w.cwds
+                .iter()
+                .find(|(c, _)| c.contains(needle))
+                .and_then(|(_, cwd)| cwd.clone())
+        };
+        let verifier = cwd_of("/test.sh").expect("the verifier ran");
+        assert_eq!(verifier, "/root", "{:?}", w.cwds);
+        assert_eq!(Some(verifier), cwd_of("/oracle/solve.sh"));
+    }
+}
+
+/// A `verifier.md` script strategy starts in the verifier's folder, as
+/// BenchFlow 0.8 runs it with `cd <verifier folder> && <command>`: started in
+/// the agent's workdir, a verifier's `python3 -` would import a `json.py` the
+/// agent left there, and `pytest test_outputs.py` would find the agent's file.
+#[tokio::test]
+async fn a_verifier_md_script_starts_in_the_verifier_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let units = [Format::TaskMdV06, Format::Split]
+        .into_iter()
+        .enumerate()
+        .map(|(i, format)| {
+            let mut t = task(&tmp.path().join(format!("t{i}")), &format!("t{i}"));
+            t.format = format;
+            t.sandbox.workdir = None;
+            t.verifier.starts_in_mount = true;
+            (Arc::new(t), vec![Attempt::Oracle])
+        })
+        .collect();
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units,
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("verifier-md-cwd".into()),
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({"path": tmp.path()}),
+    };
+    job::run(spec, runtime(provider.clone())).await.unwrap();
+    let worlds = provider.worlds.lock().unwrap();
+    assert_eq!(worlds.len(), 2);
+    for w in worlds.iter() {
+        let w = w.lock().unwrap();
+        let cwd_of = |needle: &str| {
+            w.cwds
+                .iter()
+                .find(|(c, _)| c.contains(needle))
+                .and_then(|(_, cwd)| cwd.clone())
+        };
+        let verifier = cwd_of("/test.sh").expect("the verifier ran");
+        assert_eq!(verifier, "/verifier", "{:?}", w.cwds);
+        assert_eq!(cwd_of("/oracle/solve.sh").as_deref(), Some("/root"));
+    }
 }
 
 /// A task that declares no workdir works in its image's WORKDIR, as BenchFlow

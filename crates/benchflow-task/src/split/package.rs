@@ -24,6 +24,10 @@ pub(crate) struct Layout {
     pub verifier_mount: &'static str,
     /// The script the verifier runs, relative to its folder.
     pub verifier_entry: String,
+    /// The script starts in the verifier's folder, not the workdir: set for
+    /// a `verifier.md` script strategy, which 0.8 runs as
+    /// `cd <verifier folder> && <command>`.
+    pub verifier_starts_in_mount: bool,
     /// `oracle` or `solution`, when the package has a solve script there.
     pub oracle_dir: Option<&'static str>,
     /// `/oracle` or `/solution`.
@@ -55,6 +59,7 @@ impl Layout {
             verifier_dir,
             verifier_mount,
             verifier_entry: format!("test.{ext}"),
+            verifier_starts_in_mount: false,
             oracle_dir: has_oracle.then_some(oracle_dir),
             oracle_mount,
             oracle_entry: format!("solve.{ext}"),
@@ -334,6 +339,7 @@ pub(crate) fn build(cfg: &Config, parts: Parts<'_>) -> TaskPackage {
         dir: PathBuf::from(layout.verifier_dir),
         mount: layout.verifier_mount.to_string(),
         entry: layout.verifier_entry.clone(),
+        starts_in_mount: layout.verifier_starts_in_mount,
         timeout: Some(secs(v.timeout_sec)),
         user: v.user.clone(),
         env: v.env.clone(),

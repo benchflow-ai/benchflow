@@ -360,6 +360,7 @@ fn task(root: &Path, agent_timeout: Duration) -> TaskPackage {
             dir: root.join("verifier"),
             mount: "/verifier".into(),
             entry: "test.sh".into(),
+            starts_in_mount: false,
             timeout: Some(Duration::from_secs(60)),
             user: None,
             env: BTreeMap::new(),
