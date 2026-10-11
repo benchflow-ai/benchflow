@@ -418,7 +418,7 @@ def test_sandbox_launch_checks_config_override(
     """The launch gate checks the config the run executes, after
     ``Rollout.setup()`` merges ``--config-override`` into ``task.config``.
 
-    Guards this fix against the gap between the launch gate (9d44ca19, #665),
+    Guards the fix from PR #1162 against the gap between the launch gate (9d44ca19, #665),
     which checked the config parsed from task.md, and ``--config-override``
     (0a645223, #790), which only patches ``task.config``.
     """
