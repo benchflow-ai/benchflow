@@ -97,7 +97,7 @@ class TestDeadlineComputation:
         the task config in ``Rollout.setup()``, so the raised budget is the one
         the phase enforces; the backstop must be derived from it as well.
 
-        Guards the fix for #1134: the deadline from #949 re-read the task
+        Guards the fix from PR #1161 for #1134: the deadline from #949 re-read the task
         budgets without the override introduced in 0a645223, and killed runs
         that were still inside their raised budget.
         """
