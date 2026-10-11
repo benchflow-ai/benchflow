@@ -1,10 +1,11 @@
 """LiteLLM startup patch for Bedrock Claude 4.8+ adaptive thinking.
 
-LiteLLM 1.89.0 knows the direct Anthropic Claude 4.8+ IDs, but Bedrock
-inference-profile IDs such as ``us.anthropic.claude-opus-4-8`` still need to be
-classified as adaptive-thinking models before the Bedrock Converse transform is
-called. This module is loaded inside the LiteLLM proxy process via
-``sitecustomize`` and is intentionally inert for every non-4.8+ model.
+LiteLLM 1.89.0 did not classify Bedrock inference-profile IDs such as
+``us.anthropic.claude-opus-4-8`` as adaptive-thinking models; 1.103.3 does, and
+the gate below keeps that classification for the Bedrock Converse transform
+either way. The module also applies the run-level reasoning-effort override and
+clamp. It is loaded inside the LiteLLM proxy process via ``sitecustomize`` and is
+intentionally inert for every non-4.8+ model.
 """
 
 from __future__ import annotations
@@ -62,10 +63,12 @@ def _patch_anthropic_gate() -> None:
 
     original = AnthropicConfig._is_adaptive_thinking_model
 
-    def gate(model: str) -> bool:
+    # LiteLLM passes the provider as a second argument (e.g. "bedrock"), so
+    # forward whatever the caller sent instead of fixing the vendor signature.
+    def gate(model: str, *args: Any, **kwargs: Any) -> bool:
         if _is_new_bedrock_claude(model):
             return True
-        return original(model or "")
+        return original(model or "", *args, **kwargs)
 
     setattr(  # noqa: B010 - avoids static type narrowing on monkey-patched vendor API
         AnthropicConfig,
