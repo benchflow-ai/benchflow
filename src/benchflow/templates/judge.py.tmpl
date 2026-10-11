@@ -228,24 +228,9 @@ _DECODER = json.JSONDecoder(
     object_pairs_hook=_reject_duplicate_keys,
 )
 _JSON_ERRORS = (ValueError, RecursionError)
-# Braces in prose, such as `{name}`, `{}` or `{1,2}`: no quote, colon or nested brace.
-_PROSE_BRACES_RE = re.compile(r"\{[^{}:\"']*\}")
-_OPENER_RE = re.compile(r"[{\[]")
-# What can follow `[` in a JSON array. Checking first skips prose such as
-# `[PASS]` cheaply: a failed decode costs time proportional to its offset.
-_ARRAY_START_RE = re.compile(r"\[\s*[\[\]{\"\-0-9tfn]")
-
-
-def _holds_object(value) -> bool:
-    """Return True when *value* contains a JSON object at any depth."""
-    stack = [value]  # iterative: the decoder accepts deeper nesting than recursion
-    while stack:
-        item = stack.pop()
-        if isinstance(item, dict):
-            return True
-        if isinstance(item, list):
-            stack.extend(item)
-    return False
+# Braces in prose, such as `{name}`, `{}` or `{1,2}`: with no quote or colon
+# before the closing brace they cannot hold a JSON object, let alone a score.
+_PROSE_BRACES_RE = re.compile(r"\{[^}:\"']*\}")
 
 
 def _no_verdict(why: str, text: str) -> JudgeUnavailableError:
@@ -256,61 +241,24 @@ def parse_verdict(text: str) -> dict:
     """Return the judge's single JSON verdict object, or raise.
 
     The prompt asks for JSON only, so anything that is not one clear verdict
-    is a judge failure rather than a score to guess at. The whole reply is
-    scanned, code fences included, and must hold exactly one JSON object:
+    is a judge failure rather than a score to guess at. Every `{` in the
+    reply is inspected; no region is skipped, so no object can hide:
 
-    * Prose around the verdict, and a fence around it, are fine.
-    * Braces with no quote, colon or nested brace (`{name}`) are prose.
-    * Any other `{` must start a valid object, so a truncated verdict, or one
-      written as `{'score': 0}` beside an example, raises.
-    * A JSON array is read whole and is never the verdict; one holding an
-      object raises. A `[` that does not start one is prose, unless an
-      object opens before its `]`: that is a broken array and raises.
-    * A second object anywhere, such as an example, raises.
+    * Braces that cannot hold JSON (no quote or colon before the closing
+      brace, as in `{name}`) are prose.
+    * Any other `{` must start a valid JSON object, or the reply raises. A
+      truncated verdict, or one written as `{'score': 0}`, is never passed
+      over in favour of another object.
+    * Exactly one object is allowed, so an example beside the verdict raises.
+      Prose, brackets and code fences around the verdict are fine.
 
     Duplicate keys, NaN, Infinity and numbers too large for a float raise.
+    A reply cut off mid-way is already rejected by its finish reason.
     """
     objects = []
     i = 0
-    while True:
-        match = _OPENER_RE.search(text, i)
-        if match is None:
-            break
-        start = match.start()
-        if text[start] == "[":
-            if _ARRAY_START_RE.match(text, start):
-                try:
-                    array, end = _DECODER.raw_decode(text, start)
-                except RecursionError:
-                    raise _no_verdict("nests JSON too deeply", text) from None
-                except json.JSONDecodeError as exc:
-                    # Parsing ran past the first `]`, so this is JSON structure,
-                    # not prose like `[1/3]`. Failing here also keeps the scan
-                    # linear: the next `[` would re-parse the same text.
-                    close = text.find("]", start)
-                    if close != -1 and exc.pos > close:
-                        raise _no_verdict(
-                            "has a malformed or truncated JSON array", text
-                        ) from None
-                except ValueError:
-                    pass
-                else:
-                    if _holds_object(array):
-                        raise _no_verdict("has a JSON object inside an array", text)
-                    i = end
-                    continue
-            # Prose such as `[PASS]` or `[1/3]`, unless an object opens before
-            # the bracket closes: then it is a broken array.
-            close = text.find("]", start)
-            inside = _PROSE_BRACES_RE.sub("", text[start : None if close == -1 else close])
-            if "{" in inside:
-                raise _no_verdict("has a malformed or truncated JSON array", text)
-            if close == -1:
-                break  # no `{` follows, so no further object can
-            i = close + 1
-            continue
-        prose = _PROSE_BRACES_RE.match(text, start)
-        if prose:
+    while (start := text.find("{", i)) != -1:
+        if prose := _PROSE_BRACES_RE.match(text, start):
             i = prose.end()
             continue
         try:
@@ -335,7 +283,11 @@ def judge_with_llm(trajectory_text: str) -> float:
     # Write detailed results for analysis, naming the judge that answered.
     result["judge_provider"] = judge_provider(JUDGE_MODEL)
     result["judge_model"] = JUDGE_MODEL
-    (VERIFIER_DIR / "judge_result.json").write_text(json.dumps(result, indent=2))
+    try:
+        detail = json.dumps(result, indent=2)
+    except RecursionError:
+        raise JudgeUnavailableError("judge verdict nests too deeply to record") from None
+    (VERIFIER_DIR / "judge_result.json").write_text(detail)
     return float(score)
 
 

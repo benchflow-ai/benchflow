@@ -397,7 +397,6 @@ def test_gemini_reply_cut_off_at_the_token_limit_is_a_verifier_error(tmp_path):
             '{"score": 0, "reasoning": "unfinished\n```',
             id="malformed-fence-after-an-example",
         ),
-        pytest.param('[{"score": 1},', id="truncated-array"),
         pytest.param(
             'Example: {"score": 1}. Actual verdict: {"score": 0}', id="two-objects"
         ),
@@ -412,7 +411,6 @@ def test_gemini_reply_cut_off_at_the_token_limit_is_a_verifier_error(tmp_path):
         pytest.param(
             '{"score": 1}\n```json\n{"score": 0.2}\n```', id="an-object-and-a-fence"
         ),
-        pytest.param('Result: [{"score": 1}]', id="object-inside-an-array"),
         pytest.param(
             'Example: {"score": 1}. Actual verdict: {"score": 0, "rea',
             id="truncated-verdict-after-an-example",
@@ -422,14 +420,10 @@ def test_gemini_reply_cut_off_at_the_token_limit_is_a_verifier_error(tmp_path):
             'Example: {"score": 1}. Verdict: {"reasoning"}',
             id="keyless-object-after-an-example",
         ),
-        pytest.param("[" * 100_000, id="nesting-too-deep-to-parse"),
-        pytest.param('Scores: [0.5, {"score": 1}]', id="object-later-in-an-array"),
+        pytest.param("[" * 100_000, id="only-unclosed-brackets"),
         pytest.param(
             'Format: {"score": 1}\nMy verdict: [{"score": 0.2}]',
             id="verdict-in-an-array-beside-an-example",
-        ),
-        pytest.param(
-            '[["}"],' * 500 + '{"score": 1}', id="broken-array-wrapping-a-verdict"
         ),
         pytest.param(
             'Format {"score": 1}\nVerdict: {score: 0}',
@@ -440,6 +434,14 @@ def test_gemini_reply_cut_off_at_the_token_limit_is_a_verifier_error(tmp_path):
             id="broken-array-after-an-example",
         ),
         pytest.param('Verdict: {"score": 0, "score": 1}', id="duplicate-score-keys"),
+        pytest.param(
+            'The agent typed "[" here. {"score": 0.1} Reply format: "]" {"score": 1}',
+            id="quoted-brackets-between-two-objects",
+        ),
+        pytest.param(
+            '[see "note] {"score": 0, "r": "a"} "] {"score": 1}',
+            id="quoted-bracket-run-hiding-an-object",
+        ),
         pytest.param(
             '```python``` was misused.\n{"score": 0}\nFormat:\n```\n{"score": 1}\n```',
             id="inline-backticks-at-a-line-start",
@@ -516,6 +518,15 @@ def test_an_ambiguous_or_broken_verdict_is_a_verifier_error(tmp_path, reply):
         pytest.param(
             '[x] item 1 [ ] item 2 [1/3] passed\n{"score": 0.8}',
             id="checklist-brackets-before-the-verdict",
+        ),
+        pytest.param(
+            '{"score": 0.8}\nInterval [0.4, 0.6) per [1], see [[link]].',
+            id="intervals-and-citations-after-the-verdict",
+        ),
+        pytest.param('Result: [{"score": 0.8}]', id="lone-verdict-inside-an-array"),
+        pytest.param('[the 5" screen] {"score": 0.8}', id="inch-mark-in-brackets"),
+        pytest.param(
+            '[the "best ]" one] {"score": 0.8}', id="bracket-inside-a-quoted-string"
         ),
         pytest.param(
             'The template [uses {name}] placeholders.\n{"score": 0.8}',
@@ -615,12 +626,28 @@ def test_a_malformed_fenced_verdict_beside_an_example_is_not_scored(tmp_path):
 
 
 def test_deeply_nested_json_is_a_verifier_error_not_a_traceback(tmp_path):
+    reply = '{"a": ' + "[" * 100_000  # the JSON decoder raises RecursionError
     proc, _, verifier = _run_judge(
         tmp_path,
         "claude-sonnet-5-5",
         ALL_KEYS,
-        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": "[" * 100_000}]),
+        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": reply}]),
     )
     assert proc.returncode == 1
-    assert "nests JSON too deeply" in proc.stderr
+    assert "malformed or truncated JSON object" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert not (verifier / "reward.txt").exists()
+
+
+def test_a_verdict_too_deep_to_record_is_a_verifier_error(tmp_path):
+    """json.dumps recurses in Python, so it fails on nesting the decoder accepts."""
+    reply = '{"score": 0.5, "x": ' + "[" * 1500 + "]" * 1500 + "}"
+    proc, _, verifier = _run_judge(
+        tmp_path,
+        "claude-sonnet-5-5",
+        ALL_KEYS,
+        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": reply}]),
+    )
+    assert proc.returncode == 1
+    assert "nests too deeply to record" in proc.stderr
     assert not (verifier / "reward.txt").exists()
