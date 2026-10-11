@@ -696,7 +696,7 @@ def test_bedrock_patch_preflight_fails_closed_when_patch_not_loaded(tmp_path):
 
 
 def test_bedrock_patch_preflight_rejects_gate_without_provider_argument(tmp_path):
-    """Guards PR #668's preflight (issue #602) across the LiteLLM 1.103 bump: the
+    """PR #1166 guards PR #668's preflight (issue #602) across the LiteLLM 1.103 bump: the
     Bedrock transforms now call the adaptive-thinking gate with the provider as a
     second argument, so a gate that only accepts the model must fail the
     preflight instead of raising TypeError on every proxied Bedrock request."""

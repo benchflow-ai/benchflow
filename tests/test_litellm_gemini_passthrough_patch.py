@@ -61,7 +61,7 @@ def test_ai_studio_gemma_streams_use_gemini_logger(monkeypatch) -> None:
 
 
 def test_ai_studio_path_with_non_vertex_label_is_left_to_litellm(monkeypatch) -> None:
-    """Guards the LiteLLM 1.103 bump of PR #1030's patch: only streams LiteLLM
+    """PR #1166 guards the LiteLLM 1.103 bump of PR #1030's patch: only streams LiteLLM
     labelled Vertex AI are rerouted, so any other label keeps vendor dispatch."""
     from litellm.proxy.pass_through_endpoints.llm_provider_handlers.gemini_passthrough_logging_handler import (
         GeminiPassthroughLoggingHandler,
@@ -102,7 +102,7 @@ def test_ai_studio_path_with_non_vertex_label_is_left_to_litellm(monkeypatch) ->
 
 
 def test_gemma_patch_stays_installed_while_litellm_misroutes_ai_studio() -> None:
-    """Guards PR #1030 across the LiteLLM 1.103 bump: LiteLLM now has an
+    """PR #1166 guards PR #1030 across the LiteLLM 1.103 bump: LiteLLM now has an
     ``EndpointType.GEMINI`` branch, but its pass-through route still classifies
     AI Studio URLs as Vertex AI, so the patch must not switch itself off."""
     from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
