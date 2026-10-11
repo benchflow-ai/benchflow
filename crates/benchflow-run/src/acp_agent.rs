@@ -46,7 +46,6 @@ use crate::agent::{AgentContext, AgentOutput, ModelAgent, Usage};
 use crate::events::Event;
 use crate::forwarding::{self, ProviderAccess};
 use crate::outcome::{Owner, Phase, Problem};
-use crate::shell_quote as q;
 use crate::trial::sandbox_problem;
 
 /// How often the trajectory file is rewritten while the agent works.
@@ -507,60 +506,42 @@ pub(crate) fn chosen_options(
 }
 
 /// Write the login's files for the agent user: theirs to read, nobody
-/// else's. Folders between the agent's home and a file become theirs too.
+/// else's.
 pub(crate) async fn place_login(ctx: &AgentContext<'_>, login: &Login) -> Result<(), Problem> {
     place_files(ctx, &login.files).await
 }
 
-/// Write files for the agent user (`$HOME` is its home), owned by it, as
-/// are the folders between its home and each file.
+/// Write files for the agent user (`$HOME` is its home), owned by it. A
+/// non-root agent user writes them itself ([`crate::place`]), so the
+/// folders it makes on the way are its own.
 pub(crate) async fn place_files(
     ctx: &AgentContext<'_>,
     files: &[benchflow_agent::credentials::SandboxFile],
 ) -> Result<(), Problem> {
     let home = ctx.home.trim_end_matches('/');
-    let mut owned: Vec<String> = Vec::new();
-    for file in files {
-        let path = file.path_for(home);
-        ctx.sandbox
-            .write_file(&path, &file.contents, file.mode)
-            .await
-            .map_err(|e| sandbox_problem(Phase::Setup, e))?;
-        if let Some(rest) = path.strip_prefix(&format!("{home}/")) {
-            let mut at = home.to_string();
-            for part in rest.split('/') {
-                at = format!("{at}/{part}");
-                if !owned.contains(&at) {
-                    owned.push(at.clone());
-                }
-            }
+    if ctx.user == "root" {
+        for file in files {
+            ctx.sandbox
+                .write_file(&file.path_for(home), &file.contents, file.mode)
+                .await
+                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
         }
-    }
-    if owned.is_empty() || ctx.user == "root" {
         return Ok(());
     }
-    let paths: Vec<String> = owned.iter().map(|p| q(p)).collect();
-    let script = format!(
-        "g=$(id -gn {u}) && chown {u}:\"$g\" {paths}",
-        u = q(ctx.user),
-        paths = paths.join(" ")
-    );
-    let out = ctx
-        .sandbox
-        .exec(Exec::new(script).user("root".to_string()))
-        .await
-        .map_err(|e| sandbox_problem(Phase::Setup, e))?;
-    if !out.success() {
-        return Err(Problem::new(
-            "R104",
-            Owner::Task,
-            Phase::Setup,
-            "could not give the agent user its files",
-            "the image needs `id` and `chown`; or set [agent] user = \"root\" in the task (the agent-user defense is then off)",
-        )
-        .detail(out.combined()));
-    }
-    Ok(())
+    let files: Vec<crate::place::ForAgent> = files
+        .iter()
+        .map(|f| crate::place::ForAgent {
+            path: f.path_for(home),
+            contents: &f.contents,
+            mode: f.mode,
+        })
+        .collect();
+    let user = crate::place::AgentUser {
+        name: ctx.user,
+        home,
+        earlier_turns: ctx.earlier_turns,
+    };
+    crate::place::for_agent(ctx.sandbox, &user, &files).await
 }
 
 /// The agent process's environment: the manifest's settings, then the task

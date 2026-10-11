@@ -50,12 +50,14 @@ struct Setup {
     /// The skills in the image's own skills folder (Harbor's `skills_dir`);
     /// `None`: the folder is not there.
     image_skills: Option<Vec<&'static str>>,
+    /// The agent user cannot write the files BenchFlow places for it.
+    unplaced: bool,
 }
 
 /// One thing the trial did to the sandbox, in order.
 #[derive(Debug, Clone)]
 enum Op {
-    Exec(String),
+    Exec(Exec),
     Upload(PathBuf, String),
     Write(String, Vec<u8>, u32),
     Spawn(Exec),
@@ -83,7 +85,7 @@ impl World {
         self.ops
             .iter()
             .filter_map(|o| match o {
-                Op::Exec(c) => Some(c.as_str()),
+                Op::Exec(e) => Some(e.command.as_str()),
                 _ => None,
             })
             .collect()
@@ -91,7 +93,7 @@ impl World {
     /// The script that placed the skills, and where it ran among the ops.
     fn placement(&self) -> Option<(usize, &str)> {
         self.ops.iter().enumerate().find_map(|(i, o)| match o {
-            Op::Exec(c) if c.contains("BF skill ") => Some((i, c.as_str())),
+            Op::Exec(e) if e.command.contains("BF skill ") => Some((i, e.command.as_str())),
             _ => None,
         })
     }
@@ -163,7 +165,7 @@ impl Sandbox for FakeSandbox {
         "fake"
     }
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
-        let c = exec.command;
+        let c = exec.command.clone();
         let reply = if c.contains("BF skill ") {
             ok(&self.skills_report(&c))
         } else if c.contains("useradd") {
@@ -182,12 +184,27 @@ impl Sandbox for FakeSandbox {
             ok("BF handoff done\n")
         } else if c.contains("BF owned") {
             ok("BF owned root\n")
+        } else if c.contains("BF stage-ready") {
+            ok("BF stage-ready\n")
+        } else if c.contains("BF staged") {
+            ok("BF staged\n")
+        } else if c.contains("BF placement done") {
+            if self.setup.unplaced {
+                let first = c.lines().find_map(|l| l.strip_prefix("place 0 "));
+                let path = first.and_then(|l| l.rsplit_once(' ')).map(|(p, _)| p);
+                ok(&format!(
+                    "BF unplaced {}\nBF placement done\n",
+                    path.unwrap_or_default()
+                ))
+            } else {
+                ok("BF placement done\n")
+            }
         } else if c.trim() == "pwd" {
             ok("/app\n")
         } else {
             ok("")
         };
-        self.world.lock().unwrap().ops.push(Op::Exec(c));
+        self.world.lock().unwrap().ops.push(Op::Exec(exec));
         Ok(reply)
     }
     async fn spawn(&self, exec: Exec) -> Result<Process, SandboxError> {
@@ -541,13 +558,13 @@ async fn the_tasks_skills_reach_every_skill_folder_owned_by_the_agent_user() {
     let (spawned, _) = w.first_spawn().unwrap();
     assert!(at < spawned, "skills are in place before the agent starts");
     for line in [
-        "mkdir -p /home/agent/.fake\nchown agent: /home/agent/.fake\n",
-        "chown agent: /home/agent/.fake/skills\n",
+        "mkdir -p /home/agent/.fake\nchown -h agent: /home/agent/.fake\n",
+        "chown -h agent: /home/agent/.fake/skills\n",
         "cp -R /var/lib/benchflow/skills/. /home/agent/.fake/skills/\n",
-        "chown -R agent: /home/agent/.fake/skills\n",
-        "mkdir -p /app/.agents\nchown agent: /app/.agents\n",
+        "chown -R -h agent: /home/agent/.fake/skills\n",
+        "mkdir -p /app/.agents\nchown -h agent: /app/.agents\n",
         "cp -R /var/lib/benchflow/skills/. /app/.agents/skills/\n",
-        "chown -R agent: /app/.agents/skills\n",
+        "chown -R -h agent: /app/.agents/skills\n",
         "rm -rf /var/lib/benchflow/skills /var/lib/benchflow/skills.run\n",
     ] {
         assert!(script.contains(line), "{line}\n---\n{script}");
@@ -922,24 +939,57 @@ async fn a_loaded_session_is_placed_for_the_cli_and_the_first_prompt_loads_it() 
     assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
     let w = r.world.lock().unwrap();
     let target = format!("/home/agent/.claude/projects/-app/{SESSION_ID}.jsonl");
-    let written = w
+    // Root writes the session only into a stage of its own, never into the
+    // agent's home, where a link the agent planted could send it anywhere.
+    let (staged, contents, mode) = w
         .ops
         .iter()
         .find_map(|o| match o {
-            Op::Write(p, c, m) if *p == target => Some((c.clone(), *m)),
+            Op::Write(p, c, m) if c == &std::fs::read(&file).unwrap() => {
+                Some((p.clone(), c.clone(), *m))
+            }
             _ => None,
         })
-        .expect("the session file was written where Claude Code looks");
-    assert_eq!(written.0, std::fs::read(&file).unwrap());
-    assert_eq!(written.1, 0o600);
+        .expect("the session file was staged");
+    assert!(staged.starts_with("/var/lib/benchflow-place/"), "{staged}");
+    assert_eq!(contents, std::fs::read(&file).unwrap());
+    assert_eq!(mode, 0o600);
     assert!(
-        w.execs().iter().any(|c| *c
-            == format!(
-                "chown agent: /home/agent/.claude /home/agent/.claude/projects /home/agent/.claude/projects/-app {target}"
-            )),
-        "{:#?}",
-        w.execs()
+        !w.ops
+            .iter()
+            .any(|o| matches!(o, Op::Write(p, _, _) if p.starts_with("/home/agent"))),
+        "root wrote into the agent's home"
     );
+    let stage = staged.rsplit_once('/').unwrap().0.to_string();
+    let path = Some(benchflow_sandbox::shell::SYSTEM_PATH.to_string());
+    let ran = |needle: &str| {
+        w.ops.iter().find_map(|o| match o {
+            Op::Exec(e) if e.command.contains(needle) => Some(e.clone()),
+            _ => None,
+        })
+    };
+    let given = ran("BF staged").expect("the staged file was given to the agent user");
+    assert!(
+        given
+            .command
+            .contains(&format!("chown -h agent:\"$g\" {staged}")),
+        "{}",
+        given.command
+    );
+    assert_eq!(given.user.as_deref(), Some("root"));
+    assert_eq!(given.env.get("PATH"), path.as_ref());
+    // The agent user copies it where Claude Code looks, finding its programs
+    // in the system folders only.
+    let copy = ran("BF placement done").expect("the agent user copied the file");
+    assert!(
+        copy.command.contains(&format!("place 0 {target} 600\n")),
+        "{}",
+        copy.command
+    );
+    assert_eq!(copy.user.as_deref(), Some("agent"));
+    assert_eq!(copy.env.get("PATH"), path.as_ref());
+    let cleanup = ran(&format!("rm -rf {stage}")).expect("the stage was removed");
+    assert_eq!(cleanup.user.as_deref(), Some("root"));
     let loads: Vec<&Value> = w
         .requests
         .iter()
@@ -961,6 +1011,46 @@ async fn a_loaded_session_is_placed_for_the_cli_and_the_first_prompt_loads_it() 
             .join("loaded-session")
             .join(format!("{SESSION_ID}.jsonl"))
             .is_file()
+    );
+}
+
+/// A file the agent user cannot write in its home (a folder on the way is
+/// root's, or a link to one) stops the run before the agent starts, as the
+/// task's problem; root writes nothing there in its place.
+#[tokio::test]
+async fn a_file_the_agent_user_cannot_write_stops_the_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = session_file(tmp.path());
+    let r = run(
+        &fixture("with-skills"),
+        Attempt::Model(acp_agent()),
+        Setup {
+            load_session: true,
+            unplaced: true,
+            ..Setup::default()
+        },
+        loading(&file),
+    )
+    .await;
+    let p = r.rec.problem.as_ref().expect("a problem");
+    assert_eq!(p.code, "R104", "{p:?}");
+    assert_eq!(p.owner, benchflow_run::Owner::Task);
+    let target = format!("/home/agent/.claude/projects/-app/{SESSION_ID}.jsonl");
+    assert!(p.message.contains(&target), "{}", p.message);
+    let w = r.world.lock().unwrap();
+    assert!(w.first_spawn().is_none(), "the agent started");
+    assert!(
+        !w.ops
+            .iter()
+            .any(|o| matches!(o, Op::Write(p, _, _) if p.starts_with("/home/agent"))),
+        "root wrote into the agent's home"
+    );
+    assert!(
+        w.execs()
+            .iter()
+            .any(|c| c.starts_with("rm -rf /var/lib/benchflow-place/")),
+        "the stage was left behind: {:#?}",
+        w.execs()
     );
 }
 

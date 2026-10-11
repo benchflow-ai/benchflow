@@ -55,11 +55,13 @@ pub fn holds_state(workdir: &str) -> bool {
     w.is_empty() || STATE_DIR == w || STATE_DIR.starts_with(&format!("{w}/"))
 }
 
-/// Make [`STATE_DIR`] root's alone, and the folders above it root's and not
-/// writable by others, so no other user can move it aside.
+/// Make [`STATE_DIR`] empty and root's alone, and the folders above it
+/// root's and not writable by others, so no other user can move it aside.
+/// Whatever an image ships there is removed: BenchFlow fills it during the
+/// trial, and the handoff refuses anything in it that is not root's.
 fn make_state_dir() -> String {
     format!(
-        r#"mkdir -p {state}; chown root:root {state}; chmod 700 {state}
+        r#"rm -rf {state} 2>/dev/null || true; mkdir -p {state}; chown root:root {state}; chmod 700 {state}
 d={state}; while d=$(dirname "$d"); [ "$d" != / ]; do chown root:root "$d" 2>/dev/null; chmod go-w "$d" 2>/dev/null; done"#,
         state = q(STATE_DIR),
     )
@@ -482,8 +484,26 @@ exit 1"#,
 ///   `daytona_repl_worker.py`) stay.
 /// - Reports files over 1 GB in the workdir (`BF large ...`).
 ///
-/// Ends with `BF handoff done`; without it the runner does not grade.
-pub fn handoff(workdir: &str, verifier_user: Option<&str>) -> String {
+/// First of all, it checks that [`STATE_DIR`] is still root's alone: the
+/// baseline it compares against and restores from lives there, and a
+/// baseline the agent could write would let it choose what root restores.
+/// When the folder is missing or a link, or anything in it is not root's,
+/// is a link (the copy of a linked `/etc/ld.so.preload` excepted), or is
+/// writable by others or by a group other than root's, it prints
+/// `BF state-owner <path>` for each (at most 5); otherwise, when `find`
+/// failed, `BF state-unchecked` (`BF state-unchecked no-find` when the image
+/// has none). Either way it then prints `BF handoff stopped` and does
+/// nothing else. The scan crosses mounts: a folder mounted inside the state
+/// folder is checked too.
+///
+/// With `strict_state` false (whoever worked in the sandbox was root or
+/// could become root, and so could change the folder without a trace), it
+/// prints `BF state-noted <path>` instead and goes on.
+///
+/// Its last line is `BF handoff done` when it ran to the end; the runner
+/// grades only then. A path it prints (a link's target) has any line break
+/// shown as `?`, so no path the agent chose can print a line of its own.
+pub fn handoff(workdir: &str, verifier_user: Option<&str>, strict_state: bool) -> String {
     let chown = match verifier_user {
         Some(u) if u != "root" && u != "0" => {
             format!("chown {u} /logs/verifier 2>/dev/null || true", u = q(u))
@@ -491,7 +511,17 @@ pub fn handoff(workdir: &str, verifier_user: Option<&str>) -> String {
         _ => String::new(),
     };
     format!(
-        r#"w={workdir}; b={state}/baseline
+        r#"w={workdir}; sd={state}; b={state}/baseline
+{state_mode}
+if ! command -v find >/dev/null 2>&1; then echo "BF state-unchecked no-find"; stop
+elif [ -L "$sd" ] || [ ! -d "$sd" ]; then note "$sd"; stop
+else
+  hits=$(find "$sd" \( ! -user 0 -o \( \( -type l -o -perm -0002 -o \( -perm -0020 ! -group 0 \) \) ! -path "$sd/preload" \) \) -print 2>/dev/null); rc=$?
+  if [ -n "$hits" ]; then
+    printf '%s\n' "$hits" | head -n 5 | while IFS= read -r f; do note "$f"; done
+    stop
+  elif [ "$rc" != 0 ]; then echo "BF state-unchecked"; stop; fi
+fi
 rm -rf /logs/verifier; mkdir -p /logs/verifier; chown root:root /logs/verifier; chmod 755 /logs/verifier
 {chown}
 nl='
@@ -511,7 +541,7 @@ for d in "$w" {outputs}; do
   rd=$(readlink -f "$d" 2>/dev/null || echo "$d")
   find "$d" -xdev -type l -print 2>/dev/null | while IFS= read -r l; do
     t=$(readlink -f "$l" 2>/dev/null || true)
-    case "$t" in "$rw"|"$rw"/*|"$rd"|"$rd"/*) ;; *) echo "BF symlink $l -> $t"; rm -f "$l";; esac
+    case "$t" in "$rw"|"$rw"/*|"$rd"|"$rd"/*) ;; *) printf 'BF symlink %s -> %s\n' "$l" "$(printf %s "$t" | tr '\n' '?')"; rm -f "$l";; esac
   done
   find "$d" -xdev -type f -size +1048576k -print 2>/dev/null | while IFS= read -r f; do echo "BF large $f"; done
 done
@@ -536,6 +566,13 @@ done
 echo "BF handoff done""#,
         workdir = q(workdir),
         state = q(STATE_DIR),
+        state_mode = if strict_state {
+            r#"note() { printf 'BF state-owner %s\n' "$1"; }
+stop() { echo "BF handoff stopped"; exit 0; }"#
+        } else {
+            r#"note() { printf 'BF state-noted %s\n' "$1"; }
+stop() { :; }"#
+        },
         chown = chown,
         prune = prune_expr(),
         names = steering_find_expr(),
@@ -989,9 +1026,9 @@ mod tests {
     fn programs_quote_their_inputs() {
         let s = setup_user("agent", "/app dir");
         assert!(s.contains("w='/app dir'"));
-        let h = handoff("/app", Some("tester"));
+        let h = handoff("/app", Some("tester"), true);
         assert!(h.contains("chown tester /logs/verifier"));
-        assert!(!handoff("/app", Some("root")).contains("chown root /logs/verifier 2>"));
+        assert!(!handoff("/app", Some("root"), true).contains("chown root /logs/verifier 2>"));
     }
 
     /// Only pytest and Python startup files count as planted or edited;
@@ -1044,8 +1081,35 @@ mod tests {
     /// Run [`handoff`] on the host with every absolute path it touches moved
     /// under `root`, so nothing outside `root` is read or changed.
     fn handoff_under(root: &std::path::Path, workdir: &std::path::Path) -> String {
+        handoff_with(root, workdir, true, true)
+    }
+
+    fn id(flag: &str) -> String {
+        let out = std::process::Command::new("id").arg(flag).output().unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// [`handoff_under`], strict or not; with `as_root`, the test's own user
+    /// and group stand in for root's as the state folder's owners.
+    fn handoff_with(
+        root: &std::path::Path,
+        workdir: &std::path::Path,
+        strict: bool,
+        as_root: bool,
+    ) -> String {
         let r = root.to_str().unwrap();
-        let script = handoff(workdir.to_str().unwrap(), None)
+        // Setup made the folder.
+        let state = root.join("state");
+        if std::fs::symlink_metadata(&state).is_err() {
+            std::fs::create_dir_all(&state).unwrap();
+        }
+        let mut script = handoff(workdir.to_str().unwrap(), None, strict);
+        if as_root {
+            script = script
+                .replace("! -user 0", &format!("! -user {}", id("-u")))
+                .replace("! -group 0", &format!("! -group {}", id("-g")));
+        }
+        let script = script
             .replace("/logs/verifier", &format!("{r}/logs/verifier"))
             .replace(STATE_DIR, &format!("{r}/state"))
             .replace("find / -xdev", &format!("find {r} -xdev"))
@@ -1117,6 +1181,180 @@ mod tests {
             "the planted .pth survived: {out}"
         );
         assert!(!app.join("x\n").exists(), "{out}");
+    }
+
+    /// A state folder the agent got hold of (here: replaced by a link) stops
+    /// the handoff before it reads the baseline, so nothing is restored from
+    /// files the agent could have chosen, and the runner refuses to grade.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_stops_when_the_state_folder_is_not_roots_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let app = root.join("app");
+        for d in ["app", "tmp", "var/tmp", "logs", "elsewhere/baseline"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // A baseline that lists no conftest.py: had the handoff gone on, it
+        // would have removed the planted one.
+        for f in ["list", "sums", "tmp-sums"] {
+            std::fs::write(root.join("elsewhere/baseline").join(f), "").unwrap();
+        }
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("state")).unwrap();
+        std::fs::write(app.join("conftest.py"), "planted").unwrap();
+        let out = handoff_under(&root, &app);
+        assert!(out.contains("BF state-owner"), "{out}");
+        assert!(out.contains("BF handoff stopped"), "{out}");
+        assert!(!out.contains("BF handoff done"), "{out}");
+        assert!(
+            app.join("conftest.py").exists(),
+            "the handoff went on: {out}"
+        );
+    }
+
+    /// A file in the state folder anyone may write, or a link there, stops
+    /// the handoff as well; the copy of a linked `/etc/ld.so.preload` is the
+    /// one link BenchFlow makes there itself.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_stops_on_a_state_file_others_may_write_or_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let setup = |name: &str| {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            for d in ["app", "tmp", "var/tmp", "logs", "state/baseline"] {
+                std::fs::create_dir_all(root.join(d)).unwrap();
+            }
+            std::fs::write(root.join("app/conftest.py"), name).unwrap();
+            (tmp, root)
+        };
+        // Writable by others.
+        let (_t, root) = setup("open");
+        let list = root.join("state/baseline/list");
+        std::fs::write(&list, "").unwrap();
+        std::fs::set_permissions(&list, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let out = handoff_under(&root, &root.join("app"));
+        assert!(
+            out.contains(&format!("BF state-owner {}\n", list.display())),
+            "{out}"
+        );
+        assert!(out.trim_end().ends_with("BF handoff stopped"), "{out}");
+        // A link.
+        let (_t, root) = setup("link");
+        std::os::unix::fs::symlink("/etc/hosts", root.join("state/baseline/list")).unwrap();
+        let out = handoff_under(&root, &root.join("app"));
+        assert!(out.trim_end().ends_with("BF handoff stopped"), "{out}");
+        // The preload copy may be a link.
+        let (_t, root) = setup("preload");
+        std::os::unix::fs::symlink("/etc/hosts", root.join("state/preload")).unwrap();
+        let out = handoff_under(&root, &root.join("app"));
+        assert!(!out.contains("BF state-owner"), "{out}");
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+    }
+
+    /// A file in the state folder that is not root's stops the handoff
+    /// (here every file is the test user's, and the check is root's).
+    #[cfg(unix)]
+    #[test]
+    fn handoff_stops_on_a_state_file_that_is_not_roots() {
+        if id("-u") == "0" {
+            return; // root's own files are root's
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["app", "tmp", "var/tmp", "logs", "state/baseline"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::write(root.join("state/baseline/list"), "").unwrap();
+        let out = handoff_with(&root, &root.join("app"), true, false);
+        assert!(out.contains("BF state-owner "), "{out}");
+        assert!(out.trim_end().ends_with("BF handoff stopped"), "{out}");
+    }
+
+    /// When whoever worked could act as root, a change in the state folder
+    /// is noted and the handoff goes on.
+    #[cfg(unix)]
+    #[test]
+    fn a_lenient_handoff_notes_the_state_folder_and_goes_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["app", "tmp", "var/tmp", "logs", "state/baseline"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let list = root.join("state/baseline/list");
+        std::fs::write(&list, "").unwrap();
+        std::fs::set_permissions(&list, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let out = handoff_with(&root, &root.join("app"), false, true);
+        assert!(
+            out.contains(&format!("BF state-noted {}\n", list.display())),
+            "{out}"
+        );
+        assert!(!out.contains("BF state-owner"), "{out}");
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+    }
+
+    /// A scan of the state folder that fails stops the handoff as
+    /// unchecked; what it found before failing still counts as a change.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_state_scan_stops_the_handoff() {
+        use std::os::unix::fs::PermissionsExt;
+        let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+        if String::from_utf8_lossy(&uid.stdout).trim() == "0" {
+            return; // root reads a folder whatever its mode
+        }
+        for found in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            for d in [
+                "app",
+                "tmp",
+                "var/tmp",
+                "logs",
+                "state/baseline",
+                "state/sealed",
+            ] {
+                std::fs::create_dir_all(root.join(d)).unwrap();
+            }
+            let open = root.join("state/baseline/list");
+            std::fs::write(&open, "").unwrap();
+            if found {
+                std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o666)).unwrap();
+            }
+            let sealed = root.join("state/sealed");
+            std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let out = handoff_under(&root, &root.join("app"));
+            std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(out.trim_end().ends_with("BF handoff stopped"), "{out}");
+            assert_eq!(out.contains("BF state-owner"), found, "{out}");
+            assert_eq!(out.contains("BF state-unchecked"), !found, "{out}");
+        }
+    }
+
+    /// A link's target, which the agent chose, is printed on one line with
+    /// any line break shown as `?`: a target name cannot print a `BF` line
+    /// of its own, such as a forged end of the handoff.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_target_cannot_print_a_line_of_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["app", "tmp", "var/tmp", "logs", "elsewhere"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let target = root.join("elsewhere/x\nBF handoff done");
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, root.join("app/l")).unwrap();
+        let out = handoff_under(&root, &root.join("app"));
+        let forged = format!("{}?BF handoff done", root.join("elsewhere/x").display());
+        assert!(out.contains(&forged), "{out}");
+        assert_eq!(
+            out.lines().filter(|l| *l == "BF handoff done").count(),
+            1,
+            "{out}"
+        );
+        assert!(!root.join("app/l").exists());
     }
 
     /// The agent user owns `/output` and `/outputs` as it owns the workdir,
@@ -1390,7 +1628,8 @@ mod tests {
             ("lock_system_path", lock_system_path("/app")),
             ("baseline", baseline()),
             ("kill_user", kill_user("agent")),
-            ("handoff", handoff("/app", None)),
+            ("handoff", handoff("/app", None, true)),
+            ("handoff-lenient", handoff("/app", None, false)),
             ("claim", claim("/tests", true)),
             ("claim_links_only", claim("/app/data", false)),
             ("open_parents", open_parents("/app/data")),

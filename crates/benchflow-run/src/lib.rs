@@ -33,6 +33,7 @@ pub mod metrics;
 pub mod native_agent;
 pub mod netpolicy;
 pub mod outcome;
+mod place;
 pub mod probes;
 pub mod project;
 pub mod read;

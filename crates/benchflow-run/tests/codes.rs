@@ -69,6 +69,8 @@ enum Fault {
     Shadowed,
     /// The agent's turn changed /etc/ld.so.preload, and it cannot be put back.
     PreloadStuck,
+    /// The agent took ownership of BenchFlow's state folder before grading.
+    StateTampered,
     /// The image's PATH holds a folder others can write.
     UncleanVerifierEnv,
     /// A hook before grading exits with an error.
@@ -286,9 +288,22 @@ impl Sandbox for FakeSandbox {
                 "cp: cannot stat '/app/status.txt': No such file or directory\n",
             )
         } else if c.contains("BF handoff done") {
-            output(0, if silent { "" } else { "BF handoff done\n" }, "")
+            match self.fault {
+                Fault::StateTampered => output(
+                    0,
+                    "BF state-owner /var/lib/benchflow/baseline/list\nBF handoff stopped\n",
+                    "",
+                ),
+                _ => output(0, if silent { "" } else { "BF handoff done\n" }, ""),
+            }
         } else if c.contains("BF owned") {
             output(0, if silent { "" } else { "BF owned root\n" }, "")
+        } else if c.contains("BF stage-ready") {
+            output(0, if silent { "" } else { "BF stage-ready\n" }, "")
+        } else if c.contains("BF staged") {
+            output(0, if silent { "" } else { "BF staged\n" }, "")
+        } else if c.contains("BF placement done") {
+            output(0, if silent { "" } else { "BF placement done\n" }, "")
         } else if c.contains("BF path") {
             output(
                 0,
@@ -1078,6 +1093,12 @@ fn cases() -> Vec<Case> {
             "a rubric's reference names a file the package lacks",
         )
         .tweak(|t| judged_rubric(t, Some("verifier/answers.md"))),
+        Case::new(
+            "R314",
+            Agent,
+            "BenchFlow's state folder is no longer root's at the handoff",
+        )
+        .fault(Fault::StateTampered),
         Case::new(
             "R106",
             Task,

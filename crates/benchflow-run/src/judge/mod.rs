@@ -318,7 +318,8 @@ pub async fn fetch(sb: &dyn Sandbox, workdir: &str, plan: &Plan) -> Evidence {
         let listing = match sb
             .exec(
                 Exec::new(probe)
-                    .user("root")
+                    .root()
+                    .env("PATH", benchflow_sandbox::shell::SYSTEM_PATH)
                     .timeout(Duration::from_secs(60)),
             )
             .await

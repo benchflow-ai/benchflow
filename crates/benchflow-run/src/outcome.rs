@@ -241,7 +241,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R104",
         title: "the sandbox could not be set up",
         owner: Owner::Task,
-        body: "BenchFlow could not create the non-root agent user, prepare the workdir, or give the agent user its files. Images without `useradd` or `adduser` (some distroless images) cannot host a separate agent user.\n\nAdd a shell and `useradd` to the image, or set `[agent] user = \"root\"` to run the agent as root (the agent-user defense is then off). With `bench agents check --image`, the image is yours to change.",
+        body: "BenchFlow could not create the non-root agent user, prepare the workdir, or give the agent user its files. Images without `useradd` or `adduser` (some distroless images) cannot host a separate agent user. The agent user copies its own login and settings files into its home from a folder root makes under `/var/lib/benchflow-place`: a folder on the way it cannot write (root's, read-only, or a mount), or a `/`, `/var`, or `/var/lib` that users other than root can change, stops that.\n\nAdd a shell and `useradd` to the image, make the agent's home and the folders in it the agent user's, or set `[agent] user = \"root\"` to run the agent as root (the agent-user defense is then off). With `bench agents check --image`, the image is yours to change.",
     },
     Explanation {
         code: "R105",
@@ -301,7 +301,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R205",
         title: "the agent failed its turn",
         owner: Owner::Agent,
-        body: "The agent answered a request with an error of its own, or broke the Agent Client Protocol (a malformed answer). The message is the agent's.\n\nThe trial's `agent/` folder has the agent's log. If it names a model or a setting, check `bench agents <name>`.",
+        body: "The agent answered a request with an error of its own, or broke the Agent Client Protocol (a malformed answer). The message is the agent's. In a task with stages, it is also given when the agent changed its home in an earlier stage so that BenchFlow could not put the agent's files there for the next (a file where a folder belongs, a folder made read-only).\n\nThe trial's `agent/` folder has the agent's log. If it names a model or a setting, check `bench agents <name>`.",
     },
     Explanation {
         code: "R206",
@@ -367,7 +367,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R305",
         title: "hardening before grading failed",
         owner: Owner::Sandbox,
-        body: "BenchFlow could not confirm that every agent process was gone before grading, so it did not grade. Processes stuck in uninterruptible I/O are the usual cause.\n\nRetry the trial; if it repeats for one task, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder.",
+        body: "BenchFlow could not confirm that every agent process was gone before grading, the check of its root-only state folder failed, or the handoff before grading ran out of time, so it did not grade. Processes stuck in uninterruptible I/O are the usual cause of the first; very many files in the workdir or the temp folders (often ones the agent left) of the last.\n\nRetry the trial; if it repeats for one task, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder.",
     },
     Explanation {
         code: "R306",
@@ -379,7 +379,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R307",
         title: "a hardening program did not report back",
         owner: Owner::Task,
-        body: "BenchFlow's programs before grading (the kill of the agent's processes, the handoff, the trusted PATH check) print a line when they finish. One exited without it, so something on the image's PATH answered in place of `sh`, `bash`, or a tool they use: usually an image that lets everyone write a folder like /usr/local/bin, where the agent replaced the shell. No defense of that trial can be trusted, so it is not graded.\n\nMake every folder on the image's PATH root-owned and not writable by group or others.",
+        body: "BenchFlow's programs before grading (the kill of the agent's processes, the handoff, the trusted PATH check) print a line when they finish. One exited without it, so something on the image's PATH answered in place of `sh`, `bash`, or a tool they use: usually an image that lets everyone write a folder like /usr/local/bin, where the agent replaced the shell. No defense of that trial can be trusted, so it is not graded.\n\nMake every folder on the image's PATH root-owned and not writable by group or others. The same code is given when the image has no `find`, which the handoff needs to check BenchFlow's state folder and clean up after the agent (when the agent ran as root or could become root, the handoff goes on without it and records `special_file_custody` failed): add `find` to the image.",
     },
     Explanation {
         code: "R309",
@@ -410,6 +410,12 @@ pub static EXPLANATIONS: &[Explanation] = &[
         title: "the rubric's judge settings cannot be used",
         owner: Owner::Task,
         body: "A rubric's `x-judge` names the judge model as `{\"model\": \"<provider>/<model>\"}`, and its `x-reference` and each criterion's `reference` are text or a file in a private folder of the package (`verifier/reference.md`, `verifier/answers.toml#total`). One of them could not be used: the message says which.\n\n`bench check` reports the same before a run.",
+    },
+    Explanation {
+        code: "R314",
+        title: "the agent changed BenchFlow's root-only state folder",
+        owner: Owner::Agent,
+        body: "BenchFlow keeps its own state in a folder only root may write (`/var/lib/benchflow`), including the baseline the handoff before grading compares the test-runner files against and restores them from. The handoff first checks that everything there is still root's alone: owned by root, not a link, not writable by others. When something is not, a baseline the agent could have chosen would decide what root restores, so the trial is not graded.\n\nThis applies when the agent ran as a user without a way to become root. When the agent ran as root or could become root (the image gives it `sudo`, say), or the reference solution ran as root, the change is noted in the trial's `state_custody` defense instead and grading goes on: such a run could have changed the folder without a trace.\n\nRead the agent's trajectory for what it did to the folder; if nothing in it explains the change, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder.",
     },
     Explanation {
         code: "R401",

@@ -194,13 +194,13 @@ pub fn place_script(
             path = format!("{path}/{part}");
             s.push_str(&format!("mkdir -p {p}\n", p = q(&path)));
             if let Some(o) = &owner {
-                s.push_str(&format!("chown {o} {p}\n", p = q(&path)));
+                s.push_str(&format!("chown -h {o} {p}\n", p = q(&path)));
             }
         }
         let f = q(folder);
         s.push_str(&format!("cp -R {stage}/. {f}/\n"));
         if let Some(o) = &owner {
-            s.push_str(&format!("chown -R {o} {f}\n"));
+            s.push_str(&format!("chown -R -h {o} {f}\n"));
         }
         s.push_str(&format!(
             "for d in {f}/*/; do [ -f \"$d\"{SKILL_FILE} ] && echo \"BF skill \"{f}\" $(basename \"$d\")\"; done; true\n"
@@ -294,16 +294,16 @@ mod tests {
         for line in [
             "if [ -d /skills ]; then cp -R /skills/. /var/lib/benchflow/skills/;",
             "rm -rf /var/lib/benchflow/skills/csv; cp -R /var/lib/benchflow/skills.run/csv /var/lib/benchflow/skills/csv",
-            "mkdir -p /home/agent/.config\nchown agent: /home/agent/.config\n",
-            "chown agent: /home/agent/.config/opencode/skills\n",
+            "mkdir -p /home/agent/.config\nchown -h agent: /home/agent/.config\n",
+            "chown -h agent: /home/agent/.config/opencode/skills\n",
             "cp -R /var/lib/benchflow/skills/. /home/agent/.config/opencode/skills/\n",
-            "chown -R agent: /home/agent/.config/opencode/skills\n",
+            "chown -R -h agent: /home/agent/.config/opencode/skills\n",
             "rm -rf /var/lib/benchflow/skills /var/lib/benchflow/skills.run\n",
         ] {
             assert!(s.contains(line), "{line}\n---\n{s}");
         }
         assert!(
-            !s.contains("chown agent: /home/agent\n"),
+            !s.contains("chown -h agent: /home/agent\n"),
             "the home is the user's already"
         );
         let root = place_script(

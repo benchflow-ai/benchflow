@@ -139,6 +139,9 @@ pub struct AgentContext<'a> {
     /// (`--resume-sessions`), for agents whose [`ModelAgent::session_dirs`]
     /// say they can.
     pub resume: Option<Resume>,
+    /// An agent already worked in this sandbox (an earlier stage), so what
+    /// it did to its home is its own.
+    pub earlier_turns: bool,
 }
 
 /// Values shorter than this are not redacted: masking a short value such

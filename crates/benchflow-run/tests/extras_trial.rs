@@ -139,6 +139,12 @@ impl Sandbox for Fake {
         } else if c.contains("BF owned") {
             let owner = c.split("; o=").nth(1).and_then(|s| s.lines().next());
             format!("BF owned {}\n", owner.unwrap_or("").trim_matches('\''))
+        } else if c.contains("BF stage-ready") {
+            "BF stage-ready\n".to_string()
+        } else if c.contains("BF staged") {
+            "BF staged\n".to_string()
+        } else if c.contains("BF placement done") {
+            "BF placement done\n".to_string()
         } else {
             if c.contains("/solve.sh")
                 && let Some(stage) = exec.env.get("BENCHFLOW_STAGE")

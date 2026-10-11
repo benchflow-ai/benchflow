@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use base64::Engine;
+use benchflow_sandbox::shell::SYSTEM_PATH;
 use benchflow_sandbox::{Exec, ExecOutput, Sandbox, SandboxError};
 
 use crate::shell::quote;
@@ -125,16 +126,21 @@ impl<'a> TmuxSession<'a> {
     }
 
     /// Make sure tmux exists (installing it as root if not), then start the
-    /// session. `Err(Ok(why))` is a failure the harness owns.
+    /// session. `Err(Ok(why))` is a failure the harness owns. The check runs
+    /// as the session does, as its user with the image's `PATH`, so it finds
+    /// the tmux the session will run; the install runs as root with the
+    /// system folders' programs only.
     pub async fn start(&mut self) -> Result<(), StartError> {
-        let check = self
-            .sandbox
-            .exec(Exec::new("tmux -V").root().timeout(EXEC_TIMEOUT))
-            .await?;
+        let check = self.exec("tmux -V".to_string()).await?;
         if !check.success() {
             let install = self
                 .sandbox
-                .exec(Exec::new(INSTALL_SCRIPT).root().timeout(INSTALL_TIMEOUT))
+                .exec(
+                    Exec::new(INSTALL_SCRIPT)
+                        .root()
+                        .env("PATH", SYSTEM_PATH)
+                        .timeout(INSTALL_TIMEOUT),
+                )
                 .await?;
             if !install.success() {
                 return Err(StartError::NoTmux(install.tail(2000)));

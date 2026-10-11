@@ -190,6 +190,15 @@ impl FakeSandbox {
         if c.contains("BF owned") {
             return ok("BF owned root\n");
         }
+        if c.contains("BF stage-ready") {
+            return ok("BF stage-ready\n");
+        }
+        if c.contains("BF staged") {
+            return ok("BF staged\n");
+        }
+        if c.contains("BF placement done") {
+            return ok("BF placement done\n");
+        }
         // builtin: `printf %s <b64> | base64 -d > <path>` writes a file.
         if let Some(rest) = c.split("printf %s ").nth(1)
             && c.contains("| base64 -d > ")

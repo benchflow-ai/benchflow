@@ -160,6 +160,11 @@ R313 · the task's problem · verifying · a rubric's reference names a file the
   the rubric's judge settings cannot be used: memo: reference: verifier/answers.md cannot be read (No such file or directory (os error 2)); put the reference there, or write it inline
   next: fix verifier/rubric.json (`bench check` checks the judge settings)
 
+R314 · the agent's problem · handing off to the verifier · BenchFlow's state folder is no longer root's at the handoff
+  BenchFlow's root-only state folder was changed before grading (/var/lib/benchflow/baseline/list), so the baseline grading compares against cannot be trusted and the trial was not graded
+  next: read the agent's trajectory for what it did to that folder; if nothing it did explains it, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder
+  detail: BF state-owner /var/lib/benchflow/baseline/list
+
 R106 · the task's problem · starting the sandbox · a service beside the sandbox exits as it starts
   service api did not start: api exited at once (exit code 1): Error: Cannot find module '/srv/server.js'
   next: check the service's image, command, and readiness check in the task; the trial's services/ folder has its log

@@ -131,6 +131,12 @@ impl Sandbox for FakeSandbox {
         } else if c.contains("BF owned") {
             let owner = c.split("; o=").nth(1).and_then(|s| s.lines().next());
             format!("BF owned {}\n", owner.unwrap_or("").trim_matches('\''))
+        } else if c.contains("BF stage-ready") {
+            "BF stage-ready\n".to_string()
+        } else if c.contains("BF staged") {
+            "BF staged\n".to_string()
+        } else if c.contains("BF placement done") {
+            "BF placement done\n".to_string()
         } else if c.contains("BF locked") && self.id.contains("ships") {
             // An image that ships its own /solution.
             "BF locked /solution\n".to_string()
@@ -427,6 +433,35 @@ async fn oracle_and_nop_run_score_and_resume() {
         ] {
             assert!(dir.join(f).is_file(), "missing {f}");
         }
+    }
+    // The reference solution runs as root, so its handoff only notes a
+    // change to BenchFlow's state folder, and the defense is not recorded
+    // for it; an attempt as the agent user, with no way to root, is held
+    // to the strict check.
+    for r in &out.records {
+        let custody = r.defenses.get("state_custody").map(|d| d.state);
+        if r.agent == "oracle" {
+            assert_eq!(custody, None, "{:?}", r.defenses);
+        } else {
+            let rootless =
+                r.defenses["agent_user"].state == benchflow_run::outcome::DefenseState::Enforced;
+            let expect = if rootless {
+                benchflow_run::outcome::DefenseState::Enforced
+            } else {
+                benchflow_run::outcome::DefenseState::Off
+            };
+            assert_eq!(custody, Some(expect), "{:?}", r.defenses);
+        }
+    }
+    for w in provider.worlds.lock().unwrap().iter() {
+        let w = w.lock().unwrap();
+        let oracle = w.commands.iter().any(|c| c.contains("solve.sh"));
+        let handoff = w
+            .commands
+            .iter()
+            .find(|c| c.contains("BF handoff done"))
+            .unwrap();
+        assert_eq!(handoff.contains("BF state-noted"), oracle, "{handoff}");
     }
     // The workdir is root's from the handoff until grading, as in 0.8.
     for w in provider.worlds.lock().unwrap().iter() {

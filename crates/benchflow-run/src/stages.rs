@@ -171,7 +171,7 @@ impl Trial<'_> {
 
         self.rt.events.phase(self.name(), Phase::Agent);
         let clock = Instant::now();
-        let attempted = self.stage_attempt(st, resume).await;
+        let attempted = self.stage_attempt(st, resume, index > 0).await;
         // The session is saved once the agent's work stops: after a graded
         // stage (whose kill comes first anyway), the last stage, or a stage
         // that failed. An ungraded stage's agent keeps its processes for the
@@ -405,6 +405,7 @@ impl Trial<'_> {
         &mut self,
         st: &StepSpec,
         resume: Option<Resume>,
+        earlier_turns: bool,
     ) -> Result<(), Problem> {
         let task = self.spec.task.clone();
         let opts = &self.rt.options;
@@ -538,6 +539,7 @@ impl Trial<'_> {
                     events: &self.rt.events,
                     mcp: &task.sandbox.mcp,
                     resume,
+                    earlier_turns,
                 };
                 let out = agent.run(ctx).await;
                 let problem = out.problem.clone();

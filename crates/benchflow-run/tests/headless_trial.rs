@@ -80,7 +80,7 @@ impl Sandbox for FakeSandbox {
         "fake"
     }
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
-        let c = exec.command;
+        let c = exec.command.clone();
         let stdout = if c.contains("useradd") {
             "BF user agent 1000 /home/agent\n"
         } else if c.contains("kill -9 -1") {
@@ -95,6 +95,29 @@ impl Sandbox for FakeSandbox {
             "BF handoff done\n"
         } else if c.contains("BF owned") {
             "BF owned root\n"
+        } else if c.contains("BF stage-ready") {
+            "BF stage-ready\n"
+        } else if c.contains("BF staged") {
+            "BF staged\n"
+        } else if c.contains("BF placement done") {
+            // The agent user's copy from BenchFlow's stage into its home.
+            assert_eq!(exec.user.as_deref(), Some("agent"), "{c}");
+            let mut w = self.world.lock().unwrap();
+            let stage = c
+                .split("s=")
+                .nth(1)
+                .and_then(|r| r.lines().next())
+                .unwrap_or_default()
+                .to_string();
+            for line in c.lines() {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                if let ["place", i, path, _mode] = words[..] {
+                    let staged = w.files.get(&format!("{stage}/{i}")).cloned();
+                    w.files
+                        .insert(path.to_string(), staged.expect("a staged file"));
+                }
+            }
+            "BF placement done\n"
         } else {
             ""
         };

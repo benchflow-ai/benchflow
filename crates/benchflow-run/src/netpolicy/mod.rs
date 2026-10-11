@@ -57,6 +57,15 @@ use benchflow_task::values::Network;
 use crate::hardening::Report;
 use crate::outcome::{DefenseState, Owner, Phase, Problem};
 
+/// One of BenchFlow's own root commands: programs from the system folders
+/// only, since a folder on the image's `PATH` may be the agent's.
+fn as_root(script: impl Into<String>) -> Exec {
+    Exec::new(script)
+        .root()
+        .env("PATH", benchflow_sandbox::shell::SYSTEM_PATH)
+        .timeout(STEP_TIMEOUT)
+}
+
 pub use rules::Scope;
 
 /// The longest the firewall install, the self-test, or the tamper check may
@@ -556,9 +565,7 @@ async fn enforce_stage(
         && (plan.firewall(other, host, caps).0 || (caps.root_service && other == Stage::Agent));
     if open && (guard.is_empty() || root_user) {
         if earlier {
-            let _ = sb
-                .exec(Exec::new(rules::remove()).root().timeout(STEP_TIMEOUT))
-                .await;
+            let _ = sb.exec(as_root(rules::remove())).await;
         }
         return Outcome {
             root_service: (!guard.is_empty()).then(|| unguarded("the agent runs as root", true)),
@@ -612,10 +619,7 @@ async fn enforce_stage(
         let guard_only = PhaseNet::plain(Network::Open);
         let rules_net = if want { net } else { &guard_only };
         let script = rules::install(&scope, rules_net, guard);
-        let out = match sb
-            .exec(Exec::new(script).root().timeout(STEP_TIMEOUT))
-            .await
-        {
+        let out = match sb.exec(as_root(script)).await {
             Ok(o) => o,
             Err(e) => {
                 return Outcome::failed(
@@ -689,10 +693,7 @@ async fn enforce_stage(
     let mut verdict = test.judge(&Report::parse(&ran.stdout));
     // The agent user must not have changed the rules or the pinned names.
     if let Some(sum) = &installed {
-        match sb
-            .exec(Exec::new(rules::fingerprint()).root().timeout(STEP_TIMEOUT))
-            .await
-        {
+        match sb.exec(as_root(rules::fingerprint())).await {
             Ok(o) if Report::parse(&o.stdout).first("fw-sum") == Some(sum.as_str()) => {
                 if stage == Stage::Agent {
                     verdict
@@ -712,7 +713,7 @@ async fn enforce_stage(
     // An allowed canary that failed: blocked by the firewall, or down?
     if !verdict.unreachable.is_empty() && stage == Stage::Agent && !root_user {
         let probe = selftest::reach_script(&verdict.unreachable);
-        if let Ok(o) = sb.exec(Exec::new(probe).root().timeout(STEP_TIMEOUT)).await {
+        if let Ok(o) = sb.exec(as_root(probe)).await {
             let root_reached = !Report::parse(&o.stdout).all("reached").is_empty();
             if root_reached {
                 verdict.leaks.push(format!(
@@ -791,17 +792,11 @@ async fn enforce_stage(
     } else {
         // Root is outside the agent's chain: an address that answers root
         // and refused the agent user shows the rule did the refusing.
-        let root_reached: Vec<String> = match sb
-            .exec(
-                Exec::new(selftest::service_probe(guarded))
-                    .root()
-                    .timeout(STEP_TIMEOUT),
-            )
-            .await
-        {
-            Ok(o) => selftest::services_reached(&Report::parse(&o.stdout)),
-            Err(_) => Vec::new(),
-        };
+        let root_reached: Vec<String> =
+            match sb.exec(as_root(selftest::service_probe(guarded))).await {
+                Ok(o) => selftest::services_reached(&Report::parse(&o.stdout)),
+                Err(_) => Vec::new(),
+            };
         Some(guard_proof(
             guarded,
             listening.as_deref(),

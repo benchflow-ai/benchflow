@@ -15,7 +15,6 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use benchflow_sandbox::shell;
 use serde_json::json;
 use sha2::Digest;
 
@@ -287,35 +286,25 @@ impl Trial<'_> {
         let home = self.home.trim_end_matches('/').to_string();
         let rel = format.place(&name, &self.workdir);
         let target = format!("{home}/{rel}");
-        self.sb()
-            .write_file(&target, &bytes, 0o600)
-            .await
-            .map_err(|e| sandbox_problem(Phase::Setup, e))?;
-        if self.user != "root" {
-            let owner = shell::quote(&format!("{}:", self.user));
-            let mut paths = Vec::new();
-            let mut at = home.clone();
-            for part in rel.split('/') {
-                at = format!("{at}/{part}");
-                paths.push(shell::quote(&at));
-            }
-            let out = self
-                .root(format!("chown {owner} {}", paths.join(" ")), SETUP_TIMEOUT)
+        if self.user == "root" {
+            self.sb()
+                .write_file(&target, &bytes, 0o600)
                 .await
                 .map_err(|e| sandbox_problem(Phase::Setup, e))?;
-            if !out.success() {
-                return Err(Problem::new(
-                    "R104",
-                    Owner::Task,
-                    Phase::Setup,
-                    format!(
-                        "could not give the agent user `{}` the loaded session",
-                        self.user
-                    ),
-                    "the image needs chown",
-                )
-                .detail(out.tail(2000)));
-            }
+        } else {
+            let file = crate::place::ForAgent {
+                path: target.clone(),
+                contents: &bytes,
+                mode: 0o600,
+            };
+            // Before the agent's first turn: nothing of the agent's in the
+            // home yet.
+            let user = crate::place::AgentUser {
+                name: &self.user,
+                home: &home,
+                earlier_turns: false,
+            };
+            crate::place::for_agent(self.sb(), &user, &[file]).await?;
         }
         // The trial keeps what it started from.
         let kept = self.spec.dir.join("loaded-session");

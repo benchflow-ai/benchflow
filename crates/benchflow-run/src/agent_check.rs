@@ -203,7 +203,11 @@ async fn handshake(
     record: &mut CheckRecord,
 ) -> Result<(), Problem> {
     let out = sandbox
-        .exec(Exec::new(hardening::setup_user(USER, WORKDIR)).root())
+        .exec(
+            Exec::new(hardening::setup_user(USER, WORKDIR))
+                .root()
+                .env("PATH", benchflow_sandbox::shell::SYSTEM_PATH),
+        )
         .await
         .map_err(|e| sandbox_problem(Phase::Setup, e))?;
     if !out.success() {

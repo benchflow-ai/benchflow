@@ -1297,6 +1297,7 @@ impl<'a> Trial<'a> {
                     events: &self.rt.events,
                     mcp: &task.sandbox.mcp,
                     resume,
+                    earlier_turns: false,
                 };
                 let out = agent.run(ctx).await;
                 if let Some(loaded) = self.loaded.as_mut() {
@@ -1419,16 +1420,110 @@ impl<'a> Trial<'a> {
             );
         }
         let verifier_user = self.task().verifier.user.clone();
+        // Whoever worked in the sandbox could not act as root: a change in
+        // BenchFlow's state folder is then the agent's doing, and stops the
+        // grading. Otherwise (a root agent, one with a way to root, the
+        // reference solution run as root) it is noted and grading goes on,
+        // as before the check existed.
+        let rootless_agent = self.user != "root"
+            && self
+                .defenses
+                .get("agent_user")
+                .is_some_and(|d| d.state == DefenseState::Enforced);
+        let root_solution =
+            matches!(self.spec.attempt, Attempt::Oracle) && self.task().agent.user.is_none();
+        let strict = rootless_agent && !root_solution;
         let out = self
             .root(
-                hardening::handoff(&self.workdir, verifier_user.as_deref()),
+                hardening::handoff(&self.workdir, verifier_user.as_deref(), strict),
                 SETUP_TIMEOUT,
             )
             .await
             .map_err(|e| sandbox_problem(Phase::Handoff, e))?;
         let r = Report::parse(&out.stdout);
-        if r.first("handoff").is_none() {
-            for name in ["clean_verifier_logs", "special_file_custody"] {
+        // The last line alone says how it ended: a path it printed earlier
+        // cannot pass for it.
+        let last = out.stdout.lines().rev().find(|l| !l.trim().is_empty());
+        let tampered = r.all("state-owner");
+        let unchecked = r.first("state-unchecked");
+        if last == Some("BF handoff stopped") {
+            if !tampered.is_empty() {
+                defense(
+                    &mut self.defenses,
+                    "state_custody",
+                    DefenseState::Failed,
+                    Some(format!("not root's alone: {}", tampered.join(", "))),
+                );
+                return Err(Problem::new(
+                    "R314",
+                    Owner::Agent,
+                    Phase::Handoff,
+                    format!(
+                        "BenchFlow's root-only state folder was changed before grading ({}), so the baseline grading compares against cannot be trusted and the trial was not graded",
+                        tampered.join(", ")
+                    ),
+                    "read the agent's trajectory for what it did to that folder; if nothing it did explains it, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder",
+                )
+                .detail(out.combined()));
+            }
+            if let Some(why) = unchecked {
+                defense(
+                    &mut self.defenses,
+                    "state_custody",
+                    DefenseState::Failed,
+                    Some("the state folder could not be checked".into()),
+                );
+                return Err(if why == "no-find" {
+                    Problem::new(
+                        "R307",
+                        Owner::Task,
+                        Phase::Handoff,
+                        "the image has no `find`, which the handoff before grading needs to check BenchFlow's state folder and clean up after the agent, so the trial was not graded",
+                        "add `find` to the image (findutils, or busybox's); `bench explain R307` has more",
+                    )
+                } else {
+                    Problem::new(
+                        "R305",
+                        Owner::Sandbox,
+                        Phase::Handoff,
+                        "the check of BenchFlow's state folder before grading failed (`find` exited with an error), so the trial was not graded",
+                        "retry; if it repeats for this task, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder",
+                    )
+                }
+                .detail(out.combined()));
+            }
+        }
+        if out.timed_out {
+            for name in [
+                "clean_verifier_logs",
+                "special_file_custody",
+                "state_custody",
+            ] {
+                defense(
+                    &mut self.defenses,
+                    name,
+                    DefenseState::Failed,
+                    Some("the handoff ran out of time".into()),
+                );
+            }
+            return Err(Problem::new(
+                "R305",
+                Owner::Sandbox,
+                Phase::Handoff,
+                format!(
+                    "the handoff before grading did not finish in {} s, so the trial was not graded; very many files in the workdir or the temp folders (often ones the agent left) are the usual cause",
+                    SETUP_TIMEOUT.as_secs()
+                ),
+                "look at what the agent left in the workdir and /tmp; if the task's own files are that many, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder",
+            )
+            .detail(out.tail(1500)));
+        }
+        if last != Some("BF handoff done") || !out.success() {
+            for name in [
+                "clean_verifier_logs",
+                "special_file_custody",
+                "state_custody",
+            ] {
                 defense(
                     &mut self.defenses,
                     name,
@@ -1451,12 +1546,58 @@ impl<'a> Trial<'a> {
             DefenseState::Enforced,
             None,
         );
-        defense(
-            &mut self.defenses,
-            "special_file_custody",
-            DefenseState::Enforced,
-            None,
-        );
+        // Without `find` (a lenient handoff goes on without it), the
+        // handoff could not look for special files or planted ones.
+        if unchecked == Some("no-find") {
+            defense(
+                &mut self.defenses,
+                "special_file_custody",
+                DefenseState::Failed,
+                Some("the image has no `find`, so the handoff could not look for special or planted files".into()),
+            );
+        } else {
+            defense(
+                &mut self.defenses,
+                "special_file_custody",
+                DefenseState::Enforced,
+                None,
+            );
+        }
+        if strict {
+            defense(
+                &mut self.defenses,
+                "state_custody",
+                DefenseState::Enforced,
+                Some("BenchFlow's state folder was root's alone at the handoff".into()),
+            );
+        } else if !(root_solution && r.all("state-noted").is_empty() && unchecked.is_none()) {
+            // The reference solution is the task's own and trusted: the
+            // defense is recorded for it only when its check found something.
+            let who = if root_solution {
+                "the reference solution ran as root"
+            } else {
+                "the agent ran as root or had a way to become root (see agent_user)"
+            };
+            let noted = r.all("state-noted");
+            let unchecked = match unchecked {
+                None => String::new(),
+                Some("") => "; the folder could not be checked".to_string(),
+                Some(why) => format!("; the folder could not be checked ({why})"),
+            };
+            let seen = if noted.is_empty() {
+                String::new()
+            } else {
+                format!("; not root's alone: {}", noted.join(", "))
+            };
+            defense(
+                &mut self.defenses,
+                "state_custody",
+                DefenseState::Off,
+                Some(format!(
+                    "{who}, so it could have changed BenchFlow's state folder without a trace{seen}{unchecked}"
+                )),
+            );
+        }
         if self.user != "root" {
             let owner = match verifier_user.as_deref() {
                 Some(u) if u != "root" && u != "0" => u.to_string(),
@@ -2001,10 +2142,15 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
 /// something on the image's `PATH` answered in place of the shell or a tool
 /// it uses, so no defense it should have applied can be trusted.
 pub(crate) fn unreported(what: &str, out: &ExecOutput) -> Problem {
+    unreported_in(Phase::Handoff, what, out)
+}
+
+/// [`unreported`] for a check in another phase.
+pub(crate) fn unreported_in(phase: Phase, what: &str, out: &ExecOutput) -> Problem {
     Problem::new(
         "R307",
         Owner::Task,
-        Phase::Handoff,
+        phase,
         format!(
             "{what} ran but did not report back, so the trial was not graded: a program on the image's PATH (sh, bash, or a tool BenchFlow's checks use) answered in its place"
         ),

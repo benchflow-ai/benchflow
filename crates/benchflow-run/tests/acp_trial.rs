@@ -79,6 +79,12 @@ impl Sandbox for FakeSandbox {
             "BF handoff done\n"
         } else if c.contains("BF owned") {
             "BF owned root\n"
+        } else if c.contains("BF stage-ready") {
+            "BF stage-ready\n"
+        } else if c.contains("BF staged") {
+            "BF staged\n"
+        } else if c.contains("BF placement done") {
+            "BF placement done\n"
         } else {
             ""
         };
