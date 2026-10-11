@@ -1,0 +1,11 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": { "method": "points" },
+  "x-judge": { "model": "vercel/deepseek/deepseek-v4-flash-0731" },
+  "criteria": [
+    { "id": "written", "gate": true, "text": "/app/summary.md exists and is not empty.", "stated": "to `/app/summary.md`", "judge": "test", "check": "test_written" },
+    { "id": "effect", "points": 1, "text": "The summary names Rayleigh scattering as the reason the sky looks blue.",
+      "stated": "Name the physical effect.", "judge": "llm", "evidence": ["/app/summary.md"], "reference": "Rayleigh scattering of sunlight by air molecules." }
+  ]
+}

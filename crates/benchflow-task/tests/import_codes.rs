@@ -139,6 +139,21 @@ fn cases() -> Vec<Case> {
                 &[("environment/data/fixtures.db", "rows\n")],
             )
         },
+        // `exclude = [".*"]`, written to skip hidden files, on a folder
+        // output: it matches the folder itself as `.`, so nothing is saved.
+        case(
+            "P015",
+            Base::Split,
+            &[(
+                "task.toml",
+                r#"schema_version = "1.4"
+artifacts = [{ source = "/app/out", exclude = [".*"] }]
+
+[task]
+name = "acme/fix-parser"
+"#,
+            )],
+        ),
         // X1xx: the split layout.
         //
         // A misspelled key, which Harbor ignores without a word.

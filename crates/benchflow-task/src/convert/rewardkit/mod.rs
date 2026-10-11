@@ -620,7 +620,7 @@ pub(crate) fn scan(src: &Path, cfg: &Table, steps: &BTreeSet<String>) -> Option<
                 "; its programmatic checks stay in test.sh".to_string()
             } else {
                 format!(
-                    "; its judges ({}) stay a script, so on Harbor scores do not change",
+                    "; its judges ({}) stay a script, so in a split-layout runner scores do not change",
                     judges.len()
                 )
             }

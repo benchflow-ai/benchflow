@@ -1,0 +1,55 @@
+# bench run with the oracle and nop: rewards, the files a job writes, resuming, --fail-under, and credentials kept out of the job.
+tier = "smoke"
+needs = ["sandbox"]
+tasks = ["hello"]
+
+[[step]]
+name = "the oracle passes"
+run = ["run", "tasks/hello", "-s", "{backend}", "-j", "{j}", "--job", "oracle", "--env", "E2E_SECRET=e2e-hunter2-value"]
+exit = 0
+stdout_has = ['1/1 passed']
+files = ["jobs/oracle/lock.json", "jobs/oracle/summary.json", "jobs/oracle/results.jsonl", "jobs/oracle/hello__*/result.json", "jobs/oracle/hello__*/verifier/reward.txt", "jobs/oracle/hello__*/trainer/atif.json", "jobs/oracle/hello__*/custody.json"]
+json = [{ file = "jobs/oracle/summary.json", passed = 1, total = 1, "engine.name" = "benchflow-rs" }]
+trials = [{ job = "oracle", task = "hello", count = 1, status = "scored", reward = 1.0, passed = true, result = { "agent" = "oracle", "problem" = { present = false } } }]
+
+[[step]]
+name = "a variable's value never reaches the job folder; its name does"
+sh = "! grep -r 'e2e-hunter2-value' jobs/oracle && grep -q E2E_SECRET jobs/oracle/lock.json"
+exit = 0
+
+[[step]]
+sh = "cat jobs/oracle/*/result.json | cksum > before.txt"
+
+[[step]]
+name = "the same command resumes the job and runs nothing new"
+run = ["run", "tasks/hello", "-s", "{backend}", "-j", "{j}", "--job", "oracle", "--env", "E2E_SECRET=e2e-hunter2-value"]
+exit = 0
+stdout_has = ['1 reused, 0 ran now']
+trials = [{ job = "oracle", task = "hello", count = 1 }]
+
+[[step]]
+name = "and the trial is the same one"
+sh = "cat jobs/oracle/*/result.json | cksum | cmp -s - before.txt"
+
+[[step]]
+name = "nop fails the task, which is still a scored run (exit 0)"
+run = ["run", "tasks/hello", "-a", "nop", "-s", "{backend}", "--job", "nop"]
+exit = 0
+trials = [{ job = "nop", task = "hello", status = "scored", reward = 0.0, passed = false }]
+
+[[step]]
+name = "--fail-under turns a low pass rate into exit 1"
+run = ["run", "tasks/hello", "-a", "nop", "-s", "{backend}", "--job", "nop", "--fail-under", "0.5"]
+exit = 1
+output_has = ['is below --fail-under 50\.0%']
+
+[[step]]
+name = "-k 2 adds a trial to a resumed job"
+run = ["run", "tasks/hello", "-a", "nop", "-s", "{backend}", "--job", "nop", "-k", "2"]
+exit = 0
+trials = [{ job = "nop", task = "hello", count = 2 }]
+
+[[step]]
+run = ["--json", "results", "jobs/nop"]
+exit = 0
+stdout_json = { "trials" = { "len" = 2 } }

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://task.md/schema/review-1.json",
+  "record": "verifier",
+  "rubric_version": "1.0.0",
+  "summary": {
+    "fail": 1
+  },
+  "verdicts": [
+    {
+      "id": "hello",
+      "verdict": "fail",
+      "score": null,
+      "check": "test_hello",
+      "gate": true,
+      "judge": {
+        "role": "test",
+        "tool": "test.sh",
+        "rubric_version": "1.0.0"
+      },
+      "rationale": "not passed: test_hello (failed)"
+    }
+  ],
+  "x-benchflow": {
+    "raw": 1.0,
+    "earned": 0.0,
+    "maximum": 0.0,
+    "failed_gates": [
+      "hello"
+    ],
+    "partial": 0.0,
+    "strict": false
+  }
+}

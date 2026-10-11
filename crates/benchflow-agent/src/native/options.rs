@@ -65,7 +65,7 @@ pub fn declared(name: &str) -> Vec<AgentOption> {
                 OptionKind::Int,
                 int(1_000_000),
                 (int(1), None),
-                "Most model turns (Harbor's episodes).",
+                "Most model turns.",
             ),
             AgentOption {
                 choices: vec!["json".into(), "xml".into()],

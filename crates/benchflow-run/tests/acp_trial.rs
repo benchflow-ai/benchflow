@@ -141,7 +141,8 @@ impl Sandbox for FakeSandbox {
                     "session/new" => out.push_str(&send(reply(
                         &id,
                         json!({"sessionId": "s1", "models": {"currentModelId": "fake-model",
-                               "availableModels": [{"modelId": "fake-model", "name": "Fake"}]}}),
+                               "availableModels": [{"modelId": "fake-model", "name": "Fake"},
+                                                   {"modelId": "fake-model[high]", "name": "Fake"}]}}),
                     ))),
                     "session/set_model" => out.push_str(&send(reply(&id, json!({})))),
                     "session/prompt" => match behavior {
@@ -490,6 +491,20 @@ async fn a_run_without_a_model_records_the_one_the_session_reports() {
     let (rec, _dir, _p, _tmp) = run_with(&manifest, Behavior::Solve, Duration::from_secs(60)).await;
     assert_eq!(rec.status, Status::Scored, "{:?}", rec.problem);
     assert_eq!(rec.model.as_deref(), Some("fake-model"));
+}
+
+/// An effort with no model on an agent whose ids carry the effort (Codex's
+/// `model[effort]`) runs the session's own model at that effort and records
+/// it; on 2026-10-10 `-a codex -e high` failed every trial after it started.
+#[tokio::test]
+async fn an_effort_without_a_model_runs_the_sessions_variant_for_it() {
+    let manifest = MANIFEST.replace("default = \"fake-model\"\n", "format = \"model[effort]\"\n");
+    let manifest = AgentManifest::parse(&manifest, ManifestSource::Builtin("fake.toml")).unwrap();
+    let host = HostEnv::new(BTreeMap::new(), None);
+    let agent = AcpAgent::new(manifest, None, Some("high"), &host);
+    let (rec, _dir, _p, _tmp) = run_agent(Behavior::Solve, Duration::from_secs(60), agent).await;
+    assert_eq!(rec.status, Status::Scored, "{:?}", rec.problem);
+    assert_eq!(rec.model.as_deref(), Some("fake-model[high]"));
 }
 
 /// config.json records the effort asked for, as BenchFlow 0.8's does, so a

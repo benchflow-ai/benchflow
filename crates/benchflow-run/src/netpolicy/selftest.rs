@@ -24,20 +24,24 @@ const UNLISTED: &[&str] = &["example.org", "example.net", "dns.google"];
 
 /// Shell helpers: `bf_try addr port` prints reached, refused, timeout, or
 /// notool; `bf_resolve name` prints `resolved <addr>`, unresolved, or notool.
+/// Python runs isolated and without site (`-I -S`): these probes run as
+/// root, some after an agent's turn and in its workdir, where a planted
+/// `socket.py` (or a `.pth` in a writable site-packages) would otherwise
+/// run. An interpreter that refuses those flags counts as no tool.
 const HELPERS: &str = r#"bf_try() {
   if [ -n "${BASH_VERSION:-}" ]; then
     if command -v timeout >/dev/null 2>&1; then timeout 6 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; rc=$?
     else bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; rc=$?; fi
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 6)' "$1" "$2" 2>/dev/null; rc=$?
+  elif command -v python3 >/dev/null 2>&1 && python3 -I -S -c '' 2>/dev/null; then
+    python3 -I -S -c 'import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 6)' "$1" "$2" 2>/dev/null; rc=$?
   else echo notool; return; fi
   case $rc in 0) echo reached;; 124) echo timeout;; *) echo refused;; esac
 }
 bf_resolve() {
   if command -v getent >/dev/null 2>&1; then
     if command -v timeout >/dev/null 2>&1; then out=$(timeout 10 getent hosts "$1" 2>/dev/null | head -n 1); else out=$(getent hosts "$1" 2>/dev/null | head -n 1); fi
-  elif command -v python3 >/dev/null 2>&1; then
-    out=$(python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "$1" 2>/dev/null)
+  elif command -v python3 >/dev/null 2>&1 && python3 -I -S -c '' 2>/dev/null; then
+    out=$(python3 -I -S -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "$1" 2>/dev/null)
   else echo notool; return; fi
   if [ -n "$out" ]; then echo "resolved ${out%% *}"; else echo unresolved; fi
 }
@@ -384,6 +388,60 @@ mod tests {
         }
     }
 
+    /// The helpers' Python fallback (taken when the shell is not bash and
+    /// the image has no `getent`) runs isolated: a `socket.py` in the
+    /// current folder, or on `PYTHONPATH`, is never imported. The planted
+    /// module only writes a marker file. Fails with a plain `python3 -c`.
+    #[test]
+    fn the_python_fallback_does_not_import_from_the_current_folder() {
+        let Ok(py) = std::process::Command::new("python3").arg("-V").output() else {
+            return;
+        };
+        if !py.status.success() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("imported");
+        std::fs::write(
+            dir.path().join("socket.py"),
+            format!(
+                "open({:?}, 'w').write('x')\nraise SystemExit(3)\n",
+                marker.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        // `BASH_VERSION` unset sends `bf_try` to Python; with no `getent` on
+        // `PATH`, `bf_resolve` goes there too.
+        let script =
+            format!("unset BASH_VERSION\n{HELPERS}\nbf_try 127.0.0.1 9\nbf_resolve localhost\n");
+        let python = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .unwrap();
+        let python_dir = std::path::Path::new(String::from_utf8_lossy(&python.stdout).trim())
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(dir.path())
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", python_dir.display()))
+            .env("PYTHONPATH", dir.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !marker.exists(),
+            "the probe imported the planted socket.py: {stdout}"
+        );
+        assert!(
+            stdout.lines().next().is_some_and(|l| l != "notool"),
+            "{stdout}"
+        );
+    }
+
     #[test]
     fn an_allowlist_tests_its_host_outside_hosts_and_dns() {
         let t = Test::new(&allow(), true, Stage::Agent, &[]);
@@ -590,5 +648,20 @@ mod tests {
             v.leaks,
             vec!["the blocked name www.debian.org resolved to 128.31.0.62"]
         );
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    /// Guards the orchestrator's fix of REVIEW-A (d10b) finding 1.
+    #[test]
+    fn python_in_the_probes_runs_isolated() {
+        let h = super::HELPERS;
+        assert_eq!(
+            h.matches("python3 ").count(),
+            h.matches("python3 -I -S -c").count() + h.matches("command -v python3").count(),
+            "{h}"
+        );
+        assert_eq!(h.matches("python3 -I -S -c").count(), 4);
     }
 }

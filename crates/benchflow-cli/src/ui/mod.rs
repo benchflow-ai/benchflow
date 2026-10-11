@@ -366,7 +366,11 @@ pub fn cost(costs: &[Option<f64>]) -> String {
 pub fn plural(n: usize, word: &str) -> String {
     if n == 1 {
         format!("{n} {word}")
-    } else if word.ends_with('s') || word.ends_with("sh") || word.ends_with("ch") {
+    } else if word.ends_with('s')
+        || word.ends_with('x')
+        || word.ends_with("sh")
+        || word.ends_with("ch")
+    {
         format!("{n} {word}es")
     } else if let Some(stem) = word.strip_suffix('y') {
         format!("{n} {stem}ies")
@@ -446,6 +450,8 @@ mod tests {
     fn plurals() {
         assert_eq!(plural(1, "task"), "1 task");
         assert_eq!(plural(2, "task"), "2 tasks");
+        // `bench run`'s cleanup line said "removed 2 sandboxs".
+        assert_eq!(plural(2, "sandbox"), "2 sandboxes");
         assert_eq!(plural(2, "probe"), "2 probes");
         assert_eq!(plural(3, "class"), "3 classes");
         assert_eq!(plural(2, "policy"), "2 policies");

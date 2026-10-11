@@ -431,7 +431,7 @@ async fn free_bytes(cli: &Cli) -> Option<u64> {
 pub(crate) fn parse_df(text: &str) -> Option<u64> {
     let line = text.lines().nth(1)?;
     let available_kb: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
-    Some(available_kb * 1024)
+    Some(available_kb.saturating_mul(1024))
 }
 
 #[cfg(test)]

@@ -1,0 +1,44 @@
+# bench handoff --dry-run on a saved Claude Code session; an oracle trial has none.
+tier = "smoke"
+
+[[step]]
+sh = '''
+cp -R {e2e}/jobs jobs
+d=jobs/claude-hello/hello__84c1190c
+mkdir -p $d/agent/sessions/.claude/projects/-app
+echo '{}' > $d/agent/sessions/.claude/projects/-app/aaa.jsonl
+cat > $d/result.json <<'J'
+{"task_name":"hello","rollout_name":"hello__84c1190c","agent":"claude","status":"scored","rewards":{"reward":1.0},
+ "agent_session":{"path":"agent/sessions","dirs":[".claude/projects"],"files":1,"bytes":3,"session_id":"aaa"}}
+J
+'''
+
+[[step]]
+run = ["handoff", "jobs/claude-hello/hello__84c1190c", "--dry-run"]
+env = { HOME = "{work}/home", CLAUDE_CONFIG_DIR = "{work}/home/.claude" }
+exit = 0
+output_has = ['would copy .*aaa\.jsonl to (~|\S*home)/\.claude/projects/', 'claude --resume aaa']
+absent = ["home/.claude"]
+
+[[step]]
+name = "an oracle trial has no session"
+sh = "{bench} handoff jobs/oracle-hello/$(ls jobs/oracle-hello | grep __) --dry-run"
+env = { HOME = "{work}/home", CLAUDE_CONFIG_DIR = "{work}/home/.claude" }
+exit = 2
+output_has = ['oracle, not an agent']
+
+[[step]]
+name = "a trial outside the jobs folder needs --trust"
+sh = "mkdir -p elsewhere && cp -R jobs/claude-hello elsewhere/ && {bench} handoff elsewhere/claude-hello/hello__84c1190c --dry-run"
+env = { HOME = "{work}/home", CLAUDE_CONFIG_DIR = "{work}/home/.claude" }
+exit = 2
+output_has = ['outside this project.s jobs folder', '--trust']
+absent = ["home/.claude"]
+
+[[step]]
+name = "with --trust it would hand it off"
+run = ["handoff", "elsewhere/claude-hello/hello__84c1190c", "--dry-run", "--trust"]
+env = { HOME = "{work}/home", CLAUDE_CONFIG_DIR = "{work}/home/.claude" }
+exit = 0
+output_has = ['claude --resume aaa']
+absent = ["home/.claude"]

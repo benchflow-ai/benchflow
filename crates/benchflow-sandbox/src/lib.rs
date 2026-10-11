@@ -9,7 +9,11 @@
 //! - [`daytona`]: Daytona cloud sandboxes over its REST API.
 //!
 //! Every command runs through `bash -c` inside the sandbox (falling back to
-//! `sh -c` when the image has no bash), as the user the request names.
+//! `sh -c` when the image has no bash), as the user the request names. The
+//! shells, and every program a backend runs as root on the way to the
+//! command, are found in the system folders ([`shell::SYSTEM_PATH`]) or
+//! named by their path, never through the image's `PATH`; the command gets
+//! the `PATH` it was given.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -31,6 +35,47 @@ pub mod redact;
 pub mod services;
 pub mod shell;
 mod transfer;
+
+/// Removals started in the background for sandboxes whose operation was
+/// cancelled midway (a stopped run dropped it), so the run can wait for
+/// them before it exits.
+static CLEANUPS: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn track_cleanup(cleanup: tokio::task::JoinHandle<()>) {
+    let mut all = CLEANUPS.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|c| !c.is_finished());
+    all.push(cleanup);
+}
+
+/// Wait, up to `limit`, for the removals [`track_cleanup`] started. True
+/// when all finished.
+/// Sandboxes this process could not remove inside a backend (a builder
+/// whose delete failed, one left building, a failed start's cleanup), as
+/// `<backend> <id>`, for the end-of-run list.
+static LEFT_BEHIND: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn note_left_behind(backend: &str, id: &str) {
+    LEFT_BEHIND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(format!("{backend} {id}"));
+}
+
+/// The sandboxes [`note_left_behind`] recorded so far.
+pub fn left_behind() -> Vec<String> {
+    LEFT_BEHIND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+pub async fn settle_cleanups(limit: std::time::Duration) -> bool {
+    let all = std::mem::take(&mut *CLEANUPS.lock().unwrap_or_else(|e| e.into_inner()));
+    tokio::time::timeout(limit, futures::future::join_all(all))
+        .await
+        .is_ok()
+}
 
 /// The result of a command that ran to completion (or timed out).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -99,6 +144,10 @@ pub struct Exec {
     pub env: BTreeMap<String, String>,
     /// Kill the command after this long. `None` waits forever.
     pub timeout: Option<Duration>,
+    /// Variables the command runs without, the image's included: the
+    /// backend removes them before any program starts, its own shells
+    /// included. They win over `env`.
+    pub unset: Vec<String>,
 }
 
 impl std::fmt::Debug for Exec {
@@ -109,6 +158,7 @@ impl std::fmt::Debug for Exec {
             .field("cwd", &self.cwd)
             .field("env", &EnvNames(&self.env))
             .field("timeout", &self.timeout)
+            .field("unset", &self.unset)
             .finish()
     }
 }
@@ -126,6 +176,27 @@ impl Exec {
     }
     pub fn root(self) -> Self {
         self.user("root")
+    }
+    /// BenchFlow's own command: as root, with `PATH` set to the system
+    /// folders ([`shell::SYSTEM_PATH`]) and without the loader and shell
+    /// start-up variables ([`shell::LOADER_VARS`]), so nothing the image's
+    /// `PATH` or environment names (a folder or file the agent can write)
+    /// is run, loaded, or read as root.
+    pub fn system(self) -> Self {
+        self.root()
+            .env("PATH", shell::SYSTEM_PATH)
+            .unset(shell::LOADER_VARS.iter().copied())
+            .unset(shell::SYSTEM_EXTRA_VARS.iter().copied())
+    }
+    /// Run without these variables (see [`Exec::unset`](Self#structfield.unset)).
+    pub fn unset<S: Into<String>>(mut self, names: impl IntoIterator<Item = S>) -> Self {
+        for name in names {
+            let name = name.into();
+            if !self.unset.contains(&name) {
+                self.unset.push(name);
+            }
+        }
+        self
     }
     pub fn cwd(mut self, cwd: impl Into<String>) -> Self {
         self.cwd = Some(cwd.into());
@@ -205,6 +276,30 @@ pub trait Sandbox: Send + Sync {
     /// Stop the sandbox and delete it.
     async fn destroy(&self) -> Result<(), SandboxError>;
 
+    /// What the backend itself says about this sandbox (`docker inspect`,
+    /// Daytona's API), never a program inside the sandbox, which the agent
+    /// may have replaced. A backend that cannot tell answers
+    /// [`SandboxError::Unsupported`].
+    async fn presence(&self) -> Result<Presence, SandboxError> {
+        Err(SandboxError::Unsupported(format!(
+            "the {} backend cannot say whether a sandbox still runs",
+            self.backend()
+        )))
+    }
+
+    /// [`Sandbox::download`], failing (with [`std::io::ErrorKind::FileTooLarge`])
+    /// before more than `max_bytes` of file content arrive. Backends without
+    /// a cap download it all.
+    async fn download_capped(
+        &self,
+        remote: &str,
+        local: &Path,
+        max_bytes: u64,
+    ) -> Result<(), SandboxError> {
+        let _ = max_bytes;
+        self.download(remote, local).await
+    }
+
     /// Change a running sandbox's network, where the backend can
     /// ([`Capabilities::network_switch`]).
     async fn set_network(&self, policy: &NetworkPolicy) -> Result<(), SandboxError> {
@@ -214,6 +309,19 @@ pub trait Sandbox: Send + Sync {
             self.backend()
         )))
     }
+}
+
+/// What a backend says about a sandbox it made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// It runs.
+    Running,
+    /// The backend still has it, but it does not run: it stopped, or code
+    /// inside stopped it.
+    Stopped,
+    /// The backend no longer has it: something outside the run removed it
+    /// (code inside cannot).
+    Gone,
 }
 
 /// How an image is obtained.
@@ -332,6 +440,10 @@ pub struct Capabilities {
     /// that reaches it (Daytona's daemon), so the agent user is kept from
     /// root only if something blocks that service.
     pub root_service: bool,
+    /// The backend's own `none` leaves IPv6 open (Daytona's block, seen
+    /// 2026-10-10 reaching [2606:4700:4700::1111]:443), so a phase with no
+    /// network also needs the uid firewall, which filters IPv6 too.
+    pub network_none_leaks_ipv6: bool,
 }
 
 /// The state of a backend, for `bench doctor`.
@@ -414,6 +526,11 @@ pub enum SandboxError {
     /// A command or transfer failed at the transport level.
     #[error("{0}")]
     Transport(String),
+    /// A copy failed on what it copies: `tar` in the sandbox ran and
+    /// refused some of it (a file it cannot read, a full disk), not the
+    /// connection to the sandbox.
+    #[error("{0}")]
+    Content(String),
     /// The backend refused something the task asks for.
     #[error("{0}")]
     Unsupported(String),
@@ -432,10 +549,17 @@ impl SandboxError {
             source,
         }
     }
+    /// True when a download failed because the path is not in the sandbox
+    /// (the backends' "downloading <path>" not-found), not on this machine.
+    pub fn is_missing_in_sandbox(&self) -> bool {
+        matches!(self, Self::Io { context, source }
+            if source.kind() == std::io::ErrorKind::NotFound && context.starts_with("downloading "))
+    }
+
     /// True when retrying the same operation may succeed.
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Transport(_) | Self::Start(_) => true,
+            Self::Transport(_) | Self::Start(_) | Self::Content(_) => true,
             Self::Image { task_fault, .. } => !task_fault,
             _ => false,
         }
@@ -484,6 +608,20 @@ pub const TIMEOUT_EXIT_CODE: i32 = 124;
 #[cfg(test)]
 mod debug_tests {
     use super::*;
+
+    #[test]
+    fn a_system_command_is_roots_with_the_system_path_and_no_loader_variables() {
+        let exec = Exec::new("true").env("A", "1").system().unset(["A"]);
+        assert_eq!(exec.user.as_deref(), Some("root"));
+        assert_eq!(exec.env["PATH"], shell::SYSTEM_PATH);
+        for v in shell::LOADER_VARS.iter().chain(shell::SYSTEM_EXTRA_VARS) {
+            assert!(exec.unset.iter().any(|u| u == v), "{v}");
+        }
+        let dropped = shell::LOADER_VARS.len() + shell::SYSTEM_EXTRA_VARS.len();
+        assert_eq!(exec.unset.len(), dropped + 1);
+        // Naming a variable twice keeps one entry.
+        assert_eq!(exec.unset(["A"]).unset.len(), dropped + 1);
+    }
 
     /// Debug output names a command's and a sandbox's variables, never
     /// their values, which can be keys.

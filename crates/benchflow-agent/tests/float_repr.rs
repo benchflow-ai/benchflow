@@ -1,8 +1,10 @@
 //! The trajectory writer's float formatting against Python's `repr(float)`
 //! (0.8 wrote acp_trajectory.jsonl with `json.dumps`, and files are
-//! compared byte for byte). The fixture holds 7,014 floats (random bit
-//! patterns, rounded decimals, wide magnitudes and edge values) with the
-//! `repr` 0.8's Python 3.12 gave each.
+//! compared byte for byte). The fixture holds 9,111 floats (edge values,
+//! random bit patterns, rounded decimals, wide magnitudes, and 4,000 ties
+//! between equally short digit strings, half of them rounding down) with
+//! the `repr` 0.8's Python 3.12 gave each; `fixtures/make_float_repr.py`
+//! writes it. Guards the D5 fix 132fcbfd (ties broken upward).
 
 use benchflow_agent::trajectory::python_float_repr;
 
@@ -22,5 +24,5 @@ fn python_float_repr_matches_python() {
         );
         n += 1;
     }
-    assert!(n > 7000);
+    assert!(n > 9000);
 }

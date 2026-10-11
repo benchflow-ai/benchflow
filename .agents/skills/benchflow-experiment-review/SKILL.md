@@ -47,8 +47,7 @@ trainer-facing rollout row are mandatory:
 - `trajectory/acp_trajectory.jsonl`: ACP/tool trace with agent-side events.
 - `trajectory/llm_trajectory.jsonl`: provider LLM request/response trace with
   token usage evidence.
-- `results.jsonl`: Verifiers / Prime-RL-shaped rollout row derived from the
-  healthy LLM trajectory.
+- `results.jsonl`: rollout row in the shape RL trainers ingest (prompt, completion, reward, metrics, info), derived from the healthy LLM trajectory.
 
 Do not treat ACP alone as sufficient. Do not treat `llm_trajectory.jsonl` alone
 as sufficient. Do not treat aggregate `result.json` fields as a substitute for
@@ -143,9 +142,7 @@ Reject or quarantine the trial if any of these appear:
 - Empty, truncated, or unparsable trajectory files.
 - `llm_trajectory.jsonl` has no real provider request bodies, no provider
   response bodies, or no provider token usage in response metadata.
-- `results.jsonl` lacks a Prime-RL-compatible row, marks an unhealthy rollout as
-  training-ready, misses prompt/completion/trajectory/provider token usage, or
-  exposes assistant tool calls without tool definitions.
+- `results.jsonl` lacks a trainer-compatible row, marks an unhealthy rollout as training-ready, misses prompt/completion/trajectory/provider token usage, or exposes assistant tool calls without tool definitions.
 - Empty transcript, agent never launched, or only setup logs.
 - Missing token usage/timing/tool usage metadata for newly generated data.
 - The agent lacked required task information, required skills, API keys,

@@ -19,7 +19,7 @@ export DEEPSEEK_API_KEY=sk-...          # credentials for your --model provider
 export DAYTONA_API_KEY=dtn_...          # or use --sandbox docker
 
 # Get a task (sparse checkout of one SkillsBench task — same recipe as
-# getting-started; any task.md/Harbor-format task directory works):
+# getting-started; any task.md or split-layout task directory works):
 git clone --depth 1 --filter=blob:none --sparse \
   https://github.com/benchflow-ai/skillsbench
 cd skillsbench && git sparse-checkout set tasks/edit-pdf

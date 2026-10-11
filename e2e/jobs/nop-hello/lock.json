@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "job_name": "nop-hello",
+  "created_at": "2026-10-10T17:41:38.371340-07:00",
+  "bench": {
+    "version": "0.8.1-dev.0",
+    "long_version": "0.8.1-dev.0 (355247634 2026-10-10)",
+    "commit": "355247634",
+    "commit_date": "2026-10-10"
+  },
+  "fingerprint": "7c0e41399008d6fe",
+  "dataset": null,
+  "source": {
+    "targets": [
+      "tasks/hello",
+      "tasks/two-stage"
+    ],
+    "path": "tasks/hello",
+    "remote": []
+  },
+  "options": {
+    "sandbox": "daytona",
+    "sandbox_user": "agent",
+    "trials_per_task": 1,
+    "concurrency": 4,
+    "agent_timeout_multiplier": 1.0,
+    "verifier_timeout_multiplier": 1.0,
+    "build_timeout_multiplier": 1.0,
+    "default_agent_timeout_sec": null,
+    "default_verifier_timeout_sec": 600.0,
+    "idle_timeout_sec": 600.0,
+    "pids_limit": 4096,
+    "agent_env_keys": [],
+    "extra_instruction": null,
+    "keep": "never",
+    "save_outputs": false,
+    "retries": 1,
+    "rerun": []
+  },
+  "trials": [
+    {
+      "trial": "hello__1f84c0c3",
+      "task": {
+        "id": "fixtures/hello",
+        "name": "hello",
+        "path": "tasks/hello",
+        "digest": "sha256:76fe5d4c665fabb1e5cecd7e1fa3bd38a3627e0cbfd978f5ee4301533342efeb",
+        "registry_digest": null,
+        "inputs_digest": "sha256:95d359038c1910ace883316ac713459c24f43dc8b00f442d0e43ad299f004e72",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "nop",
+        "model": null,
+        "kind": "nop",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/hello/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    },
+    {
+      "trial": "two-stage__a27f0daf",
+      "task": {
+        "id": "fixtures/two-stage",
+        "name": "two-stage",
+        "path": "tasks/two-stage",
+        "digest": "sha256:896e8b86294589c523ed17e001c7372dbe9f2b2d954d874020aa0f99916a0f6b",
+        "registry_digest": null,
+        "inputs_digest": "sha256:00e1344e98b73148a5204059b9c25e400ca58558725afa38c7a177f66724dba5",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "nop",
+        "model": null,
+        "kind": "nop",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/two-stage/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    }
+  ]
+}

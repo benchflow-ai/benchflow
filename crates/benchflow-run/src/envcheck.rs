@@ -16,38 +16,55 @@ const READ_TAIL: u64 = 256 * 1024;
 /// Folders BenchFlow owns inside the sandbox.
 const BENCHFLOW_PATHS: &[&str] = &["/logs/", "/opt/benchflow", "/tmp/benchflow"];
 
-/// One sign: its name, and whether it counts in the agent's own log (an
-/// agent that tries a command it lacks is exploring, not broken).
+/// One sign: its name, whether it counts in the agent's own log (an
+/// agent that tries a command it lacks is exploring, not broken), and
+/// whether a line shows it (given whether the line is the agent's).
 struct Sign {
     what: &'static str,
     in_agent_log: bool,
-    matches: fn(&str) -> bool,
+    matches: fn(&str, bool) -> bool,
 }
 
 const SIGNS: &[Sign] = &[
     Sign {
         what: "git refused a repository owned by another user (\"dubious ownership\")",
         in_agent_log: true,
-        matches: |l| l.contains("dubious ownership"),
+        matches: |l, _| l.contains("dubious ownership"),
     },
     Sign {
         what: "apt could not find a package (\"Unable to locate package\")",
         in_agent_log: true,
-        matches: |l| l.contains("Unable to locate package"),
+        matches: |l, _| l.contains("Unable to locate package"),
     },
     Sign {
         what: "a command was missing (\"command not found\")",
         in_agent_log: false,
-        matches: |l| l.contains("command not found"),
+        matches: |l, _| l.contains("command not found"),
     },
     Sign {
         what: "a BenchFlow folder could not be used (\"Permission denied\")",
         in_agent_log: true,
-        matches: |l| {
-            l.contains("Permission denied") && BENCHFLOW_PATHS.iter().any(|p| l.contains(p))
+        matches: |l, agent| {
+            // The verifier's folder is closed to the agent on purpose: the
+            // agent refused there is the defense holding, not a fault. The
+            // verifier refused there is.
+            l.contains("Permission denied")
+                && !(agent && l.contains("/logs/verifier"))
+                && BENCHFLOW_PATHS.iter().any(|p| names_path(l, p))
         },
     },
 ];
+
+/// Whether `line` names a path that starts with `prefix`, not a longer
+/// path that merely contains it (`/var/logs/` is not `/logs/`).
+fn names_path(line: &str, prefix: &str) -> bool {
+    line.match_indices(prefix).any(|(i, _)| {
+        line[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')))
+    })
+}
 
 /// The warnings for a trial folder: one per sign per log, each with the
 /// first line that showed it.
@@ -81,7 +98,10 @@ fn warnings_in(text: &str, source: &str, is_agent: bool) -> Vec<String> {
         .iter()
         .filter(|s| !is_agent || s.in_agent_log)
         .filter_map(|s| {
-            let line = text.lines().map(str::trim).find(|l| (s.matches)(l))?;
+            let line = text
+                .lines()
+                .map(str::trim)
+                .find(|l| (s.matches)(l, is_agent))?;
             Some(format!("{source}: {}: {}", s.what, clip(line)))
         })
         .collect()
@@ -126,7 +146,9 @@ mod tests {
             dir.path().join("agent/claude-code.txt"),
             "bash: rg: command not found\n\
              sh: 1: cannot create /logs/agent/out.txt: Permission denied\n\
-             cat: /root/secret: Permission denied\n",
+             cat: /root/secret: Permission denied\n\
+             cat: /logs/verifier/reward.txt: Permission denied\n\
+             cat: /var/logs/app.log: Permission denied\n",
         )
         .unwrap();
         let w = warnings(dir.path());
@@ -139,12 +161,30 @@ mod tests {
         assert!(w[0].ends_with("'/app/personal-site'"), "{}", w[0]);
         assert!(w[1].contains("Unable to locate package stockfish"));
         assert!(w[2].contains("uv: command not found"));
-        // The agent's own missing command and a non-BenchFlow path are not signs.
+        // The agent's own missing command, a non-BenchFlow path, and the
+        // closed verifier folder (the defense holding) are not signs.
         assert_eq!(
             w[3],
             "agent/claude-code.txt: a BenchFlow folder could not be used (\"Permission denied\"): \
              sh: 1: cannot create /logs/agent/out.txt: Permission denied"
         );
+    }
+
+    /// The verifier refused at its own folder is the environment failing,
+    /// the case this module is for; only the agent refused there is the
+    /// defense holding. Guards the D7b fix of 431d4f35, which dropped both.
+    #[test]
+    fn a_verifier_refused_at_its_own_folder_is_a_sign() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("verifier")).unwrap();
+        std::fs::write(
+            dir.path().join("verifier/test-stdout.txt"),
+            "1 passed\ntest.sh: line 9: /logs/verifier/reward.txt: Permission denied\n",
+        )
+        .unwrap();
+        let w = warnings(dir.path());
+        assert_eq!(w.len(), 1, "{w:#?}");
+        assert!(w[0].starts_with("verifier/test-stdout.txt: a BenchFlow folder"));
     }
 
     #[test]

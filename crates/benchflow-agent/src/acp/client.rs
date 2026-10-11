@@ -621,6 +621,59 @@ impl AcpClient {
             );
         }
 
+        // An effort with no model (`-a codex -e high`): the session's own
+        // model in the `model[effort]` variant it offers for that effort.
+        if model.is_none()
+            && spec.format == ModelFormat::ModelEffort
+            && spec.select != ModelSelect::None
+            && let Some(effort) = effort
+            && let Some(current) = self.current_model_id().map(str::to_string)
+        {
+            let base = model::codex_model_name(&current).to_string();
+            let id = model::codex_model_id(
+                &self.options.agent,
+                &base,
+                session.models.as_ref(),
+                Some(effort),
+            )?;
+            if model::codex_effort(&id) != effort {
+                let mut efforts: Vec<String> = session
+                    .models
+                    .as_ref()
+                    .and_then(|m| m.get("availableModels"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|m| m.get("modelId").and_then(Value::as_str))
+                    .filter(|m| model::codex_model_name(m) == base)
+                    .map(|m| model::codex_effort(m).to_string())
+                    .filter(|e| !e.is_empty())
+                    .collect();
+                efforts.dedup();
+                return Err(AcpError::Unsupported {
+                    message: format!(
+                        "reasoning effort `{effort}` was requested for agent `{}` on its default \
+                         model {base}, and its session offers {base} only at {}",
+                        self.options.agent,
+                        if efforts.is_empty() {
+                            "no named effort".to_string()
+                        } else {
+                            efforts.join(", ")
+                        }
+                    ),
+                });
+            }
+            if id != current {
+                self.set_model(&id).await?;
+                choice.model_via = Some("session/set_model".to_string());
+            } else {
+                choice.model_via = Some("current session model".to_string());
+            }
+            choice.effort_via = Some(format!("model id {id}"));
+            choice.model_id = Some(id);
+            effort_done = true;
+        }
+
         if let Some(effort) = effort.filter(|_| !effort_done) {
             let offered = self.config_option_ids();
             let option = spec.effort_config_id.clone().or_else(|| {
@@ -994,6 +1047,25 @@ impl AcpClient {
         }
         if limits::is_usage_limit_text(&message) {
             return self.usage_limit(&message);
+        }
+        // A spent subscription or credit balance in other words ("credit
+        // balance is too low", "insufficient_quota"), in the message or in
+        // `data.details`: the login's limit (R213), as the headless agents
+        // read it, not the agent's own error.
+        let details = match &data {
+            Some(Value::Object(map)) => map.get("details").map(|d| d.to_string()),
+            _ => None,
+        };
+        let text = format!("{message}\n{}", details.unwrap_or_default());
+        if let Some((crate::headless::classify::Signal::UsageLimit(info), line)) =
+            crate::headless::classify::classify(&text, chrono::Utc::now())
+        {
+            let detail = if info.detail.is_empty() {
+                line
+            } else {
+                info.detail
+            };
+            return self.usage_limit(&detail);
         }
         AcpError::Agent {
             code: error.code,

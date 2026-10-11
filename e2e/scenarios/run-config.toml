@@ -1,0 +1,165 @@
+# bench run without a sandbox: --print-config, job files (TOML, YAML, JSON, merged), --dry-run, and flags refused before anything starts.
+tier = "smoke"
+tasks = ["hello", "two-stage"]
+
+[[step]]
+sh = '''
+cat > base.toml <<'J'
+targets = ["tasks"]
+agent = "nop"
+trials = 2
+include = ["hel*"]
+[env]
+E2E_FLAG = "1"
+J
+cat > more.yaml <<'J'
+trials: 3
+concurrency: 2
+J
+cat > last.json <<'J'
+{"include": ["two-*"]}
+J
+'''
+
+[[step]]
+name = "flags, then job files (later win, lists append), then defaults"
+run = ["run", "-c", "base.toml", "-c", "more.yaml", "-c", "last.json", "--print-config"]
+exit = 0
+stdout_has = ['^agent = "nop"', '^trials = 3', '^concurrency = 2', 'hel\*', 'two-\*']
+
+[[step]]
+run = ["run", "-c", "base.toml", "-k", "5", "--print-config"]
+exit = 0
+stdout_has = ['^trials = 5']
+
+[[step]]
+name = "--print-config is a job file, so it carries --env values (lock.json keeps only names; see run-basics)"
+run = ["run", "-c", "base.toml", "--env", "E2E_VAR=visible", "--print-config"]
+exit = 0
+stdout_has = ['E2E_VAR']
+
+[[step]]
+name = "--dry-run plans and runs nothing"
+run = ["run", "tasks", "-a", "nop", "-k", "2", "--dry-run", "-s", "docker"]
+exit = 0
+output_lacks = ['Score']
+absent = ["jobs/*/lock.json"]
+
+[[step]]
+name = "-x leaves tasks out of the plan"
+run = ["run", "tasks", "-x", "two-*", "--dry-run", "-s", "docker"]
+exit = 0
+stdout_has = ['^\s*· hello$']
+output_lacks = ['two-stage']
+
+[[step]]
+name = "an unknown agent option is refused before any sandbox"
+run = ["run", "tasks/hello", "-a", "claude", "-m", "vercel/x", "--ak", "bogus=1", "--dry-run"]
+exit = 2
+stderr_has = ["no option `bogus`"]
+
+[[step]]
+name = "a badly typed agent option is refused"
+run = ["run", "tasks/hello", "-a", "builtin", "-m", "vercel/x", "--ak", "temperature=hot", "--dry-run"]
+exit = 2
+
+[[step]]
+run = ["run", "tasks/hello", "--rerun", "bogus"]
+exit = 2
+stderr_has = ["errored, unscored, or failed"]
+
+[[step]]
+run = ["run", "no-such-folder"]
+exit = 2
+
+[[step]]
+name = "--load-trajectory with a missing file"
+run = ["run", "tasks/hello", "-a", "claude", "-m", "vercel/x", "--load-trajectory", "missing.jsonl", "--dry-run"]
+exit = 2
+
+[[step]]
+name = "--load-trajectory is refused for an agent that cannot load one"
+sh = "echo '{}' > s.jsonl && {bench} run tasks/hello -a mimo -m vercel/x --load-trajectory s.jsonl --dry-run"
+exit = 2
+
+[[step]]
+name = "--skill with a folder that has no SKILL.md"
+sh = "mkdir -p noskill && {bench} run tasks/hello -a claude -m vercel/x --skill noskill --dry-run"
+exit = 2
+
+[[step]]
+name = "--skill with a real one plans it (or, with no gateway key, stops at the key)"
+sh = '''
+out=$({bench} run tasks/hello -a claude -m {judge} --skill {e2e}/skills/e2e-skill --dry-run -s docker 2>&1); rc=$?
+case $rc in
+  0) echo "$out" | grep -q 'e2e-skill' || { echo "the plan names no skill: $out"; exit 1; } ;;
+  3) echo "$out" | grep -q 'R211' || { echo "exit 3 but not for a missing key: $out"; exit 1; }
+     echo "$out" | grep -q 'e2e-skill' || { echo "the skill was dropped before the key check: $out"; exit 1; } ;;
+  *) echo "exit $rc: $out"; exit 1 ;;
+esac
+'''
+
+[[step]]
+name = "--resume-sessions with an agent that cannot resume says so"
+run = ["run", "tasks/two-stage", "-a", "mimo", "-m", "{judge}", "--resume-sessions", "--dry-run", "-s", "docker"]
+exit = [0, 3]
+stderr_has = ['cannot resume its own session']
+
+[[step]]
+name = "a model the provider does not serve is refused before anything starts (R215); with no key, R211"
+sh = '''
+out=$({bench} run tasks/hello -a claude -m vercel/no-such-model-e2e --dry-run 2>&1); rc=$?
+[ "$rc" = 3 ] || { echo "exit $rc: $out"; exit 1; }
+if [ -n "$AI_GATEWAY_API_KEY$VERCEL_AI_GATEWAY_API_KEY$VERCEL_OIDC_TOKEN" ] || [ -f "$HOME/.config/benchflow/vercel-ai-gateway.env" ]; then
+  want=R215
+else
+  want=R211
+fi
+echo "$out" | grep -q "$want" || { echo "expected $want: $out"; exit 1; }
+'''
+
+[[step]]
+name = "--diff against a job that does not exist"
+run = ["run", "tasks/hello", "--diff", "nope", "--dry-run"]
+exit = 2
+
+[[step]]
+name = "a job file from a URL that is not https is refused"
+run = ["run", "-c", "http://example.com/job.toml", "--print-config"]
+exit = 2
+
+[[step]]
+name = "a judge model that is not provider/model"
+run = ["run", "tasks/hello", "--judge-model", "nomodel", "--dry-run"]
+exit = 2
+
+[[step]]
+name = "--fail-under outside 0..1"
+run = ["run", "tasks/hello", "--fail-under", "7", "--dry-run"]
+exit = 2
+
+[[step]]
+name = "a dataset that is not in the registry"
+sh = "echo '[]' > reg.json && {bench} run -d nothing@1.0 --registry reg.json --dry-run"
+exit = 2
+
+[[step]]
+name = "-k 0 is refused, not run as one trial"
+run = ["run", "tasks/hello", "-k", "0", "--dry-run"]
+exit = 2
+
+[[step]]
+name = "a timeout multiplier of 0 is refused"
+run = ["run", "tasks/hello", "--timeout-multiplier", "0", "--dry-run"]
+exit = 2
+
+[[step]]
+name = "an idle timeout that is not a duration"
+run = ["run", "tasks/hello", "--idle-timeout", "xyz", "--dry-run"]
+exit = 2
+
+[[step]]
+name = "an option the chosen harness cannot pass is refused, with the fix"
+run = ["run", "tasks/hello", "-a", "claude", "-m", "{judge}", "--ak", "max_turns=3", "--dry-run"]
+exit = 2
+stderr_has = ['reaches the agent only on the headless harness', '--harness headless']

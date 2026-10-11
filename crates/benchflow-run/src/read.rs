@@ -28,6 +28,9 @@ impl JobView {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| self.records.first().map(|r| r.agent.clone()))
+            // A job whose first trial has not finished: what lock.json
+            // planned.
+            .or_else(|| self.planned("agent"))
             .unwrap_or_else(|| "?".into())
     }
     pub fn model(&self) -> Option<String> {
@@ -37,6 +40,50 @@ impl JobView {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| self.records.iter().find_map(|r| r.model.clone()))
+            .or_else(|| self.planned("model"))
+    }
+    /// A field of the first planned trial's attempt in lock.json, read
+    /// loosely: what a job whose first trial has not finished will run.
+    fn planned(&self, field: &str) -> Option<String> {
+        let text = std::fs::read_to_string(self.dir.join(crate::lock::FILE_NAME)).ok()?;
+        let lock: Value = serde_json::from_str(&text).ok()?;
+        lock.pointer(&format!("/trials/0/attempt/{field}"))?
+            .as_str()
+            .map(str::to_string)
+    }
+    /// How many trials lock.json planned that have no record: never started
+    /// (a drained or stopped run, or a login that ran out). 0 while the job
+    /// is running, when its trials may still start.
+    pub fn never_ran(&self) -> usize {
+        if self.running() {
+            return 0;
+        }
+        let Ok(text) = std::fs::read_to_string(self.dir.join(crate::lock::FILE_NAME)) else {
+            return 0;
+        };
+        let Ok(lock) = serde_json::from_str::<Value>(&text) else {
+            return 0;
+        };
+        let recorded: std::collections::BTreeSet<&str> = self
+            .records
+            .iter()
+            .map(|r| r.rollout_name.as_str())
+            .collect();
+        lock.get("trials")
+            .and_then(Value::as_array)
+            .map(|trials| {
+                trials
+                    .iter()
+                    .filter_map(|t| t.get("trial").and_then(Value::as_str))
+                    .filter(|name| !recorded.contains(name))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Whether a live `bench run` (or `bench regrade`) holds the job.
+    pub fn running(&self) -> bool {
+        crate::job::is_running(&self.dir)
     }
     pub fn modified(&self) -> Option<std::time::SystemTime> {
         std::fs::metadata(&self.dir).and_then(|m| m.modified()).ok()
@@ -148,18 +195,51 @@ fn parse_time(v: Option<&Value>) -> DateTime<Local> {
         .unwrap_or_else(Local::now)
 }
 
-/// A naive local time (0.8 writes `str(datetime.now())`) as Python reads
-/// it: in the hour repeated when clocks go back, the first of the two
-/// (`fold=0`); in the hour skipped when they go forward, with the offset
-/// from before the change, so `02:30` reads as `03:30`.
+/// A naive local time (0.8 writes `str(datetime.now())`) as CPython's
+/// `datetime.fromisoformat(..).timestamp()` reads it in the machine's zone:
+/// a port of `local_to_seconds` (Modules/_datetimemodule.c) with `fold=0`.
+/// In a stretch repeated when clocks go back it is the first reading; in
+/// one skipped when they go forward it is read with the UTC offset from
+/// before the jump, so Lord Howe's `02:15` on its 30-minute jump is 02:45,
+/// Troll's `01:30` on its 2-hour jump is 03:30, and Samoa's skipped
+/// 2011-12-30 lands on the 31st.
 fn local(t: NaiveDateTime) -> Option<DateTime<Local>> {
-    use chrono::LocalResult;
-    match Local.from_local_datetime(&t) {
-        LocalResult::Single(l) | LocalResult::Ambiguous(l, _) => Some(l),
-        LocalResult::None => Local
-            .from_local_datetime(&t.checked_add_signed(chrono::TimeDelta::hours(1))?)
-            .earliest(),
-    }
+    // CPython's `local(u)`: the wall clock at instant u, both counted in
+    // seconds as if the wall clock were UTC.
+    let wall_at = |u: i64| -> Option<i64> {
+        let utc = DateTime::from_timestamp(u, 0)?.naive_utc();
+        Some(u + i64::from(Local.offset_from_utc_datetime(&utc).local_minus_utc()))
+    };
+    const MAX_FOLD_SECONDS: i64 = 24 * 3600;
+    let t_secs = t.and_utc().timestamp();
+    let a = wall_at(t_secs)? - t_secs;
+    let u1 = t_secs - a;
+    let t1 = wall_at(u1)?;
+    let b = if t1 == t_secs {
+        // A reading; look a day earlier for an earlier one (fold=0).
+        let probe = u1 - MAX_FOLD_SECONDS;
+        let b = wall_at(probe)? - probe;
+        if a == b {
+            return Local
+                .timestamp_opt(u1, t.and_utc().timestamp_subsec_nanos())
+                .single();
+        }
+        b
+    } else {
+        t1 - u1
+    };
+    let u2 = t_secs - b;
+    let seconds = if wall_at(u2)? == t_secs {
+        u2
+    } else if t1 == t_secs {
+        u1
+    } else {
+        // Neither offset gives this wall time: it is in a gap.
+        u1.max(u2)
+    };
+    Local
+        .timestamp_opt(seconds, t.and_utc().timestamp_subsec_nanos())
+        .single()
 }
 
 /// Build a record from a result.json, written by either engine.
@@ -308,4 +388,149 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
             .and_then(|s| serde_json::from_value(s.clone()).ok())
             .unwrap_or_default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHILD: &str = "BENCHFLOW_TEST_NAIVE_TIME_ZONE";
+
+    /// Runs only in the child process `in_zone` starts with `TZ` set (the
+    /// zone is process-wide, and tests share one process): every case of
+    /// that zone in the fixture, which CPython 3.12 wrote
+    /// (`tests/fixtures/make_naive_local_times.py`), must read as the
+    /// instant CPython's `.timestamp()` gave.
+    #[test]
+    fn naive_times_in_the_zone_of_this_process() {
+        let Ok(zone) = std::env::var(CHILD) else {
+            return;
+        };
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/python-naive-local-times.json");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let mut failures = Vec::new();
+        let mut n = 0;
+        for case in v["cases"].as_array().unwrap() {
+            if case["zone"] != zone.as_str() {
+                continue;
+            }
+            n += 1;
+            let got = parse_time(case.get("naive"));
+            let want = (
+                case["seconds"].as_i64().unwrap(),
+                case["micros"].as_u64().unwrap(),
+            );
+            let got_pair = (got.timestamp(), u64::from(got.timestamp_subsec_micros()));
+            if got_pair != want {
+                failures.push(format!(
+                    "{}: read as {got} ({got_pair:?}), CPython {want:?}",
+                    case["naive"]
+                ));
+            }
+        }
+        assert!(n > 100, "{n} cases for {zone}");
+        assert!(
+            failures.is_empty(),
+            "{zone} (is its time zone data installed?): {} of {n} differ:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// The folders chrono 0.4 reads a zone named by `TZ` from (`find_tz_file`
+    /// in its `offset/local/tz_info/timezone.rs`, on Linux and macOS alike);
+    /// it does not read `TZDIR`.
+    const ZONE_DIRS: [&str; 4] = [
+        "/usr/share/zoneinfo",
+        "/share/zoneinfo",
+        "/etc/zoneinfo",
+        "/usr/share/lib/zoneinfo",
+    ];
+
+    /// The file chrono reads for `TZ=zone` (a leading `:` and an absolute
+    /// path as chrono takes them), if this machine has one in `dirs`.
+    fn zone_file(zone: &str, dirs: &[&Path]) -> Option<PathBuf> {
+        let path = Path::new(zone.strip_prefix(':').unwrap_or(zone));
+        if path.is_absolute() {
+            return path.is_file().then(|| path.to_path_buf());
+        }
+        dirs.iter().map(|d| d.join(path)).find(|p| p.is_file())
+    }
+
+    /// Runs `naive_times_in_the_zone_of_this_process` in a child process
+    /// with `TZ=zone`, as the CLI test of the D5 fix (51f2a252) sets the
+    /// zone of the `bench` it runs. Without the zone's file (a slim image
+    /// with no tzdata), chrono reads every time in the machine's own zone or
+    /// UTC, so the zone is skipped with a note instead. Returns whether it
+    /// ran.
+    fn in_zone(zone: &str) -> bool {
+        if zone_file(zone, &ZONE_DIRS.map(Path::new)).is_none() {
+            eprintln!(
+                "skipped the naive times of {zone}: this machine has no time zone file for it in {} (install tzdata to run them)",
+                ZONE_DIRS.join(", ")
+            );
+            return false;
+        }
+        let name = concat!(module_path!(), "::naive_times_in_the_zone_of_this_process");
+        let name = name.split_once("::").unwrap().1;
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture", "--test-threads", "1"])
+            .env("TZ", zone)
+            .env(CHILD, zone)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{text}");
+        assert!(text.contains("1 passed"), "the child ran no test: {text}");
+        true
+    }
+
+    /// Guards the skip added after the D5b runtime review of cbf42071
+    /// (finding 10): a zone this machine has no file for is skipped with a
+    /// note, not failed, as on a slim CI image without tzdata.
+    #[test]
+    fn a_zone_without_its_file_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(zone_file("America/Los_Angeles", &[dir.path()]), None);
+        std::fs::create_dir_all(dir.path().join("America")).unwrap();
+        std::fs::write(dir.path().join("America/Los_Angeles"), "TZif").unwrap();
+        let file = Some(dir.path().join("America/Los_Angeles"));
+        assert_eq!(zone_file("America/Los_Angeles", &[dir.path()]), file);
+        assert_eq!(zone_file(":America/Los_Angeles", &[dir.path()]), file);
+        let absolute = dir.path().join("America/Los_Angeles");
+        assert_eq!(zone_file(absolute.to_str().unwrap(), &[]), file);
+        // No machine has this one: its child would read no case at all.
+        assert!(!in_zone("Nowhere/No_Such_Zone"));
+    }
+
+    /// The D5 fix (51f2a252): a one-hour change, both ways.
+    #[test]
+    fn naive_times_around_a_one_hour_change_read_as_in_cpython() {
+        in_zone("America/Los_Angeles");
+    }
+
+    /// A 30-minute change: `2026-10-04 02:15` read as 03:15 before D5b
+    /// (CPython: 02:45).
+    #[test]
+    fn naive_times_around_a_30_minute_change_read_as_in_cpython() {
+        in_zone("Australia/Lord_Howe");
+    }
+
+    /// A 2-hour change: `2026-03-29 01:30` was no time at all before D5b, so
+    /// the trial showed as started in 1970 (CPython: 03:30).
+    #[test]
+    fn naive_times_around_a_2_hour_change_read_as_in_cpython() {
+        in_zone("Antarctica/Troll");
+    }
+
+    /// Samoa skipped 2011-12-30: before D5b every time that day was 1970.
+    #[test]
+    fn naive_times_on_a_skipped_day_read_as_in_cpython() {
+        in_zone("Pacific/Apia");
+    }
 }

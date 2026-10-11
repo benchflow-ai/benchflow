@@ -104,6 +104,28 @@ pub(crate) async fn list(
     Ok(out)
 }
 
+/// Daytona's clock: the `Date` header of a small read. `None` when it
+/// cannot be read.
+pub(crate) async fn server_now(api: &Api) -> Option<chrono::DateTime<chrono::Utc>> {
+    let response = api
+        .send("reading Daytona's clock", Retry::Safe, |http| {
+            Ok(http
+                .get(api.url("/sandbox"))
+                .query(&[("limit", "1")])
+                .timeout(Duration::from_secs(30)))
+        })
+        .await
+        .ok()?;
+    let date = response
+        .headers()
+        .get(reqwest::header::DATE)?
+        .to_str()
+        .ok()?;
+    chrono::DateTime::parse_from_rfc2822(date)
+        .ok()
+        .map(|d| d.with_timezone(&chrono::Utc))
+}
+
 pub(crate) async fn get(api: &Api, id: &str) -> Result<SandboxDto, ApiError> {
     api.json("checking a sandbox", Retry::Safe, |http| {
         Ok(http
@@ -134,9 +156,32 @@ pub(crate) async fn set_network(
 /// Delete a sandbox; one that is already gone, or already being deleted,
 /// counts as deleted. While another state change is in progress (Daytona
 /// answers 409, for example while the sandbox is still starting), wait for
-/// it to finish and try again, for up to 90 seconds.
+/// it to finish and try again, for up to 90 seconds. An API that does not
+/// answer (or answers 5xx or 429) is tried again for as long: a sandbox
+/// whose delete gave up stays until a later run's sweep.
 pub(crate) async fn delete(api: &Api, id: &str) -> Result<(), SandboxError> {
-    let deadline = Instant::now() + Duration::from_secs(90);
+    delete_within(api, id, Duration::from_secs(90)).await
+}
+
+/// [`delete`], giving up after `patience` however long Daytona takes to
+/// answer one request.
+pub(crate) async fn delete_within(
+    api: &Api,
+    id: &str,
+    patience: Duration,
+) -> Result<(), SandboxError> {
+    match tokio::time::timeout(patience, delete_until(api, id, Instant::now() + patience)).await {
+        Ok(result) => result,
+        Err(_) => Err(SandboxError::Transport(format!(
+            "Daytona did not finish deleting sandbox {id} within {}s. Sandbox {id} may still \
+             exist; a later `bench run` on this machine removes it, and Daytona stops one \
+             that runs once it has been idle for its auto-stop interval.",
+            patience.as_secs()
+        ))),
+    }
+}
+
+async fn delete_until(api: &Api, id: &str, deadline: Instant) -> Result<(), SandboxError> {
     let result = loop {
         let result = api
             .send("deleting a sandbox", Retry::Safe, |http| {
@@ -157,6 +202,16 @@ pub(crate) async fn delete(api: &Api, id: &str) -> Result<(), SandboxError> {
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
+            // D4 chaos runs: a 20-second API outage at teardown outlasted
+            // the request's own retries and left the sandbox running.
+            Err(err)
+                if Instant::now() < deadline
+                    && (matches!(&err, ApiError::Network { .. })
+                        || err.status().is_some_and(|s| s == 429 || s >= 500)) =>
+            {
+                tracing::debug!("deleting sandbox {id}: {}; trying again", err.message());
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
             other => break other.map(|_| ()),
         }
     };
@@ -166,8 +221,9 @@ pub(crate) async fn delete(api: &Api, id: &str) -> Result<(), SandboxError> {
         Err(err) => Err(match SandboxError::from(err) {
             SandboxError::Transport(m) | SandboxError::Unsupported(m) => {
                 SandboxError::Transport(format!(
-                    "{}. Sandbox {id} may still exist; Daytona deletes it on its own once it has been \
-                 idle for its auto-stop interval, and `bench` sweeps it at the next run.",
+                    "{}. Sandbox {id} may still exist; a later `bench run` on this machine removes \
+                 it, and Daytona stops one that runs once it has been idle for its auto-stop \
+                 interval.",
                     m.trim_end_matches('.')
                 ))
             }
@@ -342,6 +398,84 @@ fn split_lines(partial: &mut Vec<u8>, bytes: &[u8], mut line: impl FnMut(&[u8]))
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A local API that answers `failures` deletes with 503, then 200.
+    async fn flaky_api(failures: usize) -> (Api, Arc<AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let count = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut conn, _)) = listener.accept().await else {
+                    return;
+                };
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf).await;
+                let reply = if n < failures {
+                    "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                };
+                let _ = conn.write_all(reply.as_bytes()).await;
+            }
+        });
+        let api = Api::new(&format!("http://{addr}/api"), Some("k".into()), None).unwrap();
+        (api, seen)
+    }
+
+    #[tokio::test]
+    async fn a_delete_outlasts_an_api_outage() {
+        // More 503s than one request's own retries absorb.
+        let (api, seen) = flaky_api(6).await;
+        delete_within(&api, "sb-1", Duration::from_secs(90))
+            .await
+            .unwrap();
+        assert_eq!(seen.load(Ordering::SeqCst), 7);
+    }
+
+    /// A local API that accepts connections and never answers.
+    async fn silent_api() -> Api {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((conn, _)) = listener.accept().await {
+                held.push(conn);
+            }
+        });
+        Api::new(&format!("http://{addr}/api"), Some("k".into()), None).unwrap()
+    }
+
+    /// The deadline was checked only between requests, and one request may
+    /// wait 120 s for each of its tries: a delete could take minutes.
+    #[tokio::test]
+    async fn a_delete_is_bounded_while_a_request_hangs() {
+        let api = silent_api().await;
+        let started = Instant::now();
+        let err = tokio::time::timeout(
+            Duration::from_secs(20),
+            delete_within(&api, "sb-1", Duration::from_secs(1)),
+        )
+        .await
+        .expect("bounded")
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(err.to_string().contains("may still exist"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_delete_gives_up_at_its_deadline() {
+        let (api, _) = flaky_api(usize::MAX).await;
+        let err = delete_within(&api, "sb-1", Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("may still exist"), "{err}");
+    }
 
     #[test]
     fn lines_are_split_across_chunks() {

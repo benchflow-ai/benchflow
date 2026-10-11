@@ -48,6 +48,7 @@
 
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
@@ -480,6 +481,10 @@ function handle(req, res, routes, key) {
   let current = null;
   // How the body was pinned to allowed upstreams, for the log.
   let pinned;
+  // The body's hash, for the log: a request sent again after a refusal
+  // has the same one, so BenchFlow can tell a client's backoff (waiting for
+  // that answer) from the agent going on without it.
+  let sent;
   req.on('data', (chunk) => {
     size += chunk.length;
     if (size > MAX_BODY) {
@@ -563,6 +568,7 @@ function handle(req, res, routes, key) {
     if (body.length > 0 || req.headers['content-length'] !== undefined) {
       headers['content-length'] = String(body.length);
     }
+    if (body.length > 0) sent = crypto.createHash('sha256').update(body).digest('hex').slice(0, 16);
     send(1);
 
     function send(attempt) {
@@ -646,6 +652,7 @@ function handle(req, res, routes, key) {
         status: answer.statusCode,
         bytes: masker.bytes,
         ms: Date.now() - started,
+        ...(sent ? { body_hash: sent } : {}),
         ...(pinned ? { pinned } : {}),
         ...(spent || {}),
       });

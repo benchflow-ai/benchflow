@@ -353,3 +353,19 @@ fn closest_ids_rank_substrings_first() {
     assert_eq!(idx.closest("pi", 1), ["pi-acp"]);
     assert!(idx.closest("zzzzzzzz", 3).is_empty());
 }
+
+#[test]
+fn a_registry_build_of_a_builtin_takes_its_skill_folder_not_its_launch_notes() {
+    let builtin = Registry::builtin();
+    let vibe = builtin.find("mistral-vibe").unwrap();
+    assert!(vibe.skills_via.as_deref().unwrap().contains("config.toml"));
+    let m = index("2026-10-10")
+        .find("mistral-vibe")
+        .unwrap()
+        .to_manifest(&builtin)
+        .unwrap();
+    assert_eq!(m.skill_paths, vibe.skill_paths);
+    // The registry's own launch command writes no config.toml.
+    assert!(!m.launch_command().contains("config.toml"));
+    assert_eq!(m.skills_via, None);
+}

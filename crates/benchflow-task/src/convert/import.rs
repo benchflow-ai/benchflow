@@ -32,9 +32,16 @@ use super::rewardkit;
 use super::tomltext;
 use super::value::{Table, Val, parse_toml};
 use super::{ConvertError, ImportPlan, io_err};
+use crate::taskmd::SPLIT_RECORD;
 
-/// Where a package keeps Harbor files import rewrites, byte for byte.
-pub(crate) const ORIGINALS: &str = "import/harbor";
+/// Where a package keeps the split-layout files import rewrites, byte for
+/// byte: `import/<record>/`, after the `[import.<record>]` table.
+pub(crate) fn originals(record: &str) -> String {
+    format!("import/{record}")
+}
+
+/// Where this import keeps them.
+static ORIGINALS: LazyLock<String> = LazyLock::new(|| originals(SPLIT_RECORD));
 
 static SKILLS_COPY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(?:COPY|ADD)\s+(?:--\S+\s+)*(?:\./?|(?:\./)?skills(?:/\S*)?)\s").unwrap()
@@ -168,7 +175,7 @@ fn harbor_files(native: &mut Table, folders: &BTreeSet<String>, notes: &mut Vec<
         };
         record.insert("trajectory".into(), Val::Str(at));
         notes.push(format!(
-            "{loaded} is ATIF context Harbor seeds the agent's session with before it starts; no task.md runtime loads it, so it is recorded under [import.harbor] trajectory, and the checker warns"
+            "{loaded} is ATIF context a split-layout runner seeds the agent's session with before it starts; no task.md runtime loads it, so it is recorded under [import.harbor] trajectory, and the checker warns"
         ));
     }
     let workdirs: Table = stages
@@ -184,13 +191,13 @@ fn harbor_files(native: &mut Table, folders: &BTreeSet<String>, notes: &mut Vec<
             .collect();
         shown.sort();
         notes.push(format!(
-            "Harbor copies steps/<name>/workdir/ into the agent's working directory before the step starts and runs its setup.sh; no task.md runtime does, so {} are recorded under [import.harbor] workdirs, and the checker warns",
+            "a split-layout runner copies steps/<name>/workdir/ into the agent's working directory before the step starts and runs its setup.sh; no task.md runtime does, so {} are recorded under [import.harbor] workdirs, and the checker warns",
             shown.join(", ")
         ));
         record.insert("workdirs".into(), Val::Table(workdirs));
     }
     if !record.is_empty() {
-        let kept = table_mut(table_mut(native, "import"), "harbor");
+        let kept = table_mut(table_mut(native, "import"), SPLIT_RECORD);
         let mut clash: Vec<String> = record
             .keys()
             .filter(|k| kept.contains_key(*k))
@@ -199,7 +206,7 @@ fn harbor_files(native: &mut Table, folders: &BTreeSet<String>, notes: &mut Vec<
         clash.sort();
         for key in clash {
             notes.push(format!(
-                "task.toml has a top-level {key} key, so the Harbor feature it would record stays unrecorded"
+                "task.toml has a top-level {key} key, so the split-layout feature it would record stays unrecorded"
             ));
             record.shift_remove(&key);
         }
@@ -247,7 +254,7 @@ fn bundled_skills(native: &mut Table, skills: &Skills, notes: &mut Vec<String>) 
         })
         .unwrap_or_default();
     notes.push(format!(
-        "warning: environment/skills/ holds skills that nothing installs: Harbor installs skills only from the skills_dir that task.toml names, and it names none.{copy} If the task means them to be installed, as BenchFlow's runtime does by convention, declare [sandbox] skills = \"sandbox/skills\" (import-dataset does so for a BenchFlow registry)"
+        "warning: environment/skills/ holds skills that nothing installs: a split-layout runner installs skills only from the skills_dir that task.toml names, and it names none.{copy} If the task means them to be installed, as BenchFlow's runtime does by convention, declare [sandbox] skills = \"sandbox/skills\" (import-dataset does so for a BenchFlow registry)"
     ));
 }
 
@@ -275,7 +282,7 @@ pub(crate) fn declare_models(native: &mut Table, rk_judges: &[String], notes: &m
     }
     table_mut(native, "verifier").insert("models".into(), Val::Bool(true));
     notes.push(format!(
-        "the verifier's scripts call a model: {}. Declared as [verifier] models = true, so a task.md runtime gives them its model proxy and a scoped token; on Harbor they read the keys [verifier.env] passes from the host",
+        "the verifier's scripts call a model: {}. Declared as [verifier] models = true, so a task.md runtime gives them its model proxy and a scoped token; in a split-layout runner they read the keys [verifier.env] passes from the host",
         why.join("; ")
     ));
 }
@@ -298,7 +305,7 @@ pub(crate) fn harbor_to_taskmd(s: &Sources<'_>) -> Result<(String, Vec<String>),
         message,
     };
     let cfg = parse_toml(s.task_toml).map_err(|e| invalid(format!("not valid TOML: {e}")))?;
-    let imported = harbor::config_from_harbor(&cfg, "harbor").map_err(invalid)?;
+    let imported = harbor::config_from_harbor(&cfg, SPLIT_RECORD).map_err(invalid)?;
     let (mut native, moves, mut notes) = (imported.config, imported.moves, imported.notes);
     for (folder, part) in [("tests", "verifier"), ("solution", "oracle")] {
         if s.folders.contains(folder) {
@@ -320,7 +327,7 @@ pub(crate) fn harbor_to_taskmd(s: &Sources<'_>) -> Result<(String, Vec<String>),
     let mut rk_judges: Vec<String> = Vec::new();
     if let Some(scan) = s.rewardkit {
         if scan.found {
-            let kept = table_mut(table_mut(&mut native, "import"), "harbor");
+            let kept = table_mut(table_mut(&mut native, "import"), SPLIT_RECORD);
             if kept.contains_key("rewardkit") {
                 notes.push("task.toml has a top-level rewardkit key, so the RewardKit record stays unwritten".into());
             } else {
@@ -332,9 +339,9 @@ pub(crate) fn harbor_to_taskmd(s: &Sources<'_>) -> Result<(String, Vec<String>),
     }
     declare_models(&mut native, &rk_judges, &mut notes);
     if let Some(originals) = s.originals {
-        let kept = table_mut(table_mut(&mut native, "import"), "harbor");
+        let kept = table_mut(table_mut(&mut native, "import"), SPLIT_RECORD);
         if kept.contains_key("originals") {
-            notes.push("task.toml has a top-level originals key, so the record of Harbor's original files stays unwritten".into());
+            notes.push("task.toml has a top-level originals key, so the record of the original split-layout files stays unwritten".into());
         } else {
             kept.insert("originals".into(), Val::Table(originals.clone()));
         }
@@ -373,9 +380,9 @@ pub(crate) fn harbor_to_taskmd(s: &Sources<'_>) -> Result<(String, Vec<String>),
             ));
         }
         if let Some(md) = s.instruction.filter(|t| !t.trim().is_empty()) {
-            table_mut(table_mut(&mut native, "import"), "harbor")
+            table_mut(table_mut(&mut native, "import"), SPLIT_RECORD)
                 .insert("instruction".into(), Val::Str(md.to_string()));
-            notes.push("instruction.md is not shown to agents in a multi-step Harbor task; kept under [import.harbor]".into());
+            notes.push("instruction.md is not shown to agents in a multi-step split-layout task; kept under [import.harbor]".into());
         }
         s.steps.get(first).cloned().unwrap_or_default()
     } else {
@@ -496,9 +503,10 @@ pub(crate) fn plan(src: &Path, benchflow_skills: bool) -> Result<ImportPlan, Con
         record.insert(rel.clone(), Val::Table(r));
     }
     let mut writes: Vec<(String, Vec<u8>)> = Vec::new();
+    let dir = ORIGINALS.as_str();
     let taken = differ
         .iter()
-        .any(|rel| placed.contains_key(&files::rel(&format!("{ORIGINALS}/{rel}"))));
+        .any(|rel| placed.contains_key(&files::rel(&format!("{dir}/{rel}"))));
     if !record.is_empty() && !taken {
         sources.originals = Some(&record);
         let (kept_text, _) = harbor_to_taskmd(&sources)?;
@@ -507,11 +515,11 @@ pub(crate) fn plan(src: &Path, benchflow_skills: bool) -> Result<ImportPlan, Con
             for rel in &differ {
                 let path = files::under(src, &files::rel(rel));
                 let data = std::fs::read(&path).map_err(io_err(&path))?;
-                writes.push((format!("{ORIGINALS}/{rel}"), data));
+                writes.push((format!("{dir}/{rel}"), data));
             }
             if !differ.is_empty() {
                 notes.push(format!(
-                    "{} kept byte for byte in {ORIGINALS}/, so exporting the unchanged task gives back Harbor's exact files and content digest",
+                    "{} kept byte for byte in {dir}/, so exporting the unchanged task gives back the original files and content digest",
                     differ.join(", ")
                 ));
             }

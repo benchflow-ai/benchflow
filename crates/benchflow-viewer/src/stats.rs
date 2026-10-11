@@ -19,35 +19,50 @@ pub fn wilson(passed: usize, total: usize) -> Option<(f64, f64)> {
     Some(((center - half).max(0.0), (center + half).min(1.0)))
 }
 
-/// A paired comparison: the mean of `differences` with its 95% t-interval
-/// (`None` with fewer than two pairs).
+/// A paired comparison: the mean of `differences` with its 95% t-interval,
+/// or why there is none. The rules are `bench results`': no interval from
+/// fewer than three pairs or from differences that are all the same, and
+/// none reaching past the furthest two rewards can be apart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeanInterval {
     pub mean: f64,
     pub interval: Option<(f64, f64)>,
+    pub no_interval: Option<&'static str>,
 }
 
-pub fn mean_with_t_interval(differences: &[f64]) -> Option<MeanInterval> {
+/// The fewest pairs an interval is given for.
+const MIN_PAIRS: usize = 3;
+
+/// `bound` is the most two rewards can differ by (1 for rewards 0 to 1).
+pub fn mean_with_t_interval(differences: &[f64], bound: f64) -> Option<MeanInterval> {
     let n = differences.len();
     if n == 0 {
         return None;
     }
     let mean = differences.iter().sum::<f64>() / n as f64;
-    if n < 2 {
-        return Some(MeanInterval {
+    let none = |why| {
+        Some(MeanInterval {
             mean,
             interval: None,
-        });
+            no_interval: Some(why),
+        })
+    };
+    if n < MIN_PAIRS {
+        return none("too few tasks");
     }
     let variance = differences
         .iter()
         .map(|value| (value - mean).powi(2))
         .sum::<f64>()
         / (n - 1) as f64;
+    if variance <= 1e-24 {
+        return none("every task differs by the same amount");
+    }
     let half = t_quantile_975((n - 1) as f64) * (variance / n as f64).sqrt();
     Some(MeanInterval {
         mean,
-        interval: Some((mean - half, mean + half)),
+        interval: Some(((mean - half).max(-bound), (mean + half).min(bound))),
+        no_interval: None,
     })
 }
 
@@ -206,20 +221,33 @@ mod tests {
 
     #[test]
     fn paired_means_carry_a_t_interval() {
-        assert_eq!(mean_with_t_interval(&[]), None);
+        assert_eq!(mean_with_t_interval(&[], 1.0), None);
+        let none = |mean, why| MeanInterval {
+            mean,
+            interval: None,
+            no_interval: Some(why),
+        };
         assert_eq!(
-            mean_with_t_interval(&[0.5]),
-            Some(MeanInterval {
-                mean: 0.5,
-                interval: None
-            })
+            mean_with_t_interval(&[0.5], 1.0),
+            Some(none(0.5, "too few tasks"))
+        );
+        assert_eq!(
+            mean_with_t_interval(&[1.0, 0.0], 1.0),
+            Some(none(0.5, "too few tasks"))
+        );
+        assert_eq!(
+            mean_with_t_interval(&[1.0, 1.0, 1.0], 1.0),
+            Some(none(1.0, "every task differs by the same amount"))
         );
         // mean 0.5, sd 0.5, n 3: half-width 4.3027 * 0.5 / sqrt(3).
-        let paired = mean_with_t_interval(&[1.0, 0.0, 0.5]).unwrap();
+        let paired = mean_with_t_interval(&[1.0, 0.0, 0.5], 2.0).unwrap();
         close(paired.mean, 0.5, 1e-12);
         let (low, high) = paired.interval.unwrap();
         close(high - 0.5, 1.242_068_856, 1e-6);
         close(0.5 - low, 1.242_068_856, 1e-6);
+        // ... clipped to what rewards from 0 to 1 allow.
+        let paired = mean_with_t_interval(&[1.0, 0.0, 0.5], 1.0).unwrap();
+        assert_eq!(paired.interval.unwrap().1, 1.0);
     }
 
     #[test]

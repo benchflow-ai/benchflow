@@ -47,6 +47,7 @@ use crate::source::Source;
 
 pub use explain::EXPLANATIONS;
 pub use scan::{Block, BlockKind};
+pub(crate) use vocab::{SPLIT_RECORD, split_record, split_record_ignored};
 
 use config::ConfigDoc;
 use report::{At, ConfigLoc, Sink};
@@ -341,12 +342,12 @@ pub fn check(dir: &Path, opts: &CheckOptions) -> CheckReport {
             Diagnostic::error(
                 code::HARBOR_TASK_TOML,
                 format!(
-                    "task.toml is Harbor's config file; task.md keeps config in a ```toml task block ({})",
+                    "task.toml is the split layout's config file; task.md keeps config in a ```toml task block ({})",
                     vocab::IMPORT_HINT
                 ),
             )
             .in_file("task.toml")
-            .help("`bench import <folder>` converts a Harbor task into task.md; otherwise remove task.toml"),
+            .help("`bench import <folder>` converts a split-layout task into task.md; otherwise remove task.toml"),
         );
     }
     let block = doc.config_source == ConfigSource::Block;

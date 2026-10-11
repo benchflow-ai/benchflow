@@ -118,13 +118,7 @@ environment — every pytest run inside `test.sh` inherits roughly:
 PYTEST_ADDOPTS="-c /dev/null --confcutdir=<verifier-dir> --rootdir=<workspace> -p no:cacheprovider"
 ```
 
-where `<verifier-dir>` is `/verifier` for native packages (`/tests` for
-legacy), and `<workspace>` is the agent workspace (`/app` for Harbor/SWE-bench
-conventions, `/root` for SkillsBench — injected dynamically). `-c /dev/null`
-blocks `pyproject.toml`/`pytest.ini` discovery and `--confcutdir` blocks
-`conftest.py` walk-up beyond the verifier dir. Tasks that do not use pytest
-(e.g. a `test.sh` that diffs files and writes `reward.txt` directly) are
-scored the same way — pytest is just the most common tool, not a requirement.
+where `<verifier-dir>` is `/verifier` for native packages (`/tests` for legacy), and `<workspace>` is the agent workspace (`/app` for split-layout and SWE-bench conventions, `/root` for SkillsBench — injected dynamically). `-c /dev/null` blocks `pyproject.toml`/`pytest.ini` discovery and `--confcutdir` blocks `conftest.py` walk-up beyond the verifier dir. Tasks that do not use pytest (e.g. a `test.sh` that diffs files and writes `reward.txt` directly) are scored the same way — pytest is just the most common tool, not a requirement.
 
 Between agent and verifier, benchflow **hardens** the sandbox to prevent the agent from gaming the score:
 - Kill any lingering agent processes
@@ -157,15 +151,7 @@ the legacy names, so a task ships **one** of each row, not both:
 | Strategy declaration (how it's scored) | `verifier/verifier.md` | — (legacy uses `[verifier]` in `task.toml`) | not uploaded as a runtime target; selects the strategy |
 | LLM-judge rubric | `verifier/rubrics/verifier.md` + `verifier/rubrics/verifier.toml` | `tests/rubric.toml` (also `rubric.json`, Harvey-LAB style) | downloaded for the judge |
 
-A plain `test.sh` is a complete verifier on its own: with no `verifier.md`
-strategy declared, the runtime just executes it. `verifier/verifier.md`
-declares *how* a task is scored (script / llm-judge / reward-kit / agent-judge
-/ ors-episode) and is the native equivalent of the legacy `[verifier]` section
-in `task.toml`. The native LLM-judge rubric lives under `verifier/rubrics/`
-(both a human-readable `verifier.md` and a machine-readable `verifier.toml`),
-not in a single top-level `rubric.toml`. For the native verifier document and
-its strategy table see [Native task.md authoring](./task-authoring-task-md.md);
-for the legacy `[verifier.judge]` rubric path see [LLM-as-judge](./llm-judge.md).
+A plain `test.sh` is a complete verifier on its own: with no `verifier.md` strategy declared, the runtime just executes it. `verifier/verifier.md` declares *how* a task is scored (`script`, `llm-judge`, `reward-kit`, `agent-judge` or `ors-episode`) and is the native equivalent of the legacy `[verifier]` section in `task.toml`. The native LLM-judge rubric lives under `verifier/rubrics/` (both a human-readable `verifier.md` and a machine-readable `verifier.toml`), not in a single top-level `rubric.toml`. For the native verifier document and its strategy table see [Native task.md authoring](./task-authoring-task-md.md); for the legacy `[verifier.judge]` rubric path see [LLM-as-judge](./llm-judge.md).
 
 ---
 

@@ -127,7 +127,9 @@ impl Images {
         cell.get_or_init(|| async {
             match provider.prepare(spec, log).await {
                 Ok(image) => Ok(image),
-                Err(err @ SandboxError::Image { .. }) if !spec.layers.is_empty() => {
+                Err(err @ SandboxError::Image { .. })
+                    if !spec.layers.is_empty() && !cancelled_unbuilt(&err) =>
+                {
                     log(
                         "the image with the agent's install layers failed to build; checking whether the task's image builds on its own",
                     );
@@ -144,6 +146,19 @@ impl Images {
         .await
         .clone()
     }
+}
+
+/// A build the backend cancelled: not the task's, and Daytona's "context
+/// canceled" (D4 chaos runs: a build an earlier run cancelled, which
+/// Daytona keeps; the Daytona backend builds such an image again under new
+/// keys, so this is what is left when every rebuild was cancelled too; or
+/// a build this one shared, cancelled midway). Neither the task's image
+/// nor the agent's layers failed it. Any other build without output (a log
+/// that could not be followed, a timeout) is checked against the task's
+/// image alone.
+fn cancelled_unbuilt(err: &SandboxError) -> bool {
+    matches!(err, SandboxError::Image { message, task_fault: false, .. }
+        if message.contains("context canceled"))
 }
 
 /// An image that failed to build or pull: the task's, the backend's, or
@@ -224,14 +239,13 @@ fn layer_problem(agent: &str, err: SandboxError) -> Problem {
 pub fn layers_for(
     task: &TaskPackage,
     attempt: &crate::agent::Attempt,
-    root_service: bool,
+    caps: &benchflow_sandbox::Capabilities,
 ) -> Vec<String> {
     let mut layers = match attempt {
         crate::agent::Attempt::Model(m) => m.install_layers(),
         _ => Vec::new(),
     };
-    if let Some(layer) =
-        crate::netpolicy::firewall_layer(task, crate::netpolicy::Host::Agent, root_service)
+    if let Some(layer) = crate::netpolicy::firewall_layer(task, crate::netpolicy::Host::Agent, caps)
     {
         layers.insert(0, layer);
     }
@@ -239,8 +253,12 @@ pub fn layers_for(
 }
 
 /// The cache key of the image a trial of `attempt` on `task` runs in.
-pub fn key_for(task: &TaskPackage, attempt: &crate::agent::Attempt, root_service: bool) -> String {
-    cache_key(&spec_for(task, layers_for(task, attempt, root_service)))
+pub fn key_for(
+    task: &TaskPackage,
+    attempt: &crate::agent::Attempt,
+    caps: &benchflow_sandbox::Capabilities,
+) -> String {
+    cache_key(&spec_for(task, layers_for(task, attempt, caps)))
 }
 
 /// A prepared image is the task's image plus its agent layers, if any.
@@ -603,6 +621,50 @@ mod tests {
             "{}",
             p.message
         );
+        // The layered build fails on the backend's side: not the agent's.
+        let provider = Counting::default();
+        provider.failures.lock().unwrap().push(SandboxError::Image {
+            name: "hello".into(),
+            message: "Daytona could not build the image (context canceled)".into(),
+            log_tail: String::new(),
+            task_fault: false,
+        });
+        let p = Images::new()
+            .get(&provider, &layered, &|_| {}, Some("acme"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (p.code.as_str(), p.owner),
+            ("R102", Owner::Sandbox),
+            "{p:?}"
+        );
+        // Review of rust/d4-chaos: a build without output is not proof the
+        // backend failed it. Daytona judged the agent's install from its
+        // error reason when the log could not be followed, and Docker's
+        // timeout carries no log: both are checked against the task's
+        // image, which builds, so they are the agent's.
+        for err in [
+            SandboxError::Image {
+                name: "hello".into(),
+                message: "the task's Dockerfile failed to build on Daytona (exit code: 1)".into(),
+                log_tail: String::new(),
+                task_fault: true,
+            },
+            SandboxError::Image {
+                name: "hello".into(),
+                message: "the agent's layers did not finish building within 600s".into(),
+                log_tail: String::new(),
+                task_fault: false,
+            },
+        ] {
+            let provider = Counting::default();
+            provider.failures.lock().unwrap().push(err);
+            let p = Images::new()
+                .get(&provider, &layered, &|_| {}, Some("acme"))
+                .await
+                .unwrap_err();
+            assert_eq!((p.code.as_str(), p.owner), ("R201", Owner::Agent), "{p:?}");
+        }
         // The task's Dockerfile fails with and without the layers.
         let provider = Counting::default();
         provider.failures.lock().unwrap().extend([
@@ -622,7 +684,11 @@ mod tests {
         let task = benchflow_task::load(&fixture).expect("the hello fixture loads");
         let provider = Counting::default();
         let images = Images::new();
-        let key = key_for(&task, &crate::agent::Attempt::Oracle, false);
+        let key = key_for(
+            &task,
+            &crate::agent::Attempt::Oracle,
+            &benchflow_sandbox::Capabilities::default(),
+        );
         images.expect(&key);
         images.expect(&key);
         let spec = spec_for(&task, Vec::new());

@@ -607,6 +607,183 @@ fn results_fit_in_100_columns_with_a_long_model_name() {
     }
 }
 
+/// `bench results A B` gives a paired interval only when it means
+/// something: none with too few shared tasks or no spread (the cases it
+/// printed as `+1.000 to +1.000` and `-5.853 to +6.853` on 2026-10-10),
+/// never one outside what rewards from 0 to 1 allow, and null bounds in
+/// `--json` when there is none.
+#[test]
+fn results_give_a_paired_interval_only_when_it_means_something() {
+    let d = tempfile::tempdir().unwrap();
+    let compare = |a: &[f64], b: &[f64], json: bool| {
+        write_job(d.path(), "a", a);
+        write_job(d.path(), "b", b);
+        let mut cmd = bench(d.path(), &d.path().join("cache"));
+        cmd.args(["results", "jobs/a", "jobs/b"]);
+        if json {
+            cmd.arg("--json");
+        }
+        let out = String::from_utf8(cmd.output().unwrap().stdout).unwrap();
+        std::fs::remove_dir_all(d.path().join("jobs")).unwrap();
+        out
+    };
+    let out = compare(&[1.0, 1.0], &[0.0, 0.0], false);
+    assert!(
+        out.contains("+1.000 mean reward over 2 shared tasks (no interval: too few tasks)"),
+        "{out}"
+    );
+    let out = compare(&[1.0, 1.0, 1.0], &[0.0, 0.0, 0.0], false);
+    assert!(
+        out.contains("(no interval: every task differs by the same amount)"),
+        "{out}"
+    );
+    // Differences 1, 1, 0, 1, 1: the t-interval (+0.245 to +1.355) reaches
+    // past the most a 0-to-1 reward can differ by.
+    let out = compare(&[1.0; 5], &[0.0, 0.0, 1.0, 0.0, 0.0], false);
+    assert!(out.contains("(95% CI +0.245 to +1.000)"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&compare(&[1.0], &[0.0], true)).unwrap();
+    let result = &v["paired"][0]["result"];
+    assert!(
+        result["low"].is_null() && result["high"].is_null(),
+        "{result}"
+    );
+    assert_eq!(result["no_interval"], "too few tasks");
+    assert_eq!(result["diff"], 1.0);
+}
+
+/// Trials the user stopped (Ctrl-C, R001) are left out of the pass rate
+/// and listed apart, in the words the run's own summary uses; on
+/// 2026-10-10 they read as `0/2` and "your setup's problem".
+#[test]
+fn results_leave_stopped_trials_out_of_the_pass_rate() {
+    let d = tempfile::tempdir().unwrap();
+    write_job(d.path(), "j", &[1.0, 1.0, 1.0]);
+    for i in 3..5 {
+        let trial = d.path().join(format!("jobs/j/t{i}__0000000{i}"));
+        std::fs::create_dir_all(&trial).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            serde_json::json!({
+                "task_name": "t9", "rollout_name": format!("t{i}__0000000{i}"),
+                "agent": "builtin", "model": "vercel/deepseek/deepseek-v4-flash-0731",
+                "status": "skipped",
+                "problem": {"code": "R001", "owner": "you", "phase": "agent",
+                    "message": "stopped before it finished",
+                    "next": "rerun the same command to resume the job", "transient": false},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    let out = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        out.contains("Score 3/3 passed · 100.0% · partial: 2 stopped"),
+        "{out}"
+    );
+    assert!(
+        out.contains("2 trials stopped (Ctrl-C, a kill, or a closed terminal), not counted in the pass rate [R001]"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("t9"),
+        "a task with only stopped trials has no row: {out}"
+    );
+    assert!(!out.contains("problem"), "{out}");
+    // lock.json planned two more that never started (a drain).
+    std::fs::write(
+        d.path().join("jobs/j/lock.json"),
+        serde_json::json!({"trials": (0..7).map(|i| serde_json::json!({"trial": format!("t{i}__0000000{i}")})).collect::<Vec<_>>()}).to_string(),
+    )
+    .unwrap();
+    let again = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j"])
+        .output()
+        .unwrap();
+    let again = String::from_utf8(again.stdout).unwrap();
+    assert!(again.contains("2 trials planned never ran"), "{again}");
+    // --json counts the same trials as the text.
+    let json = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j", "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(v["stopped"].as_u64(), Some(2), "{v}");
+    assert_eq!(v["never_ran"].as_u64(), Some(2), "{v}");
+    assert_eq!(v["partial"], true, "{v}");
+    assert_eq!(v["pass_rate"]["n"].as_u64(), Some(3), "{v}");
+    assert_eq!(v["pass_rate"]["value"].as_f64(), Some(1.0), "{v}");
+    // The list of jobs (two, so it is a list) counts them apart too.
+    write_job(d.path(), "k", &[1.0]);
+    let list = bench(d.path(), &d.path().join("cache"))
+        .arg("results")
+        .output()
+        .unwrap();
+    let list = String::from_utf8(list.stdout).unwrap();
+    // The list says what never ran, and the rate is partial (no interval).
+    assert!(
+        list.contains("3 trials + 2 stopped + 2 never ran · 3 passed · 100.0% partial"),
+        "{list}"
+    );
+}
+
+/// `bench view --port N` with N taken says the port is taken, not that the
+/// folder given is wrong.
+#[test]
+fn view_on_a_taken_port_says_so() {
+    let d = tempfile::tempdir().unwrap();
+    write_job(d.path(), "j", &[1.0]);
+    let trajectory = d.path().join("jobs/j/t0__00000000/trajectory");
+    std::fs::create_dir_all(&trajectory).unwrap();
+    std::fs::write(trajectory.join("acp_trajectory.jsonl"), "").unwrap();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port().to_string();
+    let out = bench(d.path(), &d.path().join("cache"))
+        .args(["view", "jobs", "--no-open", "--port", &port])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains(&format!("port {port} is taken")), "{err}");
+    assert!(!err.contains("pass a job folder"), "{err}");
+}
+
+/// A job a live run holds, with no trial finished yet, reads as running
+/// with its planned agent, not as `? · – · 0 trials`.
+#[test]
+fn results_show_a_running_job_as_running() {
+    let d = tempfile::tempdir().unwrap();
+    write_job(d.path(), "done", &[1.0]);
+    let job = d.path().join("jobs/live");
+    std::fs::create_dir_all(&job).unwrap();
+    std::fs::write(job.join("evaluation.json"), "{}").unwrap();
+    std::fs::write(
+        job.join("lock.json"),
+        serde_json::json!({"trials": [{"trial": "t__1", "task": {}, "image": {}, "sandbox": "daytona",
+            "attempt": {"agent": "codex", "model": "gpt-6.1-sol", "kind": "model"}}]})
+        .to_string(),
+    )
+    .unwrap();
+    let lock = std::fs::File::create(job.join(".bench-run.lock")).unwrap();
+    lock.lock().unwrap();
+    let out = bench(d.path(), &d.path().join("cache"))
+        .arg("results")
+        .output()
+        .unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let line = out
+        .lines()
+        .find(|l| l.contains("jobs/live"))
+        .unwrap_or_default()
+        .to_string();
+    assert!(line.contains("codex"), "{out}");
+    assert!(out.contains("running"), "{out}");
+    assert!(!line.contains('?'), "{out}");
+}
+
 #[test]
 fn export_writes_a_jobs_traces_and_refuses_mixed_flags() {
     let d = tempfile::tempdir().unwrap();

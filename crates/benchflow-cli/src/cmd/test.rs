@@ -62,6 +62,8 @@ pub async fn run(args: TestArgs) -> Result<Exit> {
         .map(|t| (t.clone(), testplan::attempts(t, &probes)))
         .collect();
     let n_trials: usize = units.iter().map(|(_, a)| a.len()).sum();
+    // What each task set out to run: judged against what ran.
+    let planned_units = units.clone();
     let provider = context::provider(st.sandbox.as_deref()).await?;
     let _ = provider.sweep().await;
     let mut options = engine::options(&st, provider.as_ref(), args.sandbox.keep)?;
@@ -104,9 +106,15 @@ pub async fn run(args: TestArgs) -> Result<Exit> {
     for r in &outcome.records {
         by_task.entry(r.task_name.clone()).or_default().push(r);
     }
-    let verdicts: Vec<TaskVerdict> = tasks
+    let verdicts: Vec<TaskVerdict> = planned_units
         .iter()
-        .map(|t| testplan::judge(t, by_task.get(&t.name).map(Vec::as_slice).unwrap_or(&[])))
+        .map(|(t, planned)| {
+            testplan::judge(
+                t,
+                by_task.get(&t.name).map(Vec::as_slice).unwrap_or(&[]),
+                planned,
+            )
+        })
         .collect();
     let proven = verdicts.iter().filter(|v| v.ok).count();
     // Credential files in each task's build folder and image.
@@ -141,6 +149,7 @@ pub async fn run(args: TestArgs) -> Result<Exit> {
             serde_json::to_string_pretty(&json!({
                 "job": outcome.dir,
                 "proven": proven,
+                "not_started": outcome.not_started,
                 "tasks": tasks_json,
             }))
             .unwrap_or_default()
@@ -171,14 +180,23 @@ pub async fn run(args: TestArgs) -> Result<Exit> {
                 if proven == 1 { "itself" } else { "themselves" }
             )
         };
+        if outcome.not_started > 0 {
+            say!(
+                "  {} {} not started (the run was drained or stopped); run `bench test` again to test fully",
+                warn_mark(),
+                plural(outcome.not_started, "trial")
+            );
+        }
         let view = dim(format!("bench view {}", ui::path(&outcome.dir))).to_string();
         say!("{}", ui::fit_or_break(&line, "  ", &view, 2, ui::width()));
     }
-    Ok(if proven == verdicts.len() && bad.is_empty() {
-        Exit::Ok
-    } else {
-        Exit::Failed
-    })
+    Ok(
+        if proven == verdicts.len() && bad.is_empty() && outcome.not_started == 0 {
+            Exit::Ok
+        } else {
+            Exit::Failed
+        },
+    )
 }
 
 fn print_verdict(v: &TaskVerdict) {

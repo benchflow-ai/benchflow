@@ -1,0 +1,46 @@
+# bench explain and bench schema print stable reference data.
+tier = "smoke"
+
+[[step]]
+run = ["explain"]
+exit = 0
+stdout_has = ['^\s*T201\s', '^\s*R312\s', '^\s*P001\s']
+
+[[step]]
+run = ["explain", "R312"]
+exit = 0
+stdout_has = ['^R312', 'whose problem: the model provider']
+
+[[step]]
+run = ["explain", "r312"]
+exit = 0
+stdout_has = ['^R312']
+
+[[step]]
+run = ["explain", "ZZZ999"]
+exit = 2
+stderr_has = ["no code"]
+
+[[step]]
+run = ["schema", "task"]
+exit = 0
+stdout_json = { "type" = "object", "properties.sandbox" = { "present" = true } }
+
+[[step]]
+run = ["schema", "job"]
+exit = 0
+stdout_json = { "properties.targets" = { "present" = true } }
+
+[[step]]
+run = ["schema", "result"]
+exit = 0
+stdout_json = { "properties.status" = { "present" = true } }
+
+[[step]]
+run = ["schema", "lock"]
+exit = 0
+stdout_json = { "type" = "object" }
+
+[[step]]
+run = ["schema", "nonsense"]
+exit = 2

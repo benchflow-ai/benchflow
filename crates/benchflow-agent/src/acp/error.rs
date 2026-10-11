@@ -12,6 +12,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::headless::classify::{Signal, classify};
+
 /// Whose problem a failure is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -230,7 +232,6 @@ enum ProviderSignal {
 /// The provider failure a piece of the agent's text shows: whose problem it
 /// is and the line that says so.
 fn provider_failure_in(text: &str) -> Option<(Owner, String)> {
-    use crate::headless::classify::{Signal, classify};
     let (signal, line) = classify(text, Utc::now())?;
     let owner = match signal {
         Signal::Login => Owner::Login,
@@ -238,6 +239,9 @@ fn provider_failure_in(text: &str) -> Option<(Owner, String)> {
         // seldom has; leave it to the agent's own report.
         Signal::UsageLimit(_) => return None,
         Signal::Model => Owner::User,
+        // A prompt over the model's context window is the agent's to
+        // manage (0.8: `acp_error`), not a provider failure to retry.
+        Signal::Overflow => return None,
         Signal::RateLimit | Signal::Unavailable | Signal::Rejected => Owner::ModelProvider,
     };
     Some((owner, line))
@@ -258,6 +262,40 @@ pub fn provider_failure_in_reply(reply: &str) -> Option<(Owner, String)> {
     }
     provider_failure_in(reply)
 }
+
+/// Whether a provider error is a refused request (`HTTP 400`, `provider
+/// rejected request`): sending it again gets the same answer, so it is
+/// not retried (0.8's `provider_rejected` is permanent).
+pub fn refused_request(line: &str) -> bool {
+    matches!(classify(line, Utc::now()), Some((Signal::Rejected, _)))
+}
+
+/// Whether a provider error says the stream broke after the model began
+/// answering ("API Error: Server error mid-response", "stream closed
+/// before completion"): the turn may then count the partial answer's
+/// output tokens, and is still the provider's failure.
+pub fn broke_mid_stream(line: &str) -> bool {
+    MID_STREAM.is_match(line)
+}
+
+/// Whether `text` ends with a broken stream's words ([`broke_mid_stream`]),
+/// with nothing after them but space or a sentence's closing punctuation:
+/// how a provider's error ends a reply. A quote ends in its closing mark
+/// (`` ` ``, `"`, `)`), and an answer that goes on has words after it.
+pub fn ends_mid_stream(text: &str) -> bool {
+    MID_STREAM.find_iter(text).last().is_some_and(|m| {
+        text[m.end()..]
+            .chars()
+            .all(|c| c.is_whitespace() || matches!(c, '.' | '!' | '?' | ',' | ';' | ':' | '…'))
+    })
+}
+
+static MID_STREAM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)mid-response|stream closed before completion|Connection to the API was lost",
+    )
+    .expect("a valid pattern")
+});
 
 /// Whether a reply opens the way a provider's error does ("API Error: 529
 /// Overloaded", "Error: ...", "HTTP 401: ...", "[503] ...", "429 Too Many
@@ -309,10 +347,35 @@ impl AcpError {
         if !matches!(self, Self::Agent { .. })
             || self.needs_sign_in()
             || self.provider_signal().is_some()
+            || self.names_its_own_cause()
         {
             return None;
         }
         provider_failure_in(log)
+    }
+
+    /// The error's own text says why (a prompt over the context window, a
+    /// spent subscription), so its log is not read for another cause.
+    fn names_its_own_cause(&self) -> bool {
+        matches!(
+            self.own_signal(),
+            Some(Signal::Overflow | Signal::UsageLimit(_))
+        )
+    }
+
+    /// What the error's own text (its message and `data.details`) says.
+    fn own_signal(&self) -> Option<Signal> {
+        let Self::Agent { message, data, .. } = self else {
+            return None;
+        };
+        let details = match data.as_deref() {
+            Some(Value::Object(map)) => map
+                .get("details")
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        classify(&format!("{message}\n{details}"), Utc::now()).map(|(s, _)| s)
     }
 
     /// The model-provider failure an agent error carries: 0.8's markers, read
@@ -331,6 +394,13 @@ impl AcpError {
         };
         let text = format!("{message} {details}").to_lowercase();
         let any = |markers: &[&str]| markers.iter().any(|m| text.contains(m));
+        let signal = classify(&format!("{message}\n{details}"), Utc::now()).map(|(s, _)| s);
+        // A prompt over the context window is the agent's own (0.8's
+        // canonical `provider_rejected` case, its fault "agent"), even when
+        // the message also says `HTTP 400`; as on the reply and log paths.
+        if signal == Some(Signal::Overflow) {
+            return None;
+        }
         if any(&PROVIDER_AUTH_MARKERS) {
             Some(ProviderSignal::Auth)
         } else if any(&PROVIDER_RATE_LIMIT_MARKERS) {
@@ -343,12 +413,14 @@ impl AcpError {
             // Beyond 0.8's markers: the provider errors the headless agents
             // are read for (Claude's `API Error: 500 ...`, `rate_limit_error`,
             // `Request timed out`), so a provider's failure is not the agent's.
-            use crate::headless::classify::{Signal, classify};
-            match classify(&format!("{message}\n{details}"), Utc::now())?.0 {
+            match signal? {
                 Signal::Login => Some(ProviderSignal::Auth),
                 Signal::RateLimit => Some(ProviderSignal::RateLimit),
                 Signal::Unavailable => Some(ProviderSignal::Unavailable),
                 Signal::Rejected => Some(ProviderSignal::Rejected),
+                // A prompt over the context window is the agent's own (0.8:
+                // `acp_error`); 0.8's `http 400` marker is read above.
+                Signal::Overflow => None,
                 Signal::Model => Some(ProviderSignal::Model),
                 Signal::UsageLimit(_) => None,
             }
@@ -369,6 +441,18 @@ impl AcpError {
             Self::Unsupported { .. } => "other",
             Self::Protocol { .. } => "acp_error",
             Self::Agent { .. } if self.needs_sign_in() => "provider_auth",
+            // A prompt over the context window: 0.8's category by 0.8's
+            // markers (`provider_rejected` when the text says `http 400` or
+            // `provider rejected request`, else `acp_error`), and 0.8's
+            // fault for both: the agent's (see `owner`), not retried.
+            Self::Agent { message, .. } if matches!(self.own_signal(), Some(Signal::Overflow)) => {
+                let text = message.to_lowercase();
+                if PROVIDER_REJECTED_MARKERS.iter().any(|m| text.contains(m)) {
+                    "provider_rejected"
+                } else {
+                    "acp_error"
+                }
+            }
             Self::Agent { .. } => match self.provider_signal() {
                 Some(ProviderSignal::Auth) => "provider_auth",
                 Some(ProviderSignal::Model) => "agent_integration",
@@ -434,7 +518,7 @@ impl AcpError {
                 Some(ProviderSignal::RateLimit) => "the provider is rate limiting; retry later or lower --concurrency".into(),
                 Some(ProviderSignal::Unavailable) => "the provider is unavailable; retry later".into(),
                 Some(ProviderSignal::Rejected) => {
-                    "the provider refused the request (often a context window overflow); see the agent log".into()
+                    "the provider refused the request; see the agent log".into()
                 }
                 None => "read the agent log in the trial's agent/ folder".into(),
             },
@@ -449,7 +533,9 @@ impl AcpError {
                 false
             }
             Self::Agent { .. } => {
+                // A prompt over the context window overflows again.
                 !self.needs_sign_in()
+                    && !matches!(self.own_signal(), Some(Signal::Overflow))
                     && !matches!(
                         self.provider_signal(),
                         Some(
@@ -478,6 +564,126 @@ mod tests {
             message: message.into(),
             data,
             method: "session/prompt".into(),
+        }
+    }
+
+    #[test]
+    fn a_prompt_over_the_context_window_is_the_agents() {
+        let e = AcpError::Agent {
+            code: -32603,
+            message:
+                "Internal error: API Error: prompt is too long: 210000 tokens > 200000 maximum"
+                    .into(),
+            data: None,
+            method: "session/prompt".into(),
+        };
+        assert_eq!(e.category(), "acp_error");
+        let opaque = AcpError::Agent {
+            code: -32603,
+            message: "Internal error".into(),
+            data: None,
+            method: "session/prompt".into(),
+        };
+        assert_eq!(
+            opaque.provider_failure_in_log("litellm: context_length_exceeded\nTraceback ..."),
+            None
+        );
+    }
+
+    /// A request the provider refused for another reason (an HTTP 400 for
+    /// an unsupported parameter) is the provider's on every path, as the
+    /// JSON-RPC message path has it, and is never retried (0.8's
+    /// `provider_rejected` is permanent); a prompt over the context window
+    /// is the agent's on every path, the JSON-RPC message's `HTTP 400`
+    /// notwithstanding. Guards the D7b fixes of 61deae52 (FIX-REVIEW-A 5,
+    /// FIX-REVIEW-B 7) and of REVIEW-CORRECT M1.
+    #[test]
+    fn a_refused_request_that_is_not_the_context_window_is_the_providers() {
+        let line = "HTTP 400: Unsupported parameter 'temperature'";
+        let opaque = AcpError::Agent {
+            code: -32603,
+            message: "Internal error".into(),
+            data: None,
+            method: "session/prompt".into(),
+        };
+        assert_eq!(
+            opaque.provider_failure_in_log(&format!("{line}\nTraceback ...")),
+            Some((Owner::ModelProvider, line.to_string()))
+        );
+        assert_eq!(
+            provider_failure_in_reply(line),
+            Some((Owner::ModelProvider, line.to_string()))
+        );
+        let message = AcpError::Agent {
+            code: -32603,
+            message: format!("Internal error: {line}"),
+            data: None,
+            method: "session/prompt".into(),
+        };
+        assert_eq!(message.category(), "provider_rejected");
+        assert_eq!(message.owner(), Owner::ModelProvider);
+        assert!(!message.is_retryable());
+        assert!(refused_request(line));
+        assert!(!refused_request("API Error: 529 Overloaded"));
+        let overflow = AcpError::Agent {
+            code: -32603,
+            message: "Internal error: HTTP 400: context_length_exceeded".into(),
+            data: None,
+            method: "session/prompt".into(),
+        };
+        // 0.8's category for it, with 0.8's fault: the agent's.
+        assert_eq!(overflow.category(), "provider_rejected");
+        assert_eq!(overflow.owner(), Owner::Agent);
+        assert!(!overflow.is_retryable());
+        // Its log is not read for another cause: a tool's "HTTP 400" there
+        // would make it a provider failure (REVIEW-OUTCOMES L1).
+        let named = AcpError::Agent {
+            code: -32603,
+            message:
+                "Internal error: API Error: prompt is too long: 210000 tokens > 200000 maximum"
+                    .into(),
+            data: None,
+            method: "session/prompt".into(),
+        };
+        assert_eq!(
+            named.provider_failure_in_log("curl: Error: HTTP 400 Bad Request\n"),
+            None
+        );
+        assert_eq!(
+            provider_failure_in_reply("Error: prompt is too long: 210000 tokens > 200000 maximum"),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_stream_that_broke_mid_response_says_so() {
+        for line in [
+            "API Error: Server error mid-response",
+            "API Error: Connection closed mid-response",
+            "Error: stream closed before completion",
+            "API Error: Connection to the API was lost",
+        ] {
+            assert!(broke_mid_stream(line), "{line}");
+        }
+        for line in ["Error: rate limit exceeded", "API Error: 529 Overloaded"] {
+            assert!(!broke_mid_stream(line), "{line}");
+        }
+        // Ending a reply: only space or a sentence's end may follow, not a
+        // quote's closing mark or more words (REVIEW-B (d7d) F1).
+        for line in [
+            "API Error: Server error mid-response",
+            "API Error: Server error mid-response. ",
+            "Error: stream closed before completion!",
+        ] {
+            assert!(ends_mid_stream(line), "{line}");
+        }
+        for line in [
+            "API Error: Server error mid-response`.",
+            "API Error: Server error mid-response\".",
+            "API Error: Server error mid-response, retry with backoff.",
+            "API Error: 529 Overloaded",
+        ] {
+            assert!(!ends_mid_stream(line), "{line}");
         }
     }
 
@@ -511,9 +717,11 @@ mod tests {
                 Owner::ModelProvider,
             ),
             (
+                // 0.8's category for an overflow, and 0.8's fault for it:
+                // the agent's (not the provider's, as this test had it).
                 "provider rejected request (HTTP 400): prompt is too long",
                 "provider_rejected",
-                Owner::ModelProvider,
+                Owner::Agent,
             ),
             ("Internal error", "acp_error", Owner::Agent),
             // Claude Code's own words, which 0.8's markers miss.

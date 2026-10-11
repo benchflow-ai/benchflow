@@ -77,8 +77,15 @@ pub struct TaskVerdict {
     pub weak_details: Vec<crate::outcome::Defense>,
 }
 
-/// Judge one task's trials.
-pub fn judge(task: &Arc<TaskPackage>, records: &[&TrialRecord]) -> TaskVerdict {
+/// Judge one task's trials. `planned` is what `bench test` set out to run
+/// for it ([`attempts`]): a planned attempt with no record (the run was
+/// drained or stopped before it started) is a failed check, so a task is
+/// never proved by trials that did not run.
+pub fn judge(
+    task: &Arc<TaskPackage>,
+    records: &[&TrialRecord],
+    planned: &[Attempt],
+) -> TaskVerdict {
     let by = |label: &str| records.iter().find(|r| r.agent == label).copied();
     let mut checks = Vec::new();
 
@@ -211,6 +218,21 @@ pub fn judge(task: &Arc<TaskPackage>, records: &[&TrialRecord]) -> TaskVerdict {
             _ => broken(r, &format!("probe {}", p.id)),
         };
         checks.push(check);
+    }
+
+    for attempt in planned {
+        let label = attempt.label();
+        if by(&label).is_none() {
+            checks.push(Check {
+                attempt: label,
+                ok: false,
+                reward: None,
+                says: "did not run: the run was drained or stopped before this trial started"
+                    .into(),
+                fix: Some("run `bench test` again to test the task fully".into()),
+                trial: String::new(),
+            });
+        }
     }
 
     let mut weak: Vec<String> = Vec::new();

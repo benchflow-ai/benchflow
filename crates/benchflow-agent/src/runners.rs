@@ -184,6 +184,64 @@ mod tests {
     }
 
     #[test]
+    fn a_skill_the_app_folder_cannot_take_is_a_setup_error() {
+        use std::os::unix::fs::PermissionsExt;
+        if !std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            eprintln!("skipped: no node");
+            return;
+        }
+        // Root writes a read-only folder anyway, as in a CI container, so
+        // the copy this test blocks would go through.
+        let uid = std::process::Command::new("id").arg("-u").output();
+        if uid.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0") {
+            eprintln!("skipped: running as root");
+            return;
+        }
+        let app = tempfile::tempdir().unwrap();
+        let dir = app.path();
+        std::fs::write(dir.join("package.json"), r#"{"dependencies":{"eve":"*"}}"#).unwrap();
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        // A prebuilt app whose folder the agent user cannot write.
+        std::fs::set_permissions(dir.join("agent"), std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+        let skills = delivered();
+        let work = tempfile::tempdir().unwrap();
+        let runner = work.path().join("run_eve.mjs");
+        std::fs::write(&runner, get("run_eve.mjs").unwrap()).unwrap();
+        let instruction = work.path().join("instruction.md");
+        std::fs::write(&instruction, "Do the task.").unwrap();
+        let out = std::process::Command::new("node")
+            .arg(&runner)
+            .arg(&instruction)
+            .env("EVE_PROJECT", dir)
+            .env("EVE_SKIP_BUILD", "1")
+            .env("HOME", work.path())
+            .env("BENCHFLOW_SKILLS_DIR", skills.path())
+            .output()
+            .unwrap();
+        std::fs::set_permissions(dir.join("agent"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let events = String::from_utf8_lossy(&out.stdout);
+        let error = events
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|e| e["type"] == "error")
+            .unwrap_or_else(|| panic!("no error event: {events}"));
+        assert_eq!(error["kind"], "setup", "{error}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("could not copy skill"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn the_eve_runner_adds_no_skills_folder_without_skills() {
         let Some(app) = eve_app_after_run(false, None) else {
             return;

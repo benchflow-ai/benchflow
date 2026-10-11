@@ -177,6 +177,9 @@ cython_debug/
 
 trials/
 jobs/
+# the e2e suite's stored jobs are fixtures
+!e2e/jobs/
+!e2e/jobs/**
 .jobs/
 dogfood/
 tmp/

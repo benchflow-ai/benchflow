@@ -12,7 +12,7 @@ BenchFlow model result:
 - trajectory/llm_trajectory.jsonl exists, is non-empty, parses as JSONL, and
   contains real provider request and response records.
 - results.jsonl exists, is non-empty, parses as JSONL, and contains a
-  Prime-RL/Verifiers-shaped training-readiness row backed by the LLM trajectory.
+  trainer-shaped training-readiness row backed by the LLM trajectory.
 - token usage, timing, and tool usage metadata are present.
 
 The explicit ``--allow-native-subscription-without-llm`` mode accepts only a

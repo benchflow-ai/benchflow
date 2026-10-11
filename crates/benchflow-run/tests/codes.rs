@@ -65,14 +65,22 @@ enum Fault {
     Transport,
     /// Agent processes survive the kill before grading.
     Survivors,
+    /// The sandbox is deleted while the kill before grading runs: the
+    /// program ends without its report.
+    KillGone,
     /// A program on the image's PATH answers in place of the shell.
     Shadowed,
+    /// As `Shadowed`, and the planted shell answers any later command with
+    /// the container CLI's "No such container", though the sandbox runs.
+    ShadowedLies,
     /// The agent's turn changed /etc/ld.so.preload, and it cannot be put back.
     PreloadStuck,
     /// The agent took ownership of BenchFlow's state folder before grading.
     StateTampered,
     /// The image's PATH holds a folder others can write.
     UncleanVerifierEnv,
+    /// The workdir cannot be given to root before grading.
+    OwnFails,
     /// A hook before grading exits with an error.
     HookFails,
     /// A service beside the sandbox exits as it starts.
@@ -81,6 +89,9 @@ enum Fault {
     NoIptables,
     /// The firewall self-test reaches a blocked address.
     Leaky,
+    /// The backend loses the sandbox during the firewall self-test (its
+    /// commands still come back, as Daytona's did for a deleted sandbox).
+    LeakyGone,
     /// The verifier writes no reward.
     NoReward,
     /// The verifier writes a reward that is not a number.
@@ -99,6 +110,33 @@ enum Fault {
     VerifierKilled,
     /// The verifier runs, but its folder cannot be fetched.
     DownloadFails,
+    /// The verifier removes its own folder (`rm -rf /logs/verifier`).
+    VerifierFolderGone,
+    /// The verifier's folder comes out of the sandbox but cannot be
+    /// unpacked on this machine.
+    LocalUnpack,
+    /// The copy of the verifier's folder breaks off after `reward.txt`
+    /// (the connection drops).
+    DownloadBreaksOff,
+    /// This machine's disk fills while the verifier's folder is copied in.
+    HostDiskFull,
+    /// The first copy of the verifier's folder breaks off; the second
+    /// works.
+    DownloadBreaksOnce,
+    /// The verifier's folder cannot be copied (tar refuses a file in it),
+    /// though the sandbox runs.
+    DownloadRefused,
+    /// The verifier's folder is over the copy's cap.
+    DownloadOverCap,
+    /// The connection to the running sandbox breaks off during both copies.
+    DownloadChannel,
+    /// The verifier's code stops the sandbox (`kill -TERM 1`): the backend
+    /// still has it, stopped, and nothing more can be run or copied.
+    VerifierStopsSandbox,
+    /// The verifier runs past its timeout, and its folder cannot be copied.
+    TimeoutDownloadFails,
+    /// The backend does not answer when the sandbox is removed.
+    DestroyFails,
     /// The verifier hangs (for a Ctrl-C while grading).
     VerifierHangs,
     /// The verifier fails on a full disk and writes no reward.
@@ -125,10 +163,15 @@ enum Act {
     Crash,
     /// Answers the prompt with a JSON-RPC error.
     Error(&'static str),
+    /// The same, after writing a line to its log (stderr).
+    ErrorLogged(&'static str, &'static str),
     /// Answers the prompt with codex-acp's usage-limit error.
     Spent,
     /// Ends its turn with this as its only message, and no tool call.
     Reply(&'static str),
+    /// The same, from a model that was reached: the turn reports output
+    /// tokens.
+    Answer(&'static str),
     /// Refuses `session/new` until signed in with the vendor's account.
     NeedsSignIn,
 }
@@ -136,6 +179,10 @@ enum Act {
 #[derive(Default)]
 struct World {
     solved: bool,
+    /// The sandbox exists but was stopped from inside.
+    stopped: bool,
+    /// Copies of the verifier's folder so far.
+    downloads: usize,
     /// The sandbox is gone: every later command fails.
     gone: bool,
 }
@@ -170,11 +217,16 @@ impl Sandbox for FakeSandbox {
     }
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
         let c = exec.command;
-        let silent = self.fault == Fault::Shadowed;
+        let silent = matches!(self.fault, Fault::Shadowed | Fault::ShadowedLies);
         if self.world.lock().unwrap().gone {
             return Err(gone());
         }
         let verifier = c.contains("/verifier/test.sh") || c.contains("/tests/test.sh");
+        if self.fault == Fault::ShadowedLies && c == "true" {
+            return Err(SandboxError::Transport(
+                "the sandbox container fake-codes is no longer running (Error response from daemon: No such container: fake-codes)".into(),
+            ));
+        }
         match self.fault {
             Fault::SetupGone if c.contains("useradd") => return Err(gone()),
             Fault::SetupHangs if c.contains("useradd") => {
@@ -194,6 +246,15 @@ impl Sandbox for FakeSandbox {
             Fault::VerifierKilled if verifier => {
                 self.world.lock().unwrap().gone = true;
                 return Ok(output(137, "", "Killed\n"));
+            }
+            Fault::VerifierStopsSandbox if verifier => {
+                self.world.lock().unwrap().stopped = true;
+                return Ok(output(143, "", "Terminated\n"));
+            }
+            _ if self.world.lock().unwrap().stopped => {
+                return Err(SandboxError::Transport(
+                    "the sandbox container fake-codes is no longer running (Error response from daemon: container is not running)".into(),
+                ));
             }
             _ => {}
         }
@@ -220,7 +281,7 @@ impl Sandbox for FakeSandbox {
             }
         } else if c.contains("BF canary") {
             // The firewall self-test, as the agent user.
-            let verdict = if self.fault == Fault::Leaky {
+            let verdict = if matches!(self.fault, Fault::Leaky | Fault::LeakyGone) {
                 "reached"
             } else {
                 "refused"
@@ -260,6 +321,11 @@ impl Sandbox for FakeSandbox {
                     ));
                 }
                 Fault::Survivors => output(1, "BF survivors 4242 sleep\n", ""),
+                Fault::KillGone => {
+                    // What Daytona answered live: exit 0, no output.
+                    self.world.lock().unwrap().gone = true;
+                    output(0, "", "")
+                }
                 _ if silent => output(0, "", ""),
                 _ => output(0, "BF killed 1\n", ""),
             }
@@ -296,10 +362,20 @@ impl Sandbox for FakeSandbox {
                 ),
                 _ => output(0, if silent { "" } else { "BF handoff done\n" }, ""),
             }
+        } else if c.contains("BF owned") && self.fault == Fault::OwnFails {
+            output(
+                3,
+                "",
+                "chown: changing ownership of '/app/data': Read-only file system\nBF error chown /app\n",
+            )
         } else if c.contains("BF owned") {
             output(0, if silent { "" } else { "BF owned root\n" }, "")
         } else if c.contains("BF stage-ready") {
             output(0, if silent { "" } else { "BF stage-ready\n" }, "")
+        } else if c.contains("BF tree placed") {
+            output(0, if silent { "" } else { "BF tree placed\n" }, "")
+        } else if c.contains("BF baseline-added") {
+            output(0, if silent { "" } else { "BF baseline-added 0\n" }, "")
         } else if c.contains("BF staged") {
             output(0, if silent { "" } else { "BF staged\n" }, "")
         } else if c.contains("BF placement done") {
@@ -318,7 +394,7 @@ impl Sandbox for FakeSandbox {
             output(0, "BF baseline 2\n", "")
         } else if c.contains("/verifier/test.sh") || c.contains("/tests/test.sh") {
             match self.fault {
-                Fault::VerifierTimeout => ExecOutput {
+                Fault::VerifierTimeout | Fault::TimeoutDownloadFails => ExecOutput {
                     timed_out: true,
                     ..output(124, "collecting ...\n", "")
                 },
@@ -362,11 +438,87 @@ impl Sandbox for FakeSandbox {
     }
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
         if remote == "/logs/verifier" {
-            if self.world.lock().unwrap().gone || self.fault == Fault::DownloadFails {
+            let attempt = {
+                let mut w = self.world.lock().unwrap();
+                w.downloads += 1;
+                w.downloads
+            };
+            if matches!(self.fault, Fault::DownloadFails | Fault::DownloadBreaksOff) {
+                // The backend lost the sandbox as its folder was copied.
+                self.world.lock().unwrap().gone = true;
+            }
+            if self.world.lock().unwrap().gone && self.fault != Fault::DownloadBreaksOff {
                 return Err(gone());
+            }
+            if self.fault == Fault::LocalUnpack {
+                return Err(SandboxError::io(
+                    format!(
+                        "copying /logs/verifier out of the sandbox into {}",
+                        local.display()
+                    ),
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory"),
+                ));
+            }
+            if self.fault == Fault::VerifierFolderGone {
+                return Err(SandboxError::io(
+                    "downloading /logs/verifier",
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory"),
+                ));
+            }
+            if self.world.lock().unwrap().stopped {
+                return Err(SandboxError::Transport(
+                    "the sandbox container fake-codes is no longer running".into(),
+                ));
+            }
+            match self.fault {
+                Fault::DownloadRefused | Fault::TimeoutDownloadFails => {
+                    return Err(SandboxError::Content(
+                        "copying /logs/verifier out in fake-codes failed (exit code 2): tar: verifier/secret: Cannot open: Permission denied"
+                            .into(),
+                    ));
+                }
+                Fault::DownloadOverCap => {
+                    return Err(SandboxError::io(
+                        format!(
+                            "copying {remote} out of the sandbox into {}",
+                            local.display()
+                        ),
+                        std::io::Error::new(
+                            std::io::ErrorKind::FileTooLarge,
+                            "verifier/huge.bin would take the download past its cap",
+                        ),
+                    ));
+                }
+                Fault::DownloadChannel => return Err(gone()),
+                _ => {}
             }
             std::fs::create_dir_all(local).unwrap();
             let solved = self.world.lock().unwrap().solved;
+            // Part of the folder arrived (a reward of 0, the rest of the
+            // verifier's files did not), then the copy failed.
+            match self.fault {
+                Fault::DownloadBreaksOff => {
+                    std::fs::write(local.join("reward.txt"), "0\n").unwrap();
+                    return Err(gone());
+                }
+                Fault::DownloadBreaksOnce if attempt == 1 => {
+                    // A reward.json of 0 would win over the second copy's
+                    // reward.txt if the folder were not cleared.
+                    std::fs::write(local.join("reward.json"), "{\"reward\": 0}\n").unwrap();
+                    return Err(gone());
+                }
+                Fault::HostDiskFull => {
+                    std::fs::write(local.join("reward.txt"), "0\n").unwrap();
+                    return Err(SandboxError::io(
+                        format!(
+                            "copying {remote} out of the sandbox into {}",
+                            local.display()
+                        ),
+                        std::io::Error::from(std::io::ErrorKind::StorageFull),
+                    ));
+                }
+                _ => {}
+            }
             match self.fault {
                 Fault::NoReward
                 | Fault::VerifierFails
@@ -379,7 +531,20 @@ impl Sandbox for FakeSandbox {
         }
         Ok(())
     }
+    async fn presence(&self) -> Result<benchflow_sandbox::Presence, SandboxError> {
+        let w = self.world.lock().unwrap();
+        Ok(if w.gone || self.fault == Fault::LeakyGone {
+            benchflow_sandbox::Presence::Gone
+        } else if w.stopped {
+            benchflow_sandbox::Presence::Stopped
+        } else {
+            benchflow_sandbox::Presence::Running
+        })
+    }
     async fn destroy(&self) -> Result<(), SandboxError> {
+        if self.fault == Fault::DestroyFails {
+            return Err(gone());
+        }
         Ok(())
     }
 }
@@ -446,6 +611,12 @@ fn fake_acp_agent(act: Act, world: Arc<Mutex<World>>) -> Process {
                     }
                     Act::Error(message) => out.push(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32603, "message": message}})),
+                    Act::ErrorLogged(message, log) => {
+                        let _ = agent_stderr.write_all(format!("{log}\n").as_bytes()).await;
+                        let _ = agent_stderr.flush().await;
+                        out.push(json!({"jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32603, "message": message}}));
+                    }
                     Act::Spent => out.push(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32603, "message": "Internal error",
                             "data": {"codexErrorInfo": "usageLimitExceeded",
@@ -454,6 +625,12 @@ fn fake_acp_agent(act: Act, world: Arc<Mutex<World>>) -> Process {
                         out.push(update(json!({"sessionUpdate": "agent_message_chunk",
                             "content": {"type": "text", "text": text}})));
                         out.push(reply(json!({"stopReason": "end_turn"})));
+                    }
+                    Act::Answer(text) => {
+                        out.push(update(json!({"sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": text}})));
+                        out.push(reply(json!({"stopReason": "end_turn",
+                            "usage": {"inputTokens": 900, "outputTokens": 12, "totalTokens": 912}})));
                     }
                     Act::Silent | Act::ExitAtStart | Act::NeedsSignIn => pending = id.clone(),
                 },
@@ -1101,6 +1278,12 @@ fn cases() -> Vec<Case> {
         )
         .fault(Fault::StateTampered),
         Case::new(
+            "R315",
+            Task,
+            "the workdir cannot be given to root before grading",
+        )
+        .fault(Fault::OwnFails),
+        Case::new(
             "R106",
             Task,
             "a service beside the sandbox exits as it starts",
@@ -1304,6 +1487,41 @@ async fn every_run_code_is_triggered_and_reads_as_written() {
 
 /// Failures beyond one per code: the status each records, and that a
 /// sandbox or BenchFlow problem is never a score or the task's fault.
+/// D4 chaos runs: a sandbox whose removal failed was named only in the
+/// trial's log; the run now lists it at the end.
+#[tokio::test]
+async fn a_sandbox_that_cannot_be_removed_is_listed() {
+    let case = Case::new("R000", Owner::You, "removal fails")
+        .act(Act::Solve)
+        .fault(Fault::DestroyFails);
+    let rec = run(&case).await.expect("a trial record");
+    assert_eq!(rec.status, benchflow_run::outcome::Status::Scored);
+    assert!(
+        benchflow_run::trial::left_behind()
+            .iter()
+            .any(|s| s.ends_with(" fake-codes")),
+        "{:?}",
+        benchflow_run::trial::left_behind()
+    );
+}
+
+/// Review of rust/d4-chaos: a copy of the verifier's folder that broke
+/// off once was never tried again, so a dropped connection cost the trial.
+#[tokio::test]
+async fn a_copy_that_breaks_off_once_is_made_again() {
+    let case = Case::new("R000", Owner::You, "the copy breaks off once")
+        .act(Act::Solve)
+        .fault(Fault::DownloadBreaksOnce);
+    let rec = run(&case).await.expect("a trial record");
+    assert_eq!(
+        rec.status,
+        benchflow_run::outcome::Status::Scored,
+        "{:?}",
+        rec.problem
+    );
+    assert_eq!(rec.reward, Some(1.0));
+}
+
 #[tokio::test]
 async fn failures_record_the_right_status_owner_and_phase() {
     use Owner::*;
@@ -1374,6 +1592,110 @@ async fn failures_record_the_right_status_owner_and_phase() {
         (
             Case::new("R103", Sandbox, "the verifier's folder cannot be fetched")
                 .fault(Fault::DownloadFails),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        // D4 chaos runs (rust/d4-chaos): a full disk on this machine while
+        // the verifier's folder was copied in scored the oracle 0 from the
+        // files that arrived. Review of rust/d4-chaos (Outcomes 1): under
+        // the copy's cap, this machine's full disk is yours, and rerun.
+        (
+            Case::new("R107", You, "this machine's disk fills while the verifier's folder is copied")
+                .act(Act::Solve)
+                .fault(Fault::HostDiskFull),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        // A copy the folder stops is never graded, and never run again (the
+        // verifier may have run the agent's code).
+        (
+            Case::new("R301", Task, "tar refuses a file in the verifier's folder")
+                .act(Act::Solve)
+                .fault(Fault::DownloadRefused),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        (
+            Case::new("R301", Task, "the verifier's folder is over the copy's cap")
+                .act(Act::Solve)
+                .fault(Fault::DownloadOverCap),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        // Review of rust/d4-chaos (Outcomes 2): a connection that breaks
+        // off while the sandbox runs is the sandbox's, and rerun.
+        (
+            Case::new("R103", Sandbox, "the connection breaks off during both copies")
+                .act(Act::Solve)
+                .fault(Fault::DownloadChannel),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        // Review of rust/d4-chaos (Outcomes 3): code the verifier runs
+        // stops the sandbox; it still exists, so the failure stays the
+        // task's instead of buying a rerun.
+        (
+            Case::new("R301", Task, "the verifier's code stops the sandbox")
+                .act(Act::Solve)
+                .fault(Fault::VerifierStopsSandbox),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        (
+            Case::new("R303", Task, "the verifier times out and its folder cannot be copied")
+                .fault(Fault::TimeoutDownloadFails),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        // Reviews of rust/d4-chaos: an agent's planted shell answered the
+        // liveness check with the CLI's "No such container", which turned
+        // the task's R307 into a rerun.
+        (
+            Case::new("R307", Task, "a planted shell claims the sandbox is gone")
+                .act(Act::Solve)
+                .fault(Fault::ShadowedLies),
+            Status::Unscored,
+            Phase::Handoff,
+        ),
+        (
+            Case::new("R103", Sandbox, "the backend loses the sandbox during the firewall self-test")
+                .fault(Fault::LeakyGone)
+                .tweak(|t| t.sandbox.network = Network::Block(vec!["192.0.2.50".into()])),
+            Status::Errored,
+            Phase::Setup,
+        ),
+        // D4 chaos runs: a sandbox deleted through Daytona's API during the
+        // kill before grading was R307, the task's image.
+        (
+            Case::new("R103", Sandbox, "the sandbox is deleted during the kill before grading")
+                .act(Act::Solve)
+                .fault(Fault::KillGone),
+            Status::Errored,
+            Phase::Handoff,
+        ),
+        (
+            Case::new("R103", Sandbox, "the copy of the verifier's folder breaks off")
+                .act(Act::Solve)
+                .fault(Fault::DownloadBreaksOff),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            // The sandbox still answers: no reward is the task's.
+            Case::new("R301", Task, "the verifier removes its own folder")
+                .fault(Fault::VerifierFolderGone),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        (
+            // A failure on this machine is the user's, not the task's,
+            // even when it reads "not found" (FIX-REVIEW-B 4 on 61deae52).
+            Case::new(
+                "R107",
+                You,
+                "the verifier's folder cannot be unpacked on this machine",
+            )
+            .fault(Fault::LocalUnpack),
             Status::Errored,
             Phase::Verify,
         ),
@@ -1474,6 +1796,15 @@ async fn failures_record_the_right_status_owner_and_phase() {
                 p.message
             ));
         }
+        // Review of rust/d4-chaos: the R103 kept R307's text.
+        if matches!(case.fault, Fault::KillGone | Fault::LeakyGone)
+            && (p.message.contains("PATH") || p.message.contains("reached"))
+        {
+            failures.push(format!(
+                "{}: the message is not the sandbox's: {p:?}",
+                case.what
+            ));
+        }
         if case.fault == Fault::DiskFull && !p.message.contains("disk was full") {
             failures.push(format!("{}: the full disk is not named: {p:?}", case.what));
         }
@@ -1494,4 +1825,135 @@ async fn failures_record_the_right_status_owner_and_phase() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Only the provider's own failure leaves a trial ungraded: a model that
+/// was reached and answered with words that read like an error is graded,
+/// and a key in the reply never reaches the record.
+#[tokio::test]
+async fn an_answer_that_reads_like_a_provider_error_is_graded() {
+    use benchflow_run::outcome::Status;
+    let answered = Case::new("R214", Owner::Model, "a model answers like an error")
+        .act(Act::Answer("Error: rate limit exceeded, try again later"));
+    let rec = run(&answered).await.unwrap();
+    assert_eq!(rec.status, Status::Scored, "{:?}", rec.problem);
+    assert_eq!(rec.reward, Some(0.0));
+
+    let failed = Case::new("R212", Owner::Model, "a 401 echoing the key")
+        .act(Act::Reply("HTTP 401: invalid api key fake-key-0123456789"));
+    let rec = run(&failed).await.unwrap();
+    assert_eq!(rec.status, Status::Errored);
+    let p = rec.problem.unwrap();
+    assert!(p.message.contains("HTTP 401"), "{}", p.message);
+    assert!(!p.message.contains("fake-key-0123456789"), "{}", p.message);
+
+    // A stream that broke after the model began: the partial answer's
+    // tokens do not make the provider's failure the agent's (FIX-REVIEW-B
+    // 6 on 61deae52).
+    let broke = Case::new("R214", Owner::Model, "a stream broken mid-response")
+        .act(Act::Answer("API Error: Server error mid-response"));
+    let rec = run(&broke).await.unwrap();
+    assert_eq!(rec.status, Status::Errored, "{:?}", rec.problem);
+    assert_eq!(rec.problem.unwrap().code, "R214");
+    // The same after a partial answer, where only the last line is the
+    // error (REVIEW-CORRECT L2).
+    let partial = Case::new(
+        "R214",
+        Owner::Model,
+        "a partial answer, then a broken stream",
+    )
+    .act(Act::Answer(
+        "Here is the fix: change the loop bound.\nAPI Error: Server error mid-response",
+    ));
+    let rec = run(&partial).await.unwrap();
+    assert_eq!(rec.status, Status::Errored, "{:?}", rec.problem);
+    assert_eq!(rec.problem.unwrap().code, "R214");
+    // ...and with no line break before the error (REVIEW-OUTCOMES L3).
+    let joined = Case::new(
+        "R214",
+        Owner::Model,
+        "a partial answer run into a broken stream",
+    )
+    .act(Act::Answer(
+        "Here is the fix: change the loop bound.API Error: Server error mid-response",
+    ));
+    let rec = run(&joined).await.unwrap();
+    assert_eq!(rec.status, Status::Errored, "{:?}", rec.problem);
+    assert_eq!(rec.problem.unwrap().code, "R214");
+    // ...and after a partial answer cut mid-word, as a broken stream
+    // usually leaves it (REVIEW-B (d7d) F1: graded as the answer).
+    let cut = Case::new(
+        "R214",
+        Owner::Model,
+        "a partial answer cut mid-word, then a broken stream",
+    )
+    .act(Act::Answer(
+        "Here is the fix: change the loop bouAPI Error: Server error mid-response",
+    ));
+    let rec = run(&cut).await.unwrap();
+    assert_eq!(rec.status, Status::Errored, "{:?}", rec.problem);
+    assert_eq!(rec.problem.unwrap().code, "R214");
+    // A partial answer, then the provider failing outright, is the
+    // provider's too; an answer that only quotes such an error mid-sentence
+    // is graded (REVIEW-OUTCOMES (d7c) L4).
+    let overloaded = Case::new("R214", Owner::Model, "a partial answer, then a 529")
+        .act(Act::Answer("Here is the fix.\nAPI Error: 529 Overloaded"));
+    let rec = run(&overloaded).await.unwrap();
+    assert_eq!(rec.status, Status::Errored, "{:?}", rec.problem);
+    let quoted = Case::new("R214", Owner::Model, "an answer that quotes an error").act(
+        Act::Answer("To handle `API Error: Server error mid-response`, retry with backoff."),
+    );
+    let rec = run(&quoted).await.unwrap();
+    assert_eq!(rec.status, Status::Scored, "{:?}", rec.problem);
+    // A quote that ends the answer is still the answer.
+    let quoted = Case::new("R214", Owner::Model, "an answer that ends quoting an error").act(
+        Act::Answer("Claude Code then prints `API Error: Server error mid-response`."),
+    );
+    let rec = run(&quoted).await.unwrap();
+    assert_eq!(rec.status, Status::Scored, "{:?}", rec.problem);
+    // A spent credit balance in the error's own words is the login's limit
+    // (R213), not the agent's error (REVIEW-OUTCOMES (d7c) L2).
+    let spent = Case::new("R213", Owner::Model, "a credit balance spent, in words").act(
+        Act::Error("Internal error: Your credit balance is too low to access the Anthropic API"),
+    );
+    let rec = run(&spent).await.unwrap();
+    let p = rec.problem.unwrap();
+    assert_eq!(p.code, "R213", "{}", p.message);
+    // A JSON-RPC error that is a refused request: the provider's, not
+    // retried; one that names the context window: the agent's, whatever
+    // the log says (REVIEW-OUTCOMES L1, L7).
+    let refused = Case::new("R214", Owner::Model, "a JSON-RPC refused request").act(Act::Error(
+        "Internal error: HTTP 400: Unsupported parameter 'temperature'",
+    ));
+    let rec = run(&refused).await.unwrap();
+    let p = rec.problem.unwrap();
+    assert_eq!(
+        (p.code.as_str(), p.transient),
+        ("R214", false),
+        "{}",
+        p.message
+    );
+    // Its log ends in a tool's HTTP 400, which must not make it the
+    // provider's (REVIEW-OUTCOMES (d7c) L6: the case read no log before).
+    let overflow =
+        Case::new("R205", Owner::Agent, "a JSON-RPC context overflow").act(Act::ErrorLogged(
+            "Internal error: API Error: prompt is too long: 210000 tokens > 200000 maximum",
+            "curl: (22) The requested URL returned error: HTTP 400 Bad Request",
+        ));
+    let rec = run(&overflow).await.unwrap();
+    let p = rec.problem.unwrap();
+    assert_eq!(
+        (p.code.as_str(), p.owner),
+        ("R205", Owner::Agent),
+        "{}",
+        p.message
+    );
+    // A refused request is the provider's but never retried
+    // (REVIEW-CORRECT M1; 0.8's provider_rejected is permanent).
+    let refused = Case::new("R214", Owner::Model, "a refused request")
+        .act(Act::Reply("HTTP 400: Unsupported parameter 'temperature'"));
+    let rec = run(&refused).await.unwrap();
+    assert_eq!(rec.status, Status::Errored, "{:?}", rec.problem);
+    let p = rec.problem.unwrap();
+    assert_eq!((p.code.as_str(), p.transient), ("R214", false));
 }

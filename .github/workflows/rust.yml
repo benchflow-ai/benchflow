@@ -14,6 +14,7 @@ on:
       - "Cargo.*"
       - "rust-toolchain.toml"
       - "install.sh"
+      - "e2e/**"
       - ".github/workflows/rust.yml"
   pull_request:
     paths:
@@ -21,8 +22,13 @@ on:
       - "Cargo.*"
       - "rust-toolchain.toml"
       - "install.sh"
+      - "e2e/**"
       - ".github/workflows/rust.yml"
   workflow_dispatch:
+  # Nightly: the e2e suite's full tier on Docker (the job below runs only
+  # here, on pushes to main and bench-rs, and on manual runs).
+  schedule:
+    - cron: "17 9 * * *"
 
 # Cancel superseded runs on a PR branch; never cancel pushes or tags.
 concurrency:
@@ -79,6 +85,8 @@ jobs:
       # Pushes to main and bench-rs save the cache; pull requests only read it.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
+          # docs-guard.yml reads this cache under the same key.
+          shared-key: workspace
           save-if: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
 
       - name: cargo clippy
@@ -86,6 +94,107 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --locked
+
+      # GitHub's ubuntu runners have Docker: download from a glibc container
+      # through BenchFlow's own `docker exec` arguments (ignored elsewhere).
+      - name: glibc download through docker exec
+        if: runner.os == 'Linux'
+        run: cargo test -p benchflow-sandbox --lib --locked -- --ignored a_glibc_download
+
+      # The black-box suite's scenarios that need no sandbox and no secret,
+      # against the bench that cargo test just built. Scenarios that start
+      # sandboxes need Docker or a Daytona key; see docs/rust/testing-e2e.md.
+      - name: e2e (no sandbox)
+        run: python3 e2e/run.py --bench target/debug/bench --backend none --tier full
+
+  # The black-box suite's smoke tier on Docker: its five sandbox scenarios
+  # (bench run, bench test, doctor, the failure paths, mounts and hooks)
+  # against a debug build, on the runner's own Docker. No secret: no smoke
+  # scenario needs a model or Daytona. --require-sandbox fails the job if
+  # no sandbox scenario ran, so a skipped tier cannot pass as green.
+  e2e-docker:
+    name: e2e smoke (docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (the channel in rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+
+      - name: cargo build -p benchflow-cli
+        run: cargo build --locked -p benchflow-cli
+
+      - name: Docker is up
+        run: docker version && docker info --format '{{.ServerVersion}} {{.Driver}}'
+
+      # A deadline under the job's: a hung step fails this step, and the
+      # transcripts below are still uploaded.
+      - name: e2e smoke tier on Docker
+        timeout-minutes: 20
+        run: >-
+          python3 e2e/run.py --bench target/debug/bench --backend docker --tier smoke
+          --require-sandbox --work "$RUNNER_TEMP/e2e" --json "$RUNNER_TEMP/e2e.json"
+
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        if: failure() || cancelled()
+        with:
+          name: e2e-docker-smoke
+          path: ${{ runner.temp }}/e2e*
+          if-no-files-found: ignore
+
+  # The full tier on Docker: the network policies, every exploit probe, the
+  # image-hole defenses, services, and the shell, which the smoke tier does
+  # not reach. About 12 minutes on a warm machine, longer on a fresh runner;
+  # so on pushes to main and bench-rs, nightly, and on manual runs, not on
+  # every pull request. Still no secret: the model and Daytona scenarios
+  # skip themselves without their keys.
+  e2e-docker-full:
+    name: e2e full (docker)
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref_type == 'branch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (the channel in rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          save-if: false
+
+      - name: cargo build -p benchflow-cli
+        run: cargo build --locked -p benchflow-cli
+
+      - name: e2e full tier on Docker
+        timeout-minutes: 60
+        run: >-
+          python3 e2e/run.py --bench target/debug/bench --backend docker --tier full
+          --require-sandbox --work "$RUNNER_TEMP/e2e" --json "$RUNNER_TEMP/e2e.json"
+
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        if: failure() || cancelled()
+        with:
+          name: e2e-docker-full
+          path: ${{ runner.temp }}/e2e*
+          if-no-files-found: ignore
 
   install-script:
     name: install.sh
@@ -106,7 +215,7 @@ jobs:
   release:
     name: release (${{ matrix.target }})
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-    needs: [fmt, check, install-script]
+    needs: [fmt, check, e2e-docker, install-script]
     strategy:
       fail-fast: false
       matrix:

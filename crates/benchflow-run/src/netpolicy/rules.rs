@@ -39,7 +39,7 @@ pub enum Scope {
 /// image has none. It never fails the build, and it leaves the image's apt
 /// package lists as it found them: a solution may install from them without
 /// an update (Terminal-Bench 2's `chess-best-move` does).
-pub(super) const INSTALL_LAYER: &str = r#"if ! command -v iptables >/dev/null 2>&1; then
+pub(super) const INSTALL_LAYER: &str = r#"if ! command -v iptables >/dev/null 2>&1 || ! command -v ip6tables >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
     bf_lists=$(mktemp -d 2>/dev/null || echo /tmp/.bf-apt-lists); mkdir -p "$bf_lists"; cp -a /var/lib/apt/lists/. "$bf_lists"/ 2>/dev/null
     DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends iptables >/dev/null 2>&1
@@ -158,7 +158,12 @@ fn pins(net: &PhaseNet) -> String {
 /// unreachable only fails a TCP connect after a SYN retry, about a second
 /// later, and the self-test's twelve refused daemon connections made every
 /// Daytona trial's setup 13 s longer.
-fn chain_rules(net: &PhaseNet, v6: bool, guard: bool) -> String {
+///
+/// With `v6_only` the backend blocks this phase's network itself but for
+/// IPv6 (a `none` on Daytona): both chains let loopback through, a task's
+/// own resolver on it included, and refuse the rest; the IPv4 chain only
+/// backs the backend's block up, the IPv6 one is all that closes IPv6.
+fn chain_rules(net: &PhaseNet, v6: bool, guard: bool, v6_only: bool) -> String {
     let ranges: Vec<&String> = net
         .ranges
         .iter()
@@ -182,10 +187,14 @@ fn chain_rules(net: &PhaseNet, v6: bool, guard: bool) -> String {
     match &net.network {
         Network::Allow(_) | Network::None => {
             // Resolvers on loopback (Docker's embedded one is 127.0.0.11,
-            // reached on a rewritten port) would answer for any name.
-            add("-o lo -p udp --dport 53 -j \"$REJ\"");
-            add("-o lo -p tcp --dport 53 -j \"$RT\" $RTO");
-            if !v6 {
+            // reached on a rewritten port) would answer for any name. Where
+            // the backend blocks IPv4 itself, a resolver there reaches out
+            // to nothing, and the task's own (a dnsmasq) must keep working.
+            if !v6_only {
+                add("-o lo -p udp --dport 53 -j \"$REJ\"");
+                add("-o lo -p tcp --dport 53 -j \"$RT\" $RTO");
+            }
+            if !v6 && !v6_only {
                 refuse(&mut add, "-d 127.0.0.11");
             }
             add("-o lo -j RETURN");
@@ -213,7 +222,15 @@ fn chain_rules(net: &PhaseNet, v6: bool, guard: bool) -> String {
 /// also refuses the sandbox daemon's ports: those it listens on when the
 /// script runs, and `guard` as a floor. The script then prints
 /// `BF fw-guard-found <ports, or none>` and `BF fw-guard-ports <ports>`.
-pub(super) fn install(scope: &Scope, net: &PhaseNet, guard: &[u16]) -> String {
+/// It always prints `BF fw-v6 <absent|local|global>` first. `v6_only`: see
+/// [`chain_rules`].
+pub(super) fn install(
+    scope: &Scope,
+    net: &PhaseNet,
+    guard: &[u16],
+    v6_only: bool,
+    v6_required: bool,
+) -> String {
     let uid = match scope {
         Scope::AgentUser(user) => format!(
             "uid=$(id -u {u} 2>/dev/null) || {{ echo \"BF fw-error no-user {u}\"; exit 0; }}\n",
@@ -230,9 +247,10 @@ pub(super) fn install(scope: &Scope, net: &PhaseNet, guard: &[u16]) -> String {
     };
     format!(
         r#"{prelude}
+echo "BF fw-v6 $v6"
 [ -n "$fw4" ] || {{ echo "BF fw-error no-iptables"; exit 0; }}
 [ "$fw4_bad" = 0 ] || {{ echo "BF fw-error no-permission $fw4_err"; exit 0; }}
-if [ "$v6" = global ] && [ -z "$fw6" ]; then echo "BF fw-error ipv6-unfiltered"; exit 0; fi
+if [ "$v6" {v6_needs} ] && [ -z "$fw6" ]; then echo "BF fw-error ipv6-unfiltered"; exit 0; fi
 {uid}{discover}exit_rule() {{ echo "BF fw-error rule-failed $t"; [ -n "$fw4" ] && unhook "$fw4"; [ -n "$fw6" ] && unhook "$fw6"; exit 0; }}
 setup() {{
   t=$1
@@ -269,8 +287,8 @@ echo "BF fw-sum $(fingerprint)"
 "#,
         prelude = prelude(),
         uid = uid,
-        rules4 = chain_rules(net, false, !guard.is_empty()),
-        rules6 = chain_rules(net, true, !guard.is_empty()),
+        rules4 = chain_rules(net, false, !guard.is_empty(), v6_only),
+        rules6 = chain_rules(net, true, !guard.is_empty(), v6_only),
         discover = if guard.is_empty() {
             String::new()
         } else {
@@ -284,6 +302,9 @@ echo "BF fw-sum $(fingerprint)"
             )
         },
         jumps = jumps,
+        // Where the chain must close IPv6 (see enforce_stage), any IPv6 at
+        // all needs ip6tables, loopback included.
+        v6_needs = if v6_required { "!= absent" } else { "= global" },
         pins = pin_hosts(&pins(net)),
         gap = if guard.is_empty() {
             ""
@@ -309,7 +330,7 @@ pub(super) fn remove() -> String {
 }
 
 /// What the installed firewall covers, in one clause.
-pub(super) fn describe(scope: &Scope, net: &PhaseNet, how: &str) -> String {
+pub(super) fn describe(scope: &Scope, net: &PhaseNet, how: &str, v6_only: bool) -> String {
     let who = match scope {
         Scope::AgentUser(u) => {
             format!("every packet of `{u}` and every new connection of other non-root users")
@@ -331,6 +352,9 @@ pub(super) fn describe(scope: &Scope, net: &PhaseNet, how: &str) -> String {
             "only the listed addresses; DNS refused, {} pinned in /etc/hosts",
             names(net.names.len())
         ),
+        Network::None if v6_only => {
+            "loopback only, a resolver there included (the backend blocks IPv4 too)".into()
+        }
         Network::None => "loopback only; DNS refused".into(),
         Network::Block(_) => format!(
             "the listed addresses refused; {} pinned to {PINNED_NOWHERE} and {PINNED_NOWHERE_V6}",
@@ -365,7 +389,7 @@ pub(super) fn explain_error(error: &str, backend: &str) -> (Owner, String, Strin
         ),
         "ipv6-unfiltered" => (
             Owner::Task,
-            "the sandbox has an IPv6 address but no ip6tables to filter it, so the network policy cannot be enforced".into(),
+            "the sandbox has IPv6 (if only loopback, where a root daemon may listen) but no ip6tables to filter it, so the network policy cannot be enforced".into(),
             "add ip6tables to the task's Dockerfile (Debian's iptables package has it)".into(),
         ),
         "no-conntrack" => (
@@ -387,7 +411,7 @@ pub(super) fn guard_error(error: &str) -> String {
     match kind {
         "no-iptables" => "the task's image has no iptables, and BenchFlow could not install it (the image has no apt-get, apk, dnf, or yum that worked)".into(),
         "no-permission" => format!("root in the sandbox cannot change packet filters ({detail})"),
-        "ipv6-unfiltered" => "the sandbox has an IPv6 address but no ip6tables".into(),
+        "ipv6-unfiltered" => "the sandbox has IPv6 but no ip6tables".into(),
         "no-conntrack" => "the sandbox's kernel has no connection tracking for iptables".into(),
         _ => format!("the guard could not be installed ({error})"),
     }
@@ -435,9 +459,23 @@ mod tests {
             &["128.31.0.62/32"],
         );
         for n in [&allow, &block, &net(Network::None, &[], &[])] {
-            bash_ok(&install(&Scope::AgentUser("agent".into()), n, &[2280]));
+            bash_ok(&install(
+                &Scope::AgentUser("agent".into()),
+                n,
+                &[2280],
+                false,
+                false,
+            ));
+            bash_ok(&install(
+                &Scope::AgentUser("agent".into()),
+                n,
+                &[2280],
+                true,
+                true,
+            ));
             bash_ok(&format!("P=/proc\n{DISCOVER_PORTS}"));
-            bash_ok(&install(&Scope::Everyone, n, &[]));
+            bash_ok(&install(&Scope::Everyone, n, &[], false, false));
+            bash_ok(&install(&Scope::Everyone, n, &[], true, true));
         }
         bash_ok(&fingerprint());
         bash_ok(&remove());
@@ -460,7 +498,7 @@ mod tests {
             &[("github.com", "140.82.114.4")],
             &["140.82.114.4/32", "2001:db8::/32"],
         );
-        let v4 = chain_rules(&allow, false, false);
+        let v4 = chain_rules(&allow, false, false, false);
         assert!(v4.contains("-d 127.0.0.11 -p tcp -j \"$RT\" $RTO"), "{v4}");
         assert!(v4.contains("-d 127.0.0.11 -j \"$REJ\""), "{v4}");
         assert!(v4.contains("-d 140.82.114.4/32 -j RETURN"), "{v4}");
@@ -470,7 +508,7 @@ mod tests {
             "{v4}"
         );
         assert!(v4.trim_end().ends_with("-j \"$REJ\" || exit_rule"), "{v4}");
-        let v6 = chain_rules(&allow, true, false);
+        let v6 = chain_rules(&allow, true, false, false);
         assert!(v6.contains("-d 2001:db8::/32 -j RETURN"), "{v6}");
         assert_eq!(pins(&allow), "140.82.114.4 github.com\n");
     }
@@ -482,7 +520,7 @@ mod tests {
             &[("www.debian.org", "128.31.0.62")],
             &["128.31.0.62/32"],
         );
-        let v4 = chain_rules(&block, false, false);
+        let v4 = chain_rules(&block, false, false, false);
         assert!(
             v4.contains("-d 128.31.0.62/32 -p tcp -j \"$RT\" $RTO"),
             "{v4}"
@@ -493,7 +531,7 @@ mod tests {
             pins(&block),
             "192.0.2.1 www.debian.org\n100::1 www.debian.org\n"
         );
-        assert!(chain_rules(&block, true, false).contains("-d 100::/64"));
+        assert!(chain_rules(&block, true, false, false).contains("-d 100::/64"));
     }
 
     /// An ICMP unreachable fails a TCP connect only after a SYN retry (about
@@ -507,6 +545,8 @@ mod tests {
             &Scope::AgentUser("agent".into()),
             &net(Network::Open, &[], &[]),
             &[2280],
+            false,
+            false,
         );
         bash_ok(&s);
         let probe = s
@@ -523,7 +563,7 @@ mod tests {
             &["128.31.0.62/32"],
         );
         for v6 in [false, true] {
-            let rules = chain_rules(&block, v6, false);
+            let rules = chain_rules(&block, v6, false, false);
             let mut tcp_first = 0;
             for (i, line) in rules.lines().enumerate() {
                 if line.contains("-j \"$REJ\"") {
@@ -546,11 +586,17 @@ mod tests {
         let ports = [2280, 22220, 22222, 33333];
         for v6 in [false, true] {
             assert_eq!(
-                chain_rules(&open, v6, true),
+                chain_rules(&open, v6, true, false),
                 "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$RT\" $RTO || exit_rule; done\n"
             );
         }
-        let s = install(&Scope::AgentUser("agent".into()), &open, &ports);
+        let s = install(
+            &Scope::AgentUser("agent".into()),
+            &open,
+            &ports,
+            false,
+            false,
+        );
         bash_ok(&s);
         // The known ports are the floor; what the daemon listens on is added.
         assert!(
@@ -561,7 +607,13 @@ mod tests {
         assert!(s.contains("BF fw-guard-gap"), "{s}");
         assert!(s.contains("--uid-owner \"$uid\""), "{s}");
         // Without a guard there is no gap to report.
-        let s = install(&Scope::Everyone, &net(Network::None, &[], &[]), &[]);
+        let s = install(
+            &Scope::Everyone,
+            &net(Network::None, &[], &[]),
+            &[],
+            false,
+            false,
+        );
         assert!(!s.contains("fw-guard-gap"), "{s}");
     }
 
@@ -635,12 +687,124 @@ mod tests {
             &Scope::AgentUser("agent".into()),
             &net(Network::None, &[], &[]),
             &[2280],
+            false,
+            false,
         );
         assert!(s.contains("--uid-owner \"$uid\""), "{s}");
         assert!(s.contains("-o lo -p tcp --dport \"$port\" -j"), "{s}");
         assert!(s.contains("printf '%s\\n' 2280 $found"), "{s}");
         assert!(s.contains("jump_new 2 -m owner ! --uid-owner 0"), "{s}");
-        let s = install(&Scope::Everyone, &net(Network::None, &[], &[]), &[]);
+        let s = install(
+            &Scope::Everyone,
+            &net(Network::None, &[], &[]),
+            &[],
+            false,
+            false,
+        );
         assert!(!s.contains("--uid-owner"), "{s}");
+    }
+
+    #[test]
+    fn a_none_the_backend_blocks_over_ipv4_closes_only_ipv6_and_keeps_loopback() {
+        let none = net(Network::None, &[], &[]);
+        // IPv4 backs the backend's block up: the guard, loopback (its
+        // resolver included), then nothing.
+        let v4 = chain_rules(&none, false, true, true);
+        assert!(v4.starts_with("for port in $GUARD"), "{v4}");
+        assert!(
+            !v4.contains("--dport 53") && !v4.contains("127.0.0.11"),
+            "{v4}"
+        );
+        let lo = v4.find("-o lo -j RETURN").expect("loopback returns");
+        let rej = v4
+            .find("-j \"$REJ\" || exit_rule")
+            .expect("the rest refused");
+        assert!(lo < rej, "{v4}");
+        // IPv6: loopback, a task's own resolver on it included, then nothing.
+        let v6 = chain_rules(&none, true, false, true);
+        assert!(!v6.contains("--dport 53"), "{v6}");
+        assert!(v6.contains("-o lo -j RETURN"), "{v6}");
+        assert!(v6.trim_end().ends_with("-j \"$REJ\" || exit_rule"), "{v6}");
+        // Without v6_only a none refuses loopback resolvers as before.
+        assert!(chain_rules(&none, false, false, false).contains("--dport 53"));
+        let s = install(&Scope::Everyone, &none, &[], true, true);
+        bash_ok(&s);
+        assert!(s.contains("echo \"BF fw-v6 $v6\""), "{s}");
+    }
+
+    /// Run an install script up to its IPv6 check, with stub iptables (and
+    /// ip6tables when `ip6` is set) and `if_inet6` as the sandbox's IPv6.
+    #[cfg(unix)]
+    fn run_v6_check(script: &str, if_inet6: Option<&str>, ip6: bool) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let mut tools = vec!["iptables"];
+        if ip6 {
+            tools.push("ip6tables");
+        }
+        for t in tools {
+            let f = bin.join(t);
+            std::fs::write(&f, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // No file: a kernel without IPv6.
+        let v6 = d.path().join("if_inet6");
+        if let Some(text) = if_inet6 {
+            std::fs::write(&v6, text).unwrap();
+        }
+        // Stop right after the IPv6 check: nothing past it may touch this
+        // machine (the real script rewrites /etc/hosts).
+        let end = script
+            .find("BF fw-error ipv6-unfiltered")
+            .expect("the IPv6 check");
+        let end = end + script[end..].find('\n').unwrap();
+        let cut = format!(
+            "{}\necho BF passed-v6-check\n",
+            script[..end].replace("/proc/net/if_inet6", &v6.display().to_string())
+        );
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(cut)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_required_chain_refuses_any_ipv6_without_ip6tables() {
+        let allow = net(
+            Network::Allow(vec!["10.0.0.0/8".into()]),
+            &[],
+            &["10.0.0.0/8"],
+        );
+        let loopback = Some("00000000000000000000000000000001 01 80 10 80       lo\n");
+        let agent = Scope::AgentUser("agent".into());
+        // Required (Daytona's allowlist with the daemon guard): IPv6
+        // loopback alone without ip6tables is refused.
+        let s = install(&agent, &allow, &[2280], false, true);
+        let out = run_v6_check(&s, loopback, false);
+        assert!(out.contains("BF fw-v6 local"), "{out}");
+        assert!(out.contains("BF fw-error ipv6-unfiltered"), "{out}");
+        // With ip6tables it passes, and so does a kernel with no IPv6.
+        assert!(run_v6_check(&s, loopback, true).contains("passed-v6-check"));
+        assert!(run_v6_check(&s, None, false).contains("passed-v6-check"));
+        // Not required (Docker): only an address that routes out needs it.
+        let s = install(&agent, &allow, &[], false, false);
+        assert!(run_v6_check(&s, loopback, false).contains("passed-v6-check"));
+    }
+
+    #[test]
+    fn the_image_layer_installs_ip6tables_when_only_it_is_missing() {
+        assert!(
+            INSTALL_LAYER.starts_with(
+                "if ! command -v iptables >/dev/null 2>&1 || ! command -v ip6tables >/dev/null 2>&1; then"
+            ),
+            "{INSTALL_LAYER}"
+        );
+        assert!(INSTALL_LAYER.contains("apk add --no-cache iptables ip6tables"));
     }
 }

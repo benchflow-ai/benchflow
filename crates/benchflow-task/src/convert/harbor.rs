@@ -458,7 +458,7 @@ impl Import {
                 Err(Refused) => {
                     self.stash(&hp, v.clone(), Some(&kk));
                     self.notes.push(format!(
-                        "kept {} as written: its value is not in the form Harbor documents",
+                        "kept {} as written: its value is not in the form the split layout documents",
                         dotted(&hp)
                     ));
                 }
@@ -510,7 +510,7 @@ impl Import {
                     }
                 }
                 self.notes.push(format!(
-                    "kept {}.network_mode = {} as written: Harbor's values are no-network, public, and allowlist",
+                    "kept {}.network_mode = {} as written: the split layout's values are no-network, public, and allowlist",
                     dotted(hpath),
                     py_repr(&mode)
                 ));
@@ -544,7 +544,7 @@ impl Import {
                     self.moves.insert(kkey(hpath, old), kkey(npath, native));
                     let shown = size(&src[new]).ok_or(Refused)?;
                     self.notes.push(format!(
-                        "{} is Harbor's deprecated spelling; imported as {shown}",
+                        "{} is a deprecated split-layout spelling; imported as {shown}",
                         dotted(&kkey(hpath, old))
                     ));
                 }
@@ -570,7 +570,7 @@ impl Import {
                     .insert(kkey(hpath, "allow_internet"), kkey(npath, "network"));
                 let shown = if allow.truthy() { "'open'" } else { "'none'" };
                 self.notes.push(format!(
-                    "{}.allow_internet is Harbor's deprecated spelling; imported as network = {shown}",
+                    "{}.allow_internet is a deprecated split-layout spelling; imported as network = {shown}",
                     dotted(hpath)
                 ));
             }
@@ -636,8 +636,9 @@ pub(crate) fn config_from_harbor(cfg: &Table, stash: &str) -> Result<Imported, S
     .filter(|k| is_table(k))
     .collect();
     let has = |k: &str| tables.contains(&k);
-    let refused =
-        |what: &str| format!("cannot import [{what}]: Harbor itself would refuse its values");
+    let refused = |what: &str| {
+        format!("cannot import [{what}]: a split-layout runner would refuse its values")
+    };
     if has("task") {
         let t = im
             .table(&cfg["task"], PACKAGE, &kp(&["task"]), &[], None, &[])
@@ -882,40 +883,49 @@ impl Loss {
     }
 }
 
-const NO_EQUIVALENT: &str = "Harbor has no equivalent";
+const NO_EQUIVALENT: &str = "the split layout has no equivalent";
 
 fn table_loss(table: &str) -> Option<(LossSeverity, &'static str)> {
     use LossSeverity::*;
     Some(match table {
         "about" => (Metadata, "kept only as [metadata]"),
-        "training" => (Metadata, "Harbor has no training metadata"),
-        "credits" => (Metadata, "Harbor has no credits"),
+        "training" => (Metadata, "the split layout has no training metadata"),
+        "credits" => (Metadata, "the split layout has no credits"),
         "provenance" => (
             Metadata,
-            "Harbor keeps only [provenance] source, as its top-level source",
+            "the split layout keeps only [provenance] source, as its top-level source",
         ),
         "runs" => (
             Scoring,
-            "Harbor has no run policy, so a scored run's rules go unchecked",
+            "the split layout has no run policy, so a scored run's rules go unchecked",
         ),
-        "integrity" => (Scoring, "Harbor checks no controls or integrity thresholds"),
+        "integrity" => (
+            Scoring,
+            "the split layout checks no controls or integrity thresholds",
+        ),
         "world" => (
             RunAffecting,
-            "Harbor has no worlds: the agent would get a container, not the world the task declares",
+            "the split layout has no worlds: the agent would get a container, not the world the task declares",
         ),
-        "roles" => (RunAffecting, "Harbor runs one agent"),
-        "user" => (RunAffecting, "Harbor has no simulated user"),
-        "interaction" => (RunAffecting, "Harbor runs one agent with no simulated user"),
+        "roles" => (RunAffecting, "a split-layout runner runs one agent"),
+        "user" => (RunAffecting, "the split layout has no simulated user"),
+        "interaction" => (
+            RunAffecting,
+            "a split-layout runner runs one agent with no simulated user",
+        ),
         "family" => (
             RunAffecting,
-            "Harbor has no generated instances: one fixed folder is all it runs",
+            "the split layout has no generated instances: one fixed folder is all it runs",
         ),
-        "variants" => (RunAffecting, "Harbor has no variants"),
-        "matrix" => (RunAffecting, "Harbor has no run matrix"),
-        "tiers" => (RunAffecting, "Harbor has no tiers"),
-        "conventions" => (RunAffecting, "Harbor has no conventions table"),
-        "trajectory" => (RunAffecting, "Harbor records no trajectory requirements"),
-        "preference" => (RunAffecting, "Harbor has no preference judging"),
+        "variants" => (RunAffecting, "the split layout has no variants"),
+        "matrix" => (RunAffecting, "the split layout has no run matrix"),
+        "tiers" => (RunAffecting, "the split layout has no tiers"),
+        "conventions" => (RunAffecting, "the split layout has no conventions table"),
+        "trajectory" => (
+            RunAffecting,
+            "the split layout records no trajectory requirements",
+        ),
+        "preference" => (RunAffecting, "the split layout has no preference judging"),
         _ => return None,
     })
 }
@@ -927,29 +937,32 @@ fn key_loss(where_: &str, key: &str) -> Loss {
         return Loss::new(
             format!("[{where_}] {key}"),
             Metadata,
-            "an extension key, which Harbor ignores",
+            "an extension key, which a split-layout runner ignores",
             None,
         );
     }
     let (severity, reason) = match (table, key) {
         ("sandbox", "clock") => (
             RunAffecting,
-            "Harbor has no clock, so it would run the task on real time",
+            "the split layout has no clock, so it would run the task on real time",
         ),
         ("sandbox", "timezone") => (
             RunAffecting,
-            "Harbor has no time zone setting, so the task would run in the image's zone",
+            "the split layout has no time zone setting, so the task would run in the image's zone",
         ),
         ("sandbox", "mounts") => (
             RunAffecting,
-            "Harbor mounts no package folders into the sandbox",
+            "the split layout mounts no package folders into the sandbox",
         ),
         ("sandbox", "boundary") => (
             RunAffecting,
-            "Harbor does not take an isolation boundary from the task",
+            "a split-layout runner does not take an isolation boundary from the task",
         ),
-        ("agent", "network_reason") => (Metadata, "Harbor keeps no reason for a network setting"),
-        ("verifier", "human") => (RunAffecting, "Harbor has no human assessors"),
+        ("agent", "network_reason") => (
+            Metadata,
+            "the split layout keeps no reason for a network setting",
+        ),
+        ("verifier", "human") => (RunAffecting, "the split layout has no human assessors"),
         _ => (RunAffecting, NO_EQUIVALENT),
     };
     Loss::new(format!("[{where_}] {key}"), severity, reason, None)
@@ -1118,7 +1131,7 @@ impl Export {
                 self.losses.push(Loss::new(
                     format!("the network block list in [{at}]"),
                     LossSeverity::RunAffecting,
-                    "Harbor has no network that is open except for listed hosts",
+                    "the split layout has no network that is open except for listed hosts",
                     Some(format!("[{at}] network")),
                 ));
                 return Ok(());
@@ -1182,7 +1195,7 @@ impl Export {
                         self.losses.push(Loss::new(
                             name,
                             LossSeverity::RunAffecting,
-                            "Harbor runs no task.md judges: its reward comes from test.sh alone",
+                            "a split-layout runner runs no task.md judges: its reward comes from test.sh alone",
                             None,
                         ));
                     }
@@ -1356,7 +1369,7 @@ pub(crate) fn verifier_envs(cfg: &Table) -> Vec<(String, Val)> {
 /// Whether import recorded RewardKit in the task.
 pub(crate) fn rk_recorded(cfg: &Table) -> bool {
     let kept = match cfg.get("import") {
-        Some(Val::Table(i)) => i.get("harbor"),
+        Some(Val::Table(i)) => i.get(crate::taskmd::split_record(|k| i.contains_key(k))),
         _ => None,
     };
     match kept {
@@ -1398,9 +1411,9 @@ pub(crate) fn config_to_harbor(
     )?;
     if !package.is_empty() && !package.contains_key("name") {
         ex.losses.push(Loss::new(
-            "version, description, authors, and keywords (Harbor's [task] table needs a name)",
+            "version, description, authors, and keywords (the split layout's [task] table needs a name)",
             LossSeverity::Metadata,
-            "Harbor's [task] table needs a name",
+            "the split layout's [task] table needs a name",
             Some("version, description, authors, keywords".into()),
         ));
     } else if !package.is_empty() {
@@ -1410,7 +1423,7 @@ pub(crate) fn config_to_harbor(
         ex.losses.push(Loss::new(
             "title",
             LossSeverity::Metadata,
-            "Harbor's [task] table has no title",
+            "the split layout's [task] table has no title",
             None,
         ));
     }
@@ -1423,9 +1436,9 @@ pub(crate) fn config_to_harbor(
         if package_folder(s.get("skills")) {
             let shown = py_repr(&s["skills"]);
             ex.losses.push(Loss::new(
-                format!("[sandbox] skills = {shown} (a folder in the package; Harbor's skills_dir is a path in the environment, so the image must copy the folder there)"),
+                format!("[sandbox] skills = {shown} (a folder in the package; the split layout's skills_dir is a path in the environment, so the image must copy the folder there)"),
                 LossSeverity::RunAffecting,
-                "Harbor's skills_dir is a path in the environment, so the agent gets no skills unless the image copies the folder there",
+                "the split layout's skills_dir is a path in the environment, so the agent gets no skills unless the image copies the folder there",
                 Some("[sandbox] skills".into()),
             ));
             s.shift_remove("skills");
@@ -1435,17 +1448,17 @@ pub(crate) fn config_to_harbor(
                 && c != &Val::Str(HARBOR_COMPOSE.into())
             {
                 ex.losses.push(Loss::new(
-                        format!("[sandbox] compose = {} (Harbor reads services only from environment/docker-compose.yaml)", py_repr(c)),
+                        format!("[sandbox] compose = {} (a split-layout runner reads services only from environment/docker-compose.yaml)", py_repr(c)),
                         LossSeverity::RunAffecting,
-                        "Harbor reads services only from environment/docker-compose.yaml",
+                        "a split-layout runner reads services only from environment/docker-compose.yaml",
                         Some("[sandbox] compose".into()),
                     ));
             }
             if s.get("services").is_some_and(Val::truthy) {
                 ex.losses.push(Loss::new(
-                    "[[sandbox.services]] (Harbor declares services only in environment/docker-compose.yaml)",
+                    "[[sandbox.services]] (the split layout declares services only in environment/docker-compose.yaml)",
                     LossSeverity::RunAffecting,
-                    "Harbor declares services only in environment/docker-compose.yaml",
+                    "the split layout declares services only in environment/docker-compose.yaml",
                     Some("[[sandbox.services]]".into()),
                 ));
             }
@@ -1495,11 +1508,11 @@ pub(crate) fn config_to_harbor(
             if m != &Val::Str(want.into()) {
                 ex.losses.push(Loss::new(
                     format!(
-                        "[{part}] mount = {} (Harbor always uses {want})",
+                        "[{part}] mount = {} (a split-layout runner always uses {want})",
                         py_repr(m)
                     ),
                     LossSeverity::RunAffecting,
-                    format!("Harbor always uses {want}, so the scripts would not find their files"),
+                    format!("a split-layout runner always uses {want}, so the scripts would not find their files"),
                     Some(format!("[{part}] mount")),
                 ));
             }
@@ -1512,9 +1525,9 @@ pub(crate) fn config_to_harbor(
         && !rk_recorded(cfg)
     {
         ex.losses.push(Loss::new(
-            "[verifier] models = true (Harbor gives a verifier script no model of its own)",
+            "[verifier] models = true (a split-layout runner gives a verifier script no model of its own)",
             LossSeverity::RunAffecting,
-            "a Harbor verifier reaches a model only with a provider key that [verifier.env] passes from the host, and this task passes none",
+            "a split-layout verifier reaches a model only with a provider key that [verifier.env] passes from the host, and this task passes none",
             Some("[verifier] models".into()),
         ));
     }
@@ -1581,9 +1594,9 @@ pub(crate) fn config_to_harbor(
         .any(|st| matches!(st, Val::Table(t) if t.contains_key("gate")));
     if !stages.is_empty() && unreached_zero && combine_mean && gated {
         ex.losses.push(Loss::new(
-            "unreached stages scoring 0 (Harbor averages only the steps that ran)",
+            "unreached stages scoring 0 (a split-layout runner averages only the steps that ran)",
             LossSeverity::RunAffecting,
-            "Harbor averages only the steps that ran, so a run that stops early scores higher",
+            "a split-layout runner averages only the steps that ran, so a run that stops early scores higher",
             Some("[verifier] unreached_stages".into()),
         ));
     }
@@ -1622,7 +1635,7 @@ pub(crate) fn config_to_harbor(
         ex.losses.push(Loss::new(
             "stages other than a simple sequence",
             LossSeverity::RunAffecting,
-            "Harbor's steps unlock one after another",
+            "split-layout steps unlock one after another",
             Some("[stages]".into()),
         ));
     }
@@ -1699,7 +1712,7 @@ pub(crate) fn config_to_harbor(
             let (sev, reason) = if k.starts_with("x-") {
                 (
                     LossSeverity::Metadata,
-                    "an extension key, which Harbor ignores",
+                    "an extension key, which a split-layout runner ignores",
                 )
             } else {
                 table_loss(k).unwrap_or((LossSeverity::RunAffecting, NO_EQUIVALENT))

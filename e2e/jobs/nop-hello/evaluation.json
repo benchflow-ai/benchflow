@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "job_name": "nop-hello",
+  "tasks_dir": "tasks/hello",
+  "source": {
+    "targets": [
+      "tasks/hello",
+      "tasks/two-stage"
+    ],
+    "path": "tasks/hello",
+    "remote": []
+  },
+  "config": {
+    "agent": "nop",
+    "model": null,
+    "environment": "daytona",
+    "concurrency": 4,
+    "trials": 1,
+    "sandbox_user": "agent",
+    "agent_idle_timeout": 600,
+    "timeout_multiplier": 1.0,
+    "tasks": [
+      {
+        "name": "hello",
+        "id": "fixtures/hello",
+        "digest": "sha256:76fe5d4c665fabb1e5cecd7e1fa3bd38a3627e0cbfd978f5ee4301533342efeb",
+        "path": "tasks/hello"
+      },
+      {
+        "name": "two-stage",
+        "id": "fixtures/two-stage",
+        "digest": "sha256:896e8b86294589c523ed17e001c7372dbe9f2b2d954d874020aa0f99916a0f6b",
+        "path": "tasks/two-stage"
+      }
+    ]
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0",
+    "fingerprint": "7c0e41399008d6fe"
+  }
+}

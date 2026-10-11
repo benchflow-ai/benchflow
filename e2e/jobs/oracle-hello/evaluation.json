@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "job_name": "oracle-hello",
+  "tasks_dir": "tasks/hello",
+  "source": {
+    "targets": [
+      "tasks/hello"
+    ],
+    "path": "tasks/hello",
+    "remote": []
+  },
+  "config": {
+    "agent": "oracle",
+    "model": null,
+    "environment": "daytona",
+    "concurrency": 4,
+    "trials": 1,
+    "sandbox_user": "agent",
+    "agent_idle_timeout": 600,
+    "timeout_multiplier": 1.0,
+    "tasks": [
+      {
+        "name": "hello",
+        "id": "fixtures/hello",
+        "digest": "sha256:76fe5d4c665fabb1e5cecd7e1fa3bd38a3627e0cbfd978f5ee4301533342efeb",
+        "path": "tasks/hello"
+      }
+    ]
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0",
+    "fingerprint": "b064ca5b1146e169"
+  }
+}

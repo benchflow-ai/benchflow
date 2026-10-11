@@ -1,0 +1,32 @@
+# Network none at its edges: a separate verifier with no network on an image without iptables, a task's own service on loopback port 53, and a root agent (which Daytona, whose block leaves IPv6 open, must refuse by name).
+tier = "full"
+needs = ["sandbox"]
+tasks = ["none-separate-verifier", "none-loopback-dns", "none-root"]
+
+[[step]]
+name = "a separate verifier with no network grades; its image gets iptables where the backend needs it"
+run = ["run", "tasks/none-separate-verifier", "-s", "{backend}", "--job", "sv"]
+exit = 0
+timeout = 900
+trials = [{ job = "sv", status = "scored", reward = 1.0, result = { "problem" = { present = false } } }]
+
+[[step]]
+name = "loopback port 53 stays the sandbox's own under none (TCP and UDP, IPv4 and IPv6)"
+run = ["run", "tasks/none-loopback-dns", "-s", "{backend}", "--job", "dns"]
+exit = 0
+timeout = 900
+trials = [{ job = "dns", status = "scored", reward = 1.0, result = { "defenses.network_policy.state" = "enforced" } }]
+
+[[step]]
+name = "a root agent with no network: Docker's none has no IPv6 either, so it runs"
+only_backends = ["docker"]
+run = ["run", "tasks/none-root", "-s", "{backend}", "--job", "root"]
+exit = 0
+trials = [{ job = "root", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "a root agent with no network: Daytona, whose block leaves IPv6 open, refuses it by name (R108, owner you), whatever IPv6 the sandbox has now"
+only_backends = ["daytona"]
+run = ["run", "tasks/none-root", "-s", "{backend}", "--job", "root"]
+exit = 1
+trials = [{ job = "root", status = "errored", code = "R108", owner = "you", result = { "problem.message" = { matches = "leaves IPv6 open" } } }]

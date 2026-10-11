@@ -1,0 +1,1 @@
+{"schema_version": "1.3.1", "id": "two-stage__a27f0daf", "content": [{"class_": "text_observation", "content": "Write the word `alpha` to `/app/one.txt`, with no trailing newline.\n", "source": "user"}], "details": {"task_id": "two-stage", "environment": "two-stage", "model": "", "terminal_reward": 0.0}}

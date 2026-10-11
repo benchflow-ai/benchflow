@@ -6,7 +6,7 @@
 
 BF.views = (() => {
   const { el, fmtDuration, isRecord, plural } = BF.core;
-  const OUTCOMES = ["passed", "failed", "unscored", "errored"];
+  const OUTCOMES = ["passed", "failed", "unscored", "errored", "stopped"];
   const PHASES = [
     ["environment_setup", "environment setup"],
     ["agent_execution", "agent execution"],
@@ -308,18 +308,18 @@ BF.views = (() => {
 
     const jobs = section(
       "Pass rate by job",
-      "Pass rate counts every trial in the rows shown (errored and unscored trials count as not passed), with its 95% Wilson interval. "
+      "Pass rate counts every trial in the rows shown (errored and unscored trials count as not passed; trials you stopped are left out), with its 95% Wilson interval. "
         + "A job that ran several agents or models gets one column for each.",
     );
     const summary = table(["", "job", "agent · model", numTh("tasks"), numTh("trials"), numTh("passed"), numTh("failed"),
-      numTh("unscored"), numTh("errored"), numTh("pass rate (95% CI)"), numTh("mean reward")]);
+      numTh("unscored"), numTh("errored"), numTh("stopped"), numTh("pass rate (95% CI)"), numTh("mean reward")]);
     columns.forEach((column, index) => {
       const row = el("tr");
       const counts = isRecord(column.counts) ? column.counts : {};
       const interval = Array.isArray(column.pass_interval) ? " (" + pct(column.pass_interval[0]) + "–" + pct(column.pass_interval[1]) + ")" : "";
       row.append(
         cell(letter(index), "vmono"),
-        cell(column.job_name, "vtask"),
+        cell(column.job_name + (column.never_ran ? " (" + column.never_ran + " never ran)" : ""), "vtask"),
         cell(column.arm || "—"),
         cell(column.tasks, "num"),
         cell(column.trials, "num"),
@@ -336,7 +336,7 @@ BF.views = (() => {
       const paired = section(
         "Paired difference",
         "Columns by their letter above. Over tasks with a scored trial on both sides: each task's mean reward on the left minus the right (a task's trials are averaged first), "
-          + "with a 95% t-interval. Left out: tasks both sides ran that one side did not score. One side only: tasks the other side did not run.",
+          + "with a 95% t-interval (none from fewer than 3 shared tasks or when every task differs by the same amount). Left out: tasks both sides ran that one side did not score. One side only: tasks the other side did not run.",
       );
       const pairTable = table(["left", "right", numTh("shared tasks"), numTh("mean difference (95% CI)"), numTh("left better"),
         numTh("right better"), numTh("tied"), numTh("left out"), numTh("one side only")]);
@@ -352,6 +352,8 @@ BF.views = (() => {
             difference += " (" + signed(pair.interval[0]) + " to " + signed(pair.interval[1]) + ")";
             if (pair.interval[0] > 0) tone = "num vpos";
             else if (pair.interval[1] < 0) tone = "num vneg";
+          } else if (pair.no_interval) {
+            difference += " (no interval: " + pair.no_interval + ")";
           }
         }
         const side = (column, index) => {

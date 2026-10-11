@@ -1,0 +1,26 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "hello__5233d73b",
+  "agent": {
+    "name": "oracle",
+    "version": "unknown"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Create a file `/app/hello.txt` that contains exactly `Hello, world!` with no trailing newline.\n"
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "[oracle: oracle/solve.sh]"
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 2,
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0
+  }
+}

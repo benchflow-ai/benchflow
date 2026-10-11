@@ -111,7 +111,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Find out why a run failed, whose problem it is, and what to do | [When a run fails](./docs/when-a-run-fails.md) |
 | Run an agent from the public agents repo (goose, qwen-code, prime-agent, …) | [Running external agents](./docs/external-agents.md) |
 | Run Claude Code or Codex through their own CLIs instead of their ACP adapters | [Native harness](./docs/native-harness.md) |
-| Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
+| Run an environment from a hosted hub (ids like `primeintellect/general-agent`) | [CLI reference](./docs/reference/cli.md) |
 | Run tasks on a Docker host you control | [Remote Docker](./docs/remote-docker.md) |
 | Cap a job's spend, sandbox time, tokens or rollouts | [Budgets](./docs/reference/budget.md) |
 
@@ -192,7 +192,7 @@ bench eval run \
 
 Repos are cached under `.cache/datasets/` (in the enclosing git repository's root, or the current directory outside one). With a source path, only that folder is downloaded (a sparse clone), and each later path joins the same cache; a source without a path, or a folder that holds no BenchFlow task, gets the whole repository.
 
-Hosted environments are another source type. Instead of a repo, pass `--source-env` with the environment's pinned source version to run an external PrimeIntellect / Verifiers environment on its own native harness — BenchFlow preserves the hosted identity (`env_uid`, `hub_url`) and still writes the shared rollout output contract. See the [CLI reference](./docs/reference/cli.md) for the full hosted-environment command shape.
+Hosted environments are another source type. Instead of a repo, pass `--source-env` with the environment's pinned source version to run an environment from an external hosted hub on its own native harness (one hub runs today: environments with ids like `primeintellect/general-agent`; `openreward:` ids are recognized but refused as not executable yet) — BenchFlow preserves the hosted identity (`env_uid`, `hub_url`) and still writes the shared rollout output contract. See the [CLI reference](./docs/reference/cli.md) for the full hosted-environment command shape.
 
 Downstream projects should depend on the public PyPI release by default. For internal validation before the next public release, install or lock the internal preview channel with prereleases enabled; see [Release channels](./docs/release.md).
 

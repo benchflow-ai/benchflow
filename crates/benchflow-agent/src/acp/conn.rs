@@ -284,13 +284,36 @@ pub(crate) async fn reader(
             }
         };
         let message = match line_limit {
-            Some(limit) if line.len() > limit => {
-                tracing::info!("shrank a {}-byte agent output line", line.len());
-                match wire::shrink(&line, limit) {
-                    Some(Value::Object(map)) if wire::is_envelope(&map) => Some(map),
-                    _ => None,
+            Some(limit) if line.len() > limit => match wire::shrink(&line, limit) {
+                Some(shrunk) => {
+                    if shrunk.fits {
+                        tracing::info!("shrank a {}-byte agent output line", line.len());
+                    } else {
+                        tracing::warn!(
+                            "could not rewrite a {}-byte agent output line to fit the {limit}-byte limit (what may not be cut is too long); passed it on over the limit",
+                            line.len()
+                        );
+                    }
+                    match shrunk.value {
+                        Value::Object(map) if wire::is_envelope(&map) => Some(map),
+                        _ => None,
+                    }
                 }
-            }
+                None => {
+                    tracing::warn!(
+                        "could not read a {}-byte agent output line as JSON within its limits; it goes to the agent log",
+                        line.len()
+                    );
+                    noise(
+                        &shared,
+                        &format!(
+                            "[BenchFlow could not read a {}-byte line as a message (not JSON, or too many values); its start follows]",
+                            line.len()
+                        ),
+                    );
+                    None
+                }
+            },
             _ => {
                 let text = String::from_utf8_lossy(&line);
                 let text = text.trim();

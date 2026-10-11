@@ -108,7 +108,7 @@ pub(crate) fn phase(c: &mut Checker<'_>, table: &Map<String, Value>, where_: &st
         if let Some(fixed) = fixed {
             if let Some(d) = c.sink.found.last_mut() {
                 d.diag.label = Some(format!(
-                    "Harbor's \"{}\" is \"{fixed}\" in task.md",
+                    "the split layout's \"{}\" is \"{fixed}\" in task.md",
                     v.as_str().unwrap_or("")
                 ));
             }
@@ -486,7 +486,7 @@ pub(super) fn snapshots(
                     At::Key(&join(&p, "reads")),
                     format!(
                         "{at} needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when \
-the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so \
+the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. The split layout's collect has no such key, so \
 an imported entry needs them added"
                     ),
                 );
@@ -642,7 +642,7 @@ pub(crate) fn outputs(
                     }
                     let kp = join(&p, k);
                     let message = format!(
-                        "unknown key {} in {at}{} an output holds path, save_as, and max_bytes (exclude and service come from Harbor \
+                        "unknown key {} in {at}{} an output holds path, save_as, and max_bytes (exclude and service come from split-layout \
 imports), or x- extensions",
                         repr_str(k),
                         dym_or(k, OUTPUT_KEYS, ";")

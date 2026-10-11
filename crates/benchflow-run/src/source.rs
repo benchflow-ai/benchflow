@@ -26,6 +26,71 @@ pub struct Source {
     pub path: PathBuf,
     /// For a remote source: the repository, path, ref, and commit fetched.
     pub remote: Option<Remote>,
+    /// Keeps the checkout in use for as long as the run holds the source.
+    #[serde(skip)]
+    pub hold: Option<Hold>,
+}
+
+/// A shared lock on a checkout's `<dir>.use`, held while a run reads it:
+/// `bench cache clean` leaves a checkout in use alone. Released when the
+/// last clone is dropped, or when the process ends.
+#[derive(Debug, Clone)]
+pub struct Hold(#[allow(dead_code)] std::sync::Arc<std::fs::File>);
+
+impl PartialEq for Hold {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for Hold {}
+
+/// The file a checkout's users hold shared.
+fn use_file(dir: &Path) -> PathBuf {
+    let mut name = dir.as_os_str().to_owned();
+    name.push(".use");
+    PathBuf::from(name)
+}
+
+fn hold_checkout(dir: &Path) -> std::io::Result<Hold> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(use_file(dir))?;
+    file.lock_shared()?;
+    Ok(Hold(std::sync::Arc::new(file)))
+}
+
+/// Whether a fetch is changing the checkout in `dir` right now.
+pub fn checkout_locked(dir: &Path) -> bool {
+    let mut name = dir.as_os_str().to_owned();
+    name.push(".lock");
+    let Ok(file) = std::fs::File::open(PathBuf::from(name)) else {
+        return false;
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
+/// Whether a run holds the checkout in `dir` (`bench cache clean` asks).
+pub fn checkout_in_use(dir: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(use_file(dir)) else {
+        return false;
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -114,16 +179,18 @@ pub async fn resolve(target: &str, cache: &Path) -> Result<Source, SourceError> 
             target: target.to_string(),
             path: local,
             remote: None,
+            hold: None,
         });
     }
     let Some(mut remote) = parse_remote(target) else {
         return Err(SourceError::NotFound(target.to_string()));
     };
-    let path = fetch(&mut remote, cache).await?;
+    let (path, hold) = fetch(&mut remote, cache).await?;
     Ok(Source {
         target: target.to_string(),
         path,
         remote: Some(remote),
+        hold: Some(hold),
     })
 }
 
@@ -154,34 +221,70 @@ async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     }
 }
 
+/// How long a run waits for another to finish changing a checkout.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Hold an exclusive lock on `<dir>.lock` while a checkout in `dir` is
 /// created or changed: two runs started together on the same repository
 /// and ref would otherwise race on git's own lock files and one would fail
 /// ("Unable to create .../sparse-checkout.lock: File exists"). The lock is
-/// released when the file is dropped, or when the process dies.
+/// released when the file is dropped, or when the process dies. A run waits
+/// at most [`LOCK_WAIT`] for another, and says that it is waiting.
 async fn lock_checkout(dir: &Path) -> std::io::Result<std::fs::File> {
+    lock_checkout_within(dir, LOCK_WAIT).await
+}
+
+async fn lock_checkout_within(
+    dir: &Path,
+    limit: std::time::Duration,
+) -> std::io::Result<std::fs::File> {
     let mut name = dir.as_os_str().to_owned();
     name.push(".lock");
     let path = PathBuf::from(name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    tokio::task::spawn_blocking(move || {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)?;
-        file.lock()?;
-        Ok(file)
-    })
-    .await
-    .map_err(std::io::Error::other)?
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    let started = std::time::Instant::now();
+    let mut said = false;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+        }
+        if started.elapsed() >= limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "another bench process held {} for {}s while fetching into the same \
+                     checkout; run again when it is done (the lock goes when its process ends)",
+                    path.display(),
+                    limit.as_secs()
+                ),
+            ));
+        }
+        if !said {
+            said = true;
+            eprintln!(
+                "  waiting for another bench process to finish fetching into {} (at most {}s)",
+                dir.display(),
+                limit.as_secs()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
-/// Clone (or update) a blobless, sparse checkout of the repository into the
-/// cache and return the folder asked for.
-async fn fetch(remote: &mut Remote, cache: &Path) -> Result<PathBuf, SourceError> {
+/// Fetch the folder asked for into the cache and return it, held for the
+/// run: the ref is resolved to a commit first, and each commit gets a
+/// checkout of its own, so a run keeps the commit it resolved even when the
+/// branch moves or another run asks for another folder.
+async fn fetch(remote: &mut Remote, cache: &Path) -> Result<(PathBuf, Hold), SourceError> {
     let url = format!("https://github.com/{}.git", remote.repo);
     fetch_from(remote, cache, &url).await
 }
@@ -191,92 +294,35 @@ fn looks_like_sha(reference: &str) -> bool {
     (7..=40).contains(&reference.len()) && reference.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-async fn fetch_from(remote: &mut Remote, cache: &Path, url: &str) -> Result<PathBuf, SourceError> {
+async fn fetch_from(
+    remote: &mut Remote,
+    cache: &Path,
+    url: &str,
+) -> Result<(PathBuf, Hold), SourceError> {
     if which("git").is_none() {
         return Err(SourceError::NoGit(remote.repo.clone()));
     }
     let reference = remote.reference.clone().unwrap_or_else(|| "HEAD".into());
-    unsafe_git_value(&remote.repo, &reference, remote.path.as_slice())?;
-    let dir = cache
-        .join("sources")
-        .join("github.com")
-        .join(&remote.repo)
-        .join(sanitize(&reference));
     let err = |message: String| SourceError::Fetch {
         repo: remote.repo.clone(),
         message,
     };
-    let _lock = lock_checkout(&dir).await.map_err(|e| err(e.to_string()))?;
-    if !dir.join(".git").exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| err(e.to_string()))?;
-        git(&["init", "-q"], Some(&dir)).await.map_err(err)?;
-        git(&["remote", "add", "origin", url], Some(&dir))
-            .await
-            .map_err(err)?;
+    if let Some(part) = remote.repo.split('/').find(|p| only_dots(p)) {
+        return Err(err(format!("`{part}` is not a repository name")));
     }
-    if let Some(p) = &remote.path {
-        git(
-            &[
-                "sparse-checkout",
-                "set",
-                "--no-cone",
-                &format!("/{p}/"),
-                &format!("/{p}"),
-            ],
-            Some(&dir),
-        )
+    unsafe_git_value(&remote.repo, &reference, remote.path.as_slice())?;
+    let commit = resolve_commit(url, &reference, cache).await.map_err(err)?;
+    let paths = vec![remote.path.clone().unwrap_or_default()];
+    let co = fetch_git(url, &commit, &paths, cache)
         .await
-        .map_err(err)?;
-    } else {
-        let _ = git(&["sparse-checkout", "disable"], Some(&dir)).await;
-    }
-    let shallow = git(
-        &[
-            "fetch",
-            "-q",
-            "--depth",
-            "1",
-            "--filter=blob:none",
-            "origin",
-            &reference,
-        ],
-        Some(&dir),
-    )
-    .await;
-    match shallow {
-        Ok(_) => git(&["checkout", "-q", "--force", "FETCH_HEAD"], Some(&dir))
-            .await
-            .map_err(err)?,
-        // A commit by an abbreviated sha cannot be fetched by name: fetch the
-        // history (still without file contents) and find it there.
-        Err(m) if m.contains("couldn't find remote ref") && looks_like_sha(&reference) => {
-            git(&["fetch", "-q", "--filter=blob:none", "origin"], Some(&dir))
-                .await
-                .map_err(err)?;
-            git(
-                &[
-                    "checkout",
-                    "-q",
-                    "--force",
-                    &format!("{reference}^{{commit}}"),
-                ],
-                Some(&dir),
-            )
-            .await
-            .map_err(|_| err(format!("no branch, tag, or commit named `{reference}`")))?
-        }
-        Err(m) => {
-            return Err(err(if m.contains("couldn't find remote ref") {
-                format!("no branch, tag, or commit named `{reference}`")
-            } else {
-                m
-            }));
-        }
-    };
-    remote.commit = git(&["rev-parse", "HEAD"], Some(&dir)).await.ok();
+        .map_err(|e| match e {
+            SourceError::Fetch { message, .. } => err(message),
+            other => other,
+        })?;
+    remote.commit = Some(co.commit.clone());
     let path = match &remote.path {
-        Some(p) => dir.join(p),
-        None => dir.clone(),
+        Some(p) => co.dir.join(p),
+        None => co.dir.clone(),
     };
     if !path.exists() {
         return Err(err(format!(
@@ -284,7 +330,114 @@ async fn fetch_from(remote: &mut Remote, cache: &Path, url: &str) -> Result<Path
             remote.path.clone().unwrap_or_default()
         )));
     }
-    Ok(path)
+    Ok((path, co.hold))
+}
+
+/// The full sha `reference` names in the repository at `url`, found in a
+/// blobless clone kept per repository (`<repo>/.resolve`). A ref that looks
+/// like a sha must resolve to a commit starting with it: a branch or tag of
+/// that name does not count, nor does an annotated tag object; a prefix of
+/// two commits is reported as ambiguous.
+async fn resolve_commit(url: &str, reference: &str, cache: &Path) -> Result<String, String> {
+    if reference.len() == 40 && looks_like_sha(reference) {
+        return Ok(reference.to_ascii_lowercase());
+    }
+    let dir = cache
+        .join("sources")
+        .join("git")
+        .join(repo_folder(url))
+        .join(".resolve");
+    let _lock = lock_checkout(&dir).await.map_err(|e| e.to_string())?;
+    if !dir.join(".git").exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        git(&["init", "-q"], Some(&dir)).await?;
+        git(&["remote", "add", "origin", url], Some(&dir)).await?;
+    }
+    let sha_like = looks_like_sha(reference);
+    let named = git(
+        &[
+            "fetch",
+            "-q",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            "origin",
+            reference,
+        ],
+        Some(&dir),
+    )
+    .await;
+    match named {
+        Ok(_) => {
+            let sha = git(&["rev-parse", "FETCH_HEAD^{commit}"], Some(&dir)).await?;
+            if !sha_like || sha.starts_with(&reference.to_ascii_lowercase()) {
+                return Ok(sha);
+            }
+            // A branch or tag named like the sha: not what a sha means.
+        }
+        Err(m) if !(m.contains("couldn't find remote ref") && sha_like) => {
+            return Err(if m.contains("couldn't find remote ref") {
+                format!("no branch, tag, or commit named `{reference}`")
+            } else {
+                m
+            });
+        }
+        Err(_) => {}
+    }
+    // An abbreviated sha: fetch the history (without file contents) and
+    // find the commits that start with it. An earlier depth-1 fetch left
+    // this clone shallow, and a fetch does not cross that boundary on its
+    // own: unshallow it first.
+    let mut args = vec!["fetch", "-q", "--filter=blob:none"];
+    if dir.join(".git/shallow").exists() {
+        args.push("--unshallow");
+    }
+    args.extend([
+        "origin",
+        "+refs/heads/*:refs/remotes/origin/*",
+        "+refs/tags/*:refs/tags/*",
+    ]);
+    git(&args, Some(&dir)).await?;
+    let prefix = reference.to_ascii_lowercase();
+    let listed = git(
+        &["rev-parse", &format!("--disambiguate={prefix}")],
+        Some(&dir),
+    )
+    .await
+    .unwrap_or_default();
+    let mut commits = Vec::new();
+    let mut other = Vec::new();
+    for id in listed
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with(&prefix))
+    {
+        match git(&["cat-file", "-t", id], Some(&dir)).await.as_deref() {
+            Ok("commit") => commits.push(id.to_string()),
+            Ok(kind) => other.push(format!("{id} ({kind})")),
+            Err(_) => {}
+        }
+    }
+    match commits.as_slice() {
+        [one] => Ok(one.clone()),
+        [] if !other.is_empty() => Err(format!(
+            "`{reference}` names {}, not a commit; give the commit's sha",
+            other.join(", ")
+        )),
+        [] => Err(format!("no branch, tag, or commit named `{reference}`")),
+        many => Err(format!(
+            "`{reference}` is ambiguous: {} commits start with it ({}); give more of the sha, \
+             or all 40 characters",
+            many.len(),
+            many.iter().map(|c| &c[..12]).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+/// A name made only of dots (`.`, `..`, `...`): never a repository, ref, or
+/// folder name here, since it would name a folder of the cache itself.
+fn only_dots(part: &str) -> bool {
+    !part.is_empty() && part.chars().all(|c| c == '.')
 }
 
 /// A sparse checkout of one repository at one commit.
@@ -293,6 +446,8 @@ pub struct GitCheckout {
     pub dir: PathBuf,
     /// The commit checked out (the full sha, even when `HEAD` was asked for).
     pub commit: String,
+    /// Keeps the checkout in use while the caller holds it.
+    pub hold: Hold,
 }
 
 /// Fetch `paths` of the repository at `url` at `commit` into the cache, as a
@@ -313,13 +468,6 @@ pub async fn fetch_git(
         repo: url.to_string(),
         message,
     };
-    let unpinned = commit.eq_ignore_ascii_case("head");
-    let reference = if unpinned { "HEAD" } else { commit };
-    let dir = cache
-        .join("sources")
-        .join("git")
-        .join(repo_folder(url))
-        .join(sanitize(reference));
     let wanted: Vec<String> = paths
         .iter()
         .map(|p| p.trim_matches('/').to_string())
@@ -330,19 +478,34 @@ pub async fn fetch_git(
     if url.starts_with('-') {
         return Err(err(format!("`{url}` is not a git URL")));
     }
+    // `HEAD` moves: resolve it first, so this run gets a checkout of the
+    // commit it resolved, which no later run changes.
+    let resolved;
+    let commit = if commit.eq_ignore_ascii_case("head") {
+        resolved = resolve_commit(url, "HEAD", cache).await.map_err(err)?;
+        resolved.as_str()
+    } else {
+        commit
+    };
+    let reference = commit;
+    let dir = cache
+        .join("sources")
+        .join("git")
+        .join(repo_folder(url))
+        .join(sanitize(reference));
     let _lock = lock_checkout(&dir).await.map_err(|e| err(e.to_string()))?;
+    let hold = hold_checkout(&dir).map_err(|e| err(e.to_string()))?;
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(&dir).map_err(|e| err(e.to_string()))?;
         git(&["init", "-q"], Some(&dir)).await.map_err(err)?;
         git(&["remote", "add", "origin", url], Some(&dir))
             .await
             .map_err(err)?;
-    } else if !unpinned
-        && git(&["rev-parse", "HEAD"], Some(&dir))
-            .await
-            .ok()
-            .as_deref()
-            == Some(commit)
+    } else if git(&["rev-parse", "HEAD"], Some(&dir))
+        .await
+        .ok()
+        .as_deref()
+        == Some(commit)
         && wanted.iter().all(|p| dir.join(p).exists())
         && (!whole
             || git(&["config", "core.sparseCheckout"], Some(&dir))
@@ -351,9 +514,13 @@ pub async fn fetch_git(
                 .as_deref()
                 != Some("true"))
     {
+        if let Some(link) = escaping_link(&dir) {
+            return Err(err(link));
+        }
         return Ok(GitCheckout {
             dir,
             commit: commit.to_string(),
+            hold,
         });
     }
     if whole {
@@ -391,9 +558,6 @@ pub async fn fetch_git(
     if let Err(first) = shallow {
         // Some servers refuse to fetch a commit by its sha alone; fetch the
         // history (still without file contents) and find it there.
-        if unpinned {
-            return Err(err(first));
-        }
         git(&["fetch", "-q", "--filter=blob:none", "origin"], Some(&dir))
             .await
             .map_err(|m| err(format!("{first}; then: {m}")))?;
@@ -428,7 +592,65 @@ pub async fn fetch_git(
             }
         )));
     }
-    Ok(GitCheckout { dir, commit: head })
+    if let Some(link) = escaping_link(&dir) {
+        return Err(err(link));
+    }
+    Ok(GitCheckout {
+        dir,
+        commit: head,
+        hold,
+    })
+}
+
+/// Why the checkout in `dir` may not be used: a symbolic link anywhere in
+/// it that leads outside the checkout. A fetched repository is someone
+/// else's, and a task folder that resolves to `~/.config/...` would read
+/// this machine's files as the task's. Links that stay inside are fine.
+fn escaping_link(dir: &Path) -> Option<String> {
+    // The whole checkout, every time: a sparse one holds only what was asked
+    // for, and a dataset that asks for the root and a folder turns sparse
+    // checkout off, so walking only the folders asked for would miss the
+    // rest (delta review A3).
+    let wanted: &[String] = &[];
+    let root = dir.canonicalize().ok()?;
+    let outside = |path: &Path| match path.canonicalize() {
+        Ok(real) => !real.starts_with(&root),
+        // A dangling link reads as nothing.
+        Err(_) => false,
+    };
+    let roots: Vec<PathBuf> = if wanted.is_empty() {
+        vec![dir.to_path_buf()]
+    } else {
+        wanted.iter().map(|p| dir.join(p)).collect()
+    };
+    for start in roots {
+        if outside(&start) {
+            return Some(format!(
+                "`{}` in the repository leads outside it through a symbolic link; BenchFlow \
+                 does not follow it",
+                start.strip_prefix(dir).unwrap_or(&start).display()
+            ));
+        }
+        for entry in walkdir::WalkDir::new(&start)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.path_is_symlink())
+        {
+            if outside(entry.path()) {
+                return Some(format!(
+                    "`{}` in the repository is a symbolic link to a place outside it; BenchFlow \
+                     does not follow it",
+                    entry
+                        .path()
+                        .strip_prefix(dir)
+                        .unwrap_or(entry.path())
+                        .display()
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// Refuse a ref that git would read as an option (`--upload-pack=<command>`
@@ -440,6 +662,7 @@ fn unsafe_git_value(repo: &str, reference: &str, paths: &[String]) -> Result<(),
         message,
     };
     if reference.starts_with('-')
+        || only_dots(reference)
         || reference
             .chars()
             .any(|c| c.is_whitespace() || c.is_control())
@@ -450,10 +673,11 @@ fn unsafe_git_value(repo: &str, reference: &str, paths: &[String]) -> Result<(),
     }
     if let Some(p) = paths
         .iter()
-        .find(|p| p.starts_with('/') || p.split(['/', '\\']).any(|c| c == ".."))
+        .find(|p| p.starts_with('/') || p.split(['/', '\\']).any(only_dots))
     {
         return Err(err(format!(
-            "the path `{p}` leaves the repository (absolute, or with `..`)"
+            "the path `{p}` leaves the repository or names no folder in it (absolute, or with \
+             a part made only of dots)"
         )));
     }
     Ok(())
@@ -644,8 +868,13 @@ mod tests {
         run(&["commit", "-q", "-am", "new"]);
         let url = format!("file://{}", repo.display());
         let cache = tmp.path().join("cache");
+        // A branch fetched first leaves the resolve clone shallow at the new
+        // commit (security review F5): the older prefix must still resolve.
+        let current = run(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        let mut branch = parse_remote(&format!("o/r/tasks@{current}")).unwrap();
+        fetch_from(&mut branch, &cache, &url).await.unwrap();
         let mut remote = parse_remote(&format!("o/r/tasks@{}", &old[..7])).unwrap();
-        let path = fetch_from(&mut remote, &cache, &url).await.unwrap();
+        let (path, _hold) = fetch_from(&mut remote, &cache, &url).await.unwrap();
         assert_eq!(
             std::fs::read_to_string(path.join("a/task.md")).unwrap(),
             "old"
@@ -659,6 +888,201 @@ mod tests {
                 .contains("no branch, tag, or commit named `abcdef0`"),
             "{e}"
         );
+        // A branch named like a sha is not a commit starting with it.
+        run(&["branch", "deadbee", &old]);
+        let mut remote = parse_remote("o/r/tasks@deadbee").unwrap();
+        let e = fetch_from(&mut remote, &cache, &url).await.unwrap_err();
+        assert!(e.to_string().contains("named `deadbee`"), "{e}");
+        // An annotated tag object's sha names a tag, not the commit it tags.
+        run(&["tag", "-a", "v1", "-m", "v1", &old]);
+        let tag = run(&["rev-parse", "v1"]);
+        assert_ne!(tag, old);
+        let mut remote = parse_remote(&format!("o/r/tasks@{}", &tag[..9])).unwrap();
+        let e = fetch_from(&mut remote, &cache, &url).await.unwrap_err();
+        assert!(e.to_string().contains("(tag), not a commit"), "{e}");
+    }
+
+    /// Each run gets a checkout of the commit it resolved: a later run of
+    /// the same branch after it moved, or of another folder, leaves the
+    /// first run's files as they were. The checkout is held while in use,
+    /// and `bench cache clean` leaves it alone.
+    #[tokio::test]
+    async fn a_run_keeps_the_commit_it_resolved() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        for p in ["tasks/a", "tasks/b"] {
+            std::fs::create_dir_all(repo.join(p)).unwrap();
+            std::fs::write(repo.join(p).join("task.md"), "old").unwrap();
+        }
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "old"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let mut first = parse_remote("o/r/tasks/a@main").unwrap();
+        let (a, hold) = fetch_from(&mut first, &cache, &url).await.unwrap();
+        // Another run asks for another folder at the same commit.
+        let mut other = parse_remote("o/r/tasks/b@main").unwrap();
+        let (b, _) = fetch_from(&mut other, &cache, &url).await.unwrap();
+        assert_eq!(a.parent(), b.parent());
+        assert!(a.join("task.md").exists(), "folders are added, not swapped");
+        // main moves; a later run gets the new commit in a checkout of its own.
+        std::fs::write(repo.join("tasks/a/task.md"), "new").unwrap();
+        run(&["commit", "-q", "-am", "new"]);
+        let mut later = parse_remote("o/r/tasks/a@main").unwrap();
+        let (a2, _) = fetch_from(&mut later, &cache, &url).await.unwrap();
+        assert_ne!(first.commit, later.commit);
+        assert_eq!(std::fs::read_to_string(a2.join("task.md")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(a.join("task.md")).unwrap(), "old");
+        // In use while held; free once dropped.
+        let checkout = a.parent().unwrap().parent().unwrap().to_path_buf();
+        assert!(checkout_in_use(&checkout));
+        let entry = crate::cache::Entry {
+            kind: crate::cache::Kind::Sources,
+            name: "o/r".into(),
+            path: checkout.clone(),
+            bytes: 0,
+            last_used: None,
+        };
+        assert!(crate::cache::remove(&entry).is_err());
+        drop(hold);
+        // Other tests' git children may hold an inherited copy of the file
+        // for a moment between fork and exec.
+        let mut free = false;
+        for _ in 0..50 {
+            if !checkout_in_use(&checkout) {
+                free = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(free, "the checkout is free once its hold is dropped");
+        // Security review F6: not while a fetch changes it; then its lock
+        // files go with it.
+        let changing = lock_checkout(&checkout).await.unwrap();
+        assert!(crate::cache::remove(&entry).is_err());
+        drop(changing);
+        crate::cache::remove(&entry).unwrap();
+        let mut lock = checkout.as_os_str().to_owned();
+        lock.push(".lock");
+        assert!(!checkout.exists() && !use_file(&checkout).exists());
+        assert!(!PathBuf::from(lock).exists());
+    }
+
+    /// Security review F2: a repository whose task folder (or a file in
+    /// it) is a symbolic link outside the checkout is refused; a link that
+    /// stays inside is fine.
+    #[tokio::test]
+    async fn links_out_of_a_fetched_repository_are_refused() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let secret = tmp.path().join("secret");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("task.md"), "KEY=live").unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("tasks/ok")).unwrap();
+        std::fs::create_dir_all(repo.join("tasks/file")).unwrap();
+        std::fs::write(repo.join("tasks/ok/task.md"), "ok").unwrap();
+        std::os::unix::fs::symlink("task.md", repo.join("tasks/ok/alias.md")).unwrap();
+        std::os::unix::fs::symlink(&secret, repo.join("tasks/dir")).unwrap();
+        std::os::unix::fs::symlink(secret.join("task.md"), repo.join("tasks/file/task.md"))
+            .unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "links"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let mut ok = parse_remote("o/r/tasks/ok@main").unwrap();
+        assert!(fetch_from(&mut ok, &cache, &url).await.is_ok());
+        // A dataset asking for the root and a folder turns sparse checkout
+        // off; the links elsewhere in the repository are still found.
+        let sha = ok.commit.clone().unwrap();
+        let e = fetch_git(&url, &sha, &["".into(), "tasks/ok".into()], &cache)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("symbolic link"), "{e}");
+        for target in ["o/r/tasks/dir@main", "o/r/tasks/file@main"] {
+            let mut remote = parse_remote(target).unwrap();
+            let e = fetch_from(&mut remote, &cache, &url).await.unwrap_err();
+            assert!(e.to_string().contains("symbolic link"), "{target}: {e}");
+        }
+    }
+
+    /// Names made only of dots never reach the cache's paths, and a
+    /// checkout another process holds is waited for, not forever.
+    #[tokio::test]
+    async fn dots_are_refused_and_a_held_checkout_is_waited_for_with_a_deadline() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let url = format!("file://{}", tmp.path().join("nowhere").display());
+        for target in ["o/r/tasks@..", "o/r/../x@main", "o/r/./x@main"] {
+            let mut remote = parse_remote(target).unwrap();
+            let e = fetch_from(&mut remote, &cache, &url).await.unwrap_err();
+            assert!(
+                e.to_string().contains("dots") || e.to_string().contains("is not a branch"),
+                "{target}: {e}"
+            );
+        }
+        let mut remote = Remote {
+            repo: "../..".into(),
+            path: None,
+            reference: None,
+            commit: None,
+        };
+        let e = fetch_from(&mut remote, &cache, &url).await.unwrap_err();
+        assert!(e.to_string().contains("not a repository name"), "{e}");
+        assert!(!tmp.path().join("cache.lock").exists());
+
+        let dir = tmp.path().join("checkout");
+        let held = lock_checkout(&dir).await.unwrap();
+        let e = lock_checkout_within(&dir, std::time::Duration::from_millis(300))
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(e.to_string().contains("another bench process held"), "{e}");
+        drop(held);
+        lock_checkout_within(&dir, std::time::Duration::from_millis(300))
+            .await
+            .unwrap();
     }
 
     /// A registry names the commit, the URL, and the paths; none of them may

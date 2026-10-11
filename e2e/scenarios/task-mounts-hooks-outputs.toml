@@ -1,0 +1,21 @@
+# A read-only mount, a task.md snapshot hook before grading, and a declared output saved as an artifact.
+tier = "smoke"
+needs = ["sandbox"]
+tasks = ["mount-hook-outputs"]
+
+[[step]]
+run = ["run", "tasks/mount-hook-outputs", "-s", "{backend}", "--job", "o"]
+exit = 0
+trials = [{ job = "o", status = "scored", reward = 1.0, files = ["hooks/1.txt", "artifacts/out.txt", "artifacts/manifest.json"], file_has = { "artifacts/out.txt" = "mounted-e2e-42", "artifacts/manifest.json" = '"status": "ok"' }, result = { "defenses.read_only_mounts.state" = "enforced" } }]
+
+[[step]]
+name = "a control that writes to the read-only mount fails (bench test)"
+run = ["test", "tasks/mount-hook-outputs", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+trials = [{ job = "tests/*", agent = "control:write-mount", status = "scored", reward = 0.0 }]
+
+[[step]]
+name = "nop leaves no output: the artifact is recorded as missing and the task fails"
+run = ["run", "tasks/mount-hook-outputs", "-a", "nop", "-s", "{backend}", "--job", "n"]
+exit = 0
+trials = [{ job = "n", status = "scored", reward = 0.0 }]

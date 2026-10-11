@@ -86,7 +86,7 @@ pub async fn run(args: RegradeArgs) -> Result<Exit> {
         |rt| regrade::run(plan, rt, concurrency),
     )
     .await
-    .map_err(|e| CliError::bug("writing the regrade job folder", e))?;
+    .map_err(engine::job_folder_error)?;
 
     if ui().json {
         println!(
@@ -98,6 +98,7 @@ pub async fn run(args: RegradeArgs) -> Result<Exit> {
                 "changed": outcome.changed(),
                 "trials": outcome.changes,
                 "not_regradable": not_regradable,
+                "not_started": outcome.not_started,
                 "summary": outcome.summary,
             }))
             .unwrap_or_default()
@@ -146,6 +147,14 @@ pub async fn run(args: RegradeArgs) -> Result<Exit> {
                 );
             }
         }
+        if outcome.not_started > 0 {
+            say!(
+                "  {} {} not regraded (the regrade was drained or stopped); run `bench regrade {}` again, which writes a new folder",
+                warn_mark(),
+                plural(outcome.not_started, "trial"),
+                ui::path(&job)
+            );
+        }
         print_not_regradable(&not_regradable);
         say!("  {}  {}", dim("Job  "), ui::path(&outcome.dir));
         say!(
@@ -157,11 +166,13 @@ pub async fn run(args: RegradeArgs) -> Result<Exit> {
     }
     let all_scored = outcome.records.iter().all(|r| r.status == Status::Scored)
         && outcome.records.len() == outcome.changes.len();
-    Ok(if all_scored && not_regradable.is_empty() {
-        Exit::Ok
-    } else {
-        Exit::Failed
-    })
+    Ok(
+        if all_scored && not_regradable.is_empty() && outcome.not_started == 0 {
+            Exit::Ok
+        } else {
+            Exit::Failed
+        },
+    )
 }
 
 fn reward_text(status: Status, reward: Option<f64>) -> String {

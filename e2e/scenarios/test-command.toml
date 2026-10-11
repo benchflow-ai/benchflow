@@ -1,0 +1,36 @@
+# bench test: the oracle passes, nop fails, controls fail; a task whose verifier says yes to nothing fails the test.
+tier = "smoke"
+needs = ["sandbox"]
+tasks = ["hello", "always-passes", "loose-hello"]
+
+[[step]]
+run = ["test", "tasks/hello", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+output_has = ['oracle\s+1', 'nop\s+0', 'control:near-miss\s+0', '1 of 1 task|proved']
+trials = [
+  { job = "tests/*", agent = "oracle", status = "scored", reward = 1.0 },
+  { job = "tests/*", agent = "nop", status = "scored", reward = 0.0 },
+  { job = "tests/*", agent = "control:near-miss", reward = 0.0 },
+]
+
+[[step]]
+name = "doing nothing passes, so the test fails"
+run = ["test", "tasks/always-passes", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 1
+output_has = ['doing nothing passes']
+
+[[step]]
+name = "a control that passes fails the test"
+run = ["test", "tasks/loose-hello", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 1
+output_has = ['control:exact\s+1']
+trials = [{ job = "tests/*", agent = "control:exact", status = "scored", reward = 1.0 }]
+
+[[step]]
+run = ["test", "--list-probes"]
+exit = 0
+stdout_has = ['forge-reward', 'path-shadow', 'env-inject']
+
+[[step]]
+run = ["test", "tasks/hello", "--probes", "no-such-probe", "-s", "{backend}"]
+exit = 2

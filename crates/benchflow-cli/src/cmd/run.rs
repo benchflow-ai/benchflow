@@ -70,7 +70,32 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         }
     };
     let agent_name = st.defaults.agent.clone().unwrap_or_else(|| "oracle".into());
-    let trials = st.defaults.trials.unwrap_or(1).max(1);
+    // `-k 0` (or `trials = 0` in a job file) asks for no trials; running
+    // one anyway would hide the mistake.
+    if st.defaults.trials == Some(0) {
+        // Name where the 0 came from: the flag, a job file, or bench.toml.
+        let (what, next) = if args.trials == Some(0) {
+            (
+                "-k 0".to_string(),
+                "drop -k for one trial per task, or pass -k 1 or more".to_string(),
+            )
+        } else if job_file.run.trials == Some(0) {
+            (
+                format!("trials = 0 in the job file ({})", args.config.join(", ")),
+                "set trials to 1 or more there, or override it with -k".to_string(),
+            )
+        } else {
+            (
+                "trials = 0 in bench.toml's [run] or its profile".to_string(),
+                "set trials to 1 or more there, or override it with -k".to_string(),
+            )
+        };
+        return Err(CliError::usage(format!(
+            "{what} asks for no trials; trials is a whole number from 1"
+        ))
+        .next(next));
+    }
+    let trials = st.defaults.trials.unwrap_or(1);
     let resolved = JobFile {
         targets: pick(&args.targets, &job_file.targets),
         dataset: args.dataset.clone().or(job_file.dataset.clone()),
@@ -97,6 +122,18 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         }
         return Ok(Exit::Ok);
     }
+    // Filters follow 0.8's fnmatch, which reads `[^`, braces and backslashes
+    // differently from a shell glob.
+    for (flag, patterns) in [
+        ("--include", &resolved.include),
+        ("--exclude", &resolved.exclude),
+    ] {
+        for p in patterns {
+            for note in benchflow_task::fnmatch::dialect_notes(p) {
+                note!("  {} {flag} '{p}': {note}", warn_mark());
+            }
+        }
+    }
     if resolved.dataset.is_some() && !resolved.targets.is_empty() {
         return Err(CliError::usage(
             "both a dataset and targets were given; a run takes one or the other",
@@ -122,6 +159,41 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         return Err(CliError::usage(format!(
             "--fail-under takes a rate from 0 to 1, not {f}"
         )));
+    }
+    // A judge model the judge could never call would only fail after every
+    // agent had run; refuse it before anything starts.
+    if let Some(m) = &args.judge_model
+        && !m
+            .split_once('/')
+            .is_some_and(|(p, rest)| !p.trim().is_empty() && !rest.trim().is_empty())
+    {
+        return Err(
+            CliError::usage(format!("--judge-model takes <provider>/<model>, not `{m}`"))
+                .next("for example --judge-model vercel/deepseek/deepseek-v4-flash-0731"),
+        );
+    }
+    // A provider neither the judge's providers nor the native client know
+    // would fail the same way, after the agents. A missing key is left to
+    // the judge, which says which variable it wanted.
+    if let Some(m) = &args.judge_model
+        && let Some((prefix, _)) = m.split_once('/')
+        && benchflow_agent::providers::ProviderRegistry::builtin()
+            .find(prefix)
+            .is_none()
+        && matches!(
+            benchflow_agent::native::endpoint::EndpointResolver::resolve(
+                &benchflow_agent::native::endpoint::BuiltinProviders,
+                m,
+                &benchflow_agent::credentials::HostEnv::from_process(),
+            ),
+            Err(benchflow_agent::native::endpoint::EndpointError::UnknownProvider { .. })
+        )
+    {
+        return Err(CliError::usage(format!(
+            "--judge-model names no provider BenchFlow knows: `{prefix}`",
+            prefix = m.split_once('/').map(|(p, _)| p).unwrap_or(m)
+        ))
+        .next("`bench agents` lists the providers; for example --judge-model vercel/deepseek/deepseek-v4-flash-0731"));
     }
 
     // What to run.
@@ -157,7 +229,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         // run would resume a job: that needs the tasks' digests.
         if args.dry_run
             && args.diff.is_empty()
-            && !may_resume(&st.jobs_dir, args.job.as_deref(), args.fresh)
+            && !may_resume(&st.jobs_dir, args.job.as_deref(), args.fresh, &d)
         {
             return dataset_plan(&d, listed, &resolved, None);
         }
@@ -233,6 +305,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
     let model = resolved.run.model.clone();
     let effort = resolved.run.reasoning_effort.clone();
     let env = resolved.run.env.clone();
+    refuse_untyped_base_urls(&env, &context::parse_env(&args.env)?)?;
     let agent_options = context::agent_option_pairs(&resolved.run.agent_options);
     let attempt = engine::attempt(
         &agent_name,
@@ -274,13 +347,27 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         }
     }
     let load_trajectory = loaded_session(&resolved.run, &attempt)?;
-    if let benchflow_run::Attempt::Model(m) = &attempt {
-        m.preflight().map_err(|p| {
-            CliError::not_ready(p.message.clone())
-                .code(p.code.clone())
-                .owner(p.owner)
-                .next(p.next.clone())
-        })?;
+    // A missing login stops a run here, before any sandbox starts; a plan
+    // (--dry-run) needs no key, so it says what is missing instead.
+    let not_ready = match &attempt {
+        benchflow_run::Attempt::Model(m) => m.preflight().err(),
+        _ => None,
+    };
+    // A native loop whose calls (and key) a base URL sends elsewhere.
+    if benchflow_agent::native::find(&agent_name).is_some()
+        && let Some(m) = model.as_deref()
+        && let Some(line) = benchflow_agent::native::endpoint::base_url_note(
+            m,
+            &benchflow_agent::credentials::HostEnv::from_process(),
+        )
+    {
+        note!("  {} {line}", warn_mark());
+    }
+    if let Some(p) = not_ready.as_ref().filter(|_| !args.dry_run) {
+        return Err(CliError::not_ready(p.message.clone())
+            .code(p.code.clone())
+            .owner(p.owner)
+            .next(p.next.clone()));
     }
 
     // The plan, before anything starts.
@@ -302,6 +389,9 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         options.job_files = job_files;
         let (plan, _) = diff_plan(&diff_jobs, &units, trials, args.job.as_deref(), &options)?;
         print_diff(&plan, true);
+        if !ui().json {
+            say_not_ready(not_ready.as_ref());
+        }
         return Ok(Exit::Ok);
     }
     if args.dry_run {
@@ -325,7 +415,11 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             &options,
         );
         if let Some((d, _)) = &dataset {
-            return dataset_plan(d, listed, &resolved, Some(&preview));
+            let plan = dataset_plan(d, listed, &resolved, Some(&preview));
+            if !ui().json {
+                say_not_ready(not_ready.as_ref());
+            }
+            return plan;
         }
         let plan = json!({
             "agent": attempt.label(),
@@ -336,6 +430,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             "jobs_dir": st.jobs_dir,
             "tasks": tasks.iter().map(|t| json!({"name": t.name, "id": t.id, "path": t.root, "digest": t.digest, "format": t.format})).collect::<Vec<_>>(),
             "refused": refused.iter().map(|(t, m)| json!({"task": t, "reason": m})).collect::<Vec<_>>(),
+            "not_ready": not_ready.as_ref().map(|p| json!({"code": p.code, "message": p.message, "next": p.next})),
             "sources": sources,
             "job": job_json(Some(&preview)),
         });
@@ -347,12 +442,12 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         } else {
             say!("{}", bold("Plan (nothing runs with --dry-run)"));
             say!(
-                "  agent    {}{}",
-                attempt.label(),
-                model
-                    .as_ref()
-                    .map(|m| format!(" · {m}"))
-                    .unwrap_or_default()
+                "  agent    {}",
+                attempt_title(
+                    &attempt.label(),
+                    model.as_deref(),
+                    attempt.model().as_deref()
+                )
             );
             say!(
                 "  tasks    {} × {} = {}",
@@ -375,6 +470,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             for (t, m) in &refused {
                 say!("  {} {} would be refused: {}", warn_mark(), t, m);
             }
+            say_not_ready(not_ready.as_ref());
         }
         return Ok(Exit::Ok);
     }
@@ -459,16 +555,11 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
 
     // Exit code: trials not scored, and the gate.
     let recs = &outcome.records;
-    let total = recs.len();
-    let passed = recs.iter().filter(|r| r.passed == Some(true)).count();
     let statuses: Vec<Status> = recs.iter().map(|r| r.status).collect();
     let mut exit = run_exit(&statuses, outcome.not_started);
     if let Some(f) = fail_under {
-        let rate = if total == 0 {
-            0.0
-        } else {
-            passed as f64 / total as f64
-        };
+        // The rate the Score line shows: stopped trials left out.
+        let rate = benchflow_run::record::Tally::of(recs).rate().unwrap_or(0.0);
         if rate + 1e-12 < f {
             say!(
                 "  {} pass rate {:.1}% is below --fail-under {:.1}%",
@@ -709,6 +800,7 @@ fn print_diff(plan: &diff::DiffPlan, dry_run: bool) {
             diff::Action::Reuse => ui::paint(ui::GREEN, "reuse  "),
             diff::Action::Regrade => ui::paint(ui::CYAN, "regrade"),
             diff::Action::Rerun => "rerun  ".to_string(),
+            diff::Action::Run => "run    ".to_string(),
         };
         let from = t
             .source
@@ -730,11 +822,15 @@ fn print_diff(plan: &diff::DiffPlan, dry_run: bool) {
     }
     let n = plan.trials.len();
     say!(
-        "  {}: {} reuse · {} regrade · {} rerun",
+        "  {}: {} reuse · {} regrade · {} rerun{}",
         plural(n, "trial"),
         plan.count(diff::Action::Reuse),
         plan.count(diff::Action::Regrade),
-        plan.count(diff::Action::Rerun)
+        plan.count(diff::Action::Rerun),
+        match plan.count(diff::Action::Run) {
+            0 => String::new(),
+            new => format!(" · {new} new"),
+        }
     );
 }
 
@@ -754,9 +850,9 @@ fn registry_error(e: RegistryError) -> CliError {
         RegistryError::BadRef(_) => CliError::usage(e.to_string()),
         RegistryError::NotFound { .. } => CliError::usage(e.to_string())
             .next("check the name and version; --registry <url-or-file> searches another registry"),
-        RegistryError::Unreadable { .. } => CliError::failed(e.to_string())
+        RegistryError::Unreadable { .. } | RegistryError::NoneRead { .. } => CliError::failed(e.to_string())
             .owner(Owner::You)
-            .next("check the network, or pass --registry with a local copy of the registry"),
+            .next("check the network. Offline, bench reads the copy of each registry it last fetched (registries/ in its cache folder, see `bench cache`); --registry <file> reads such a copy taken from another machine"),
         RegistryError::Invalid { .. } => CliError::failed(e.to_string())
             .owner(Owner::Task)
             .next("the registry is malformed; tell its maintainers, or pass --registry with a fixed copy"),
@@ -806,7 +902,7 @@ fn dataset_line(d: &registry::Dataset, width: usize) -> String {
             plural(d.tasks.len(), "task")
         ),
         " · ",
-        &dim(&d.registry),
+        &dim(registry::shown(&d.registry)),
         10,
         width,
     )
@@ -931,13 +1027,24 @@ fn plan_task_lines(d: &registry::Dataset, listed: usize) -> Vec<String> {
             None => from.push((place, 1)),
         }
     }
-    for (place, k) in &from {
+    // A registry that pins one commit per task has one source per task;
+    // list the first few so the plan stays readable at dataset scale.
+    const SHOWN: usize = 5;
+    for (place, k) in from.iter().take(SHOWN) {
         let count = if from.len() > 1 {
             format!(" ({k})")
         } else {
             String::new()
         };
         lines.push(format!("  from     {place}{count}"));
+    }
+    if from.len() > SHOWN {
+        let rest: usize = from[SHOWN..].iter().map(|(_, k)| k).sum();
+        lines.push(format!(
+            "  from     and {} ({})",
+            plural(from.len() - SHOWN, "other source"),
+            plural(rest, "task")
+        ));
     }
     let pinned = d.tasks.iter().filter(|t| t.digest.is_some()).count();
     lines.push(if pinned == 0 {
@@ -953,15 +1060,48 @@ fn plan_task_lines(d: &registry::Dataset, listed: usize) -> Vec<String> {
 /// without fetching anything.
 /// Whether a run could resume a job here, judged without the tasks: false
 /// when the run would surely start a new job (`--fresh`, a `--job` name not
-/// used yet, or no job in the jobs folder).
-fn may_resume(jobs_dir: &Path, job: Option<&str>, fresh: bool) -> bool {
+/// used yet, or no job in the jobs folder that ran this dataset or any task
+/// of the same name). A run resumes by its tasks' digests, not by the
+/// dataset's name, so a job of the same tasks under another version or
+/// from a local folder counts; the fetch then tells for sure.
+fn may_resume(jobs_dir: &Path, job: Option<&str>, fresh: bool, d: &registry::Dataset) -> bool {
     if let Some(name) = job {
         return jobs_dir.join(name).join("evaluation.json").is_file();
     }
+    // Only a job of these tasks could be resumed: another job in the
+    // folder must not make a plan fetch every task and check the login.
+    let names: std::collections::BTreeSet<&str> = d.tasks.iter().map(|t| t.name.as_str()).collect();
+    let could_be_this = |dir: &Path| {
+        std::fs::read_to_string(dir.join("evaluation.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .is_some_and(|v| {
+                let ds = &v["source"]["dataset"];
+                let same_dataset =
+                    ds["name"] == d.name.as_str() && ds["version"] == d.version.as_str();
+                // evaluation.json lists the job's tasks under `config.tasks`;
+                // a task's loaded name may differ from the registry's listing
+                // name, so its id and folder name count too.
+                let same_task = v["config"]["tasks"].as_array().is_some_and(|tasks| {
+                    tasks.iter().any(|t| {
+                        let folder = t["path"]
+                            .as_str()
+                            .map(|p| p.trim_end_matches('/').rsplit('/').next().unwrap_or(p));
+                        [t["name"].as_str(), t["id"].as_str(), folder]
+                            .into_iter()
+                            .flatten()
+                            .any(|n| {
+                                names.contains(n)
+                                    || names.contains(n.rsplit('/').next().unwrap_or(n))
+                            })
+                    })
+                });
+                same_dataset || same_task
+            })
+    };
     !fresh
-        && std::fs::read_dir(jobs_dir).is_ok_and(|mut dirs| {
-            dirs.any(|e| e.is_ok_and(|e| e.path().join("evaluation.json").is_file()))
-        })
+        && std::fs::read_dir(jobs_dir)
+            .is_ok_and(|mut dirs| dirs.any(|e| e.is_ok_and(|e| could_be_this(&e.path()))))
 }
 
 /// The plan's job line: whether the run would resume a job, and how much of
@@ -1060,17 +1200,106 @@ fn dataset_plan(
     Ok(Exit::Ok)
 }
 
+/// Why a task was skipped, on its one line: the first error itself, so a
+/// dataset whose tasks all fail the same way says how without a `bench
+/// check` per task.
+fn skip_reason(errors: &[(&str, &str)]) -> String {
+    match errors {
+        [] => "it did not load".to_string(),
+        [(code, message)] => format!("[{code}] {message}"),
+        [(code, message), rest @ ..] => {
+            let more = if rest.len() == 1 { "error" } else { "errors" };
+            format!("[{code}] {message} (and {} more {more})", rest.len())
+        }
+    }
+}
+
+/// Refuse a base-URL variable (`ANTHROPIC_BASE_URL`, `OPENAI_API_BASE`, …)
+/// that came from bench.toml or a job file rather than `--env`: with one,
+/// an agent on its own key keeps that key and sends it to the URL, and a
+/// cloned repository's bench.toml could name any host. Typed on the command
+/// line, it is the user's choice.
+fn refuse_untyped_base_urls(
+    env: &std::collections::BTreeMap<String, String>,
+    typed: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    // Where the agent's key or login goes (base URLs, proxies, the
+    // certificates it trusts), or code that runs inside the agent, which
+    // holds them: a cloned repository's file must not choose these.
+    // (`NO_PROXY` only narrows where traffic goes.) The loader and shell
+    // start-up variables (`BASH_ENV`, `LD_AUDIT`, ...) and Python's run
+    // code in the agent's process or its launching shell.
+    let moves_keys = |k: &str| {
+        let k = k.to_ascii_uppercase();
+        ["_BASE_URL", "_API_BASE", "_API_URL", "_ENDPOINT", "_PROXY"]
+            .iter()
+            .any(|s| k.ends_with(s))
+            && k != "NO_PROXY"
+            || [
+                "NODE_TLS_REJECT_UNAUTHORIZED",
+                "NODE_EXTRA_CA_CERTS",
+                "NODE_OPTIONS",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "REQUESTS_CA_BUNDLE",
+                "CURL_CA_BUNDLE",
+                "PYTHONPATH",
+                "PYTHONSTARTUP",
+                "PYTHONHOME",
+            ]
+            .contains(&k.as_str())
+            || benchflow_sandbox::shell::LOADER_VARS.contains(&k.as_str())
+    };
+    if let Some((k, _)) = env
+        .iter()
+        .find(|(k, v)| moves_keys(k) && typed.get(*k) != Some(*v))
+    {
+        return Err(CliError::usage(format!(
+            "{k} is set in bench.toml or a job file; it can move where the agent's key or login is \
+             sent, or run code inside the agent, so it is taken only from the command line"
+        ))
+        .next(format!(
+            "pass --env {k}=<value> to use it, or remove it from the file"
+        )));
+    }
+    Ok(())
+}
+
+/// The plan's line for a login a run would stop on.
+fn say_not_ready(problem: Option<&benchflow_run::outcome::Problem>) {
+    if let Some(p) = problem {
+        say!(
+            "  {} a run would stop here, before any sandbox starts: [{}] {}",
+            warn_mark(),
+            p.code,
+            p.message
+        );
+        say!("      {} {}", dim("next:"), p.next);
+    }
+}
+
+/// What runs, for the `Running ...` line: the agent and its model. With no
+/// `-m`, the agent's own default model (Claude Code's is Haiku), which
+/// nothing else on screen names.
+fn attempt_title(label: &str, asked: Option<&str>, running: Option<&str>) -> String {
+    match (asked, running) {
+        (Some(m), _) => format!("{label} ({m})"),
+        (None, Some(m)) => format!("{label} ({m}, its default)"),
+        (None, None) => label.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod exit_tests {
     use super::*;
 
     #[test]
     fn the_dataset_line_fits_100_columns() {
-        let d = registry::Dataset {
+        let mut d = registry::Dataset {
             name: "terminal-bench".into(),
             version: "2.0".into(),
             description: None,
-            registry: "https://raw.githubusercontent.com/laude-institute/harbor/main/registry.json"
+            registry: "https://example.com/some/long/path/to/a/team/registry/main/registry.json"
                 .into(),
             bench_version: None,
             tasks: Vec::new(),
@@ -1082,6 +1311,100 @@ mod exit_tests {
         for line in narrow.lines() {
             assert!(ui::visible_width(line) <= 100, "{line}");
         }
+        // The default registries are named by what they are, not by address.
+        d.registry = registry::PUBLIC_REGISTRY.into();
+        let public = dataset_line(&d, 100);
+        assert!(public.contains("the public dataset registry"), "{public}");
+        assert!(!public.contains("https://"), "{public}");
+    }
+
+    #[test]
+    fn a_registry_with_a_commit_per_task_lists_a_few_sources() {
+        let tasks = (0..50)
+            .map(|i| registry::DatasetTask {
+                name: format!("t{i}"),
+                location: registry::Location::Git {
+                    url: "https://example.com/r.git".into(),
+                    commit: format!("{i:02}{}", "a".repeat(38)),
+                    path: format!("tasks/t{i}"),
+                },
+                digest: None,
+            })
+            .collect();
+        let d = registry::Dataset {
+            name: "swe".into(),
+            version: "1".into(),
+            description: None,
+            registry: "r.json".into(),
+            bench_version: None,
+            tasks,
+        };
+        let lines = plan_task_lines(&d, 50);
+        let from: Vec<&String> = lines.iter().filter(|l| l.contains("from ")).collect();
+        assert_eq!(from.len(), 6, "{lines:#?}");
+        assert_eq!(from[5], "  from     and 45 other sources (45 tasks)");
+    }
+
+    #[test]
+    fn a_dataset_plan_fetches_only_for_a_job_of_that_dataset() {
+        let jobs = tempfile::tempdir().unwrap();
+        let d = registry::Dataset {
+            name: "terminal-bench".into(),
+            version: "2.0".into(),
+            description: None,
+            registry: "r.json".into(),
+            bench_version: None,
+            tasks: Vec::new(),
+        };
+        let job = |name: &str, source: Value| {
+            let dir = jobs.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("evaluation.json"),
+                json!({"source": source}).to_string(),
+            )
+            .unwrap();
+        };
+        // A job of local tasks, and one of another version: nothing to resume.
+        job("a", json!({"path": "tasks"}));
+        job(
+            "b",
+            json!({"dataset": {"name": "terminal-bench", "version": "1.0"}}),
+        );
+        assert!(!may_resume(jobs.path(), None, false, &d));
+        job(
+            "c",
+            json!({"dataset": {"name": "terminal-bench", "version": "2.0"}}),
+        );
+        assert!(may_resume(jobs.path(), None, false, &d));
+        assert!(!may_resume(jobs.path(), None, true, &d));
+        assert!(may_resume(jobs.path(), Some("a"), true, &d));
+
+        // A run resumes by its tasks' digests: a job that ran a task of the
+        // same name (from a local folder, or another version) may be this
+        // run's, so the plan fetches to tell (FIX-REVIEW-B 10 on 01b1811f).
+        let jobs = tempfile::tempdir().unwrap();
+        let mut d = d;
+        d.tasks = vec![registry::DatasetTask {
+            name: "fix-git".into(),
+            location: registry::Location::Local("fix-git".into()),
+            digest: None,
+        }];
+        let dir = jobs.path().join("local");
+        std::fs::create_dir_all(&dir).unwrap();
+        // The shape job.rs's evaluation_json writes: the tasks under
+        // config, each named as loaded, with its folder.
+        let eval = |task: &str| {
+            json!({"source": {"path": "tasks"}, "config": {"tasks": [
+                {"name": format!("terminal-bench/{task}"), "id": format!("{task}-1a2b"),
+                 "digest": "d", "path": format!("/home/me/tasks/{task}")}
+            ]}})
+            .to_string()
+        };
+        std::fs::write(dir.join("evaluation.json"), eval("regex-log")).unwrap();
+        assert!(!may_resume(jobs.path(), None, false, &d));
+        std::fs::write(dir.join("evaluation.json"), eval("fix-git")).unwrap();
+        assert!(may_resume(jobs.path(), None, false, &d));
     }
 
     #[test]
@@ -1109,62 +1432,5 @@ mod exit_tests {
         assert!(run_exit(&[Status::Unscored], 0) == Exit::Failed);
         assert!(run_exit(&[Status::Errored], 0) == Exit::Failed);
         assert!(run_exit(&[Status::Scored], 1) == Exit::Failed);
-    }
-}
-
-/// Why a task was skipped, on its one line: the first error itself, so a
-/// dataset whose tasks all fail the same way says how without a `bench
-/// check` per task.
-fn skip_reason(errors: &[(&str, &str)]) -> String {
-    match errors {
-        [] => "it did not load".to_string(),
-        [(code, message)] => format!("[{code}] {message}"),
-        [(code, message), rest @ ..] => {
-            let more = if rest.len() == 1 { "error" } else { "errors" };
-            format!("[{code}] {message} (and {} more {more})", rest.len())
-        }
-    }
-}
-
-/// What runs, for the `Running ...` line: the agent and its model. With no
-/// `-m`, the agent's own default model (Claude Code's is Haiku), which
-/// nothing else on screen names.
-fn attempt_title(label: &str, asked: Option<&str>, running: Option<&str>) -> String {
-    match (asked, running) {
-        (Some(m), _) => format!("{label} ({m})"),
-        (None, Some(m)) => format!("{label} ({m}, its default)"),
-        (None, None) => label.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod title_tests {
-    use super::attempt_title;
-
-    #[test]
-    fn a_skipped_task_says_its_first_error() {
-        let renamed = ("X203", "the `environment` key was renamed to `sandbox`");
-        assert_eq!(
-            super::skip_reason(&[renamed]),
-            "[X203] the `environment` key was renamed to `sandbox`"
-        );
-        assert_eq!(
-            super::skip_reason(&[renamed, ("X201", "x"), ("X201", "y")]),
-            "[X203] the `environment` key was renamed to `sandbox` (and 2 more errors)"
-        );
-        assert_eq!(super::skip_reason(&[]), "it did not load");
-    }
-
-    #[test]
-    fn the_running_line_names_a_default_model() {
-        assert_eq!(
-            attempt_title("builtin", Some("mimo/x"), Some("mimo/x")),
-            "builtin (mimo/x)"
-        );
-        assert_eq!(
-            attempt_title("claude", None, Some("claude-haiku-4-5-20251001")),
-            "claude (claude-haiku-4-5-20251001, its default)"
-        );
-        assert_eq!(attempt_title("oracle", None, None), "oracle");
     }
 }

@@ -1,0 +1,11 @@
+# An image that ships its own solution where the oracle goes: bench test (oracle passes, nop fails, and the probe aimed at the hole scores no more than nop; the defense is recorded as repaired).
+tier = "full"
+needs = ["sandbox"]
+tasks = ["ships-solution"]
+
+[[step]]
+run = ["test", "tasks/ships-solution", "--probes", "peek-hidden", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+timeout = 1500
+output_lacks = ['VULNERABLE']
+trials = [{ job = "tests/*", agent = "oracle", status = "scored", reward = 1.0, result = { "defenses.hidden_verifier.state" = "failed", "defenses.hidden_verifier.note" = { matches = "locked to root before the agent ran" } } }, { job = "tests/*", agent = "nop", status = "scored", reward = 0.0 }, { job = "tests/*", agent = "probe:*", status = "scored", reward = 0.0, result = { "defenses.hidden_verifier.state" = "failed", "defenses.hidden_verifier.note" = { matches = "locked to root before the agent ran" } } }]

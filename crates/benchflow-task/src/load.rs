@@ -25,7 +25,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "P001",
         title: "not a task folder",
         body: "A task folder holds task.md (task.md, or BenchFlow 0.8's task.md with YAML frontmatter) or \
-task.toml (the split layout Harbor uses). The path given holds neither, is a file, or does not exist. \
+task.toml (the split layout). The path given holds neither, is a file, or does not exist. \
 `bench new <name>` creates a task folder.",
     },
     Explanation {
@@ -60,6 +60,18 @@ could not be used; the message says which. A run would stop on it with R313.",
         body: "BenchFlow stopped with an internal error while it checked this task, so the task was neither \
 loaded nor run. The message holds the error. This is a BenchFlow bug, whatever the task holds: report it with \
 the task folder (or the value that set it off). The other tasks are checked as usual.",
+    },
+    Explanation {
+        code: "P015",
+        title: "an output's exclude pattern matches the output itself",
+        body: "An output's `exclude` patterns are matched against the output itself before anything in it, \
+as BenchFlow 0.8's capture does: against its name, and for a folder against `.`, its path relative to \
+itself. A pattern that matches leaves the whole output out, so nothing of it is saved to the trial's \
+`artifacts/` and its manifest entry says `excluded` (the trial's raw outputs, when saved, still hold it). \
+`.*`, `*`, `?`, `*.*` and `[.]*` all match `.`, so `exclude = [\".*\"]`, written to skip hidden files, skips \
+the whole folder; a file output `/app/run.log` with `exclude = [\"*.log\"]` is skipped by its name. To skip \
+hidden files inside a folder, write `.?*`, which does not match `.`. Whether a path is a folder is known only \
+in the sandbox, so a pattern that matches `.` is reported in case it is one.",
     },
 ];
 
@@ -184,6 +196,7 @@ pub fn check(dir: &Path, opts: &CheckOptions) -> CheckReport {
         report
             .diagnostics
             .extend(package.extras.diagnostics.iter().cloned());
+        report.diagnostics.extend(self_excluded_outputs(package));
     }
     if let Some(package) = report.package.as_mut() {
         match crate::digest::digest_as(dir, format) {
@@ -196,6 +209,66 @@ pub fn check(dir: &Path, opts: &CheckOptions) -> CheckReport {
         }
     }
     report
+}
+
+/// P015: outputs whose own `exclude` patterns match them, so a run saves
+/// nothing of them. The run (`source_excluded` in benchflow-run's
+/// `collect.rs`) checks an output as 0.8's capture checks its source before
+/// walking it: by its name, and a folder also as `.`. Whether the path is a
+/// folder is known only in the sandbox, so a match on `.` is reported as
+/// "if it is a folder". One warning per output, for its first such pattern.
+fn self_excluded_outputs(package: &TaskPackage) -> Vec<Diagnostic> {
+    use crate::fnmatch::fnmatchcase;
+    let file = match package.format {
+        Format::Split => "task.toml",
+        Format::TaskMd | Format::TaskMdV06 => "task.md",
+    };
+    let mut outputs: Vec<(String, &crate::package::Output)> = package
+        .sandbox
+        .outputs
+        .iter()
+        .map(|o| (format!("output {}", o.path), o))
+        .collect();
+    for stage in package.extras.steps.iter().flat_map(|s| &s.stages) {
+        outputs.extend(
+            stage
+                .outputs
+                .iter()
+                .map(|o| (format!("stage {}'s output {}", stage.name, o.path), o)),
+        );
+    }
+    let mut found = Vec::new();
+    for (what, o) in outputs {
+        // The name the run matches: the path's last component, as
+        // `Path::file_name` gives it there.
+        let name = Path::new(&o.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned());
+        for p in &o.exclude {
+            let d = if let Some(name) = name.as_deref().filter(|n| fnmatchcase(n, p)) {
+                Diagnostic::warning(
+                    "P015",
+                    format!(
+                        "{what}: its exclude pattern {p:?} matches its own name {name:?}, so the output captures nothing (BenchFlow 0.8 skipped it too)"
+                    ),
+                )
+                .help("remove the pattern, or narrow it so it matches only what is inside the output")
+            } else if fnmatchcase(".", p) {
+                Diagnostic::warning(
+                    "P015",
+                    format!(
+                        "{what}: its exclude pattern {p:?} matches \".\", a folder's path relative to itself, so if the output is a folder it captures nothing (BenchFlow 0.8 skipped it too)"
+                    ),
+                )
+                .help("to skip hidden files inside the folder, write \".?*\", which does not match \".\"")
+            } else {
+                continue;
+            };
+            found.push(d.in_file(file));
+            break;
+        }
+    }
+    found
 }
 
 /// Name every file relative to the package, as callers expect: the split
@@ -234,7 +307,7 @@ fn not_a_task(dir: &Path) -> CheckReport {
     report
         .diagnostics
         .push(Diagnostic::error("P001", message).in_file(dir).help(
-        "a task is a folder with task.md (or Harbor's task.toml); `bench new <name>` creates one",
+        "a task is a folder with task.md (or a split-layout task.toml); `bench new <name>` creates one",
     ));
     report
 }
@@ -246,6 +319,29 @@ pub fn load(dir: &Path) -> Result<TaskPackage, Vec<Diagnostic>> {
     let ok = report.ok();
     match report.package.take() {
         Some(package) if ok => Ok(package),
+        _ => Err(report.diagnostics),
+    }
+}
+
+/// Load a package to grade a finished trial's saved outputs again: as
+/// [`load`], except that a service `command` Docker Compose cannot split
+/// (P014) neither stops it nor stays a refused field. A regrade runs only
+/// the verifier, in a fresh sandbox from the task's image, and starts no
+/// service, so a job that ran such a task under an earlier bench (which
+/// split the string another way) can still be graded again.
+pub fn load_to_regrade(dir: &Path) -> Result<TaskPackage, Vec<Diagnostic>> {
+    let mut report = check(dir, &CheckOptions::default());
+    let stops = report
+        .diagnostics
+        .iter()
+        .any(|d| d.is_error() && d.code != "P014");
+    match report.package.take() {
+        Some(mut package) if !stops => {
+            package
+                .unsupported
+                .retain(|u| !crate::compose::is_refused_command(u));
+            Ok(package)
+        }
         _ => Err(report.diagnostics),
     }
 }
@@ -376,6 +472,125 @@ mod tests {
                 .iter()
                 .any(|d| d.code == crate::taskmd::code::HARBOR_TASK_TOML && d.is_error())
         );
+    }
+
+    /// Guards D5b's parity of output `exclude` (cbf42071, review finding 6 of
+    /// both D5b reviews): an output whose own pattern matches it captures
+    /// nothing, as in 0.8, and `bench check` now says so (P015).
+    #[test]
+    fn an_output_its_own_exclude_matches_is_warned_about() {
+        use crate::fnmatch::fnmatchcase;
+        // The help's claims, in 0.8's fnmatch.
+        for p in [".*", "*", "?", "*.*", "[.]*"] {
+            assert!(fnmatchcase(".", p), "{p}");
+        }
+        assert!(!fnmatchcase(".", ".?*") && fnmatchcase(".env", ".?*"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write(
+            d,
+            "split/task.toml",
+            "schema_version = \"1.4\"\nartifacts = [\
+             { source = \"/app/out\", exclude = [\".*\"] },\
+             { source = \"/app/run.log\", exclude = [\"*.tmp\", \"*.log\"] },\
+             { source = \"/app/keep/\", exclude = [\".?*\", \"*.tmp\"] },\
+             \"/app/plain\"]\n[environment]\nworkdir = \"/app\"\n",
+        );
+        write(d, "split/instruction.md", "Do it.\n");
+        write(d, "split/environment/Dockerfile", "FROM ubuntu:24.04\n");
+        write(
+            d,
+            "split/tests/test.sh",
+            "echo 1 > /logs/verifier/reward.txt\n",
+        );
+        let report = check(&d.join("split"), &CheckOptions::default());
+        assert!(report.ok(), "{:#?}", report.diagnostics);
+        let warned: Vec<(&str, &str)> = report
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "P015")
+            .map(|d| {
+                assert!(!d.is_error());
+                assert_eq!(d.location.as_ref().unwrap().file, Path::new("task.toml"));
+                (d.message.as_str(), d.help.as_deref().unwrap())
+            })
+            .collect();
+        assert_eq!(warned.len(), 2, "{warned:#?}");
+        assert_eq!(
+            warned[0].0,
+            "output /app/out: its exclude pattern \".*\" matches \".\", a folder's path relative to itself, so if the output is a folder it captures nothing (BenchFlow 0.8 skipped it too)"
+        );
+        assert!(warned[0].1.contains("\".?*\""), "{}", warned[0].1);
+        assert_eq!(
+            warned[1].0,
+            "output /app/run.log: its exclude pattern \"*.log\" matches its own name \"run.log\", so the output captures nothing (BenchFlow 0.8 skipped it too)"
+        );
+
+        // task.md's outputs, the same way.
+        write(
+            d,
+            "md/task.md",
+            "Do it.\n\n```toml task\nname = \"a/b\"\nversion = \"1.0.0\"\n\n[sandbox]\noutputs = [{ path = \"/app/out\", exclude = [\"*\"] }]\n```\n",
+        );
+        write(d, "md/sandbox/Dockerfile", "FROM ubuntu:24.04\n");
+        write(
+            d,
+            "md/verifier/test.sh",
+            "echo 1 > /logs/verifier/reward.txt\n",
+        );
+        let report = check(&d.join("md"), &CheckOptions::default());
+        let codes: Vec<(&str, &Path)> = report
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "P015")
+            .map(|d| (d.code, d.location.as_ref().unwrap().file.as_path()))
+            .collect();
+        assert_eq!(codes, [("P015", Path::new("task.md"))]);
+    }
+
+    /// Guards the regrade of tasks P014 refuses (the D5b runtime review of
+    /// cbf42071, finding 7): only P014 is let through, and only its refused
+    /// fields are dropped.
+    #[test]
+    fn a_regrade_loads_a_task_despite_a_command_compose_cannot_split() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let task = |extra: &str| {
+            format!(
+                "Do it.\n\n```toml task\nname = \"a/b\"\nversion = \"1.0.0\"\n\n[[sandbox.services]]\nname = \"web\"\nimage = \"python:3.12-slim\"\ncommand = \"python -c print(1)\"\n{extra}```\n"
+            )
+        };
+        write(d, "task.md", &task(""));
+        write(d, "sandbox/Dockerfile", "FROM ubuntu:24.04\n");
+        write(
+            d,
+            "verifier/test.sh",
+            "echo 1 > /logs/verifier/reward.txt\n",
+        );
+        let refused = load(d).unwrap_err();
+        assert!(refused.iter().any(|x| x.code == "P014"), "{refused:#?}");
+        let package = load_to_regrade(d).unwrap();
+        assert!(package.unsupported.is_empty(), "{:#?}", package.unsupported);
+        // Any other error still stops it, and other refused fields stay.
+        write(
+            d,
+            "task.md",
+            &task("[[sandbox.services]]\nname = \"web\"\nimage = \"x\"\n"),
+        );
+        assert!(load_to_regrade(d).is_err());
+        write(
+            d,
+            "task.md",
+            &task("\n[sandbox]\noutputs = [{ path = \"/app/out\", max_bytes = 10 }]\n"),
+        );
+        let package = load_to_regrade(d).unwrap();
+        let fields: Vec<&str> = package
+            .unsupported
+            .iter()
+            .map(|u| u.field.as_str())
+            .collect();
+        assert_eq!(fields, ["[sandbox] outputs[0] max_bytes"]);
     }
 
     #[test]

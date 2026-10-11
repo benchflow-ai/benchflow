@@ -187,7 +187,7 @@ proptest! {
         let p = tmp.path().join(format!("noise-{ext}"));
         std::fs::write(&p, &noise).unwrap();
         paths.push(p);
-        timed("jobfile::load", || {
+        timed("jobfile::load", move || {
             for one in &paths {
                 if let Ok(j) = jobfile::load(std::slice::from_ref(one)) {
                     let _ = j.to_toml();
@@ -197,57 +197,13 @@ proptest! {
         });
     }
 
-    /// A real job folder with one of its records swapped for edited text or
-    /// random JSON of its shape, read by every reader of finished jobs.
-    #[test]
-    fn job_folder_readers(
-        pick in any::<prop::sample::Index>(),
-        target in any::<prop::sample::Index>(),
-        as_text in any::<bool>(),
-        doc in json_with(RESULT_KEYS),
-        text in mutated(seeds(&["benchflow-viewer/tests/fixtures/jobs", "benchflow-run/tests/fixtures/export/jobs"], &|n| n.ends_with(".json") || n.ends_with(".jsonl"), 300)),
-    ) {
-        let src = pick.get(&JOB_DIRS);
-        let tmp = tempfile::tempdir().unwrap();
-        let job = tmp.path().join("job");
-        copy_dir(src, &job);
-        let records: Vec<PathBuf> = files(&job, &|p: &Path| {
-            p.extension().is_some_and(|e| e == "json" || e == "jsonl" || e == "txt")
-        }).into_iter().map(|(p, _)| p).collect();
-        if !records.is_empty() {
-            let file = target.get(&records);
-            let body = if as_text { text.clone() } else { doc.to_string() };
-            std::fs::write(file, body).unwrap();
-        }
-        timed("job readers", || {
-            let view = read::read_job(&job);
-            let _ = view.agent();
-            let _ = view.model();
-            let _ = read::read_lock(&job);
-            let _ = read::find_jobs(tmp.path());
-            for t in read::trial_dirs(&job) {
-                if let Some(rec) = read::read_trial(&t) {
-                    let _ = benchflow_run::traces::trial_atif(&t, &rec);
-                    let _ = benchflow_run::trainer::read_events(&t);
-                }
-            }
-            let _ = diff::load_sources(std::slice::from_ref(&job));
-            let _ = benchflow_run::regrade::plan_with(&job, &|_| Err("not loaded in the fuzz test".into()));
-            let _ = benchflow_run::regrade::saved_outputs(&job);
-            let opts = benchflow_run::traces::ExportOptions::default();
-            let _ = benchflow_run::traces::export_hf(&job, &tmp.path().join("hf"), &opts);
-            let _ = benchflow_run::traces::export_otel(&job, &tmp.path().join("otel.jsonl"), &opts);
-            let _ = benchflow_run::trainer::write_job(&job);
-        });
-    }
-
     /// result.json as random JSON straight into the record reader.
     #[test]
     fn result_json(doc in json_mutated(
         json_seeds(&["benchflow-viewer/tests/fixtures/jobs", "benchflow-run/tests/fixtures/export/jobs"], &|n| n == "result.json", 60),
         RESULT_KEYS,
     )) {
-        timed("record_from_json", || { let _ = read::record_from_json(&doc, Path::new("/nonexistent/trial")); });
+        timed("record_from_json", move || { let _ = read::record_from_json(&doc, Path::new("/nonexistent/trial")); });
     }
 
     /// Dataset registries, dataset files and dataset refs.
@@ -262,7 +218,7 @@ proptest! {
         std::fs::write(&p, doc.to_string()).unwrap();
         let p2 = tmp.path().join("dataset.toml");
         std::fs::write(&p2, &text).unwrap();
-        timed("registry", || {
+        timed("registry", move || {
             let _ = registry::parse_registry(&doc.to_string(), "fuzz");
             let _ = registry::parse_registry(&text, "fuzz");
             let _ = registry::read_dataset_file(&p);
@@ -300,7 +256,7 @@ proptest! {
             reference: None,
             guidance: None,
         };
-        timed("parse_verdict", || { let _ = judge::parse_verdict(&item, &reply); });
+        timed("parse_verdict", move || { let _ = judge::parse_verdict(&item, &reply); });
     }
 
     /// What the sandbox-side programs print (`BF key value` lines).
@@ -310,11 +266,60 @@ proptest! {
         prop::collection::vec(("(BF )?", proptest::sample::select(&["memtotal", "mem", "credential", "env", "user", "done", "oom", "cgroup", "pids", "x"][..]), " ", "\\PC{0,30}"), 0..12)
             .prop_map(|v| v.into_iter().map(|(a, b, c, d)| format!("{a}{b}{c}{d}\n")).collect::<String>()),
     ]) {
-        timed("sandbox reports", || {
+        timed("sandbox reports", move || {
             let _ = hardening::Report::parse(&text);
             let _ = confine::parse_memory(&text);
             let _ = confine::VerifierEnv::parse(&text);
             let _ = credentials::parse_scan(&text);
+        });
+    }
+}
+
+proptest! {
+    // Whole folders written and read: a short shrink.
+    #![proptest_config(config_files())]
+
+    /// A real job folder with one of its records swapped for edited text or
+    /// random JSON of its shape, read by every reader of finished jobs.
+    #[test]
+    fn job_folder_readers(
+        pick in any::<prop::sample::Index>(),
+        target in any::<prop::sample::Index>(),
+        as_text in any::<bool>(),
+        doc in json_with(RESULT_KEYS),
+        text in mutated(seeds(&["benchflow-viewer/tests/fixtures/jobs", "benchflow-run/tests/fixtures/export/jobs"], &|n| n.ends_with(".json") || n.ends_with(".jsonl"), 300)),
+    ) {
+        let src = pick.get(&JOB_DIRS);
+        let tmp = tempfile::tempdir().unwrap();
+        let job = tmp.path().join("job");
+        copy_dir(src, &job);
+        let records: Vec<PathBuf> = files(&job, &|p: &Path| {
+            p.extension().is_some_and(|e| e == "json" || e == "jsonl" || e == "txt")
+        }).into_iter().map(|(p, _)| p).collect();
+        if !records.is_empty() {
+            let file = target.get(&records);
+            let body = if as_text { text.clone() } else { doc.to_string() };
+            std::fs::write(file, body).unwrap();
+        }
+        timed("job readers", move || {
+            let view = read::read_job(&job);
+            let _ = view.agent();
+            let _ = view.model();
+            let _ = read::read_lock(&job);
+            let _ = read::find_jobs(tmp.path());
+            for t in read::trial_dirs(&job) {
+                if let Some(rec) = read::read_trial(&t) {
+                    let _ = benchflow_run::traces::trial_atif(&t, &rec);
+                    let _ = benchflow_run::trainer::read_events(&t);
+                }
+            }
+            let _ = diff::load_sources(std::slice::from_ref(&job));
+            let _ = benchflow_run::regrade::plan_with(&job, &|_| Err("not loaded in the fuzz test".into()));
+            let _ = benchflow_run::regrade::saved_outputs(&job);
+            let opts = benchflow_run::traces::ExportOptions::default();
+            let _ = benchflow_run::traces::export_hf(&job, &tmp.path().join("hf"), &opts);
+            let _ = benchflow_run::traces::export_otel(&job, &tmp.path().join("otel.jsonl"), &opts);
+            let _ = benchflow_run::trainer::write_job(&job);
         });
     }
 }

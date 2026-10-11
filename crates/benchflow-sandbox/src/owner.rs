@@ -1,19 +1,26 @@
 //! Who made a sandbox, so a sweep removes a crashed run's leftovers and
 //! never a live run's sandboxes.
 //!
-//! Every container and Daytona sandbox BenchFlow creates carries three
+//! Every container and Daytona sandbox BenchFlow creates carries five
 //! labels:
 //!
 //! - [`OWNER_LABEL`](crate::OWNER_LABEL): the owner scope, `bench` unless
 //!   `BENCHFLOW_OWNER` names another (teams sharing one Daytona key or one
 //!   Docker daemon can keep their sweeps apart this way);
 //! - [`HOST_LABEL`](crate::HOST_LABEL): this machine's host name;
+//! - [`INSTALL_LABEL`]: a random id kept in this machine's BenchFlow cache
+//!   folder (with the PID namespace on Linux);
+//! - [`USER_LABEL`]: the user id of the BenchFlow process;
 //! - [`PID_LABEL`](crate::PID_LABEL): the id of the BenchFlow process.
 //!
-//! A sandbox is a leftover when its owner scope is ours, its host is this
-//! machine, and no process with its pid is alive here. A pid that is alive
-//! (even one reused by an unrelated process) keeps the sandbox: a sweep may
-//! miss garbage, but it never deletes a live run's sandbox.
+//! A sandbox is a leftover when its owner scope is ours, its host, install
+//! and user are this process's, and no process with its pid is alive here.
+//! Host names alone collide (VMs named `localhost`, Macs named
+//! `MacBook-Pro.local`), and a pid is invisible across PID namespaces and
+//! users (`hidepid`): without the install and user labels another live
+//! run's sandboxes could read as leftovers. A pid that is alive (even one
+//! reused by an unrelated process) keeps the sandbox: a sweep may miss
+//! garbage, but it never deletes a live run's sandbox.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -85,11 +92,95 @@ fn read_hostname() -> String {
     "unknown-host".to_string()
 }
 
-/// The labels a new sandbox carries: owner scope, host, and this process id.
+/// Label: this installation's random id (see [`install`]).
+pub const INSTALL_LABEL: &str = "ai.benchflow.install";
+/// Label: the user id of the process that made the sandbox.
+pub const USER_LABEL: &str = "ai.benchflow.uid";
+
+/// This installation: a random id kept in BenchFlow's cache folder
+/// (`BENCHFLOW_CACHE_DIR`, `$XDG_CACHE_HOME/benchflow` or
+/// `~/.cache/benchflow`), plus the PID namespace on Linux, where pids are
+/// only comparable inside one namespace. Read once. When the id cannot be
+/// kept, a new one per process: this process's leftovers are then left to
+/// the age rules, never mistaken for another's.
+pub fn install() -> &'static str {
+    static INSTALL: OnceLock<String> = OnceLock::new();
+    INSTALL.get_or_init(|| {
+        let id = read_install_id(&cache_dir())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        match std::fs::read_link("/proc/self/ns/pid") {
+            Ok(ns) => {
+                let ns: String = ns
+                    .to_string_lossy()
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect();
+                format!("{id}-{ns}")
+            }
+            Err(_) => id,
+        }
+    })
+}
+
+fn cache_dir() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("BENCHFLOW_CACHE_DIR") {
+        return dir.into();
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+        return std::path::PathBuf::from(xdg).join("benchflow");
+    }
+    dirs::home_dir()
+        .map(|h| h.join(".cache"))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("benchflow")
+}
+
+/// The id in `dir/install-id`, made when missing. `None` when it can be
+/// neither read nor made.
+fn read_install_id(dir: &std::path::Path) -> Option<String> {
+    let path = dir.join("install-id");
+    let valid = |s: &str| s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit());
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && valid(text.trim())
+    {
+        return Some(text.trim().to_string());
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    // Two processes starting at once: the first file written wins.
+    let tmp = dir.join(format!("install-id.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, &id).ok()?;
+    let _ = std::fs::hard_link(&tmp, &path);
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::read_to_string(&path)
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| valid(t))
+}
+
+/// The user id of this process.
+pub fn user() -> String {
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid never fails and touches no memory.
+        #[allow(unsafe_code)]
+        let uid = unsafe { libc::getuid() };
+        uid.to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        "0".to_string()
+    }
+}
+
+/// The labels a new sandbox carries: owner scope, host, install, user, and
+/// this process id.
 pub fn labels() -> BTreeMap<String, String> {
     let mut labels = BTreeMap::new();
     labels.insert(OWNER_LABEL.to_string(), scope());
     labels.insert(HOST_LABEL.to_string(), hostname().to_string());
+    labels.insert(INSTALL_LABEL.to_string(), install().to_string());
+    labels.insert(USER_LABEL.to_string(), user());
     labels.insert(PID_LABEL.to_string(), std::process::id().to_string());
     labels
 }
@@ -103,31 +194,57 @@ pub enum ProcessState {
     Unknown,
 }
 
-/// Whether process `pid` exists on this machine.
+/// Whether process `pid` exists on this machine: `kill(pid, 0)`, where a
+/// refusal (EPERM: another user's process) means it is alive. `/proc`
+/// hides other users' processes under `hidepid`, so it is not asked.
 pub async fn process_state(pid: u32) -> ProcessState {
     if pid == std::process::id() {
         return ProcessState::Alive;
     }
-    if std::path::Path::new("/proc/self").exists() {
-        return if std::path::Path::new(&format!("/proc/{pid}")).exists() {
-            ProcessState::Alive
-        } else {
-            ProcessState::Gone
-        };
-    }
-    // macOS and other systems without /proc: `ps -p` exits 0 when the
-    // process exists and 1 when it does not.
-    match tokio::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "pid="])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
+    #[cfg(unix)]
     {
-        Ok(status) if status.success() => ProcessState::Alive,
-        Ok(status) if status.code() == Some(1) => ProcessState::Gone,
-        _ => ProcessState::Unknown,
+        let Ok(raw) = libc::pid_t::try_from(pid) else {
+            return ProcessState::Unknown;
+        };
+        if raw <= 0 {
+            return ProcessState::Unknown;
+        }
+        // SAFETY: signal 0 sends nothing; it only checks that the process
+        // exists, and touches no memory.
+        #[allow(unsafe_code)]
+        let rc = unsafe { libc::kill(raw, 0) };
+        if rc == 0 {
+            return ProcessState::Alive;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => ProcessState::Gone,
+            Some(libc::EPERM) => ProcessState::Alive,
+            _ => ProcessState::Unknown,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if std::path::Path::new("/proc/self").exists() {
+            return if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                ProcessState::Alive
+            } else {
+                ProcessState::Gone
+            };
+        }
+        // macOS and other systems without /proc: `ps -p` exits 0 when the
+        // process exists and 1 when it does not.
+        match tokio::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "pid="])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+        {
+            Ok(status) if status.success() => ProcessState::Alive,
+            Ok(status) if status.code() == Some(1) => ProcessState::Gone,
+            _ => ProcessState::Unknown,
+        }
     }
 }
 
@@ -149,7 +266,10 @@ pub async fn judge<'a>(label: impl Fn(&str) -> Option<&'a str>) -> Verdict {
     if label(OWNER_LABEL) != Some(scope().as_str()) {
         return Verdict::Foreign;
     }
-    if label(HOST_LABEL) != Some(hostname()) {
+    if label(HOST_LABEL) != Some(hostname())
+        || label(INSTALL_LABEL) != Some(install())
+        || label(USER_LABEL) != Some(user().as_str())
+    {
         return Verdict::OtherHost;
     }
     let Some(pid) = label(PID_LABEL).and_then(|p| p.trim().parse::<u32>().ok()) else {
@@ -172,6 +292,15 @@ mod tests {
         assert_eq!(sanitize_scope("team a/b"), "team-a-b");
         assert_eq!(sanitize_scope("  ..x.. "), "x");
         assert_eq!(sanitize_scope(&"y".repeat(100)).len(), MAX_SCOPE_LEN);
+    }
+
+    #[test]
+    fn the_install_id_is_kept_and_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = read_install_id(dir.path()).unwrap();
+        assert_eq!(first.len(), 32);
+        assert_eq!(read_install_id(dir.path()).unwrap(), first);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -209,6 +338,27 @@ mod tests {
         dead.insert(PID_LABEL.into(), pid.to_string());
         let verdict = judge(|k| dead.get(k).map(String::as_str)).await;
         assert_eq!(verdict, Verdict::Leftover);
+
+        // Review of rust/d4-chaos (Daytona 2): the same host name (VMs
+        // named `localhost`) but another install, or another user: its pid
+        // means nothing here.
+        let mut other_install = dead.clone();
+        other_install.insert(
+            INSTALL_LABEL.into(),
+            "0123456789abcdef0123456789abcdef".into(),
+        );
+        let verdict = judge(|k| other_install.get(k).map(String::as_str)).await;
+        assert_eq!(verdict, Verdict::OtherHost);
+        let mut other_user = dead.clone();
+        other_user.insert(USER_LABEL.into(), "4242424".into());
+        let verdict = judge(|k| other_user.get(k).map(String::as_str)).await;
+        assert_eq!(verdict, Verdict::OtherHost);
+        let mut unlabelled = dead.clone();
+        unlabelled.remove(INSTALL_LABEL);
+        let verdict = judge(|k| unlabelled.get(k).map(String::as_str)).await;
+        assert_eq!(verdict, Verdict::OtherHost);
+        // Another user's live process answers EPERM: alive.
+        assert_eq!(process_state(1).await, ProcessState::Alive);
 
         // Another host: never judged dead from here.
         let mut other = dead.clone();

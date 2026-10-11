@@ -1,0 +1,38 @@
+# bench agents: the list, one agent, JSON, and unknown names.
+tier = "smoke"
+
+[[step]]
+run = ["agents"]
+exit = 0
+stdout_has = ['^\s*oracle\s', '^\s*nop\s', '^\s*claude\b', '^\s*codex\b', '^\s*builtin\b']
+
+[[step]]
+name = "--json prints one document"
+run = ["agents", "--json"]
+exit = 0
+stdout_json = { "0.name" = "oracle" }
+
+[[step]]
+run = ["agents", "claude"]
+exit = 0
+stdout_has = ['^claude\b', 'resume', 'skills']
+
+[[step]]
+run = ["--json", "agents", "codex"]
+exit = 0
+stdout_json = { "name" = "codex" }
+
+[[step]]
+run = ["agents", "builtin"]
+exit = 0
+stdout_has = ['max_output_tokens']
+
+[[step]]
+name = "an unknown agent is refused"
+run = ["agents", "no-such-agent"]
+exit = 2
+stderr_has = ["no agent"]
+
+[[step]]
+name = "--json for a native, the external, and the DSPy agent"
+sh = "for a in builtin terminus-2 external dspy-rlm; do {bench} --json agents $a | python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d[\"name\"] == sys.argv[1] else 1)' $a || exit 1; done"

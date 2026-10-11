@@ -1,7 +1,11 @@
 //! Running commands in a container.
 //!
 //! Every command is `docker exec -i [-u user] [-w cwd] --env-file … <name>
-//! sh -c '<wrapped>'`, where the wrapper picks bash when the image has it.
+//! /bin/sh -c '<wrapped>'`, where the wrapper picks bash when the image has
+//! it (see [`command_shell`]). The shells are found in the system folders
+//! only: `docker exec` looks a bare `sh` up through the command's `PATH`,
+//! which for a root command may be the image's, with a folder the agent can
+//! write on it.
 //! Each command also carries [`EXEC_ID_ENV`] set to a fresh id. Killing the
 //! `docker exec` client does not stop the command inside the container, so
 //! a timeout (or [`ProcessHandle::kill`]) runs a second `docker exec` that
@@ -29,7 +33,7 @@ use tokio::sync::Notify;
 
 use super::cli::{Cli, EnvArgs, exit_code};
 use crate::capture::{OUTPUT_CAP, TailBuffer, read_tail};
-use crate::shell::login_free_shell;
+use crate::shell::command_shell;
 use crate::{
     EXEC_ID_ENV, Exec, ExecOutput, Process, ProcessHandle, SandboxError, TIMEOUT_EXIT_CODE,
 };
@@ -59,9 +63,47 @@ pub(crate) fn exec_args(container: &str, exec: &Exec, env: &EnvArgs) -> Vec<Stri
     }
     args.extend(env.args.iter().cloned());
     args.push(container.to_string());
-    args.push("sh".to_string());
+    args.push("/bin/sh".to_string());
     args.push("-c".to_string());
-    args.push(login_free_shell(&exec.command));
+    args.push(command_shell(&exec.command, &exec.unset));
+    args
+}
+
+/// The environment of a `docker exec`: `exec`'s variables, the exec id, and
+/// each of `exec.unset` that is safe to pass empty set to nothing.
+/// `docker exec` cannot remove a variable of the image's, only set it, so a
+/// file-naming loader variable is emptied (glibc and the shells treat empty
+/// as none). A flag loader variable is never emptied — glibc acts on its
+/// presence, so `-e LD_SHOW_AUXV=` would make every glibc program print its
+/// auxiliary vector — and is left to the shell's own `unset`
+/// ([`command_shell`]).
+fn exec_env(exec: &Exec, exec_id: &str) -> BTreeMap<String, String> {
+    let mut env = exec.env.clone();
+    for name in &exec.unset {
+        if crate::shell::empty_safe_vars().any(|v| v == name) {
+            env.insert(name.clone(), String::new());
+        }
+    }
+    env.insert(EXEC_ID_ENV.to_string(), exec_id.to_string());
+    env
+}
+
+/// `-e` arguments for BenchFlow's own root plumbing (kills and copies):
+/// `PATH` set to the system folders, and every file-naming loader and
+/// start-up variable emptied, so the shell `docker exec` starts and what it
+/// runs neither looks a program up nor loads or reads a file through the
+/// image's environment. The flag loader variables are left alone (an empty
+/// one would make glibc act); an image rarely sets them, and none names a
+/// file. `tar` and the rest carry only this environment.
+pub(crate) fn plumbing_env_args() -> Vec<String> {
+    let mut args = vec![
+        "-e".to_string(),
+        format!("PATH={}", crate::shell::SYSTEM_PATH),
+    ];
+    for name in crate::shell::empty_safe_vars() {
+        args.push("-e".to_string());
+        args.push(format!("{name}="));
+    }
     args
 }
 
@@ -80,19 +122,17 @@ pub(crate) fn kill_users(user: Option<&str>) -> Vec<String> {
 }
 
 /// The `docker exec` arguments that kill the processes tagged `exec_id`, as
-/// `as_user`, with `sh` and `kill` found in the system folders only.
+/// `as_user`, with the plumbing's environment ([`plumbing_env_args`]).
 pub(crate) fn kill_args(container: &str, as_user: &str, exec_id: &str) -> Vec<String> {
-    vec![
-        "exec".to_string(),
-        "-u".to_string(),
-        as_user.to_string(),
-        "-e".to_string(),
-        format!("PATH={}", crate::shell::SYSTEM_PATH),
+    let mut args = vec!["exec".to_string(), "-u".to_string(), as_user.to_string()];
+    args.extend(plumbing_env_args());
+    args.extend([
         container.to_string(),
-        "sh".to_string(),
+        "/bin/sh".to_string(),
         "-c".to_string(),
         crate::shell::kill_tagged(exec_id),
-    ]
+    ]);
+    args
 }
 
 /// Kill every process in `container` tagged with `exec_id`, for a command
@@ -192,7 +232,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for FirstOutput<R> {
 }
 
 /// The error for output that says the container itself is gone, if it does.
-fn container_gone(cli: &Cli, container: &str, stderr: &str) -> Option<SandboxError> {
+pub(super) fn container_gone(cli: &Cli, container: &str, stderr: &str) -> Option<SandboxError> {
     // Only the CLI's own words count: a command may well print "is not
     // running" about something else.
     let lower = stderr.to_lowercase();
@@ -224,9 +264,7 @@ pub(super) async fn exec(
 ) -> Result<ExecOutput, SandboxError> {
     let started = Instant::now();
     let exec_id = new_exec_id();
-    let mut env: BTreeMap<String, String> = exec.env.clone();
-    env.insert(EXEC_ID_ENV.to_string(), exec_id.clone());
-    let env = EnvArgs::new(&env)?;
+    let env = EnvArgs::new(&exec_env(&exec, &exec_id))?;
     let args = exec_args(container, &exec, &env);
     let mut cmd = cli.command(&args);
     for (k, v) in &env.process_env {
@@ -302,9 +340,7 @@ pub(super) async fn exec(
 /// Start `exec` in `container` with open pipes.
 pub(super) async fn spawn(cli: &Cli, container: &str, exec: Exec) -> Result<Process, SandboxError> {
     let exec_id = new_exec_id();
-    let mut env: BTreeMap<String, String> = exec.env.clone();
-    env.insert(EXEC_ID_ENV.to_string(), exec_id.clone());
-    let env = EnvArgs::new(&env)?;
+    let env = EnvArgs::new(&exec_env(&exec, &exec_id))?;
     let args = exec_args(container, &exec, &env);
     let mut cmd = cli.command(&args);
     cmd.stdin(Stdio::piped());
@@ -391,13 +427,41 @@ mod tests {
         let args = exec_args("bf-x-1", &exec, &env);
         assert_eq!(&args[..6], ["exec", "-i", "-u", "agent", "-w", "/app"]);
         assert_eq!(args[6], "--env-file");
-        assert_eq!(&args[8..11], ["bf-x-1", "sh", "-c"]);
-        assert_eq!(args[11], login_free_shell("echo hi"));
+        assert_eq!(&args[8..11], ["bf-x-1", "/bin/sh", "-c"]);
+        assert_eq!(args[11], command_shell("echo hi", &[]));
         assert_eq!(args.len(), 12);
     }
 
+    /// `Exec::unset` reaches the container as empty values (which the
+    /// loader and the shells ignore) and the shell unsets them, even when
+    /// `env` sets one.
+    #[test]
+    fn unset_variables_are_emptied_then_unset() {
+        let exec = Exec::new("true")
+            .env("LD_PRELOAD", "/app/x.so")
+            .env("A", "1")
+            .unset(["LD_PRELOAD", "BASH_ENV", "LD_SHOW_AUXV"]);
+        let env = exec_env(&exec, "id1");
+        // File-naming and start-up variables are emptied (glibc ignores an
+        // empty value); the flag is never passed, so glibc does not act on
+        // it. The shell unsets all three.
+        assert_eq!(env["LD_PRELOAD"], "");
+        assert_eq!(env["BASH_ENV"], "");
+        assert!(!env.contains_key("LD_SHOW_AUXV"), "{env:?}");
+        assert_eq!(env["A"], "1");
+        assert_eq!(env[EXEC_ID_ENV], "id1");
+        let args = exec_args("bf-x-1", &exec, &EnvArgs::new(&env).unwrap());
+        assert!(
+            args.last()
+                .unwrap()
+                .contains("unset LD_PRELOAD BASH_ENV LD_SHOW_AUXV; "),
+            "{args:?}"
+        );
+    }
+
     /// BenchFlow's own root plumbing (copies in and out, kills) finds its
-    /// programs in the system folders, never through the image's `PATH`.
+    /// programs in the system folders, never through the image's `PATH`,
+    /// and starts without the image's loader variables.
     #[test]
     fn root_plumbing_runs_with_the_system_path() {
         let path = format!("PATH={}", crate::shell::SYSTEM_PATH);
@@ -408,17 +472,26 @@ mod tests {
         ] {
             let at = args.iter().position(|a| a == "bf-x-1").unwrap();
             let before = &args[..at];
-            assert!(
-                before.windows(2).any(|w| w[0] == "-e" && w[1] == path),
-                "{args:?}"
-            );
+            let set = |v: &str| before.windows(2).any(|w| w[0] == "-e" && w[1] == v);
+            assert!(set(&path), "{args:?}");
+            // The file-naming and start-up variables are emptied; the flags
+            // (glibc acts on their presence) must never be passed.
+            for name in crate::shell::empty_safe_vars() {
+                assert!(set(&format!("{name}=")), "{name}: {args:?}");
+            }
+            for name in crate::shell::FLAG_LOADER_VARS {
+                assert!(
+                    !set(&format!("{name}=")),
+                    "{name} must not be set: {args:?}"
+                );
+            }
         }
     }
 
     #[test]
     fn the_kill_script_names_the_exec_id() {
         let s = crate::shell::kill_tagged("abc123");
-        assert!(s.starts_with("id=abc123; "));
+        assert!(s.contains(" id=abc123; "));
         assert!(s.contains("BENCHFLOW_EXEC_ID=$id"));
         assert!(s.contains("kill -9"));
     }

@@ -57,6 +57,19 @@ pub const STATE_DIR: &str = "/var/lib/benchflow";
 /// rootless agent with R314).
 const STATE_UMASK: &str = "umask 077";
 
+/// Every root command BenchFlow sends starts with this, so a folder root
+/// creates (a missing mount or workdir parent, `/logs/verifier` between
+/// stages, the parents a handoff restore recreates) is `0755`, not the
+/// `0777` a `docker exec` umask of `0000` — which this campaign's
+/// Docker-in-Docker daemon has — would give. The state writers set their
+/// own [`STATE_UMASK`] afterwards, so their folders stay `0700`.
+pub const PLUMBING_UMASK: &str = "umask 022";
+
+/// `script` run with the plumbing umask ([`PLUMBING_UMASK`]) set first.
+pub fn with_plumbing_umask(script: &str) -> String {
+    format!("{PLUMBING_UMASK}\n{script}")
+}
+
 /// Whether giving the agent user `workdir` would give it the folder that
 /// holds [`STATE_DIR`]: the workdir is `/`, the state folder, or one of the
 /// folders above it.
@@ -116,6 +129,17 @@ const STEERING_FILES: &[&str] = &[
     "*.pth",
     "entry_points.txt",
 ];
+
+/// Whether a file name is one of [`STEERING_FILES`] (an `entry_points.txt`
+/// then counts only when it names `pytest11`, as [`SKIP_UNLESS_STEERING`]
+/// says).
+pub(crate) fn is_steering_name(name: &str) -> bool {
+    // `find -name '*.pth'` matches `.pth` itself: `*` may match nothing.
+    STEERING_FILES.iter().any(|n| match n.strip_prefix('*') {
+        Some(ext) => name.ends_with(ext),
+        None => name == *n,
+    })
+}
 
 /// Shell: `continue` the enclosing loop over `$f` unless `$f` steers
 /// pytest. Every steering file does, except an `entry_points.txt` that never
@@ -215,10 +239,12 @@ echo "BF user $u $(id -u "$u") $home""#,
 /// Let root's git work in the workdir, which `setup_user` gave the agent
 /// user: git refuses a repository another user owns ("dubious ownership").
 /// Run as root before a reference solution that runs as root, as BenchFlow
-/// 0.8 does; best effort, since not every image has git.
+/// 0.8 does; best effort, since not every image has git. The solution runs
+/// with `HOME=/root`, so the entry goes there too: an exec inherits an
+/// image's `ENV HOME`, which may name the workdir or another user's home.
 pub fn trust_workdir_for_git(workdir: &str) -> String {
     format!(
-        "command -v git >/dev/null 2>&1 && git config --global --add safe.directory {} 2>/dev/null || true",
+        "command -v git >/dev/null 2>&1 && HOME=/root git config --global --add safe.directory {} 2>/dev/null || true",
         q(workdir)
     )
 }
@@ -230,17 +256,58 @@ pub fn trust_workdir_for_git(workdir: &str) -> String {
 /// grading: programs that check who owns a folder then work for the
 /// verifier, such as git, which refuses a repository another user owns
 /// ("detected dubious ownership"). Before a later stage the owner is the
-/// agent user again. Prints `BF owned <owner>`.
-pub fn own_workdir(workdir: &str, owner: &str) -> String {
+/// agent user again; only after a graded stage, whose handoff stopped every
+/// agent process, so nothing can swap a path while this runs.
+///
+/// A file with more than one hard link keeps its owner unless the agent
+/// user `agent` owns it: the other link may be a file outside the workdir
+/// (an agent can link `/etc/passwd` into it), and changing the owner of one
+/// link changes the file's; the agent user's own file it may give away.
+///
+/// The workdir itself changes first: when that fails (a read-only mount),
+/// or the image has no `find` that takes the options used, it exits 3,
+/// and with no `owner` user, or a workdir of `/`, it exits 2 (`BF error
+/// ...` on stderr). Then `BF root-owned`. A workdir that is a link (the
+/// image's `/app -> /srv/app`) is walked where it leads when the folder
+/// holding the link is root's alone, so no other user could have made it;
+/// otherwise only the link changes, with a `BF unchanged` note. The rest is walked
+/// from inside each folder where `find` can (`-execdir`), so no path grows
+/// past the system's limit however deep the agent nested its folders. A
+/// path that could not be changed is not fatal: the first 5 errors are
+/// printed as `BF unchanged <error>` (one line each); a file that went away
+/// during the walk is no error. Ends with `BF owned <owner>`.
+pub fn own_workdir(workdir: &str, owner: &str, agent: &str) -> String {
     format!(
-        r#"w={workdir}; o={owner}
+        r#"w={workdir}; o={owner}; a={agent}
 r=$(readlink -f "$w" 2>/dev/null); [ -n "$r" ] || r=$w
 for p in "$w" "$r"; do case "$p" in /|'') echo "BF error workdir $w" >&2; exit 2;; esac; done
 g=$(id -gn "$o" 2>/dev/null) || {{ echo "BF error no-user $o" >&2; exit 2; }}
-[ -d "$w" ] && find "$w" -xdev -exec chown -h "$o:$g" {{}} + 2>/dev/null
+mine=; au=$(id -u "$a" 2>/dev/null) && case "$au" in ''|*[!0-9]*) ;; *) mine="-o -user $au";; esac
+if [ -e "$w" ]; then
+  command -v find >/dev/null 2>&1 || {{ echo "BF error no-find" >&2; exit 3; }}
+  find "$w" -xdev -mindepth 1 -maxdepth 0 \( -type d -o -links 1 \) -print >/dev/null 2>&1 || {{ echo "BF error find" >&2; exit 3; }}
+fi
+t=$w
+if [ -L "$w" ]; then
+  p=$(dirname "$w"); pm=$(stat -Lc %A "$p" 2>/dev/null)
+  case "$pm" in ?????w????|????????w?) pm=open;; esac
+  if [ "$(stat -Lc %u "$p" 2>/dev/null)" = 0 ] && [ "$pm" != open ]; then t=$r
+  else echo "BF unchanged $w is a link in a folder others may write, so it was not followed"; fi
+fi
+if [ -d "$t" ]; then
+  chown -h "$o:$g" "$t" || {{ echo "BF error chown $w" >&2; exit 3; }}
+  echo "BF root-owned"
+  if find "$t" -maxdepth 0 -execdir true \; 2>/dev/null; then x=-execdir; else x=-exec; fi
+  # The errors are streamed, never held: a deep tree can give millions.
+  # Each filter reads to the end, so find never meets a closed pipe.
+  find "$t" -xdev -mindepth 1 \( -type d -o -links 1 $mine \) $x chown -h "$o:$g" {{}} + 2>&1 >/dev/null \
+    | grep -v 'No such file or directory' | grep . | sed -n '1,5p' \
+    | while IFS= read -r l; do printf 'BF unchanged %s\n' "$(printf %s "$l" | tr -d '\r')"; done
+fi
 echo "BF owned $o""#,
         workdir = q(workdir),
         owner = q(owner),
+        agent = q(agent),
     )
 }
 
@@ -426,6 +493,38 @@ true"#,
     )
 }
 
+/// Run as root: print `BF open <folder>` for each folder above `path` the
+/// user `agent` can make an entry in: its own, one others may write (the
+/// sticky bit does not stop a new entry, such as a link where root is about
+/// to make a folder), or one its group may write. The check is root's, not
+/// the agent user's: a process the agent left running could change what a
+/// check of its own user prints. Prints `BF open ?` when the user is unknown,
+/// and `BF target-closed` when `path` is already a folder the user cannot
+/// make entries in (an earlier mount, or the image, placed it root's).
+pub fn agent_writable_parents(path: &str, agent: &str) -> String {
+    format!(
+        r#"d={path}; a={agent}; t=$d
+au=$(id -u "$a" 2>/dev/null) || {{ echo "BF open ?"; exit 0; }}
+ag=" $(id -G "$a" 2>/dev/null) "
+may() {{
+  u=$(stat -Lc %u "$1" 2>/dev/null); g=$(stat -Lc %g "$1" 2>/dev/null); m=$(stat -Lc %A "$1" 2>/dev/null)
+  [ "$u" = "$au" ] && return 0
+  case "$m" in ????????w?) return 0;; esac
+  case "$m" in ?????w????) case "$ag" in *" $g "*) return 0;; esac;; esac
+  return 1
+}}
+while :; do
+  d=$(dirname "$d")
+  if [ -d "$d" ] && may "$d"; then echo "BF open $d"; fi
+  [ "$d" = / ] && break
+done
+if [ -d "$t" ] && [ ! -L "$t" ] && ! may "$t"; then echo "BF target-closed"; fi
+true"#,
+        path = q(path),
+        agent = q(agent),
+    )
+}
+
 /// Snapshot the steering files (path and SHA-256) and keep a copy of each, in
 /// root-only state, before the agent starts; and note the `*.py` files
 /// already in the temp folders.
@@ -448,6 +547,37 @@ echo "BF baseline $(wc -l < "$b/list" | tr -d ' ')""#,
         state = q(STATE_DIR),
         prune = prune_expr(),
         names = steering_find_expr(),
+    )
+}
+
+/// Add a stage's own test-runner files to [`baseline`] while an earlier
+/// stage's agent may still run, rather than take the baseline again: a file
+/// that agent planted or edited would then count as the task's. Each entry
+/// is a path and the SHA-256 of the file the stage ships, computed on this
+/// machine; BenchFlow first writes the file's copy to
+/// `<baseline>/added<path>`, where the handoff restores an edited one from.
+/// Ends with `BF baseline-added <n>`; prints only `BF baseline-missing` when
+/// there is no baseline to add to (its own defense already says so).
+pub fn baseline_add(entries: &[(String, String)]) -> String {
+    let adds: String = entries
+        .iter()
+        .map(|(path, sum)| format!("add {} {}\n", q(path), q(sum)))
+        .collect();
+    format!(
+        r#"{umask}
+b={state}/baseline
+if [ ! -f "$b/list" ] || [ ! -f "$b/sums" ]; then echo "BF baseline-missing"; exit 0; fi
+# The copies' folders were made by an upload, with whatever umask it had:
+# the handoff refuses a state folder anyone but root may write.
+[ -d "$b/added" ] && chmod -R go-w "$b/added"
+add() {{
+  {{ grep -Fxv -- "$1" "$b/list"; printf '%s\n' "$1"; }} | LC_ALL=C sort > "$b/list.new" && mv "$b/list.new" "$b/list" || exit 1
+  {{ while IFS= read -r line; do [ "${{line#*  }}" = "$1" ] || printf '%s\n' "$line"; done < "$b/sums"; printf '%s  %s\n' "$2" "$1"; }} > "$b/sums.new" && mv "$b/sums.new" "$b/sums" || exit 1
+}}
+{adds}echo "BF baseline-added {n}""#,
+        umask = STATE_UMASK,
+        state = q(STATE_DIR),
+        n = entries.len(),
     )
 }
 
@@ -507,7 +637,12 @@ exit 1"#,
 ///   opens a FIFO hangs, and a symlink can point it at files the agent
 ///   should not choose.
 /// - Removes steering files the agent planted and restores ones it edited
-///   (`BF planted ...`, `BF restored ...`), against [`baseline`].
+///   (`BF planted ...`, `BF restored ...`), against [`baseline`] (and the
+///   copies [`baseline_add`] keeps). A file whose folder is reached through
+///   a link someone other than root made, leading out of the workdir (the
+///   agent can replace a folder of its own outside the workdir, such as a
+///   later stage's mount it copied in, with a link to `/etc`), is neither
+///   removed nor restored: `BF lost ...`.
 /// - Removes `*.py` files left in `/tmp` and `/var/tmp`, which shadow
 ///   modules for any Python started there; files that were there unchanged
 ///   before the agent started (the sandbox's own, such as Daytona's
@@ -542,6 +677,13 @@ pub fn handoff(workdir: &str, verifier_user: Option<&str>, strict_state: bool) -
     };
     format!(
         r#"w={workdir}; sd={state}; b={state}/baseline
+{foreign}
+out_of_reach() {{
+  foreign_links "$(dirname "$1")" | while IFS= read -r l; do
+    t=$(readlink -f "$l" 2>/dev/null)
+    case "$t" in "$rw"|"$rw"/*) ;; *) echo out; break;; esac
+  done | grep -q out
+}}
 {state_mode}
 if ! command -v find >/dev/null 2>&1; then echo "BF state-unchecked no-find"; stop
 elif [ -L "$sd" ] || [ ! -d "$sd" ]; then note "$sd"; stop
@@ -585,7 +727,10 @@ if [ -f "$b/list" ]; then
     now=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
     if [ "$now" != "$s" ]; then
       {skip}
-      rm -rf "$f"; tar -xf "$b/files.tar" -C / "${{f#/}}" 2>/dev/null && echo "BF restored $f" || echo "BF lost $f"
+      if out_of_reach "$f"; then echo "BF lost $f"; continue; fi
+      rm -rf "$f"
+      if [ -f "$b/added$f" ]; then cp -p "$b/added$f" "$f" 2>/dev/null && echo "BF restored $f" || echo "BF lost $f"
+      else tar -xf "$b/files.tar" -C / "${{f#/}}" 2>/dev/null && echo "BF restored $f" || echo "BF lost $f"; fi
     fi
   done < "$b/sums"
 fi
@@ -606,6 +751,7 @@ stop() { echo "BF handoff stopped"; exit 0; }"#
 stop() { :; }"#
         },
         chown = chown,
+        foreign = FOREIGN_LINKS,
         prune = prune_expr(),
         names = steering_find_expr(),
         skip = SKIP_UNLESS_STEERING,
@@ -797,31 +943,7 @@ true"#
 /// (`GCONV_PATH`, ...), and the shells' start-up files (`BASH_ENV`, `ENV`).
 /// The verifier runs with every one unset, except ones the task's own
 /// `[verifier] env` sets.
-pub const LOADER_VARS: &[&str] = &[
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
-    "LD_AUDIT",
-    "LD_DEBUG",
-    "LD_DEBUG_OUTPUT",
-    "LD_PROFILE",
-    "LD_PROFILE_OUTPUT",
-    "LD_ORIGIN_PATH",
-    "LD_DYNAMIC_WEAK",
-    "LD_BIND_NOT",
-    "LD_SHOW_AUXV",
-    "LD_USE_LOAD_BIAS",
-    "LD_HWCAP_MASK",
-    "LD_ASSUME_KERNEL",
-    "GCONV_PATH",
-    "GLIBC_TUNABLES",
-    "MALLOC_TRACE",
-    "LOCPATH",
-    "NLSPATH",
-    "HOSTALIASES",
-    "RES_OPTIONS",
-    "BASH_ENV",
-    "ENV",
-];
+pub use benchflow_sandbox::shell::LOADER_VARS;
 
 /// The loader variables the verifier runs without: [`LOADER_VARS`] minus
 /// the ones the task's `[verifier] env` sets itself.
@@ -1368,6 +1490,8 @@ mod tests {
         // The system-folder lock keeps its scan in the state folder while it
         // runs: stopped there by its timeout, what it leaves is root's alone.
         assert!(lock_system_dirs("/w", "/h", "agent").starts_with(STATE_UMASK));
+        // A later stage's additions to the baseline are written there too.
+        assert!(baseline_add(&[]).starts_with(STATE_UMASK));
     }
 
     /// A restored `/etc/ld.so.preload` stays readable by every user, as the
@@ -1598,6 +1722,325 @@ mod tests {
         }
     }
 
+    /// A stage's own files join the baseline from the sums given (computed
+    /// on the host), replacing what the baseline had for the same path; the
+    /// handoff then keeps them, and puts back an edited one from BenchFlow's
+    /// own copy rather than from the first baseline's archive. A file the
+    /// opening stage planted is not added, so the handoff removes it. Guards
+    /// the D7b fix of the stage boundary (part 2 of its brief), where a
+    /// later stage took the baseline again while the agent still ran.
+    #[cfg(unix)]
+    #[test]
+    fn a_stages_own_files_join_the_baseline_and_are_restored_from_its_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let app = root.join("app");
+        for d in ["app", "tmp", "var/tmp", "logs", "state/baseline"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let sum = |b: &[u8]| {
+            use sha2::Digest;
+            hex::encode(sha2::Sha256::digest(b))
+        };
+        let shipped = app.join("conftest.py");
+        let other = app.join("pytest.ini");
+        let b = root.join("state/baseline");
+        // The first baseline knew an older conftest.py and a pytest.ini.
+        std::fs::write(
+            b.join("list"),
+            format!("{}\n{}\n", shipped.display(), other.display()),
+        )
+        .unwrap();
+        std::fs::write(&other, "[pytest]\n").unwrap();
+        std::fs::write(
+            b.join("sums"),
+            format!(
+                "{}  {}\n{}  {}\n",
+                sum(b"OLD = 1\n"),
+                shipped.display(),
+                sum(b"[pytest]\n"),
+                other.display()
+            ),
+        )
+        .unwrap();
+        // The stage ships a new one; BenchFlow keeps its copy.
+        let copy = root.join(format!("state/baseline/added{}", shipped.display()));
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, "SHIPPED = 2\n").unwrap();
+        let r = root.to_str().unwrap();
+        let add = baseline_add(&[(shipped.to_str().unwrap().to_string(), sum(b"SHIPPED = 2\n"))])
+            .replace(STATE_DIR, &format!("{r}/state"));
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&add)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "BF baseline-added 1\n"
+        );
+        let list = std::fs::read_to_string(b.join("list")).unwrap();
+        assert_eq!(list.lines().count(), 2, "{list}");
+        let sums = std::fs::read_to_string(b.join("sums")).unwrap();
+        assert!(
+            sums.contains(&format!(
+                "{}  {}\n",
+                sum(b"SHIPPED = 2\n"),
+                shipped.display()
+            )),
+            "{sums}"
+        );
+        assert!(!sums.contains(&sum(b"OLD = 1\n")), "{sums}");
+        assert!(sums.contains(&sum(b"[pytest]\n")), "{sums}");
+        // The agent edited the stage's file and planted another.
+        std::fs::write(&shipped, "EDITED = 3\n").unwrap();
+        let planted = app.join("sub/conftest.py");
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        std::fs::write(&planted, "PLANTED\n").unwrap();
+        let out = handoff_under(&root, &app);
+        assert!(
+            out.contains(&format!("BF restored {}\n", shipped.display())),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("BF planted {}\n", planted.display())),
+            "{out}"
+        );
+        assert_eq!(std::fs::read_to_string(&shipped).unwrap(), "SHIPPED = 2\n");
+        assert!(!planted.exists());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "[pytest]\n");
+        // Nothing to add to: said so, and nothing made.
+        let none = baseline_add(&[]).replace(STATE_DIR, &format!("{r}/nowhere"));
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&none)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "BF baseline-missing\n"
+        );
+    }
+
+    /// The handoff never removes or restores a test-runner file through a
+    /// link that leads out of the workdir: the agent can replace a folder
+    /// of its own outside the workdir (a later stage's mount it copied in)
+    /// with a link to `/etc`, and root would then write the restored file
+    /// there. A link that stays inside the workdir is fine. Guards the D7b
+    /// fix of REVIEW-SEC H1 on b875d9d4.
+    #[cfg(unix)]
+    #[test]
+    fn a_restore_never_goes_through_a_link_out_of_the_workdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let app = root.join("app");
+        for d in [
+            "app/real",
+            "tmp",
+            "var/tmp",
+            "logs",
+            "state/baseline",
+            "etcx",
+            "srv",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::os::unix::fs::symlink(root.join("etcx"), root.join("srv/data")).unwrap();
+        std::os::unix::fs::symlink(app.join("real"), app.join("sub")).unwrap();
+        let sum = |b: &[u8]| {
+            use sha2::Digest;
+            hex::encode(sha2::Sha256::digest(b))
+        };
+        let outside = root.join("srv/data/conftest.py");
+        let inside = app.join("sub/conftest.py");
+        let b = root.join("state/baseline");
+        std::fs::write(
+            b.join("list"),
+            format!("{}\n{}\n", inside.display(), outside.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            b.join("sums"),
+            format!(
+                "{s}  {}\n{s}  {}\n",
+                inside.display(),
+                outside.display(),
+                s = sum(b"SHIPPED\n")
+            ),
+        )
+        .unwrap();
+        for p in [&inside, &outside] {
+            let copy = root.join(format!("state/baseline/added{}", p.display()));
+            std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+            std::fs::write(&copy, "SHIPPED\n").unwrap();
+        }
+        std::fs::write(app.join("real/conftest.py"), "EDITED\n").unwrap();
+        let out = handoff_under(&root, &app);
+        assert!(
+            out.contains(&format!("BF lost {}\n", outside.display())),
+            "{out}"
+        );
+        assert!(!root.join("etcx/conftest.py").exists(), "{out}");
+        assert!(
+            out.contains(&format!("BF restored {}\n", inside.display())),
+            "{out}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(app.join("real/conftest.py")).unwrap(),
+            "SHIPPED\n"
+        );
+    }
+
+    /// The folders above a mount a running agent could make an entry in:
+    /// its own, ones others may write (sticky or not), ones its group may
+    /// write; not another user's it cannot write (a web server's), as
+    /// `open_parents` would have it. Run on this machine with a stand-in
+    /// `stat -Lc` (the host's may not take `-c`). Guards the D7b fix of
+    /// REVIEW-CORRECT M2.
+    #[cfg(unix)]
+    #[test]
+    fn the_folders_a_running_agent_can_write_are_its_own_and_open_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("stat"),
+            "#!/bin/sh\nfmt=; for a; do case \"$a\" in -Lc) ;; %*) fmt=$a;; *) f=$a;; esac; done\n\
+             l=$(ls -lnd \"$f\")\n\
+             case \"$fmt\" in %u) echo \"$l\" | awk '{print $3}';; %g) echo \"$l\" | awk '{print $4}';; \
+             %A) echo \"$l\" | awk '{print substr($1,1,10)}';; esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("stat"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let me = whoami();
+        let run = |path: &str| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(agent_writable_parents(path, &me))
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap()
+        };
+        // A folder of its own.
+        let mine = root.join("mine");
+        std::fs::create_dir_all(&mine).unwrap();
+        let out = run(&format!("{}/data", mine.display()));
+        assert!(
+            out.contains(&format!("BF open {}\n", mine.display())),
+            "{out}"
+        );
+        // Root's folders it cannot write (here: the system's) are not open.
+        let out = run("/usr/share/benchflow-none/data");
+        assert!(!out.contains("BF open /usr"), "{out}");
+        // A sticky folder others may write is.
+        if std::path::Path::new("/private/tmp").is_dir() || std::path::Path::new("/tmp").is_dir() {
+            let t = std::fs::canonicalize("/tmp").unwrap();
+            let out = run(&format!("{}/benchflow-none/data", t.display()));
+            assert!(out.contains(&format!("BF open {}\n", t.display())), "{out}");
+        }
+        // A target that is already a folder it cannot write (root's): said
+        // so (REVIEW-OUTCOMES M2); one of its own is not.
+        let out = run("/usr/share");
+        assert!(out.contains("BF target-closed"), "{out}");
+        let out = run(mine.to_str().unwrap());
+        assert!(!out.contains("BF target-closed"), "{out}");
+        // An unknown user: said so.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(agent_writable_parents("/x/y", "no-such-user-bf"))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "BF open ?\n");
+    }
+
+    /// A workdir that is a link in a folder others may write is not
+    /// followed (an agent could have made it), and is noted; an image
+    /// without `find` stops the change rather than letting grading run
+    /// against the agent's files. Guards the D7b fixes of REVIEW-CORRECT
+    /// L3 and L4.
+    #[cfg(unix)]
+    #[test]
+    fn own_workdir_follows_no_link_another_user_could_make_and_needs_find() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("real/inside")).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("app")).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = root.join("log");
+        std::fs::write(
+            bin.join("chown"),
+            format!(
+                "#!/bin/sh\nfor a; do echo \"$a\"; done >> {}\n",
+                q(log.to_str().unwrap())
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("chown"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let me = whoami();
+        let app = root.join("app");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(own_workdir(app.to_str().unwrap(), &me, &me))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("so it was not followed"), "{stdout}");
+        let changed = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!changed.contains("inside"), "{changed}");
+        // No find on PATH: refused before anything changes.
+        let nofind = root.join("nofind");
+        std::fs::create_dir_all(&nofind).unwrap();
+        for tool in [
+            "id", "readlink", "dirname", "chown", "stat", "grep", "head", "tr",
+        ] {
+            for d in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+                let p = std::path::Path::new(d).join(tool);
+                if p.exists() {
+                    let _ = std::os::unix::fs::symlink(&p, nofind.join(tool));
+                    break;
+                }
+            }
+        }
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(own_workdir(root.join("real").to_str().unwrap(), &me, &me))
+            .env("PATH", &nofind)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("BF error no-find"));
+    }
+
+    /// The names the baseline's scan looks for, matched on this machine.
+    #[test]
+    fn steering_names_match_as_the_scan_does() {
+        for n in [
+            "conftest.py",
+            "pytest.ini",
+            "sitecustomize.py",
+            "usercustomize.py",
+            "a.pth",
+            ".pth",
+        ] {
+            assert!(is_steering_name(n), "{n}");
+        }
+        for n in ["conftest.pyc", "my_conftest.py", "pytest.ini.bak"] {
+            assert!(!is_steering_name(n), "{n}");
+        }
+    }
+
     /// A link's target, which the agent chose, is printed on one line with
     /// any line break shown as `?`: a target name cannot print a `BF` line
     /// of its own, such as a forged end of the handoff.
@@ -1654,27 +2097,29 @@ mod tests {
         assert!(!gone("answer.json"), "{out}");
     }
 
+    fn whoami() -> String {
+        let me = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .unwrap();
+        String::from_utf8(me.stdout).unwrap().trim().to_string()
+    }
+
     /// The workdir goes to the owner named, on its own filesystem, links
     /// changed themselves and never followed; `/` and unknown users are
     /// refused before anything changes.
     #[cfg(unix)]
     #[test]
     fn own_workdir_gives_the_folder_to_its_owner_and_refuses_the_root_folder() {
-        let s = own_workdir("/root", "root");
-        assert!(
-            s.contains(r#"find "$w" -xdev -exec chown -h "$o:$g""#),
-            "{s}"
-        );
+        let s = own_workdir("/root", "root", "agent");
+        assert!(s.contains("-xdev"), "{s}");
+        assert!(s.contains(r#"chown -h "$o:$g""#), "{s}");
         let tmp = tempfile::tempdir().unwrap();
         let w = tmp.path().join("work");
         std::fs::create_dir_all(w.join("repo/.git")).unwrap();
         std::fs::write(w.join("repo/file"), "x").unwrap();
         std::os::unix::fs::symlink(tmp.path().join("outside"), w.join("link")).unwrap();
-        let me = std::process::Command::new("id")
-            .arg("-un")
-            .output()
-            .unwrap();
-        let me = String::from_utf8(me.stdout).unwrap().trim().to_string();
+        let me = whoami();
         let sh = |script: String| {
             std::process::Command::new("sh")
                 .arg("-c")
@@ -1683,11 +2128,11 @@ mod tests {
                 .unwrap()
         };
         // Owning what it already owns is all a test can do without root.
-        let out = sh(own_workdir(w.to_str().unwrap(), &me));
+        let out = sh(own_workdir(w.to_str().unwrap(), &me, &me));
         assert!(out.status.success());
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
-            format!("BF owned {me}\n")
+            format!("BF root-owned\nBF owned {me}\n")
         );
         assert!(!tmp.path().join("outside").exists(), "a link was followed");
         let to_root = tmp.path().join("to-root");
@@ -1698,10 +2143,165 @@ mod tests {
             (to_root.to_str().unwrap(), me.as_str()),
             (w.to_str().unwrap(), "no-such-user-bf"),
         ] {
-            let out = sh(own_workdir(workdir, owner));
+            let out = sh(own_workdir(workdir, owner, &me));
             assert_eq!(out.status.code(), Some(2), "{workdir:?} {owner}");
             assert!(!String::from_utf8_lossy(&out.stdout).contains("BF owned"));
         }
+    }
+
+    /// A folder chain nested past the system's path limit (an agent can
+    /// make one with `mkdir x && cd x` in a loop) changes owner without an
+    /// error: the walk runs `chown` from inside each folder. Run with the
+    /// host's `find` and `chown` on the test user's own files. The same tree
+    /// with full paths (`-exec`, as b7d315aa had it) fails, which shows the
+    /// tree is deep enough. Guards the D7b fix of FIX-REVIEW-A 1, where such
+    /// a tree turned the agent's trial into an ungraded sandbox error.
+    #[cfg(unix)]
+    #[test]
+    fn own_workdir_walks_a_tree_nested_past_the_path_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = tmp.path().canonicalize().unwrap().join("work");
+        std::fs::create_dir_all(&w).unwrap();
+        let name = "d".repeat(200);
+        let made = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "cd {} && i=0; while [ $i -lt 30 ]; do mkdir {name} && cd {name} || exit 1; i=$((i+1)); done; echo x > f",
+                q(w.to_str().unwrap())
+            ))
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let me = whoami();
+        let run = |script: String| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let script = own_workdir(w.to_str().unwrap(), &me, &me);
+        assert_eq!(
+            run(script.clone()),
+            format!("BF root-owned\nBF owned {me}\n")
+        );
+        let full_paths = run(script.replace("x=-execdir", "x=-exec"));
+        assert!(full_paths.contains("BF unchanged "), "{full_paths}");
+        assert!(
+            full_paths.ends_with(&format!("BF owned {me}\n")),
+            "{full_paths}"
+        );
+    }
+
+    /// Hard links keep their owner unless the agent user owns them; links
+    /// change themselves; only a failure on the workdir itself is fatal (exit
+    /// 3), one below it is a `BF unchanged` note, and a file that went away while
+    /// the walk ran is no error. Guards the D7b fixes of FIX-REVIEW-A 1 and 2
+    /// and FIX-REVIEW-B 3 on b7d315aa.
+    #[test]
+    fn own_workdir_leaves_others_hard_links_alone_and_notes_what_kept_its_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let w = root.join("work");
+        std::fs::create_dir_all(w.join("sub")).unwrap();
+        std::fs::write(w.join("sub/mine"), "x").unwrap();
+        // A file outside the workdir linked into it.
+        std::fs::write(root.join("passwd"), "root:x:0:0").unwrap();
+        std::fs::hard_link(root.join("passwd"), w.join("sub/linked")).unwrap();
+        std::fs::write(root.join("target"), "t").unwrap();
+        std::os::unix::fs::symlink(root.join("target"), w.join("sym")).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = root.join("chown.log");
+        // A stand-in chown that logs each path it is given (made absolute
+        // when `find` runs it from inside a folder), and fails as `mode`
+        // says: on the workdir itself, below it, or as a file gone.
+        let stub = |mode: &str| {
+            let _ = std::fs::remove_file(&log);
+            std::fs::write(
+                bin.join("chown"),
+                format!(
+                    "#!/bin/sh\nw={w}\nfor a; do case \"$a\" in -*|*:*) ;; /*) echo \"$a\";; *) echo \"$(pwd -P)/${{a#./}}\";; esac; done >> {log}\n\
+                     for a; do case \"$a\" in -*|*:*) continue;; esac\n\
+                       case {mode} in\n\
+                         root) [ \"$a\" = \"$w\" ] && {{ echo \"chown: $a: Read-only file system\" >&2; exit 1; }};;\n\
+                         below) [ \"$a\" = \"$w\" ] || {{ echo \"chown: $a: Read-only file system\" >&2; exit 1; }};;\n\
+                         gone) [ \"$a\" = \"$w\" ] || {{ echo \"chown: $a: No such file or directory\" >&2; exit 1; }};;\n\
+                       esac\n\
+                     done\nexit 0\n",
+                    w = q(w.to_str().unwrap()),
+                    log = q(&log.display().to_string()),
+                    mode = mode,
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                bin.join("chown"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+        };
+        let me = whoami();
+        let run = |agent: &str| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(own_workdir(w.to_str().unwrap(), &me, agent))
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .output()
+                .unwrap()
+        };
+        let changed = || std::fs::read_to_string(&log).unwrap_or_default();
+        let has = |log: &str, p: &std::path::Path| log.lines().any(|l| l == p.to_str().unwrap());
+
+        // Someone else's hard link (the agent is another user) keeps its owner.
+        stub("ok");
+        let out = run("no-such-user-bf");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("BF root-owned\nBF owned {me}\n")
+        );
+        let log1 = changed();
+        assert!(has(&log1, &w), "{log1}");
+        assert!(has(&log1, &w.join("sub/mine")), "{log1}");
+        assert!(has(&log1, &w.join("sub")), "{log1}");
+        assert!(
+            has(&log1, &w.join("sym")),
+            "the link itself changes: {log1}"
+        );
+        assert!(!has(&log1, &root.join("target")), "{log1}");
+        assert!(
+            !has(&log1, &w.join("sub/linked")),
+            "a hard link's file may be outside the workdir: {log1}"
+        );
+        // The agent user's own hard link is given away (FIX-REVIEW-A 2).
+        stub("ok");
+        assert!(run(&me).status.success());
+        assert!(has(&changed(), &w.join("sub/linked")), "{}", changed());
+
+        // The workdir itself refused: fatal.
+        stub("root");
+        let out = run(&me);
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("BF owned"));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("BF error chown"));
+        // A path below it refused: noted, and the workdir is still owned.
+        stub("below");
+        let out = run(&me);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{out:?}");
+        assert!(stdout.contains("BF unchanged chown: "), "{stdout}");
+        assert!(stdout.contains("Read-only file system"), "{stdout}");
+        assert!(stdout.ends_with(&format!("BF owned {me}\n")), "{stdout}");
+        // A file gone during the walk: no note.
+        stub("gone");
+        let out = run(&me);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("BF root-owned\nBF owned {me}\n")
+        );
     }
 
     /// Run `script` under host `sh` with a stand-in `stat` that reads the

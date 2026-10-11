@@ -8,8 +8,20 @@ use crate::{NetworkPolicy, SandboxError, SandboxSpec, owner};
 
 /// What the container runs: a shell that sleeps until it is stopped. A
 /// `sleep` in the background plus `wait` lets the TERM trap run at once,
-/// and works with every `sleep` (busybox's has no `infinity`).
-pub(crate) const KEEPALIVE: &str = "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done";
+/// and works with every `sleep` (busybox's has no `infinity`). `sleep` is
+/// found in the system folders ([`crate::shell::SYSTEM_PATH`]) only and
+/// starts without the loader variables: the loop runs it again every hour,
+/// often as root, after the agent may have placed a program of that name on
+/// the image's `PATH` or a library where the image's `LD_LIBRARY_PATH`
+/// points. (`docker exec` takes its environment from the container's
+/// configuration, not from this process.)
+pub(crate) fn keepalive() -> String {
+    format!(
+        "PATH={}; unset {}; trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done",
+        crate::shell::SYSTEM_PATH,
+        crate::shell::LOADER_VARS.join(" ")
+    )
+}
 
 /// How long a new container may take to reach `running`.
 const START_TIMEOUT: Duration = Duration::from_secs(60);
@@ -108,10 +120,10 @@ pub(crate) fn run_args(cli: &Cli, spec: &SandboxSpec, name: &str, env: &EnvArgs)
     }
     args.extend(env.args.iter().cloned());
     args.push("--entrypoint".to_string());
-    args.push("sh".to_string());
+    args.push("/bin/sh".to_string());
     args.push(spec.image.reference.clone());
     args.push("-c".to_string());
-    args.push(KEEPALIVE.to_string());
+    args.push(keepalive());
     args
 }
 
@@ -284,6 +296,40 @@ mod tests {
         assert!(container_name("a b/c").starts_with("bf-a-b-c-"));
         assert!(container_name("///").starts_with("bf-"));
         assert!(container_name(&"x".repeat(100)).len() <= 3 + 40 + 1 + 8);
+    }
+
+    /// The keep-alive loop runs `sleep` as the image's user (often root)
+    /// every hour of the trial; it never finds it through the image's
+    /// `PATH`.
+    #[test]
+    fn the_keepalive_finds_no_program_through_the_image_path() {
+        use std::os::unix::process::CommandExt as _;
+        let keepalive = keepalive();
+        assert!(
+            keepalive.starts_with(&format!(
+                "PATH={}; unset LD_PRELOAD ",
+                crate::shell::SYSTEM_PATH
+            )),
+            "{keepalive}"
+        );
+        let m = crate::shell::markers::Markers::new();
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&keepalive)
+            .env("PATH", m.path())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        // Long enough for the loop's first `sleep` to start; then stop the
+        // loop and its `sleep` together.
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("kill -TERM -{}", child.id()))
+            .status();
+        let status = child.wait().unwrap();
+        assert!(status.success(), "{status:?}");
+        assert!(m.ran().is_empty(), "{:?}", m.ran());
     }
 
     #[test]

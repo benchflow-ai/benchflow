@@ -5,6 +5,16 @@
 //! inputs beside it; see its `README.md`. Every converted package and
 //! every exported folder must match it file for file, byte for byte, with
 //! the same executable bits, and every export must report the same losses.
+//! The one deliberate difference: where convert.py's messages name another
+//! framework, BenchFlow's say what is meant (see `common/mod.rs`), and the
+//! expected messages are read through that mapping; BenchFlow's own are
+//! checked to name none. The import record and its folder (`[import.harbor]`,
+//! `import/harbor/`) are identifiers other tools read, and keep convert.py's
+//! names, compared byte for byte.
+
+mod common;
+
+use common::{naming, neutral_json};
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,7 +29,7 @@ fn fixtures() -> PathBuf {
 
 fn results() -> serde_json::Map<String, Value> {
     let text = fs::read_to_string(fixtures().join("expected/results.json")).unwrap();
-    match serde_json::from_str(&text).unwrap() {
+    match neutral_json(&serde_json::from_str(&text).unwrap()) {
         Value::Object(m) => m,
         _ => panic!("results.json is an object"),
     }
@@ -121,6 +131,14 @@ fn check_export(
         .map(|l| serde_json::to_value(l).unwrap())
         .collect();
     assert_eq!(Value::Array(losses), want["losses"], "{key}: losses");
+    let said = report
+        .losses
+        .iter()
+        .flat_map(|l| [l.reason.as_str(), l.text.as_str()])
+        .chain(report.rewritten.iter().map(|r| r.reason.as_str()))
+        .chain([report.summary.as_str()]);
+    let found = naming(said);
+    assert!(found.is_empty(), "{key}: {found:#?}");
     assert_eq!(
         serde_json::to_value(&report.restored_originals).unwrap(),
         want["restored_originals"],
@@ -142,6 +160,14 @@ fn check_export(
             serde_json::from_str(&fs::read_to_string(out.join("export-report.json")).unwrap())
                 .unwrap();
         assert_eq!(written["status"], want["status"]);
+        // The report's format names, as convert.py writes them
+        // (`"from": "task.md", "to": "harbor"`): identifiers other tools
+        // read.
+        assert_eq!(
+            (&written["report"], &written["from"], &written["to"]),
+            (&"export".into(), &"task.md".into(), &"harbor".into()),
+            "{key}"
+        );
     }
 }
 
@@ -173,6 +199,8 @@ fn check_kind(kind: &str) -> usize {
                     &fixtures().join("expected").join(kind).join(&name),
                     &[],
                 );
+                let found = naming(report.notes.iter().map(|n| n.text.as_str()));
+                assert!(found.is_empty(), "{key}: {found:#?}");
                 let notes = want["notes"].as_array().unwrap().len();
                 assert!(
                     report.notes.len() >= notes.saturating_sub(1),
@@ -181,6 +209,13 @@ fn check_kind(kind: &str) -> usize {
                 );
                 check_export(
                     &out,
+                    &format!("roundtrip/{key}"),
+                    &fixtures().join("expected/roundtrip").join(kind).join(&name),
+                    &results,
+                );
+                // The package convert.py wrote exports to the same files.
+                check_export(
+                    &fixtures().join("expected").join(kind).join(&name),
                     &format!("roundtrip/{key}"),
                     &fixtures().join("expected/roundtrip").join(kind).join(&name),
                     &results,
@@ -297,7 +332,8 @@ fn degraded_exports_write_when_allowed() {
 #[test]
 fn imports_check_as_the_reference_imports_do() {
     let text = fs::read_to_string(fixtures().join("expected/checked.json")).unwrap();
-    let checked: BTreeMap<String, Vec<String>> = serde_json::from_str(&text).unwrap();
+    let checked: BTreeMap<String, Vec<String>> =
+        serde_json::from_value(neutral_json(&serde_json::from_str(&text).unwrap())).unwrap();
     let results = results();
     let mut seen = 0;
     for kind in ["harbor", "v06"] {
@@ -326,4 +362,97 @@ fn imports_check_as_the_reference_imports_do() {
         }
     }
     assert_eq!(seen, checked.len(), "every recorded package was checked");
+}
+
+/// A package with both import records (from hand edits or merges): export
+/// restores originals from the one it reads, `[import.harbor]`, copies
+/// neither folder into the output, and says the other was left out instead
+/// of reporting a lossless export.
+#[test]
+fn a_package_with_both_import_records_exports_neither_folder() {
+    let src = fixtures().join("expected/harbor/build-steps");
+    let work = tempfile::tempdir().unwrap();
+    let pkg = work.path().join("pkg");
+    for (rel, (bytes, _)) in tree(&src) {
+        let to = pkg.join(&rel);
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        fs::write(to, bytes).unwrap();
+    }
+    let md = fs::read_to_string(pkg.join("task.md")).unwrap();
+    let md = md.replacen(
+        "[import.harbor]\n",
+        "[import.split]\n# from a hand edit\nversion = \"1.0\"  # an old record\n\n[import.harbor]\n",
+        1,
+    );
+    fs::write(pkg.join("task.md"), md).unwrap();
+    fs::create_dir_all(pkg.join("import/split")).unwrap();
+    fs::write(pkg.join("import/split/task.toml"), "stray = true\n").unwrap();
+    fs::write(pkg.join("import/harbor/notes.txt"), "not an original\n").unwrap();
+    let out = work.path().join("out");
+    let report = convert::export_split_with(&pkg, &out, &ExportOptions::default()).unwrap();
+    assert_eq!(report.status, ExportStatus::Degraded);
+    assert!(!out.join("import").exists(), "{:?}", tree(&out).keys());
+    let left_out: Vec<&str> = report.losses.iter().map(|l| l.path.as_str()).collect();
+    assert_eq!(left_out, ["[import.split]"], "{:?}", report.losses);
+    // Both folders are named, the one read included.
+    let reason = &report.losses[0].reason;
+    assert!(
+        reason.contains("import/split/") && reason.contains("the other files in import/harbor/"),
+        "{reason}"
+    );
+    // The ignored record's comments go with it: task.toml is restored.
+    assert!(
+        report.restored_originals.iter().any(|r| r == "task.toml"),
+        "{:?}",
+        report.rewritten
+    );
+    // The originals still come back byte for byte.
+    let want = fixtures().join("expected/roundtrip/harbor/build-steps");
+    assert_eq!(
+        fs::read(out.join("task.toml")).unwrap(),
+        fs::read(want.join("task.toml")).unwrap()
+    );
+}
+
+/// A package whose record is `[import.split]` (an unreleased build wrote
+/// it) exports to the same files as the same package under convert.py's
+/// `[import.harbor]`.
+#[test]
+fn a_package_with_only_the_other_record_name_exports_the_same() {
+    let src = fixtures().join("expected/harbor/build-steps");
+    let work = tempfile::tempdir().unwrap();
+    let pkg = work.path().join("pkg");
+    for (rel, (bytes, exe)) in tree(&src) {
+        let rel = rel.replacen("import/harbor/", "import/split/", 1);
+        let to = pkg.join(&rel);
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        let bytes = if rel == "task.md" {
+            String::from_utf8(bytes)
+                .unwrap()
+                .replace("[import.harbor", "[import.split")
+                .into_bytes()
+        } else {
+            bytes
+        };
+        fs::write(&to, bytes).unwrap();
+        #[cfg(unix)]
+        if exe {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&to, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    assert!(pkg.join("import/split").is_dir());
+    let out = work.path().join("out");
+    let report = convert::export_split_with(&pkg, &out, &ExportOptions::default()).unwrap();
+    let want = &results()["roundtrip/harbor/build-steps"];
+    assert_eq!(status_name(report.status), want["status"]);
+    assert_eq!(
+        serde_json::to_value(&report.restored_originals).unwrap(),
+        want["restored_originals"]
+    );
+    assert_same_tree(
+        &out,
+        &fixtures().join("expected/roundtrip/harbor/build-steps"),
+        &["export-report.json"],
+    );
 }

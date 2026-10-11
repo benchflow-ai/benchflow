@@ -75,7 +75,7 @@ bench train validate children.jsonl --format branch-tree
 bench train validate pairs.jsonl --format branch-tree
 ```
 
-Preference training (TRL `DPOTrainer`): `pairs.jsonl` is already in TRL's conversational preference shape, `prompt` / `chosen` / `rejected` message lists, so it loads as it is:
+Preference training (a DPO trainer): `pairs.jsonl` is already in the conversational preference shape DPO trainers read, `prompt` / `chosen` / `rejected` message lists, so it loads as it is:
 
 ```python
 from datasets import load_dataset

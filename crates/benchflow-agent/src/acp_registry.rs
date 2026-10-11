@@ -354,7 +354,9 @@ impl Entry {
                 m.credentials = b.credentials.clone();
                 m.account = b.account.clone();
                 m.skill_paths = b.skill_paths.clone();
-                m.skills_via = b.skills_via.clone();
+                // Not `skills_via`: it says how the builtin's own launch
+                // command points the agent at its skills (mistral-vibe's
+                // config.toml), which the registry's command does not do.
                 m.home_dirs = b.home_dirs.clone();
                 for (k, v) in &b.launch.env {
                     m.launch.env.entry(k.clone()).or_insert_with(|| v.clone());

@@ -47,7 +47,10 @@ pub use client::{
     PROTOCOL_VERSION, PromptLimits, PromptOutcome, SessionInfo, StopReason, TrajectoryHandle,
 };
 pub use conn::EventSink;
-pub use error::{AcpError, IdleReport, Owner, provider_failure_in_reply};
+pub use error::{
+    AcpError, IdleReport, Owner, broke_mid_stream, ends_mid_stream, provider_failure_in_reply,
+    refused_request,
+};
 pub use mcp::{McpServer, McpTransport};
 pub use watchdog::PENDING_GRACE_MULTIPLIER;
 pub use wire::{DEFAULT_LINE_LIMIT, DEFAULT_MAX_LINE};

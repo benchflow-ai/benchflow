@@ -40,6 +40,9 @@ struct World {
     spec_workdir: Option<String>,
     /// (user, command, variables) of every command.
     execs: Vec<(Option<String>, String, BTreeMap<String, String>)>,
+    /// The variables each command runs without (`Exec::unset`), in the
+    /// order of `execs`.
+    unsets: Vec<Vec<String>>,
     destroyed: bool,
 }
 
@@ -77,10 +80,14 @@ impl Sandbox for FakeSandbox {
         w.cwds.push((c.clone(), exec.cwd.clone()));
         w.execs
             .push((exec.user.clone(), c.clone(), exec.env.clone()));
+        w.unsets.push(exec.unset.clone());
         let stdout = if self.id.contains("shadowed") {
             // The agent replaced `sh`: every program "succeeds" and says nothing.
             String::new()
-        } else if c == "pwd" {
+        } else if c.contains("bf_try()") {
+            // The network self-test, answered as a closed network would.
+            closed_network_canaries(&c)
+        } else if c.lines().last() == Some("pwd") {
             // An image built with `WORKDIR /root`, or one that sets none.
             if self.id.contains("imgroot") {
                 "/root\n"
@@ -90,7 +97,8 @@ impl Sandbox for FakeSandbox {
             .to_string()
         } else if c.contains("BF image-path") {
             // An image whose PATH starts in a venv inside the workdir.
-            "BF image-path /app/.venv/bin:/usr/local/bin:/usr/bin:/bin\n".to_string()
+            "BF image-path /app/.venv/bin:/usr/local/bin:/usr/bin:/bin\nBF image-loader BASH_ENV\n"
+                .to_string()
         } else if c.contains("BF open") {
             // Folders above a path that are not root's alone: the workdir.
             if c.contains("/app/") {
@@ -124,15 +132,29 @@ impl Sandbox for FakeSandbox {
         } else if c.contains("BF venv-done") {
             "BF venv-safepath 1\nBF venv-path /usr/local/bin:/usr/bin:/bin\nBF venv-done\n"
                 .to_string()
+        } else if c.contains("BF path")
+            && self.id.contains("nopath")
+            && w.commands.iter().any(|x| x.contains("kill -9 -1"))
+        {
+            // After the agent's turn the trusted PATH check says nothing.
+            String::new()
         } else if c.contains("BF path") {
             "BF path /usr/local/bin:/usr/bin:/bin\n".to_string()
         } else if c.contains("BF handoff done") {
             "BF planted /app/conftest.py\nBF handoff done\n".to_string()
         } else if c.contains("BF owned") {
-            let owner = c.split("; o=").nth(1).and_then(|s| s.lines().next());
+            let owner = c
+                .split("; o=")
+                .nth(1)
+                .and_then(|s| s.lines().next())
+                .and_then(|l| l.split("; a=").next());
             format!("BF owned {}\n", owner.unwrap_or("").trim_matches('\''))
         } else if c.contains("BF stage-ready") {
             "BF stage-ready\n".to_string()
+        } else if c.contains("BF tree placed") {
+            "BF tree placed\n".to_string()
+        } else if c.contains("BF baseline-added") {
+            "BF baseline-added 0\n".to_string()
         } else if c.contains("BF staged") {
             "BF staged\n".to_string()
         } else if c.contains("BF placement done") {
@@ -224,6 +246,31 @@ impl Sandbox for FakeSandbox {
         self.world.lock().unwrap().destroyed = true;
         Ok(())
     }
+}
+
+/// What a network self-test script prints in a sandbox with no network:
+/// every connection probe refused, every name unresolved.
+fn closed_network_canaries(script: &str) -> String {
+    let mut out = String::new();
+    for line in script.lines() {
+        let Some(i) = line.find("echo \"BF canary ") else {
+            continue;
+        };
+        let rest = &line[i + "echo \"BF canary ".len()..];
+        let kind = rest.split(' ').next().unwrap_or("");
+        let Some(j) = rest.find(") \"") else {
+            continue;
+        };
+        let target = rest[j + 3..].split(';').next().unwrap_or("").trim();
+        let target = target.trim_matches('\'');
+        let result = if rest.contains("$(bf_resolve") {
+            "unresolved"
+        } else {
+            "refused"
+        };
+        out.push_str(&format!("BF canary {kind} {result} {target}\n"));
+    }
+    out
 }
 
 struct FakeProvider {
@@ -893,6 +940,171 @@ async fn root_programs_never_look_programs_up_on_the_images_path() {
     assert!(judged, "the trusted PATH check ran after the agent");
 }
 
+/// The image's environment may name a library or a start-up file in the
+/// workdir (`LD_PRELOAD`, `BASH_ENV`, ...). Every one of BenchFlow's own
+/// root programs runs without the loader variables, before and after the
+/// agent's turn.
+#[tokio::test]
+async fn root_programs_run_without_the_loader_variables() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("venv"), "venv"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        units: vec![(t, vec![Attempt::Nop])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+        carry: Vec::new(),
+    };
+    let out = job::run(spec, runtime(provider.clone())).await.unwrap();
+    assert_eq!(out.records.len(), 1);
+    let worlds = provider.worlds.lock().unwrap();
+    let w = worlds[0].lock().unwrap();
+    let system = benchflow_sandbox::shell::SYSTEM_PATH;
+    let mut own = 0;
+    for ((user, c, env), unset) in w.execs.iter().zip(&w.unsets) {
+        if user.as_deref() != Some("root") || env.get("PATH").map(String::as_str) != Some(system) {
+            continue;
+        }
+        own += 1;
+        for v in benchflow_sandbox::shell::LOADER_VARS {
+            assert!(unset.iter().any(|u| u == v), "{v} is kept for: {c}");
+        }
+    }
+    assert!(own >= 5, "only {own} of BenchFlow's own root commands ran");
+    // The verifier's shell, and the check of its environment, start
+    // without them too.
+    let unset_of = |needle: &str| {
+        w.execs
+            .iter()
+            .zip(&w.unsets)
+            .find(|((_, c, _), _)| c.contains(needle))
+            .map(|(_, u)| u.clone())
+            .unwrap_or_else(|| panic!("no command with {needle}"))
+    };
+    for needle in ["/verifier/test.sh", "BF venv-done"] {
+        let unset = unset_of(needle);
+        for v in benchflow_sandbox::shell::LOADER_VARS {
+            assert!(unset.iter().any(|u| u == v), "{v} is kept for {needle}");
+        }
+    }
+    // The check still says what the image set, read before the agent ran.
+    let note = out.records[0].defenses["clean_verifier_env"]
+        .note
+        .clone()
+        .unwrap_or_default();
+    assert!(
+        note.contains("unset from the sandbox's own environment: BASH_ENV"),
+        "{note}"
+    );
+}
+
+/// With `[verifier] network = "none"`, the verifier stage's network
+/// self-test runs after the agent's turn as the verifier's user (root). It
+/// must run with the verifier's trusted `PATH` (the fake's `BF path`
+/// answer), not the image's, and without the loader variables.
+#[tokio::test]
+async fn the_verifier_network_self_test_runs_on_the_trusted_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut t = task(&tmp.path().join("netnone"), "netnone");
+    t.sandbox.network = Network::None;
+    t.verifier.network = Some(Network::None);
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        units: vec![(Arc::new(t), vec![Attempt::Nop])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+        carry: Vec::new(),
+    };
+    let out = job::run(spec, runtime(provider.clone())).await.unwrap();
+    assert_eq!(out.records.len(), 1);
+    let worlds = provider.worlds.lock().unwrap();
+    let w = worlds[0].lock().unwrap();
+    // The self-test script defines `bf_try()`; the verifier stage's runs
+    // as root, the agent stage's as the agent user.
+    let tests: Vec<_> = w
+        .execs
+        .iter()
+        .zip(&w.unsets)
+        .filter(|((_, c, _), _)| c.contains("bf_try()"))
+        .collect();
+    let verifier = tests
+        .iter()
+        .find(|((user, _, _), _)| user.as_deref() == Some("root"))
+        .unwrap_or_else(|| panic!("no verifier-stage self-test: {:?}", out.records[0].problem));
+    let ((_, _, env), unset) = verifier;
+    assert_eq!(
+        env.get("PATH").map(String::as_str),
+        Some("/usr/local/bin:/usr/bin:/bin"),
+        "the verifier self-test's PATH"
+    );
+    for v in benchflow_sandbox::shell::LOADER_VARS {
+        assert!(unset.iter().any(|u| u == v), "{v} kept for the self-test");
+    }
+    // It starts in `/`, not the agent's workdir.
+    let cwds: Vec<_> = w
+        .cwds
+        .iter()
+        .filter(|(c, _)| c.contains("bf_try()"))
+        .map(|(_, cwd)| cwd.clone())
+        .collect();
+    assert!(
+        cwds.iter().all(|c| c.as_deref() == Some("/")),
+        "self-test folders: {cwds:?}"
+    );
+}
+
+/// With no answer from the trusted PATH check after the agent's turn, the
+/// verifier-stage self-test does not run on the image's `PATH`: the trial
+/// stops, as the verifier's own check does.
+#[tokio::test]
+async fn the_verifier_network_self_test_needs_the_trusted_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut t = task(&tmp.path().join("nopath"), "nopath");
+    t.sandbox.network = Network::None;
+    t.verifier.network = Some(Network::None);
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        units: vec![(Arc::new(t), vec![Attempt::Nop])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+        carry: Vec::new(),
+    };
+    let out = job::run(spec, runtime(provider.clone())).await.unwrap();
+    let r = &out.records[0];
+    let p = r.problem.as_ref().expect("the trial stops");
+    assert_eq!(p.code, "R307", "{p:?}");
+    assert!(p.message.contains("network self-test"), "{}", p.message);
+    let worlds = provider.worlds.lock().unwrap();
+    let w = worlds[0].lock().unwrap();
+    assert!(
+        !w.execs
+            .iter()
+            .any(|(user, c, _)| c.contains("bf_try()") && user.as_deref() == Some("root")),
+        "the verifier-stage self-test ran without a trusted PATH"
+    );
+}
+
 /// Read-only package files are recorded as held only when no folder above
 /// them is the agent's; the verifier's mount is claimed (links and files
 /// the agent left there removed) before the verifier is uploaded into it.
@@ -1137,7 +1349,7 @@ async fn a_broken_environment_is_flagged_but_keeps_its_score() {
     let mut failed = nop.clone();
     failed.agent = "oracle".into();
     let records = vec![&failed, nop];
-    let v = benchflow_run::testplan::judge(&t, &records);
+    let v = benchflow_run::testplan::judge(&t, &records, &[]);
     let check = v.checks.iter().find(|c| c.attempt == "oracle").unwrap();
     assert!(!check.ok);
     assert!(
@@ -1172,7 +1384,7 @@ async fn a_weak_defense_says_what_the_trial_noted() {
     };
     let out = job::run(spec, runtime(provider)).await.unwrap();
     let records: Vec<_> = out.records.iter().collect();
-    let v = benchflow_run::testplan::judge(&t, &records);
+    let v = benchflow_run::testplan::judge(&t, &records, &[]);
     assert!(v.ok, "{:?}", v.checks);
     assert_eq!(v.weak_defenses, vec!["hidden_verifier".to_string()]);
     assert_eq!(v.weak_details.len(), 1);
@@ -1632,7 +1844,7 @@ async fn a_task_without_a_workdir_works_in_the_image_workdir() {
             .iter()
             .find(|(c, _)| c.contains("/oracle/solve.sh"))
             .and_then(|(_, cwd)| cwd.clone());
-        let probed = w.commands.iter().any(|c| c == "pwd");
+        let probed = w.commands.iter().any(|c| c.lines().last() == Some("pwd"));
         let setup = w
             .commands
             .iter()
@@ -1943,6 +2155,226 @@ impl Provider for SlowStart {
     }
 }
 
+/// Drain mode (the first Ctrl-C): the trial running finishes and is
+/// scored, and the queued one never starts.
+#[tokio::test]
+async fn a_drained_run_finishes_running_trials_and_starts_no_more() {
+    let tmp = tempfile::tempdir().unwrap();
+    let units: Vec<_> = ["one", "two"]
+        .iter()
+        .map(|n| {
+            (
+                Arc::new(task(&tmp.path().join(n), n)),
+                vec![Attempt::Oracle],
+            )
+        })
+        .collect();
+    let provider = Arc::new(SlowStart {
+        inner: FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        },
+        delay: Duration::from_millis(400),
+    });
+    let (_stop_tx, stop_rx) = stop_switch();
+    let options = RunOptions::default();
+    let drain = options.drain.clone();
+    let rt = Arc::new(Runtime {
+        provider: provider.clone(),
+        images: Images::new(),
+        options,
+        events: Events::none(),
+        stop: stop_rx,
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drain.start();
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units,
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let out = job::run(spec, rt).await.unwrap();
+    assert_eq!(out.records.len(), 1, "{:?}", out.records);
+    assert_eq!(out.records[0].status, Status::Scored);
+    assert_eq!(out.records[0].reward, Some(1.0));
+    assert_eq!(out.not_started, 1);
+    assert_eq!(provider.inner.worlds.lock().unwrap().len(), 1);
+}
+
+/// Delta review B1: a `bench test` drained after its first trial must not
+/// call the task proved. The oracle ran and passed; the nop never started,
+/// so the verdict fails with a "did not run" check for it.
+#[tokio::test]
+async fn a_drained_bench_test_does_not_prove_its_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("probe-me"), "probe-me"));
+    let planned = benchflow_run::testplan::attempts(&t, &benchflow_run::testplan::ProbeSet::None);
+    assert_eq!(planned.len(), 2, "the oracle and the nop");
+    let provider = Arc::new(SlowStart {
+        inner: FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        },
+        delay: Duration::from_millis(400),
+    });
+    let (_stop_tx, stop_rx) = stop_switch();
+    let options = RunOptions::default();
+    let drain = options.drain.clone();
+    let rt = Arc::new(Runtime {
+        provider,
+        images: Images::new(),
+        options,
+        events: Events::none(),
+        stop: stop_rx,
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drain.start();
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), planned.clone())],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let out = job::run(spec, rt).await.unwrap();
+    assert_eq!((out.records.len(), out.not_started), (1, 1));
+    let records: Vec<&benchflow_run::record::TrialRecord> = out.records.iter().collect();
+    let v = benchflow_run::testplan::judge(&t, &records, &planned);
+    assert!(!v.ok, "{v:?}");
+    let missing: Vec<&str> = v
+        .checks
+        .iter()
+        .filter(|c| c.says.starts_with("did not run"))
+        .map(|c| c.attempt.as_str())
+        .collect();
+    assert_eq!(missing, ["nop"], "{v:?}");
+}
+
+/// Delta review B2 and B3: a regrade drained after its first trial reports
+/// the one it never started, and leaves no folder for it (the agent files
+/// are copied only when a trial starts).
+#[tokio::test]
+async fn a_drained_regrade_reports_what_it_never_regraded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tasks: Vec<Arc<TaskPackage>> = ["ra", "rb"]
+        .iter()
+        .map(|n| Arc::new(task(&tmp.path().join(n), n)))
+        .collect();
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: tasks
+            .iter()
+            .map(|t| (t.clone(), vec![Attempt::Oracle]))
+            .collect(),
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("graded".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let fake = || FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    };
+    let out = job::run(spec, runtime(Arc::new(fake()))).await.unwrap();
+    for r in &out.records {
+        std::fs::create_dir_all(out.dir.join(&r.rollout_name).join("outputs/app")).unwrap();
+    }
+    let by_name: BTreeMap<String, Arc<TaskPackage>> =
+        tasks.iter().map(|t| (t.name.clone(), t.clone())).collect();
+    let load = |p: &Path| {
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        Ok(by_name[&name].clone())
+    };
+    let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+    assert_eq!(plan.regradable.len(), 2);
+    let options = RunOptions::default();
+    let drain = options.drain.clone();
+    let (_tx, rx) = stop_switch();
+    let rt = Arc::new(Runtime {
+        provider: Arc::new(SlowStart {
+            inner: fake(),
+            delay: Duration::from_millis(400),
+        }),
+        images: Images::new(),
+        options,
+        events: Events::none(),
+        stop: rx,
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drain.start();
+    });
+    let re = benchflow_run::regrade::run(plan, rt, 1).await.unwrap();
+    assert_eq!((re.records.len(), re.not_started), (1, 1));
+    let folders: Vec<String> = std::fs::read_dir(&re.dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        folders,
+        [re.records[0].rollout_name.clone()],
+        "no folder for the trial never started"
+    );
+}
+
+/// A trial folder without result.json (a crash, or an unsaved record) is
+/// moved aside before the trial runs again, so the rerun cannot read the
+/// lost attempt's files (such as an old verifier reward).
+#[tokio::test]
+async fn resume_moves_a_folder_without_a_result_aside() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("gamma"), "gamma"));
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t, vec![Attempt::Nop])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("leftover".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let fake = || {
+        runtime(Arc::new(FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        }))
+    };
+    let out = job::run(spec.clone(), fake()).await.unwrap();
+    let name = out.records[0].rollout_name.clone();
+    let dir = out.dir.join(&name);
+    // The record was lost; a stale reward file is left behind.
+    std::fs::remove_file(dir.join("result.json")).unwrap();
+    std::fs::write(dir.join("stale-marker"), "lost attempt").unwrap();
+    let again = job::run(spec, fake()).await.unwrap();
+    assert_eq!(again.records.len(), 1);
+    assert!(dir.join("result.json").is_file());
+    assert!(!dir.join("stale-marker").exists(), "the rerun starts clean");
+    assert!(
+        again
+            .dir
+            .join(".rerun")
+            .join(format!("{name}-1/stale-marker"))
+            .is_file()
+    );
+}
+
 #[tokio::test]
 async fn a_sandbox_being_made_when_the_run_stops_is_removed() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1982,6 +2414,92 @@ async fn a_sandbox_being_made_when_the_run_stops_is_removed() {
     let worlds = provider.inner.worlds.lock().unwrap();
     assert_eq!(worlds.len(), 1);
     assert!(worlds[0].lock().unwrap().destroyed);
+}
+
+/// A backend that notes, as each sandbox is made, whether a live process
+/// holds `job`'s run lock (what `bench view` checks to leave unfinished
+/// trials out).
+struct LockProbe {
+    inner: FakeProvider,
+    job: PathBuf,
+    held: Mutex<Vec<bool>>,
+}
+
+#[async_trait]
+impl Provider for LockProbe {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+    async fn status(&self) -> ProviderStatus {
+        self.inner.status().await
+    }
+    async fn prepare(
+        &self,
+        spec: &ImageSpec,
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+    ) -> Result<Image, SandboxError> {
+        self.inner.prepare(spec, log).await
+    }
+    async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
+        let held = std::fs::File::open(self.job.join(job::RUNNING_FILE))
+            .map(|f| matches!(f.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock)))
+            .unwrap_or(false);
+        self.held.lock().unwrap().push(held);
+        self.inner.create(spec).await
+    }
+}
+
+/// A live `bench regrade` holds its new job's run lock, as `bench run`
+/// does, so the viewer does not count its unfinished trials as errored.
+#[tokio::test]
+async fn a_regrade_holds_its_job_while_it_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("alpha"), "alpha"));
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("graded".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({"targets": ["alpha"]}),
+    };
+    let out = job::run(
+        spec,
+        runtime(Arc::new(FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        })),
+    )
+    .await
+    .unwrap();
+    let rec = &out.records[0];
+    std::fs::create_dir_all(out.dir.join(&rec.rollout_name).join("outputs/app")).unwrap();
+    let load = |_: &Path| Ok(t.clone());
+    let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+    let provider = Arc::new(LockProbe {
+        inner: FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        },
+        job: tmp.path().join("jobs/graded-regrade-1"),
+        held: Mutex::new(Vec::new()),
+    });
+    let (_tx, rx) = stop_switch();
+    let rt = Arc::new(Runtime {
+        provider: provider.clone(),
+        images: Images::new(),
+        options: RunOptions::default(),
+        events: Events::none(),
+        stop: rx,
+    });
+    let re = benchflow_run::regrade::run(plan, rt, 1).await.unwrap();
+    assert_eq!(re.dir, provider.job);
+    assert_eq!(*provider.held.lock().unwrap(), vec![true]);
 }
 
 #[tokio::test]

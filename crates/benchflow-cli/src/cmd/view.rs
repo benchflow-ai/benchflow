@@ -40,10 +40,10 @@ pub async fn run(args: ViewArgs) -> Result<Exit> {
         open_browser: !args.no_open,
         ..ServeOptions::default()
     };
-    let handle = benchflow_viewer::serve_jobs(&roots, options).await.map_err(|e| {
-        CliError::failed(format!("the viewer did not start: {e:#}"))
-            .next("pass a job folder, a folder of jobs, or a trial folder; try another --port if one is busy")
-    })?;
+    let port = args.port;
+    let handle = benchflow_viewer::serve_jobs(&roots, options)
+        .await
+        .map_err(|e| start_error(&e, port))?;
     let what = describe(&handle.target);
     note!(
         "  {} {}  {}{}",
@@ -85,6 +85,23 @@ fn describe(target: &Target) -> String {
                 ""
             }
         ),
+    }
+}
+
+/// Why the viewer did not start, with the next step for that cause: a port
+/// already taken is not a problem with the folders given.
+fn start_error(e: &anyhow::Error, port: Option<u16>) -> CliError {
+    let taken = e
+        .chain()
+        .filter_map(|c| c.downcast_ref::<std::io::Error>())
+        .any(|io| io.kind() == std::io::ErrorKind::AddrInUse);
+    let error = CliError::failed(format!("the viewer did not start: {e:#}"));
+    match port {
+        Some(port) if taken => error.next(format!(
+            "port {port} is taken (another bench view, perhaps); pass another --port, or leave \
+             --port out to use the first free one from 8765"
+        )),
+        _ => error.next("pass a job folder, a folder of jobs, or a trial folder"),
     }
 }
 

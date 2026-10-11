@@ -61,6 +61,12 @@ fn imports_match_harbors_migrate_and_check_clean() {
         let rep =
             convert::import_to_taskmd_with(&src, &imported, &ImportOptions::default()).unwrap();
         assert_eq!(rep.converted_from, Some("terminal-bench-v1"));
+        // The note says what was converted, into what, without pointing at
+        // another tool.
+        assert_eq!(
+            rep.notes[0].text,
+            "converted from Terminal-Bench v1 (task.yaml, run-tests.sh, solution.sh) to the split layout, then to task.md; review the result before relying on it"
+        );
         assert_eq!(
             benchflow_task::detect(&imported),
             Some(benchflow_task::Format::TaskMd)

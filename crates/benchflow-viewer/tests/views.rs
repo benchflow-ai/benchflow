@@ -218,9 +218,10 @@ async fn compare_puts_tasks_by_job_with_pass_rates_and_a_paired_difference() {
     assert_eq!((pair["a"].as_u64(), pair["b"].as_u64()), (Some(0), Some(1)));
     assert_eq!(pair["shared"], 2);
     close(&pair["mean_difference"], -0.5);
-    // sd 0.7071, n 2, t(0.975, 1) = 12.7062: -0.5 +- 6.3531.
-    close(&pair["interval"][0], -6.853_102_368_087_349);
-    close(&pair["interval"][1], 5.853_102_368_087_349);
+    // Two shared tasks give no interval (with one, t(0.975, 1) = 12.7
+    // made it -6.853 to +5.853 for rewards that differ by at most 1).
+    assert!(pair["interval"].is_null(), "{pair}");
+    assert_eq!(pair["no_interval"], "too few tasks");
     assert_eq!(
         [
             &pair["better"],
@@ -233,6 +234,53 @@ async fn compare_puts_tasks_by_job_with_pass_rates_and_a_paired_difference() {
     );
     assert_eq!(view["query"]["runs"], serde_json::json!(["rust-job", OLD]));
     assert_eq!(view["unknown"], serde_json::json!([]));
+}
+
+/// `runs=` takes a job as typed in the shell (`jobs/rust-job`, the form the
+/// docs show) as well as its id under the folder served.
+#[tokio::test]
+async fn compare_takes_jobs_as_paths_from_the_shell() {
+    let dir = corpus();
+    let router = router(dir.path());
+    let view = api(
+        &router,
+        &format!("/api/compare?runs=jobs/rust-job,./jobs/{OLD}/"),
+    )
+    .await;
+    assert_eq!(view["query"]["runs"], serde_json::json!(["rust-job", OLD]));
+    assert_eq!(view["unknown"], serde_json::json!([]));
+    let view = api(&router, "/api/compare?runs=jobs/nope").await;
+    assert_eq!(view["unknown"], serde_json::json!(["jobs/nope"]));
+}
+
+/// Delta review B3: a drained job is not shown as complete. Its lock.json
+/// planned 3 trials and 1 ran, so /compare marks the column with 2 never
+/// ran and partial, and /outcomes says so per job.
+#[tokio::test]
+async fn compare_and_outcomes_say_how_many_planned_trials_never_ran() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = dir.path().join("jobs/drained");
+    let trial = job.join("a__1");
+    std::fs::create_dir_all(trial.join("trajectory")).unwrap();
+    std::fs::write(trial.join("trajectory/acp_trajectory.jsonl"), "").unwrap();
+    std::fs::write(
+        trial.join("result.json"),
+        r#"{"task_name": "a", "agent": "x", "status": "scored", "passed": true, "rewards": {"reward": 1.0}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        job.join("lock.json"),
+        r#"{"trials": [{"trial": "a__1"}, {"trial": "b__1"}, {"trial": "c__1"}]}"#,
+    )
+    .unwrap();
+    let router = router(dir.path());
+    let view = api(&router, "/api/compare").await;
+    let column = &view["columns"][0];
+    assert_eq!(column["never_ran"], 2, "{view}");
+    assert_eq!(column["partial"], true);
+    assert_eq!(view["never_ran"]["drained"], 2);
+    let outcomes = api(&router, "/api/outcomes").await;
+    assert_eq!(outcomes["never_ran"]["drained"], 2, "{outcomes}");
 }
 
 #[tokio::test]

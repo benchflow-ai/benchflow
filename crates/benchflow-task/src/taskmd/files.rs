@@ -19,7 +19,9 @@ use super::pyfmt::{repr_str, str_of};
 use super::pyval::{nonblank, py_eq, table, truthy};
 use super::report::{At, ConfigLoc, FileLoc, Sink};
 use super::text::read_text_lossy;
-use super::vocab::{HOST_VAR, PROVIDER_VAR, SHARED_CANARY_GUIDS};
+use super::vocab::{
+    HOST_VAR, PROVIDER_VAR, SHARED_CANARY_GUIDS, split_record, split_record_ignored,
+};
 
 static HOST_VAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(HOST_VAR).unwrap());
 static PROVIDER_VAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(PROVIDER_VAR).unwrap());
@@ -298,22 +300,34 @@ pub(crate) fn family_files(config: &Value, dir: &Path, loc: &ConfigLoc<'_>) -> V
     ]
 }
 
-/// Harbor features an import records under `[import.harbor]` because task.md
-/// has no home for them (the reference's `check_imported`).
+/// Split-layout features an import records under `[import.harbor]` because
+/// task.md has no home for them (the reference's `check_imported`).
 pub(crate) fn imported(config: &Value, dir: &Path, loc: &ConfigLoc<'_>) -> Vec<Diagnostic> {
-    let harbor = table(config, &["import", "harbor"]);
+    let record = record_name(config);
+    let kept = table(config, &["import", record]);
     let mut sink = Sink::new(Some(loc));
-    if let Some(Value::String(t)) = harbor.get("trajectory") {
+    let import = table(config, &["import"]);
+    if let Some(other) = split_record_ignored(|k| import.contains_key(k)) {
         sink.warning(
             code::IMPORTED,
-            At::Value("import.harbor.trajectory"),
+            At::Value(&format!("import.{other}")),
             format!(
-                "[import.harbor] trajectory: Harbor seeds the agent's session with {t}, an ATIF trajectory, before the agent starts; no \
+                "[import.{record}] and [import.{other}] both record an import from the split layout; bench reads [import.{record}] and ignores \
+[import.{other}], and bench export leaves out both import/{record}/ and import/{other}/ (it restores originals from import/{record}/ only); keep one record"
+            ),
+        );
+    }
+    if let Some(Value::String(t)) = kept.get("trajectory") {
+        sink.warning(
+            code::IMPORTED,
+            At::Value(&format!("import.{record}.trajectory")),
+            format!(
+                "[import.{record}] trajectory: a split-layout runner seeds the agent's session with {t}, an ATIF trajectory, before the agent starts; no \
 task.md runtime loads it, so a task.md run starts without that context"
             ),
         );
     }
-    if let Some(Value::Object(workdirs)) = harbor.get("workdirs") {
+    if let Some(Value::Object(workdirs)) = kept.get("workdirs") {
         for (name, path) in workdirs {
             let shown = str_of(path);
             let setup = if dir.join(&shown).join("setup.sh").is_file() {
@@ -323,15 +337,21 @@ task.md runtime loads it, so a task.md run starts without that context"
             };
             sink.warning(
                 code::IMPORTED,
-                At::Value(&join("import.harbor.workdirs", name)),
+                At::Value(&join(&format!("import.{record}.workdirs"), name)),
                 format!(
-                    "[import.harbor] workdirs: before stage {name} starts, Harbor copies {shown}/ into the agent's working directory{setup}; \
+                    "[import.{record}] workdirs: before stage {name} starts, a split-layout runner copies {shown}/ into the agent's working directory{setup}; \
 no task.md runtime does, so the stage starts without them"
                 ),
             );
         }
     }
     sink.into_diagnostics()
+}
+
+/// The name of the split-layout record in `config`'s `[import]` table.
+fn record_name(config: &Value) -> &'static str {
+    let import = table(config, &["import"]);
+    split_record(|k| import.contains_key(k))
 }
 
 /// Canaries built on a public GUID detect nothing.
@@ -597,7 +617,8 @@ pub(crate) fn script_models(config: &Value, dir: &Path) -> Vec<String> {
             format!("stages/{name}/verifier"),
         ));
     }
-    let record = table(config, &["import", "harbor", "rewardkit"]);
+    let record_name = record_name(config);
+    let record = table(config, &["import", record_name, "rewardkit"]);
     for (where_, t, folder) in tables {
         if t.get("models") == Some(&Value::Bool(true)) {
             out.push(format!("{where_} models = true"));
@@ -644,7 +665,7 @@ pub(crate) fn script_models(config: &Value, dir: &Path) -> Vec<String> {
             other => vec![str_of(other)],
         };
         out.push(format!(
-            "[import.harbor] rewardkit records judge files that call a model ({})",
+            "[import.{record_name}] rewardkit records judge files that call a model ({})",
             names.join(", ")
         ));
     }

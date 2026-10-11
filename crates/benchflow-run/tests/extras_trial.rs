@@ -100,6 +100,10 @@ struct World {
     services: Vec<String>,
     attached: Vec<String>,
     removed: Vec<String>,
+    /// (local, remote) of every upload.
+    uploads: Vec<(PathBuf, String)>,
+    /// (remote, contents) of every file written.
+    writes: Vec<(String, Vec<u8>)>,
 }
 
 struct Fake {
@@ -116,7 +120,14 @@ impl Sandbox for Fake {
         "fake"
     }
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
-        let c = exec.command.clone();
+        // Root's plumbing commands start with the plumbing umask; the fake
+        // answers and records them by what comes after it.
+        let prefix = format!("{}\n", benchflow_run::hardening::PLUMBING_UMASK);
+        let c = exec
+            .command
+            .strip_prefix(prefix.as_str())
+            .unwrap_or(&exec.command)
+            .to_string();
         let mut w = self.world.lock().unwrap();
         w.commands.push(c.clone());
         w.users
@@ -137,10 +148,27 @@ impl Sandbox for Fake {
         } else if c.contains("BF handoff done") {
             "BF handoff done\n".to_string()
         } else if c.contains("BF owned") {
-            let owner = c.split("; o=").nth(1).and_then(|s| s.lines().next());
+            let owner = c
+                .split("; o=")
+                .nth(1)
+                .and_then(|s| s.lines().next())
+                .and_then(|l| l.split("; a=").next());
             format!("BF owned {}\n", owner.unwrap_or("").trim_matches('\''))
         } else if c.contains("BF stage-ready") {
             "BF stage-ready\n".to_string()
+        } else if c.contains("BF tree placed") {
+            "BF tree placed\n".to_string()
+        } else if c.contains("BF open") && c.starts_with("d=/app/locked;") {
+            // A target an earlier mount placed root's and read-only.
+            "BF open /app\nBF target-closed\n".to_string()
+        } else if c.contains("BF open")
+            && (c.starts_with("d=/app/data;") || c.starts_with("d='/app/data';"))
+        {
+            // Before placing a mount, while an agent may still run: the
+            // agent user can write /app.
+            "BF open /app\n".to_string()
+        } else if c.contains("BF baseline-added") {
+            "BF baseline-added 0\n".to_string()
         } else if c.contains("BF staged") {
             "BF staged\n".to_string()
         } else if c.contains("BF placement done") {
@@ -165,12 +193,19 @@ impl Sandbox for Fake {
         Err(SandboxError::Unsupported("no processes in the fake".into()))
     }
     async fn upload(&self, local: &Path, remote: &str) -> Result<(), SandboxError> {
+        let mut w = self.world.lock().unwrap();
         if remote == "/verifier" || remote == "/tests" {
-            self.world.lock().unwrap().verifier = Some(local.to_path_buf());
+            w.verifier = Some(local.to_path_buf());
         }
+        w.uploads.push((local.to_path_buf(), remote.to_string()));
         Ok(())
     }
-    async fn write_file(&self, _r: &str, _c: &[u8], _m: u32) -> Result<(), SandboxError> {
+    async fn write_file(&self, r: &str, c: &[u8], _m: u32) -> Result<(), SandboxError> {
+        self.world
+            .lock()
+            .unwrap()
+            .writes
+            .push((r.to_string(), c.to_vec()));
         Ok(())
     }
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
@@ -363,6 +398,209 @@ fn result_json(dir: &Path, r: &TrialRecord) -> Value {
     .unwrap()
 }
 
+/// The two-stage fixture, copied into `dir`, whose second stage ships a
+/// workdir/ folder with a `conftest.py` and a mount with another, and whose
+/// opening stage is graded or not.
+fn shipping_stages(dir: &Path, opening_graded: bool) -> Arc<TaskPackage> {
+    shipping_stages_at(dir, opening_graded, "/app/data")
+}
+
+/// [`shipping_stages`], with the second stage's mount at `target`.
+fn shipping_stages_at(dir: &Path, opening_graded: bool, target: &str) -> Arc<TaskPackage> {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            let t = to.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                copy(&e.path(), &t);
+            } else {
+                std::fs::copy(e.path(), &t).unwrap();
+            }
+        }
+    }
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/two-stage");
+    copy(&src, dir);
+    for (f, body) in [
+        ("stages/second/workdir/conftest.py", "SHIPPED = 2\n"),
+        ("stages/second/workdir/notes.txt", "notes\n"),
+        ("stages/second/data/conftest.py", "MOUNTED = 2\n"),
+    ] {
+        std::fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(f), body).unwrap();
+    }
+    let mut t = benchflow_task::load(dir).unwrap_or_else(|e| panic!("{e:#?}"));
+    let steps = t.extras.steps.as_mut().unwrap();
+    steps.stages[0].graded = opening_graded;
+    steps.stages[0].gate = None;
+    steps.stages[1].workdir = Some("stages/second/workdir".into());
+    steps.stages[1].mounts = vec![benchflow_task::extras::Mount {
+        source: "stages/second/data".into(),
+        target: target.into(),
+    }];
+    Arc::new(t)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// After an opening stage that is not graded, its agent's processes still
+/// run while BenchFlow prepares the next stage, so root writes nothing into
+/// the workdir there and changes no owner: the stage's files and a mount
+/// under a folder the agent can write are staged by root and copied in by
+/// the agent user, the workdir is not handed back (it never left), and the
+/// test-runner baseline is not taken again (a conftest.py the opening
+/// stage planted would join it) but extended with the stage's own files,
+/// read on this machine. Guards the D7b fixes of the stage boundary
+/// (FIX-REVIEW-B 1 and the D7b brief's part 2).
+#[tokio::test]
+async fn after_an_ungraded_stage_root_writes_nothing_where_the_agent_runs() {
+    let pkg = tempfile::tempdir().unwrap();
+    let task = shipping_stages(pkg.path(), false);
+    let (records, _dir, world, _tmp) = run(task, vec![Attempt::Oracle], true).await;
+    assert!(records[0].problem.is_none(), "{:?}", records[0].problem);
+    let w = world.lock().unwrap();
+    let place = "/var/lib/benchflow-place/";
+    // The stage's files and the mount went to root's own stage, never
+    // straight to /app.
+    let staged: Vec<&(PathBuf, String)> = w
+        .uploads
+        .iter()
+        .filter(|(l, _)| l.ends_with("stages/second/workdir") || l.ends_with("stages/second/data"))
+        .collect();
+    assert_eq!(staged.len(), 2, "{:?}", w.uploads);
+    assert!(
+        staged.iter().all(|(_, r)| r.starts_with(place)),
+        "{staged:?}"
+    );
+    // The agent user copied both in.
+    let copies: Vec<&(String, String)> = w
+        .users
+        .iter()
+        .filter(|(_, c)| c.contains("BF tree placed"))
+        .collect();
+    assert_eq!(copies.len(), 2, "{copies:?}");
+    assert!(copies.iter().all(|(u, _)| u == "agent"), "{copies:?}");
+    // The agent user removes the trees handed to it; root removes only
+    // empty folders (REVIEW-CORRECT M4).
+    let removed = w
+        .users
+        .iter()
+        .filter(|(u, c)| u == "agent" && c.starts_with("rm -rf /var/lib/benchflow-place/"))
+        .count();
+    assert_eq!(removed, 2, "{:?}", w.users);
+    assert!(
+        !w.commands
+            .iter()
+            .any(|c| c.starts_with("rm -rf /var/lib/benchflow-place/")
+                && w.users.iter().any(|(u, uc)| uc == c && u != "agent"))
+    );
+    assert!(copies.iter().any(|(_, c)| c.contains("d=/app/data\n")));
+    // Root changed no owner in the workdir and claimed no mount there.
+    for c in &w.commands {
+        assert!(!c.contains("chown -R agent"), "{c}");
+        assert!(!c.contains("chown -R 0:0 /app/data"), "{c}");
+        assert!(!(c.contains("BF owned") && c.contains("o=agent;")), "{c}");
+    }
+    // One full baseline in setup, one before the first turn; none later.
+    let full = w
+        .commands
+        .iter()
+        .filter(|c| c.contains("BF baseline $("))
+        .count();
+    assert_eq!(full, 2);
+    let added = w
+        .commands
+        .iter()
+        .find(|c| c.contains("BF baseline-added"))
+        .expect("the stage's files were added to the baseline");
+    // The workdir's (the fake image's is /root) and the mount's.
+    for (at, body) in [
+        ("/conftest.py", "SHIPPED = 2\n"),
+        ("/app/data/conftest.py", "MOUNTED = 2\n"),
+    ] {
+        let sum = sha256_hex(body.as_bytes());
+        let path = added
+            .lines()
+            .find_map(|l| l.strip_prefix("add ")?.strip_suffix(&format!(" {sum}")))
+            .unwrap_or_else(|| panic!("{body:?} not added: {added}"));
+        assert!(path.ends_with(at), "{path}");
+        let copy = format!("/var/lib/benchflow/baseline/added{path}");
+        assert!(
+            w.writes
+                .iter()
+                .any(|(r, c)| *r == copy && c == body.as_bytes()),
+            "{copy}"
+        );
+    }
+    assert!(!added.contains("notes.txt"), "{added}");
+}
+
+/// A later stage that mounts where a folder the agent cannot write already
+/// is (an earlier mount placed it root's and read-only), while an earlier
+/// ungraded stage's agent runs: neither root nor the agent user can place
+/// it safely, and the agent's copy would fail every time. The trial is
+/// refused as the task's (R104), before any copy, not blamed on the agent.
+/// Guards the D7c fix of REVIEW-OUTCOMES M2.
+#[tokio::test]
+async fn a_remount_over_a_folder_the_agent_cannot_write_is_the_tasks() {
+    let pkg = tempfile::tempdir().unwrap();
+    let task = shipping_stages_at(pkg.path(), false, "/app/locked");
+    let (records, _dir, world, _tmp) = run(task, vec![Attempt::Oracle], true).await;
+    let p = records[0].problem.as_ref().expect("refused");
+    assert_eq!(
+        (p.code.as_str(), p.owner),
+        ("R104", benchflow_run::outcome::Owner::Task),
+        "{}",
+        p.message
+    );
+    assert!(p.message.contains("/app/locked"), "{}", p.message);
+    // After the opening stage's agent ran to the end: the task's fault is
+    // not run again on resume (D7d brief, REVIEW-OUTCOMES (d7c) L5).
+    assert_eq!(records[0].status, Status::Unscored);
+    let w = world.lock().unwrap();
+    assert!(
+        !w.commands
+            .iter()
+            .any(|c| c.contains("BF tree placed") && c.contains("/app/locked")),
+        "no copy was tried"
+    );
+}
+
+/// After a graded opening stage, whose handoff stopped every agent process,
+/// the workdir goes back to the agent user and the baseline is taken again;
+/// the stage's files still come in through the agent user's copy, and the
+/// mount the root way (no agent process can swap its path).
+#[tokio::test]
+async fn after_a_graded_stage_the_workdir_returns_and_the_baseline_is_retaken() {
+    let pkg = tempfile::tempdir().unwrap();
+    let task = shipping_stages(pkg.path(), true);
+    let (records, _dir, world, _tmp) = run(task, vec![Attempt::Oracle], true).await;
+    assert!(records[0].problem.is_none(), "{:?}", records[0].problem);
+    let w = world.lock().unwrap();
+    let first_grade = w
+        .commands
+        .iter()
+        .position(|c| c.starts_with("unset LD_PRELOAD") && c.contains("exec /"))
+        .expect("a stage was graded");
+    let after: Vec<&String> = w.commands[first_grade..].iter().collect();
+    assert!(
+        after
+            .iter()
+            .any(|c| c.contains("BF owned") && c.contains("o=agent;"))
+    );
+    assert!(after.iter().any(|c| c.contains("BF baseline $(")));
+    assert!(!w.commands.iter().any(|c| c.contains("BF baseline-added")));
+    let copies = w
+        .users
+        .iter()
+        .filter(|(u, c)| u == "agent" && c.contains("BF tree placed"))
+        .count();
+    assert_eq!(copies, 1);
+    assert!(after.iter().any(|c| c.contains("chown -R 0:0 /app/data")));
+}
+
 #[tokio::test]
 async fn stages_run_in_order_and_a_missed_gate_stops_the_trial() {
     // One run per attempt: the fake's state is per run.
@@ -396,7 +634,7 @@ async fn stages_run_in_order_and_a_missed_gate_stops_the_trial() {
             .filter(|(_, c)| c.contains("BF owned"))
             .collect();
         let to = |c: &str, who: &str| {
-            c.contains(&format!("o='{who}'")) || c.contains(&format!("o={who}\n"))
+            c.contains(&format!("o='{who}';")) || c.contains(&format!("o={who};"))
         };
         assert!(
             owned.iter().any(|(i, c)| *i < first_grade && to(c, "root")),

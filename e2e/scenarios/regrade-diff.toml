@@ -1,0 +1,71 @@
+# bench regrade, --diff (reuse, regrade, rerun), and --rerun failed.
+tier = "full"
+needs = ["sandbox"]
+tasks = ["hello"]
+
+[[step]]
+run = ["run", "tasks/hello", "-s", "{backend}", "--job", "a", "--save-outputs"]
+exit = 0
+trials = [{ job = "a", status = "scored", reward = 1.0, files = ["outputs*"] }]
+
+[[step]]
+name = "nothing changed: reuse"
+run = ["run", "tasks/hello", "-s", "{backend}", "--job", "b", "--diff", "a", "--dry-run"]
+exit = 0
+stdout_has = ['^\s*reuse\s+hello']
+
+[[step]]
+name = "only the verifier changed: regrade"
+sh = "printf '\\n# changed\\n' >> tasks/hello/verifier/test.sh"
+
+[[step]]
+run = ["run", "tasks/hello", "-s", "{backend}", "--job", "b", "--diff", "a", "--dry-run"]
+exit = 0
+stdout_has = ['^\s*regrade\s+hello']
+
+[[step]]
+run = ["run", "tasks/hello", "-s", "{backend}", "--job", "b", "--diff", "a"]
+exit = 0
+stdout_has = ['1 regraded from earlier jobs, 0 ran now']
+trials = [{ job = "b", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "the instruction changed: rerun"
+sh = "sed -i.bak '1s/^/Please. /' tasks/hello/task.md && rm tasks/hello/task.md.bak"
+
+[[step]]
+run = ["run", "tasks/hello", "-s", "{backend}", "--job", "c", "--diff", "a", "--dry-run"]
+exit = 0
+stdout_has = ['^\s*rerun\s+hello']
+
+[[step]]
+name = "regrade a finished job into a new folder"
+run = ["regrade", "jobs/a", "-s", "{backend}"]
+exit = 0
+files = ["jobs/a-regrade-1/lock.json"]
+trials = [{ job = "a-regrade-1", status = "scored", reward = 1.0 }]
+json = [{ file = "jobs/a-regrade-1/lock.json", "regrade_of" = { present = true } }]
+
+[[step]]
+name = "--rerun failed reruns a failed trial in place"
+run = ["run", "tasks/hello", "-a", "nop", "-s", "{backend}", "--job", "n"]
+exit = 0
+
+[[step]]
+sh = "cat jobs/n/*/result.json | cksum > before.txt"
+
+[[step]]
+run = ["run", "tasks/hello", "-a", "nop", "-s", "{backend}", "--job", "n", "--rerun", "failed"]
+exit = 0
+stdout_has = ['0 reused, 1 ran now']
+trials = [{ job = "n", count = 1, reward = 0.0 }]
+
+[[step]]
+name = "the failed trial really ran again"
+sh = "! { cat jobs/n/*/result.json | cksum | cmp -s - before.txt; }"
+
+[[step]]
+name = "a job with no saved outputs cannot be regraded"
+run = ["regrade", "jobs/n", "-s", "{backend}"]
+exit = [1, 2]
+output_has = ['save|outputs']

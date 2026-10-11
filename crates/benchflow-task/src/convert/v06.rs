@@ -272,22 +272,22 @@ fn config_from_v06(front: Val) -> Result<(Table, Vec<String>), String> {
     let Val::Table(mut d) = toml_safe(front, "", &mut notes) else {
         return Ok((Table::new(), notes));
     };
-    for (v06, harbor) in TABLE_NAMES {
-        if d.contains_key(v06) && d.contains_key(harbor) {
+    for (v06, split) in TABLE_NAMES {
+        if d.contains_key(v06) && d.contains_key(split) {
             return Err(format!(
-                "frontmatter has both {v06} and {harbor}; v0.6 treats them as one table"
+                "frontmatter has both {v06} and {split}; v0.6 treats them as one table"
             ));
         }
-        if d.contains_key(harbor) {
-            notes.push(format!("{harbor} is v0.6's legacy spelling of {v06}"));
+        if d.contains_key(split) {
+            notes.push(format!("{split} is v0.6's legacy spelling of {v06}"));
         } else if let Some(v) = d.shift_remove(v06) {
-            d.insert(harbor.to_string(), v);
+            d.insert(split.to_string(), v);
         }
     }
     if let Some(Val::Table(ver)) = d.get_mut("verifier") {
-        for (v06, harbor) in VERIFIER_NAMES {
+        for (v06, split) in VERIFIER_NAMES {
             if let Some(v) = ver.shift_remove(v06) {
-                ver.insert(harbor.to_string(), v);
+                ver.insert(split.to_string(), v);
             }
         }
     }
@@ -320,12 +320,12 @@ fn config_from_v06(front: Val) -> Result<(Table, Vec<String>), String> {
     }
     let imported = harbor::config_from_harbor(&d, "v06")?;
     let mut native = imported.config;
-    notes.extend(
-        imported
-            .notes
-            .into_iter()
-            .map(|n| n.replace("Harbor's deprecated", "v0.6's deprecated")),
-    );
+    notes.extend(imported.notes.into_iter().map(|n| {
+        n.replace(
+            "a deprecated split-layout spelling",
+            "v0.6's deprecated spelling",
+        )
+    }));
     if let Some(Val::Table(kept)) = native
         .get_mut("import")
         .and_then(|i| i.as_table_mut())
@@ -725,7 +725,7 @@ pub(crate) fn plan(src: &Path) -> Result<ImportPlan, ConvertError> {
         }
         if rel == ["task.toml"] || rel == ["instruction.md"] {
             skipped.push(format!(
-                "{} is a Harbor copy of this task; the v0.6 task.md is the source, so it was not carried",
+                "{} is a split-layout copy of this task; the v0.6 task.md is the source, so it was not carried",
                 rel[0]
             ));
             continue;

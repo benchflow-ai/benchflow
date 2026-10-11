@@ -40,6 +40,8 @@ pub struct Tally {
     pub failed: usize,
     pub unscored: usize,
     pub errored: usize,
+    /// Stopped by the user (Ctrl-C): not a failure of any kind.
+    pub stopped: usize,
     pub reused: usize,
 }
 
@@ -65,6 +67,7 @@ enum Kind {
     Failed,
     Unscored,
     Errored,
+    Stopped,
 }
 
 impl Tally {
@@ -74,6 +77,7 @@ impl Tally {
             Kind::Failed => &mut self.failed,
             Kind::Unscored => &mut self.unscored,
             Kind::Errored => &mut self.errored,
+            Kind::Stopped => &mut self.stopped,
         }
     }
 
@@ -174,6 +178,8 @@ pub async fn render(
                             (Status::Scored, None) if flip => Kind::Passed,
                             (Status::Scored, _) => Kind::Failed,
                             (Status::Unscored, _) => Kind::Unscored,
+                            // `bench run` skips a trial only when it is stopped.
+                            (Status::Skipped, _) => Kind::Stopped,
                             _ => Kind::Errored,
                         };
                         tally.finish(&mut finished, &s.trial, kind);
@@ -309,6 +315,9 @@ fn draw(
             tally.unscored + tally.errored
         ));
     }
+    if tally.stopped > 0 {
+        counts.push_str(&dim(format!(" · {} stopped", tally.stopped)).to_string());
+    }
     if tally.reused > 0 {
         counts.push_str(&dim(format!(" · {} reused", tally.reused)).to_string());
     }
@@ -414,6 +423,9 @@ mod tests {
         tally.finish(&mut finished, "regex-log__2", Kind::Errored);
         tally.finish(&mut finished, "regex-log__2", Kind::Passed);
         assert_eq!((tally.done, tally.errored, tally.passed), (2, 1, 1));
+        // Behavior review 13: a stopped trial is not counted as errored.
+        tally.finish(&mut finished, "slow__3", Kind::Stopped);
+        assert_eq!((tally.done, tally.errored, tally.stopped), (3, 1, 1));
     }
 
     #[test]

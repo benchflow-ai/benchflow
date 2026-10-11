@@ -24,10 +24,17 @@ enum Level {
 
 /// With a sandbox ready, a backend not set up here is worth knowing, not a
 /// warning: a new machine with Docker should not warn that Podman is missing.
-fn soften(lines: &mut [Line], missing: &[usize]) {
+/// One installed but not ready (a Docker CLI with no daemon) is a warning
+/// beside a ready one, not a failure: the run can go on the ready backend.
+fn soften(lines: &mut [Line], missing: &[usize], not_ready: &[usize]) {
     for &i in missing {
         if let Some(l) = lines.get_mut(i) {
             l.level = Level::Info;
+        }
+    }
+    for &i in not_ready {
+        if let Some(l) = lines.get_mut(i) {
+            l.level = Level::Warn;
         }
     }
 }
@@ -36,17 +43,25 @@ fn soften(lines: &mut [Line], missing: &[usize]) {
 /// provider key here: without it, a new user with only a gateway key reads
 /// "no login" beside Claude Code and Codex and thinks they cannot run them.
 fn keyed_line(keyed: &[(String, String)]) -> Option<Line> {
-    let (_, first) = keyed.first()?;
+    keyed.first()?;
     let mut providers: Vec<&str> = keyed.iter().map(|(_, p)| p.as_str()).collect();
+    providers.sort_unstable();
     providers.dedup();
     let names: Vec<&str> = keyed.iter().map(|(n, _)| n.as_str()).collect();
+    // One prefix only when every agent listed runs on that provider.
+    let (keys, prefix) = match providers.as_slice() {
+        [one] => (format!("your {one} key"), format!("-m {one}/<model>")),
+        many => (
+            format!("a key of yours ({})", many.join(", ")),
+            "-m <provider>/<model>".to_string(),
+        ),
+    };
     Some(Line {
         name: "agents".into(),
         level: Level::Ok,
         summary: format!(
-            "{} run on your {} key with -m {first}/<model>: {}",
+            "{} run on {keys} with {prefix}: {}",
             names.len(),
-            providers.join(", "),
             crate::ui::truncate(&names.join(", "), 120)
         ),
         fix: None,
@@ -97,6 +112,8 @@ pub async fn run(args: DoctorArgs) -> Result<Exit> {
     let mut any_sandbox = false;
     // Backends with nothing set up here: no binary, or no Daytona key.
     let mut missing = Vec::new();
+    // Backends set up here that did not answer as ready.
+    let mut not_ready = Vec::new();
     for b in &backends {
         if b == "daytona" && std::env::var_os("DAYTONA_API_KEY").is_none() {
             missing.push(lines.len());
@@ -135,6 +152,7 @@ pub async fn run(args: DoctorArgs) -> Result<Exit> {
                         fix: None,
                     });
                 } else {
+                    not_ready.push(lines.len());
                     lines.push(Line {
                         name: b.clone(),
                         level: Level::Fail,
@@ -151,8 +169,18 @@ pub async fn run(args: DoctorArgs) -> Result<Exit> {
             }),
         }
     }
+    // A backend bench.toml pins is the one runs use: its failure stays one.
+    let pinned = context::project()
+        .ok()
+        .and_then(|p| p.run_defaults(None).ok())
+        .and_then(|d| d.sandbox);
     if any_sandbox && args.sandbox.is_empty() {
-        soften(&mut lines, &missing);
+        let not_pinned: Vec<usize> = not_ready
+            .iter()
+            .copied()
+            .filter(|&i| pinned.as_deref() != Some(lines[i].name.as_str()))
+            .collect();
+        soften(&mut lines, &missing, &not_pinned);
     }
     if !any_sandbox {
         lines.push(Line {
@@ -424,6 +452,17 @@ mod tests {
             l.summary,
             "2 run on your vercel key with -m vercel/<model>: claude, codex"
         );
+        // Agents on different providers get no one provider's prefix.
+        let l = keyed_line(&[
+            ("a".into(), "vercel".into()),
+            ("b".into(), "openai".into()),
+            ("c".into(), "vercel".into()),
+        ])
+        .unwrap();
+        assert_eq!(
+            l.summary,
+            "3 run on a key of yours (openai, vercel) with -m <provider>/<model>: a, b, c"
+        );
     }
 
     #[test]
@@ -434,11 +473,15 @@ mod tests {
             line("daytona", Level::Warn),
             line("git", Level::Warn),
         ];
-        soften(&mut lines, &[1, 2]);
+        soften(&mut lines, &[1, 2], &[]);
         let levels: Vec<Level> = lines.iter().map(|l| l.level).collect();
         assert!(
             levels == [Level::Ok, Level::Info, Level::Info, Level::Warn],
             "only the missing backends are softened"
         );
+        // A Docker CLI with no daemon beside a ready Daytona: a warning.
+        let mut lines = vec![line("docker", Level::Fail), line("daytona", Level::Ok)];
+        soften(&mut lines, &[], &[0]);
+        assert!(lines[0].level == Level::Warn);
     }
 }

@@ -87,6 +87,12 @@ impl Cli {
         S: AsRef<std::ffi::OsStr>,
     {
         let mut cmd = Command::new(&self.binary);
+        // A process group of its own: the terminal sends Ctrl-C to bench's
+        // whole group, and a `docker exec` that got it would end the trial
+        // a drain (the first Ctrl-C) means to let finish. A stop still ends
+        // these children (kill_on_drop, and the container's own cleanup).
+        #[cfg(unix)]
+        cmd.process_group(0);
         cmd.args(args)
             .kill_on_drop(true)
             .stdin(Stdio::null())
@@ -346,6 +352,33 @@ mod tests {
             binary: "docker".into(),
             flavor: Flavor::Docker,
         }
+    }
+
+    /// The terminal's Ctrl-C goes to bench's process group; a sandbox CLI
+    /// child must not be in it (checked with a real child process).
+    #[tokio::test]
+    async fn cli_children_get_a_process_group_of_their_own() {
+        let pgid = |pid: u32| {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "pgid=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let sh = Cli {
+            name: "sh".into(),
+            binary: "sh".into(),
+            flavor: Flavor::Docker,
+        };
+        let out = sh
+            .command(["-c", "ps -o pgid= -p $$"])
+            .output()
+            .await
+            .unwrap();
+        let child = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let ours = pgid(std::process::id());
+        assert!(!child.is_empty() && !ours.is_empty());
+        assert_ne!(child, ours, "the child shares bench's process group");
     }
 
     #[test]

@@ -217,7 +217,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R001",
         title: "stopped before it finished",
         owner: Owner::You,
-        body: "The run was stopped (Ctrl-C) while this trial was running. Its sandbox was removed. Rerun the same command to resume the job: finished trials are kept and this one runs again.",
+        body: "The run was stopped while this trial was running: a second Ctrl-C (the first only drains the run: no new trial starts and running ones finish), a `kill`, or a closed terminal. Its sandbox was removed. Such trials say nothing about the agent, so the run's summary and `bench results` leave them out of the pass rate and list them apart. Rerun the same command to resume the job: finished trials are kept and this one runs again.",
     },
     Explanation {
         code: "R101",
@@ -241,7 +241,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R104",
         title: "the sandbox could not be set up",
         owner: Owner::Task,
-        body: "BenchFlow could not create the non-root agent user, prepare the workdir, or give the agent user its files. Images without `useradd` or `adduser` (some distroless images) cannot host a separate agent user. The agent user copies its own login and settings files into its home from a folder root makes under `/var/lib/benchflow-place`: a folder on the way it cannot write (root's, read-only, or a mount), or a `/`, `/var`, or `/var/lib` that users other than root can change, stops that.\n\nAdd a shell and `useradd` to the image, make the agent's home and the folders in it the agent user's, or set `[agent] user = \"root\"` to run the agent as root (the agent-user defense is then off). With `bench agents check --image`, the image is yours to change.",
+        body: "BenchFlow could not create the non-root agent user, prepare the workdir, or give the agent user its files. Images without `useradd` or `adduser` (some distroless images) cannot host a separate agent user. The agent user copies its own login and settings files into its home from a folder root makes under `/var/lib/benchflow-place`: a folder on the way it cannot write (root's, read-only, or a mount), or a `/`, `/var`, or `/var/lib` that users other than root can change, stops that.\n\nAdd a shell and `useradd` to the image, make the agent's home and the folders in it the agent user's, or set `[agent] user = \"root\"` to run the agent as root (the agent-user defense is then off). With `bench agents check --image`, the image is yours to change. In a task with stages, it is also given when a later stage's files or mounts cannot be put in place: the agent user copies them in, and a copy that fails under a path the task itself placed (its mounts) or a mount point is the task's; and a stage that mounts where an earlier mount or the image left a folder the agent user cannot write, while an earlier ungraded stage's agent still runs, is refused before any copy, since neither BenchFlow nor the agent user can put the files there safely. A fault found after an earlier stage's agent worked leaves the trial unscored, not run again.",
     },
     Explanation {
         code: "R105",
@@ -265,7 +265,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R108",
         title: "the network policy could not be enforced",
         owner: Owner::Task,
-        body: "The task limits the network (none in one phase, a host allowlist, or a blocklist), and BenchFlow could not put the limit in place, so the trial did not start rather than run unprotected. The message says why: the image has no iptables and none could be installed, root in the sandbox cannot change packet filters, the sandbox has IPv6 but no ip6tables, a listed host does not resolve, or the agent runs as root (root could remove the firewall).\n\nAdd iptables (and ip6tables) to the task's Dockerfile, fix the host name, remove `[agent] user = \"root\"`, or run with `--sandbox docker`.",
+        body: "The task limits the network, and BenchFlow could not put the limit in place, so the phase did not run rather than run unprotected. The limit needs BenchFlow's firewall for none in one phase, a host allowlist, or a blocklist; on Daytona, whose own network block leaves IPv6 open, for every none and allowlist too. The message says why it could not: the image has no iptables and none could be installed, root in the sandbox cannot change packet filters, the sandbox has IPv6 but no ip6tables, a listed host does not resolve, or the agent runs as root (root could remove the firewall).\n\nWhose problem it is depends on the cause, and the trial's problem names it: the task's when Docker would refuse it too (fix the Dockerfile, the host name, or `[agent] user = \"root\"`); yours when Docker would run it (only Daytona's IPv6 gap needs the firewall, or your `sandbox-user = \"root\"` setting made the agent root): run it with `--sandbox docker`, add iptables and ip6tables to the image, or set a non-root sandbox user; the sandbox's when root there cannot change packet filters; BenchFlow's when a rule it wrote failed (report it with the trial folder).",
     },
     Explanation {
         code: "R109",
@@ -301,7 +301,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R205",
         title: "the agent failed its turn",
         owner: Owner::Agent,
-        body: "The agent answered a request with an error of its own, or broke the Agent Client Protocol (a malformed answer). The message is the agent's. In a task with stages, it is also given when the agent changed its home in an earlier stage so that BenchFlow could not put the agent's files there for the next (a file where a folder belongs, a folder made read-only).\n\nThe trial's `agent/` folder has the agent's log. If it names a model or a setting, check `bench agents <name>`.",
+        body: "The agent answered a request with an error of its own, or broke the Agent Client Protocol (a malformed answer). The message is the agent's. In a task with stages, it is also given when what the agent did in an earlier stage stopped BenchFlow from putting the next stage's files in place: the agent's own files in its home, the stage's files, which the agent user copies into the workdir, or, after an ungraded stage, a mount under a folder the agent can write, which it copies in too (a file where a folder belongs, a folder made read-only, a pipe where a file goes). A path the task itself placed, or a mount, is the task's instead (R104).\n\nThe trial's `agent/` folder has the agent's log. If it names a model or a setting, check `bench agents <name>`.",
     },
     Explanation {
         code: "R206",
@@ -331,7 +331,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R214",
         title: "the model provider failed",
         owner: Owner::Model,
-        body: "The model provider rate-limited the request, was unavailable, or rejected it, or BenchFlow could not list the upstream providers a gateway would route the model to (it sends nothing it cannot keep off Baseten). The run retries the trial when retries are on.\n\nIf it keeps failing, check the provider's status page, or lower `--concurrency` to stay under its rate limit.",
+        body: "The model provider rate-limited the request, was unavailable, or rejected it, or BenchFlow could not list the upstream providers a gateway would route the model to (it sends nothing it cannot keep off Baseten). The run retries the trial when retries are on, except for a refused request (an HTTP 400 that is not about the context window), which a retry would not change. A prompt over the context window is the agent's (R205) for ACP and headless agents; BenchFlow's own native loops report it here, not retried.\n\nIf it keeps failing, check the provider's status page, or lower `--concurrency` to stay under its rate limit.",
     },
     Explanation {
         code: "R215",
@@ -343,7 +343,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R301",
         title: "the verifier wrote no reward",
         owner: Owner::Task,
-        body: "The verifier finished but `/logs/verifier` holds neither `reward.json` nor `reward.txt`. (A task with a rubric is different: with no `ctrf.json`, every test criterion fails and the trial is graded, as the task.md format says.)\n\n`verifier/test-stdout.txt` in the trial folder has the verifier's output. A test.sh that exits early (set -e on a failing install) is the usual cause: write the reward on every path, even when tests fail.",
+        body: "The verifier finished but `/logs/verifier` holds neither `reward.json` nor `reward.txt`. (A task with a rubric is different: with no `ctrf.json`, every test criterion fails and the trial is graded, as the task.md format says.)\n\n`verifier/test-stdout.txt` in the trial folder has the verifier's output. A test.sh that exits early (set -e on a failing install) is the usual cause: write the reward on every path, even when tests fail.\n\nThe same code is given when `/logs/verifier` could not be copied out of the sandbox, twice, because of the folder: more than 1 GiB in it, files `tar` refuses, names this machine cannot store, a missing `tar` (written by the verifier, or by the agent's code it ran); or because code inside stopped the sandbox. The trial is not graded from a partial copy, and not run again, since the agent's code may have caused it. A copy that fails on this machine (a full disk, a job folder it cannot write) is R107, and one whose connection to a running sandbox breaks is R103; both are run again. The message has the error.",
     },
     Explanation {
         code: "R302",
@@ -379,7 +379,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R307",
         title: "a hardening program did not report back",
         owner: Owner::Task,
-        body: "BenchFlow's programs before grading (the kill of the agent's processes, the handoff, the trusted PATH check) print a line when they finish. One exited without it, so something on the image's PATH answered in place of `sh`, `bash`, or a tool they use: usually an image that lets everyone write a folder like /usr/local/bin, where the agent replaced the shell. No defense of that trial can be trusted, so it is not graded.\n\nMake every folder on the image's PATH root-owned and not writable by group or others. The same code is given when the image has no `find`, which the handoff needs to check BenchFlow's state folder and clean up after the agent (when the agent ran as root or could become root, the handoff goes on without it and records `special_file_custody` failed): add `find` to the image.",
+        body: "BenchFlow's programs before grading (the kill of the agent's processes, the handoff, the trusted PATH check), and the one that gives the workdir back to the agent user before a later stage, print a line when they finish. One exited without it, so something on the image's PATH answered in place of `sh`, `bash`, or a tool they use: usually an image that lets everyone write a folder like /usr/local/bin, where the agent replaced the shell. No defense of that trial can be trusted, so it is not graded.\n\nMake every folder on the image's PATH root-owned and not writable by group or others. The same code is given when the image has no `find`, which the handoff needs to check BenchFlow's state folder and clean up after the agent (when the agent ran as root or could become root, the handoff goes on without it and records `special_file_custody` failed): add `find` to the image.",
     },
     Explanation {
         code: "R309",
@@ -416,6 +416,12 @@ pub static EXPLANATIONS: &[Explanation] = &[
         title: "the agent changed BenchFlow's root-only state folder",
         owner: Owner::Agent,
         body: "BenchFlow keeps its own state in a folder only root may write (`/var/lib/benchflow`), including the baseline the handoff before grading compares the test-runner files against and restores them from. The handoff first checks that everything there is still root's alone: owned by root, not a link, not writable by others. When something is not, a baseline the agent could have chosen would decide what root restores, so the trial is not graded.\n\nThis applies when the agent ran as a user without a way to become root. When the agent ran as root or could become root (the image gives it `sudo`, say), or the reference solution ran as root, the change is noted in the trial's `state_custody` defense instead and grading goes on: such a run could have changed the folder without a trace.\n\nRead the agent's trajectory for what it did to the folder; if nothing in it explains the change, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder.",
+    },
+    Explanation {
+        code: "R315",
+        title: "the workdir could not be given to its owner",
+        owner: Owner::Task,
+        body: "Before grading, BenchFlow gives the workdir and everything in it to root (or the task's verifier user), as BenchFlow 0.8 does, so the verifier does not run against files the agent owns; after a graded stage it gives the workdir back to the agent user. This time the workdir folder itself could not change owner, so the trial was not graded rather than graded against the agent's ownership: the image has no such user (`[verifier] user` names one it lacks), the workdir is `/`, the workdir is on a read-only mount, or the image has no `find` that takes the options BenchFlow uses (`-xdev`, `-mindepth`, `-maxdepth`, `-links`).\n\nA path inside the workdir that cannot change owner (one nested past what the image's `find` can walk, a file `chown` refuses) does not stop the trial: `custody.json` lists it under `workdir_unchanged`. Another filesystem mounted inside the workdir is not walked, as before, and keeps its owner. A change that runs past its time once the workdir itself changed is noted there too; one that runs past it before, or is ended by the sandbox before the workdir itself changed, is the sandbox's (R103, retried); one that exits cleanly without its report is R307. A walk that runs past its time, or is ended, once the workdir itself changed is noted, not fatal. A workdir that is a link (the image's `/app -> /srv/app`) is walked where it leads when the folder holding the link is root's alone; otherwise only the link changes, and that is noted.",
     },
     Explanation {
         code: "R401",

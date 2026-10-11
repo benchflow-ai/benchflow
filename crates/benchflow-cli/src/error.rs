@@ -14,7 +14,8 @@ pub enum Exit {
     /// Done; for `run`, every trial scored and every gate held.
     Ok = 0,
     /// Done, but something failed: a check found errors, a trial went
-    /// unscored, a gate failed.
+    /// unscored, a gate failed; or something to fetch first (a registry, a
+    /// git repository) could not be read, and nothing ran.
     Failed = 1,
     /// A bad flag or argument; nothing ran.
     Usage = 2,

@@ -49,7 +49,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
     Explanation {
         code: "X100",
         title: "unknown key in task.toml",
-        body: "Harbor and BenchFlow ignore a task.toml key their config does not define, so a misspelled \
+        body: "Split-layout runners, BenchFlow included, ignore a task.toml key their config does not define, so a misspelled \
 setting such as `network_mod` falls back to its default without a word. The check names the closest key \
 the table holds; when the spelling is clearly a typo, `bench check --fix` renames it.",
     },
@@ -63,7 +63,7 @@ message names.",
     Explanation {
         code: "X102",
         title: "deprecated spelling",
-        body: "Harbor still reads `memory = \"4G\"`, `storage = \"10G\"`, and `allow_internet`, but they are \
+        body: "Split-layout runners still read `memory = \"4G\"`, `storage = \"10G\"`, and `allow_internet`, but they are \
 deprecated in favor of `memory_mb`, `storage_mb`, and `network_mode`. The check says how the old spelling is \
 read; `bench check --fix` rewrites it.",
     },
@@ -72,14 +72,14 @@ read; `bench check --fix` rewrites it.",
         title: "setting with no effect",
         body: "The setting is read but changes nothing, or another setting overrides it: for example \
 `allow_internet` beside `network_mode`, or `multi_step_reward_strategy` in a task without [[steps]]. Where \
-Harbor and BenchFlow 0.8 read the setting differently, the message says how.",
+other split-layout runners and BenchFlow 0.8 read the setting differently, the message says how.",
     },
     Explanation {
         code: "X104",
-        title: "BenchFlow 0.8 spelling Harbor ignores",
+        title: "BenchFlow 0.8 spelling other split-layout runners ignore",
         body: "BenchFlow 0.8 reads `[sandbox]`, `[oracle]`, `sandbox_mode`, `image`, and `[solution] NAME = \
-\"value\"` in task.toml, but Harbor does not, so the task behaves differently in Harbor. Use Harbor's \
-spelling: `[environment]`, `[solution]`, `environment_mode`, `docker_image`, and `[solution.env]`.",
+\"value\"` in task.toml, but other split-layout runners do not, so the task behaves differently there. Use the split \
+layout's own spelling: `[environment]`, `[solution]`, `environment_mode`, `docker_image`, and `[solution.env]`.",
     },
     Explanation {
         code: "X110",
@@ -89,9 +89,9 @@ spelling: `[environment]`, `[solution]`, `environment_mode`, `docker_image`, and
     Explanation {
         code: "X111",
         title: "invalid value in task.toml",
-        body: "A value has the wrong type or breaks a rule Harbor or BenchFlow 0.8 enforces, such as a \
+        body: "A value has the wrong type or breaks a rule split-layout runners or BenchFlow 0.8 enforce, such as a \
 `name` that is not \"org/name\", `allowed_hosts` without network_mode = \"allowlist\", or a time limit that \
-is not a positive number of seconds. Harbor refuses to load such a task.",
+is not a positive number of seconds. A split-layout runner refuses to load such a task.",
     },
     Explanation {
         code: "X112",
@@ -111,7 +111,7 @@ scored.",
         title: "no image for the sandbox",
         body: "The sandbox is built from environment/Dockerfile, or pulled from `docker_image` in \
 [environment]. The task has neither. Without an environment/ folder it is an error; with an empty one it is \
-a warning, since Harbor runs such tasks on providers that supply their own machine (cloud desktops), which \
+a warning, since a split-layout runner runs such tasks on providers that supply their own machine (cloud desktops), which \
 this runtime does not support yet.",
     },
 ];
@@ -335,7 +335,7 @@ fn check_files(
         report.diagnostics.push(
             Diagnostic::warning("X114", "environment/ has no Dockerfile and [environment] no docker_image")
                 .in_file(env.join("Dockerfile"))
-                .note_line("Harbor runs such a task only on an environment provider that supplies its own machine")
+                .note_line("a split-layout runner runs such a task only on an environment provider that supplies its own machine")
                 .help("add environment/Dockerfile, or set docker_image in [environment]"),
         );
         refused.push(Unsupported {

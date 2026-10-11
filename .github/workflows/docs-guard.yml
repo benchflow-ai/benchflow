@@ -1,0 +1,67 @@
+name: docs-guard
+
+# The docs name no other evaluation framework. The rust workflow runs this
+# check with the rest of the tests, but only when Rust files change; this
+# workflow runs it alone when the files it reads change: every markdown
+# file, docs/, .agents/skills/ and the templates `bench new` copies.
+on:
+  push:
+    branches: [main, bench-rs]
+    paths:
+      - "**/*.md"
+      - ".github/**/*.md"
+      - "docs/**"
+      - ".agents/skills/**"
+      - "crates/benchflow-task/templates/**"
+      - "crates/benchflow-cli/tests/docs_name_no_other_framework.rs"
+      - ".github/workflows/docs-guard.yml"
+  pull_request:
+    paths:
+      - "**/*.md"
+      - ".github/**/*.md"
+      - "docs/**"
+      - ".agents/skills/**"
+      - "crates/benchflow-task/templates/**"
+      - "crates/benchflow-cli/tests/docs_name_no_other_framework.rs"
+      - ".github/workflows/docs-guard.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The same as rust.yml's: the Rust cache key includes RUST* variables, and
+  # this job reads rust.yml's cache.
+  RUST_BACKTRACE: "1"
+
+jobs:
+  docs-guard:
+    name: docs name no other framework
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (the channel in rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustc --version && cargo --version
+
+      # Reads the cache rust.yml's test job saves (same shared key); never
+      # saves its own, smaller one under that key.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: workspace
+          save-if: false
+
+      - name: cargo test (docs guard only)
+        run: cargo test -p benchflow-cli --locked --test docs_name_no_other_framework

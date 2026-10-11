@@ -1,0 +1,33 @@
+# bench doctor: the backend is ready; --confinement starts one sandbox and reads each defense back.
+tier = "smoke"
+needs = ["sandbox"]
+
+[[step]]
+run = ["doctor", "-s", "{backend}"]
+exit = 0
+output_has = ['{backend}']
+
+[[step]]
+run = ["--json", "doctor", "-s", "{backend}"]
+exit = 0
+
+[[step]]
+name = "--confinement"
+run = ["doctor", "--confinement", "-s", "{backend}"]
+exit = 0
+timeout = 600
+output_has = ['system_folders +enforced', 'root_environ +enforced']
+
+[[step]]
+name = "--confinement --json: each defense the runner owns reads back enforced"
+sh = '''{bench} --json doctor --confinement -s {backend} > conf.json && python3 -I -c '
+import json, sys
+d = json.load(open("conf.json"))
+states = {s["name"]: s["state"] for s in d["settings"]}
+core = ["system_folders", "verifier_env", "ld_so_preload", "oom_score_adj", "root_environ"]
+bad = [f"{n}={states.get(n)}" for n in core if states.get(n) != "enforced"]
+odd = [f"{n}={v}" for n, v in states.items() if v not in ("enforced", "not-supported", "not-set")]
+if bad or odd:
+    sys.exit(f"not enforced: {bad}; unknown states: {odd}; all: {states}")
+' '''
+timeout = 600

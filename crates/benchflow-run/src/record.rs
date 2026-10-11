@@ -73,6 +73,15 @@ pub struct Custody {
     /// Absent when the agent ran as root or the change did not report back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir_owner: Option<String>,
+    /// Paths in the workdir that kept their owner when it changed hands
+    /// (`chown` or `find` refused them: a path nested past what the image's
+    /// `find` can walk, a file on a read-only bind mount of the workdir's
+    /// own filesystem; at most 5 errors per change), or a change that ran
+    /// past its time. The workdir folder itself always changed. Another
+    /// filesystem mounted inside the workdir is not walked at all (`-xdev`)
+    /// and is not listed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workdir_unchanged: Vec<String>,
     /// Hidden folders the image shipped, locked before the agent ran.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub locked: Vec<String>,
@@ -158,8 +167,8 @@ pub struct ResultFile {
     pub dataset_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_digest: Option<String>,
-    /// A task graded in stages: each stage's result, in Harbor's shape
-    /// (`step_name`, `verifier_result.rewards`), with its gate's outcome.
+    /// A task graded in stages: each stage's result (`step_name`,
+    /// `verifier_result.rewards`), with its gate's outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_results: Option<Value>,
     /// The agent's own session files, saved at the end of its turn for
@@ -313,7 +322,51 @@ fn ts(t: &DateTime<Local>) -> String {
     t.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
 }
 
+/// How a trial the user stopped (Ctrl-C, R001) reads everywhere: the run's
+/// summary and `bench results` say it in these words, and leave such trials
+/// out of the pass rate.
+pub const STOPPED_WORDS: &str =
+    "stopped (Ctrl-C, a kill, or a closed terminal), not counted in the pass rate";
+
+/// What a job's trials add up to, as every score shows it (the run's
+/// summary, `bench results` in text and JSON, `--fail-under`): trials the
+/// user stopped are counted apart, never in the pass rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Tally {
+    /// Trials in the pass rate: every trial but the stopped ones.
+    pub counted: usize,
+    pub passed: usize,
+    pub scored: usize,
+    pub stopped: usize,
+}
+
+impl Tally {
+    pub fn of<'a>(records: impl IntoIterator<Item = &'a TrialRecord>) -> Self {
+        let mut t = Tally::default();
+        for r in records {
+            if r.stopped() {
+                t.stopped += 1;
+                continue;
+            }
+            t.counted += 1;
+            t.passed += usize::from(r.passed == Some(true));
+            t.scored += usize::from(r.status == Status::Scored);
+        }
+        t
+    }
+    /// The pass rate, `None` with nothing counted.
+    pub fn rate(&self) -> Option<f64> {
+        (self.counted > 0).then(|| self.passed as f64 / self.counted as f64)
+    }
+}
+
 impl TrialRecord {
+    /// Whether the user stopped this trial before it finished (R001): it
+    /// says nothing about the agent, so pass rates leave it out.
+    pub fn stopped(&self) -> bool {
+        self.status == Status::Skipped && self.problem.as_ref().is_some_and(|p| p.code == "R001")
+    }
+
     /// result.json, in 0.8's shape plus the Rust engine's fields.
     pub fn result_json(&self) -> Value {
         serde_json::to_value(self.result_file()).unwrap_or(Value::Null)
@@ -438,20 +491,63 @@ impl TrialRecord {
         None
     }
 
-    pub fn write(&self, dir: &Path, config: &Value) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        write_json(&dir.join("result.json"), &self.result_json())?;
-        write_json(&dir.join("config.json"), config)?;
-        write_json(
-            &dir.join("timing.json"),
-            &serde_json::to_value(&self.timing).unwrap_or_default(),
-        )?;
-        write_json(&dir.join("prompts.json"), &json!(self.prompts))?;
-        write_json(
-            &dir.join("custody.json"),
-            &serde_json::to_value(&self.custody).unwrap_or_default(),
-        )?;
+    /// Write the trial's record files, result.json last: its rename marks
+    /// the trial finished, so a record is never read back with parts
+    /// missing. Each write is tried three times (a full disk may free up).
+    /// On failure the error names the file; nothing is deleted.
+    pub fn write(&self, dir: &Path, config: &Value) -> Result<(), RecordWriteError> {
+        let files: [(&'static str, Value); 5] = [
+            ("config.json", config.clone()),
+            (
+                "timing.json",
+                serde_json::to_value(&self.timing).unwrap_or_default(),
+            ),
+            ("prompts.json", json!(self.prompts)),
+            (
+                "custody.json",
+                serde_json::to_value(&self.custody).unwrap_or_default(),
+            ),
+            ("result.json", self.result_json()),
+        ];
+        std::fs::create_dir_all(dir).map_err(|error| RecordWriteError {
+            file: dir.display().to_string(),
+            error,
+        })?;
+        for (name, value) in &files {
+            let path = dir.join(name);
+            let mut tries = 0;
+            loop {
+                match write_json(&path, value) {
+                    Ok(()) => break,
+                    Err(_) if tries < 2 => {
+                        tries += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                    }
+                    Err(error) => {
+                        let _ = std::fs::remove_file(path.with_extension("json.tmp"));
+                        return Err(RecordWriteError {
+                            file: (*name).to_string(),
+                            error,
+                        });
+                    }
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+/// A trial record file that could not be written.
+#[derive(Debug)]
+pub struct RecordWriteError {
+    /// The file (or the trial folder) that failed.
+    pub file: String,
+    pub error: std::io::Error,
+}
+
+impl std::fmt::Display for RecordWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.file, self.error)
     }
 }
 
@@ -475,7 +571,7 @@ fn category(p: &Problem) -> String {
         "R302" => "reward_parse".into(),
         "R303" => "verifier_timeout".into(),
         "R304" => "verifier_error".into(),
-        "R305" | "R307" => "verifier_hardening".into(),
+        "R305" | "R307" | "R314" | "R315" => "verifier_hardening".into(),
         "R311" => "verifier_error".into(),
         "R401" => "unsupported_task_feature".into(),
         _ => "internal".into(),
@@ -492,7 +588,12 @@ pub fn fmt_reward(r: f64) -> String {
         let s = format!("{r:.3}");
         let s = s.trim_end_matches('0').trim_end_matches('.');
         if matches!(s, "0" | "1" | "-0" | "-1") {
-            format!("{r}")
+            // Display never uses an exponent: 5e-324 took 326 characters.
+            if r.abs() < 1e-4 {
+                format!("{r:e}")
+            } else {
+                format!("{r}")
+            }
         } else {
             s.to_string()
         }
@@ -502,14 +603,158 @@ pub fn fmt_reward(r: f64) -> String {
 pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     let mut text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
     text.push('\n');
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    write_atomic(path, text.as_bytes())
+}
+
+/// Write `path` through a temporary file beside it, so a reader (or a run
+/// resumed after a crash or a full disk) sees the old file or the new one,
+/// never part of one. The temporary file reaches the disk before the
+/// rename: a file system that reports a full disk only then (NFS) fails
+/// the write rather than replace the old file with part of the new one.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        sync(&f)
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, path)?;
+    // The rename reaches the disk too, so a power loss cannot bring the
+    // old file back. A folder some file systems cannot sync is no failure.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+        && let Ok(dir) = std::fs::File::open(parent)
+        && let Err(e) = sync(&dir)
+        && !unsyncable(&e)
+    {
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Flush `file` to the disk. On macOS `sync_all` is `F_FULLFSYNC` only,
+/// which file systems other than APFS and HFS+ (SMB mounts, for one)
+/// refuse; those get a plain `fsync`, as SQLite and Go do.
+fn sync(file: &std::fs::File) -> std::io::Result<()> {
+    sync_with(file.sync_all(), || plain_fsync(file))
+}
+
+/// `full`, or when the file system refuses it, `plain`.
+fn sync_with(
+    full: std::io::Result<()>,
+    plain: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match full {
+        Err(e) if unsyncable(&e) => plain(),
+        other => other,
+    }
+}
+
+/// An error that says the file system cannot do this kind of sync.
+fn unsyncable(e: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(
+            e.raw_os_error(),
+            Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL | libc::EOPNOTSUPP)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = e;
+        false
+    }
+}
+
+#[cfg(unix)]
+fn plain_fsync(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: fsync on a descriptor this `File` owns and keeps open.
+    #[allow(unsafe_code)]
+    let rc = unsafe { libc::fsync(file.as_raw_fd()) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        let e = std::io::Error::last_os_error();
+        // A folder or a file system that cannot be synced at all.
+        if unsyncable(&e) { Ok(()) } else { Err(e) }
+    }
+}
+
+#[cfg(not(unix))]
+fn plain_fsync(file: &std::fs::File) -> std::io::Result<()> {
+    file.sync_all()
 }
 
 #[cfg(test)]
 mod tests {
+    /// The rate every score uses (`--fail-under` included) leaves stopped
+    /// trials out: 3 passed and 2 stopped is 1.0, not 0.6.
+    #[test]
+    fn the_tally_rate_leaves_stopped_trials_out() {
+        let rec = |v: serde_json::Value| {
+            crate::read::record_from_json(&v, std::path::Path::new("t")).unwrap()
+        };
+        let mut recs: Vec<TrialRecord> = (0..3)
+            .map(|_| rec(json!({"status": "scored", "rewards": {"reward": 1.0}, "passed": true})))
+            .collect();
+        for _ in 0..2 {
+            recs.push(rec(json!({"status": "skipped", "problem": {
+                "code": "R001", "owner": "you", "phase": "agent",
+                "message": "stopped before it finished", "next": "rerun", "transient": false}})));
+        }
+        let t = Tally::of(&recs);
+        assert_eq!((t.counted, t.passed, t.stopped), (3, 3, 2));
+        assert_eq!(t.rate(), Some(1.0));
+        assert_eq!(Tally::of(&recs[3..]).rate(), None);
+    }
+
     use super::*;
+
+    /// D4 chaos runs: results.jsonl and the trainer files were written in
+    /// place, so a crash or a full disk mid-write left part of a file.
+    #[test]
+    fn a_failed_write_leaves_the_old_file_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("results.jsonl");
+        write_atomic(&path, b"{\"a\":1}\n").unwrap();
+        // The temporary file cannot be made: the write fails, the old
+        // file stays as it was, and nothing is left behind.
+        std::fs::create_dir(dir.path().join("results.jsonl.tmp")).unwrap();
+        assert!(write_atomic(&path, b"{\"a\":2}\n").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"a\":1}\n");
+        std::fs::remove_dir(dir.path().join("results.jsonl.tmp")).unwrap();
+        write_atomic(&path, b"{\"a\":3}\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"a\":3}\n");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// Review of rust/d4-chaos (Outcomes 5): on macOS `sync_all` is
+    /// `F_FULLFSYNC` with no fallback, so every job file failed on an SMB
+    /// mount. A refusal of the full sync falls back to a plain one; other
+    /// errors stay errors.
+    #[test]
+    fn a_refused_full_sync_falls_back_to_a_plain_one() {
+        let refused = || Err(std::io::Error::from_raw_os_error(libc::ENOTSUP));
+        let mut plain_ran = false;
+        sync_with(refused(), || {
+            plain_ran = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(plain_ran);
+        let full = || Err(std::io::Error::from_raw_os_error(libc::EIO));
+        assert!(sync_with(full(), || Ok(())).is_err());
+        // The atomic write syncs its folder too, and still works.
+        let dir = tempfile::tempdir().unwrap();
+        write_atomic(&dir.path().join("x.json"), b"{}").unwrap();
+        assert_eq!(std::fs::read(dir.path().join("x.json")).unwrap(), b"{}");
+    }
 
     /// Guards the D5 fix: rounding to three places showed a failed 0.9996
     /// as `1` (and 0.0004 as `0`) in the live view and in results.
@@ -521,6 +766,9 @@ mod tests {
         assert_eq!(fmt_reward(2.0 / 3.0), "0.667");
         assert_eq!(fmt_reward(0.9996), "0.9996");
         assert_eq!(fmt_reward(0.0004), "0.0004");
+        assert_eq!(fmt_reward(5e-324), "5e-324");
+        assert_eq!(fmt_reward(0.00004), "4e-5");
+        assert_eq!(fmt_reward(1.0 - 1e-12), "0.999999999999");
     }
 
     /// `bench run -a codex -m <a model Codex does not offer>` wrote
@@ -550,5 +798,20 @@ mod tests {
         assert_eq!(fmt_reward(0.0), "0");
         assert_eq!(fmt_reward(0.75), "0.75");
         assert_eq!(fmt_reward(1.0 / 3.0), "0.333");
+    }
+}
+
+#[cfg(test)]
+mod category_tests {
+    use crate::outcome::{Owner, Phase, Problem};
+
+    /// The handoff's refusals read as hardening, not as a BenchFlow bug
+    /// (REVIEW-OUTCOMES (d7c) L6).
+    #[test]
+    fn the_handoffs_refusals_are_hardening() {
+        for code in ["R305", "R307", "R314", "R315"] {
+            let p = Problem::new(code, Owner::Task, Phase::Handoff, "m", "n");
+            assert_eq!(super::category(&p), "verifier_hardening", "{code}");
+        }
     }
 }

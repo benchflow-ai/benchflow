@@ -102,6 +102,24 @@ pub struct RunOptions {
     /// saved.
     #[serde(skip)]
     pub judge_env: JudgeEnv,
+    /// Drain mode: once on, no new trial (or retry) starts, and running
+    /// ones go on to finish. The first Ctrl-C turns it on. Never saved.
+    #[serde(skip)]
+    pub drain: Drain,
+}
+
+/// The drain switch every clone of a run's options shares.
+#[derive(Debug, Clone, Default)]
+pub struct Drain(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drain {
+    /// Start nothing new from now on.
+    pub fn start(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn on(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// Variables for the judge; their values never print.
@@ -239,6 +257,7 @@ impl Default for RunOptions {
             scan_credentials: false,
             judge_model: None,
             judge_env: JudgeEnv::default(),
+            drain: Drain::default(),
         }
     }
 }

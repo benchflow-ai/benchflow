@@ -1,0 +1,10 @@
+# A verifier in its own image: bench test (oracle passes, nop and controls fail).
+tier = "full"
+needs = ["sandbox"]
+tasks = ["separate-verifier"]
+
+[[step]]
+run = ["test", "tasks/separate-verifier", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+timeout = 1500
+trials = [{ job = "tests/*", agent = "oracle", status = "scored", reward = 1.0 }, { job = "tests/*", agent = "nop", status = "scored", reward = 0.0 }]

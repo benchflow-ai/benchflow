@@ -1,0 +1,60 @@
+# bench check: codes with positions, --fix, --strict, --schema, --json.
+tier = "smoke"
+tasks = ["hello", "leaves-credentials", "hello-split", "hello-v06", "two-stage", "network-allow", "judged", "mount-hook-outputs"]
+
+[[step]]
+name = "every fixture is valid (one has a warning)"
+run = ["check", "tasks"]
+exit = 0
+output_has = ['8 tasks: 8 ok · 1 warning', 'warning\[P003\]']
+
+[[step]]
+name = "--strict turns the warning into a failure"
+run = ["check", "--strict", "tasks/leaves-credentials"]
+exit = 1
+output_has = ['0 ok, 1 with errors']
+
+[[step]]
+name = "a misspelled key is T201, with its line"
+sh = "cp -R tasks/hello tasks/typo && sed -i.bak 's/^timeout = \"2m\"/timout = \"2m\"/' tasks/typo/task.md && rm tasks/typo/task.md.bak"
+
+[[step]]
+run = ["check", "tasks/typo"]
+exit = 1
+output_has = ['error\[T201\]', 'task.md:\d+:\d+', 'did you mean `timeout`', 'check --fix']
+
+[[step]]
+run = ["--json", "check", "tasks/typo"]
+exit = 1
+stdout_has = ['"T201"']
+
+[[step]]
+name = "--fix renames it"
+run = ["check", "--fix", "tasks/typo"]
+exit = 0
+output_has = ['fixed .*rename `timout` to `timeout`']
+file_has = { "tasks/typo/task.md" = '^timeout = "2m"' }
+
+[[step]]
+run = ["check", "tasks/typo"]
+exit = 0
+
+[[step]]
+name = "--schema checks only the task file"
+run = ["check", "--schema", "tasks/hello"]
+exit = 0
+
+[[step]]
+name = "not a task folder"
+sh = "mkdir -p empty"
+
+[[step]]
+run = ["check", "empty"]
+exit = [1, 2]
+output_has = ['P001|no task']
+
+[[step]]
+name = "the judge settings are reported"
+run = ["check", "tasks/judged"]
+exit = 0
+output_has = ['deepseek']

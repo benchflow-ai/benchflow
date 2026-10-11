@@ -27,7 +27,7 @@ This architecture rests on three sources, kept honest against each other.
 - *"The harness is not meant to be intelligent"* — self-improvement targets the **model and skills**, never the harness; *"skill 是属于 memory"* (skills are memory).
 - ACP is the mechanism for modelling human interaction inside a rollout.
 
-**The agentic-RL literature** — agentic RL is a *"temporally extended, partially observable MDP"* (*The Landscape of Agentic RL*, 2509.02547) — definitionally a branching structure. Tree-structured rollouts give *"step-wise process supervised signals even using only the outcome reward"* and *"more rollouts within a fixed budget of tokens or tool calls"* (*Tree Search for LLM Agent RL* / Tree-GRPO, ICLR 2026). A scan of 13 RL libraries (verifiers, prime-rl, SkyRL, verl, NeMo-RL, Tinker, OpenEnv, Harbor, Terminal-Bench, Inspect, ORS, Gymnasium, agent-lightning) found **all model rollouts linearly** — so a tree-native rollout with environment snapshot/restore is genuine, defensible novelty, and the load-bearing hard part is snapshot/restore of *heavy* environment state (see "The hard part").
+**The agentic-RL literature** — agentic RL is a *"temporally extended, partially observable MDP"* (*The Landscape of Agentic RL*, 2509.02547) — definitionally a branching structure. Tree-structured rollouts give *"step-wise process supervised signals even using only the outcome reward"* and *"more rollouts within a fixed budget of tokens or tool calls"* (*Tree Search for LLM Agent RL* / Tree-GRPO, ICLR 2026). A scan of 13 RL and evaluation libraries found **all model rollouts linearly** — so a tree-native rollout with environment snapshot/restore is genuine, defensible novelty, and the load-bearing hard part is snapshot/restore of *heavy* environment state (see "The hard part").
 
 ## Design principles
 
@@ -86,7 +86,7 @@ Scene       — a declared span carrying a role/skill configuration             
 ```
 
 - **The primitives are irreducible.** The tree (`Rollout`), its edges (`Step` — Han's atomic unit; one `Step` is one "turn"), and the `Branch` operation (snapshot + fork). `Branch` is the credit-assignment engine: it evaluates *one state across N continuations* — averaging the children's returns estimates `V(s)`. That is Han's *"from reward function to a value function of the current state"* and Tree-GRPO's peer-reviewed result that a tree yields process supervision from a single outcome reward. A GRPO group run as a shared-prefix tree beats N independent rollouts (more rollouts per token/tool budget). Callers create branches explicitly at GRPO group or value-estimation points; `ask_user` currently resolves one answer and does not fork automatically.
-- **`Trajectory` is a derived view** — a pure function of the tree (a path), never declared. It is what serialises out: a linear `prompt / completion / reward / metrics / info` record, the Verifiers/ORS training unit.
+- **`Trajectory` is a derived view** — a pure function of the tree (a path), never declared. It is what serialises out: a linear `prompt / completion / reward / metrics / info` record, the training unit RL trainers read (written as `trainer/verifiers.jsonl`).
 - **`Scene` is authoring sugar** — the *declaration* form for multi-phase / multi-agent rollouts (`RolloutConfig.scenes`). It desugars completely to per-`Step` role/skill attribution plus config that changes along the tree, and adds no expressive power. It has no runtime object and no lifecycle of its own — `RolloutConfig.scenes` is a desugaring pass that lowers to per-`Step` config. Kept only as a convenient authoring affordance. (The original RFC's instinct — "a phase is just state" — was correct.)
 
 **Tree-native is free for the mental model, not for the engine.** A linear rollout genuinely *is* a degree-1 tree, so the *data model* costs nothing extra for the common case. But the *engine* — checkpoint/fork, three-layer snapshot composition, node-addressed scoring, child scheduling — is paid for on day one even by users who only run linear rollouts. That is an accepted cost, not a hidden one: the tree is the correct foundation, and the linear path inherits its machinery.
@@ -209,7 +209,7 @@ tables are not an enforcement boundary.
 
 **State is a real database**; tools are read-write ops over the schema — which is what makes state snapshot-able, diffable, and verifiable. Two topologies behind one contract: **in-sandbox** (the environment runs in the rollout's own sandbox — the default) and **shared-fleet / sidecar** (a long-lived service fleet + a `TaskDatabase` + `AccountBroker` for multi-tenant per-task accounts — the scale path).
 
-**The Stateful Multi-Service Benchmark (SMSB).** ClawsBench and chi-bench are structurally the same machine; the plane hosts both. ClawsBench is the internal dogfood (the manifest's design partner); chi-bench is the external proof — a ~25k-LOC heavy simulator with a thin MCP transport, onboarded via a ~25-line manifest with its environment **untouched**, its ~920 LOC of Harbor coupling collapsing into the manifest.
+**The Stateful Multi-Service Benchmark (SMSB).** ClawsBench and chi-bench are structurally the same machine; the plane hosts both. ClawsBench is the internal dogfood (the manifest's design partner); chi-bench is the external proof — a ~25k-LOC heavy simulator with a thin MCP transport, onboarded via a ~25-line manifest with its environment **untouched**, its ~920 LOC of coupling to its previous runner collapsing into the manifest.
 
 ## Evaluation — the five spaces
 
@@ -237,9 +237,9 @@ Human interaction is modelled through ACP's role split: **BenchFlow is the ACP C
 
 The manifest is BenchFlow's native format; **adapters translate every other format to it.**
 
-**Inbound env adapters** — Harbor, Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench tasks run through the Harbor adapter** (Harbor is itself terminal-bench-derived).
+**Inbound env adapters** — split-layout task directories and hosted environments → run foreign benchmarks natively. Of the hosted hubs, only environments with ids like `primeintellect/general-agent` run today (through the `verifiers` package's `vf-eval`); `openreward:` ids are recognized but refused as not executable yet. **Terminal-Bench 2 tasks are split-layout task directories, which `bench eval run` loads directly** (the split layout is itself derived from Terminal-Bench's). Terminal-Bench v1 tasks (`task.yaml`) are not; the Rust `bench import` converts them first.
 
-**Outbound — the trainer seam.** A scored trajectory exports as a **Verifiers / ORS JSONL record** (`prompt / completion / reward / metrics / info`). Being a Verifiers/ORS-compatible producer yields a trainer — prime-rl — with zero trainer code. BenchFlow is a rollout *service*; trainers (Tinker, verl, NeMo-RL) stay external. The trajectory is the seam.
+**Outbound — the trainer seam.** A scored trajectory exports as a **trainer JSONL record** (`prompt / completion / reward / metrics / info`, written as `trainer/verifiers.jsonl`; rewards also export as the ORS reward record). Producing that record means a trainer that reads it needs no BenchFlow code. BenchFlow's own `prime-rl` backend (`bench train run sft`) does not read it; it trains on the `prime-sft` rows that `bench train convert` writes. BenchFlow is a rollout *service*; trainers stay external. The trajectory is the seam.
 
 ## How a Task flows through the architecture
 
@@ -273,16 +273,16 @@ The architecture is one shape; these are the eight things it must carry. Capabil
 | 5 | **Continual learning** | A **Job run in `sequential-shared` mode**: Rollouts run in order over a persistent **learner store** (memory + skills). The store is versioned (a generation stamped per rollout) and rollback-capable; the **Memory space** tracks improvement, drift, and adoption. Skills stay useful *only if continuously evolved* (Han). The learner store is the one snapshot layer that does not roll back with a `Branch`. |
 | 6 | **RL-native** | The whole execution model: the Rollout is a tree, the Trajectory is a path, the Reward contract scores any node, and the trajectory exports as a trainer-ready record. Agentic RL is a temporally-extended POMDP — and the architecture is shaped like one. |
 | 7 | **Branching, rollback, Han's framework** | *Not a benchmark — the RL-native substrate itself.* First-class `Branch`; `Environment.snapshot`/`restore` as definitional roll-back; the value-function purpose of the tree; the five spaces; eval = monitoring = reward; the non-intelligent harness. Capabilities 4–6 ride on it. |
-| 8 | **Env adapters — Harbor / PrimeIntellect / OpenReward** | The **edges**: `bench eval run` reads Harbor `task.toml` directories directly (unknown keys ignored with a warning, unhonourable ones refused; see running-benchmarks.md), and the Python-only `HarborAdapter` reads them into an `InboundTask`; outbound, the trajectory exports to Verifiers/ORS. |
+| 8 | **Env adapters — split layout / hosted environments** | The **edges**: `bench eval run` reads split-layout `task.toml` directories directly (unknown keys ignored with a warning, unhonourable ones refused; see running-benchmarks.md), and the Python-only `HarborAdapter` reads them into an `InboundTask`; outbound, the trajectory exports as the trainer record (`trainer/verifiers.jsonl`) and rewards as the ORS reward record. |
 
 All eight land on one architecture — four planes, a tree-native Rollout, an adapter edge. None requires a new top-level concept.
 
 ## The hard part — honest risk
 
-The library scan is unambiguous: **no agentic-RL library ships environment snapshot/restore.** Tree-GRPO branches a *token prefix*; Inspect's `fork()` deep-copies *conversation* state, not the sandbox; its checkpoint system is resume-only — its design note says *"reality doesn't have a fork command."* BenchFlow's bet is to branch a **heavy stateful environment** — a mock-Gmail SQLite database, a healthcare simulator, eventually a K8s cluster. The `Branch` checkpoint is genuinely three unsolved problems, not one:
+The library scan is unambiguous: **no agentic-RL library ships environment snapshot/restore.** Tree-GRPO branches a *token prefix*; one evaluation library's `fork()` deep-copies *conversation* state, not the sandbox; its checkpoint system is resume-only — its design note says *"reality doesn't have a fork command."* BenchFlow's bet is to branch a **heavy stateful environment** — a mock-Gmail SQLite database, a healthcare simulator, eventually a K8s cluster. The `Branch` checkpoint is genuinely three unsolved problems, not one:
 
 1. **Environment-state snapshot** — DB dump/restore, copy-on-write volumes, fork-able service processes. Designed deliberately, environment-class by environment-class — not one generic call.
-2. **Agent-session snapshot** — freezing and restoring a *live ACP session* (and the running agent process and its context behind it) is the same class of hard problem. Inspect can only deep-copy conversation state precisely because it cannot snapshot the process. The architecture does not get this for free.
+2. **Agent-session snapshot** — freezing and restoring a *live ACP session* (and the running agent process and its context behind it) is the same class of hard problem. That library can only deep-copy conversation state precisely because it cannot snapshot the process. The architecture does not get this for free.
 3. **Cross-layer consistency** — the three snapshot layers (container / environment-state / agent-session) have different consistency models; a naïve capture can produce a container snapshot and a DB snapshot that disagree about a write in flight. The `Branch` lifecycle therefore **quiesces the agent first**, then snapshots environment → container → session in order.
 
 Tree-native rollout *structure* is proven and safe to commit to. The `Branch` *checkpoint* — all three layers — is the frontier: it is where the engineering risk concentrates and where the moat is, and it must be designed deliberately, not hand-waved as one call.
@@ -308,8 +308,8 @@ So decisions are not re-litigated.
 Checked against the recent agentic-RL literature; the field's shape matches.
 - Agentic RL = a temporally-extended POMDP — definitionally a branching structure. *(The Landscape of Agentic RL, 2509.02547)*
 - Tree-structured rollouts yield process supervision from a single outcome reward and more rollouts per token/tool budget. *(Tree Search for LLM Agent RL / Tree-GRPO, ICLR 2026, 2509.21240)*
-- All 13 surveyed RL libraries model rollouts linearly with no environment snapshot/restore — tree-native + heavy-environment snapshot is real novelty, not a reinvention.
-- Rollout-as-a-service decoupled from training; the trajectory is the seam. *(ProRL Agent; PrimeIntellect Environments Hub)*
+- All 13 surveyed RL and evaluation libraries model rollouts linearly with no environment snapshot/restore — tree-native + heavy-environment snapshot is real novelty, not a reinvention.
+- Rollout-as-a-service decoupled from training; the trajectory is the seam. *(ProRL Agent)*
 - Continual learning = a base policy + a persistent, evolving skill library; version and roll back the store. *(MetaClaw, MemSkill, SkillLearnBench)*
 
 **Verdict:** the architecture is consensus-correct on shape and deliberately ahead of the field on one primitive — the `Branch` checkpoint (environment + agent-session + container snapshot) for stateful branching. The risk is execution of that primitive, not the design.

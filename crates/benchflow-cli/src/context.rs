@@ -27,6 +27,11 @@ pub fn project() -> Result<Project> {
 /// or in the current folder) into the environment, never overriding a
 /// variable that is already set.
 ///
+/// A cloned repository brings its `.env`, so only credentials and a few
+/// settings are taken from it ([`dotenv_allows`]); anything else (where keys
+/// are sent, proxies, certificates, git's settings, the loader) is ignored
+/// and named in a note, and must come from this shell's environment.
+///
 /// Must run before any other thread starts: it sets environment variables.
 pub fn load_dotenv_before_threads() {
     let Ok(cwd) = std::env::current_dir() else {
@@ -36,6 +41,18 @@ pub fn load_dotenv_before_threads() {
     let Ok(text) = std::fs::read_to_string(root.join(".env")) else {
         return;
     };
+    // A .env that git tracks came with the clone: it is the repository's,
+    // not the user's, so nothing in it is taken.
+    if tracked_by_git(&root, ".env") {
+        eprintln!(
+            "  ! ignoring {}: git tracks it, so it came with the repository; set keys in this \
+             shell or in ~/.config/benchflow",
+            root.join(".env").display()
+        );
+        return;
+    }
+    let mut ignored = Vec::new();
+    let mut taken = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -50,7 +67,12 @@ pub fn load_dotenv_before_threads() {
             continue;
         }
         let v = v.trim().trim_matches('"').trim_matches('\'');
+        if !dotenv_allows(k) {
+            ignored.push(k.to_string());
+            continue;
+        }
         if std::env::var_os(k).is_none() {
+            taken.push(k.to_string());
             // SAFETY: called from main before the async runtime or any other
             // thread exists, so nothing reads the environment concurrently.
             #[allow(unsafe_code)]
@@ -59,6 +81,61 @@ pub fn load_dotenv_before_threads() {
             }
         }
     }
+    if !taken.is_empty() {
+        taken.sort();
+        eprintln!(
+            "  note: took {} from {}",
+            taken.join(", "),
+            root.join(".env").display()
+        );
+    }
+    if !ignored.is_empty() {
+        ignored.sort();
+        ignored.dedup();
+        eprintln!(
+            "  ! ignoring {} in {}: a project's .env may set only keys and tokens (names ending \
+             in _API_KEY, _KEY, or _TOKEN), DAYTONA_TARGET, and BENCHFLOW_OWNER; set others in \
+             this shell",
+            ignored.join(", "),
+            root.join(".env").display()
+        );
+    }
+}
+
+/// Whether git tracks `file` in the repository at `root` (a clone brings
+/// only tracked files). False when git is missing or `root` is no repository.
+fn tracked_by_git(root: &std::path::Path, file: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--", file])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Whether a project's `.env` may set `name`: credentials (`*_API_KEY`,
+/// `*_KEY`, `*_TOKEN`) and the settings that move nothing elsewhere.
+/// Base URLs, proxies, certificates, `GIT_*`, `DOCKER_*`, `PATH`, and the
+/// loader's variables are left to this shell.
+pub fn dotenv_allows(name: &str) -> bool {
+    const SETTINGS: &[&str] = &["DAYTONA_TARGET", "BENCHFLOW_OWNER"];
+    // Keys that decide whose machines get the run (and the keys and logins
+    // it carries): only from this shell or ~/.config/benchflow.
+    const NOT_FROM_A_PROJECT: &[&str] = &["DAYTONA_API_KEY"];
+    let upper = name.to_ascii_uppercase();
+    if NOT_FROM_A_PROJECT.contains(&upper.as_str()) {
+        return false;
+    }
+    if SETTINGS.contains(&upper.as_str()) {
+        return true;
+    }
+    let credential = ["_API_KEY", "_KEY", "_TOKEN"]
+        .iter()
+        .any(|suffix| upper.ends_with(suffix));
+    // `GIT_SSH_KEY`-style names are git's settings, not credentials bench reads.
+    credential && !upper.starts_with("GIT_") && !upper.starts_with("SSL_")
 }
 
 /// The folders a command should look for tasks in: the arguments, else
@@ -92,6 +169,16 @@ pub fn discover(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
 
 /// Check packages in parallel, keeping their order.
 pub fn check_all(paths: &[PathBuf], opts: &CheckOptions) -> Vec<CheckReport> {
+    check_each(paths, |p| check_one(p, opts))
+}
+
+/// `check` on every path in parallel, keeping their order. Every path gets a
+/// report: when a thread stops (a crash that `check` did not catch), the
+/// task it was on and the ones it had not reached get P005.
+fn check_each(
+    paths: &[PathBuf],
+    check: impl Fn(&std::path::Path) -> CheckReport + Sync,
+) -> Vec<CheckReport> {
     let n = paths.len();
     if n == 0 {
         return Vec::new();
@@ -102,28 +189,45 @@ pub fn check_all(paths: &[PathBuf], opts: &CheckOptions) -> Vec<CheckReport> {
         .min(n)
         .max(1);
     let chunk = n.div_ceil(threads);
-    let mut out: Vec<Option<CheckReport>> = (0..n).map(|_| None).collect();
+    let out: std::sync::Mutex<Vec<Option<CheckReport>>> =
+        std::sync::Mutex::new((0..n).map(|_| None).collect());
+    let mut stopped: Vec<(usize, String)> = Vec::new();
     std::thread::scope(|s| {
         let handles: Vec<_> = paths
             .chunks(chunk)
             .enumerate()
             .map(|(i, c)| {
+                let (out, check) = (&out, &check);
                 s.spawn(move || {
-                    c.iter()
-                        .enumerate()
-                        .map(|(j, p)| (i * chunk + j, check_one(p, opts)))
-                        .collect::<Vec<_>>()
+                    for (j, p) in c.iter().enumerate() {
+                        let report = check(p);
+                        out.lock().unwrap_or_else(|e| e.into_inner())[i * chunk + j] = Some(report);
+                    }
                 })
             })
             .collect();
-        for h in handles {
-            if let Ok(v) = h.join() {
-                for (i, r) in v {
-                    out[i] = Some(r);
-                }
+        for (i, h) in handles.into_iter().enumerate() {
+            if let Err(e) = h.join() {
+                stopped.push((i, panic_text(e.as_ref())));
             }
         }
     });
+    let mut out = out.into_inner().unwrap_or_else(|e| e.into_inner());
+    for (i, what) in stopped {
+        let end = ((i + 1) * chunk).min(n);
+        let mut first = true;
+        for k in i * chunk..end {
+            if out[k].is_none() {
+                let message = if first {
+                    format!("checking this task crashed BenchFlow: {what}")
+                } else {
+                    "not checked: BenchFlow crashed on an earlier task".to_string()
+                };
+                first = false;
+                out[k] = Some(crashed(&paths[k], message));
+            }
+        }
+    }
     out.into_iter().flatten().collect()
 }
 
@@ -137,21 +241,33 @@ fn check_one(path: &std::path::Path, opts: &CheckOptions) -> CheckReport {
 /// `check()`, with a crash turned into a P005 error on `path`.
 fn guarded(path: &std::path::Path, check: impl FnOnce() -> CheckReport) -> CheckReport {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)).unwrap_or_else(|e| {
-        let what = e
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| e.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "no message".into());
-        let mut report = CheckReport::new(path, benchflow_task::detect(path));
-        report.diagnostics.push(
-            benchflow_task::Diagnostic::error(
-                "P005",
-                format!("checking this task crashed BenchFlow: {what}"),
-            )
-            .help("this is a BenchFlow bug; report it with the task folder"),
-        );
-        report
+        crashed(
+            path,
+            format!(
+                "checking this task crashed BenchFlow: {}",
+                panic_text(e.as_ref())
+            ),
+        )
     })
+}
+
+fn panic_text(e: &(dyn std::any::Any + Send)) -> String {
+    e.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| e.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".into())
+}
+
+/// A P005 report on `path`. Its format is detected under a guard too, so a
+/// crash there cannot lose the task either.
+fn crashed(path: &std::path::Path, message: String) -> CheckReport {
+    let format = std::panic::catch_unwind(|| benchflow_task::detect(path)).unwrap_or(None);
+    let mut report = CheckReport::new(path, format);
+    report.diagnostics.push(
+        benchflow_task::Diagnostic::error("P005", message)
+            .help("this is a BenchFlow bug; report it with the task folder"),
+    );
+    report
 }
 
 /// Load tasks for running: discover, check, and keep the ones that load.
@@ -322,6 +438,40 @@ mod tests {
                 .iter()
                 .any(|d| d.code == "P005" && d.is_error() && d.message.contains("boom"))
         );
+    }
+
+    /// A crash the per-task guard does not catch (in the guard itself)
+    /// stopped the thread, and its share of the tasks vanished.
+    #[test]
+    fn a_stopped_thread_loses_no_task() {
+        let paths: Vec<PathBuf> = (0..40)
+            .map(|i| PathBuf::from(format!("/nonexistent/t{i}")))
+            .collect();
+        let reports = check_each(&paths, |p| {
+            if p.ends_with("t5") {
+                panic!("boom in {}", p.display());
+            }
+            CheckReport::new(p, None)
+        });
+        let roots: Vec<&std::path::Path> = reports.iter().map(|r| r.root.as_path()).collect();
+        assert_eq!(
+            roots,
+            paths.iter().map(PathBuf::as_path).collect::<Vec<_>>()
+        );
+        let r = reports.iter().find(|r| r.root.ends_with("t5")).unwrap();
+        assert!(r.diagnostics.iter().any(|d| d.code == "P005"
+            && d.is_error()
+            && d.message.contains("boom in /nonexistent/t5")));
+        let ok = reports.iter().filter(|r| r.diagnostics.is_empty()).count();
+        let skipped = reports
+            .iter()
+            .filter(|r| {
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.message.starts_with("not checked"))
+            })
+            .count();
+        assert_eq!(ok + skipped + 1, 40);
     }
 
     /// Guards the D5 fix: `--idle-timeout -1`, `nan`, `inf` or `1e30` (also

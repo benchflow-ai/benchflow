@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "job_name": "oracle-hello",
+  "created_at": "2026-10-10T17:36:07.194188-07:00",
+  "bench": {
+    "version": "0.8.1-dev.0",
+    "long_version": "0.8.1-dev.0 (355247634 2026-10-10)",
+    "commit": "355247634",
+    "commit_date": "2026-10-10"
+  },
+  "fingerprint": "b064ca5b1146e169",
+  "dataset": null,
+  "source": {
+    "targets": [
+      "tasks/hello"
+    ],
+    "path": "tasks/hello",
+    "remote": []
+  },
+  "options": {
+    "sandbox": "daytona",
+    "sandbox_user": "agent",
+    "trials_per_task": 1,
+    "concurrency": 4,
+    "agent_timeout_multiplier": 1.0,
+    "verifier_timeout_multiplier": 1.0,
+    "build_timeout_multiplier": 1.0,
+    "default_agent_timeout_sec": null,
+    "default_verifier_timeout_sec": 600.0,
+    "idle_timeout_sec": 600.0,
+    "pids_limit": 4096,
+    "agent_env_keys": [],
+    "extra_instruction": null,
+    "keep": "never",
+    "save_outputs": false,
+    "retries": 1,
+    "rerun": []
+  },
+  "trials": [
+    {
+      "trial": "hello__5233d73b",
+      "task": {
+        "id": "fixtures/hello",
+        "name": "hello",
+        "path": "tasks/hello",
+        "digest": "sha256:76fe5d4c665fabb1e5cecd7e1fa3bd38a3627e0cbfd978f5ee4301533342efeb",
+        "registry_digest": null,
+        "inputs_digest": "sha256:78f7b5ab6e9702ba0e8965f7d21b1f1fd325678a6a72ae396169fe4c09e77c84",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "oracle",
+        "model": null,
+        "kind": "oracle",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/hello/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    }
+  ]
+}

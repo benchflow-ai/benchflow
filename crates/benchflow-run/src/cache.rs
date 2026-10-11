@@ -132,10 +132,22 @@ pub fn scan(root: &Path) -> Scan {
 
 /// Remove one entry from disk.
 pub fn remove(e: &Entry) -> std::io::Result<()> {
+    if crate::source::checkout_in_use(&e.path) || crate::source::checkout_locked(&e.path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ResourceBusy,
+            "a running bench is using this checkout; clean it when the run is done",
+        ));
+    }
     if e.path.is_dir() {
         std::fs::remove_dir_all(&e.path)?;
     } else if e.path.exists() {
         std::fs::remove_file(&e.path)?;
+    }
+    // A checkout's lock files go with it.
+    for suffix in [".lock", ".use"] {
+        let mut name = e.path.as_os_str().to_owned();
+        name.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(name));
     }
     // Leave no empty parents behind under sources/.
     let mut parent = e.path.parent();

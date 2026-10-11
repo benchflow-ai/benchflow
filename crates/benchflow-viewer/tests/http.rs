@@ -198,6 +198,42 @@ async fn foreign_host_names_are_refused() {
     }
 }
 
+/// The run list leaves out a trial a live run has not finished (its stats,
+/// 0.8's page, would count it as unscored); once no process holds the job,
+/// the same trial is listed (a run that stopped without a result).
+#[tokio::test]
+async fn the_run_list_leaves_out_trials_a_live_run_has_not_finished() {
+    let dir = corpus();
+    let pending = dir.path().join("jobs/job-1/gamma__dddd0001");
+    std::fs::create_dir_all(pending.join("trajectory")).unwrap();
+    std::fs::write(pending.join("trajectory/acp_trajectory.jsonl"), "").unwrap();
+    let lock = std::fs::File::create(dir.path().join("jobs/job-1/.bench-run.lock")).unwrap();
+    lock.lock().unwrap();
+    let ids = |page: &str| -> Vec<String> {
+        boot(page)["rollouts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| run["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, _, page) = get(&runs_app(dir.path()), "/").await;
+    assert_eq!(
+        ids(&page),
+        ["job-1/alpha__aaaa0001", "job-1/beta__bbbb0001"]
+    );
+    drop(lock);
+    let (_, _, page) = get(&runs_app(dir.path()), "/").await;
+    assert_eq!(
+        ids(&page),
+        [
+            "job-1/alpha__aaaa0001",
+            "job-1/beta__bbbb0001",
+            "job-1/gamma__dddd0001"
+        ]
+    );
+}
+
 #[tokio::test]
 async fn other_routes_and_methods_are_refused_without_reading_files() {
     let dir = corpus();

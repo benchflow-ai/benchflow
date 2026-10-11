@@ -9,7 +9,8 @@
 //!   Codex's usage-limit messages, parsed for the window and reset time;
 //! - a rejected login (R212);
 //! - a model the login cannot use (R215);
-//! - a provider that limited, failed or refused the request (R214).
+//! - a provider that limited, failed or refused the request (R214);
+//! - a prompt over the model's context window, which the agent sent.
 //!
 //! In a block of text the match nearest the end wins, as in Harbor: a run
 //! that retried a rate limit and then hit an auth error failed on the auth
@@ -31,6 +32,9 @@ pub(crate) enum Signal {
     RateLimit,
     Unavailable,
     Rejected,
+    /// The prompt was over the model's context window: the agent's to
+    /// manage, not the provider's failure.
+    Overflow,
 }
 
 fn re(pattern: &str) -> Regex {
@@ -107,14 +111,34 @@ static PATTERNS: LazyLock<Vec<(Regex, Signal)>> = LazyLock::new(|| {
             Signal::Unavailable,
         ),
         (
-            re(concat!(
-                r"(?i)input token count exceeds the maximum|prompt is too long: \d+ tokens > \d+ maximum|",
-                r"context_length_exceeded|context window|provider rejected request|\bHTTP 400\b",
+            // The native loop's phrases, one list for both, and Gemini's
+            // wording, which has a number in the middle.
+            re(&format!(
+                r"(?i){}|input token count(?: \(\d+\))? exceeds the maximum",
+                crate::native::error::CONTEXT_PHRASES
+                    .iter()
+                    .map(|p| regex::escape(p))
+                    .collect::<Vec<_>>()
+                    .join("|")
             )),
+            Signal::Overflow,
+        ),
+        (
+            re(r"(?i)provider rejected request|\bHTTP 400\b"),
             Signal::Rejected,
         ),
     ]
 });
+
+/// A retry delay with a number ("Please retry in 20.5s", "retry after 30",
+/// `retryDelay`): a per-minute rate limit that some providers word like a
+/// spent quota ("You exceeded your current quota"), not a spent balance. A
+/// spent balance that only says to retry later ("retry after topping up")
+/// has no number and stays a usage limit, and so does a spent daily quota,
+/// whose message gives a delay too (`PerDay` in its quota id).
+static RETRY_HINT: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)\bretry (?:in|after) \d|retrydelay"));
+static DAILY: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)per.?day|\bdaily\b"));
 
 /// What one line says, if anything.
 fn classify_line(line: &str, now: DateTime<Utc>) -> Option<Signal> {
@@ -124,6 +148,9 @@ fn classify_line(line: &str, now: DateTime<Utc>) -> Option<Signal> {
     PATTERNS.iter().find_map(|(re, signal)| {
         let m = re.find(line)?;
         Some(match signal {
+            Signal::UsageLimit(_) if RETRY_HINT.is_match(line) && !DAILY.is_match(line) => {
+                Signal::RateLimit
+            }
             Signal::UsageLimit(_) => {
                 // Not Claude's or Codex's exact words: keep the line as the detail.
                 let detail = line[m.start()..].trim().to_string();
@@ -165,7 +192,37 @@ mod tests {
             Signal::RateLimit => "rate",
             Signal::Unavailable => "down",
             Signal::Rejected => "rejected",
+            Signal::Overflow => "overflow",
         })
+    }
+
+    /// A per-minute 429 worded like a spent quota but giving a retry delay
+    /// is a rate limit (the provider's, retried), not a usage limit, which
+    /// stops the whole job; a spent balance that only says to retry later
+    /// stays one. Guards the follow-up of the d7d and orchestrator reviews.
+    #[test]
+    fn a_quota_message_with_a_retry_delay_is_a_rate_limit() {
+        for (text, want) in [
+            (
+                "You exceeded your current quota. Please retry in 20.5s.",
+                "rate",
+            ),
+            (
+                "You exceeded your current quota, please check your plan and billing details.",
+                "usage",
+            ),
+            (
+                "Your credit balance is too low, retry after topping up",
+                "usage",
+            ),
+            ("insufficient_quota", "usage"),
+            (
+                "You exceeded your current quota (GenerateRequestsPerDayPerProjectPerModel-FreeTier). Please retry in 3600s.",
+                "usage",
+            ),
+        ] {
+            assert_eq!(kind(text), Some(want), "{text}");
+        }
     }
 
     #[test]
@@ -242,7 +299,37 @@ mod tests {
             ),
             (
                 "prompt is too long: 210000 tokens > 200000 maximum",
+                Some("overflow"),
+            ),
+            (
+                "HTTP 400: Unsupported parameter 'temperature'",
                 Some("rejected"),
+            ),
+            // Both on one line: the window, which the agent sent.
+            ("HTTP 400: context_length_exceeded", Some("overflow")),
+            // The native loop's wordings too (REVIEW-OUTCOMES L2).
+            (
+                "HTTP 400: This model's maximum context length is 8192 tokens",
+                Some("overflow"),
+            ),
+            (
+                "HTTP 400: Input is too long for requested model.",
+                Some("overflow"),
+            ),
+            // The rest of the native loop's list (REVIEW-OUTCOMES (d7c) L3).
+            ("HTTP 400: prompt is too long", Some("overflow")),
+            (
+                "HTTP 400: too many tokens: 300000 > 200000",
+                Some("overflow"),
+            ),
+            // A rate limit that counts tokens stays a rate limit.
+            (
+                "Rate limit reached: too many tokens per minute",
+                Some("rate"),
+            ),
+            (
+                "The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",
+                Some("overflow"),
             ),
             ("everything is fine", None),
         ];

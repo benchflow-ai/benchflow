@@ -1340,6 +1340,28 @@ mod ratio {
             assert_eq!(Ratio::from_json(&json!(3)).unwrap().to_string(), "3");
         }
 
+        /// Guards the D5 fix (62d41d0e): a JSON float is read as
+        /// `Fraction(str(v))`, and Python's `str` breaks a tie between
+        /// equally short digits to even (755133721037486.25 is `.2`), where
+        /// `{:e}` rounds up. Every float of the agent crate's fixture
+        /// (Python's `repr`, which `str` equals; `make_float_repr.py`, with
+        /// 4,000 ties) must read as the ratio of Python's text.
+        #[test]
+        fn floats_read_as_pythons_str_on_the_fixture() {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../benchflow-agent/tests/fixtures/python-float-repr.jsonl");
+            let text = std::fs::read_to_string(path).unwrap();
+            let mut compared = 0;
+            for line in text.lines() {
+                let case: serde_json::Value = serde_json::from_str(line).unwrap();
+                let value = f64::from_bits(case["bits"].as_u64().unwrap());
+                let want = Ratio::parse(case["repr"].as_str().unwrap());
+                assert_eq!(Ratio::from_json(&json!(value)), want, "{value:e}");
+                compared += usize::from(want.is_some());
+            }
+            assert!(compared > 5000, "{compared} floats fit a ratio");
+        }
+
         #[test]
         fn arithmetic() {
             let a = Ratio::new(1, 3).unwrap();

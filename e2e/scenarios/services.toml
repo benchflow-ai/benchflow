@@ -1,0 +1,23 @@
+# Services beside the agent's container (a split-layout Compose file): run on Docker, refused by name on Daytona.
+tier = "full"
+needs = ["sandbox"]
+tasks = ["sidecar"]
+
+[[step]]
+only_backends = ["docker"]
+run = ["test", "tasks/sidecar", "--probes", "none", "-s", "{backend}"]
+exit = 0
+timeout = 1500
+
+[[step]]
+only_backends = ["docker"]
+run = ["run", "tasks/sidecar", "-s", "{backend}", "--job", "o"]
+exit = 0
+trials = [{ job = "o", status = "scored", reward = 1.0, files = ["services/api.log"] }]
+
+[[step]]
+name = "Daytona cannot run services: refused by name, the user's setup"
+only_backends = ["daytona"]
+run = ["run", "tasks/sidecar", "-s", "{backend}", "--job", "d"]
+exit = 1
+trials = [{ job = "d", status = "errored", code = "R401", owner = "you" }]

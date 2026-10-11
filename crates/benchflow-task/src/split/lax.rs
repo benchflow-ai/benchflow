@@ -42,49 +42,106 @@ pub(crate) fn int(v: &Value) -> Result<i64, String> {
             if let Some(i) = n.as_i64() {
                 return Ok(i);
             }
+            // pydantic-core's `float_as_int`: whole, finite, and strictly
+            // inside the 64-bit range.
             match n.as_f64() {
-                Some(f) if f.fract() == 0.0 && f.is_finite() && f.abs() < 9.2e18 => Ok(f as i64),
+                Some(f) if f % 1.0 == 0.0 && (i64::MIN as f64) < f && f < (i64::MAX as f64) => {
+                    Ok(f as i64)
+                }
                 _ => fail(),
             }
         }
-        Value::String(s) => {
-            // A zero fraction is a whole number ("1.0", "2.00"; not "1."),
-            // and `_` may only sit between digits of the whole part.
-            let t = s.trim();
-            let whole = match t.split_once('.') {
-                Some((whole, frac)) if !frac.is_empty() && frac.bytes().all(|b| b == b'0') => whole,
-                Some(_) => return fail(),
-                None => t,
-            };
-            let b = whole.as_bytes();
-            let between_digits = |i: usize| {
-                i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(u8::is_ascii_digit)
-            };
-            if (0..b.len()).any(|i| b[i] == b'_' && !between_digits(i)) {
-                return fail();
-            }
-            let t = whole.replace('_', "");
-            let digits = t.strip_prefix(['+', '-']).unwrap_or(&t);
-            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-                t.parse::<i64>().or_else(|_| fail())
-            } else {
-                fail()
-            }
-        }
+        // Integers past 64 bits, which pydantic keeps, are refused here.
+        Value::String(s) => str_as_int(s).map_or_else(fail, Ok),
         _ => fail(),
     }
 }
 
-/// A number's text with its underscores removed, as pydantic reads
-/// `"1_000"`: `None` when one starts or ends the text or two are together.
-fn without_underscores(t: &str) -> Option<String> {
-    if !t.contains('_') {
-        return Some(t.to_string());
+// The string rules below are ported from pydantic-core 2.41.5 (the version
+// pydantic 2.12.5 pins), `src/input/shared.rs`, and the integer syntax of
+// jiter 0.11.1's `NumberInt::try_from`. Whitespace is Rust's `str::trim`
+// there too, so the two agree on every kind of space.
+
+/// pydantic-core's `str_as_int`: the text as a JSON integer, else the text
+/// after `clean_int_str` as one.
+fn str_as_int(s: &str) -> Option<i64> {
+    json_int(s).or_else(|| json_int(&clean_int_str(s)?))
+}
+
+/// The whole text as a JSON integer (`-?(0|[1-9][0-9]*)`) that fits in 64
+/// bits.
+fn json_int(s: &str) -> Option<i64> {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    let well_formed = digits == "0"
+        || (digits.starts_with(|c: char| ('1'..='9').contains(&c))
+            && digits.bytes().all(|b| b.is_ascii_digit()));
+    if well_formed { s.parse().ok() } else { None }
+}
+
+/// pydantic-core's `clean_int_str`: trim, drop one `+`, leading zeros, a
+/// zero fraction (`.0`, `.000`) and underscores; `None` when nothing
+/// changed or the text cannot be a number. It keeps pydantic-core's
+/// quirks: a `-` after leading zeros starts the number (`"0-495"` is -495).
+fn clean_int_str(text: &str) -> Option<String> {
+    let len_before = text.len();
+    let mut s = text.trim();
+    if let Some(rest) = s.strip_prefix('+') {
+        if rest.starts_with('-') {
+            return None;
+        }
+        s = rest;
     }
-    if t.starts_with('_') || t.ends_with('_') || t.contains("__") {
+    let mut negative = false;
+    if let Some(rest) = s.strip_prefix('-') {
+        if rest.starts_with(['-', '+']) {
+            return None;
+        }
+        negative = true;
+        s = rest;
+    }
+    s = strip_leading_zeros(s)?;
+    if let Some(i) = s.find('.') {
+        let fraction = &s[i + 1..];
+        if !fraction.is_empty() && fraction.bytes().all(|b| b == b'0') {
+            s = &s[..i];
+        }
+    }
+    let sign = if negative { "-" } else { "" };
+    if let Some(stripped) = strip_underscores(s) {
+        return Some(format!("{sign}{stripped}"));
+    }
+    (len_before != s.len()).then(|| format!("{sign}{s}"))
+}
+
+/// pydantic-core's `strip_leading_zeros`: zeros (and underscores among
+/// them) before the first other digit, `-` or `.` go; `None` when the text
+/// does not start with a digit or `-`.
+fn strip_leading_zeros(s: &str) -> Option<&str> {
+    let mut chars = s.char_indices();
+    match chars.next() {
+        Some((_, '0')) => {}
+        Some((_, c)) if c.is_ascii_digit() || c == '-' => return Some(s),
+        _ => return None,
+    }
+    for (i, c) in chars {
+        match c {
+            '0' | '_' => {}
+            '1'..='9' | '-' => return Some(&s[i..]),
+            // Keep the character before the dot (a zero or an underscore).
+            '.' => return Some(&s[i - 1..]),
+            _ => return None,
+        }
+    }
+    Some(&s[s.len() - 1..])
+}
+
+/// pydantic-core's `strip_underscores`: the text without its underscores,
+/// `None` when it has none, or one starts or ends it, or two are together.
+fn strip_underscores(s: &str) -> Option<String> {
+    if s.starts_with('_') || s.ends_with('_') || !s.contains('_') || s.contains("__") {
         return None;
     }
-    Some(t.replace('_', ""))
+    Some(s.replace('_', ""))
 }
 
 /// A float field: numbers, booleans, and strings that hold a number.
@@ -94,8 +151,14 @@ pub(crate) fn float(v: &Value) -> Result<f64, String> {
         Value::Number(n) => n
             .as_f64()
             .ok_or_else(|| format!("expected a number, found {n}")),
-        Value::String(s) => without_underscores(s.trim())
-            .and_then(|t| t.parse::<f64>().ok())
+        // pydantic-core's `str_as_float`: the trimmed text as Rust reads a
+        // float, else the untrimmed text without underscores (so `" 1_0"`
+        // is refused).
+        Value::String(s) => s
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .or_else(|| strip_underscores(s)?.parse().ok())
             .ok_or_else(|| format!("expected a number, found {}", describe(v))),
         other => Err(format!("expected a number, found {}", describe(other))),
     }
@@ -195,13 +258,15 @@ pub(crate) fn choice(v: &Value, allowed: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    /// Guards the D5 fix: int, float and boolean against pydantic 2.12's lax
-    /// mode (0.8's loader) on 66 spellings (`"1_000"`, `"1.0"`, `" 12 "`,
-    /// `" true "`, `"0x10"`, `"1e400"`, Unicode digits, JSON numbers and
-    /// bools). The fixture holds what pydantic returned (`null` when it
-    /// refused; `"inf"`/`"nan"` for those). Integers past i64 (which pydantic
-    /// keeps) are left out. pydantic-core also has quirks on random text that
-    /// are not ported (it reads the integer `"0-495"` as -495).
+    /// Guards the D5 fixes (2176d568, 66b7f937) and the D5b port of
+    /// pydantic-core's string rules: int, float and boolean against 0.8's
+    /// task.toml model in pydantic 2.12's lax mode on 10,732 values (66
+    /// hand-picked by D5, more from its review, then seeded random strings
+    /// and JSON numbers; `tests/fixtures/lax/make_fixture.py` writes them
+    /// with 0.8's Python). The fixture holds what pydantic returned (`null`
+    /// when it refused; `"inf"`/`"nan"` for those). Integers past i64 (which
+    /// pydantic keeps) are left out. Before the port, 758 values differed
+    /// (`" 0_3"` read as the float 3.0, `"0__1"` refused as an integer, ...).
     #[test]
     fn int_float_and_boolean_match_pydantic() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

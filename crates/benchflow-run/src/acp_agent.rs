@@ -32,7 +32,8 @@ use async_trait::async_trait;
 use benchflow_agent::AgentManifest;
 use benchflow_agent::acp::{
     AcpClient, AcpError, AcpEvent, ClientOptions, McpServer, OutputStream, Owner as AcpOwner,
-    PromptLimits, StopReason, provider_failure_in_reply,
+    PromptLimits, StopReason, broke_mid_stream, ends_mid_stream, provider_failure_in_reply,
+    refused_request,
 };
 use benchflow_agent::credentials::{HostEnv, Login};
 use benchflow_agent::manifest::InstallMethod;
@@ -315,11 +316,40 @@ impl ModelAgent for AcpAgent {
             Ok(()) => {
                 // A provider's error returned as the agent's whole reply
                 // (Hermes ends its turn with a 401 as an ordinary message):
-                // the provider failed, and the trial is not graded.
+                // the provider failed, and the trial is not graded. A model
+                // that wrote output tokens was reached, so words that read
+                // like an error are its answer, graded like any other;
+                // unless they say the stream broke mid-response, when the
+                // tokens are the partial answer's: then the reply may open
+                // with that partial answer, and its last line is the error.
                 let reply = handle.with(|t| t.final_text());
+                // After a partial answer, the provider's error ends the
+                // reply ([`partial_then_error`]).
+                let tail = partial_then_error(&reply);
+                let failure = provider_failure_in_reply(&reply)
+                    .map(|f| (f, false))
+                    .or_else(|| {
+                        let tail = tail.filter(|_| out.usage.output_tokens > 0)?;
+                        provider_failure_in_reply(tail).map(|f| (f, true))
+                    });
+                let failure = failure.and_then(|((owner, line), after_partial)| {
+                    // A model that wrote output tokens was reached: only a
+                    // stream that broke, or (after a partial answer) a
+                    // provider that then failed, is not its answer.
+                    let broke = broke_mid_stream(&line)
+                        || (after_partial
+                            && matches!(owner, AcpOwner::ModelProvider)
+                            && ends_with_api_error(&reply));
+                    (out.usage.output_tokens == 0 || broke).then_some((owner, line))
+                });
                 if out.tool_calls == 0
-                    && let Some((owner, line)) = provider_failure_in_reply(&reply)
+                    && let Some((owner, line)) = failure
                 {
+                    // The reply is the agent's words, which the trajectory
+                    // keeps as they are; the record must not hold a key.
+                    let line = Redactor::new(login.secrets.iter().cloned())
+                        .redact(&line)
+                        .into_owned();
                     let message = format!(
                         "{} ended its turn with no tool call, replying only with a provider error: {line}",
                         self.manifest.name
@@ -329,7 +359,7 @@ impl ModelAgent for AcpAgent {
                         self.manifest.name
                     );
                     out.problem = Some(with_detail(
-                        provider_problem(owner, message, &log_hint),
+                        provider_problem(owner, message, &log_hint, &line),
                         client.stderr_tail(STDERR_TAIL),
                     ));
                 }
@@ -460,13 +490,20 @@ impl AcpAgent {
             }
             _ => self.model.clone(),
         };
-        client
+        let choice = client
             .select_model(
                 &self.manifest.model,
                 model.as_deref(),
                 self.effort.as_deref(),
             )
             .await?;
+        // With no model asked for, an effort may still have moved the session
+        // to another variant of its model (`gpt-6.1-sol[high]`): record that.
+        if self.model.is_none()
+            && let Some(id) = choice.model_id
+        {
+            out.model = Some(id);
+        }
         let idle = (!ctx.idle_timeout.is_zero()).then_some(ctx.idle_timeout);
         let prompts =
             std::iter::once(ctx.instruction.to_string()).chain(ctx.stages.iter().cloned());
@@ -669,7 +706,7 @@ pub fn acp_problem_reading(
     let log_hint = format!("agent/{agent}.txt and agent/stderr.txt in the trial folder");
     if let Some((owner, line)) = e.provider_failure_in_log(log) {
         let message = format!("{message}; the agent's log says: {line}");
-        let p = provider_problem(owner, message, &log_hint);
+        let p = provider_problem(owner, message, &log_hint, &line);
         return with_detail(p, stderr_tail);
     }
     let p = match e {
@@ -715,6 +752,10 @@ pub fn acp_problem_reading(
         AcpError::Agent { .. } => match e.owner() {
             AcpOwner::Login => Problem::new("R212", Owner::Model, Phase::Agent, message, next),
             AcpOwner::User => Problem::new("R215", Owner::You, Phase::Agent, message, next),
+            // A refused request (0.8's `provider_rejected`) is permanent.
+            AcpOwner::ModelProvider if e.category() == "provider_rejected" => {
+                Problem::new("R214", Owner::Model, Phase::Agent, message, next)
+            }
             AcpOwner::ModelProvider => {
                 Problem::new("R214", Owner::Model, Phase::Agent, message, next).transient()
             }
@@ -727,8 +768,124 @@ pub fn acp_problem_reading(
     with_detail(p, stderr_tail)
 }
 
+/// Whether the reply ends with Claude Code's own `API Error:` (on its last
+/// line, or run into the end of the last sentence), the only provider error,
+/// besides a broken stream, that ends a partial answer as the provider's: an
+/// answer that ends quoting a bare `Error: Connection refused` is the
+/// model's.
+fn ends_with_api_error(reply: &str) -> bool {
+    partial_then_error(reply).is_some_and(|tail| tail.starts_with("API Error:"))
+}
+
+/// The error line that ends a reply after a partial answer, when there is
+/// one: its last `API Error:` (else `Error:`, not inside a word such as
+/// `TypeError:`) that starts the reply, a line, or follows the end of a
+/// sentence, and runs to the end of the reply on one short line. An answer
+/// that only quotes such an error mid-sentence is no error. Only an
+/// `API Error:` line, or a broken stream, makes it the provider's
+/// ([`ends_with_api_error`]); a bare `Error:` line is the model's answer.
+///
+/// A stream that broke usually cut the answer mid-word, and an adapter that
+/// adds no line break joins the error straight on (`...loop bouAPI Error:
+/// Server error mid-response`): there, the last `API Error:` at any place
+/// counts when its line says the stream broke and ends the reply
+/// ([`ends_mid_stream`]), which a quote (in its closing mark) or an answer
+/// that goes on does not.
+fn partial_then_error(reply: &str) -> Option<&str> {
+    let reply = reply.trim_end();
+    let opening = |needle: &str| {
+        reply
+            .match_indices(needle)
+            .map(|(i, _)| i)
+            .filter(|&i| {
+                let before = reply[..i].trim_end_matches([' ', '\t']);
+                before.is_empty()
+                    || before.ends_with(['\n', '.', '!', '?', ':'])
+                        && !reply[..i].ends_with(|c: char| c.is_alphanumeric())
+            })
+            .last()
+    };
+    let one_line = |at: usize| {
+        let tail = &reply[at..];
+        (at > 0 && !tail.contains('\n') && tail.len() <= 200).then_some(tail)
+    };
+    opening("API Error:")
+        .or_else(|| opening("Error:"))
+        .and_then(one_line)
+        .or_else(|| {
+            let at = reply.rfind("API Error:")?;
+            one_line(at).filter(|tail| ends_mid_stream(tail))
+        })
+}
+
+#[cfg(test)]
+mod partial_tests {
+    use super::partial_then_error;
+
+    /// Guards the D7d fix of REVIEW-OUTCOMES (d7c) L4.
+    #[test]
+    fn only_an_error_that_ends_a_partial_answer_counts() {
+        for (reply, want) in [
+            (
+                "Here is the fix.API Error: Server error mid-response",
+                Some("API Error: Server error mid-response"),
+            ),
+            (
+                "Here is the fix.\nAPI Error: Request timed out.",
+                Some("API Error: Request timed out."),
+            ),
+            // Quoted mid-sentence, or inside a word: no error.
+            (
+                "To handle `API Error: Server error mid-response`, retry with backoff.",
+                None,
+            ),
+            ("It raised a TypeError: x is undefined", None),
+            // The whole reply is the error: that is the other check's.
+            ("API Error: Server error mid-response", None),
+            // A broken stream joined onto an answer cut mid-word or inside
+            // code (REVIEW-B (d7d) F1).
+            (
+                "change the loop bouAPI Error: Server error mid-response",
+                Some("API Error: Server error mid-response"),
+            ),
+            (
+                "for i in range(nAPI Error: Server error mid-response.",
+                Some("API Error: Server error mid-response."),
+            ),
+            // ...but not a quote, nor any other error after a mid-word cut.
+            (
+                "Claude Code prints `API Error: Server error mid-response`.",
+                None,
+            ),
+            ("then retry the loop bouAPI Error: 529 Overloaded", None),
+        ] {
+            assert_eq!(partial_then_error(reply), want, "{reply}");
+        }
+    }
+
+    /// After a partial answer, a final bare `Error:` line the model wrote
+    /// (quoting what a client prints) is its answer; only Claude Code's own
+    /// `API Error:` opening is the provider's. Guards the orchestrator's fix
+    /// of REVIEW-A (d7d) finding 2.
+    #[test]
+    fn a_quoted_error_line_is_the_answer() {
+        assert!(super::ends_with_api_error(
+            "Here is the fix.\nAPI Error: Request timed out."
+        ));
+        assert!(!super::ends_with_api_error(
+            "So the client prints:\nError: Connection refused"
+        ));
+        assert!(!super::ends_with_api_error("Here is the fix."));
+    }
+}
+
 /// A provider failure found in the agent's log or reply, as a trial problem.
-fn provider_problem(owner: AcpOwner, message: String, log_hint: &str) -> Problem {
+/// `line` is the provider's own words (the reply's or the log's line):
+/// whether they are a refused request decides the retry, not the message
+/// built around them.
+fn provider_problem(owner: AcpOwner, message: String, log_hint: &str, line: &str) -> Problem {
+    // A refused request gets the same answer again: not retried.
+    let retry = !refused_request(line);
     match owner {
         AcpOwner::Login => Problem::new(
             "R212",
@@ -743,6 +900,15 @@ fn provider_problem(owner: AcpOwner, message: String, log_hint: &str) -> Problem
             Phase::Agent,
             message,
             "the provider does not serve this model; pick another with -m",
+        ),
+        _ if !retry => Problem::new(
+            "R214",
+            Owner::Model,
+            Phase::Agent,
+            message,
+            format!(
+                "the model provider refused the request, which a retry would not change; check the model and the agent's settings for it, and see {log_hint}"
+            ),
         ),
         _ => Problem::new(
             "R214",

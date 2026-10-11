@@ -418,8 +418,14 @@ pub(crate) fn parse_model_ids(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The listed model a misspelled one most likely meant.
+/// The listed model a misspelled one most likely meant. A model the list
+/// names exactly is not misspelled (the router lists it but serves it no
+/// route), so it gets no suggestion: another model's name would be wrong.
+/// A model that differs only in case gets the listed spelling.
 pub(crate) fn closest_model(model: &str, ids: &[String]) -> Option<String> {
+    if ids.iter().any(|id| id == model) {
+        return None;
+    }
     crate::suggest::did_you_mean(model, ids.iter().map(String::as_str))
 }
 

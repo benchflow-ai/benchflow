@@ -97,14 +97,14 @@ impl BackendError {
                 "check that the backend at {url} is running and reachable from this machine, then run again"
             ),
             BackendError::Rejected { route, .. } => format!(
-                "fix the backend's {route} route (Karotte's backend protocol; see docs/rust/harnesses.md)"
+                "fix the backend's {route} route (the backend protocol; see docs/rust/harnesses.md)"
             ),
             BackendError::Malformed { route, .. } if *route == GET_MESSAGE => format!(
                 "fix the backend's {GET_MESSAGE}: it must answer 404 while no message is ready, or a message_added event such as \
                  {{\"type\": \"message_added\", \"message\": {{\"role\": \"assistant\", \"content\": \"...\", \"tool_calls\": [...]}}}}"
             ),
             BackendError::Malformed { route, .. } => format!(
-                "fix the backend's {route} route (Karotte's backend protocol; see docs/rust/harnesses.md)"
+                "fix the backend's {route} route (the backend protocol; see docs/rust/harnesses.md)"
             ),
         }
     }

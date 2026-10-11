@@ -327,6 +327,35 @@ async fn a_login_error_on_stderr_is_recognized() {
     assert!(!err.is_retryable());
 }
 
+/// A prompt over the context window is the agent's, as on every ACP path;
+/// a request the provider refused for another reason is the provider's and
+/// not retried. Guards the D7b fix of REVIEW-CORRECT M1.
+#[tokio::test]
+async fn the_context_window_is_the_agents_and_a_refused_request_is_not_retried() {
+    let run = |stderr: &'static [u8]| {
+        run_script(
+            "gemini-text",
+            Script {
+                stderr: stderr.to_vec(),
+                exit: 1,
+                ..Script::default()
+            },
+            RunnerOptions::default(),
+        )
+    };
+    let err = run(b"Error: prompt is too long: 210000 tokens > 200000 maximum\n")
+        .await
+        .result
+        .unwrap_err();
+    assert_eq!(err.owner(), crate::acp::Owner::Agent, "{err}");
+    let err = run(b"Error: HTTP 400: Unsupported parameter 'temperature'\n")
+        .await
+        .result
+        .unwrap_err();
+    assert_eq!(err.category(), "provider_rejected", "{err}");
+    assert!(!err.is_retryable());
+}
+
 #[tokio::test]
 async fn an_agent_that_exits_cleanly_having_done_nothing_is_an_error() {
     let run = run_script("codex-json", Script::default(), RunnerOptions::default()).await;
@@ -380,4 +409,35 @@ async fn a_long_error_line_is_cut_for_the_message() {
     let text = err.to_string();
     assert!(text.chars().count() < 400, "{text}");
     assert!(!text.contains("\\n"), "{text}");
+}
+
+#[tokio::test]
+async fn a_wrapper_refusal_counts_only_before_the_agent_worked() {
+    let refusal = b"BenchFlow: fx needs tmux, and the image has no apt-get, dnf or apk to add it\n";
+    let before = run_script(
+        "gemini-text",
+        Script {
+            stderr: refusal.to_vec(),
+            exit: 127,
+            ..Script::default()
+        },
+        RunnerOptions::default(),
+    )
+    .await;
+    let err = before.result.unwrap_err();
+    assert_eq!(err.owner(), crate::acp::Owner::User, "{err}");
+    // The same words after the agent answered are its own output.
+    let after = run_script(
+        "gemini-text",
+        Script {
+            stdout: b"I ran the tests; they fail.\n".to_vec(),
+            stderr: refusal.to_vec(),
+            exit: 1,
+            ..Script::default()
+        },
+        RunnerOptions::default(),
+    )
+    .await;
+    let err = after.result.unwrap_err();
+    assert_ne!(err.owner(), crate::acp::Owner::User, "{err}");
 }

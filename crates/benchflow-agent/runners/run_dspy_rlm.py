@@ -50,7 +50,7 @@ def int_option(name: str, default: int) -> int:
 
 
 class Tools:
-    """Harbor's seven tools, acting on this machine in the working folder."""
+    """The seven tools of the dspy-rlm agent, acting on this machine in the working folder."""
 
     def __init__(self, events: bf_events.Events, cwd: Path, timeout: int) -> None:
         self.events = events

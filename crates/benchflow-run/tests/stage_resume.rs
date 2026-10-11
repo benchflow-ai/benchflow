@@ -111,6 +111,10 @@ impl Sandbox for FakeSandbox {
             ok("BF owned root\n")
         } else if c.contains("BF stage-ready") {
             ok("BF stage-ready\n")
+        } else if c.contains("BF tree placed") {
+            ok("BF tree placed\n")
+        } else if c.contains("BF baseline-added") {
+            ok("BF baseline-added 0\n")
         } else if c.contains("BF staged") {
             ok("BF staged\n")
         } else if c.contains("BF placement done") {

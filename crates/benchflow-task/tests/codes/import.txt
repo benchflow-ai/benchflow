@@ -1,10 +1,14 @@
 P001 error: not a task: no task.md or task.toml here
   at .
-  help: a task is a folder with task.md (or Harbor's task.toml); `bench new <name>` creates one
+  help: a task is a folder with task.md (or a split-layout task.toml); `bench new <name>` creates one
 
 P002 error: cannot read a file of the package: environment/data/fixtures.db: Permission denied (os error 13)
   at .
   help: make it readable (`chmod a+r <file>`), or remove it if it does not belong to the task
+
+P015 warning: output /app/out: its exclude pattern ".*" matches ".", a folder's path relative to itself, so if the output is a folder it captures nothing (BenchFlow 0.8 skipped it too)
+  at task.toml
+  help: to skip hidden files inside the folder, write ".?*", which does not match "."
 
 X100 warning: unknown key `network_mod` in [environment] is ignored
   at task.toml:7
@@ -26,7 +30,7 @@ X103 warning: `allow_internet` in [environment] is ignored because `network_mode
   at task.toml:8
   help: remove `allow_internet`
 
-X104 warning: `sandbox` is BenchFlow 0.8's spelling of `environment`; Harbor ignores it
+X104 warning: `sandbox` is BenchFlow 0.8's spelling of `environment`; bench and 0.8 read it, other split-layout runners ignore it
   at task.toml:6
   help: rename it to `environment` so every harness reads it
 
@@ -68,7 +72,7 @@ X204 error: task.md has the section ## prompt twice
   at task.md:10
   help: merge the two sections into one
 
-X205 error: unknown task.md profile "code-changes"; did you mean "code-change"? known profiles: acceptance-live, code-change, harbor-compatible, leaderboard-local, multi-agent, reward-kit
+X205 error: unknown task.md profile "code-changes"; did you mean "code-change"? known profiles: acceptance-live, code-change, leaderboard-local, multi-agent, reward-kit
   at task.md:2
 
 X206 error: verifier/verifier.md is invalid: verifier.default_strategy "tests" must name one of verifier.strategies: deterministic

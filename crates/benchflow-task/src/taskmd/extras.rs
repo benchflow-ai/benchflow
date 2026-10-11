@@ -14,6 +14,7 @@ use serde_json::{Map, Value};
 use super::TaskDocument;
 use super::pyfmt::str_of;
 use super::pyval::{duration_s, num, obj, table};
+use crate::diag::Diagnostic;
 use crate::extras::{
     Combine, Extras, Gate, Hook, Mount, Service, StepSpec, Steps, Unreached, VerifierImage,
 };
@@ -93,8 +94,15 @@ pub(super) fn mounts(
     out
 }
 
-/// `[[sandbox.services]]` as services.
-fn services(v: &Value, root: &Path, refused: &mut Vec<Unsupported>) -> Vec<Service> {
+/// `[[sandbox.services]]` as services, with a warning (P013) for each
+/// command string Compose cuts at a shell operator and an error (P014) for
+/// each one it refuses.
+fn services(
+    v: &Value,
+    root: &Path,
+    refused: &mut Vec<Unsupported>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<Service> {
     let Value::Array(items) = v else {
         return Vec::new();
     };
@@ -143,14 +151,23 @@ fn services(v: &Value, root: &Path, refused: &mut Vec<Unsupported>) -> Vec<Servi
         };
         let command = match s.get("command") {
             None | Some(Value::Null) => Vec::new(),
-            Some(Value::String(c)) => match crate::compose::split_words(c) {
-                Some(words) => words,
-                None => {
-                    refuse(
-                        refused,
-                        format!("{where_} command"),
-                        "its quotes do not close",
-                    );
+            // 0.8 copied the string into a Compose file, and Compose split it.
+            Some(Value::String(c)) => match crate::shellwords::parse(c) {
+                Ok(split) => {
+                    if let Some(dropped) = split.dropped {
+                        let field = format!("{where_} command");
+                        diagnostics.push(
+                            crate::compose::cut_command(&field, &split.words, dropped)
+                                .in_file("task.md"),
+                        );
+                    }
+                    split.words
+                }
+                Err(why) => {
+                    let field = format!("{where_} command");
+                    diagnostics
+                        .push(crate::compose::unsplittable_command(&field, why).in_file("task.md"));
+                    refuse(refused, field, crate::compose::refused_command(why));
                     continue;
                 }
             },
@@ -455,7 +472,9 @@ pub(super) fn read(
             "[sandbox] services",
             "[[sandbox.services]] and [sandbox] compose both declare services; declare them in one place",
         ),
-        (Some(s), None) => extras.services = services(s, root, refused),
+        (Some(s), None) => {
+            extras.services = services(s, root, refused, &mut extras.diagnostics);
+        }
         (None, Some(Value::String(path))) if path == COMPOSE_PATH => {
             let compose = crate::compose::read(root, "sandbox", COMPOSE_PATH, refused);
             extras.services = compose.services;

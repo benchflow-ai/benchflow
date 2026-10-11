@@ -109,9 +109,23 @@ fn many(views: &[JobView]) -> Result<Exit> {
     // When the table is wider than the terminal, each job gets two lines.
     let mut blocks = Vec::new();
     for v in views {
-        let total = v.records.len();
-        let passed = v.records.iter().filter(|r| r.passed == Some(true)).count();
+        // Trials the user stopped (Ctrl-C) are not counted, as in `one`.
+        let tally = benchflow_run::record::Tally::of(&v.records);
+        let (total, passed) = (tally.counted, tally.passed);
         let rate = Rate::new(passed, total);
+        let never = v.never_ran();
+        // With trials stopped or never run, the rate is partial: no
+        // interval, as on the Score line.
+        let partial = tally.stopped + never > 0;
+        let rate_text = if partial {
+            if total > 0 {
+                format!("{:.1}% partial", 100.0 * rate.value)
+            } else {
+                "partial".to_string()
+            }
+        } else {
+            rate.display()
+        };
         let rewards: Vec<f64> = v.records.iter().filter_map(|r| r.reward).collect();
         let agent = v.agent();
         // A `bench test` job mixes the oracle, an empty run, controls, and
@@ -123,19 +137,30 @@ fn many(views: &[JobView]) -> Result<Exit> {
         } else {
             fmt_reward(rewards.iter().sum::<f64>() / rewards.len() as f64)
         };
-        let when = v.modified().map(crate::ui::ago).unwrap_or_default();
+        let when = if v.running() {
+            "running".to_string()
+        } else {
+            v.modified().map(crate::ui::ago).unwrap_or_default()
+        };
         let score = if test_plan {
             dim("test plan")
         } else {
-            format!("{passed} · {}", rate.display())
+            format!("{passed} · {rate_text}")
         };
         let detail = if test_plan {
             format!("{} · {}", plural(total, "trial"), dim("test plan"))
         } else {
             format!(
-                "{} · {passed} passed · {} · mean reward {mean}",
+                "{}{}{} · {passed} passed · {rate_text} · mean reward {mean}",
                 plural(total, "trial"),
-                rate.display()
+                match v.records.len() - total {
+                    0 => String::new(),
+                    n => format!(" + {n} stopped"),
+                },
+                match never {
+                    0 => String::new(),
+                    n => format!(" + {n} never ran"),
+                }
             )
         };
         blocks.push(format!(
@@ -148,7 +173,7 @@ fn many(views: &[JobView]) -> Result<Exit> {
             ui::path(&v.dir),
             agent_label(&agent),
             model,
-            total.to_string(),
+            trials_cell(total, v.records.len() - total, never),
             score,
             mean,
             when,
@@ -165,6 +190,19 @@ fn many(views: &[JobView]) -> Result<Exit> {
         dim("`bench results <job>` for one job; `bench results <a> <b>` to compare.")
     );
     Ok(Exit::Ok)
+}
+
+/// A job's trial count, with the ones the user stopped apart: `5`, or
+/// `3 + 2 stopped`.
+fn trials_cell(counted: usize, stopped: usize, never: usize) -> String {
+    let mut cell = counted.to_string();
+    if stopped > 0 {
+        cell.push_str(&format!(" + {stopped} stopped"));
+    }
+    if never > 0 {
+        cell.push_str(&format!(" + {never} never ran"));
+    }
+    cell
 }
 
 /// Whether a job's agents are a `bench test` plan (the oracle beside
@@ -209,9 +247,6 @@ fn agent_label(agents: &str) -> String {
 
 fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
     let stats = task_stats(&v.records);
-    let total = v.records.len();
-    let passed = v.records.iter().filter(|r| r.passed == Some(true)).count();
-    let rate = Rate::new(passed, total);
     if ui().json {
         let mut j = job_json(v);
         j["tasks"] = json!(stats);
@@ -231,13 +266,14 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
         v.agent(),
         v.model().map(|m| format!(" · {m}")).unwrap_or_default()
     );
-    say!(
-        "  {} {}/{} passed · {}",
-        bold("Score"),
-        passed,
-        total,
-        rate.display()
-    );
+    say!("{}", engine::score_line(&v.records));
+    if v.running() {
+        say!(
+            "  {} {}",
+            dim("running"),
+            dim("a bench run is still running this job; these are the trials finished so far")
+        );
+    }
     let all: Vec<&TrialRecord> = v.records.iter().collect();
     if let Some(u) = engine::usage(&all) {
         say!("  {}  {u}", dim("Usage"));
@@ -308,7 +344,7 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
     // Failures by cause.
     let mut causes: std::collections::BTreeMap<String, Vec<&benchflow_run::record::TrialRecord>> =
         Default::default();
-    for r in &v.records {
+    for r in v.records.iter().filter(|r| !r.stopped()) {
         if let Some(p) = &r.problem {
             causes.entry(p.code.clone()).or_default().push(r);
         }
@@ -326,6 +362,18 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
         say!(
             "{}",
             crate::ui::wrap(&format!("      {} ", dim("next:")), &p.next, 12, width)
+        );
+    }
+    for line in engine::stopped_lines(&v.records) {
+        say!("{line}");
+    }
+    let never = v.never_ran();
+    if never > 0 {
+        say!(
+            "  {} {} planned never ran (the run was drained or stopped first, or a login ran out); \
+             running the job's command again runs them",
+            warn_mark(),
+            plural(never, "trial")
         );
     }
     Ok(Exit::Ok)
@@ -391,7 +439,7 @@ fn compare(views: &[JobView]) -> Result<Exit> {
                         "  A − {b}: {:+.3} mean reward over {} ({})",
                         p.diff,
                         plural(p.tasks, "shared task"),
-                        paired_interval(p.tasks, p.low, p.high)
+                        paired_interval_text(p)
                     ),
                     format!(
                         "A better on {}, {b} better on {}, tied on {}",
@@ -416,7 +464,11 @@ fn cost_cell(recs: &[&TrialRecord]) -> String {
     let costs: Vec<Option<f64>> = recs.iter().map(|r| r.usage.cost_usd).collect();
     let tokens: u64 = recs
         .iter()
-        .map(|r| r.usage.input_tokens + r.usage.output_tokens)
+        .map(|r| {
+            // Every kind of token, as the run's usage line counts them.
+            let u = &r.usage;
+            u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens
+        })
         .sum();
     match costs.iter().flatten().copied().reduce(|a, b| a + b) {
         Some(sum) if costs.iter().all(Option::is_some) => ui::usd(sum),
@@ -465,17 +517,21 @@ fn status_cell(s: Status, passed: Option<bool>) -> String {
 }
 
 fn job_json(v: &JobView) -> serde_json::Value {
-    let total = v.records.len();
-    let passed = v.records.iter().filter(|r| r.passed == Some(true)).count();
-    let rate = Rate::new(passed, total);
+    // The trials the score counts, as the text and summary.json count them.
+    let tally = benchflow_run::record::Tally::of(&v.records);
+    let rate = Rate::new(tally.passed, tally.counted);
     json!({
         "dir": v.dir,
         "agent": v.agent(),
         "model": v.model(),
-        "trials": total,
-        "passed": passed,
+        "trials": tally.counted,
+        "passed": tally.passed,
         "pass_rate": rate,
-        "scored": v.records.iter().filter(|r| r.status == Status::Scored).count(),
+        "scored": tally.scored,
+        "stopped": tally.stopped,
+        "never_ran": v.never_ran(),
+        // Stopped or never-run trials: the pass rate is not the whole job's.
+        "partial": tally.stopped + v.never_ran() > 0,
         // What the trials that recorded a cost cost, and how many did:
         // null, not 0, when none did.
         "cost_usd": v.records.iter().filter_map(|r| r.usage.cost_usd).reduce(|a, b| a + b),
@@ -483,28 +539,15 @@ fn job_json(v: &JobView) -> serde_json::Value {
     })
 }
 
-/// The paired difference's interval, or why there is none: one shared task
-/// has no spread to make one from (the bounds would both be the difference).
-fn paired_interval(tasks: usize, low: f64, high: f64) -> String {
-    if tasks < 2 {
-        "no interval from one task".to_string()
-    } else {
-        format!("95% CI {low:+.3} to {high:+.3}")
-    }
-}
-
-#[cfg(test)]
-mod paired_tests {
-    #[test]
-    fn one_shared_task_gives_no_interval() {
-        assert_eq!(
-            super::paired_interval(1, 0.0, 0.0),
-            "no interval from one task"
-        );
-        assert_eq!(
-            super::paired_interval(3, -0.5, 0.25),
-            "95% CI -0.500 to +0.250"
-        );
+/// The paired difference's interval, or why there is none.
+fn paired_interval_text(p: &benchflow_run::metrics::Paired) -> String {
+    match (p.low, p.high) {
+        (Some(low), Some(high)) => format!("95% CI {low:+.3} to {high:+.3}"),
+        _ => format!(
+            "no interval: {}",
+            p.no_interval
+                .unwrap_or(benchflow_run::metrics::TOO_FEW_TASKS)
+        ),
     }
 }
 

@@ -200,7 +200,10 @@ impl Trial<'_> {
                 None => {
                     exec.command =
                         format!("{}{}", hardening::verifier_env_prefix(&unset), hook.run);
-                    exec = exec.cwd(self.workdir.clone()).envs(env.clone());
+                    exec = exec
+                        .cwd(self.workdir.clone())
+                        .envs(env.clone())
+                        .unset(unset.iter().copied());
                     self.sb()
                 }
                 Some(name) => match self.x.services.iter().find(|(s, _)| s == name) {
@@ -311,7 +314,11 @@ pub(super) fn write_artifacts(unpacked: &Path, outputs: &[Output], artifacts: &P
         let from = unpacked.join(o.path.trim_start_matches('/'));
         let to = artifacts.join(&o.save_as);
         let exclude = &o.exclude;
-        let (kind, status) = if from.is_dir() {
+        let (kind, status) = if (from.is_dir() || from.is_file()) && source_excluded(&from, exclude)
+        {
+            let kind = if from.is_dir() { "directory" } else { "file" };
+            (kind, "excluded")
+        } else if from.is_dir() {
             let copied = copy_tree(&from, &to, exclude);
             ("directory", if copied == 0 { "empty" } else { "ok" })
         } else if from.is_file() {
@@ -339,6 +346,23 @@ pub(super) fn write_artifacts(unpacked: &Path, outputs: &[Output], artifacts: &P
         artifacts.join("manifest.json"),
         serde_json::to_string_pretty(&manifest).unwrap_or_default(),
     );
+}
+
+/// Whether an output's own `exclude` patterns match the output itself, as
+/// 0.8's capture checks its source before walking it: a folder by its name
+/// or as `.` (its path relative to itself), a file by its name. Such an
+/// output is not copied at all (`{path = "/app/run.log", exclude =
+/// ["*.log"]}` captures nothing in 0.8).
+fn source_excluded(from: &Path, exclude: &[String]) -> bool {
+    use benchflow_task::fnmatch::fnmatchcase;
+    let name = from
+        .file_name()
+        .map(|f| f.to_string_lossy())
+        .unwrap_or_default();
+    let relative = if from.is_dir() { "." } else { &*name };
+    exclude
+        .iter()
+        .any(|p| fnmatchcase(relative, p) || fnmatchcase(&name, p))
 }
 
 /// Copy regular files under `from` to `to`, skipping what an `exclude`
@@ -467,6 +491,63 @@ mod tests {
                 ("artifacts/report.txt", "file", "ok"),
                 ("artifacts/logs", "directory", "ok"),
                 ("artifacts/missing", "file", "failed")
+            ]
+        );
+    }
+
+    /// 0.8 matches `exclude` against the output itself too: a file output
+    /// whose name matches, or a folder whose name (or `.`) does, captures
+    /// nothing.
+    #[test]
+    fn an_output_its_own_exclude_matches_is_not_copied() {
+        let d = tempfile::tempdir().unwrap();
+        let unpacked = d.path().join("outputs");
+        for f in [
+            "app/run.log",
+            "app/node_modules/x.js",
+            "app/logs/a.txt",
+            "app/keep/b.txt",
+        ] {
+            let p = unpacked.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+        }
+        let out = |path: &str, save_as: &str, exclude: &[&str]| Output {
+            path: path.into(),
+            save_as: save_as.into(),
+            max_bytes: None,
+            exclude: exclude.iter().map(|s| s.to_string()).collect(),
+        };
+        let artifacts = d.path().join("artifacts");
+        write_artifacts(
+            &unpacked,
+            &[
+                out("/app/run.log", "run.log", &["*.log"]),
+                out("/app/node_modules/", "nm", &["node_modules"]),
+                out("/app/logs", "logs", &["*"]),
+                out("/app/keep", "keep", &["*.log"]),
+            ],
+            &artifacts,
+        );
+        assert!(!artifacts.join("run.log").exists());
+        assert!(!artifacts.join("nm").exists());
+        assert!(!artifacts.join("logs/a.txt").exists());
+        assert!(artifacts.join("keep/b.txt").is_file());
+        let m: Vec<Value> = serde_json::from_str(
+            &std::fs::read_to_string(artifacts.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let statuses: Vec<(&str, &str)> = m
+            .iter()
+            .map(|e| (e["type"].as_str().unwrap(), e["status"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                ("file", "excluded"),
+                ("directory", "excluded"),
+                ("directory", "excluded"),
+                ("directory", "ok")
             ]
         );
     }

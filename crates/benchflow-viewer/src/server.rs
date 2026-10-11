@@ -387,11 +387,14 @@ fn view_response(
             .map(views::read_trial)
             .collect();
         let title = state.title();
-        let data = match view {
+        let mut data = match view {
             View::Compare => views::compare(&trials, &title, capped, &query),
             View::Outcomes => views::outcomes(&trials, &title, capped, &query),
             View::Pareto => views::pareto(&trials, &title, capped, &query),
         };
+        if matches!(view, View::Compare | View::Outcomes) {
+            views::mark_never_ran(&mut data, &views::never_ran_by_job(&runs));
+        }
         if page {
             write_view_page(
                 writer,

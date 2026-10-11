@@ -15,7 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::cli::{Cli, Flavor};
 use super::{DockerProvider, DockerSandbox};
-use crate::shell::login_free_shell;
+use crate::shell::command_shell;
 use crate::{
     EXEC_ID_ENV, Exec, Image, ImageSource, ImageSpec, NetworkPolicy, OWNER_LABEL, Provider,
     Sandbox, SandboxError, SandboxSpec, owner,
@@ -514,9 +514,11 @@ async fn create_runs_one_container_with_limits_labels_and_a_private_env_file() {
     expected.push(sandbox.id().to_string());
     for (k, v) in [
         ("ai.benchflow.host", owner::hostname().to_string()),
+        ("ai.benchflow.install", owner::install().to_string()),
         ("ai.benchflow.name", "trial-1".to_string()),
         ("ai.benchflow.owner", owner::scope()),
         ("ai.benchflow.pid", std::process::id().to_string()),
+        ("ai.benchflow.uid", owner::user()),
         ("custom", "1".to_string()),
     ] {
         expected.push("--label".into());
@@ -544,11 +546,11 @@ async fn create_runs_one_container_with_limits_labels_and_a_private_env_file() {
         "-e",
         "MULTI",
         "--entrypoint",
-        "sh",
+        "/bin/sh",
         "ubuntu:24.04",
         "-c",
     ]));
-    expected.push(super::run::KEEPALIVE.to_string());
+    expected.push(super::run::keepalive());
     assert_eq!(run.args, expected);
 
     // The values never reach a command line; the file was private and is gone.
@@ -634,8 +636,8 @@ async fn exec_passes_user_cwd_and_env_and_captures_both_streams() {
     let env_path = call.args[7].clone();
     let mut expected = strings(&["exec", "-i", "-u", "agent", "-w", "/work", "--env-file"]);
     expected.push(env_path);
-    expected.extend(strings(&["bf-test", "sh", "-c"]));
-    expected.push(login_free_shell("echo hi"));
+    expected.extend(strings(&["bf-test", "/bin/sh", "-c"]));
+    expected.push(command_shell("echo hi", &[]));
     assert_eq!(call.args, expected);
     let env_file = call.env_file.clone().unwrap();
     let mut lines = env_file.lines();
@@ -658,7 +660,7 @@ async fn exec_passes_user_cwd_and_env_and_captures_both_streams() {
 async fn a_timeout_kills_the_command_inside_the_container() {
     let fake = Fake::new(
         r#"case "$1" in exec)
-  if [ "$2" = "-u" ] && [ "$3" = "0" ] && [ "$7" = "sh" ]; then exit 0; fi
+  if [ "$2" = "-u" ] && [ "$3" = "0" ] && [ "$4" = "-e" ]; then exit 0; fi
   echo started; exec sleep 30;;
 esac"#,
     );
@@ -689,14 +691,13 @@ esac"#,
         .to_string();
     let kill = calls
         .iter()
-        .find(|c| c.args.get(6).map(String::as_str) == Some("sh"))
+        .find(|c| c.args.get(1).map(String::as_str) == Some("-u"))
         .expect("the kill ran");
-    let path = format!("PATH={}", crate::shell::SYSTEM_PATH);
+    assert_eq!(kill.args, super::exec::kill_args("bf-test", "0", &exec_id));
     assert_eq!(
-        &kill.args[..8],
-        strings(&["exec", "-u", "0", "-e", &path, "bf-test", "sh", "-c"]).as_slice()
+        kill.args.last().unwrap(),
+        &crate::shell::kill_tagged(&exec_id)
     );
-    assert_eq!(kill.args[8], crate::shell::kill_tagged(&exec_id));
 }
 
 /// Root in a container cannot read another user's `/proc/<pid>/environ`
@@ -707,7 +708,7 @@ esac"#,
 async fn a_timeout_kills_a_users_command_as_that_user_then_as_root() {
     let fake = Fake::new(
         r#"case "$1" in exec)
-  if [ "$2" = "-u" ] && [ "$7" = "sh" ]; then exit 0; fi
+  if [ "$2" = "-u" ] && [ "$4" = "-e" ]; then exit 0; fi
   exec sleep 30;;
 esac"#,
     );
@@ -721,27 +722,24 @@ esac"#,
         .await
         .unwrap();
     assert!(out.timed_out);
-    // The kills are the calls that run `sh` (the fake's `$7`). Under load
+    // The kills are the calls that run `/bin/sh` (the fake's `$7`). Under load
     // the timed-out command can be killed before its fake records the call,
     // so only the kills are counted.
     let calls = fake.calls();
     let kills: Vec<_> = calls
         .iter()
-        .filter(|c| {
-            c.args.get(1).map(String::as_str) == Some("-u")
-                && c.args.get(6).map(String::as_str) == Some("sh")
-        })
+        .filter(|c| c.args.get(1).map(String::as_str) == Some("-u"))
         .collect();
     assert_eq!(kills.len(), 2, "{calls:?}");
-    let path = format!("PATH={}", crate::shell::SYSTEM_PATH);
-    assert_eq!(
-        &kills[0].args[..6],
-        strings(&["exec", "-u", "agent", "-e", &path, "bf-test"]).as_slice()
-    );
-    assert_eq!(
-        &kills[1].args[..6],
-        strings(&["exec", "-u", "0", "-e", &path, "bf-test"]).as_slice()
-    );
+    let users: Vec<_> = kills.iter().map(|c| c.args[2].as_str()).collect();
+    assert_eq!(users, ["agent", "0"]);
+    for kill in kills {
+        let at = kill.args.iter().position(|a| a == "bf-test").unwrap();
+        assert_eq!(
+            &kill.args[3..at],
+            super::exec::plumbing_env_args().as_slice()
+        );
+    }
 }
 
 #[tokio::test]
@@ -753,6 +751,39 @@ async fn exec_reports_a_vanished_container_as_an_error() {
         matches!(&err, SandboxError::Transport(m) if m.contains("no longer running")),
         "{err:?}"
     );
+}
+
+/// Reviews of D4's branch: whether a container still ran was asked of a
+/// command inside it, which an agent's own `sh` could answer with the
+/// CLI's "No such container". The CLI's `inspect` says it.
+#[tokio::test]
+async fn the_cli_says_whether_a_container_runs() {
+    let running = Fake::new(r#"case "$1" in inspect) echo true;; *) exit 9;; esac"#);
+    assert_eq!(
+        running.sandbox().presence().await.unwrap(),
+        crate::Presence::Running
+    );
+    let inspect = &running.calls_to("inspect")[0];
+    assert_eq!(
+        inspect.args,
+        strings(&["inspect", "--format", "{{.State.Running}}", "bf-test"])
+    );
+    // Review of rust/d4-chaos (Outcomes 3): a container that exists but
+    // stopped (root code inside can stop it) is not lost.
+    let exited = Fake::new(r#"case "$1" in inspect) echo false;; esac"#);
+    assert_eq!(
+        exited.sandbox().presence().await.unwrap(),
+        crate::Presence::Stopped
+    );
+    let removed = Fake::new(r#"echo 'Error: No such object: bf-test' >&2; exit 1"#);
+    assert_eq!(
+        removed.sandbox().presence().await.unwrap(),
+        crate::Presence::Gone
+    );
+    let daemon = Fake::new(
+        r#"echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"#,
+    );
+    assert!(daemon.sandbox().presence().await.is_err());
 }
 
 #[tokio::test]
@@ -820,7 +851,7 @@ async fn spawn_gives_live_pipes_and_the_exit_code() {
 async fn killing_a_spawned_process_kills_it_inside_the_container() {
     let fake = Fake::new(
         r#"case "$1" in exec)
-  if [ "$2" = "-u" ] && [ "$3" = "0" ] && [ "$7" = "sh" ]; then exit 0; fi
+  if [ "$2" = "-u" ] && [ "$3" = "0" ] && [ "$4" = "-e" ]; then exit 0; fi
   echo ready; exec sleep 30;;
 esac"#,
     );
@@ -835,19 +866,10 @@ esac"#,
     assert_eq!(code, 128 + 9);
     let calls = fake.calls();
     assert_eq!(calls.len(), 2);
-    assert_eq!(
-        &calls[1].args[..7],
-        strings(&[
-            "exec",
-            "-u",
-            "0",
-            "-e",
-            &format!("PATH={}", crate::shell::SYSTEM_PATH),
-            "bf-test",
-            "sh"
-        ])
-        .as_slice()
-    );
+    let mut expected = strings(&["exec", "-u", "0"]);
+    expected.extend(super::exec::plumbing_env_args());
+    expected.extend(strings(&["bf-test", "/bin/sh"]));
+    assert_eq!(&calls[1].args[..expected.len()], expected.as_slice());
 }
 
 // --- files ----------------------------------------------------------------
@@ -895,21 +917,15 @@ async fn upload_pipes_a_tar_into_tar_as_root() {
         .await
         .unwrap();
     let call = &fake.calls()[0];
-    assert_eq!(
-        call.args,
-        strings(&[
-            "exec",
-            "-i",
-            "-u",
-            "0",
-            "-e",
-            &format!("PATH={}", crate::shell::SYSTEM_PATH),
-            "bf-test",
-            "sh",
-            "-c",
-            "mkdir -p /app/data && tar -xf - -C /app/data"
-        ])
-    );
+    let mut expected = strings(&["exec", "-i", "-u", "0"]);
+    expected.extend(super::exec::plumbing_env_args());
+    expected.extend(strings(&[
+        "bf-test",
+        "/bin/sh",
+        "-c",
+        "umask 022; mkdir -p /app/data && tar -xf - -C /app/data",
+    ]));
+    assert_eq!(call.args, expected);
     let entries = tar_entries(call.stdin.as_deref().unwrap());
     assert_eq!(
         entries,
@@ -942,8 +958,8 @@ async fn uploading_a_file_lands_it_at_the_named_path() {
         .unwrap();
     let call = &fake.calls()[0];
     assert_eq!(
-        call.args[9],
-        "mkdir -p /opt/tools && tar -xf - -C /opt/tools"
+        call.args.last().unwrap(),
+        "umask 022; mkdir -p /opt/tools && tar -xf - -C /opt/tools"
     );
     let entries = tar_entries(call.stdin.as_deref().unwrap());
     assert_eq!(entries.len(), 1);
@@ -959,8 +975,8 @@ async fn write_file_sends_one_entry_with_its_mode() {
         .unwrap();
     let call = &fake.calls()[0];
     assert_eq!(
-        call.args[9],
-        "mkdir -p /logs/agent && tar -xf - -C /logs/agent"
+        call.args.last().unwrap(),
+        "umask 022; mkdir -p /logs/agent && tar -xf - -C /logs/agent"
     );
     assert_eq!(
         tar_entries(call.stdin.as_deref().unwrap()),
@@ -984,12 +1000,14 @@ async fn upload_reports_an_image_without_tar() {
     );
 }
 
-/// A fake whose `exec -u 0 <c> tar -cf - -C <parent> <name>` archives
-/// `$dir/root<parent>/<name>` with the host's tar.
+/// A fake whose `exec -u 0 ... <c> tar -cf - -C <parent> <name>` archives
+/// `$dir/root<parent>/<name>` with the host's tar (the last two arguments).
 fn download_fake() -> Fake {
     Fake::new(
         r#"case "$1" in exec)
-  COPYFILE_DISABLE=1 exec tar -cf - -C "$dir/root${11}" "${12}";;
+  for a; do bf_pp=$bf_p; bf_p=$bf_n; bf_n=$a; done
+  [ "$bf_p" = "--" ] || { echo "no -- before the name" >&2; exit 2; }
+  COPYFILE_DISABLE=1 exec tar -cf - -C "$dir/root$bf_pp" -- "$bf_n";;
 esac"#,
     )
 }
@@ -1017,23 +1035,12 @@ async fn download_unpacks_files_and_folders_with_modes_and_skips_the_rest() {
     let dst = tempfile::tempdir().unwrap();
     let local = dst.path().join("got");
     fake.sandbox().download("/srv/out", &local).await.unwrap();
-    assert_eq!(
-        fake.calls()[0].args,
-        strings(&[
-            "exec",
-            "-u",
-            "0",
-            "-e",
-            &format!("PATH={}", crate::shell::SYSTEM_PATH),
-            "bf-test",
-            "tar",
-            "-cf",
-            "-",
-            "-C",
-            "/srv",
-            "out"
-        ])
-    );
+    let mut expected = strings(&["exec", "-u", "0"]);
+    expected.extend(super::exec::plumbing_env_args());
+    expected.extend(strings(&[
+        "bf-test", "tar", "-cf", "-", "-C", "/srv", "--", "out",
+    ]));
+    assert_eq!(fake.calls()[0].args, expected);
     assert_eq!(
         std::fs::read_to_string(local.join("a.txt")).unwrap(),
         "alpha"
@@ -1059,6 +1066,65 @@ async fn downloading_one_file_writes_it_at_the_local_path() {
     assert_eq!(std::fs::read_to_string(&local).unwrap(), "1");
 }
 
+/// Review of rust/d4-chaos (Outcomes 1): the verifier's folder was copied
+/// without a cap, so it could fill this machine's disk; over the cap the
+/// copy fails as too large.
+#[tokio::test]
+async fn a_capped_download_stops_at_its_cap() {
+    let fake = download_fake();
+    std::fs::create_dir_all(fake.path("root/logs/verifier")).unwrap();
+    std::fs::write(fake.path("root/logs/verifier/big.bin"), vec![7u8; 4096]).unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let err = fake
+        .sandbox()
+        .download_capped("/logs/verifier", &dst.path().join("v"), 1024)
+        .await
+        .unwrap_err();
+    let SandboxError::Io { source, .. } = &err else {
+        panic!("wrong error: {err:?}")
+    };
+    assert_eq!(source.kind(), std::io::ErrorKind::FileTooLarge);
+    fake.sandbox()
+        .download_capped("/logs/verifier", &dst.path().join("w"), 1 << 20)
+        .await
+        .unwrap();
+}
+
+/// Review of rust/d4-chaos (Outcomes 8): a copy that streamed nothing read
+/// as "the folder is missing" whatever the CLI said.
+#[tokio::test]
+async fn a_copy_that_fails_before_streaming_is_not_a_missing_folder() {
+    let fake = Fake::new(
+        r#"echo 'Error response from daemon: Container bf-test is restarting, wait until the container is running' >&2; exit 1"#,
+    );
+    let dst = tempfile::tempdir().unwrap();
+    let err = fake
+        .sandbox()
+        .download("/logs/verifier", &dst.path().join("v"))
+        .await
+        .unwrap_err();
+    assert!(
+        !matches!(&err, SandboxError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound),
+        "{err:?}"
+    );
+}
+
+/// Review of rust/d4-chaos (Outcomes 2): tar refusing a file in the
+/// container is the copied files' failure, not the connection's.
+#[tokio::test]
+async fn tar_refusing_a_file_is_a_content_failure() {
+    let fake = Fake::new(
+        r#"echo 'tar: verifier/secret: Cannot open: Permission denied' >&2; echo 'tar: Exiting with failure status due to previous errors' >&2; exit 2"#,
+    );
+    let dst = tempfile::tempdir().unwrap();
+    let err = fake
+        .sandbox()
+        .download("/logs/verifier", &dst.path().join("v"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SandboxError::Content(_)), "{err:?}");
+}
+
 #[tokio::test]
 async fn downloading_a_missing_path_is_not_found() {
     let fake = download_fake();
@@ -1073,6 +1139,33 @@ async fn downloading_a_missing_path_is_not_found() {
         panic!("wrong error: {err:?}")
     };
     assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+}
+
+/// A download whose exec fails before tar sends anything (the container
+/// stopped, the daemon failed this exec) is the sandbox's failure, not a
+/// missing file: the judge would otherwise show the agent's work as gone.
+/// A name the agent started with `-` is a name, not an option. Guards the
+/// D7d fixes of REVIEW-OUTCOMES (d7c) H2 and M1.
+#[tokio::test]
+async fn a_failed_exec_is_not_a_missing_file_and_a_dash_name_downloads() {
+    let fake = Fake::new(
+        r#"case "$1" in exec)
+  echo 'Error response from daemon: container bf-test is not running' >&2; exit 1;;
+esac"#,
+    );
+    let dst = tempfile::tempdir().unwrap();
+    let err = fake
+        .sandbox()
+        .download("/app/report.md", &dst.path().join("x"))
+        .await
+        .unwrap_err();
+    assert!(!err.is_missing_in_sandbox(), "{err:?}");
+    let fake = download_fake();
+    std::fs::create_dir_all(fake.path("root/app")).unwrap();
+    std::fs::write(fake.path("root/app/-v.md"), "mine").unwrap();
+    let local = dst.path().join("dash");
+    fake.sandbox().download("/app/-v.md", &local).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "mine");
 }
 
 // --- destroy and sweep ----------------------------------------------------
@@ -1095,6 +1188,8 @@ async fn sweep_removes_only_containers_of_dead_processes_on_this_host() {
         serde_json::json!({
             OWNER_LABEL: owner::scope(),
             crate::HOST_LABEL: host,
+            owner::INSTALL_LABEL: owner::install(),
+            owner::USER_LABEL: owner::user(),
             crate::PID_LABEL: pid.to_string(),
         })
         .to_string()

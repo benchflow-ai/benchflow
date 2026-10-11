@@ -38,6 +38,11 @@ impl Template {
     pub fn paths(&self) -> impl Iterator<Item = &'static str> {
         self.files.iter().map(|(path, _)| *path)
     }
+
+    /// The files the template writes: (path, text).
+    pub fn files(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
+        self.files.iter().copied()
+    }
 }
 
 /// One template file: its path in the task, and its text.
@@ -77,7 +82,7 @@ static TEMPLATES: &[Template] = &[
     },
     Template {
         name: "split",
-        description: "the split layout Harbor reads: task.toml, instruction.md, environment/, tests/, solution/",
+        description: "the split layout: task.toml, instruction.md, environment/, tests/, solution/",
         files: &[
             template_file!("split", "task.toml"),
             template_file!("split", "instruction.md"),

@@ -44,17 +44,17 @@ pub const AGENTS: &[(&str, &[&str], &str)] = &[
     (
         BUILTIN,
         &[],
-        "BenchFlow's tool loop (bash, view, replace, write, submit), after Karotte's builtin agent; the model is called from the host",
+        "BenchFlow's tool loop (bash, view, replace, write, submit); the model is called from the host",
     ),
     (
         TERMINUS_2,
         &["terminus2"],
-        "Terminus-2 from Harbor: keystrokes to a tmux session, JSON replies, context summarization; the model is called from the host",
+        "Terminus-2: keystrokes to a tmux session, JSON replies, context summarization; the model is called from the host",
     ),
     (
         COMPUTER_1,
         &["computer1"],
-        "computer-1 from Harbor: a screenshot of the sandbox's desktop, one action from a vision model, xdotool; needs a task image with a display",
+        "computer-1: a screenshot of the sandbox's desktop, one action from a vision model, xdotool; needs a task image with a display",
     ),
 ];
 

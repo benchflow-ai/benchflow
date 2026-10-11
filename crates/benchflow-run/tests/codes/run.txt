@@ -165,6 +165,11 @@ R314 · the agent's problem · handing off to the verifier · BenchFlow's state 
   next: read the agent's trajectory for what it did to that folder; if nothing it did explains it, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder
   detail: BF state-owner /var/lib/benchflow/baseline/list
 
+R315 · the task's problem · handing off to the verifier · the workdir cannot be given to root before grading
+  giving the workdir to the verifier failed: the workdir folder itself could not change owner (exit 3)
+  next: add the user to the image, or fix [verifier] user; keep the workdir off a read-only mount, in its own folder
+  detail: chown: changing ownership of '/app/data': Read-only file system
+
 R106 · the task's problem · starting the sandbox · a service beside the sandbox exits as it starts
   service api did not start: api exited at once (exit code 1): Error: Cannot find module '/srv/server.js'
   next: check the service's image, command, and readiness check in the task; the trial's services/ folder has its log

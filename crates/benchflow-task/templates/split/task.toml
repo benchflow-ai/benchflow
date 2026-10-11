@@ -1,5 +1,5 @@
-# A task in the split layout, which Harbor and BenchFlow both read: this file
-# holds the config, instruction.md what the agent is asked to do,
+# A task in the split layout, which BenchFlow and other split-layout runners
+# read: this file holds the config, instruction.md what the agent is asked to do,
 # environment/ the agent's container, tests/ the verifier, and solution/ a
 # reference solution. `bench import` converts it to a single task.md.
 schema_version = "1.4"

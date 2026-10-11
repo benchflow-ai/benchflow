@@ -114,6 +114,14 @@ impl HostEnv {
 
     /// Variables the run sets explicitly (labelled `agent_env`); they win
     /// over the environment.
+    /// Variables that count as this process's environment (a caller's own,
+    /// such as a test pointing the judge at a fake server), unlike
+    /// [`HostEnv::with_overrides`], which are the run's.
+    pub fn with_environment(mut self, vars: BTreeMap<String, String>) -> Self {
+        self.vars.extend(vars);
+        self
+    }
+
     pub fn with_overrides(mut self, overrides: BTreeMap<String, String>) -> Self {
         self.overrides = overrides;
         self
@@ -128,6 +136,15 @@ impl HostEnv {
     /// A variable's value and where it came from. Blank values count as
     /// unset, and an override set blank hides the environment's value (so a
     /// run can drop an API key to use the subscription login, as in 0.8).
+    /// `name` from the process environment only, never from the run's own
+    /// variables (`--env`, a job file, bench.toml's `[run] env`).
+    pub fn environment(&self, name: &str) -> Option<&str> {
+        self.vars
+            .get(name)
+            .map(String::as_str)
+            .filter(|v| !v.trim().is_empty())
+    }
+
     pub fn get(&self, name: &str) -> Option<(&str, Origin)> {
         let set = |v: &&String| !v.trim().is_empty();
         if let Some(value) = self.overrides.get(name) {

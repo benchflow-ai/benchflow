@@ -593,8 +593,34 @@ pub(crate) fn harbor_name(key: &str) -> Option<&'static str> {
         .map(|(_, v)| *v)
 }
 
-/// How to point people at Harbor imports.
-pub(crate) const IMPORT_HINT: &str = "tools/convert.py import converts Harbor tasks";
+/// How to point people at split-layout imports.
+pub(crate) const IMPORT_HINT: &str = "`bench import` converts split-layout tasks";
+
+/// The `[import.<name>]` table where an import from the split layout records
+/// what task.md has no home for, and `import/<name>/`, where it keeps the
+/// original files it rewrote. Other tools read these names (task.md's
+/// `convert.py` and `taskmd.py`, and BenchFlow 0.8's copy of the checker),
+/// so `bench import` writes them as `convert.py` and earlier `bench` builds
+/// did: they are identifiers, not text.
+pub(crate) const SPLIT_RECORD: &str = "harbor";
+/// The name an unreleased `bench` build wrote instead; still read.
+pub(crate) const SPLIT_RECORD_ALT: &str = "split";
+
+/// The record name a task's `[import]` table uses: [`SPLIT_RECORD`] unless
+/// only [`SPLIT_RECORD_ALT`] is there.
+pub(crate) fn split_record(has: impl Fn(&str) -> bool) -> &'static str {
+    if !has(SPLIT_RECORD) && has(SPLIT_RECORD_ALT) {
+        SPLIT_RECORD_ALT
+    } else {
+        SPLIT_RECORD
+    }
+}
+
+/// The record a task's `[import]` table holds besides the one read, when it
+/// holds both names; it is ignored.
+pub(crate) fn split_record_ignored(has: impl Fn(&str) -> bool) -> Option<&'static str> {
+    (has(SPLIT_RECORD) && has(SPLIT_RECORD_ALT)).then_some(SPLIT_RECORD_ALT)
+}
 
 /// The base of task.md's schema URLs.
 pub(crate) const SCHEMA_BASE: &str = "https://task.md/schema/";

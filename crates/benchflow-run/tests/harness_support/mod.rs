@@ -95,6 +95,9 @@ impl FakeSandbox {
         if c.contains("BF handoff done") {
             return ok("BF handoff done\n");
         }
+        if c.contains("BF owned") {
+            return ok("BF owned root\n");
+        }
         // The builtin tools' `write`: `printf %s <b64> | base64 -d > <path>`.
         if let Some(rest) = c.split("printf %s ").nth(1)
             && c.contains("| base64 -d > ")

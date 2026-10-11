@@ -128,9 +128,9 @@ Right: strings are quoted in TOML.
     timeout = "10m""#;
 
 HARBOR_TASK_TOML, "task.toml beside task.md",
-r#"task.toml is Harbor's config file. task.md keeps config in the ```toml task block, and Harbor's keys mean something else there, so a task.toml beside task.md is an error rather than silently ignored.
+r#"task.toml is the split layout's config file. task.md keeps config in the ```toml task block, and its keys mean something else there, so a task.toml beside task.md is an error rather than silently ignored.
 
-Fix: convert the Harbor task with `bench import <folder>` (or task-md's `tools/convert.py import`), which writes the config block in task.md's names, then delete task.toml."#;
+Fix: convert the split-layout task with `bench import <folder>` (or task-md's `tools/convert.py import`), which writes the config block in task.md's names, then delete task.toml."#;
 
 FRONTMATTER, "Legacy YAML frontmatter",
 r#"task.md draft 2 opens with the instruction. YAML frontmatter (a `---` block at the top) is BenchFlow 0.8's form, read here only as legacy config.
@@ -171,8 +171,8 @@ Right:
 
 Keys for a tool of your own go under an extension: `x-acme-retries = 3`, or a table `[x-acme]`."#;
 
-HARBOR_KEY, "A Harbor spelling",
-r#"Harbor's task.toml names some settings differently: `timeout_sec`, `memory_mb`, `network_mode`, `[environment]`, `[solution]`, and others. In task.md they are errors that name the task.md key, and when the conversion is direct, `bench check --fix` rewrites both the key and its value.
+HARBOR_KEY, "A split-layout spelling",
+r#"The split layout's task.toml names some settings differently: `timeout_sec`, `memory_mb`, `network_mode`, `[environment]`, `[solution]`, and others. In task.md they are errors that name the task.md key, and when the conversion is direct, `bench check --fix` rewrites both the key and its value.
 
 Wrong:
 
@@ -192,7 +192,7 @@ Right:
     memory = "4 GB"
     network = "none"
 
-For a whole Harbor task, `bench import` converts every key at once."#;
+For a whole split-layout task, `bench import` converts every key at once."#;
 
 KEY_GONE, "A key or value that earlier drafts used",
 r#"Some keys and values were cut or moved between drafts: [trajectory] tokens and format, [training] deterministic, [world.desktop] clock (now [sandbox] clock), feedback = "rationales", ATIF judge views, and others. The message says where each went; where it says "Remove the key", `bench check --fix` removes it.
@@ -244,7 +244,7 @@ Right:
     memory = "4 GB""#;
 
 BAD_NETWORK, "Not a network",
-r#"A network is "none", "open", a list of reachable hosts, or { block = [hosts] } for open except those. Harbor's "no-network" and "public" are "none" and "open" in task.md.
+r#"A network is "none", "open", a list of reachable hosts, or { block = [hosts] } for open except those. The split layout's "no-network" and "public" are "none" and "open" in task.md.
 
 Wrong:
 
@@ -441,10 +441,12 @@ Right: declare that the verifier's scripts call a model, and let the runtime pro
     [verifier]
     models = true"#;
 
-IMPORTED, "A Harbor feature task.md does not run",
-r#"An import records Harbor settings task.md has no home for under [import.harbor]. Harbor honors some of them (seeding the agent's session with a trajectory, copying workdirs before a step); no task.md runtime does, so the task runs without them.
+IMPORTED, "A split-layout feature task.md does not run",
+r#"An import records split-layout settings task.md has no home for under [import.harbor]. Split-layout runners honor some of them (seeding the agent's session with a trajectory, copying workdirs before a step); no task.md runtime does, so the task runs without them.
 
-Fix: decide whether the task still works without the feature; if it does not, rewrite that part of the task in task.md's own terms."#;
+Fix: decide whether the task still works without the feature; if it does not, rewrite that part of the task in task.md's own terms.
+
+The same code warns about a package with two such records, [import.harbor] and [import.split] (the name an unreleased bench build wrote): bench reads [import.harbor] and ignores the other, and bench export restores originals from import/harbor/ only and copies neither folder. Fix: keep one record."#;
 
 JUDGMENT_FILE, "rubric.json or behaviors.json does not parse",
 r#"verifier/rubric.json and verifier/behaviors.json must be JSON objects in UTF-8.

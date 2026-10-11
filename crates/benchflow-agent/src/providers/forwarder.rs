@@ -19,7 +19,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use benchflow_sandbox::shell::SYSTEM_PATH;
 use benchflow_sandbox::{Exec, Sandbox, SandboxError};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -292,12 +291,7 @@ impl Forwarder {
             "test -x {NODE} || exit 3; umask 077; rm -rf {dir} && mkdir -p {dir} && chown root:root {dir} && chmod 700 {dir}"
         );
         let out = sandbox
-            .exec(
-                Exec::new(prepare)
-                    .root()
-                    .env("PATH", SYSTEM_PATH)
-                    .timeout(Duration::from_secs(60)),
-            )
+            .exec(Exec::new(prepare).system().timeout(Duration::from_secs(60)))
             .await
             .map_err(sandbox_error("making its folder"))?;
         match out.exit_code {
@@ -337,12 +331,7 @@ impl Forwarder {
             "chown root:root {dir}/forwarder.js {dir}/config.json {dir}/key && chmod 600 {dir}/forwarder.js {dir}/config.json {dir}/key && exec {NODE} {dir}/forwarder.js {dir}/config.json"
         );
         let process = sandbox
-            .spawn(
-                Exec::new(command)
-                    .root()
-                    .env("PATH", SYSTEM_PATH)
-                    .cwd(dir.to_string()),
-            )
+            .spawn(Exec::new(command).system().cwd(dir.to_string()))
             .await
             .map_err(sandbox_error("starting it"))?;
 

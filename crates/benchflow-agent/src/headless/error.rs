@@ -209,9 +209,7 @@ impl HeadlessError {
             Self::Provider {
                 retryable: true, ..
             } => "the provider is limiting or unavailable; retry later or lower concurrency".into(),
-            Self::Provider { .. } => format!(
-                "the provider refused the request (often a context window overflow); see {log}"
-            ),
+            Self::Provider { .. } => format!("the provider refused the request; see {log}"),
             Self::AgentFailed { .. } => format!("read {log}"),
             Self::Exited { started: false, .. } => format!(
                 "the agent failed before doing anything; its stderr (above, and {log}) says why"

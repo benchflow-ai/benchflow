@@ -1,0 +1,50 @@
+# bench new: every template makes a task that checks clean, in the folder asked for.
+tier = "smoke"
+
+[[step]]
+run = ["new", "--list"]
+exit = 0
+stdout_has = ['^\s*basic\s', '^\s*python\s', '^\s*split\s']
+
+[[step]]
+sh = "mkdir -p out"
+
+[[step]]
+name = "--dir is where the task goes (not -C)"
+run = ["new", "basic-one", "--dir", "out"]
+exit = 0
+files = ["out/basic-one/task.md", "out/basic-one/oracle/solve.sh", "out/basic-one/verifier/test.sh"]
+absent = ["out/out"]
+
+[[step]]
+run = ["new", "py-one", "-t", "python", "--dir", "out"]
+exit = 0
+files = ["out/py-one/task.md"]
+
+[[step]]
+run = ["new", "split-one", "-t", "split", "--dir", "out"]
+exit = 0
+files = ["out/split-one/task.toml", "out/split-one/instruction.md"]
+
+[[step]]
+name = "every new task checks clean"
+run = ["check", "--strict", "out"]
+exit = 0
+output_has = ['3 tasks: 3 ok']
+
+[[step]]
+name = "an existing name is refused"
+run = ["new", "basic-one", "--dir", "out"]
+exit = 2
+stderr_has = ["already exists"]
+
+[[step]]
+name = "an unknown template is refused"
+run = ["new", "x", "-t", "no-such-template", "--dir", "out"]
+exit = 2
+
+[[step]]
+name = "--json"
+run = ["--json", "new", "json-one", "--dir", "out"]
+exit = 0
+stdout_json = { "files" = { "len" = 5 } }

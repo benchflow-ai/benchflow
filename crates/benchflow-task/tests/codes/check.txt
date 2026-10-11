@@ -20,9 +20,9 @@ error[T107]: config block is not valid TOML: string values must be quoted, expec
   at task.md:7
   label: the config stops parsing here
 
-error[T108]: task.toml is Harbor's config file; task.md keeps config in a ```toml task block (tools/convert.py import converts Harbor tasks)
+error[T108]: task.toml is the split layout's config file; task.md keeps config in a ```toml task block (`bench import` converts split-layout tasks)
   at task.toml
-  help: `bench import <folder>` converts a Harbor task into task.md; otherwise remove task.toml
+  help: `bench import <folder>` converts a split-layout task into task.md; otherwise remove task.toml
 
 warning[T109]: legacy YAML frontmatter: `task fmt` moves it into a ```toml task block
   at task.md:1
@@ -44,10 +44,10 @@ error[T201]: unknown key [agent] timout; did you mean timeout? [agent] holds bud
   label: did you mean `timeout`?
   fix: rename `timout` to `timeout`
 
-error[T202]: [agent] timeout_sec is Harbor's name; task.md uses timeout (tools/convert.py import converts Harbor tasks)
+error[T202]: [agent] timeout_sec is the split layout's name; task.md uses timeout (`bench import` converts split-layout tasks)
   at task.md:7
   label: task.md spells this `timeout`
-  help: `bench import <folder>` converts a whole Harbor task into task.md
+  help: `bench import <folder>` converts a whole split-layout task into task.md
   fix: replace `timeout_sec = 600` with `timeout = "10m"`
 
 error[T203]: [training] deterministic is gone: whether a reward is deterministic is computed (no model-judged criterion and no monitor behavior), and judge noise is measured as retest and reward_noise in the rubric's validation (docs/rubrics.md). Remove the key
@@ -68,7 +68,7 @@ error[T206]: [sandbox] memory must be a size such as "512 MB" or "4 GB"
 
 error[T207]: [sandbox] network must be "none", "open", a list of hosts, or { block = [hosts] }
   at task.md:7
-  label: Harbor's "no-network" is "none" in task.md
+  label: the split layout's "no-network" is "none" in task.md
   fix: write "none"
 
 error[T208]: [verifier] isolation must be one of 'shared', 'separate'
@@ -79,7 +79,7 @@ error[T208]: [verifier] isolation must be one of 'shared', 'separate'
 error[T209]: [agent] budget tokens is a count: a whole number, or a string of a number and K (1,000) or M (1,000,000) that comes to a whole number, such as 400000, "400K", or "2M"
   at task.md:7
 
-error[T210]: [verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. Harbor's collect has no such key, so an imported entry needs them added
+error[T210]: [verifier] snapshot[0] needs reads, the absolute paths whose state the command reads: the runtime puts each on a volume when the sandbox starts, and the snapshot runs in a fresh container that sees only those paths. The split layout's collect has no such key, so an imported entry needs them added
   at task.md:6
 
 error[T211]: [sandbox] outputs[0] path rel/x is relative; an output's path is absolute, such as /work/rel/x
@@ -117,7 +117,7 @@ error[T220]: [integrity.controls] injection names 'nearmiss'; it names controls 
 warning[T221]: sandbox.env.KEY resolves ${OPENAI_API_KEY} from the host; a runtime resolves it only if the operator allows that variable, and never a provider key: a seat that calls a model gets the runtime's proxy and a scoped token instead
   at task.md:7
 
-warning[T222]: [import.harbor] trajectory: Harbor seeds the agent's session with t.json, an ATIF trajectory, before the agent starts; no task.md runtime loads it, so a task.md run starts without that context
+warning[T222]: [import.harbor] trajectory: a split-layout runner seeds the agent's session with t.json, an ATIF trajectory, before the agent starts; no task.md runtime loads it, so a task.md run starts without that context
   at task.md:7
 
 error[T301]: not valid JSON: expected value at line 1 column 15

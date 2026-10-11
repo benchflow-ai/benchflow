@@ -242,8 +242,8 @@ pub(super) fn outputs(v: &Value, refusals: &mut Refusals) -> Vec<Output> {
                     .collect();
             }
             if let Some(mb) = m.get("max_bytes") {
-                output.max_bytes =
-                    crate::values::parse_bytes(mb).or_else(|| size_mb(mb).map(|x| x * 1024 * 1024));
+                output.max_bytes = crate::values::parse_bytes(mb)
+                    .or_else(|| size_mb(mb).map(|x| x.saturating_mul(1024 * 1024)));
                 refusals.refuse(
                     format!("[sandbox] outputs[{n}] max_bytes"),
                     "per-output caps are not implemented yet",
@@ -946,5 +946,24 @@ pub(crate) fn package(
         extras,
         config: cfg.clone(),
         digest: provisional_tree_digest(root),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_huge_output_cap_saturates() {
+        // `size_mb` takes a trailing newline, as Python's `$` does, so this
+        // one skips the saturating `parse_bytes`.
+        let mut refusals = Refusals(Vec::new());
+        let out = outputs(
+            &json!([{"path": "/app/x", "max_bytes": "99999999999999 TB\n"}]),
+            &mut refusals,
+        );
+        assert_eq!(out[0].max_bytes, Some(u64::MAX));
     }
 }

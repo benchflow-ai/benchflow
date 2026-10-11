@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use base64::Engine;
-use benchflow_sandbox::shell::SYSTEM_PATH;
 use benchflow_sandbox::{Exec, ExecOutput, Sandbox, SandboxError};
 
 use crate::shell::quote;
@@ -135,12 +134,7 @@ impl<'a> TmuxSession<'a> {
         if !check.success() {
             let install = self
                 .sandbox
-                .exec(
-                    Exec::new(INSTALL_SCRIPT)
-                        .root()
-                        .env("PATH", SYSTEM_PATH)
-                        .timeout(INSTALL_TIMEOUT),
-                )
+                .exec(Exec::new(INSTALL_SCRIPT).system().timeout(INSTALL_TIMEOUT))
                 .await?;
             if !install.success() {
                 return Err(StartError::NoTmux(install.tail(2000)));
@@ -245,8 +239,8 @@ impl<'a> TmuxSession<'a> {
             return Ok(());
         }
         let token = uuid::Uuid::new_v4().simple().to_string();
-        let path = quote(&format!("/tmp/.harbor-tmux-paste-{token}"));
-        let buffer = format!("harbor-paste-{token}");
+        let path = quote(&format!("/tmp/.bench-tmux-paste-{token}"));
+        let buffer = format!("bench-paste-{token}");
         let payload = base64::engine::general_purpose::STANDARD.encode(key.as_bytes());
         let result = async {
             for (i, chunk) in payload
@@ -562,7 +556,7 @@ mod tests {
             commands
                 .last()
                 .unwrap()
-                .starts_with("rm -f /tmp/.harbor-tmux-paste-")
+                .starts_with("rm -f /tmp/.bench-tmux-paste-")
         );
     }
 
@@ -607,7 +601,7 @@ mod tests {
             commands
                 .last()
                 .unwrap()
-                .starts_with("rm -f /tmp/.harbor-tmux-paste-")
+                .starts_with("rm -f /tmp/.bench-tmux-paste-")
         );
     }
 

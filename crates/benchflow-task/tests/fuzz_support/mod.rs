@@ -4,37 +4,203 @@
 //!
 //! The case count is proptest's: `PROPTEST_CASES=200000 cargo test --test
 //! fuzz_parsers` runs a long campaign; the default keeps `cargo test` quick.
-//! `BENCH_FUZZ_SLOW_MS` sets the per-input time limit (default 5000).
+//! Each input runs under [`timed`]: past `BENCH_FUZZ_SLOW_MS` (default 5000)
+//! it is logged as slow and waited for; past `BENCH_FUZZ_HANG_MS` (default
+//! ten times that, and at least 120000) it fails the property as hung.
+//! `BENCH_FUZZ_SEED` sets the seed every property starts from (see
+//! [`rng_seed`]). A failing case's own seed is saved under the target folder,
+//! never beside the source, and tried first on the next run; not in CI, and
+//! never for a hang (see [`persistence_dir`]). `PROPTEST_MAX_SHRINK_ITERS`
+//! and `PROPTEST_MAX_SHRINK_TIME` override the shrink budgets below.
 
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::any::Any;
+use std::cell::RefCell;
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use proptest::test_runner::Config;
+use proptest::test_runner::{
+    Config, FailurePersistence, FileFailurePersistence, PersistedSeed, RngSeed,
+};
 use serde_json::{Map, Value};
 
 /// Cases per property unless `PROPTEST_CASES` says otherwise.
 pub const DEFAULT_CASES: u32 = 96;
 
-pub fn config() -> Config {
-    let cases = std::env::var("PROPTEST_CASES")
+/// The seed properties start from in CI, so a failure there can be run
+/// again as it was.
+pub const CI_SEED: u64 = 20_261_010;
+
+/// The seed proptest starts each property from: `BENCH_FUZZ_SEED` (or
+/// proptest's own `PROPTEST_RNG_SEED`) when set; [`CI_SEED`] when `CI` is
+/// set (GitHub Actions sets it), so CI runs the same inputs every time;
+/// otherwise random, so each local run tries new inputs.
+pub fn rng_seed() -> RngSeed {
+    if let Some(seed) = std::env::var("BENCH_FUZZ_SEED")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_CASES);
+        .and_then(|s| s.trim().parse().ok())
+    {
+        return RngSeed::Fixed(seed);
+    }
+    if std::env::var_os("PROPTEST_RNG_SEED").is_some() {
+        return Config::default().rng_seed;
+    }
+    if in_ci() {
+        return RngSeed::Fixed(CI_SEED);
+    }
+    RngSeed::Random
+}
+
+/// Whether `CI` is set (to anything but empty, `0` or `false`).
+fn in_ci() -> bool {
+    std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "0" && v != "false")
+}
+
+/// The folder failing seeds are saved in: `proptest-regressions/` in the
+/// target folder the test binary was built in (`target/`, or wherever
+/// `CARGO_TARGET_DIR` points), never beside the test's source. `None`, so
+/// nothing is saved or replayed, when `CI` is set (CI's fixed seed already
+/// makes a failure there reproducible), when `BENCH_FUZZ_PERSIST=0` or
+/// `PROPTEST_DISABLE_FAILURE_PERSISTENCE` is set, or when the target folder
+/// cannot be found.
+pub fn persistence_dir() -> Option<PathBuf> {
+    let off = in_ci()
+        || std::env::var_os("PROPTEST_DISABLE_FAILURE_PERSISTENCE").is_some()
+        || std::env::var("BENCH_FUZZ_PERSIST").is_ok_and(|v| v.trim() == "0");
+    if off {
+        return None;
+    }
+    target_dir().map(|t| t.join("proptest-regressions"))
+}
+
+/// The target folder of the running test binary, which Cargo puts at
+/// `<target>/[<triple>/]<profile>/deps/<name>-<hash>`: the nearest folder
+/// above it holding Cargo's `CACHEDIR.TAG`, else the `<profile>` folder
+/// above `deps`.
+pub fn target_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut above = exe.ancestors().skip(1);
+    if let Some(dir) = above.clone().find(|d| d.join("CACHEDIR.TAG").is_file()) {
+        return Some(dir.to_path_buf());
+    }
+    above
+        .find(|d| d.file_name().is_some_and(|n| n == "deps"))
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
+/// The seed file in `dir` for the test source `source` (proptest's
+/// `file!()`): the source's path with its folders joined by `__` and `.txt`
+/// for `.rs`, so `crates/benchflow-task/tests/fuzz_parsers.rs` saves to
+/// `crates__benchflow-task__tests__fuzz_parsers.txt`.
+pub fn persistence_file(dir: &Path, source: &str) -> PathBuf {
+    let parts: Vec<String> = Path::new(source)
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let flat = parts.join("__");
+    let flat = flat.strip_suffix(".rs").unwrap_or(&flat);
+    dir.join(format!("{flat}.txt"))
+}
+
+/// Proptest's own file format and replay, at [`persistence_file`] under the
+/// folder it holds, except that a property in which an input hung (see
+/// [`timed`]) saves nothing: whether an input finishes in time depends on
+/// the machine's load as much as on the input, and a saved seed would be
+/// replayed first on every later run.
+#[derive(Debug, Clone, PartialEq)]
+struct UnderTarget(PathBuf);
+
+impl UnderTarget {
+    fn file(&self, source: Option<&'static str>) -> Option<FileFailurePersistence> {
+        let path = persistence_file(&self.0, source?);
+        let path: &'static str = Box::leak(path.to_string_lossy().into_owned().into_boxed_str());
+        Some(FileFailurePersistence::Direct(path))
+    }
+}
+
+impl FailurePersistence for UnderTarget {
+    fn load_persisted_failures2(&self, source_file: Option<&'static str>) -> Vec<PersistedSeed> {
+        self.file(source_file)
+            .map(|f| f.load_persisted_failures2(None))
+            .unwrap_or_default()
+    }
+
+    fn save_persisted_failure2(
+        &mut self,
+        source_file: Option<&'static str>,
+        seed: PersistedSeed,
+        shrunken_value: &dyn std::fmt::Debug,
+    ) {
+        if let Some(what) = hung_here()
+            && !FAILED_FIRST.with(|f| f.get())
+        {
+            eprintln!("fuzz: not saving the seed of this failure: an input of {what} hung");
+            return;
+        }
+        if let Some(mut f) = self.file(source_file) {
+            f.save_persisted_failure2(None, seed, shrunken_value);
+        }
+    }
+
+    fn box_clone(&self) -> Box<dyn FailurePersistence> {
+        Box::new(self.clone())
+    }
+
+    fn eq(&self, other: &dyn FailurePersistence) -> bool {
+        other.as_any().downcast_ref::<Self>() == Some(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn env_u32(name: &str) -> Option<u32> {
+    std::env::var(name).ok().and_then(|s| s.trim().parse().ok())
+}
+
+/// A config with this many shrink steps and milliseconds of shrinking at
+/// most, unless the `PROPTEST_MAX_SHRINK_*` variables say otherwise.
+fn config_with(shrink_iters: u32, shrink_ms: u32) -> Config {
+    let cases = env_u32("PROPTEST_CASES").unwrap_or(DEFAULT_CASES);
+    let persistence =
+        persistence_dir().map(|dir| Box::new(UnderTarget(dir)) as Box<dyn FailurePersistence>);
     Config {
         cases,
-        failure_persistence: None,
-        max_shrink_iters: 2048,
+        failure_persistence: persistence,
+        max_shrink_iters: env_u32("PROPTEST_MAX_SHRINK_ITERS").unwrap_or(shrink_iters),
+        max_shrink_time: env_u32("PROPTEST_MAX_SHRINK_TIME").unwrap_or(shrink_ms),
+        rng_seed: rng_seed(),
         ..Config::default()
     }
 }
 
-/// [`config`] for properties that cost a second or so per input (whole job
-/// folders through a server): an eighth of the cases.
+/// For in-memory parsers (milliseconds per input): a deep shrink, so a
+/// failure comes back as a small input, but at most two minutes of it.
+pub fn config() -> Config {
+    config_with(2048, 120_000)
+}
+
+/// For properties that write and read whole folders (task folders, imports,
+/// job folders: 5 to 50 ms per input on an idle machine, much more on a
+/// loaded one, and up to the time limit per try when an input hangs): a
+/// short shrink, so a failure is reported within a minute or two.
+pub fn config_files() -> Config {
+    config_with(64, 60_000)
+}
+
+/// For properties that cost a second or so per input (whole job folders
+/// through a server): an eighth of the cases and a shorter shrink.
 pub fn config_slow() -> Config {
-    let mut c = config();
+    let mut c = config_with(16, 60_000);
     c.cases = (c.cases / 8).max(1);
     c
 }
@@ -66,20 +232,158 @@ fn count(what: &str) {
     }
 }
 
-/// Runs `f`, failing when one input takes longer than the limit.
-pub fn timed<T>(what: &str, f: impl FnOnce() -> T) -> T {
-    count(what);
-    let limit = std::env::var("BENCH_FUZZ_SLOW_MS")
+fn env_ms(name: &str) -> Option<Duration> {
+    std::env::var(name)
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5000);
+        .and_then(|s| s.trim().parse().ok())
+        .map(Duration::from_millis)
+}
+
+/// The time after which an input counts as slow: `BENCH_FUZZ_SLOW_MS`,
+/// default 5000. A slow input is logged and waited for, not failed.
+pub fn slow_limit() -> Duration {
+    env_ms("BENCH_FUZZ_SLOW_MS").unwrap_or(Duration::from_millis(5000))
+}
+
+/// The time after which an input counts as hung and fails its property:
+/// `BENCH_FUZZ_HANG_MS`, default ten times [`slow_limit`] and at least two
+/// minutes, so a loaded CI machine does not fail an input that is only slow.
+pub fn hang_cap() -> Duration {
+    env_ms("BENCH_FUZZ_HANG_MS").unwrap_or_else(|| {
+        slow_limit()
+            .saturating_mul(10)
+            .max(Duration::from_secs(120))
+    })
+}
+
+thread_local! {
+    /// The target whose input hung on this thread, if one did. libtest runs
+    /// each test on a thread of its own, so this is per property.
+    static HUNG: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    /// Whether an input failed on this thread before any hung: then a hang
+    /// came while shrinking that failure, and its seed, which regenerates
+    /// the first failing input, is still saved.
+    static FAILED_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Notes a failing input on this thread, unless one already hung.
+fn note_failure() {
+    if hung_here().is_none() {
+        FAILED_FIRST.with(|f| f.set(true));
+    }
+}
+
+/// The target (the `what` given to [`timed`]) whose input hung on this
+/// thread, if one did.
+pub fn hung_here() -> Option<String> {
+    HUNG.with(|h| h.borrow().clone())
+}
+
+/// What [`timed`] returns for an input it does not run: a pass.
+pub trait Pass {
+    fn pass() -> Self;
+    /// Whether this answer fails the case.
+    fn failed(&self) -> bool {
+        false
+    }
+}
+
+impl Pass for () {
+    fn pass() {}
+}
+
+impl<T: Pass, E> Pass for Result<T, E> {
+    fn pass() -> Self {
+        Ok(T::pass())
+    }
+    fn failed(&self) -> bool {
+        self.as_ref().is_ok_and(Pass::failed) || self.is_err()
+    }
+}
+
+/// Writes one line to the process's stderr, past libtest's capture, so CI
+/// logs show it even when the test passes.
+fn log(line: &str) {
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+/// Runs `f` on a thread of its own and waits for it, so an input that hangs
+/// fails the test instead of stalling it. A panic in `f` fails the case with
+/// its own message.
+///
+/// - Past [`slow_limit`] the input is slow: a `fuzz-slow` line goes to
+///   stderr (with the target and, once it ends, the time it took), and it is
+///   waited for. A slow input does not fail.
+/// - Past [`hang_cap`] it is hung: the case fails, and its thread is left
+///   running. Proptest then shrinks the failure, which would start another
+///   thread for each shrink step that hangs too, each spinning or stuck. So
+///   after a hang, `timed` on the same thread runs nothing and returns
+///   [`Pass::pass`]: proptest finds no smaller failing input and reports
+///   the one that hung, as it was. No seed is saved for it (see
+///   [`persistence_dir`]).
+pub fn timed<T: Pass + Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    timed_within(slow_limit(), hang_cap(), what, f)
+}
+
+/// [`timed`] with its own slow limit and hang cap.
+pub fn timed_within<T: Pass + Send + 'static>(
+    limit: Duration,
+    cap: Duration,
+    what: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    if hung_here().is_some() {
+        return T::pass();
+    }
+    count(what);
     let start = Instant::now();
-    let out = f();
-    let took = start.elapsed();
-    assert!(
-        took < Duration::from_millis(limit),
-        "{what} took {took:?} on one input"
-    );
+    let limit = limit.min(cap);
+    let (done, finished) = mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .name(format!("fuzz {what}"))
+        .spawn(move || {
+            let _ = done.send(f());
+        })
+        .expect("start a thread for one input");
+    let mut slow = false;
+    let out = loop {
+        let until = if slow { cap } else { limit };
+        match finished.recv_timeout(until.saturating_sub(start.elapsed())) {
+            Ok(out) => break out,
+            Err(RecvTimeoutError::Timeout) if !slow && limit < cap => {
+                slow = true;
+                log(&format!(
+                    "fuzz-slow: {what}: one input is still running after {limit:?} (BENCH_FUZZ_SLOW_MS); waiting up to {cap:?} (BENCH_FUZZ_HANG_MS)"
+                ));
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                HUNG.with(|h| *h.borrow_mut() = Some(what.to_string()));
+                panic!(
+                    "{what} did not finish one input within {cap:?} (BENCH_FUZZ_HANG_MS), so it counts as hung. Its thread is left running; this property's later inputs (proptest's shrink steps) are not run, so the input shown is the one that hung, unshrunk, and its seed is not saved"
+                )
+            }
+            Err(RecvTimeoutError::Disconnected) => match worker.join() {
+                Err(panic) => {
+                    note_failure();
+                    std::panic::resume_unwind(panic)
+                }
+                Ok(()) => unreachable!("the input's thread ended without an answer or a panic"),
+            },
+        }
+    };
+    let _ = worker.join();
+    if out.failed() {
+        note_failure();
+    }
+    if slow {
+        log(&format!(
+            "fuzz-slow: {what}: one input took {:?} (over {limit:?}; slow, not failed)",
+            start.elapsed()
+        ));
+    }
     out
 }
 

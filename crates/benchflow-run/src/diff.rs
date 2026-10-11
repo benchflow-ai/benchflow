@@ -39,6 +39,8 @@ pub enum Action {
     Reuse,
     Regrade,
     Rerun,
+    /// No earlier job had a trial of this task: it runs for the first time.
+    Run,
 }
 
 impl Action {
@@ -47,6 +49,7 @@ impl Action {
             Action::Reuse => "reuse",
             Action::Regrade => "regrade",
             Action::Rerun => "rerun",
+            Action::Run => "run",
         }
     }
 }
@@ -97,7 +100,7 @@ impl DiffPlan {
     pub fn carries(&self, sources: &[SourceTrial]) -> Vec<Carry> {
         self.trials
             .iter()
-            .filter(|t| t.action != Action::Rerun)
+            .filter(|t| matches!(t.action, Action::Reuse | Action::Regrade))
             .filter_map(|t| {
                 let s = t.source.as_ref()?;
                 let src = sources
@@ -306,7 +309,7 @@ pub fn plan(
                 "the earlier trials that match are already used by other planned trials".into(),
             ),
             None => (
-                Action::Rerun,
+                Action::Run,
                 None,
                 "no trial of this task in the earlier jobs".into(),
             ),
@@ -332,6 +335,13 @@ pub fn plan(
         skipped,
         trials,
     }
+}
+
+/// Whether two agent fingerprints name the same install, counting an earlier
+/// build's name for one as the same.
+fn same_install(then: &Option<String>, now: &Option<String>) -> bool {
+    let current = crate::external_agent::current_fingerprint;
+    then.as_deref().map(current) == now.as_deref().map(current)
 }
 
 /// One planned trial against one earlier trial of the same task.
@@ -369,7 +379,10 @@ fn judge(
             was("the effort", &show(&s.effort), &show(&t.attempt.effort)),
         );
     }
-    if s.lock.attempt.agent_fingerprint != t.attempt.agent_fingerprint {
+    if !same_install(
+        &s.lock.attempt.agent_fingerprint,
+        &t.attempt.agent_fingerprint,
+    ) {
         return (
             Closeness::Agent,
             "the agent's install changed (its version, harness, or install steps)".into(),
@@ -453,6 +466,7 @@ fn ended(status: Status, rec: &TrialRecord) -> String {
         Status::Scored => "was scored",
         Status::Unscored => "was not scored",
         Status::Errored => "errored",
+        Status::Skipped if rec.stopped() => "was stopped before it finished",
         Status::Skipped => "never ran",
     };
     match &rec.problem {
@@ -784,6 +798,32 @@ mod tests {
             found[0].outputs.is_none(),
             "a linked outputs.tar is not used"
         );
+    }
+
+    /// The external agent's fingerprint was renamed; an earlier job's
+    /// trials of it are the same install, not "the agent's install changed".
+    #[test]
+    fn the_external_agents_older_fingerprint_is_the_same_install() {
+        let job =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/export/jobs/rust-claude");
+        let (mut found, _) = load_sources(std::slice::from_ref(&job));
+        let mut s = found.remove(0);
+        let task = load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello"));
+        let fp = |f: &str| Some(f.to_string());
+        s.lock.attempt.agent = "external".into();
+        let mut t = s.lock.clone();
+        let reason = |s: &SourceTrial, t: &LockTrial| {
+            judge(&task, t, &s.agent_options, &s.options, s, &Rerun::default()).1
+        };
+        s.lock.attempt.agent_fingerprint = fp("external:karotte-backend-protocol");
+        t.attempt.agent_fingerprint = fp(crate::external_agent::FINGERPRINT);
+        assert!(
+            !reason(&s, &t).contains("install changed"),
+            "{}",
+            reason(&s, &t)
+        );
+        t.attempt.agent_fingerprint = fp("external:something-else");
+        assert!(reason(&s, &t).contains("install changed"));
     }
 
     #[test]

@@ -98,6 +98,8 @@ impl Provider for DockerProvider {
             network_allow_cidrs: None,
             network_switch: false,
             root_service: false,
+            // --network none removes every interface but loopback.
+            network_none_leaks_ipv6: false,
         }
     }
 
@@ -234,7 +236,52 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
-        files::download(&self.cli, &self.name, remote, local).await
+        files::download(&self.cli, &self.name, remote, local, None).await
+    }
+
+    async fn presence(&self) -> Result<crate::Presence, SandboxError> {
+        let args = [
+            "inspect".to_string(),
+            "--format".to_string(),
+            "{{.State.Running}}".to_string(),
+            self.name.clone(),
+        ];
+        let out = self.cli.run(&args, Some(Duration::from_secs(30))).await?;
+        if out.ok() {
+            return Ok(if out.stdout.trim() == "true" {
+                crate::Presence::Running
+            } else {
+                crate::Presence::Stopped
+            });
+        }
+        let lower = out.message().to_lowercase();
+        if [
+            "no such container",
+            "no such object",
+            "no container with name or id",
+        ]
+        .iter()
+        .any(|m| lower.contains(m))
+        {
+            return Ok(crate::Presence::Gone);
+        }
+        Err(self.cli.daemon_problem(&out).unwrap_or_else(|| {
+            SandboxError::Transport(format!(
+                "`{} inspect {}` failed: {}",
+                self.cli.name,
+                self.name,
+                out.message()
+            ))
+        }))
+    }
+
+    async fn download_capped(
+        &self,
+        remote: &str,
+        local: &Path,
+        max_bytes: u64,
+    ) -> Result<(), SandboxError> {
+        files::download(&self.cli, &self.name, remote, local, Some(max_bytes)).await
     }
 
     async fn destroy(&self) -> Result<(), SandboxError> {

@@ -572,7 +572,7 @@ fn clean_context(ctx: &str) -> String {
 /// at `dst`, which must be empty. Returns notes on what it did.
 pub(crate) fn map(src: &Path, dst: &Path, res: &Resources) -> Result<Vec<String>, ConvertError> {
     let mut notes = vec![
-        "converted from Terminal-Bench v1 the way Harbor's task migrate does; review the result before relying on it".to_string(),
+        "converted from Terminal-Bench v1 (task.yaml, run-tests.sh, solution.sh) to the split layout, then to task.md; review the result before relying on it".to_string(),
     ];
     if src.join("solution.yaml").exists() {
         return Err(ConvertError::Invalid {
@@ -598,7 +598,7 @@ pub(crate) fn map(src: &Path, dst: &Path, res: &Resources) -> Result<Vec<String>
         })?;
     if !ignored.is_empty() {
         notes.push(format!(
-            "task.yaml settings with no Harbor or task.md equivalent were dropped: {}",
+            "task.yaml settings with no split-layout or task.md equivalent were dropped: {}",
             ignored.join(", ")
         ));
     }
@@ -719,7 +719,7 @@ pub(crate) fn map(src: &Path, dst: &Path, res: &Resources) -> Result<Vec<String>
                 &env.join("docker-compose.yaml"),
             )?;
             notes.push(
-                "docker-compose.yaml says more than a Dockerfile can (other services, networks, or volumes), so it was rewritten in Harbor's template with the main service named main".into(),
+                "docker-compose.yaml says more than a Dockerfile can (other services, networks, or volumes), so it was rewritten in the split layout's Compose template with the main service named main".into(),
             );
         }
     }

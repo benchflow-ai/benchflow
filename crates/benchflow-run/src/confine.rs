@@ -32,9 +32,8 @@ fn defense(name: &str, state: DefenseState, note: impl Into<String>) -> Defense 
 
 async fn root(sb: &dyn Sandbox, script: String) -> Result<ExecOutput, SandboxError> {
     sb.exec(
-        Exec::new(script)
-            .root()
-            .env("PATH", benchflow_sandbox::shell::SYSTEM_PATH)
+        Exec::new(crate::hardening::with_plumbing_umask(&script))
+            .system()
             .timeout(STEP_TIMEOUT),
     )
     .await
@@ -238,6 +237,17 @@ impl Sandbox for AgentSandbox<'_> {
     async fn destroy(&self) -> Result<(), SandboxError> {
         self.inner.destroy().await
     }
+    async fn presence(&self) -> Result<benchflow_sandbox::Presence, SandboxError> {
+        self.inner.presence().await
+    }
+    async fn download_capped(
+        &self,
+        remote: &str,
+        local: &Path,
+        max_bytes: u64,
+    ) -> Result<(), SandboxError> {
+        self.inner.download_capped(remote, local, max_bytes).await
+    }
 }
 
 /// Read back the `oom_score_adj` an agent command gets through
@@ -281,7 +291,7 @@ pub fn parse_memory(output: &str) -> (Option<u64>, Option<u64>, String) {
     let total = r
         .first("memtotal")
         .and_then(|kb| kb.trim().parse::<u64>().ok())
-        .map(|kb| kb * 1024);
+        .map(|kb| kb.saturating_mul(1024));
     let line = r.first("mem").unwrap_or("none").to_string();
     let mut parts = line.split_whitespace();
     let version = parts.next().unwrap_or("none");
@@ -329,7 +339,7 @@ fn memory_defense(
         .map(|t| format!("; the sandbox sees {} MB in total", mb(t)))
         .unwrap_or_default();
     match (limit, requested_mb) {
-        (Some(l), Some(req)) if mb(l) > req.div_ceil(1024) * 1024 => defense(
+        (Some(l), Some(req)) if mb(l) > req.div_ceil(1024).saturating_mul(1024) => defense(
             "memory_limit",
             DefenseState::Failed,
             format!(
@@ -501,17 +511,32 @@ pub fn verifier_command(vars: &[&str], entry: &str) -> String {
 ///
 /// `safepath_off` says why `PYTHONSAFEPATH` may be off ([`safepath_off`]);
 /// `None` when it must be 1.
+///
+/// `image_loader` names the loader variables the image's environment set,
+/// read before the agent ran. When given, the check (a root shell, as a
+/// rule, after the agent's turn) starts without `vars` (`Exec::unset`), so
+/// it neither loads nor reads what they name, and reports those as dropped
+/// instead of seeing them itself.
 pub async fn check_verifier_env(
     sb: &dyn Sandbox,
     exec_like: &Exec,
     vars: &[&str],
     safepath_off: Option<&str>,
+    image_loader: Option<&[String]>,
 ) -> Result<Result<Defense, Problem>, SandboxError> {
     let mut exec = exec_like.clone();
     exec.command = hardening::verifier_env_check(vars);
     exec.timeout = Some(STEP_TIMEOUT);
+    if image_loader.is_some() {
+        exec = exec.unset(vars.iter().copied());
+    }
     let out = sb.exec(exec).await?;
-    let env = VerifierEnv::parse(&out.stdout);
+    let mut env = VerifierEnv::parse(&out.stdout);
+    for name in image_loader.unwrap_or_default() {
+        if vars.contains(&name.as_str()) && !env.dropped.contains(name) {
+            env.dropped.push(name.clone());
+        }
+    }
     Ok(judge_verifier_env(&env, safepath_off, &out))
 }
 
@@ -618,7 +643,7 @@ pub fn safepath_off(format: Format, task_env: &BTreeMap<String, String>) -> Opti
         Some(v) if v == "1" => None,
         Some(_) => Some("turned off by the task's [verifier] env"),
         None if format == Format::TaskMd => None,
-        None => Some("left to the image, as Harbor and 0.8 run this task format"),
+        None => Some("left to the image, as 0.8 runs this task format"),
     }
 }
 
@@ -665,6 +690,15 @@ mod tests {
         let (l, t, s) = parse_memory("BF mem none\n");
         assert_eq!((l, t), (None, None));
         assert!(s.contains("no memory cgroup"));
+    }
+
+    #[test]
+    fn huge_memory_numbers_saturate() {
+        // The sandbox's own report and the task's size: both outside input.
+        let (_, t, _) = parse_memory("BF mem none\nBF memtotal 18446744073709551615\n");
+        assert_eq!(t, Some(u64::MAX));
+        let d = memory_defense(Some(1 << 30), None, "v2", Some(u64::MAX), "fake");
+        assert_eq!(d.state, DefenseState::Enforced);
     }
 
     #[test]
@@ -746,7 +780,7 @@ mod tests {
             add_safepath(&mut env, &none, format);
             assert!(!env.contains_key("PYTHONSAFEPATH"), "{format:?}");
             let why = safepath_off(format, &none);
-            assert!(why.is_some_and(|w| w.contains("Harbor")), "{why:?}");
+            assert!(why.is_some_and(|w| w.contains("0.8")), "{why:?}");
             let v = VerifierEnv::parse("BF venv-safepath \nBF venv-done\n");
             assert_eq!(
                 judge_verifier_env(&v, why, &out()).unwrap().state,

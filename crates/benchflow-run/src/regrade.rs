@@ -64,14 +64,19 @@ pub struct Plan {
 
 /// Read a finished job and plan its regrade: each trial needs its task
 /// folder (from config.json or lock.json) to still load, and saved outputs.
+/// A task loads as [`benchflow_task::load::load_to_regrade`] loads it: a
+/// service command Docker Compose cannot split (P014) does not stop a
+/// regrade, which starts no service.
 pub fn plan(job: &Path) -> std::io::Result<Plan> {
     plan_with(job, &|p| {
-        benchflow_task::load(p).map(Arc::new).map_err(|d| {
-            d.iter()
-                .find(|x| x.is_error())
-                .map(|x| x.message.clone())
-                .unwrap_or_else(|| "it does not load".into())
-        })
+        benchflow_task::load::load_to_regrade(p)
+            .map(Arc::new)
+            .map_err(|d| {
+                d.iter()
+                    .find(|x| x.is_error())
+                    .map(|x| x.message.clone())
+                    .unwrap_or_else(|| "it does not load".into())
+            })
     })
 }
 
@@ -359,6 +364,9 @@ pub struct RegradeOutcome {
     pub changes: Vec<Change>,
     pub not_regradable: Vec<NotRegradable>,
     pub summary: Value,
+    /// Planned regrades that never started (the regrade was drained or
+    /// stopped first).
+    pub not_started: usize,
 }
 
 impl RegradeOutcome {
@@ -394,6 +402,9 @@ pub async fn run(
     let started = Instant::now();
     let dir = regrade_dir(&plan.job);
     std::fs::create_dir_all(&dir)?;
+    // Held like `bench run` holds its job, so `bench view` leaves the trials
+    // still being regraded out instead of counting them as errored.
+    let _running = job::hold(&dir)?;
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -468,18 +479,18 @@ pub async fn run(
                 p
             }
         };
-        copy_agent_files(&r.dir, &spec.dir);
         let regrade = Regrade {
             archive,
             agent: r.record.agent.clone(),
             model: r.record.model.clone(),
             output: recorded_agent(&r.record),
+            agent_files: r.dir.clone(),
         };
         let sem = sem.clone();
         let rt = rt.clone();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await.ok()?;
-            if rt.stopping() {
+            if !rt.starting_new() {
                 return None;
             }
             Some(trial::regrade(&spec, &rt, regrade).await)
@@ -557,6 +568,7 @@ pub async fn run(
         changes,
         not_regradable: plan.not_regradable,
         summary,
+        not_started,
     })
 }
 
@@ -691,6 +703,64 @@ mod tests {
         assert_eq!(
             regrade_dir(&job),
             d.path().join("2026-10-10__09-00-00-regrade-2")
+        );
+    }
+
+    /// Guards the regrade of tasks P014 refuses (the D5b runtime review of
+    /// cbf42071, finding 7): a sidecar command Docker Compose cannot split
+    /// keeps the task from running, but a job that ran it under an earlier
+    /// bench is still regraded, as grading starts no service.
+    #[test]
+    fn a_task_with_a_command_compose_cannot_split_is_regraded() {
+        let d = tempfile::tempdir().unwrap();
+        let task = d.path().join("tasks/sidecar");
+        for (rel, text) in [
+            (
+                "task.toml",
+                "version = \"1.0\"\n\n[environment]\nworkdir = \"/app\"\n",
+            ),
+            ("instruction.md", "Ask the api for its token.\n"),
+            ("environment/Dockerfile", "FROM ubuntu:24.04\n"),
+            (
+                "environment/docker-compose.yaml",
+                "services:\n  api:\n    image: python:3.12-slim\n    command: python -c print(1)\n",
+            ),
+            ("tests/test.sh", "echo 1 > /logs/verifier/reward.txt\n"),
+        ] {
+            let p = task.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        let refused = benchflow_task::load(&task).unwrap_err();
+        assert!(refused.iter().any(|x| x.code == "P014"), "{refused:#?}");
+
+        let job = d.path().join("jobs/run");
+        let trial = job.join("sidecar__00000001");
+        std::fs::create_dir_all(trial.join("outputs/app")).unwrap();
+        std::fs::write(trial.join("outputs/app/token.txt"), "t0k3n").unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            r#"{"task_name": "sidecar", "rollout_name": "sidecar__00000001", "agent": "oracle", "status": "scored", "sandbox_id": "sb-1", "rewards": {"reward": 1.0}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            trial.join("config.json"),
+            json!({ "task_path": task, "workdir": "/app" }).to_string(),
+        )
+        .unwrap();
+        let plan = plan(&job).unwrap();
+        let why: Vec<&str> = plan
+            .not_regradable
+            .iter()
+            .map(|n| n.reason.as_str())
+            .collect();
+        assert!(why.is_empty(), "{why:#?}");
+        assert_eq!(plan.regradable.len(), 1);
+        let task = &plan.regradable[0].task;
+        assert!(task.unsupported.is_empty(), "{:#?}", task.unsupported);
+        assert!(
+            trial::refusal(task, &Attempt::Nop).is_none(),
+            "the regrade would stop on R401"
         );
     }
 

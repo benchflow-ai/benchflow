@@ -1,0 +1,75 @@
+# BenchFlow's messages never name another evaluation framework. The reference
+# tools the differential tests compare against (task-md's taskmd.py and
+# convert.py, BenchFlow 0.8) still do; each line here is one phrase they print
+# (left of the tab) and what BenchFlow prints in its place (right). The tests
+# apply these in order to the reference's text before comparing word for word.
+# The split layout is task.toml + instruction.md + environment/ + tests/ +
+# solution/; a split-layout runner is any tool that runs such a task.
+Harbor's Compose template fills service `main` with what Harbor's harness manages	The split layout's Compose template fills service `main` with what a split-layout runner manages
+Harbor's log folders	the runner's log folders
+Harbor's log folder	a split-layout runner's log folder
+rewritten in Harbor's template	rewritten in the split layout's Compose template
+no Harbor or task.md equivalent	no split-layout or task.md equivalent
+task.toml is Harbor's config file	task.toml is the split layout's config file
+and Harbor's keys mean something else there	and its keys mean something else there
+convert the Harbor task with	convert the split-layout task with
+Harbor's task.toml names some settings differently	The split layout's task.toml names some settings differently
+(or Harbor's task.toml)	(or a split-layout task.toml)
+For a whole Harbor task	For a whole split-layout task
+a whole Harbor task	a whole split-layout task
+# Not wording but advice: the reference points at its own converter, bench at
+# its own command for the same job.
+tools/convert.py import converts Harbor tasks	`bench import` converts split-layout tasks
+converts a Harbor task	converts a split-layout task
+converts Harbor tasks	converts split-layout tasks
+the original Harbor task	the original split-layout task
+a multi-step Harbor task	a multi-step split-layout task
+is a Harbor copy of this task	is a split-layout copy of this task
+A Harbor spelling	A split-layout spelling
+A Harbor feature task.md does not run	A split-layout feature task.md does not run
+the Harbor feature it would record	the split-layout feature it would record
+An import records Harbor settings	An import records split-layout settings
+Harbor honors some of them	Split-layout runners honor some of them
+come from Harbor imports	come from split-layout imports
+the split layout Harbor uses	the split layout
+the split layout Harbor reads	the split layout
+Harbor's original files	the original split-layout files
+gives back Harbor's exact files and content digest	gives back the original files and content digest
+and Harbor's content digest differs	and the split layout's content digest differs
+is Harbor's name; task.md uses	is the split layout's name; task.md uses
+is Harbor's deprecated spelling	is a deprecated split-layout spelling
+Harbor's collect has no such key	The split layout's collect has no such key
+Harbor's values are	the split layout's values are
+in the form Harbor documents	in the form the split layout documents
+Harbor itself would refuse its values	a split-layout runner would refuse its values
+Harbor's "no-network" and "public"	The split layout's "no-network" and "public"
+Harbor's "	the split layout's "
+0.8 renamed Harbor's `environment`	0.8 renamed the split layout's `environment`
+Harbor's [task] table	the split layout's [task] table
+Harbor's skills_dir	the split layout's skills_dir
+Harbor's steps unlock	split-layout steps unlock
+a Harbor verifier reaches	a split-layout verifier reaches
+on Harbor they read	in a split-layout runner they read
+so on Harbor scores do not change	so in a split-layout runner scores do not change
+Harbor seeds	a split-layout runner seeds
+Harbor copies	a split-layout runner copies
+Harbor installs	a split-layout runner installs
+Harbor averages	a split-layout runner averages
+Harbor always uses	a split-layout runner always uses
+Harbor gives	a split-layout runner gives
+Harbor runs	a split-layout runner runs
+Harbor reads	a split-layout runner reads
+Harbor refuses	a split-layout runner refuses
+Harbor ignores	a split-layout runner ignores
+Harbor does not	a split-layout runner does not
+Harbor shows	a split-layout runner shows
+Harbor would drop	the split layout would drop
+Harbor cannot hold	the split layout cannot hold
+Harbor holds	the split layout holds
+Harbor has no	the split layout has no
+Harbor keeps	the split layout keeps
+Harbor checks	the split layout checks
+Harbor records	the split layout records
+Harbor mounts	the split layout mounts
+Harbor declares	the split layout declares
+Harbor watches	the split layout watches

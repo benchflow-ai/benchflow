@@ -2,7 +2,8 @@
 //!
 //! The reference tools use Python's `difflib.get_close_matches(word,
 //! possibilities, n=1, cutoff=0.6)`, which ranks by
-//! `SequenceMatcher(None, word, candidate).ratio()`. This module implements
+//! `SequenceMatcher(None, candidate, word).ratio()` (it sets the word as the
+//! second sequence; the ratio is not symmetric). This module implements
 //! the same ratio (Ratcliff/Obershelp longest matching blocks, with difflib's
 //! "autojunk" heuristic, which only matters for strings of 200 or more
 //! characters) so a suggestion here is the suggestion there.
@@ -33,7 +34,7 @@ where
     for cand in possibilities {
         // difflib checks real_quick_ratio and quick_ratio first; they are
         // upper bounds, so skipping them changes nothing but speed.
-        let r = ratio(word, cand);
+        let r = ratio(cand, word);
         if r >= cutoff {
             scored.push((r, cand));
         }
@@ -179,5 +180,15 @@ mod tests {
         assert_eq!(did_you_mean("timout", keys), Some("timeout".into()));
         assert_eq!(did_you_mean("netwrk", keys), Some("network".into()));
         assert_eq!(did_you_mean("zzz", keys), None);
+    }
+
+    /// difflib scores the candidate as the first sequence:
+    /// `SequenceMatcher(None, "harbor-compatible", word)` is 0.571 for this
+    /// word, under the cutoff, while the other order gives 0.619.
+    #[test]
+    fn the_candidate_is_the_first_sequence_as_in_difflib() {
+        let word = "terminal-bench-compatible";
+        assert!((ratio("harbor-compatible", word) - 0.5714285714285714).abs() < 1e-12);
+        assert_eq!(did_you_mean(word, ["harbor-compatible"]), None);
     }
 }

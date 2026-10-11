@@ -139,13 +139,7 @@ timeout_sec = 120
 keys = ["ANTHROPIC_API_KEY"]
 ```
 
-This ~25-line manifest is the *entire* framework-integration surface:
-chi-bench's image, Dockerfile, and entrypoint are unmodified, and the ~920
-LOC of Harbor coupling it previously carried collapses into the manifest.
-ClawsBench (`base_image` + framework-started `[[services]]`) and chi-bench
-(`image` + `owns_lifecycle = true`) are the two topologies behind one
-contract. See [`benchmarks/chi-bench/README.md`](../benchmarks/chi-bench/README.md)
-for the field-by-field mapping.
+This ~25-line manifest is the *entire* framework-integration surface: chi-bench's image, Dockerfile, and entrypoint are unmodified, and the ~920 LOC of coupling to its previous runner collapses into the manifest. ClawsBench (`base_image` + framework-started `[[services]]`) and chi-bench (`image` + `owns_lifecycle = true`) are the two topologies behind one contract. See [`benchmarks/chi-bench/README.md`](../benchmarks/chi-bench/README.md) for the field-by-field mapping.
 
 ## How it runs
 
@@ -230,8 +224,7 @@ bench eval run --tasks-dir <tasks> --environment-manifest myenv@v1 ...
 
 ## Exporting for training
 
-A scored rollout's trajectory exports to the Verifiers / ORS dataset format
-that prime-rl ingests — `benchflow.trajectories.export`:
+A scored rollout's trajectory exports to a trainer record (`prompt`, `completion`, `reward`, `metrics`, `info`; tool calls appear in it as text) with `benchflow.trajectories.export`. To fine-tune with the `prime-rl` backend, convert runs with `bench train convert --format prime-sft` instead: that backend reads only `prime-sft` rows.
 
 ```python
 from benchflow.trajectories.export import (
@@ -249,9 +242,7 @@ record = trajectory_to_verifiers_record(
 export_trajectories_to_jsonl([record], "dataset.jsonl")
 ```
 
-Each line is one record: `prompt`, `completion`, `reward`, `metrics`,
-`is_completed`, `is_truncated`, `example_id`, `info` — the shape pinned
-against the Verifiers `RolloutOutput` type.
+Each line is one record: `prompt`, `completion`, `reward`, `metrics`, `is_completed`, `is_truncated`, `example_id`, `info` — the shape pinned against the `RolloutOutput` type of the `verifiers` package.
 
 ## Roll-back — `snapshot` / `restore`
 

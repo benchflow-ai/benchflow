@@ -463,8 +463,9 @@ mod python_repr_tests {
     /// Guards the D5 fix: `{:e}` breaks a tie between equally short digits
     /// upward where Python rounds half to even (755133721037486.25), and the
     /// Terminal-Bench importer printed `1e-5` where Python writes `1e-05`.
-    /// Every float in the fixture (7,014, with 0.8's Python 3.12 `repr`)
-    /// must come out as Python wrote it, through each of the crate's ports.
+    /// Every float in the fixture (9,111 with 4,000 ties, with 0.8's Python
+    /// 3.12 `repr`; `make_float_repr.py` next to it writes it) must come out
+    /// as Python wrote it, through each of the crate's ports.
     #[test]
     fn float_reprs_match_python() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

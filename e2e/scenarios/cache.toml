@@ -1,0 +1,24 @@
+# bench cache lists only what this bench wrote, and clean --remove leaves a file it did not write alone.
+tier = "smoke"
+
+[[step]]
+run = ["cache", "--only", "sources,registries,logs"]
+exit = 0
+
+[[step]]
+run = ["--json", "cache", "--only", "sources,registries,logs"]
+exit = 0
+stdout_json = { "items" = { "len" = 0 } }
+
+[[step]]
+name = "a file bench did not write is left alone"
+sh = "mkdir -p cache/stranger && echo x > cache/stranger/file"
+
+[[step]]
+run = ["cache", "clean", "--only", "sources,registries,logs", "--remove"]
+exit = 0
+files = ["cache/stranger/file"]
+
+[[step]]
+run = ["cache", "--only", "bogus"]
+exit = 2

@@ -171,7 +171,7 @@ fn write_file(dir: &Path, rel: &str, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, text)
+    crate::record::write_atomic(&path, text.as_bytes())
 }
 
 fn remove_file(path: &Path) -> std::io::Result<()> {
@@ -332,7 +332,7 @@ fn aggregate(
         }
     }
     let path = job.join(out);
-    std::fs::write(&path, text)?;
+    crate::record::write_atomic(&path, text.as_bytes())?;
     Ok(Some(path))
 }
 

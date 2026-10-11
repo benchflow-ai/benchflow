@@ -13,6 +13,10 @@ use std::sync::LazyLock;
 
 use serde_json::{Map, Value, json};
 
+/// The profile for split-layout compatibility, which 0.8 names after another
+/// framework.
+const UNLISTED_PROFILE: &str = "harbor-compatible";
+
 /// The profiles 0.8 ships, by name.
 static PROFILES: LazyLock<Map<String, Value>> = LazyLock::new(|| {
     let v = json!({
@@ -195,10 +199,24 @@ fn parse_profiles(front: &Map<String, Value>) -> Result<Vec<String>, (String, St
                 return Err((key.into(), format!("`{key}` entries must be profile names")));
             };
             if !PROFILES.contains_key(name) {
-                let mut known: Vec<&String> = PROFILES.keys().collect();
+                // A profile named after another framework is still read, but
+                // not suggested or listed: BenchFlow's text names none.
+                let mut known: Vec<&String> = PROFILES
+                    .keys()
+                    .filter(|k| k.as_str() != UNLISTED_PROFILE)
+                    .collect();
                 known.sort();
                 let known: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+                // The unlisted profile is suggested only to someone whose
+                // typo already starts with its name, so it is their word
+                // being repeated, never bench's.
+                let names_it = name.to_ascii_lowercase().starts_with("harb");
                 let guess = crate::suggest::did_you_mean(name, known.iter().copied())
+                    .or_else(|| {
+                        names_it
+                            .then(|| crate::suggest::did_you_mean(name, [UNLISTED_PROFILE]))
+                            .flatten()
+                    })
                     .map(|g| format!("did you mean {g:?}? "))
                     .unwrap_or_default();
                 return Err((
@@ -345,5 +363,42 @@ mod tests {
         assert!(normalize(&obj(json!({"name": ""}))).is_err());
         let (out, _) = normalize(&obj(json!({"verifier": {"timeout_sec": 5}}))).unwrap();
         assert_eq!(out["verifier"]["timeout_sec"], 5);
+    }
+
+    /// 0.8's split-layout compatibility profile is still read, but the
+    /// unknown-profile message neither lists nor suggests it, since its
+    /// name is another framework's.
+    #[test]
+    fn the_compatibility_profile_is_read_but_not_listed() {
+        let (out, ex) = normalize(&obj(json!({"profile": UNLISTED_PROFILE}))).unwrap();
+        assert_eq!(ex.profiles, vec![UNLISTED_PROFILE.to_string()]);
+        assert_eq!(out["sandbox"]["memory_mb"], 2048);
+        for typo in [
+            "harbor-compatibl",
+            "harbor-compat",
+            "Harbour-compatible",
+            "nope",
+            "compatible",
+            "split-compatible",
+            "split-layout-compatible",
+            "tbench-compatible",
+            "compatibility",
+        ] {
+            let (_, message) = normalize(&obj(json!({ "profile": typo }))).unwrap_err();
+            // The message repeats what was typed, then what is known.
+            let (_, after) = message.split_once(&format!("{typo:?}")).unwrap();
+            let (guess, known) = after.split_once("known profiles: ").unwrap();
+            assert!(!known.to_lowercase().contains("harbor"), "{message}");
+            // A near miss of the unlisted name is pointed at it.
+            let near = typo.to_ascii_lowercase().starts_with("harb");
+            if !near {
+                assert!(!message.to_lowercase().contains("harbor"), "{message}");
+            }
+            assert_eq!(
+                guess.contains(&format!("did you mean {UNLISTED_PROFILE:?}?")),
+                near,
+                "{message}"
+            );
+        }
     }
 }

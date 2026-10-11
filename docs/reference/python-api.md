@@ -620,14 +620,14 @@ print(result.reward)      # weighted float [0.0, 1.0]
 print(result.events)      # list[RewardEvent] — per-function breakdown
 ```
 
-### Adapters (Inspect AI + ORS)
+### Adapters (outbound formats)
 
 Convert between BenchFlow types and external frameworks.
 
 ```python
 from benchflow import InspectAdapter, ORSAdapter, to_inspect_task, to_ors_reward
 
-# BenchFlow Scene → Inspect AI task format
+# BenchFlow Scene → an external evaluation library's task format
 inspect_task = to_inspect_task(scene, rubric=rubric)
 
 # BenchFlow VerifyResult → ORS reward format

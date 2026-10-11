@@ -23,6 +23,7 @@ pub mod package;
 pub mod reward;
 pub mod rubric;
 pub mod scaffold;
+pub(crate) mod shellwords;
 pub mod source;
 pub mod split;
 pub mod suggest;

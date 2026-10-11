@@ -27,11 +27,22 @@ use crate::source::{self, SourceError};
 /// BenchFlow 0.8's dataset registry (skillsbench's), with task digests.
 pub const BENCHFLOW_REGISTRY: &str =
     "https://raw.githubusercontent.com/benchflow-ai/skillsbench/main/registry.json";
-/// Harbor's legacy registry: many public benchmarks, no task digests.
-pub const HARBOR_REGISTRY: &str =
+/// The public legacy registry: many public benchmarks, no task digests.
+pub const PUBLIC_REGISTRY: &str =
     "https://raw.githubusercontent.com/laude-institute/harbor/main/registry.json";
 /// The registries searched, in order, when none is named.
-pub const DEFAULT_REGISTRIES: [&str; 2] = [BENCHFLOW_REGISTRY, HARBOR_REGISTRY];
+pub const DEFAULT_REGISTRIES: [&str; 2] = [BENCHFLOW_REGISTRY, PUBLIC_REGISTRY];
+
+/// A registry as messages name it: the two searched by default by what
+/// they are (the public one's address names another framework, which
+/// BenchFlow's text does not), any other by its address.
+pub fn shown(registry: &str) -> String {
+    match registry {
+        BENCHFLOW_REGISTRY => "BenchFlow's registry".into(),
+        PUBLIC_REGISTRY => "the public dataset registry".into(),
+        other => format!("the registry {other}"),
+    }
+}
 
 /// A fetched registry is reused from the cache for this long.
 const CACHE_FRESH: Duration = Duration::from_secs(3600);
@@ -112,10 +123,14 @@ pub enum Location {
 pub enum RegistryError {
     #[error("`{0}` is not a dataset name; write it as name@version, such as terminal-bench@2.0")]
     BadRef(String),
-    #[error("could not read the registry {registry}: {message}")]
+    #[error("could not read {}: {message}", shown(.registry))]
     Unreadable { registry: String, message: String },
-    #[error("the registry {registry} is not valid: {message}")]
+    #[error("{} is not valid: {message}", shown(.registry))]
     Invalid { registry: String, message: String },
+    /// None of the registries searched by default could be read, so
+    /// whether the dataset exists is unknown.
+    #[error("`{wanted}` could not be looked up: {message}")]
+    NoneRead { wanted: String, message: String },
     #[error("no dataset `{wanted}` in {searched}{hint}")]
     NotFound {
         wanted: String,
@@ -251,7 +266,7 @@ pub fn select(
         };
         return Err(RegistryError::NotFound {
             wanted: wanted.to_string(),
-            searched: source.to_string(),
+            searched: shown(source),
             hint,
         });
     };
@@ -511,12 +526,17 @@ pub async fn load(source: &str, cache: &Path) -> Result<Vec<RegistryEntry>, Regi
     parse_registry(&text, source)
 }
 
-async fn fetch_cached(url: &str, cache: &Path) -> Result<String, RegistryError> {
+/// Where the copy of the registry at `url` is kept in `cache`.
+pub fn cached_copy(cache: &Path, url: &str) -> PathBuf {
     use sha2::{Digest, Sha256};
     let key = hex::encode(Sha256::digest(url.as_bytes()));
-    let file = cache
+    cache
         .join("registries")
-        .join(format!("{}.json", &key[..16]));
+        .join(format!("{}.json", &key[..16]))
+}
+
+async fn fetch_cached(url: &str, cache: &Path) -> Result<String, RegistryError> {
+    let file = cached_copy(cache, url);
     let fresh = std::fs::metadata(&file)
         .and_then(|m| m.modified())
         .ok()
@@ -525,19 +545,23 @@ async fn fetch_cached(url: &str, cache: &Path) -> Result<String, RegistryError> 
     if fresh && let Ok(text) = std::fs::read_to_string(&file) {
         return Ok(text);
     }
+    // The library's errors repeat the address, which the message already
+    // names (and names by what it is for the default registries); their
+    // causes (connection refused, a timeout, a TLS failure) carry none.
+    let text = |e: reqwest::Error| error_chain(&e.without_url());
     let fetched = async {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
             .build()
-            .map_err(|e| e.to_string())?;
+            .map_err(text)?;
         let resp = client
             .get(url)
             .send()
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(text)?
             .error_for_status()
-            .map_err(|e| e.to_string())?;
-        resp.text().await.map_err(|e| e.to_string())
+            .map_err(text)?;
+        resp.text().await.map_err(text)
     }
     .await;
     match fetched {
@@ -559,9 +583,24 @@ async fn fetch_cached(url: &str, cache: &Path) -> Result<String, RegistryError> 
     }
 }
 
+/// `e` and its causes, joined by `: `, each said once.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        let text = c.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        cause = c.source();
+    }
+    out
+}
+
 /// Resolve a dataset: a local `dataset.toml` (when `spec` or `registry`
 /// names one), else `spec` in the named registry, else in BenchFlow's
-/// registry and then Harbor's.
+/// registry and then the public dataset registry.
 pub async fn resolve(
     spec: &str,
     registry: Option<&str>,
@@ -580,7 +619,7 @@ pub async fn resolve(
             if d.name != wanted.name || !version_ok {
                 return Err(RegistryError::NotFound {
                     wanted: wanted.to_string(),
-                    searched: reg.to_string(),
+                    searched: shown(reg),
                     hint: format!("; it holds {}@{}", d.name, d.version),
                 });
             }
@@ -590,29 +629,45 @@ pub async fn resolve(
         return select(&entries, &wanted, reg);
     }
     let mut unreadable = Vec::new();
+    let mut read: Vec<String> = Vec::new();
     let mut similar: Vec<String> = Vec::new();
     for reg in DEFAULT_REGISTRIES {
         match load(reg, cache).await {
-            Ok(entries) => match select(&entries, &wanted, reg) {
-                Ok(d) => return Ok(d),
-                // A version miss in a registry that has the name is final.
-                Err(e @ RegistryError::NotFound { .. })
-                    if entries.iter().any(|x| x.name == wanted.name) =>
-                {
-                    return Err(e);
-                }
-                Err(_) => {
-                    for name in similar_names(&entries, &wanted.name) {
-                        if !similar.contains(&name) {
-                            similar.push(name);
+            Ok(entries) => {
+                match select(&entries, &wanted, reg).inspect_err(|_| read.push(shown(reg))) {
+                    Ok(d) => return Ok(d),
+                    // A version miss in a registry that has the name is final.
+                    Err(e @ RegistryError::NotFound { .. })
+                        if entries.iter().any(|x| x.name == wanted.name) =>
+                    {
+                        return Err(e);
+                    }
+                    Err(_) => {
+                        for name in similar_names(&entries, &wanted.name) {
+                            if !similar.contains(&name) {
+                                similar.push(name);
+                            }
                         }
                     }
                 }
-            },
+            }
             Err(e) => unreadable.push(e.to_string()),
         }
     }
-    let searched = DEFAULT_REGISTRIES.join(" or ");
+    // A registry that could not be read may hold the dataset, so whether
+    // it exists is unknown.
+    if !unreadable.is_empty() {
+        let mut message = unreadable.join("; ");
+        if !read.is_empty() {
+            message.push_str(&format!("; it is not in {}", read.join(" or ")));
+        }
+        message.push_str(&not_found_hint(&similar, &[]));
+        return Err(RegistryError::NoneRead {
+            wanted: wanted.to_string(),
+            message,
+        });
+    }
+    let searched = DEFAULT_REGISTRIES.map(shown).join(" or ");
     Err(RegistryError::NotFound {
         wanted: wanted.to_string(),
         searched,
@@ -892,6 +947,22 @@ mod tests {
         ));
     }
 
+    /// The HTTP library's errors repeat the address; the message names the
+    /// registry once, by what it is for the default ones.
+    #[tokio::test]
+    async fn a_registry_that_cannot_be_fetched_is_not_named_twice() {
+        let d = tempfile::tempdir().unwrap();
+        let url = "http://127.0.0.1:1/some-org/some-repo/main/registry.json";
+        let Err(RegistryError::Unreadable { registry, message }) = load(url, d.path()).await else {
+            panic!("an unreachable registry is unreadable");
+        };
+        assert_eq!(registry, url);
+        assert!(!message.contains("127.0.0.1"), "{message}");
+        assert!(!message.contains("some-repo"), "{message}");
+        // The cause is kept: here, the refused connection.
+        assert!(message.to_lowercase().contains("connect"), "{message}");
+    }
+
     #[tokio::test]
     async fn resolves_from_a_registry_file() {
         let d = tempfile::tempdir().unwrap();
@@ -904,19 +975,25 @@ mod tests {
         assert_eq!(ds.tasks.len(), 1);
     }
 
-    /// Harbor's real registry, fetched by hand (about 13 MB; not committed):
-    /// `BENCH_HARBOR_REGISTRY=/path/to/registry.json cargo test -p benchflow-run harbor`.
+    /// The public dataset registry, fetched by hand (about 13 MB; not
+    /// committed): `BENCH_PUBLIC_REGISTRY=/path/to/registry.json cargo test
+    /// -p benchflow-run terminal_bench`. The variable's older name,
+    /// `BENCH_HARBOR_REGISTRY`, is read when the new one is unset; the old
+    /// filter, `harbor`, no longer selects this test (it runs two unrelated
+    /// ones and skips this), so use `terminal_bench`.
     #[test]
-    fn resolves_terminal_bench_from_harbors_registry() {
-        let Some(path) = std::env::var_os("BENCH_HARBOR_REGISTRY") else {
+    fn resolves_terminal_bench_from_the_public_registry() {
+        let Some(path) = std::env::var_os("BENCH_PUBLIC_REGISTRY")
+            .or_else(|| std::env::var_os("BENCH_HARBOR_REGISTRY"))
+        else {
             return;
         };
         let text = std::fs::read_to_string(path).unwrap();
-        let entries = parse_registry(&text, HARBOR_REGISTRY).unwrap();
+        let entries = parse_registry(&text, PUBLIC_REGISTRY).unwrap();
         let d = select(
             &entries,
             &parse_ref("terminal-bench@2.0").unwrap(),
-            HARBOR_REGISTRY,
+            PUBLIC_REGISTRY,
         )
         .unwrap();
         assert_eq!(d.tasks.len(), 89);

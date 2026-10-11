@@ -94,7 +94,7 @@ proptest! {
         format in proptest::sample::select(OutputFormat::ALL.to_vec()),
         lines in prop::collection::vec(line(), 0..24),
     ) {
-        timed(format.name(), || {
+        timed(format.name(), move || {
             let mut parser = format.parser();
             let mut traj = Trajectory::new();
             let mut out = Vec::new();
@@ -117,7 +117,7 @@ proptest! {
     /// that exports.
     #[test]
     fn acp_updates(updates in prop::collection::vec(json_with(*WORDS), 0..32)) {
-        timed("apply_update", || {
+        timed("apply_update", move || {
             let mut traj = Trajectory::new();
             for u in &updates {
                 traj.apply_update(u, Receipt { first_observed_ns: 1, last_observed_ns: 2 });
@@ -135,7 +135,7 @@ proptest! {
     /// back and exported.
     #[test]
     fn trajectory_jsonl(text in mutated(acp_trajectories())) {
-        timed("parse_jsonl", || {
+        timed("parse_jsonl", move || {
             if let Ok(events) = parse_jsonl(&text) {
                 let json: Vec<Value> = events.iter().map(|e| e.to_json()).collect();
                 let _ = summarize(events.iter(), true, None);
@@ -149,7 +149,7 @@ proptest! {
     /// Agent manifests (a project may add its own).
     #[test]
     fn agent_manifest(text in mutated(agent_tomls())) {
-        timed("AgentManifest::parse", || {
+        timed("AgentManifest::parse", move || {
             let _ = AgentManifest::parse(&text, ManifestSource::File(PathBuf::from("agent.toml")));
         });
     }
@@ -157,7 +157,7 @@ proptest! {
     /// Provider manifests.
     #[test]
     fn provider_manifest(text in mutated(provider_tomls())) {
-        timed("Provider::parse", || {
+        timed("Provider::parse", move || {
             let _ = benchflow_agent::providers::Provider::parse(&text, ManifestSource::File(PathBuf::from("p.toml")));
         });
     }
@@ -168,7 +168,7 @@ proptest! {
         doc in json_with(&["version", "agents", "id", "name", "version", "description", "distribution", "npx", "uvx", "binary", "package", "args", "env", "cmd", "archive", "url", "sha256", "linux-x86_64", "darwin-aarch64"]),
         spec in prop_oneof!["acp:\\PC{0,20}", "\\PC{0,20}", mutated(vec!["acp:goose@1.54.0".into(), "acp:claude-code".into()])],
     ) {
-        timed("acp registry", || {
+        timed("acp registry", move || {
             let _ = benchflow_agent::acp_registry::Index::parse(&doc.to_string());
             let _ = benchflow_agent::acp_registry::parse_spec(&spec);
         });
@@ -188,7 +188,7 @@ proptest! {
             ]),
         ],
     ) {
-        timed("model replies", || {
+        timed("model replies", move || {
             let _ = openai::parse_response(&body);
             let _ = anthropic::parse_response(&body);
             let _ = json_parser::parse_response(&text);
@@ -202,7 +202,7 @@ proptest! {
     fn backend_and_assignments(
         text in prop_oneof![json_with(&["type", "action", "command", "keystrokes", "message", "done", "reward", "error", "content", "timeout", "id"]).prop_map(|v| v.to_string()), "\\PC{0,60}"],
     ) {
-        timed("backend", || {
+        timed("backend", move || {
             let _ = benchflow_agent::external::backend::parse_message(&text);
             let _ = benchflow_agent::manifest::options::parse_assignment(&text);
         });

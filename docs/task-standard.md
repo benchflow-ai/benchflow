@@ -359,13 +359,7 @@ Grade only the submitted artifact and declared evidence. Do not infer intent
 from private oracle files or hidden verifier fixtures.
 ```
 
-`test.sh` is the minimum executable strategy and the compatibility export target.
-Reward Kit-style criteria, ORS-style episode rewards, and AgentBeats-style
-assessor agents are verifier strategies. Runtime adapters may write declared
-evidence artifacts such as `trajectory/ors-rewards.jsonl`, but the ORS-specific
-judge/normalization semantics stay inside verifier scope. They must not leak
-into agent prompts, and they must emit either the canonical reward envelope or a
-declared multi-metric map.
+`test.sh` is the minimum executable strategy and the compatibility export target. `reward-kit` criteria, ORS-style episode rewards, and assessor agents (agents that grade other agents) are verifier strategies. Runtime adapters may write declared evidence artifacts such as `trajectory/ors-rewards.jsonl`, but the ORS-specific judge/normalization semantics stay inside verifier scope. They must not leak into agent prompts, and they must emit either the canonical reward envelope or a declared multi-metric map.
 
 Verifier packages must be isolated:
 
@@ -384,13 +378,7 @@ Verifier packages must be isolated:
 Native verifier code lives in `verifier/` and is mounted at `/verifier`.
 Compatibility `tests/` remains supported and is mounted at `/tests`.
 
-The minimum script verifier contract applies to the selected verifier
-entrypoint: native packages with no `verifier/verifier.md` run
-`verifier/test.sh`; imported split-layout packages may run `tests/test.sh`.
-When `verifier/verifier.md` is present, structural verifier validity follows
-the selected strategy. A package can therefore be valid without
-`verifier/test.sh` if, for example, the selected Reward Kit runner and criteria
-files exist.
+The minimum script verifier contract applies to the selected verifier entrypoint: native packages with no `verifier/verifier.md` run `verifier/test.sh`; imported split-layout packages may run `tests/test.sh`. When `verifier/verifier.md` is present, structural verifier validity follows the selected strategy. A package can therefore be valid without `verifier/test.sh` if, for example, the selected `reward-kit` runner and criteria files exist.
 
 - write `/logs/verifier/reward.txt` with one float from `0.0` to `1.0`
 - optionally write `/logs/verifier/reward.json` with structured rubric/evidence;
@@ -440,8 +428,7 @@ Target reward precedence:
 
 - `reward.txt` remains the scalar compatibility minimum
 - when `reward.json` exists, it should be the authoritative rich reward artifact
-- `reward.json` may be an envelope with a numeric `reward`, or a reward-kit
-  style multi-metric map with `metrics` plus a declared `aggregate` policy
+- `reward.json` may be an envelope with a numeric `reward`, or a `reward-kit` style multi-metric map with `metrics` plus a declared `aggregate` policy
 - if both files exist and `reward.json` has a scalar aggregate, the scalar must
   match `float(reward.txt)` or validation should fail closed
 - if `reward.json` is a multi-metric map without a scalar `reward`,
@@ -455,34 +442,7 @@ Target reward precedence:
   and task-specific payloads such as `metrics`, `regressions`, `participants`,
   `winner`, `raw`, and `debug`
 
-Current runtime now prefers `reward.json` over `reward.txt`, rejects
-disagreeing scalar outputs, and preserves a first set of structured reward
-fields. `src/benchflow/task/verifier_document.py` parses
-`verifier/verifier.md` strategies, rubric metadata, output contracts, and
-verifier-scoped role prompts. When `verifier/verifier.md` is present,
-`Verifier.verify()` selects its default strategy: `script` runs the declared
-command relative to the uploaded verifier directory, `llm-judge` uses the
-existing deliverables judge with verifier-local rubric, model, input directory,
-and context/context-file overrides, `reward-kit` runs a safe relative
-`reward.py` package runner inside verifier scope, writes a
-`reward-kit-manifest.json` contract, and, when criteria are declared, parses
-those criteria before launch and computes/verifies canonical `reward` from
-matching `reward.json.metrics`. `agent-judge` runs a
-verifier-scoped judge role over declared evidence inputs. ORS runtime helpers
-can normalize tool-output rewards into `trajectory/ors-rewards.jsonl`;
-`ors-episode` then reads declared ORS reward evidence, normalizes reward
-responses or event streams through the existing ORS adapter, and emits
-canonical `reward.json` plus `reward-details.json`.
-`reward-details.json` is a named rollout artifact, stale copies are cleared
-before verification, script verifiers can preserve it, target-service
-verifiers download it with the rest of `/logs/verifier`, and the built-in LLM
-judge emits criterion details there. Metrics-only `reward.json` maps can now
-use the verifier document's `outputs.aggregate_policy` or selected Reward Kit
-criteria policy to compute and persist the canonical `reward`. It still does
-not fully match the target: full Reward Kit parity, full OpenReward environment
-import/export, and AgentBeats
-assessor lifecycles are not yet first-class; selected unsupported strategies
-fail closed.
+Current runtime now prefers `reward.json` over `reward.txt`, rejects disagreeing scalar outputs, and preserves a first set of structured reward fields. `src/benchflow/task/verifier_document.py` parses `verifier/verifier.md` strategies, rubric metadata, output contracts, and verifier-scoped role prompts. When `verifier/verifier.md` is present, `Verifier.verify()` selects its default strategy: `script` runs the declared command relative to the uploaded verifier directory, `llm-judge` uses the existing deliverables judge with verifier-local rubric, model, input directory, and context/context-file overrides, `reward-kit` runs a safe relative `reward.py` package runner inside verifier scope, writes a `reward-kit-manifest.json` contract, and, when criteria are declared, parses those criteria before launch and computes/verifies canonical `reward` from matching `reward.json.metrics`. `agent-judge` runs a verifier-scoped judge role over declared evidence inputs. ORS runtime helpers can normalize tool-output rewards into `trajectory/ors-rewards.jsonl`; `ors-episode` then reads declared ORS reward evidence, normalizes reward responses or event streams through the existing ORS adapter, and emits canonical `reward.json` plus `reward-details.json`. `reward-details.json` is a named rollout artifact, stale copies are cleared before verification, script verifiers can preserve it, target-service verifiers download it with the rest of `/logs/verifier`, and the built-in LLM judge emits criterion details there. Metrics-only `reward.json` maps can now use the verifier document's `outputs.aggregate_policy` or selected `reward-kit` criteria policy to compute and persist the canonical `reward`. It still does not fully match the target: full `reward-kit` parity, full import and export of ORS environments, and assessor-agent lifecycles are not yet first-class; selected unsupported strategies fail closed.
 
 Validation evidence should include parser checks, legacy-vs-native migration
 parity, live rollout artifacts, negative-contract failures, and explicit
@@ -775,7 +735,7 @@ Target compatibility rules:
            modal:
              image: registry.example.com/task:latest
          steps:
-           - runner: harbor-step-runner
+           - runner: custom-step-runner
          verifier:
            reward_kit:
              metric: exact_match
@@ -807,10 +767,7 @@ Target compatibility rules:
    preserve split-layout `tests/` without requiring `verifier.md` or rubric
    files. If both `verifier/` and `tests/` exist, validation should compare
    normalized file maps and fail closed on drift.
-12. ORS/AgentBeats imports/exports live at the adapter boundary: ORS
-   tool-output rewards become declared reward-event artifacts plus a terminal
-   aggregate, and AgentBeats assessor agents become verifier strategies rather
-   than root task syntax.
+12. ORS and assessor-agent imports/exports live at the adapter boundary: ORS tool-output rewards become declared reward-event artifacts plus a terminal aggregate, and assessor agents become verifier strategies rather than root task syntax.
 
 Round-trip guarantees are semantic, not byte-exact. Config equivalence should
 be checked through canonical `TaskConfig` dumps; prompt equivalence through
@@ -829,9 +786,9 @@ Current implementation status:
 | native `oracle/` | yes | yes | keep |
 | verifier `script` strategy | yes | yes | keep |
 | verifier `llm-judge` strategy | yes | yes | keep |
-| verifier `reward-kit` strategy | yes | partial | safe relative `reward.py` runner executes; declared criteria parse before launch, emit a runtime manifest, require exact metrics, and compute/verify canonical reward; fuller Reward Kit parity remains target work |
+| verifier `reward-kit` strategy | yes | partial | safe relative `reward.py` runner executes; declared criteria parse before launch, emit a runtime manifest, require exact metrics, and compute/verify canonical reward; fuller `reward-kit` parity remains target work |
 | verifier `agent-judge` strategy | yes | partial | verifier-scoped LLM judge over declared inputs; richer ACP-backed judge agents remain target work |
-| verifier `ors-episode` strategy | yes | partial | runtime helper writes ORS tool-output rewards to `trajectory/ors-rewards.jsonl`; declared reward responses/event streams normalize into `reward.json` and `reward-details.json`; fuller OpenReward environment import/export remains target work |
+| verifier `ors-episode` strategy | yes | partial | runtime helper writes ORS tool-output rewards to `trajectory/ors-rewards.jsonl`; declared reward responses/event streams normalize into `reward.json` and `reward-details.json`; fuller import and export of ORS environments remains target work |
 | `agents.roles` | yes | partial | `TaskRuntimeView` carries parsed scenes; explicit sequential shared-workspace handoff can switch roles through the user loop |
 | `scenes` | yes | partial | prompt composition compiles; multi-role document-user scenes execute only with explicit turns and supported team handoff |
 | `user` / `## user-persona` | yes | partial | `model: scripted` + string `private_facts` compiles to `DocumentNudgeUser`; bounded model-linear users compile to `ModelDocumentNudgeUser`; linear single- and multi-scene user loops execute when every scene is single-role, or when explicit multi-role turns opt into sequential shared-workspace team handoff; `confirmation_policy: human` gates ACP permissions fail-closed without an explicit handler; `branch_execution: option-kinds-preserved` preserves option IDs and kinds; forked branch execution, interactive approval UI, parallel teams, and rich handoff artifacts fail closed |

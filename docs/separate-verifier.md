@@ -1,13 +1,13 @@
 # Separate verifier sandboxes
 
-A task can ask for its verifier to run in a sandbox of its own instead of the sandbox the agent worked in. The verifier sandbox receives only the agent's final workspace, the task's declared artifacts and `/logs/artifacts`. Nothing else the agent left behind exists there: not a `conftest.py` in `/tests`, not a pre-written `/logs/verifier/reward.txt`, not a `.pth` file in site-packages, not a background process. This is Harbor's `environment_mode = "separate"`, and Harbor task directories that use it run unchanged on Docker and Daytona.
+A task can ask for its verifier to run in a sandbox of its own instead of the sandbox the agent worked in. The verifier sandbox receives only the agent's final workspace, the task's declared artifacts and `/logs/artifacts`. Nothing else the agent left behind exists there: not a `conftest.py` in `/tests`, not a pre-written `/logs/verifier/reward.txt`, not a `.pth` file in site-packages, not a background process. This is the split layout's `environment_mode = "separate"`, and split-layout task directories that use it run unchanged on Docker and Daytona.
 
 ```toml
 [verifier]
 environment_mode = "separate"      # BenchFlow name: sandbox_mode
 
-# Optional: the verifier sandbox's own settings (Harbor [verifier.environment],
-# BenchFlow [verifier.sandbox]). Declaring it implies separate mode.
+# Optional: the verifier sandbox's own settings (split layout: [verifier.environment],
+# BenchFlow: [verifier.sandbox]). Declaring it implies separate mode.
 [verifier.environment]
 docker_image = "ghcr.io/org/task-verifier:1"
 cpus = 1
@@ -18,11 +18,11 @@ In a `task.md` package the same keys are `verifier.sandbox_mode: separate` and `
 
 ## Which image the verifier sandbox uses
 
-In Harbor's order:
+In the order split-layout runners use:
 
 1. `docker_image` in `[verifier.environment]` / `[verifier.sandbox]`;
 2. with no verifier table, a fresh copy of the task's `[environment]` / `[sandbox]`: its `docker_image` when set;
-3. otherwise the image built from `tests/Dockerfile` (Harbor builds the separate verifier from `tests/`; the Dockerfile usually copies `test.sh` into `/tests`);
+3. otherwise the image built from `tests/Dockerfile` (split-layout runners build the separate verifier from `tests/`; the Dockerfile usually copies `test.sh` into `/tests`);
 4. BenchFlow only: with neither a verifier table nor a `tests/Dockerfile`, a fresh sandbox from the task's own `environment/Dockerfile`. None of the agent's changes survive into it.
 
 A task with none of these is refused before launch (`bench tasks check <dir> --sandbox daytona` shows it). The verifier sandbox never runs the task's setup commands, healthcheck, skills or MCP servers; those belong to the agent's sandbox.
@@ -57,15 +57,15 @@ A job's `--max-sandbox-seconds` budget adds `verifier_sandbox_total` to each tri
 
 ## Worked example
 
-Expected outcomes when each row is run as an oracle trial. Harbor's two tasks were copied verbatim from `harbor-framework/harbor` `examples/tasks/verifier-mode-matrix` (commit 6cb9ff31). Both use `FROM ubuntu:24.04` with no network, so capture runs through the `tar` path.
+Outcomes observed when each row ran as an oracle trial. The two `separate-*` tasks were copied verbatim from the `examples/tasks/verifier-mode-matrix` folder of another split-layout runner's public repository (Apache-2.0, commit 6cb9ff31). They are not checked in here, so their rows record one run and can't be rerun from this repository; the other rows can. Both use `FROM ubuntu:24.04` with no network, so capture runs through the `tar` path.
 
 | Task | Mode | Reward | Notes |
 |---|---|---|---|
 | answer-42, oracle writes 42 | separate | 1.0 | image from `tests/Dockerfile`; 1 workspace file transferred |
 | answer-42, solution writes 41 and tampers (as root) | separate | 0.0 | planted `/tests/conftest.py`, site-packages `.pth`, PATH shim, `/tmp` file: all absent in the verifier sandbox |
 | same tampering task | shared | 1.0 | the root-level plants reach the verifier; pytest reports a pass for the wrong answer |
-| Harbor `separate-explicit` | separate | 1.0 | Harbor's own checks pass: `/logs/artifacts` marker copied, declared `/tmp` artifact present, undeclared `/tmp` file absent |
-| Harbor `separate-reuse-env` | separate | 1.0 | also checks that the verifier image was built from `tests/`, not the agent's `environment/` |
+| `separate-explicit` | separate | 1.0 | the task's own checks pass: `/logs/artifacts` marker copied, declared `/tmp` artifact present, undeclared `/tmp` file absent |
+| `separate-reuse-env` | separate | 1.0 | also checks that the verifier image was built from `tests/`, not the agent's `environment/` |
 | answer-42 with an unbuildable `tests/Dockerfile` | separate | unscored | `verifier_error: separate verifier sandbox failed to start: ... BUILD_FAILED`, category `verifier_infra` |
 
 The tampering solution runs as root because the oracle does. It stands in for an agent that gained root, not for a locked-down agent user.
@@ -77,4 +77,4 @@ The tampering solution runs as root because the oracle does. It stands in for an
 - Multi-step tasks (`steps`) are still refused as a whole, so per-step verifier modes do not run yet.
 - State outside the workspace, the declared artifacts and `/logs/artifacts` does not reach the verifier: services, databases, files elsewhere. A task whose verifier reads such state should stay in shared mode or declare the paths as artifacts.
 - Capture limits are those of `--freeze-workspace`: at most 20 GiB and 200,000 entries per workspace, 1 GiB and 10,000 files for collected artifacts. Credential files, sandbox runtime state and symlinks that leave the workspace are left out and listed in the manifest.
-- The verifier's network is the verifier sandbox's `network_mode`. Harbor's per-phase verifier network overrides are not applied separately.
+- The verifier's network is the verifier sandbox's `network_mode`. The split layout's per-phase verifier network overrides are not applied separately.

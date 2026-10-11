@@ -1,0 +1,3 @@
+build context 0d9a2837d93c65cf86c90e5b9595e942 is already on Daytona
+asking Daytona to build the image
+image ready: bf-build:hello:0681d87f06f06e32

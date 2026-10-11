@@ -21,10 +21,10 @@ Results go to stdout; progress, notes, and diagnostics go to stderr, so `bench r
 | Code | Meaning |
 |---|---|
 | 0 | Done. For `run`: every trial was scored and every gate held. For `check`: no errors. For `test`: every task proved itself |
-| 1 | Done, but something failed: a check found errors, a trial went unscored or errored or was stopped (Ctrl-C), a probe got through, or a `--fail-under` gate failed |
+| 1 | Done, but something failed: a check found errors, a trial went unscored or errored or was stopped (Ctrl-C), a probe got through, or a `--fail-under` gate failed. Also when something bench had to fetch first could not be read (a dataset registry, a task's git repository); then nothing ran |
 | 2 | A usage error: a bad flag, a missing path, an invalid `bench.toml`; nothing ran |
 | 3 | The machine is not ready: no sandbox backend, or no login for the agent |
-| 130 | Stopped with a second Ctrl-C |
+| 130 | Quit at once: a third Ctrl-C (or a second `kill`) |
 
 ## Commands
 
@@ -155,8 +155,8 @@ bench run [OPTIONS] [TARGETS]...
 | `-k`, `--trials` `<N>` | Trials per task |
 | `--job` `<NAME>` | Job name (an existing job is resumed) |
 | `--fresh` | Start a new job instead of resuming the latest matching one |
-| `-i`, `--include` `<PATTERN>` | Only tasks whose names match (glob; repeatable) |
-| `-x`, `--exclude` `<PATTERN>` | Skip tasks whose names match (glob; repeatable) |
+| `-i`, `--include` `<PATTERN>` | Only tasks whose names match: an exact name, or a pattern of `*`, `?`, `[...]` and `[!...]` (repeatable) |
+| `-x`, `--exclude` `<PATTERN>` | Skip tasks whose names match: an exact name, or a pattern of `*`, `?`, `[...]` and `[!...]` (repeatable) |
 | `-n`, `--limit` `<N>` | Run at most N tasks (the first N by name) |
 | `--env` `<KEY=VALUE>` | Environment variable for the agent (repeatable) |
 | `--timeout-multiplier` `<X>` | Scale every task's agent, verifier, and build timeouts |
@@ -171,12 +171,12 @@ bench run [OPTIONS] [TARGETS]...
 | `--extra-instruction` `<TEXT>` | Text appended to every task's instruction |
 | `--save-outputs` | Save each trial's workdir (or declared outputs) in its folder |
 | `-d`, `--dataset` `<NAME@VERSION>` | A dataset from a registry, name@version (or a dataset.toml); instead of targets |
-| `--registry` `<URL-OR-FILE>` | The registry for --dataset: a URL or a file (default: BenchFlow's, then the public one) |
+| `--registry` `<URL-OR-FILE>` | The registry for --dataset: a URL or a file (default: BenchFlow's, then the public dataset registry) |
 | `-c`, `--config` `<FILE-OR-URL>` | A job file (TOML, or YAML or JSON by extension), or an https:// URL of one; repeatable, later files win |
 | `--print-config` | Print the resolved settings as a job file, and exit |
 | `--rerun` `<KINDS>` | On resume, also rerun trials that were: errored, unscored, failed (comma-separated) |
 | `--diff` `<JOB>` | An earlier job (folder, or name in the jobs folder) to reuse trials from: each planned trial is reused, regraded from its saved outputs, or rerun, and the plan is printed first (repeatable) |
-| `--dry-run` | Print the plan and run nothing |
+| `--dry-run` | Print the plan and run nothing; exits 0 and names what a run would stop on (a missing login) |
 
 ```text
 Targets are task folders, folders of tasks, or GitHub repositories:
@@ -185,7 +185,7 @@ Targets are task folders, folders of tasks, or GitHub repositories:
   bench run https://github.com/org/repo/tree/v1/tasks
 
 Or a dataset from a registry, every task pinned to a git commit:
-  bench run -d terminal-bench@2.0                   # BenchFlow's registry, then the public one
+  bench run -d terminal-bench@2.0                   # BenchFlow's registry, then the public dataset registry
   bench run -d mine@1.0 --registry registry.json    # a registry file or URL
   bench run -d datasets/mine/dataset.toml           # a local dataset
 
@@ -204,6 +204,10 @@ exactly what ran.
 (same task, agent, model, effort, and settings; copied in), regrade (only the
 tests or verifier changed, and outputs were saved; graded again without the
 agent), or rerun, with the reason. With --dry-run it only prints the plan.
+
+Ctrl-C drains the run: no new trial starts and running ones finish. A second
+Ctrl-C stops them (their sandboxes are removed; they are left out of the pass
+rate and listed apart), and a third quits at once.
 
 Examples:
   bench run tasks/ -a claude -m claude-sonnet-4-6 -j 8
@@ -437,6 +441,8 @@ Examples:
   bench agents acp:goose             # the same for the ACP registry's goose entry
   bench agents --registry            # every entry of the public ACP registry
   bench agents check goose -s daytona
+
+With --json, the list is an array of {name, aliases, kind, harnesses, description, options}: kind is script (oracle, nop), manifest, native, or backend (external), and harnesses are the values --harness takes, the default first. One agent's page is its entry; --registry gives {name, version, installs, built_in_as, description} per entry.
 ```
 
 ### bench import
@@ -590,7 +596,7 @@ sandbox = "daytona"
 concurrency = 32
 ```
 
-A `.env` file next to `bench.toml` (or in the current folder) is read for variables that are not already set.
+A `.env` file next to `bench.toml` (or in the current folder) is read for variables that are not already set. A cloned repository brings its `.env`, so it may set only keys and tokens (names ending in `_API_KEY`, `_KEY`, or `_TOKEN`, except `GIT_*`, `SSL_*`, and `DAYTONA_API_KEY`, which decides whose sandboxes get the run's keys and logins), `DAYTONA_TARGET`, and `BENCHFLOW_OWNER`; the variables it took are named in a note. A `.env` that git tracks came with the clone and is not read at all; anything else (base URLs such as `DAYTONA_API_URL`, proxies, certificate files, git's settings, `PATH`) is ignored and named in a note, and must be set in the shell. `DAYTONA_API_URL` must be https, or http to this machine, wherever it is set.
 
 ## Job files
 
@@ -627,6 +633,7 @@ Each trial's task also has an inputs digest: a hash of what the agent works from
 | `reuse` | An earlier trial ran the same task (same digest) with the same agent, model, effort, agent install, and the settings that change the agent's run (sandbox backend and user, agent and idle timeouts, process limit, `--runtime`, `--max-tool-calls`, `--max-tokens`, `--extra-instruction`, `--skill`, `--load-trajectory`, `--resume-sessions`, the names of `--env` variables, and agent options), and it was scored. Its folder is copied into the new job |
 | `regrade` | Everything on the agent's side matches (same inputs digest), but the task's tests or verifier changed, or the verifier timeouts did; the earlier trial was scored or unscored and saved its outputs, and the task is not graded in stages. Its outputs are graded again in a fresh sandbox with the new verifier; the agent does not run |
 | `rerun` | Anything else. The reason names the first difference found (`the effort differs: low then, high now`), or says the earlier trial errored, saved no outputs, or is already used |
+| `run` | No earlier job had a trial of this task; it runs for the first time (counted as `new` in the last line) |
 
 ```text
 $ bench run tasks -a oracle -s daytona --diff oracle-a --dry-run

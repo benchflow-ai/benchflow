@@ -7,6 +7,7 @@ This branch rebuilds BenchFlow's command line and run engine in Rust. It is one 
 - [cli.md](./cli.md): every command, flag, exit code, environment variable, and `bench.toml` key
 - [viewer.md](./viewer.md): `bench view`'s pages: the run list, compare, outcomes, and the Pareto view
 - [testing-tasks.md](./testing-tasks.md): how `bench test` proves a task, and every exploit probe
+- [testing-e2e.md](./testing-e2e.md): the black-box end-to-end suite in `e2e/` that drives the `bench` binary on Docker and Daytona
 - [rubrics.md](./rubrics.md): rubric criteria a model judges on the host, one clean call per criterion, against the task's reference
 - [harnesses.md](./harnesses.md): agents and how they are driven: manifests, options, skills, sessions, providers
 - [status.md](./status.md): what is ported, what is not yet, and how each part was verified
@@ -210,7 +211,7 @@ Options (bench run -a claude --ak <name>=<value>; unset ones are not passed)
 A dataset is a named, versioned list of tasks, each pinned to a git commit. `bench run -d` resolves one from a registry and fetches only the task folders it needs, with a sparse, blobless checkout per repository and commit (cached under `~/.cache/benchflow/sources/git`):
 
 ```bash
-bench run -d terminal-bench@2.0 -a claude -m claude-sonnet-4-6   # BenchFlow's registry, then the public one
+bench run -d terminal-bench@2.0 -a claude -m claude-sonnet-4-6   # BenchFlow's registry, then the public dataset registry
 bench run -d skillsbench -i 'fix-*' --dry-run                     # no version: head, else the highest release
 bench run -d mine@1.0 --registry ./registry.json                  # a registry file or URL
 bench run -d datasets/mine/dataset.toml                           # a local dataset
@@ -228,7 +229,7 @@ name = "fix-the-parser"        # the folder ./fix-the-parser (or ./tasks/fix-the
 digest = "sha256:…"            # optional; `path = "…"` names another folder
 ```
 
-`--include`, `--exclude`, and `--limit` narrow the dataset before anything is fetched, and `--dry-run` lists its tasks and says whether the run would resume an earlier job (`would resume jobs/<job> (3 of 3 trials kept)`) or start a new one; it fetches nothing unless the jobs folder holds a job the run could resume, since telling needs the tasks' digests. Every trial's `result.json` records `dataset_name`, `dataset_version`, and the digest the registry pins (`registry_digest`), and the job's `lock.json` records the commit each task was fetched at. This build records registry digests but cannot check them yet, and says so when it runs.
+`--include`, `--exclude`, and `--limit` narrow the dataset before anything is fetched, and `--dry-run` lists its tasks and says whether the run would resume an earlier job (`would resume jobs/<job> (3 of 3 trials kept)`) or start a new one; it fetches nothing unless the jobs folder holds a job of the same dataset and version, or one that ran a task of the same name (a run resumes by its tasks' digests, so the same tasks under another version or from a local folder count), since telling whether that job matches needs the tasks' digests (and then it also checks the agent's login, as a run would). Every trial's `result.json` records `dataset_name`, `dataset_version`, and the digest the registry pins (`registry_digest`), and the job's `lock.json` records the commit each task was fetched at. This build records registry digests but cannot check them yet, and says so when it runs.
 
 ## Regrading
 

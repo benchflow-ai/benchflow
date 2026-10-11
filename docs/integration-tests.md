@@ -85,11 +85,11 @@ objects and fetch them through
 `https://huggingface.co/buckets/ScaleAI/hil-bench-swe-images/resolve/images/<uid>.tar.zst`,
 not through dataset `hf_hub_download`.
 
-Hosted environment registries such as PrimeIntellect, OpenReward/ORS, and Harbor registry should not use benchmark UIDs unless their envs have been converted into checked-in BenchFlow task sources. Track those with `env_uid` plus the canonical `hub_url` in the compatibility board, and record a separate `benchflow_uid` only after conversion. The current hub URLs are `https://openreward.ai/environments`, `https://hub.harborframework.com/`, and `https://app.primeintellect.ai/dashboard/environments?ex_sort=by_sections`.
+Hosted environment registries, among them the public `registry.json` that lists Terminal-Bench 2 and other datasets (not BenchFlow's own SkillsBench registry), should not use benchmark UIDs unless their envs have been converted into checked-in BenchFlow task sources. Track those with `env_uid` plus the canonical `hub_url` in the compatibility board, and record a separate `benchflow_uid` only after conversion. The current hub URLs are listed in the compatibility board in [`tests/integration/suites/release.yaml`](../tests/integration/suites/release.yaml).
 
-The current OpenReward compatibility-board selections are `openreward:GeneralReasoning/KellyBench@be14865a-3c70-422e-a2ba-f45c132cd29a` for long-horizon sandbox/tool use and `openreward:GeneralReasoning/CTF@fcfcd0ef-1298-40e9-9492-83628fd98a1c` for security sandbox coverage. The current PrimeIntellect selections are `primeintellect:primeintellect/reverse-text@0.1.4` for lightweight/no-secret inventory and `primeintellect:primeintellect/math-python@0.1.10` for tool-use plus Prime sandbox coverage. The current Harbor selections are `harbor:terminal-bench/adaptive-rejection-sampler@69671fbaac6d67a7ef0dfec016cc38a64ef7a77c` for Terminal-Bench-style packaging and `harbor:binary-audit/caddy-backdoor-detect@75f3e6e331776b80f77faa3d2ff80627b8b5d069` for security-style adaptation.
+The current compatibility-board selections from the hub whose ids start `openreward:` are `openreward:GeneralReasoning/KellyBench@be14865a-3c70-422e-a2ba-f45c132cd29a` for long-horizon sandbox/tool use and `openreward:GeneralReasoning/CTF@fcfcd0ef-1298-40e9-9492-83628fd98a1c` for security sandbox coverage. The current selections from the hub whose ids start `primeintellect:` (the one hosted hub `--source-env` can run) are `primeintellect:primeintellect/reverse-text@0.1.4` for lightweight/no-secret inventory and `primeintellect:primeintellect/math-python@0.1.10` for tool use plus that hub's own sandbox. The current selections from the public `registry.json` that lists Terminal-Bench 2 are `harbor:terminal-bench/adaptive-rejection-sampler@69671fbaac6d67a7ef0dfec016cc38a64ef7a77c` for Terminal-Bench-style packaging and `harbor:binary-audit/caddy-backdoor-detect@75f3e6e331776b80f77faa3d2ff80627b8b5d069` for security-style adaptation.
 
-OpenReward exposes stable environment IDs and `updated_at` timestamps in its catalog rather than semantic environment versions, so the compatibility board uses the environment ID in `env_uid` and records `updated_at` separately. OpenReward session-level smoke may still require account credits even when catalog inventory succeeds.
+The `openreward:` hub exposes stable environment IDs and `updated_at` timestamps in its catalog rather than semantic environment versions, so the compatibility board uses the environment ID in `env_uid` and records `updated_at` separately. That hub's session-level smoke may still require account credits even when catalog inventory succeeds.
 
 For the current release-prep sweep, the feature release set includes:
 
@@ -136,21 +136,15 @@ uv run python tests/integration/run_suite.py --lane adapter-release-set --execut
   --open-pr-root OpaqueToolsBench=/path/to/pr-280-worktree \
   --open-pr-root ContinualLearningBench=/path/to/pr-283-worktree
 
-# Validate hosted env hub metadata and regenerate Harbor inventory evidence.
+# Validate hosted env hub metadata and regenerate the public registry.json's inventory evidence.
 uv run python tests/integration/run_suite.py --lane hosted-env-compatibility-board --execute-hosted-env-evidence
 ```
 
 Trace-to-task evidence writes generated tasks, oracle job outputs, and `trace-evidence.json` under `dogfood/2026-05-19-trace-to-task-e2e/` by default. The evidence directory is declared in [`tests/integration/suites/release.yaml`](../tests/integration/suites/release.yaml) and can be overridden with `--trace-evidence-dir`.
 
-Hosted-env evidence writes `hosted-env-evidence.json` plus Harbor registry JSONL
-inventory under `dogfood/2026-05-19-release-gate/hosted-envs/` by default.
-OpenReward and PrimeIntellect remain hub-metadata checks until account/credited
-hosted eval support is available; Harbor has a public registry inventory path.
+Hosted-env evidence writes `hosted-env-evidence.json` plus a JSONL inventory of the public `registry.json` under `dogfood/2026-05-19-release-gate/hosted-envs/` by default. The two hosted hubs remain hub-metadata checks until account/credited hosted eval support is available; the public `registry.json` has an inventory path.
 
-SkillsBench-vs-Harbor parity is an offline checker over existing artifacts. It
-does not clone `benchflow-ai/skillsbench-trajectories` during the release run
-because that baseline repository is large. Supply a local checkout or extracted
-artifact root pinned to `2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c`:
+SkillsBench parity against another split-layout runner's baseline is an offline checker over existing artifacts. It does not clone `benchflow-ai/skillsbench-trajectories` during the release run because that baseline repository is large. Supply a local checkout or extracted artifact root pinned to `2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c`:
 
 ```bash
 uv run python tests/integration/run_suite.py --lane skillsbench-harbor-parity \
@@ -168,18 +162,9 @@ uv run python tests/integration/run_suite.py --lane skillsbench-harbor-parity \
   --skillsbench-harbor-task shock-analysis-supply
 ```
 
-The checker normalizes the expected schema differences explicitly: Harbor
-rewards come from `verifier_result.rewards.reward` and ATIF trajectories from
-`agent/trajectory.json`, while BenchFlow rewards come from `rewards.reward` and
-ACP trajectories from `trajectory/acp_trajectory.jsonl`. It fails on missing
-tasks, malformed artifacts, missing trajectories, unseen task outcomes, per-task
-reward movement outside the Harbor observed range, and aggregate
-outcome/reward-rate drift over the configured thresholds.
+The checker normalizes the expected schema differences explicitly: baseline rewards come from `verifier_result.rewards.reward` and ATIF trajectories from `agent/trajectory.json`, while BenchFlow rewards come from `rewards.reward` and ACP trajectories from `trajectory/acp_trajectory.jsonl`. It fails on missing tasks, malformed artifacts, missing trajectories, unseen task outcomes, per-task reward movement outside the baseline's observed range, and aggregate outcome/reward-rate drift over the configured thresholds.
 
-To refresh the Harbor pin, fetch the baseline repository, inspect the candidate
-run root, run the parity checker against known BenchFlow evidence, and update
-`tests/integration/suites/release.yaml` plus the command above only after the
-new baseline is accepted:
+To refresh the baseline pin, fetch the baseline repository, inspect the candidate run root, run the parity checker against known BenchFlow evidence, and update `tests/integration/suites/release.yaml` plus the command above only after the new baseline is accepted:
 
 ```bash
 git -C /path/to/skillsbench-trajectories fetch origin main
@@ -209,7 +194,7 @@ Adapter coverage should stay intentionally small in the near-term profile: one r
 | Sandbox | `docker`, `daytona`; optional `modal`; future `firecracker`, `k8s` / `kubernetes` | Docker/Daytona get the current release smoke lane; Modal is optional follow-up evidence; Firecracker/K8s stay in backlog hard-isolation lanes until implemented |
 | Task set | SkillsBench subset, Terminal-Bench smoke, security DinD smoke, generated trace tasks | Task sets should be named and versioned |
 | Benchmark adapter | Harvey LAB, ProgramBench, SkillsBench, open adapter PRs | Adapter lanes validate source-suite semantics and verifier behavior; benchmark identity is the source-derived UID, not the display name |
-| Hosted env hub | OpenReward environments, Harbor Hub, PrimeIntellect Environments Hub | Hosted env lanes track `env_uid` patterns, selected envs, and canonical hub URLs |
+| Hosted env hub | Hosted environment hubs and the public `registry.json` that lists Terminal-Bench 2 | Hosted env lanes track `env_uid` patterns, selected envs, and canonical hub URLs |
 | Feature | Trace-to-task, agent decoupling, sandbox decoupling | Feature lanes validate product/runtime behavior directly |
 
 ### Required Lanes
@@ -219,7 +204,7 @@ Adapter coverage should stay intentionally small in the near-term profile: one r
 | Shared sandbox smoke | 1 boring representative task × oracle or one cheap agent × Docker/Daytona | Proves the same task contract works across every current release-gated sandbox |
 | SkillsBench agent matrix | 9 SkillsBench tasks × credentialed agents × default model × Daytona | Proves real agent execution across the registered-agent surface |
 | Adapter release set | 1 representative smoke/parity run per merged adapter and open adapter PR | Proves every adapter in the release set preserves source-suite semantics |
-| Hosted env compatibility board | OpenReward, Harbor Hub, PrimeIntellect hub entries × selected env UIDs or remaining selection TODOs | Proves hosted env catalogs are tracked as envs, not benchmark sources |
+| Hosted env compatibility board | Hosted hub and public `registry.json` entries × selected env UIDs or remaining selection TODOs | Proves hosted env catalogs are tracked as envs, not benchmark sources |
 | Terminal-Bench smoke | 1 Terminal-Bench-style task × Docker and one cloud sandbox | Proves shell verifier and packaging compatibility |
 | Trace-to-task e2e | local/JSONL trace + HuggingFace/opentraces source × generated tasks × Docker or Daytona | Proves generated tasks are runnable, not just emitted |
 | Decoupling checks | core import/task validation without optional packages; representative task on at least two agents and two sandboxes | Proves agents and sandboxes are not hard-coupled to core |

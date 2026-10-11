@@ -1,0 +1,78 @@
+# bench results and bench export on stored jobs (a Daytona run of this suite's oracle and nop).
+tier = "smoke"
+
+[[step]]
+sh = "cp -R {e2e}/jobs jobs"
+
+[[step]]
+run = ["results", "jobs/oracle-hello"]
+exit = 0
+stdout_has = ['1/1 passed', 'hello']
+
+[[step]]
+run = ["--json", "results", "jobs/oracle-hello"]
+exit = 0
+stdout_json = { "trials.0.status" = "scored", "trials.0.rewards.reward" = 1.0 }
+
+[[step]]
+name = "every job in a folder"
+run = ["results"]
+exit = 0
+stdout_has = ['oracle-hello', 'nop-hello']
+
+[[step]]
+name = "-t lists trials"
+run = ["results", "-t", "jobs/nop-hello"]
+exit = 0
+stdout_has = ['two-stage', 'hello']
+
+[[step]]
+name = "two jobs are compared over the tasks both ran"
+run = ["results", "jobs/oracle-hello", "jobs/nop-hello"]
+exit = 0
+stdout_has = ['hello']
+
+[[step]]
+run = ["results", "jobs/missing"]
+exit = 2
+
+[[step]]
+name = "traces as a dataset"
+run = ["export", "jobs/oracle-hello", "out-hf"]
+exit = 0
+files = ["out-hf/data/train.jsonl", "out-hf/README.md"]
+
+[[step]]
+run = ["export", "jobs/oracle-hello", "out-hf2", "--sharegpt", "--episodes", "last", "--instruction", "--verifier-output"]
+exit = 0
+file_has = { "out-hf2/data/train.jsonl" = ['conversations_sharegpt', '"instruction"', 'verifier_output'] }
+
+[[step]]
+name = "--filter failure on an all-pass job leaves nothing to export"
+run = ["export", "jobs/oracle-hello", "out-hf3", "--filter", "failure"]
+exit = 1
+output_has = ['1 skipped']
+absent = ["out-hf3/data/train.jsonl"]
+
+[[step]]
+name = "a job whose trials have no trajectory (nop) is refused with the reason"
+run = ["export", "jobs/nop-hello", "out-hf4"]
+exit = 1
+stderr_has = ["no trial .* has a trajectory"]
+
+[[step]]
+name = "OpenTelemetry"
+run = ["export", "jobs/oracle-hello", "-f", "otel", "traces.jsonl"]
+exit = 0
+json = [{ file = "traces.jsonl", "resourceSpans" = { "present" = true } }]
+
+[[step]]
+name = "the same ids twice"
+sh = "{bench} export jobs/oracle-hello -f otel t2.jsonl >/dev/null 2>&1 && cmp traces.jsonl t2.jsonl"
+exit = 0
+
+[[step]]
+name = "split is for tasks, not jobs"
+run = ["export", "jobs/oracle-hello", "-f", "split"]
+exit = 2
+stderr_has = ['is a job folder; the split layout is for tasks']

@@ -45,14 +45,18 @@ pub enum Outcome {
     Unscored,
     /// The trial could not run to the end (or was skipped).
     Errored,
+    /// The user stopped the run while the trial ran (R001): listed apart,
+    /// and left out of pass rates, as `bench results` does.
+    Stopped,
 }
 
 impl Outcome {
-    pub const ALL: [Outcome; 4] = [
+    pub const ALL: [Outcome; 5] = [
         Outcome::Passed,
         Outcome::Failed,
         Outcome::Unscored,
         Outcome::Errored,
+        Outcome::Stopped,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -61,6 +65,7 @@ impl Outcome {
             Outcome::Failed => "failed",
             Outcome::Unscored => "unscored",
             Outcome::Errored => "errored",
+            Outcome::Stopped => "stopped",
         }
     }
 
@@ -165,6 +170,77 @@ pub fn in_progress(run: &Run) -> bool {
     }
 }
 
+/// Per job (by id), how many trials its `lock.json` planned that have no
+/// folder with a result: never started (a drained or stopped run, or a
+/// login that ran out). A job a live run holds is left out: its trials may
+/// still start. Only jobs with a listed trial are counted.
+pub fn never_ran_by_job(runs: &[Run]) -> BTreeMap<String, usize> {
+    let mut jobs: BTreeMap<String, std::path::PathBuf> = BTreeMap::new();
+    for run in runs {
+        if let Some(dir) = run.dir.parent() {
+            jobs.entry(job_of(&run.id).to_string())
+                .or_insert_with(|| dir.to_path_buf());
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (job, dir) in jobs {
+        let running = std::fs::File::open(dir.join(RUNNING_FILE))
+            .map(|f| matches!(f.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock)))
+            .unwrap_or(false);
+        if running {
+            continue;
+        }
+        let Some(lock) = load_json(&dir.join("lock.json")) else {
+            continue;
+        };
+        let n = lock
+            .get("trials")
+            .as_array()
+            .map(|trials| {
+                trials
+                    .iter()
+                    .filter_map(|t| t.get("trial").as_str())
+                    .filter(|name| !dir.join(name).join("result.json").exists())
+                    .filter(|name| !dir.join(name).is_dir())
+                    .count()
+            })
+            .unwrap_or(0);
+        if n > 0 {
+            out.insert(job, n);
+        }
+    }
+    out
+}
+
+/// Add the never-ran counts to a view: each `/compare` column gets
+/// `never_ran` and `partial` (stopped or never-ran trials, so its rate is
+/// not the whole job's), and the view gets `never_ran` by job.
+pub fn mark_never_ran(view: &mut Value, never_ran: &BTreeMap<String, usize>) {
+    let Value::Object(map) = view else {
+        return;
+    };
+    if let Some(Value::Array(columns)) = map.get_mut("columns") {
+        for column in columns.iter_mut() {
+            let Value::Object(c) = column else { continue };
+            let job = get(c, "job").as_str().unwrap_or_default().to_string();
+            let n = never_ran.get(&job).copied().unwrap_or(0);
+            // `counts` carries `stopped` only when some trial was.
+            let stopped = !matches!(get(c, "counts").get("stopped"), Value::Null);
+            c.insert("never_ran".into(), n.into());
+            c.insert("partial".into(), (n > 0 || stopped).into());
+        }
+    }
+    map.insert(
+        "never_ran".into(),
+        Value::Object(
+            never_ran
+                .iter()
+                .map(|(job, n)| (job.clone(), (*n).into()))
+                .collect(),
+        ),
+    );
+}
+
 /// Read one trial's `result.json` and timing.
 pub fn read_trial(run: &Run) -> Trial {
     let result = load_object(&run.dir.join("result.json"));
@@ -228,6 +304,9 @@ fn outcome_of(result: &Map, reward: Option<f64>) -> Outcome {
     match get(result, "status").as_str() {
         Some("scored") => scored(),
         Some("unscored") => Outcome::Unscored,
+        Some("skipped") if get(result, "problem").get("code").as_str() == Some("R001") => {
+            Outcome::Stopped
+        }
         Some("errored" | "skipped") => Outcome::Errored,
         _ if result.is_empty() => Outcome::Errored,
         _ if reward.is_some() => scored(),
@@ -358,13 +437,15 @@ fn select<'a>(trials: &'a [Trial], query: &ViewQuery) -> Selection<'a> {
     }
     let mut selected = Vec::new();
     let mut unknown = Vec::new();
-    for job in &query.jobs {
-        if jobs.iter().any(|(known, _)| known == job) {
-            if !selected.contains(job) {
-                selected.push(job.clone());
+    for asked in &query.jobs {
+        match match_job(&jobs, asked) {
+            Some(job) => {
+                if !selected.contains(&job) {
+                    selected.push(job);
+                }
             }
-        } else if !unknown.contains(job) {
-            unknown.push(job.clone());
+            None if !unknown.contains(asked) => unknown.push(asked.clone()),
+            None => {}
         }
     }
     if query.jobs.is_empty() {
@@ -388,6 +469,29 @@ fn select<'a>(trials: &'a [Trial], query: &ViewQuery) -> Selection<'a> {
         unknown,
         agents: agents.into_iter().collect(),
         trials: kept,
+    }
+}
+
+/// The job a `runs=` entry names. Ids are relative to the folder served
+/// (`a` when serving `jobs`), but a path as typed in the shell works too
+/// (`jobs/a`, `./jobs/a/`): the one job whose id ends the path, for a
+/// relative path without `..`.
+fn match_job(jobs: &[(String, usize)], asked: &str) -> Option<String> {
+    let asked = asked.trim_end_matches('/');
+    if let Some((job, _)) = jobs.iter().find(|(known, _)| known == asked) {
+        return Some(job.clone());
+    }
+    // Only a plain relative path: `..` or an absolute path never names a
+    // job here, even one that ends the same way.
+    if asked.starts_with('/') || asked.split('/').any(|part| part == "..") {
+        return None;
+    }
+    let mut found = jobs
+        .iter()
+        .filter(|(known, _)| known != ROOT_JOB && asked.ends_with(&format!("/{known}")));
+    match (found.next(), found.next()) {
+        (Some((job, _)), None) => Some(job.clone()),
+        _ => None,
     }
 }
 
@@ -451,10 +555,12 @@ fn counts<'a>(trials: impl IntoIterator<Item = &'a Trial>) -> BTreeMap<Outcome, 
     counts
 }
 
+/// The counts as JSON; `stopped` only when some trial was.
 fn counts_value(counts: &BTreeMap<Outcome, usize>) -> Value {
     Value::Object(
         counts
             .iter()
+            .filter(|(outcome, count)| **outcome != Outcome::Stopped || **count > 0)
             .map(|(outcome, count)| (outcome.as_str().to_string(), (*count).into()))
             .collect(),
     )
@@ -559,7 +665,8 @@ pub fn compare(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuer
                 .collect();
             let counts = counts(members.iter().copied());
             let passed = counts[&Outcome::Passed];
-            let total = members.len();
+            // Stopped trials are counted apart, not in the pass rate.
+            let total = members.len() - counts[&Outcome::Stopped];
             let rewards: Vec<f64> = members.iter().filter_map(|trial| trial.reward).collect();
             object([
                 ("job", job.clone().into()),
@@ -598,6 +705,8 @@ pub fn compare(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuer
             let (mut better, mut worse, mut tied, mut excluded) = (0usize, 0usize, 0usize, 0usize);
             // Tasks only one side ran are not shared; they are counted apart.
             let mut one_side = 0usize;
+            // Rewards are usually 0 to 1; wider ones widen the possible range.
+            let (mut lowest, mut highest) = (0.0_f64, 1.0_f64);
             for (_, cells) in &rows {
                 match (cells[a].is_empty(), cells[b].is_empty()) {
                     (true, true) => continue,
@@ -618,11 +727,15 @@ pub fn compare(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuer
                             worse += 1;
                         }
                         differences.push(difference);
+                        for reward in [left, right] {
+                            lowest = lowest.min(reward);
+                            highest = highest.max(reward);
+                        }
                     }
                     _ => excluded += 1,
                 }
             }
-            let paired = mean_with_t_interval(&differences);
+            let paired = mean_with_t_interval(&differences, highest - lowest);
             object([
                 ("a", a.into()),
                 ("b", b.into()),
@@ -633,7 +746,11 @@ pub fn compare(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuer
                 ),
                 (
                     "interval",
-                    interval(paired.and_then(|paired| paired.interval)),
+                    interval(paired.as_ref().and_then(|paired| paired.interval)),
+                ),
+                (
+                    "no_interval",
+                    paired.and_then(|paired| paired.no_interval).into(),
                 ),
                 ("better", better.into()),
                 ("worse", worse.into()),
@@ -898,6 +1015,11 @@ pub fn pareto(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuery
                 .iter()
                 .filter(|trial| trial.outcome == Outcome::Passed)
                 .count();
+            let counted = members
+                .iter()
+                .filter(|trial| trial.outcome != Outcome::Stopped)
+                .count()
+                .max(1);
             let pick = |value: fn(&Trial) -> Option<f64>| -> Vec<f64> {
                 members.iter().filter_map(|trial| value(trial)).collect()
             };
@@ -905,7 +1027,7 @@ pub fn pareto(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuery
             let seconds = pick(|trial| trial.seconds);
             let tokens = pick(|trial| trial.tokens);
             Point {
-                rate: passed as f64 / members.len() as f64,
+                rate: passed as f64 / counted as f64,
                 axes: [mean(&costs), quantile(&seconds, 0.5), mean(&tokens)],
                 counts: [costs.len(), seconds.len(), tokens.len()],
             }
@@ -941,7 +1063,13 @@ pub fn pareto(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuery
             map.insert("pass_rate".into(), point.rate.into());
             map.insert(
                 "pass_interval".into(),
-                interval(wilson(passed, members.len())),
+                interval(wilson(
+                    passed,
+                    members
+                        .iter()
+                        .filter(|trial| trial.outcome != Outcome::Stopped)
+                        .count(),
+                )),
             );
             for (axis, name) in PARETO_AXES.iter().enumerate() {
                 map.insert((*name).into(), point.axes[axis].into());
@@ -1028,6 +1156,44 @@ mod tests {
             "the run is gone: the trial stopped without a result"
         );
         assert_eq!(read_trial(&run).outcome, Outcome::Errored);
+    }
+
+    /// Behavior review 6: a trial the user stopped (R001) is its own
+    /// outcome, left out of the compare pass rate, as `bench results` does.
+    #[test]
+    fn stopped_trials_are_their_own_outcome_and_left_out_of_pass_rates() {
+        assert_eq!(
+            outcome(r#"{"status": "skipped", "problem": {"code": "R001"}}"#),
+            Outcome::Stopped
+        );
+        assert_eq!(
+            outcome(r#"{"status": "skipped", "problem": {"code": "R000"}}"#),
+            Outcome::Errored
+        );
+        let mut trials: Vec<Trial> = (0..3)
+            .map(|i| {
+                trial(
+                    &format!("j/t{i}__1"),
+                    &format!("t{i}"),
+                    "x",
+                    Outcome::Passed,
+                    Some(1.0),
+                )
+            })
+            .collect();
+        for i in 3..5 {
+            trials.push(trial(
+                &format!("j/t{i}__1"),
+                &format!("t{i}"),
+                "x",
+                Outcome::Stopped,
+                None,
+            ));
+        }
+        let view = compare(&trials, "jobs", false, &ViewQuery::default());
+        let column = &view.get("columns").as_array().unwrap()[0];
+        assert_eq!(dumps(column.get("pass_rate")), "1.0");
+        assert_eq!(dumps(column.get("counts").get("stopped")), "2");
     }
 
     #[test]

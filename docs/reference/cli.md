@@ -244,7 +244,7 @@ bench eval run \
   --publish-hf benchflow/env0-experiment-trajectories \
   --hf-prefix experiments/my-run
 
-# From a hosted PrimeIntellect / Verifiers environment
+# From a hosted environment
 bench eval run \
   --source-env primeintellect/general-agent \
   --source-env-version 0.1.1 \
@@ -285,10 +285,10 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--source-env-rollouts-per-example` | `1` | Rollouts per hosted environment example |
 | `--source-env-max-tokens` | `1024` | Max tokens for hosted environment model calls |
 | `--source-env-temperature` | `0.0` | Temperature for hosted environment model calls |
-| `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable (for example `reasoning_effort=minimal`) |
-| `--source-env-verifiers-version` | env package's requirement | Pin the verifiers release installed with the hosted env (e.g. `0.3.2.dev137`); recorded in `hosted_env/hosted_run.json` |
-| `--source-env-base-url` | verifiers' default (Prime inference) | Model endpoint for the hosted run (passed to vf-eval as its API base URL on the legacy CLI, its client base URL on v1) |
-| `--source-env-api-key-var` | verifiers' default (`PRIME_API_KEY`) | Environment variable holding that endpoint's API key |
+| `--source-env-sampling-arg` | — | `vf-eval` sampling argument as `KEY=VALUE`; repeatable (for example `reasoning_effort=minimal`) |
+| `--source-env-verifiers-version` | env package's requirement | Pin the `verifiers` release installed with the hosted env (e.g. `0.3.2.dev137`); recorded in `hosted_env/hosted_run.json` |
+| `--source-env-base-url` | the `verifiers` default (the hub's inference) | Model endpoint for the hosted run (passed to `vf-eval` as its API base URL on the legacy CLI, its client base URL on v1) |
+| `--source-env-api-key-var` | the `verifiers` default (`PRIME_API_KEY`) | Environment variable holding that endpoint's API key |
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
@@ -426,15 +426,7 @@ leave provider traffic untouched.
 
 For training rollouts, pass `--agent-env BENCHFLOW_CAPTURE_TOKEN_LOGPROBS=1`. The LiteLLM gateway then asks the model server for sampled-token logprobs on chat-completions, Anthropic Messages and Responses calls, and for prompt and completion token ids on vLLM routes (`BENCHFLOW_CAPTURE_TOKEN_IDS=1` requests them on other servers that implement `return_token_ids`). Each call in `trajectory/llm_trajectory.jsonl` gets a `metadata.token_capture` block; fields a provider cannot return (Anthropic, Bedrock) are marked `unavailable` with a reason. This is opt-in because providers that do not implement these parameters may reject the request. Schema and coverage: [token-capture.md](./token-capture.md).
 
-`--source-env` is for external hosted environment hubs. The first supported
-runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
-(`env_uid`, `hub_url`), installs the versioned package into an isolated local
-virtual environment, and runs `vf-eval`. `--sandbox` remains the BenchFlow task
-sandbox selector for local/repo task sources; Verifiers source environments own
-their own harness and sandbox behavior. `--model` is passed to the Verifiers
-model endpoint; use a model id available to that provider. Provider-specific
-sampling options are not inferred; pass them explicitly with
-`--source-env-sampling-arg`.
+`--source-env` runs an environment from an external hosted hub. Only environments with ids like `primeintellect/general-agent` (or `primeintellect:primeintellect/general-agent@0.1.1`) run; `openreward:` ids are recognized but refused as not executable yet. The runner is the `verifiers` package's `vf-eval`: BenchFlow preserves the hosted identity (`env_uid`, `hub_url`), installs the versioned package into an isolated local virtual environment, and runs `vf-eval`. `--sandbox` remains the BenchFlow task sandbox selector for local/repo task sources; hosted source environments own their own harness and sandbox behavior. `--model` is the model `vf-eval` calls at `--source-env-base-url` (by default the hub's inference); use a model id that endpoint serves. Provider-specific sampling options are not inferred; pass them explicitly with `--source-env-sampling-arg`.
 
 Tasks shipping a weighted review rubric automatically run a separate reviewer
 before their final reward is committed. Reviewer options are independent of
@@ -796,15 +788,11 @@ bench train convert jobs/run-001 \
   --manifest train.trl.manifest.json
 ```
 
-`results.jsonl` remains the canonical scored-rollout artifact regardless of
-trainer. Each BenchFlow row carries `info.schema_version`: from version 2, `reward` and `score` are null when the rollout is unscored (an agent, verifier or infrastructure failure), never 0; rows without the field are version 1, which wrote 0.0 there (such a row's `metrics` has no `reward` key, which is how `bf.load_job` still reads it as unscored). The selected format changes only the converted output. For TRL,
-`exchange` mode emits one supervised completion for every primary agent model
-call while excluding captured OpenCode title, summary, compaction, and helper
-calls. `rollout` mode emits only the final primary model call.
+`results.jsonl` remains the canonical scored-rollout artifact regardless of trainer. Each BenchFlow row carries `info.schema_version`: from version 2, `reward` and `score` are null when the rollout is unscored (an agent, verifier or infrastructure failure), never 0; rows without the field are version 1, which wrote 0.0 there (such a row's `metrics` has no `reward` key, which is how `bf.load_job` still reads it as unscored). The selected format changes only the converted output. For `trl-sft`, `exchange` mode emits one supervised completion for every primary agent model call while excluding captured OpenCode title, summary, compaction, and helper calls. `rollout` mode emits only the final primary model call.
 
 Rows contain the parent agent's conversation only. A Claude subagent (started with the `Agent` or `Task` tool) sends its model calls through the same gateway, so they appear in `llm_trajectory.jsonl` next to the parent's calls. Conversion attributes each call before building rows. A call belongs to a subagent when `acp_trajectory.jsonl` links its tool calls to a spawn call (`parent_tool_call_id`), or when its conversation starts with the spawn call's `prompt`. A call belongs to the parent when its conversation declares the spawn tool, which Claude Code gives only to the main agent. Tool-less calls made inside a tool, such as Claude Code's `WebSearch` call, are excluded and counted as `skipped_helper_calls`. If a tool-using call matches none of these rules, or the evidence conflicts, conversion fails and writes no output. It never mixes an unattributed call into parent rows. `--subagent-rows` also writes each subagent's calls as separate rows, using the same `rollout` or `exchange` mode. These rows are tagged `agent_role: "subagent"` and carry `parent_tool_call_id`, `subagent_type` and `subagent_description`. Parent rows are then tagged `agent_role: "parent"`. Subagent rows carry the rollout's reward. The manifest reports `rollouts_with_subagents`, `subagent_calls_seen`, `subagent_exchanges_seen`, `subagent_exchanges_excluded` and `subagent_rows_written`.
 
-A `results.jsonl` row keeps every captured call as a trajectory step, and the Prime-SFT prompt/completion comes from its last step. The row does not record which agent made each call. Conversion therefore refuses a `results.jsonl` row whose steps show subagent calls; convert the rollout or jobs directory instead. This check can only see a subagent whose spawn call is still in the row. The results writer drops a spawn call that no later request used, so if the capture ends inside a subagent, that subagent's steps may not be detected.
+A `results.jsonl` row keeps every captured call as a trajectory step, and the `prime-sft` prompt/completion comes from its last step. The row does not record which agent made each call. Conversion therefore refuses a `results.jsonl` row whose steps show subagent calls; convert the rollout or jobs directory instead. This check can only see a subagent whose spawn call is still in the row. The results writer drops a spawn call that no later request used, so if the capture ends inside a subagent, that subagent's steps may not be detected.
 
 `--format branch-tree` reads every `tree.json` under the path (runs made with `bench eval branch`, `bf.branch` or `Rollout.branch`) and writes one row per branch child (`kind: "branch_child"`, `schema_version` 2): `prefix` (the conversation up to the fork: for a trial started from a kept checkpoint, the source trial's conversation up to that checkpoint, then the parent's events, then the enclosing child's events for a nested fork), `continuation` (the child's own events), `messages` (both, ready for `tokenizer.apply_chat_template(row["messages"], tools=row["tools"])`), `tools` (function definitions inferred from the recorded calls: names and argument names only), the child's label, request, status and reward, the fork's `value` V, `value_stderr` and `advantage` (reward − V; null when either is missing), `agent`, `model`, `depth`, `fork_id`, `fork_kind` (`fork` or `retry`) and `parent_node`. Messages use the OpenAI chat shape: one `assistant` message per reply with `content`, `reasoning_content` and `tool_calls` (`{"id", "type": "function", "function": {"name", "arguments": "<JSON string>"}}`), each followed by its `tool` results. Tool names are the agent's own (`Write`, `Bash`, …) when the agent reports them (Claude does) and otherwise inferred from the call; `tool_names` says which (`agent`, `inferred`, `mixed`). `session` copies the fork's `agent_session`: `fresh` means the child did not remember the prefix, `resumed` that it continued that conversation. `prefix_complete: false` (with `prefix_source`) marks a row whose checkpoint source could not be found, so its prefix lacks the source conversation. Rows of one fork share their prefix. Oracle children are skipped unless `--include-oracle`. `--pairs PATH` adds one `branch_pair` row per pair of siblings whose rewards both exist and differ and that were asked the same thing: `prompt` (the prefix plus the shared user turn), `chosen` and `rejected` (the replies after it), `chosen_reward`, `rejected_reward`, `margin`; `--pairs-any-request` also keeps pairs asked different things (`same_request: false`, their user turns inside `chosen`/`rejected`), which are not valid preference pairs for DPO. `--min-reward`, `--expected-rows` and `--manifest` apply to child rows; the manifest counts skipped oracle children, rows below `--min-reward` and pairs skipped for different requests. The row schemas are `docs/reference/schemas/benchflow-branch-child-row.v2.schema.json` and `benchflow-branch-pair-row.v2.schema.json`; `bench train validate --format branch-tree` checks a file. The source is the ACP event log (`trajectory/acp_trajectory.jsonl`, each child's `observation.json`), because runs that can branch have no LLM-proxy trajectory. See the recipe in the [Branching guide](../branching.md#training-on-branch-runs).
 
@@ -825,14 +813,7 @@ bench train convert jobs/run-001 --out train.jsonl --manifest m.json \
 - `advantage` and `group`: the reward normalised over the scored rollouts of the same group (`--group-by`, default `task,agent,model,job`: a group stays inside one job unless `job` is left out, since jobs may have run different policy checkpoints; an attempt an Evaluation retried is excluded as `retried`): `grpo` = `(r − mean) / (std + 1e-4)` with the sample std, `loo` = `r − mean(others)`. `group` records the key, normalisation, formula, counts, mean and std. With both options, `advantage_vector` normalises each component the same way.
 - Unscored rollouts (errors, scoring errors, no reward) never enter a baseline; their advantage is null with `excluded: "unscored"`, never 0. A group with one scored rollout has no advantage (`excluded: "single_scored_rollout"`). Groups are computed before `--min-reward` filters rows. The manifest's `training_signal` block lists every group with its members.
 
-TRL conversion never truncates implicitly. The default `full` context policy
-preserves every captured message. `message-window` first renders with the
-pinned tokenizer; when a row is too long it preserves all leading system
-messages, the original task user message, the target assistant completion, and
-the longest complete recent suffix of assistant/tool groups that fits. It
-records original/final token counts and every dropped-message count in both the
-row and conversion manifest. It fails if the required prefix and completion
-cannot fit.
+`trl-sft` conversion never truncates implicitly. The default `full` context policy preserves every captured message. `message-window` first renders with the pinned tokenizer; when a row is too long it preserves all leading system messages, the original task user message, the target assistant completion, and the longest complete recent suffix of assistant/tool groups that fits. It records original/final token counts and every dropped-message count in both the row and conversion manifest. It fails if the required prefix and completion cannot fit.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -846,7 +827,7 @@ cannot fit.
 | `--manifest` | — | Optional conversion stats JSON path |
 | `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
 | `--canonical-selection` | — | Restrict conversion to rows selected by `canonical-selection.json` |
-| `--context-policy` | `full` | TRL context policy: exact `full` rows or tokenizer-aware `message-window` |
+| `--context-policy` | `full` | `trl-sft` context policy: exact `full` rows or tokenizer-aware `message-window` |
 | `--tokenizer` | — | Tokenizer/model ID required by `message-window` |
 | `--tokenizer-revision` | — | Immutable tokenizer revision for context windowing |
 | `--max-length` | — | Maximum rendered length required by `message-window` |
@@ -865,10 +846,7 @@ Reports, per rollout, whether the gateway token capture (`--agent-env BENCHFLOW_
 
 ### bench train validate
 
-Validate Prime-RL or TRL SFT JSONL before upload or training. Both formats fail
-closed on malformed tool calls, undeclared tools, orphan tool outputs, and row
-count mismatches. TRL validation additionally requires object-valued tool-call
-arguments and exactly one assistant message in each completion.
+Validate `prime-sft` or `trl-sft` JSONL before upload or training. Both formats fail closed on malformed tool calls, undeclared tools, orphan tool outputs, and row count mismatches. `trl-sft` validation additionally requires object-valued tool-call arguments and exactly one assistant message in each completion.
 
 ```bash
 bench train validate train.jsonl
@@ -888,11 +866,7 @@ bench train validate train.trl.jsonl \
   --max-length 40960
 ```
 
-When `--tokenizer` is set, TRL validation uses TRL's training chat template,
-checks that prompt tokenization remains a prefix of prompt-plus-completion,
-requires a non-empty assistant token mask after the prompt boundary, and fails
-instead of silently truncating a row beyond `--max-length`. The JSON report
-includes token-length distribution and minimum trainable assistant tokens.
+When `--tokenizer` is set, `trl-sft` validation uses the training chat template from the `trl` extra, checks that prompt tokenization remains a prefix of prompt-plus-completion, requires a non-empty assistant token mask after the prompt boundary, and fails instead of silently truncating a row beyond `--max-length`. The JSON report includes token-length distribution and minimum trainable assistant tokens.
 
 With `--format branch-tree` the command checks the child rows (`children.jsonl`) or pair rows (`pairs.jsonl`) written by `bench train convert --format branch-tree`: every row is `schema_version` 2; a child's `messages` equal `prefix` + `continuation`; children of one fork share their prefix; `advantage` equals `reward − value`; tool calls have the `{"id", "type": "function", "function": {"name", "arguments"}}` shape with a JSON-string `arguments`, are named in the row's `tools`, and every `tool` message answers an earlier call; a pair's `chosen_reward` beats its `rejected_reward` and a same-request pair's `prompt` ends with the shared user turn. The report counts rows by kind, forks, rows with tool calls and rows whose prefix is incomplete (`prefix_complete: false`). `--tokenizer`, `--tokenizer-revision`, `--max-length` and `--require-llm-trajectory` do not apply and are refused.
 
@@ -905,15 +879,13 @@ With `--format branch-tree` the command checks the child rows (`children.jsonl`)
 | `--task-manifest` | — | Task manifest for source rows |
 | `--require-llm-trajectory` | `false` | Fail unless source selected rows have valid `llm_trajectory.jsonl` |
 | `--require-tool-calls` | `false` | Fail unless trainer rows and source rows include tool calls |
-| `--tokenizer` | — | Tokenizer/model ID used to render and mask TRL rows |
-| `--tokenizer-revision` | — | Immutable tokenizer revision used for TRL validation |
-| `--max-length` | — | Fail when a rendered TRL row exceeds this token length |
+| `--tokenizer` | — | Tokenizer/model ID used to render and mask `trl-sft` rows |
+| `--tokenizer-revision` | — | Immutable tokenizer revision used for `trl-sft` validation |
+| `--max-length` | — | Fail when a rendered `trl-sft` row exceeds this token length |
 
 ### bench train run sft
 
-Launch a supervised fine-tuning job and record BenchFlow launch metadata. The
-first supported backend is `prime-rl`; BenchFlow wraps the native Prime-RL SFT
-entrypoint instead of re-modeling trainer internals.
+Launch a supervised fine-tuning job and record BenchFlow launch metadata. The first supported backend is `prime-rl`, an RL trainer that ships its own SFT entrypoint; BenchFlow wraps that entrypoint instead of re-modeling trainer internals.
 
 ```bash
 bench train run sft \
@@ -936,43 +908,34 @@ uv run sft @ configs/qwen35-env0-sft.toml \
   --output-dir train-runs/qwen35-env0-sft/prime-rl-output
 ```
 
-BenchFlow writes `<work-dir>/train-run.json`, `<work-dir>/command.txt`, and
-separate Prime-RL stdout/stderr logs under `<work-dir>/prime-rl/`. Secrets are
-not written to the manifest; only the names of recognized credential env vars
-that were present are recorded.
+BenchFlow writes `<work-dir>/train-run.json`, `<work-dir>/command.txt`, and the trainer's separate stdout/stderr logs under `<work-dir>/prime-rl/`. Secrets are not written to the manifest; only the names of recognized credential env vars that were present are recorded.
 
-For the Mobile300 PR828 reproduction, use `--compat-profile
-env0-mobile300-pr828`. That profile stages the historical custom-trainer
-pretokenized shifted-label rows, bypasses Prime-RL `stack`/`cat` packing for
-those staged rows so training sees one original trajectory per micro-batch, and
-enables `sample_mean` loss normalization through a run-local `sitecustomize.py`
-shim. The shim leaves Prime-RL package files untouched but fails closed if the
-Prime-RL SFT train loop or data module no longer exposes the expected hooks.
+For the Mobile300 PR828 reproduction, use `--compat-profile env0-mobile300-pr828`. That profile stages the historical custom-trainer pretokenized shifted-label rows, bypasses the trainer's `stack`/`cat` packing for those staged rows so training sees one original trajectory per micro-batch, and enables `sample_mean` loss normalization through a run-local `sitecustomize.py` shim. The shim leaves the trainer's package files untouched but fails closed if the trainer's SFT train loop or data module no longer exposes the expected hooks.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--backend` | `prime-rl` | Training backend. Currently only `prime-rl` is supported |
-| `--config` | required | Prime-RL SFT TOML config. Relative paths are resolved from the current directory first, then from `--prime-rl-dir` when set |
+| `--config` | required | The trainer's SFT TOML config. Relative paths are resolved from the current directory first, then from `--prime-rl-dir` when set |
 | `--data` | — | Optional dataset override passed through as `--data.name` |
-| `--output-dir` | `<work-dir>/prime-rl-output` | Prime-RL trainer output directory |
-| `--compat-profile` | — | Named BenchFlow Prime-RL SFT compatibility profile. `env0-mobile300-pr828` expands to the Mobile300 PR828 reproduction settings |
+| `--output-dir` | `<work-dir>/prime-rl-output` | Trainer output directory |
+| `--compat-profile` | — | Named BenchFlow SFT compatibility profile for `prime-rl`. `env0-mobile300-pr828` expands to the Mobile300 PR828 reproduction settings |
 | `--work-dir` | `train-runs/sft` | BenchFlow training run directory |
-| `--prime-rl-dir` | current directory | Prime-RL checkout to run `uv run sft` from |
-| `--dry-run` | `false` | Pass `--dry-run` through to Prime-RL |
+| `--prime-rl-dir` | current directory | The trainer's checkout to run `uv run sft` from |
+| `--dry-run` | `false` | Pass `--dry-run` through to the trainer |
 | `--follow` | `false` | Stream trainer stdout while writing logs |
-| `--uv-no-sync` | `false` | Run Prime-RL as `uv run --no-sync sft ...`, useful after backend post-install steps such as `flash-attn` |
-| `--override` | — | Prime-RL override as `KEY=VALUE`; repeatable, emitted as `--KEY VALUE` |
-| `--target-examples` | — | Derive Prime-RL `max_steps` from target sample exposure and effective `data.batch_size`, rounding up |
-| `--target-micro-steps` | — | Derive Prime-RL `max_steps` from custom-trainer batch-size-1 microsteps, dropping the final partial accumulation |
+| `--uv-no-sync` | `false` | Run the trainer as `uv run --no-sync sft ...`, useful after backend post-install steps such as `flash-attn` |
+| `--override` | — | Trainer override as `KEY=VALUE`; repeatable, emitted as `--KEY VALUE` |
+| `--target-examples` | — | Derive the trainer's `max_steps` from target sample exposure and effective `data.batch_size`, rounding up |
+| `--target-micro-steps` | — | Derive the trainer's `max_steps` from custom-trainer batch-size-1 microsteps, dropping the final partial accumulation |
 | `--sync-scheduler-to-max-steps` / `--no-sync-scheduler-to-max-steps` | `true` | When `--target-examples` or `--target-micro-steps` is set, also derive `scheduler.decay_steps` |
 | `--sync-ckpt-to-max-steps` / `--no-sync-ckpt-to-max-steps` | `false` | When deriving `max_steps`, also derive `ckpt.interval` and `ckpt.keep_interval` |
-| `--pack-function` | — | First-class Prime-RL `data.pack_function` override: `cat` or `stack` |
-| `--loss-mask` | — | First-class Prime-RL `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
-| `--loss-normalization` | — | Prime-RL SFT loss normalization. `token_mean` keeps native Prime-RL behavior; `sample_mean` launches a run-local compatibility shim that matches the historical custom trainer's per-row mean loss and requires `data.pack_function=stack` |
-| `--model-attn` | — | First-class Prime-RL `model.attn` override, e.g. `sdpa` |
-| `--renderer-mode` | — | Prime-RL renderer override. `none` emits `--renderer None`, making Prime-RL use tokenizer `apply_chat_template` tokenization |
+| `--pack-function` | — | First-class trainer `data.pack_function` override: `cat` or `stack` |
+| `--loss-mask` | — | First-class trainer `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
+| `--loss-normalization` | — | SFT loss normalization. `token_mean` keeps the trainer's own behavior; `sample_mean` launches a run-local compatibility shim that matches the historical custom trainer's per-row mean loss and requires `data.pack_function=stack` |
+| `--model-attn` | — | First-class trainer `model.attn` override, e.g. `sdpa` |
+| `--renderer-mode` | — | Trainer renderer override. `none` emits `--renderer None`, making the trainer use tokenizer `apply_chat_template` tokenization |
 | `--tool-defs-mode` | `preserve` | For local JSONL or local dataset dirs, keep tool schemas (`preserve`) or remove `tool_defs`/`tools` from the temporary training copy (`omit`) |
-| `--allow-unsafe-stack-flash-attn` | `false` | Allow Qwen3.5 `stack` packing with flash attention despite the known Prime-RL varlen-kernel risk |
+| `--allow-unsafe-stack-flash-attn` | `false` | Allow Qwen3.5 `stack` packing with flash attention despite the trainer's known varlen-kernel risk |
 | `--force` | `false` | Overwrite an existing `<work-dir>/train-run.json` manifest |
 | `--publish-model` | — | Upload trainer output to this Hugging Face model repo |
 | `--model-tag` | — | Path prefix/tag for the model upload |
@@ -1038,7 +1001,7 @@ Validate a task directory. Native packages use `task.md`, `environment/`, and
 bench tasks check tasks/my-task
 ```
 
-Warnings are printed but do not fail the check: a task with no canary string (no file among `task.md`, `instruction.md`, `task.toml`, `verifier/test.sh`, `tests/test.sh`, `oracle/solve.sh`, `solution/solve.sh`, `environment/Dockerfile` has a `canary GUID <uuid>` line; Harbor's and Terminal-Bench's canaries count), `task.toml` keys BenchFlow does not know (ignored when the task runs, or named as refused when BenchFlow cannot honour them, such as `[[verifier.collect]]`), and a verifier script that installs pytest plugins (`pytest-*` packages) into a Python environment the agent could write: the working directory, the task's workspace (`sandbox.workdir`, else the Dockerfile's last `WORKDIR`, `/` meaning `/root`), the agent's home, `/tmp`, `/var/tmp`, `/logs` or `/testbed`, with `$HOME` and `~` read as the verifier's `/root` (`uv venv .tb`, `uv init`/`uv add`, `python -m venv venv`, `pip install --target ./x`, `uv venv /root/.venv` or `uv pip install --python /root/.venv/bin/python` in a `WORKDIR /root` task, an activated venv there): the pytest plugin guard refuses plugin code there, so every trial ends unscored, and the warning names the fix, `uvx --with <plugin>` into uv's cache (which BenchFlow moves to a directory the guard trusts) or the image. A script that also clears `PYTEST_ADDOPTS` is told instead that the guard never checks that code.
+Warnings are printed but do not fail the check: a task with no canary string (no file among `task.md`, `instruction.md`, `task.toml`, `verifier/test.sh`, `tests/test.sh`, `oracle/solve.sh`, `solution/solve.sh`, `environment/Dockerfile` has a `canary GUID <uuid>` line; the canaries of other split-layout runners and of Terminal-Bench count), `task.toml` keys BenchFlow does not know (ignored when the task runs, or named as refused when BenchFlow cannot honour them, such as `[[verifier.collect]]`), and a verifier script that installs pytest plugins (`pytest-*` packages) into a Python environment the agent could write: the working directory, the task's workspace (`sandbox.workdir`, else the Dockerfile's last `WORKDIR`, `/` meaning `/root`), the agent's home, `/tmp`, `/var/tmp`, `/logs` or `/testbed`, with `$HOME` and `~` read as the verifier's `/root` (`uv venv .tb`, `uv init`/`uv add`, `python -m venv venv`, `pip install --target ./x`, `uv venv /root/.venv` or `uv pip install --python /root/.venv/bin/python` in a `WORKDIR /root` task, an activated venv there): the pytest plugin guard refuses plugin code there, so every trial ends unscored, and the warning names the fix, `uvx --with <plugin>` into uv's cache (which BenchFlow moves to a directory the guard trusts) or the image. A script that also clears `PYTEST_ADDOPTS` is told instead that the guard never checks that code.
 
 With `--level`, validation runs at a chosen depth: `schema`, `structural`,
 `runtime-capability`, `publication-grade`, `acceptance`, `acceptance-live`, or `equivalence`.
@@ -1110,7 +1073,7 @@ Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--target` | `harbor` | Compatibility target: `harbor` |
+| `--target` | `harbor` | Compatibility target; `harbor`, the split layout, is the only one |
 | `--overwrite` | `false` | Replace an existing export directory |
 | `--report-only` | `false` | Print the compatibility loss report without writing files |
 
@@ -1327,15 +1290,11 @@ See [Trajectory upload](../traj-upload.md) for privacy and operator details.
 
 ## bench hub
 
-External environment hubs: browse a hub's environments (`list`/`show`/`inspect`)
-and check Harbor registry compatibility (`check`).
+External environment hubs: browse a hub's environments (`list`/`show`/`inspect`) and check compatibility with the public `registry.json` that lists Terminal-Bench 2 and other datasets (`check`). This is not BenchFlow's own SkillsBench registry, which `bench eval run -d` reads.
 
 ### bench hub list / show / inspect
 
-Read-only browsing of a hub's environments. `list` covers two hubs via
-`--provider`: `primeintellect` (hosted "Environments") and `harbor` (the
-benchmark registry). To *run* a hosted environment, use
-[`bench eval run --source-env`](#bench-eval-run).
+Read-only browsing of a hub's environments. `list` covers two hubs via `--provider`: `primeintellect` (hosted "Environments") and `harbor` (the public `registry.json` that lists Terminal-Bench 2). To *run* a hosted environment, use [`bench eval run --source-env`](#bench-eval-run); only `primeintellect` environments run.
 
 ```bash
 bench hub list --provider primeintellect --owner primeintellect --search general-agent --limit 5
@@ -1348,11 +1307,10 @@ bench hub inspect primeintellect/general-agent --version 0.1.1 --path README.md
 
 ### bench hub check
 
-Inventory or structurally check representative tasks from an environment hub's
-registry. Defaults to an inventory pass against the public Harbor registry JSON.
+Inventory or structurally check representative tasks from an environment hub's registry. Defaults to an inventory pass against the public `registry.json` that lists Terminal-Bench 2 and other datasets.
 
 ```bash
-# Inventory the public Harbor hub registry
+# Inventory the public registry.json
 bench hub check
 
 # Structural check, two tasks per dataset, JSONL output
@@ -1361,7 +1319,7 @@ bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--registry` | Harbor public registry URL | Harbor registry JSON URL or local file |
+| `--registry` | `https://raw.githubusercontent.com/harbor-framework/harbor/main/registry.json` | Registry JSON URL or local file |
 | `--tasks-per-dataset` | `2` | Representative tasks selected per dataset |
 | `--level` | `inventory` | Compatibility level: `inventory` or `check` |
 | `--out` | — | Optional JSONL output path |

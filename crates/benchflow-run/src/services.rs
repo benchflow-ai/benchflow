@@ -152,8 +152,10 @@ impl Trial<'_> {
                 _ => provider.create(&spec).await,
             };
             // Nobody waits for it any more: the trial was stopped.
-            if let Err(Ok(sandbox)) = tx.send(made) {
-                let _ = sandbox.destroy().await;
+            if let Err(Ok(sandbox)) = tx.send(made)
+                && sandbox.destroy().await.is_err()
+            {
+                super::note_left_behind(sandbox.as_ref());
             }
         });
         super::track_start(start);
@@ -191,6 +193,7 @@ impl Trial<'_> {
                 self.rt
                     .events
                     .log(self.name(), format!("could not remove service {name}: {e}"));
+                super::note_left_behind(sandbox.as_ref());
             }
         }
         if let (Some(network), Some(host)) = (self.x.network.take(), host)
@@ -201,21 +204,102 @@ impl Trial<'_> {
         }
     }
 
+    /// The paths the task itself places: its own mounts' targets, and with
+    /// `through`, every stage's up to and including that one.
+    pub(super) fn task_paths(&self, through: Option<&str>) -> Vec<String> {
+        let task = self.task();
+        let mut paths: Vec<String> = task
+            .extras
+            .mounts
+            .iter()
+            .map(|m| m.target.clone())
+            .collect();
+        // Up to the stage being prepared: a later stage's mounts are not
+        // there yet, and say nothing about whose a failed copy is.
+        if let (Some(steps), Some(through)) = (&task.extras.steps, through) {
+            for st in &steps.stages {
+                paths.extend(st.mounts.iter().map(|m| m.target.clone()));
+                if st.name == through {
+                    break;
+                }
+            }
+        }
+        paths
+    }
+
     /// Place package files in the sandbox, owned by root and read-only.
     /// `after_agent`: an agent has had a turn in this sandbox (a later
     /// stage's mounts), so nothing found at a target is kept.
+    /// `agent_alive`: that agent's processes still run (its stage was not
+    /// graded). Then a target under a folder the agent user can write
+    /// ([`hardening::agent_writable_parents`]) is not root's to write: the agent could swap any path on the way for a
+    /// link while root removes, unpacks, and changes modes there. The agent
+    /// user copies those files in instead ([`crate::place::tree_for_agent`]):
+    /// they are its own, and the defense says so (it could have moved
+    /// root's aside anyway).
     pub(super) async fn place_mounts(
         &mut self,
         mounts: &[Mount],
         phase: Phase,
         after_agent: bool,
+        agent_alive: bool,
+        stage: Option<&str>,
     ) -> Result<(), Problem> {
         if mounts.is_empty() {
             return Ok(());
         }
         let task = self.spec.task.clone();
         let mut open = Vec::new();
+        let mut copied = Vec::new();
         for m in mounts {
+            if agent_alive {
+                let out = self
+                    .root(
+                        hardening::agent_writable_parents(&m.target, &self.user),
+                        SETUP_TIMEOUT,
+                    )
+                    .await
+                    .map_err(|e| sandbox_problem(phase, e))?;
+                let report = Report::parse(&out.stdout);
+                let above = report.all("open");
+                // A folder already at the target that the agent user cannot
+                // write (an earlier mount placed it root's and read-only, or
+                // the image did): the agent's copy cannot merge into it, and
+                // root writing there could be led anywhere by the running
+                // agent. Neither can place the files safely.
+                if let Some(d) = above.first()
+                    && report.first("target-closed").is_some()
+                {
+                    return Err(Problem::new(
+                        "R104",
+                        Owner::Task,
+                        phase,
+                        format!(
+                            "this stage mounts {} where a folder the agent user cannot write is already (an earlier mount, or the image, placed it), while an earlier ungraded stage's agent still runs and can write {d}: neither BenchFlow nor the agent user can put the files there safely",
+                            m.target
+                        ),
+                        "mount the stage's files at a path no earlier mount uses, or grade the earlier stage (its handoff stops the agent first)",
+                    ));
+                }
+                if let Some(d) = above.first() {
+                    let user = crate::place::AgentUser {
+                        name: &self.user,
+                        home: &self.home,
+                        earlier_turns: true,
+                    };
+                    let others = without_one(self.task_paths(stage), &m.target);
+                    crate::place::tree_for_agent(
+                        self.sb(),
+                        &user,
+                        &super::in_package(&task.root, &m.source),
+                        &m.target,
+                        &others,
+                    )
+                    .await?;
+                    copied.push(format!("{} (in {d})", m.target));
+                    continue;
+                }
+            }
             // After an agent's turn (a later stage's mounts), nothing the
             // agent left at the target or on the way to it is kept.
             self.claim(&m.target, after_agent, phase).await?;
@@ -266,6 +350,14 @@ impl Trial<'_> {
             (
                 DefenseState::Off,
                 "the agent runs as root and could change the mounted files".to_string(),
+            )
+        } else if !copied.is_empty() {
+            (
+                DefenseState::Failed,
+                format!(
+                    "copied in by the agent user and its own, since an earlier stage's agent still ran and a folder above is not root's alone: {}",
+                    copied.join(", ")
+                ),
             )
         } else if !open.is_empty() {
             (
@@ -412,5 +504,33 @@ mod tests {
         assert!(gpu_matches("NVIDIA L4", &["L4".into()]));
         assert!(gpu_matches("NVIDIA A100-SXM4-80GB", &types));
         assert!(gpu_matches("NVIDIA GeForce RTX 4090", &["rtx 4090".into()]));
+    }
+}
+
+/// The task's paths other than one mount's own entry: a target another
+/// mount also uses stays among them.
+fn without_one(mut paths: Vec<String>, target: &str) -> Vec<String> {
+    if let Some(i) = paths.iter().position(|p| p == target) {
+        paths.remove(i);
+    }
+    paths
+}
+
+#[cfg(test)]
+mod path_tests {
+    /// Guards D7c's owner fix for a target two mounts use
+    /// (REVIEW-OUTCOMES (d7c) L6).
+    #[test]
+    fn a_target_two_mounts_use_stays_the_tasks() {
+        let paths = vec![
+            "/app/data".to_string(),
+            "/app/data".to_string(),
+            "/srv".to_string(),
+        ];
+        assert_eq!(
+            super::without_one(paths.clone(), "/app/data"),
+            vec!["/app/data".to_string(), "/srv".to_string()]
+        );
+        assert_eq!(super::without_one(paths, "/srv").len(), 2);
     }
 }

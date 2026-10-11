@@ -353,10 +353,9 @@ fn resolve(model: &str, host: &HostEnv) -> Result<(Endpoint, Option<Routing>), R
         ));
     };
     let registry = ProviderRegistry::builtin();
-    let override_url = host
-        .get(BASE_URL_OVERRIDE_ENV)
-        .map(|(v, _)| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty());
+    let override_url =
+        benchflow_agent::native::endpoint::base_url_from(host, BASE_URL_OVERRIDE_ENV)
+            .map_err(|e| ReviewError::new(ReviewErrorKind::Model, e.to_string(), e.next_step()))?;
     let Some(provider) = registry.find(prefix) else {
         // Providers only the native client knows (`vercel-anthropic`).
         let endpoint = BuiltinProviders.resolve(model, host).map_err(|e| {

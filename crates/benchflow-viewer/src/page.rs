@@ -247,14 +247,22 @@ pub fn render_page(title: &str, boot: &Value) -> String {
     writer.into_string()
 }
 
-/// The run list's boot data: one row per run, plus whether the list was capped.
+/// The run list's boot data: one row per run, plus whether the list was
+/// capped. A trial a live `bench run` or `bench regrade` has not finished is
+/// left out, as the other views and `bench results` leave it out: the run
+/// list's stats (0.8's page, unchanged) would count it as unscored.
 pub fn browse_boot(runs: &[Run], capped: bool) -> Value {
     object([
         ("mode", "browse".into()),
         ("capped", capped.into()),
         (
             "rollouts",
-            Value::Array(runs.iter().map(rollout_summary).collect()),
+            Value::Array(
+                runs.iter()
+                    .filter(|run| !crate::views::in_progress(run))
+                    .map(rollout_summary)
+                    .collect(),
+            ),
         ),
     ])
 }

@@ -8,6 +8,8 @@ mod error;
 mod fuzz_tests;
 mod legacy;
 #[cfg(test)]
+mod names;
+#[cfg(test)]
 mod reference;
 mod ui;
 

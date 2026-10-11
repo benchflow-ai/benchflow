@@ -317,47 +317,6 @@
     "ok": false,
     "error": "ValidationError: 1 validation error for TaskConfig"
   },
-  "convert/v06/harbor-parity": {
-    "ok": true,
-    "instruction": "Solve the parity task. This file demonstrates that `task.md` can carry the\ncurrent Harbor-style `task.toml` schema plus BenchFlow-native roles, scenes,\nand simulated-user metadata in one authoring document.",
-    "name": "benchflow/harbor-parity",
-    "agent": {
-      "timeout_sec": 120.0,
-      "user": "agent",
-      "network_mode": "allowlist",
-      "allowed_hosts": [
-        "api.example.com"
-      ]
-    },
-    "sandbox": {
-      "docker_image": "ghcr.io/example/task:latest",
-      "cpus": 4,
-      "memory_mb": 4096,
-      "storage_mb": 8192,
-      "gpus": 1,
-      "workdir": "/workspace",
-      "env": {
-        "DATASET": "${DATASET:-sample}"
-      },
-      "network_mode": "allowlist",
-      "allowed_hosts": [
-        "datasets.example.com"
-      ],
-      "build_timeout_sec": 600.0
-    },
-    "verifier": {
-      "timeout_sec": 60.0,
-      "user": "root",
-      "env": {
-        "JUDGE_API_KEY": "${JUDGE_API_KEY:-test}"
-      }
-    },
-    "solution": {
-      "env": {
-        "SOLUTION_MODE": "oracle"
-      }
-    }
-  },
   "convert/v06/multi-scene": {
     "ok": true,
     "instruction": "Refactor the tiny service so it keeps the same public behavior while splitting\nrequest parsing, business logic, and output formatting into separate modules.",
@@ -485,5 +444,46 @@
   "convert/v06/report-writer": {
     "ok": false,
     "error": "ValidationError: 1 validation error for TaskConfig"
+  },
+  "convert/v06/split-parity": {
+    "ok": true,
+    "instruction": "Solve the parity task. This file demonstrates that `task.md` can carry the\ncurrent split-layout `task.toml` schema plus BenchFlow-native roles, scenes,\nand simulated-user metadata in one authoring document.",
+    "name": "benchflow/split-parity",
+    "agent": {
+      "timeout_sec": 120.0,
+      "user": "agent",
+      "network_mode": "allowlist",
+      "allowed_hosts": [
+        "api.example.com"
+      ]
+    },
+    "sandbox": {
+      "docker_image": "ghcr.io/example/task:latest",
+      "cpus": 4,
+      "memory_mb": 4096,
+      "storage_mb": 8192,
+      "gpus": 1,
+      "workdir": "/workspace",
+      "env": {
+        "DATASET": "${DATASET:-sample}"
+      },
+      "network_mode": "allowlist",
+      "allowed_hosts": [
+        "datasets.example.com"
+      ],
+      "build_timeout_sec": 600.0
+    },
+    "verifier": {
+      "timeout_sec": 60.0,
+      "user": "root",
+      "env": {
+        "JUDGE_API_KEY": "${JUDGE_API_KEY:-test}"
+      }
+    },
+    "solution": {
+      "env": {
+        "SOLUTION_MODE": "oracle"
+      }
+    }
   }
 }

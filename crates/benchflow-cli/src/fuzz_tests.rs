@@ -23,7 +23,7 @@ proptest! {
         proptest::sample::select(TOKENS).prop_map(str::to_string),
         "\\PC{0,16}",
     ]) {
-        timed("parse_duration", || {
+        timed("parse_duration", move || {
             if let Ok(d) = context::parse_duration(&text) {
                 prop_assert!(d <= benchflow_task::values::LONGEST, "{text:?} gave {d:?}");
             }
@@ -33,7 +33,7 @@ proptest! {
 
     #[test]
     fn pairs(pairs in prop::collection::vec(prop_oneof!["\\PC{0,20}", "[a-z-_]{0,8}=\\PC{0,12}", " *[a-z-]{1,8} *=.{0,8}"], 0..6)) {
-        timed("pairs", || {
+        timed("pairs", move || {
             let _ = context::parse_env(&pairs);
             let _ = context::parse_agent_options(&pairs);
         });
@@ -56,7 +56,7 @@ proptest! {
         let name = name.replace(['/', '\0'], "_");
         let file = tmp.path().join(if name.is_empty() || name == "." || name == ".." { "x".into() } else { name });
         let _ = std::fs::write(&file, format!("{first}\n"));
-        timed("handoff ids", || {
+        timed("handoff ids", move || {
             if let Some(id) = handoff::codex_id(&file)
                 && handoff::safe_id(&id)
             {

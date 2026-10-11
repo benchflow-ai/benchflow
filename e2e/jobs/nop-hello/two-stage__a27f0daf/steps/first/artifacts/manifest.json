@@ -1,0 +1,10 @@
+[
+  {
+    "source": "/app/one.txt",
+    "destination": "artifacts/one.txt",
+    "type": "file",
+    "status": "failed",
+    "service": null,
+    "exclude": []
+  }
+]

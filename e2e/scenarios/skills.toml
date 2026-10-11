@@ -1,0 +1,25 @@
+# Skills: a task's own and --skill folders. Scripted attempts get none, and say why; model agents get them (see claude-sessions).
+tier = "full"
+needs = ["sandbox"]
+tasks = ["with-skills"]
+
+[[step]]
+run = ["test", "tasks/with-skills", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+
+[[step]]
+name = "a script agent gets no skills, says so, and records why"
+run = ["run", "tasks/with-skills", "-a", "script:{e2e}/agents/find-skills.sh", "--skill", "{e2e}/skills/e2e-skill", "-s", "{backend}", "--job", "s", "--save-outputs"]
+exit = 0
+stderr_has = ['runs without skills']
+trials = [{ job = "s", status = "scored", reward = 1.0, files = ["outputs/**/skills-seen.txt"], file_has = { "config.json" = ['"task_skills": true', 'e2e-skill', 'only model agents get them'] } }]
+
+[[step]]
+name = "and it really saw no SKILL.md anywhere in the sandbox"
+sh = 'f=$(find jobs/s -name skills-seen.txt | head -1) && test -n "$f" && ! grep -q SKILL.md "$f"'
+
+[[step]]
+name = "--no-task-skills is recorded"
+run = ["run", "tasks/with-skills", "-a", "script:{e2e}/agents/find-skills.sh", "--no-task-skills", "-s", "{backend}", "--job", "n"]
+exit = 0
+trials = [{ job = "n", status = "scored", file_has = { "config.json" = ['"task_skills": false'] } }]

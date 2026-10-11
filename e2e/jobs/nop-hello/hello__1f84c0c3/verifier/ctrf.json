@@ -1,0 +1,1 @@
+{"results": {"tool": {"name": "test.sh"}, "tests": [{"name": "test_hello", "status": "failed"}]}}

@@ -38,6 +38,8 @@ pub struct RunDefaults {
     pub reasoning_effort: Option<String>,
     pub sandbox: Option<String>,
     pub concurrency: Option<usize>,
+    /// Trials per task: 1 or more (`bench run` refuses 0).
+    #[schemars(range(min = 1))]
     pub trials: Option<usize>,
     pub jobs_dir: Option<PathBuf>,
     /// Scales the agent, verifier, and build timeouts.

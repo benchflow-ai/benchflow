@@ -434,50 +434,50 @@ pub(crate) fn read(r: &mut Reader<'_>, config: &Value) -> Config {
 }
 
 /// Decide which of two spellings of one table to read. In `task.toml` the
-/// first (Harbor's) wins and the second (0.8's) is read only alone; in a 0.8
+/// first (the split layout's) wins and the second (0.8's) is read only alone; in a 0.8
 /// frontmatter only the second exists, and the first is an error.
 fn pick_spelling(
     r: &mut Reader<'_>,
     map: &Map<String, Value>,
     prefix: &str,
-    harbor: &'static str,
+    split: &'static str,
     benchflow: &'static str,
 ) -> (Option<&'static str>, Option<&'static str>) {
-    let has_h = map.contains_key(harbor);
+    let has_h = map.contains_key(split);
     let has_b = map.contains_key(benchflow);
     match r.dialect {
         Dialect::TaskToml => {
             if has_h && has_b {
                 let msg = format!(
-                    "`{benchflow}`{} is ignored because `{harbor}` is set: they are the same table, and Harbor reads only `{harbor}`",
+                    "`{benchflow}`{} is ignored because `{split}` is set: they are the same table, and a split-layout runner reads only `{split}`",
                     where_(prefix)
                 );
                 r.ignored(&join(prefix, benchflow), msg).and_help(format!(
-                    "merge the two and keep `{harbor}`; BenchFlow 0.8 refuses a config with both"
+                    "merge the two and keep `{split}`; BenchFlow 0.8 refuses a config with both"
                 ));
-                (Some(harbor), Some(benchflow))
+                (Some(split), Some(benchflow))
             } else if has_b {
                 let path = join(prefix, benchflow);
                 let msg = format!(
-                    "`{benchflow}`{} is BenchFlow 0.8's spelling of `{harbor}`; Harbor ignores it",
+                    "`{benchflow}`{} is BenchFlow 0.8's spelling of `{split}`; bench and 0.8 read it, other split-layout runners ignore it",
                     where_(prefix)
                 );
                 let code = r.codes.benchflow_only;
                 r.push(code, Severity::Warning, &path, msg, false)
-                    .and_help(format!("rename it to `{harbor}` so every harness reads it"));
+                    .and_help(format!("rename it to `{split}` so every harness reads it"));
                 (Some(benchflow), None)
             } else if has_h {
-                (Some(harbor), None)
+                (Some(split), None)
             } else {
                 (None, None)
             }
         }
         Dialect::Frontmatter => {
-            if harbor == "solution" {
+            if split == "solution" {
                 // 0.8 accepts `solution` as an alias of `oracle`, but not both.
                 if has_h && has_b {
                     r.invalid(
-                        &join(prefix, harbor),
+                        &join(prefix, split),
                         "the config has both `oracle` and its old spelling `solution`; keep only `oracle`".into(),
                     );
                     return (Some(benchflow), None);
@@ -486,7 +486,7 @@ fn pick_spelling(
                     if has_b {
                         Some(benchflow)
                     } else if has_h {
-                        Some(harbor)
+                        Some(split)
                     } else {
                         None
                     },
@@ -652,7 +652,7 @@ fn check_allowlist(
             }
             Dialect::TaskToml => {
                 r.ignored(&path, msg)
-                    .and_note("Harbor runs it with no host reachable; BenchFlow 0.8 refuses it");
+                    .and_note("bench and other split-layout runners run it with no host reachable; BenchFlow 0.8 refuses it");
             }
         }
     }
@@ -714,7 +714,7 @@ fn read_sandbox(r: &mut Reader<'_>, t: &Map<String, Value>, prefix: &str) -> San
     if image_key == "image" && r.dialect == Dialect::TaskToml {
         let path = join(prefix, "image");
         let msg = format!(
-            "`image`{} is BenchFlow 0.8's spelling of `docker_image`; Harbor ignores it",
+            "`image`{} is BenchFlow 0.8's spelling of `docker_image`; bench and 0.8 read it, other split-layout runners ignore it",
             where_(prefix)
         );
         let code = r.codes.benchflow_only;
@@ -826,7 +826,7 @@ fn read_size_spelling(
         match r.dialect {
             Dialect::TaskToml => {
                 let msg = format!(
-                    "`{old}`{} is ignored: Harbor reads it only as a size string such as \"4G\"",
+                    "`{old}`{} is ignored: a split-layout runner reads it only as a size string such as \"4G\"",
                     where_(prefix)
                 );
                 r.ignored(&path, msg)
@@ -865,7 +865,9 @@ fn read_size_spelling(
             where_(prefix)
         );
         r.ignored(&path, msg)
-            .and_note("Harbor refuses this config; BenchFlow 0.8 uses the old spelling")
+            .and_note(
+                "a split-layout runner refuses this config; BenchFlow 0.8 uses the old spelling",
+            )
             .and_help(format!("keep only `{new}`"));
     }
     let code = r.codes.deprecated;
@@ -1317,7 +1319,7 @@ fn read_oracle(r: &mut Reader<'_>, t: &Map<String, Value>, prefix: &str) -> Orac
         if r.dialect == Dialect::TaskToml {
             let code = r.codes.benchflow_only;
             let msg = format!(
-                "`{key}` in [{prefix}] is BenchFlow 0.8's shorthand for [{prefix}.env] {key}; Harbor ignores it"
+                "`{key}` in [{prefix}] is BenchFlow 0.8's shorthand for [{prefix}.env] {key}; bench and 0.8 read it, other split-layout runners ignore it"
             );
             r.push(code, Severity::Warning, &path, msg, false)
                 .and_help(format!("move it under [{prefix}.env]"));

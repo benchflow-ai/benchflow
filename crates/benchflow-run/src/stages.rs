@@ -1,5 +1,5 @@
-//! Stages graded one after another in one sandbox (Harbor's `[[steps]]`,
-//! task.md stages graded on their own).
+//! Stages graded one after another in one sandbox (the split layout's
+//! `[[steps]]`, task.md stages graded on their own).
 //!
 //! For each stage, in order:
 //!
@@ -15,7 +15,7 @@
 //! handoff kills every agent process before the stage is graded, as for a
 //! single prompt. A gate the stage misses stops the trial there.
 //!
-//! With `--resume-sessions` (Harbor's `--resume-trajectory`), each stage
+//! With `--resume-sessions`, each stage
 //! after the first resumes the agent's own session instead, when the agent
 //! can ([`crate::agent::ModelAgent::session_dirs`]): its home outlives the
 //! handoff, so the session's files are still there; BenchFlow checks that
@@ -27,7 +27,7 @@
 //!
 //! Each stage leaves `steps/<name>/` in the trial folder (`agent/`,
 //! `trajectory/`, `verifier/`, `artifacts/`, `hooks/`), and its result in
-//! result.json's `step_results`, in Harbor's shape (`step_name`,
+//! result.json's `step_results`, in the split layout's shape (`step_name`,
 //! `verifier_result.rewards`) plus the gate's outcome. The trial's reward
 //! follows the task's rule ([`Combine`], [`Unreached`]); `verifier/` at the
 //! top holds it, with the last graded stage's output.
@@ -66,6 +66,7 @@ impl Trial<'_> {
         let mut prompts: Vec<String> = Vec::new();
         let mut failure: Option<Problem> = None;
         let mut last_graded: Option<String> = None;
+        let mut worked = false;
         for (i, st) in steps.stages.iter().enumerate() {
             let mut row = json!({ "step_name": st.name, "reached": true, "graded": st.graded });
             let ended = self
@@ -73,8 +74,9 @@ impl Trial<'_> {
                 .await;
             rows.push(row);
             match ended {
-                Ok(None) => {}
+                Ok(None) => worked = true,
                 Ok(Some(g)) => {
+                    worked = true;
                     graded.push(g.values);
                     last_graded = Some(st.name.clone());
                     if g.gate_failed {
@@ -96,6 +98,7 @@ impl Trial<'_> {
         }
         write_lines(&self.spec.dir.join("trajectory"), &events);
         self.agent.prompts = prompts;
+        self.stage_worked = worked;
         self.x.step_results = Some(Value::Array(rows));
         if let Some(p) = failure {
             return Err(p);
@@ -160,7 +163,15 @@ impl Trial<'_> {
             )
             .await?;
         }
-        self.prepare_stage(st, index > 0).await?;
+        // An ungraded stage's agent keeps its processes into this one.
+        let agent_alive = index > 0
+            && self.user != "root"
+            && task
+                .extras
+                .steps
+                .as_ref()
+                .is_some_and(|s| !s.stages[index - 1].graded);
+        self.prepare_stage(st, index > 0, agent_alive).await?;
 
         let (resume, fresh_why) = self.stage_resume(index).await?;
         if let Some(why) = &fresh_why {
@@ -215,6 +226,8 @@ impl Trial<'_> {
         let score = match graded {
             Ok(s) => s,
             Err(p) => {
+                // The row records what the trial reports.
+                let p = self.sandbox_lost_instead(p).await;
                 row["verifier_result"] = Value::Null;
                 row["error"] = json!(p.to_string());
                 return Err(p);
@@ -248,52 +261,59 @@ impl Trial<'_> {
 
     /// The stage's files, mounts, setup script, and readiness check.
     /// `later`: an earlier stage's agent has worked in this sandbox.
-    async fn prepare_stage(&mut self, st: &StepSpec, later: bool) -> Result<(), Problem> {
+    /// `agent_alive`: that stage was not graded, so no handoff stopped its
+    /// processes, and they still run.
+    ///
+    /// Root never writes into the workdir here: the agent owns it, may
+    /// have left links in it, and with `agent_alive` can swap any path
+    /// while root works. The stage's files are staged by root and copied in
+    /// by the agent user ([`crate::place::tree_for_agent`]).
+    async fn prepare_stage(
+        &mut self,
+        st: &StepSpec,
+        later: bool,
+        agent_alive: bool,
+    ) -> Result<(), Problem> {
         let task = self.spec.task.clone();
-        if later && self.user != "root" {
-            // Grading the last stage gave the workdir to root; the agent
-            // works in it again.
+        if later && !agent_alive && self.user != "root" {
+            // Grading the last stage gave the workdir to root, and its
+            // handoff stopped every agent process; the agent works in it
+            // again. After a stage not graded it is still the agent's.
             let user = self.user.clone();
             let out = self
-                .root(hardening::own_workdir(&self.workdir, &user), OWN_TIMEOUT)
+                .root(
+                    hardening::own_workdir(&self.workdir, &user, &user),
+                    OWN_TIMEOUT,
+                )
                 .await
                 .map_err(|e| sandbox_problem(Phase::Setup, e))?;
-            if Report::parse(&out.stdout).first("owned").is_none() {
-                return Err(super::unreported(
-                    "giving the workdir back to the agent",
-                    &out,
-                ));
-            }
+            let (_, kept) = super::own_result(
+                &out,
+                &user,
+                "giving the workdir back to the agent",
+                Phase::Setup,
+            )?;
+            self.custody.workdir_unchanged.extend(kept);
         }
-        self.place_mounts(&st.mounts, Phase::Setup, later).await?;
+        self.place_mounts(&st.mounts, Phase::Setup, later, agent_alive, Some(&st.name))
+            .await?;
         if let Some(rel) = &st.workdir {
             let local = super::in_package(&task.root, rel);
             let workdir = self.workdir.clone();
-            self.sb()
-                .upload(&local, &workdir)
-                .await
-                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
-            // The agent owns what the stage gives it.
-            let names: Vec<String> = std::fs::read_dir(&local)
-                .map(|rd| {
-                    rd.filter_map(Result::ok)
-                        .map(|e| {
-                            shell::quote(&format!(
-                                "{}/{}",
-                                workdir.trim_end_matches('/'),
-                                e.file_name().to_string_lossy()
-                            ))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            if self.user != "root" && !names.is_empty() {
-                let _ = self
-                    .root(
-                        format!("chown -R {} {}", shell::quote(&self.user), names.join(" ")),
-                        SETUP_TIMEOUT,
-                    )
-                    .await;
+            if self.user == "root" {
+                self.sb()
+                    .upload(&local, &workdir)
+                    .await
+                    .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+            } else {
+                let user = crate::place::AgentUser {
+                    name: &self.user,
+                    home: &self.home,
+                    earlier_turns: later,
+                };
+                let task_paths = self.task_paths(Some(&st.name));
+                crate::place::tree_for_agent(self.sb(), &user, &local, &workdir, &task_paths)
+                    .await?;
             }
             if local.join("setup.sh").is_file() {
                 let script = format!("{}/setup.sh", workdir.trim_end_matches('/'));
@@ -323,10 +343,17 @@ impl Trial<'_> {
                 }
             }
         }
-        if later {
-            // The test-runner files the agent is handed now include the
-            // stage's own (a conftest.py in its workdir/), which the next
-            // handoff must keep, and restore if the agent edits them.
+        // The test-runner files the agent is handed now include the stage's
+        // own (a conftest.py in its workdir/), which the next handoff must
+        // keep, and restore if the agent edits them. The baseline describes
+        // the task as shipped: with no agent process left (before the first
+        // turn, or after a graded stage's handoff put back every file the
+        // agent planted or edited), it is taken again; while an earlier
+        // stage's agent still runs, only the stage's own files are added, as
+        // read on this machine.
+        if agent_alive {
+            self.add_to_baseline(st).await?;
+        } else {
             let out = self
                 .root(hardening::baseline(), SETUP_TIMEOUT)
                 .await
@@ -337,6 +364,54 @@ impl Trial<'_> {
         }
         if let Some(ready) = &st.ready {
             self.wait_ready(ready, later).await?;
+        }
+        Ok(())
+    }
+
+    /// Add the test-runner files stage `st` ships (in its workdir/ folder
+    /// and its mounts) to the baseline, from the files on this machine: the
+    /// copies in the sandbox may already be the running agent's
+    /// ([`hardening::baseline_add`]).
+    async fn add_to_baseline(&mut self, st: &StepSpec) -> Result<(), Problem> {
+        let task = self.spec.task.clone();
+        let mut shipped = Vec::new();
+        if let Some(rel) = &st.workdir {
+            shipped.extend(steering_in(
+                &super::in_package(&task.root, rel),
+                &self.workdir,
+            ));
+        }
+        for m in &st.mounts {
+            shipped.extend(steering_in(
+                &super::in_package(&task.root, &m.source),
+                &m.target,
+            ));
+        }
+        if shipped.is_empty() {
+            return Ok(());
+        }
+        let mut entries = Vec::new();
+        for (path, bytes, mode) in shipped {
+            let copy = format!("{}/baseline/added{path}", hardening::STATE_DIR);
+            self.sb()
+                .write_file(&copy, &bytes, mode & 0o755)
+                .await
+                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+            entries.push((
+                path,
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes)),
+            ));
+        }
+        let out = self
+            .root(hardening::baseline_add(&entries), SETUP_TIMEOUT)
+            .await
+            .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+        let report = Report::parse(&out.stdout);
+        if report.first("baseline-missing").is_some() {
+            return Ok(());
+        }
+        if !(out.success() && report.first("baseline-added").is_some()) {
+            return Err(super::unreported("the stage's test-runner baseline", &out));
         }
         Ok(())
     }
@@ -708,6 +783,47 @@ fn archive_attempt(trial: &Path, dir: &Path, stage: &str, events: &mut Vec<Value
     }
 }
 
+/// The test-runner files ([`hardening::is_steering_name`]) under `local`,
+/// a file or folder on this machine that lands at `at` in the sandbox: the
+/// sandbox path, contents, and mode of each. Links are not followed, and
+/// `node_modules` and `.git` are skipped, as the baseline's scan skips them.
+fn steering_in(local: &Path, at: &str) -> Vec<(String, Vec<u8>, u32)> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut out = Vec::new();
+    let mut todo = vec![(local.to_path_buf(), at.trim_end_matches('/').to_string())];
+    while let Some((path, there)) = todo.pop() {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name == "node_modules" || name == ".git" || name.contains(['\n', '/']) {
+                    continue;
+                }
+                todo.push((e.path(), format!("{there}/{name}")));
+            }
+        } else if meta.is_file() {
+            // The name it has in the sandbox: a file mounted under another
+            // name is that name there.
+            let name = there.rsplit('/').next().unwrap_or("").to_string();
+            if hardening::is_steering_name(&name)
+                && let Ok(bytes) = std::fs::read(&path)
+                // As the handoff counts one: only when it names pytest11.
+                && (name != "entry_points.txt"
+                    || bytes.windows(8).any(|w| w == b"pytest11"))
+            {
+                out.push((there, bytes, meta.permissions().mode()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 fn write_lines(dir: &Path, events: &[Value]) {
     let _ = std::fs::create_dir_all(dir);
     let text: String = events
@@ -740,6 +856,51 @@ fn copy_dir(from: &Path, to: &Path) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The test-runner files a stage ships are found by the name they have
+    /// in the sandbox: a file mounted under another name counts as that
+    /// name, and nested files, links, and `node_modules` are as the scan
+    /// sees them. Guards the D7b fix of REVIEW-CORRECT L6.
+    #[cfg(unix)]
+    #[test]
+    fn the_stages_own_test_runner_files_are_found_by_their_sandbox_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        std::fs::write(d.join("conftest_v2.py"), "MOUNTED").unwrap();
+        std::fs::create_dir_all(d.join("work/sub")).unwrap();
+        std::fs::create_dir_all(d.join("work/node_modules/x")).unwrap();
+        std::fs::write(d.join("work/sub/conftest.py"), "S").unwrap();
+        std::fs::write(d.join("work/notes.txt"), "N").unwrap();
+        std::fs::write(d.join("work/node_modules/x/conftest.py"), "skip").unwrap();
+        std::os::unix::fs::symlink(d.join("conftest_v2.py"), d.join("work/pytest.ini")).unwrap();
+        // An entry_points.txt counts only when it names pytest11.
+        std::fs::create_dir_all(d.join("work/a.dist-info")).unwrap();
+        std::fs::create_dir_all(d.join("work/b.dist-info")).unwrap();
+        std::fs::write(
+            d.join("work/a.dist-info/entry_points.txt"),
+            "[pytest11]\nx = y\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("work/b.dist-info/entry_points.txt"),
+            "[console_scripts]\nx = y\n",
+        )
+        .unwrap();
+        let mounted = steering_in(&d.join("conftest_v2.py"), "/app/conftest.py");
+        assert_eq!(mounted.len(), 1);
+        assert_eq!(mounted[0].0, "/app/conftest.py");
+        let shipped: Vec<String> = steering_in(&d.join("work"), "/app/")
+            .into_iter()
+            .map(|f| f.0)
+            .collect();
+        assert_eq!(
+            shipped,
+            vec![
+                "/app/a.dist-info/entry_points.txt".to_string(),
+                "/app/sub/conftest.py".to_string()
+            ]
+        );
+    }
     use super::*;
     use benchflow_task::extras::StepSpec;
 

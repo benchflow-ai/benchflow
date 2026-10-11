@@ -1,0 +1,23 @@
+# Model-judged rubric criteria, judged on the host by the gateway's DeepSeek model; an unreachable judge leaves the trial unscored (R312), never 0.
+tier = "full"
+needs = ["sandbox", "gateway"]
+tasks = ["judged"]
+
+[[step]]
+run = ["run", "tasks/judged", "-s", "{backend}", "--job", "j", "--judge-model", "{judge}"]
+exit = 0
+timeout = 900
+trials = [{ job = "j", status = "scored", reward = 1.0, files = ["verifier/judgments.jsonl", "verifier/review.json"], file_has = { "verifier/judgments.jsonl" = ['deepseek', '"holds":\s*true|"verdict"'] } }]
+
+[[step]]
+name = "nop: the gate fails, so the reward is 0 whatever the model judge says (it still grades every criterion)"
+run = ["run", "tasks/judged", "-a", "nop", "-s", "{backend}", "--job", "n"]
+exit = 0
+trials = [{ job = "n", status = "scored", reward = 0.0, file_has = { "verifier/judgments.jsonl" = ['"verdict":\s*"fail"'] } }]
+
+[[step]]
+name = "a judge that cannot be reached: unscored, R312"
+run = ["run", "tasks/judged", "-s", "{backend}", "--job", "u", "--judge-model", "openrouter/no-such/model"]
+env = { OPENROUTER_API_KEY = "e2e-not-a-key" }
+exit = 1
+trials = [{ job = "u", status = "unscored", code = "R312" }]

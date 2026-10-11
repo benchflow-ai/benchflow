@@ -1,0 +1,30 @@
+# bench view: every page and its JSON API answer on a stored job.
+tier = "smoke"
+
+[[step]]
+sh = "cp -R {e2e}/jobs jobs"
+
+[[step]]
+name = "serve, fetch each page, stop"
+timeout = 120
+sh = '''
+port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+{bench} view jobs/oracle-hello jobs/nop-hello --no-open --port $port > view.out 2>&1 &
+pid=$!
+for i in $(seq 1 150); do curl -fs "http://127.0.0.1:$port/" >/dev/null 2>&1 && break; sleep 0.2; done
+fail=0
+for page in / /compare /outcomes /pareto /api/compare /api/outcomes /api/pareto; do
+  code=$(curl -s -o "page$(echo $page | tr / _).out" -w '%{http_code}' "http://127.0.0.1:$port$page")
+  echo "$page $code" >> codes.txt
+  [ "$code" = 200 ] || fail=1
+done
+kill $pid; wait $pid 2>/dev/null
+exit $fail
+'''
+exit = 0
+file_has = { "page_api_outcomes.out" = ['^\s*[\[{]'], "page_api_compare.out" = ['hello'] }
+
+[[step]]
+name = "a missing job is a usage error"
+run = ["view", "jobs/missing", "--no-open"]
+exit = 2

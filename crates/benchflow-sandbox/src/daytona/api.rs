@@ -238,6 +238,34 @@ impl fmt::Debug for Api {
 /// How many times a request is tried at most.
 const MAX_ATTEMPTS: u32 = 5;
 
+/// The Daytona key goes to `DAYTONA_API_URL` as a bearer header: it must be
+/// https, or http to this machine (a local fake), wherever it was set.
+fn check_api_url(base: &str) -> Result<(), SandboxError> {
+    let refuse = |why: &str| {
+        Err(SandboxError::Unsupported(format!(
+            "DAYTONA_API_URL {why}; the Daytona key is sent there, so it must be https, or http \
+             to this machine (localhost, 127.0.0.1, ::1)"
+        )))
+    };
+    let Ok(url) = reqwest::Url::parse(base.trim()) else {
+        return refuse("is not a URL");
+    };
+    let host = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if loopback => Ok(()),
+        _ => refuse(&format!("is {}://{host}", url.scheme())),
+    }
+}
+
 impl Api {
     pub(crate) fn new(
         base: &str,
@@ -247,6 +275,7 @@ impl Api {
         // Websockets go through rustls without an explicit config; make sure
         // a crypto provider is installed even if several are compiled in.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        check_api_url(base)?;
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .user_agent(format!("benchflow/{}", env!("CARGO_PKG_VERSION")))
@@ -687,5 +716,32 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ApiError::NoKey));
+    }
+
+    /// A cloned project's `.env` (or any other source) set
+    /// `DAYTONA_API_URL=http://attacker.example`: the key would go there in
+    /// cleartext. Only https, or http to this machine, is taken.
+    #[test]
+    fn the_api_url_must_be_https_or_this_machine() {
+        for bad in [
+            "http://attacker.example/api",
+            "http://user:secret@10.0.0.5/api",
+            "ftp://x/api",
+            "not a url",
+        ] {
+            let err = Api::new(bad, Some("k".into()), None)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("must be https"), "{bad}: {err}");
+            assert!(!err.contains("secret"), "{err}");
+        }
+        for good in [
+            "https://app.daytona.io/api",
+            "http://127.0.0.1:3986/api",
+            "http://localhost:3986/api",
+            "http://[::1]:3986/api",
+        ] {
+            assert!(Api::new(good, Some("k".into()), None).is_ok(), "{good}");
+        }
     }
 }

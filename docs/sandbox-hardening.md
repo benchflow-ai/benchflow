@@ -21,7 +21,7 @@ Between the agent's last action and the verifier's first command, `harden_before
 8. **Move the verifier's uv and pip state out of the agent's reach** — uv and pip caches, uv tool environments and uv-managed Pythons move to a new root-owned directory the plugin guard trusts by path, and uv and pip stop reading configuration the agent could have written; see [The verifier's uv and pip state](#the-verifiers-uv-and-pip-state).
 9. **Choose trusted pytest plugins and install the plugin guard** — see the next section.
 
-The verifier then runs against this hardened workspace. Its command (test.sh, a script strategy or a reward-kit runner) starts with `umask 022`, so what it creates is mode 0644 or 0755 on every backend, whatever mask the runtime gives an exec: `docker exec` on Docker's own daemon uses 0022, but on Docker-in-Docker (Docker 29.8.1, runc 1.5.1) it uses 0000, and the uv cache test.sh filled came out group- and world-writable. The separate verifier's unpack runs under the same mask.
+The verifier then runs against this hardened workspace. Its command (test.sh, a script strategy or a `reward-kit` runner) starts with `umask 022`, so what it creates is mode 0644 or 0755 on every backend, whatever mask the runtime gives an exec: `docker exec` on Docker's own daemon uses 0022, but on Docker-in-Docker (Docker 29.8.1, runc 1.5.1) it uses 0000, and the uv cache test.sh filled came out group- and world-writable. The separate verifier's unpack runs under the same mask.
 
 ## Pytest plugin guard
 
@@ -195,7 +195,7 @@ Matching ignores scheme, port, query string, and case, strips a leading `www.`, 
 
 ## Network policy: allowlist egress
 
-`network_mode: allowlist` makes only the listed destinations reachable for the agent. It uses the same proxy, CA, uid firewall and block log as the denylist, in an allow mode. Declare it on `sandbox`, or on `agent` over a public sandbox (Harbor's recommended form, [harbor#2146](https://github.com/harbor-framework/harbor/issues/2146)); the two mean the same thing here because BenchFlow filters the agent's uid only. Entry syntax is in [task authoring](./task-authoring-task-md.md#network-policy).
+`network_mode: allowlist` makes only the listed destinations reachable for the agent. It uses the same proxy, CA, uid firewall and block log as the denylist, in an allow mode. Declare it on `sandbox`, or on `agent` over a public sandbox (the form another split-layout runner recommends); the two mean the same thing here because BenchFlow filters the agent's uid only. Entry syntax is in [task authoring](./task-authoring-task-md.md#network-policy).
 
 ```yaml
 agent:
@@ -216,7 +216,7 @@ agent:
 | Agent traffic to listed IP/CIDR entries | uid firewall (`iptables`/`ip6tables` ACCEPT) | reachable directly, for any protocol (e.g. `psql` to a compose sibling) |
 | All other agent traffic | uid firewall | rejected (IPv4 and IPv6) |
 | Model API | controller | the loopback LiteLLM gateway is always reachable (its port is registered with the proxy). Native Claude subscription auth (`claude-agent-acp` with `CLAUDE_CODE_OAUTH_TOKEN`, no gateway) gets `api.anthropic.com:443` for `POST /v1/messages` only, with the URL-source body check; unless the task lists `api.anthropic.com` itself. Other native subscription clients (e.g. Codex ChatGPT login) are refused at connect time with an error, instead of failing silently on their first model call |
-| Agent install, setup, oracle | not filtered | the firewall is installed after the agent is installed and its ACP session is bootstrapped; oracle runs get no policy ([harbor#583](https://github.com/harbor-framework/harbor/issues/583)) |
+| Agent install, setup, oracle | not filtered | the firewall is installed after the agent is installed and its ACP session is bootstrapped; oracle runs get no policy, as in another split-layout runner |
 | Verifier | not filtered (root) | the verifier keeps its own rule: it runs as root outside the uid firewall. `verifier.network_mode: allowlist` is refused at preflight; a verifier configured with `verifier.user` equal to the sandbox user inherits the firewall |
 | Separate verifier sandbox (`verifier.sandbox_mode: separate`) | not filtered | the agent's allowlist is not carried into it; `network_mode: allowlist` or `denylist` on `verifier.sandbox` is refused at preflight, because there is no agent uid or proxy there |
 
@@ -239,7 +239,7 @@ The denylist requirements apply: a non-root `sandbox_user`, `python3` and `opens
 - **CIDR entries admit addresses, not names.** A name that is not listed does not resolve for the agent even if its address is inside a listed range. List the name too.
 - **Wildcard DNS services.** Listing `*.sslip.io` or similar admits names that embed any address; the address check still refuses loopback, metadata and unlisted private ranges, but any public address becomes reachable.
 - **Shared addresses.** A CIDR entry admits every site hosted in that range; use hostnames for CDN-hosted services.
-- **Empty lists are rejected.** Harbor treats an empty allowlist as "deny all"; BenchFlow requires at least one entry (use `no-network` for none) and has no `--allow-agent-host` flag.
+- **Empty lists are rejected.** Another split-layout runner treats an empty allowlist as "deny all"; BenchFlow requires at least one entry (use `no-network` for none) and has no `--allow-agent-host` flag.
 - The denylist limits on HTTP/1.x, certificate pinning and client proxy support apply unchanged.
 
 ## Threat model and known gaps

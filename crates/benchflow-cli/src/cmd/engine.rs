@@ -211,8 +211,9 @@ pub async fn attempt(
 }
 
 /// Run a job with the live view, and return its outcome. The first Ctrl-C
-/// stops new trials and cancels running ones (their sandboxes are still
-/// torn down); a second Ctrl-C exits at once.
+/// drains the run (no new trials; running ones finish), the second stops
+/// it (running trials are cancelled and their sandboxes torn down), and a
+/// third exits at once.
 pub async fn run_job(
     spec: JobSpec,
     provider: Arc<dyn Provider>,
@@ -266,8 +267,10 @@ pub fn job_folder_error(e: std::io::Error) -> CliError {
     }
 }
 
-/// Run `work` on a fresh runtime with the live view. The first Ctrl-C stops
-/// new trials and cancels running ones; a second Ctrl-C exits at once.
+/// Run `work` on a fresh runtime with the live view. The first Ctrl-C
+/// drains the run: no new trial starts, and running ones finish. The second
+/// stops it: running trials are cancelled and their sandboxes removed. A
+/// third exits at once. A `kill` or a closed terminal stops at once.
 pub async fn with_live_view<T, F, Fut>(
     provider: Arc<dyn Provider>,
     options: RunOptions,
@@ -281,6 +284,7 @@ where
 {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (stop_tx, stop_rx) = benchflow_run::trial::stop_switch();
+    let drain = options.drain.clone();
     let rt = Arc::new(Runtime {
         provider,
         images: Images::new().build_timeout_multiplier(options.build_timeout_multiplier),
@@ -290,29 +294,68 @@ where
     });
     let render = tokio::spawn(ui::live::render(rx, label_width, view));
     let interrupt = tokio::spawn(async move {
-        let quit = stop_then_quit(move || {
-            let _ = stop_tx.send(true);
+        let quit = drain_stop_quit(
+            move || {
+                drain.start();
+                if !ui().json {
+                    anstream::eprintln!(
+                        "\n  {} draining: no new trials start; running ones finish (Ctrl-C again to stop them now)",
+                        warn_mark()
+                    );
+                }
+            },
+            move || {
+                let _ = stop_tx.send(true);
+                if !ui().json {
+                    anstream::eprintln!(
+                        "\n  {} stopping: no new trials; cancelling running ones and removing their sandboxes (Ctrl-C again to quit now)",
+                        warn_mark()
+                    );
+                }
+            },
+        );
+        if quit.await {
             if !ui().json {
-                anstream::eprintln!(
-                    "\n  {} stopping: no new trials; cancelling running ones and removing their sandboxes (Ctrl-C again to quit now)",
+                // Not `eprintln!`: it panics when stderr is gone (a closed
+                // terminal's SIGHUP), and the run would never exit.
+                use std::io::Write;
+                let _ = writeln!(
+                    anstream::stderr(),
+                    "\n  {} quitting now: any sandbox still being removed or built is left; a later `bench run` on this machine removes it once it is idle and done building",
                     warn_mark()
                 );
             }
-        });
-        if quit.await {
             std::process::exit(130);
         }
     });
     let outcome = work(rt.clone()).await;
     // A sandbox still being made when the run was stopped is removed as
-    // soon as its backend hands it over; a second Ctrl-C still quits.
-    if !benchflow_run::trial::settle_stopped_starts(std::time::Duration::from_secs(120)).await
-        && !ui().json
-    {
-        anstream::eprintln!(
-            "  {} a sandbox was still being made after 2 minutes; the next run removes it",
-            warn_mark()
-        );
+    // soon as its backend hands it over; another Ctrl-C still quits.
+    let settled =
+        benchflow_run::trial::settle_stopped_starts(std::time::Duration::from_secs(120)).await;
+    // A Daytona sandbox still building its image is deleted once it has
+    // built (deleting it mid-build cancels the build, which Daytona keeps).
+    let cleaned = benchflow_sandbox::settle_cleanups(std::time::Duration::from_secs(60)).await;
+    if !ui().json {
+        if !settled {
+            anstream::eprintln!(
+                "  {} a sandbox was still being made after 2 minutes; the next `bench run` here removes it",
+                warn_mark()
+            );
+        }
+        if !cleaned {
+            anstream::eprintln!(
+                "  {} a Daytona sandbox was still building its image after a minute, and is left to finish (deleting it would cancel the build); a later `bench run` on this machine removes it once it is done and idle",
+                warn_mark()
+            );
+        }
+        // D4 chaos runs: a delete that outlasted its retries left the
+        // sandbox running, and only the trial's log said so.
+        let mut left = benchflow_run::trial::left_behind();
+        left.extend(benchflow_sandbox::left_behind());
+        if let Some(note) = left_behind_note(&left) {
+            anstream::eprintln!("  {} {note}", warn_mark());
+        }
     }
     interrupt.abort();
     drop(rt);
@@ -320,19 +363,63 @@ where
     outcome
 }
 
-/// Wait for a stop signal and call `on_stop`, then wait for a second one
-/// (another Ctrl-C, `kill`, or hang-up): true when it came, to quit now.
-async fn stop_then_quit(on_stop: impl FnOnce()) -> bool {
-    if !stop_signal().await {
-        return false;
+/// The end-of-run warning for sandboxes the run could not remove (each
+/// `<backend> <id>`): which, and what removes them.
+fn left_behind_note(left: &[String]) -> Option<String> {
+    if left.is_empty() {
+        return None;
     }
-    on_stop();
-    stop_signal().await
+    let mut by_backend: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for entry in left {
+        let (backend, id) = entry.split_once(' ').unwrap_or(("", entry.as_str()));
+        by_backend.entry(backend).or_default().push(id);
+    }
+    let it = if left.len() == 1 { "it" } else { "them" };
+    let ways: Vec<String> = by_backend
+        .iter()
+        .map(|(backend, ids)| match *backend {
+            "docker" | "podman" => format!("`{backend} rm -f {}`", ids.join(" ")),
+            "daytona" => format!("Daytona's dashboard ({})", ids.join(", ")),
+            other => format!("the {other} backend ({})", ids.join(", ")),
+        })
+        .collect();
+    Some(format!(
+        "could not remove {}: {}; a later `bench run` on this machine removes {it} once idle and done building, or remove {it} now: {}",
+        plural(left.len(), "sandbox"),
+        left.join(", "),
+        ways.join("; ")
+    ))
 }
 
-/// The first Ctrl-C, a `kill`, or a closed terminal (SSH dropped): each
-/// stops the run the same way, so its sandboxes are removed.
-async fn stop_signal() -> bool {
+/// Wait for signals: a first Ctrl-C calls `on_drain`; the next one (or a
+/// first `kill` or hang-up) calls `on_stop`; then one more returns true, to
+/// quit now. False when signals cannot be caught.
+async fn drain_stop_quit(on_drain: impl FnOnce(), on_stop: impl FnOnce()) -> bool {
+    match stop_signal().await {
+        None => return false,
+        Some(Signal::Interrupt) => {
+            on_drain();
+            if stop_signal().await.is_none() {
+                return false;
+            }
+        }
+        Some(Signal::Other) => {}
+    }
+    on_stop();
+    stop_signal().await.is_some()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    /// Ctrl-C.
+    Interrupt,
+    /// A `kill` or a closed terminal (SSH dropped): nobody is there to wait
+    /// for a drain, so these stop the run at once.
+    Other,
+}
+
+/// The next Ctrl-C, `kill`, or hang-up.
+async fn stop_signal() -> Option<Signal> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -341,13 +428,16 @@ async fn stop_signal() -> bool {
             signal(SignalKind::hangup()),
         ) {
             return tokio::select! {
-                r = tokio::signal::ctrl_c() => r.is_ok(),
-                _ = term.recv() => true,
-                _ = hup.recv() => true,
+                r = tokio::signal::ctrl_c() => r.ok().map(|_| Signal::Interrupt),
+                _ = term.recv() => Some(Signal::Other),
+                _ = hup.recv() => Some(Signal::Other),
             };
         }
     }
-    tokio::signal::ctrl_c().await.is_ok()
+    tokio::signal::ctrl_c()
+        .await
+        .ok()
+        .map(|_| Signal::Interrupt)
 }
 
 /// A failure group's heading: "2 trials errored [R201] · the agent's
@@ -355,13 +445,6 @@ async fn stop_signal() -> bool {
 fn cause_heading(status: Status, code: &str, owner: Owner, n: usize) -> String {
     let kind = match status {
         Status::Unscored => "unscored",
-        Status::Skipped if code == "R001" => {
-            return format!(
-                "{} stopped {}",
-                plural(n, "trial"),
-                dim(format!("[{code}] · you stopped the run"))
-            );
-        }
         Status::Skipped => "not run",
         _ => "errored",
     };
@@ -410,35 +493,31 @@ fn usage_line(now: &[&TrialRecord], kept: &[&TrialRecord]) -> Option<String> {
         None => "nothing earlier".into(),
     };
     parts.push(format!(
-        "not counted: the {} kept, {earlier}",
+        "not counted: the {} from an earlier run (kept or regraded), {earlier}",
         plural(kept.len(), "trial")
     ));
     Some(ui::join_fitting(&parts, 9, ui::width()))
 }
 
-/// The end-of-run report: the score, failures grouped by cause with whose
-/// problem each is, usage, and where to look next.
-pub fn report(outcome: &JobOutcome) {
-    if ui().json {
-        return;
-    }
-    let recs = &outcome.records;
-    let agent_recs: Vec<&TrialRecord> = recs.iter().collect();
-    let total = agent_recs.len();
-    let passed = agent_recs.iter().filter(|r| r.passed == Some(true)).count();
-    let scored = agent_recs
-        .iter()
-        .filter(|r| r.status == Status::Scored)
-        .count();
+/// The Score line, over the trials that count: those the user stopped
+/// (Ctrl-C) are left out, and listed apart by [`stopped_lines`].
+pub fn score_line(recs: &[TrialRecord]) -> String {
+    let counted: Vec<&TrialRecord> = recs.iter().filter(|r| !r.stopped()).collect();
+    let tally = benchflow_run::record::Tally::of(recs);
+    let (total, passed, scored) = (tally.counted, tally.passed, tally.scored);
     let rate = Rate::new(passed, total);
-    say!("");
     let mut score = format!("  {} {}/{} passed", bold("Score"), passed, total);
     // With nothing scored (a run stopped at once), a pass rate and its
     // interval say nothing.
-    if total > 0 && scored > 0 {
+    // With trials stopped, the rate is partial: the stopped trials are the
+    // long ones, which fail more often. No interval then, and the rate as if
+    // they had failed beside it.
+    if total > 0 && scored > 0 && tally.stopped == 0 {
         score.push_str(&format!(" · {}", rate.display()));
+    } else if total > 0 && scored > 0 {
+        score.push_str(&format!(" · {:.1}%", 100.0 * passed as f64 / total as f64));
     }
-    let rewards: Vec<f64> = agent_recs.iter().filter_map(|r| r.reward).collect();
+    let rewards: Vec<f64> = counted.iter().filter_map(|r| r.reward).collect();
     if !rewards.is_empty() && rewards.iter().any(|r| *r != 0.0 && *r != 1.0) {
         score.push_str(&format!(
             " · mean reward {}",
@@ -448,12 +527,66 @@ pub fn report(outcome: &JobOutcome) {
     if scored < total {
         score.push_str(&dim(format!(" · {} of {} scored", scored, total)).to_string());
     }
-    say!("{score}");
-    // Failures by cause.
+    let stopped = tally.stopped;
+    if stopped > 0 {
+        score.push_str(
+            &dim(format!(
+                " · partial: {stopped} stopped ({:.1}% if they had failed)",
+                100.0 * passed as f64 / (total + stopped) as f64
+            ))
+            .to_string(),
+        );
+    }
+    score
+}
+
+/// The lines for trials the user stopped (Ctrl-C), in the words the run's
+/// summary and `bench results` share; none when there are none.
+pub fn stopped_lines(recs: &[TrialRecord]) -> Vec<String> {
+    let stopped: Vec<&TrialRecord> = recs.iter().filter(|r| r.stopped()).collect();
+    if stopped.is_empty() {
+        return Vec::new();
+    }
+    let names: Vec<&str> = stopped
+        .iter()
+        .take(3)
+        .map(|r| r.rollout_name.as_str())
+        .collect();
+    let more = if stopped.len() > 3 {
+        format!(" and {} more", stopped.len() - 3)
+    } else {
+        String::new()
+    };
+    vec![
+        format!(
+            "  {} {} {} {}",
+            warn_mark(),
+            plural(stopped.len(), "trial"),
+            benchflow_run::record::STOPPED_WORDS,
+            dim("[R001]")
+        ),
+        format!("      {} {}{}", dim("trials:"), names.join(", "), more),
+        format!(
+            "      {} run the job's `bench run` command again to run them",
+            dim("next:")
+        ),
+    ]
+}
+
+/// The end-of-run report: the score, failures grouped by cause with whose
+/// problem each is, usage, and where to look next.
+pub fn report(outcome: &JobOutcome) {
+    if ui().json {
+        return;
+    }
+    let recs = &outcome.records;
+    say!("");
+    say!("{}", score_line(recs));
+    // Failures by cause; trials the user stopped come after, apart.
     let mut causes: BTreeMap<(Owner, String), Vec<&TrialRecord>> = BTreeMap::new();
     for r in recs {
         if let Some(p) = &r.problem {
-            if r.status == Status::Skipped && p.code == "R000" {
+            if r.status == Status::Skipped && p.code == "R000" || r.stopped() {
                 continue;
             }
             causes.entry((p.owner, p.code.clone())).or_default().push(r);
@@ -483,6 +616,9 @@ pub fn report(outcome: &JobOutcome) {
                 ui::width()
             )
         );
+    }
+    for line in stopped_lines(recs) {
+        say!("{line}");
     }
     // Zeros that may measure a broken task rather than the agent.
     let suspect: Vec<&TrialRecord> = recs
@@ -524,7 +660,7 @@ pub fn report(outcome: &JobOutcome) {
     }
     if outcome.not_started > 0 {
         say!(
-            "  {} {} not started (a login ran out of quota, or the run stopped); rerun to resume",
+            "  {} {} not started (a login ran out of quota, or you stopped or drained the run); rerun the same command to run them",
             warn_mark(),
             plural(outcome.not_started, "trial")
         );
@@ -596,30 +732,65 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use super::stop_then_quit;
+    use super::drain_stop_quit;
 
-    fn terminate_self() {
+    fn signal_self(name: &str) {
         let status = std::process::Command::new("kill")
-            .args(["-TERM", &std::process::id().to_string()])
+            .args([name, &std::process::id().to_string()])
             .status()
             .unwrap();
         assert!(status.success());
     }
 
+    /// Ctrl-C drains, a second stops, a third quits; a `kill` skips the
+    /// drain. One test, since the signals go to the whole test process.
     #[tokio::test]
-    async fn a_second_kill_quits_after_the_first_stops() {
+    async fn ctrl_c_drains_then_stops_then_quits_and_a_kill_stops_at_once() {
         use tokio::signal::unix::{SignalKind, signal};
-        // Catch SIGTERM in this process before sending any.
-        let _held = signal(SignalKind::terminate()).unwrap();
+        // Catch both in this process before sending any.
+        let _int = signal(SignalKind::interrupt()).unwrap();
+        let _term = signal(SignalKind::terminate()).unwrap();
+        let pause = || tokio::time::sleep(Duration::from_millis(200));
+
+        let drained = Arc::new(AtomicBool::new(false));
         let stopped = Arc::new(AtomicBool::new(false));
-        let flag = stopped.clone();
-        let quit = tokio::spawn(stop_then_quit(move || flag.store(true, Ordering::SeqCst)));
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        terminate_self();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (d, s) = (drained.clone(), stopped.clone());
+        let quit = tokio::spawn(drain_stop_quit(
+            move || d.store(true, Ordering::SeqCst),
+            move || s.store(true, Ordering::SeqCst),
+        ));
+        pause().await;
+        signal_self("-INT");
+        pause().await;
+        assert!(drained.load(Ordering::SeqCst));
+        assert!(
+            !stopped.load(Ordering::SeqCst),
+            "the first Ctrl-C only drains"
+        );
+        signal_self("-INT");
+        pause().await;
         assert!(stopped.load(Ordering::SeqCst));
         assert!(!quit.is_finished());
-        terminate_self();
+        signal_self("-INT");
+        let quit = tokio::time::timeout(Duration::from_secs(5), quit).await;
+        assert!(quit.expect("the third Ctrl-C quits").unwrap());
+
+        let drained = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (d, s) = (drained.clone(), stopped.clone());
+        let quit = tokio::spawn(drain_stop_quit(
+            move || d.store(true, Ordering::SeqCst),
+            move || s.store(true, Ordering::SeqCst),
+        ));
+        pause().await;
+        signal_self("-TERM");
+        pause().await;
+        assert!(stopped.load(Ordering::SeqCst));
+        assert!(
+            !drained.load(Ordering::SeqCst),
+            "a kill does not wait for a drain"
+        );
+        signal_self("-TERM");
         let quit = tokio::time::timeout(Duration::from_secs(5), quit).await;
         assert!(quit.expect("the second kill quits").unwrap());
     }
@@ -628,6 +799,29 @@ mod tests {
 #[cfg(test)]
 mod report_tests {
     use super::*;
+
+    /// Reviews of rust/d4-chaos: the warning sent Docker users to "the
+    /// backend's dashboard".
+    #[test]
+    fn sandboxes_left_behind_are_named_with_what_removes_them() {
+        assert_eq!(left_behind_note(&[]), None);
+        let note = left_behind_note(&["docker bf-hello-1".to_string()]).unwrap();
+        assert_eq!(
+            note,
+            "could not remove 1 sandbox: docker bf-hello-1; a later `bench run` on this machine removes it once idle and done building, or remove it now: `docker rm -f bf-hello-1`"
+        );
+        let note = left_behind_note(&[
+            "daytona 6f1c".to_string(),
+            "podman bf-a".to_string(),
+            "daytona 9e2d".to_string(),
+        ])
+        .unwrap();
+        assert!(note.starts_with("could not remove 3 sandboxes: "), "{note}");
+        assert!(note.contains(", or remove them now: "), "{note}");
+        assert!(note.contains("Daytona's dashboard (6f1c, 9e2d)"), "{note}");
+        assert!(note.contains("`podman rm -f bf-a`"), "{note}");
+        assert!(!note.contains("backend's dashboard"), "{note}");
+    }
 
     fn trial(name: &str, input: u64, cost: Option<f64>) -> TrialRecord {
         let v = serde_json::json!({
@@ -650,7 +844,7 @@ mod report_tests {
         .expect("a line");
         assert!(line.contains("1.0K in · 10 out · $0.02 this run"), "{line}");
         assert!(
-            line.contains("the 1 trial kept, 549.7K in · 10 out · $0.14 earlier"),
+            line.contains("the 1 trial from an earlier run (kept or regraded), 549.7K in · 10 out · $0.14 earlier"),
             "{line}"
         );
         // Nothing ran now (`--rerun failed` with no failures).
@@ -664,12 +858,58 @@ mod report_tests {
         assert!(line.ends_with("cost not recorded"), "{line}");
     }
 
+    /// Trials the user stopped are left out of the Score and listed apart,
+    /// not blamed on a setup (on 2026-10-10 a run with 3 of 3 scored trials
+    /// passed said `Score 3/5 passed · 60.0%`).
     #[test]
-    fn stopped_trials_are_not_blamed_on_a_setup() {
-        let stopped = cause_heading(Status::Skipped, "R001", Owner::You, 2);
-        assert!(stopped.starts_with("2 trials stopped "), "{stopped}");
-        assert!(stopped.contains("you stopped the run"), "{stopped}");
-        assert!(!stopped.contains("problem"), "{stopped}");
+    fn stopped_trials_are_left_out_of_the_score_and_listed_apart() {
+        let rec = |name: &str, v: serde_json::Value| {
+            benchflow_run::read::record_from_json(&v, std::path::Path::new(name)).unwrap()
+        };
+        let passed =
+            serde_json::json!({"status": "scored", "rewards": {"reward": 1.0}, "passed": true});
+        let stopped = serde_json::json!({"status": "skipped", "problem": {
+            "code": "R001", "owner": "you", "phase": "agent",
+            "message": "stopped before it finished", "next": "rerun", "transient": false}});
+        let mut recs: Vec<TrialRecord> = (0..3)
+            .map(|i| rec(&format!("p{i}"), passed.clone()))
+            .collect();
+        recs.push(rec("s1", stopped.clone()));
+        recs.push(rec("s2", stopped));
+        // Without the colors a terminal gets.
+        let plain = |text: &str| {
+            let mut out = String::new();
+            let mut chars = text.chars();
+            while let Some(c) = chars.next() {
+                if c == '\u{1b}' {
+                    chars.by_ref().find(|c| *c == 'm');
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+        let score = plain(&score_line(&recs));
+        assert!(
+            score.contains("Score 3/3 passed · 100.0% · partial"),
+            "{score}"
+        );
+        assert!(
+            score.ends_with("· partial: 2 stopped (60.0% if they had failed)"),
+            "{score}"
+        );
+        assert!(
+            !score.contains("43.9"),
+            "no interval for a partial rate: {score}"
+        );
+        let lines: Vec<String> = stopped_lines(&recs).iter().map(|l| plain(l)).collect();
+        assert!(
+            lines[0]
+                .ends_with("2 trials stopped (Ctrl-C, a kill, or a closed terminal), not counted in the pass rate [R001]"),
+            "{lines:?}"
+        );
+        assert!(lines[1].ends_with("s1, s2"), "{lines:?}");
+        assert!(stopped_lines(&recs[..3]).is_empty());
         let errored = cause_heading(Status::Errored, "R201", Owner::Agent, 1);
         assert!(errored.starts_with("1 trial errored "), "{errored}");
         assert!(errored.contains("[R201]"), "{errored}");

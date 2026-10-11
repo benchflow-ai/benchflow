@@ -12,12 +12,21 @@
 //!   canary, the title, the mode, and whether the package is ok;
 //! - the facts about grading, line for line.
 //!
+//! Where the reference names another framework, its messages and facts are
+//! read in BenchFlow's words (`common/mod.rs`); BenchFlow's own are compared
+//! as they are, and must name no framework. Both sides name the import
+//! record `[import.harbor]`, an identifier other tools read.
+//!
 //! Two kinds of message are compared by their first words only: a TOML or
 //! JSON syntax error, since the message after `not valid TOML:` comes from
 //! the parsing library.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+
+use common::{naming, neutral};
 
 use benchflow_task::check::CheckOptions;
 use benchflow_task::diag::{Diagnostic, Severity};
@@ -84,7 +93,7 @@ fn reference_said(d: &Value) -> Said {
         Some("warning") => "warning",
         other => panic!("unknown level {other:?}"),
     };
-    let message = normalize_message(d["message"].as_str().unwrap_or_default());
+    let message = normalize_message(&neutral(d["message"].as_str().unwrap_or_default()));
     let place = d["where"].as_str().unwrap_or("task.md");
     let (file, line) = if place.starts_with('[') {
         ("task.md".to_string(), None)
@@ -316,8 +325,26 @@ fn compare(group: &str, name: &str, dir: &Path) -> Vec<String> {
     }
 
     // What grading needs.
-    let want_facts = reference_facts(&check_text);
-    if want_facts != report.facts {
+    let want_facts: Vec<String> = reference_facts(&check_text)
+        .iter()
+        .map(|f| neutral(f))
+        .collect();
+    let got_facts: Vec<String> = report.facts.clone();
+    // Everything a diagnostic prints (message, label, help, notes) and the
+    // facts.
+    let said = got_diags
+        .iter()
+        .flat_map(|d| {
+            std::iter::once(d.message.as_str())
+                .chain(d.label.as_deref())
+                .chain(d.help.as_deref())
+                .chain(d.notes.iter().map(String::as_str))
+        })
+        .chain(report.facts.iter().map(String::as_str));
+    for found in naming(said) {
+        problems.push(format!("bench's own text names a framework: {found}"));
+    }
+    if want_facts != got_facts {
         problems.push(format!(
             "facts differ\n  reference: {want_facts:#?}\n  rust:      {:#?}",
             report.facts

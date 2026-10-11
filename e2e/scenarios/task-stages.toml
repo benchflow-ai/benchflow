@@ -1,0 +1,17 @@
+# Stages graded one after another, the first gated: bench test (oracle passes, nop and controls fail).
+tier = "full"
+needs = ["sandbox"]
+tasks = ["two-stage"]
+
+[[step]]
+run = ["test", "tasks/two-stage", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+timeout = 1500
+trials = [{ job = "tests/*", agent = "oracle", status = "scored", reward = 1.0 }, { job = "tests/*", agent = "nop", status = "scored", reward = 0.0 }]
+
+[[step]]
+name = "the oracle's record has one result per stage"
+run = ["run", "tasks/two-stage", "-s", "{backend}", "--job", "o"]
+exit = 0
+files = ["jobs/o/two-stage__*/steps/first/verifier", "jobs/o/two-stage__*/steps/second"]
+trials = [{ job = "o", status = "scored", reward = 1.0, result = { "step_results" = { len = 2 }, "step_results.0.step_name" = "first" } }]

@@ -1,6 +1,6 @@
 //! One module per command.
 
-mod agents;
+pub(crate) mod agents;
 mod cache;
 mod check;
 mod convert;

@@ -93,7 +93,7 @@ impl ModelAgent for Shell {
         let status = tokio::process::Command::new(&cli)
             .args([
                 "exec",
-                "-it",
+                exec_flags(std::io::IsTerminal::is_terminal(&std::io::stdin())),
                 "-u",
                 user,
                 "-w",
@@ -228,6 +228,13 @@ pub async fn run(args: ShellArgs) -> Result<Exit> {
     }
 }
 
+/// `docker exec`'s flags: a terminal only when stdin is one. With `-t`
+/// and piped stdin (`bench shell < commands`) the CLI refuses ("the input
+/// device is not a TTY") and the session never starts.
+fn exec_flags(stdin_is_terminal: bool) -> &'static str {
+    if stdin_is_terminal { "-it" } else { "-i" }
+}
+
 /// The shell `bench shell` opens in the sandbox. It starts with the line
 /// every agent command starts with, so what you run there is, like an
 /// agent's processes, the first the kernel stops when memory runs out.
@@ -242,7 +249,13 @@ fn shell_command(home: &str, workdir: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_command;
+    use super::{exec_flags, shell_command};
+
+    #[test]
+    fn a_terminal_only_when_stdin_is_one() {
+        assert_eq!(exec_flags(true), "-it");
+        assert_eq!(exec_flags(false), "-i");
+    }
 
     #[test]
     fn the_shell_starts_with_the_agents_oom_line() {

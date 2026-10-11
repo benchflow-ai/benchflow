@@ -135,7 +135,7 @@ and what it is:
   $JOBS_DIR/<timestamp>/<task>__<hash8>/
     result.json                      — rollout summary: rewards, tool calls,
                                        token usage/cost, errors, timing
-    results.jsonl                    — Verifiers/Prime-RL shaped rollout row
+    results.jsonl                    — rollout row in the shape RL trainers ingest
     config.json                      — the rollout's resolved configuration
                                        (secret-bearing env vars filtered out)
     prompts.json                     — the prompts sent to the agent

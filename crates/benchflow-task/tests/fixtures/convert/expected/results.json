@@ -258,30 +258,6 @@
     "rewritten": [],
     "restored_extension_paths": []
   },
-  "v06/harbor-parity": {
-    "notes": [
-      "kept under [import.v06]: interaction.scenes, roles.solver.agent",
-      "the verifier's scripts call a model: [verifier.env] passes JUDGE_API_KEY. Declared as [verifier] models = true, so a task.md runtime gives them its model proxy and a scoped token; on Harbor they read the keys [verifier.env] passes from the host"
-    ]
-  },
-  "roundtrip/v06/harbor-parity": {
-    "status": "refused",
-    "losses": [
-      {
-        "path": "[roles]",
-        "reason": "Harbor runs one agent",
-        "severity": "run-affecting"
-      },
-      {
-        "path": "[user]",
-        "reason": "Harbor has no simulated user",
-        "severity": "run-affecting"
-      }
-    ],
-    "restored_originals": [],
-    "rewritten": [],
-    "restored_extension_paths": []
-  },
   "v06/multi-scene": {
     "notes": [
       "kept under [import.v06]: interaction.scenes, roles.executor.agent, roles.executor.capabilities, roles.planner.agent, roles.planner.capabilities, roles.reviewer.agent, roles.reviewer.capabilities"
@@ -474,6 +450,30 @@
       {
         "path": "the ```user block",
         "reason": "Harbor shows the agent instruction.md and each step's instruction only",
+        "severity": "run-affecting"
+      }
+    ],
+    "restored_originals": [],
+    "rewritten": [],
+    "restored_extension_paths": []
+  },
+  "v06/split-parity": {
+    "notes": [
+      "kept under [import.v06]: interaction.scenes, roles.solver.agent",
+      "the verifier's scripts call a model: [verifier.env] passes JUDGE_API_KEY. Declared as [verifier] models = true, so a task.md runtime gives them its model proxy and a scoped token; on Harbor they read the keys [verifier.env] passes from the host"
+    ]
+  },
+  "roundtrip/v06/split-parity": {
+    "status": "refused",
+    "losses": [
+      {
+        "path": "[roles]",
+        "reason": "Harbor runs one agent",
+        "severity": "run-affecting"
+      },
+      {
+        "path": "[user]",
+        "reason": "Harbor has no simulated user",
         "severity": "run-affecting"
       }
     ],

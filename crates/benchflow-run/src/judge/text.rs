@@ -4,14 +4,27 @@
 
 use std::io::Read;
 
-/// The most bytes a document may unpack to (a zip bomb stops here).
+/// The most bytes a document may unpack to, all its parts together (a zip
+/// bomb stops here, however many parts it repeats). A document that goes
+/// on past it gives the text read until then, marked as cut.
 const UNPACK_CAP: u64 = 64 * 1024 * 1024;
+
+/// The most text, in bytes, one document gives: far more than a call shows
+/// ([`super::FILE_TEXT_CAP`]), and a bound on what a small spreadsheet
+/// whose cells all repeat one long shared string can grow to.
+const TEXT_CAP: usize = 1 << 20;
 
 /// A file's text, or why there is none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Text {
-    /// The text, and what kind of file it came from (`markdown`, `docx`).
-    Read { kind: &'static str, text: String },
+    /// The text, what kind of file it came from (`markdown`, `docx`), and
+    /// whether the file goes on past what was read ([`UNPACK_CAP`],
+    /// [`TEXT_CAP`]).
+    Read {
+        kind: &'static str,
+        text: String,
+        cut: bool,
+    },
     /// Why it cannot be read as text.
     Unreadable(String),
 }
@@ -57,9 +70,10 @@ pub fn to_text(name: &str, bytes: &[u8]) -> Text {
         "docx" => office(bytes, "docx", docx),
         "pptx" => office(bytes, "pptx", pptx),
         "xlsx" => office(bytes, "xlsx", xlsx),
-        "pdf" => pdf(bytes).map(|t| Text::Read {
+        "pdf" => pdf(bytes).map(|(text, cut)| Text::Read {
             kind: "pdf",
-            text: t,
+            text,
+            cut,
         }),
         _ => {
             let kind = PLAIN
@@ -80,6 +94,7 @@ pub fn to_text(name: &str, bytes: &[u8]) -> Text {
             Ok(Text::Read {
                 kind,
                 text: String::from_utf8_lossy(bytes).into_owned(),
+                cut: false,
             })
         }
     };
@@ -92,11 +107,16 @@ fn office(
     read: impl Fn(&Zip<'_>) -> Result<String, String>,
 ) -> Result<Text, String> {
     let zip = Zip::open(bytes).map_err(|e| format!("not a readable .{kind} file ({e})"))?;
-    let text = read(&zip)?;
+    let mut text = read(&zip)?;
+    let cut = shorten(&mut text, TEXT_CAP) | zip.cut.get();
     if text.trim().is_empty() {
-        return Err(format!("a .{kind} file with no text in it"));
+        return Err(if cut {
+            format!("a .{kind} file that unpacks to more than {UNPACK_CAP} bytes before any text")
+        } else {
+            format!("a .{kind} file with no text in it")
+        });
     }
-    Ok(Text::Read { kind, text })
+    Ok(Text::Read { kind, text, cut })
 }
 
 fn docx(z: &Zip<'_>) -> Result<String, String> {
@@ -122,6 +142,9 @@ fn pptx(z: &Zip<'_>) -> Result<String, String> {
     slides.sort();
     let mut out = String::new();
     for (num, name) in slides {
+        if z.cut.get() || out.len() > TEXT_CAP {
+            break;
+        }
         out.push_str(&format!("--- slide {num} ---\n"));
         out.push_str(&xml_text(&z.text(name)?, &[("</a:p>", "\n")]));
         out.push('\n');
@@ -158,46 +181,80 @@ fn xlsx(z: &Zip<'_>) -> Result<String, String> {
         .collect();
     sheets.sort();
     let mut out = String::new();
-    for (num, name) in sheets {
+    'sheets: for (num, name) in sheets {
+        // Each sheet's title counts too: a part that unpacks to nothing
+        // spends none of the zip's budget.
+        if z.cut.get() || out.len() >= TEXT_CAP {
+            z.cut.set(true);
+            break;
+        }
         let title = names
-            .get(num as usize - 1)
+            .get((num as usize).wrapping_sub(1))
             .cloned()
             .unwrap_or_else(|| format!("sheet {num}"));
         out.push_str(&format!("=== sheet: {} ===\n", unescape(&title)));
+        if shorten(&mut out, TEXT_CAP) {
+            z.cut.set(true);
+            break;
+        }
         let xml = z.text(name)?;
         for row in elements(&xml, "row") {
-            let cells: Vec<String> = row
-                .split("<c ")
-                .skip(1)
-                .map(|c| {
-                    let r = attr(c, "r").unwrap_or_default();
-                    let shared_ref = attr(c, "t").as_deref() == Some("s");
-                    let value = if let Some(is) = c.find("<is>") {
-                        xml_text(&c[is..], &[])
-                    } else {
-                        between(c, "<v>", "</v>").map(unescape).unwrap_or_default()
-                    };
-                    let value = if shared_ref {
-                        value
-                            .trim()
-                            .parse::<usize>()
-                            .ok()
-                            .and_then(|i| shared.get(i).cloned())
-                            .unwrap_or(value)
-                    } else {
-                        value
-                    };
-                    format!("{r}={value}")
-                })
-                .filter(|c| !c.ends_with('='))
-                .collect();
-            if !cells.is_empty() {
-                out.push_str(&cells.join("\t"));
+            // Cells go straight into the text, which stops at TEXT_CAP: a
+            // shared string is not copied once per cell that names it.
+            let mut first = true;
+            for c in row.split("<c ").skip(1) {
+                let r = attr(c, "r").unwrap_or_default();
+                let shared_ref = attr(c, "t").as_deref() == Some("s");
+                let value = if let Some(is) = c.find("<is>") {
+                    xml_text(&c[is..], &[])
+                } else {
+                    between(c, "<v>", "</v>").map(unescape).unwrap_or_default()
+                };
+                let value: &str = if shared_ref {
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| shared.get(i))
+                        .map_or(value.as_str(), String::as_str)
+                } else {
+                    &value
+                };
+                if value.is_empty() {
+                    continue;
+                }
+                if !first {
+                    out.push('\t');
+                }
+                first = false;
+                out.push_str(&r);
+                out.push('=');
+                out.push_str(value);
+                if shorten(&mut out, TEXT_CAP) {
+                    z.cut.set(true);
+                    break 'sheets;
+                }
+            }
+            if !first {
                 out.push('\n');
             }
         }
     }
     Ok(out)
+}
+
+/// Cut `text` to at most `cap` bytes, on a character's boundary; whether
+/// anything was cut.
+fn shorten(text: &mut String, cap: usize) -> bool {
+    if text.len() <= cap {
+        return false;
+    }
+    let mut end = cap;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    true
 }
 
 /// The text of an XML fragment: `breaks` turned into their text, tags
@@ -284,6 +341,15 @@ fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
 struct Zip<'a> {
     bytes: &'a [u8],
     entries: Vec<ZipEntry>,
+    /// Each part's place in `entries`, by name: a workbook of tens of
+    /// thousands of parts is read part by part, and a scan per part would
+    /// take the host minutes.
+    index: std::collections::HashMap<String, usize>,
+    /// What the archive may still unpack to, across every entry read.
+    budget: std::cell::Cell<u64>,
+    /// The budget ran out: an entry was read only in part, and later ones
+    /// not at all.
+    cut: std::cell::Cell<bool>,
 }
 
 struct ZipEntry {
@@ -331,7 +397,25 @@ impl<'a> Zip<'a> {
             });
             at += 46 + name_len + extra_len + comment_len;
         }
-        Ok(Self { bytes, entries })
+        // Office never names a part twice; a zip that does could have one
+        // part read over and over.
+        let mut names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        names.sort_unstable();
+        if names.windows(2).any(|w| w[0] == w[1]) {
+            return Err("a zip that names a part twice".to_string());
+        }
+        let index = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.name.clone(), i))
+            .collect();
+        Ok(Self {
+            bytes,
+            entries,
+            index,
+            budget: std::cell::Cell::new(UNPACK_CAP),
+            cut: std::cell::Cell::new(false),
+        })
     }
 
     fn names(&self) -> impl Iterator<Item = &str> {
@@ -340,9 +424,9 @@ impl<'a> Zip<'a> {
 
     fn text(&self, name: &str) -> Result<String, String> {
         let e = self
-            .entries
-            .iter()
-            .find(|e| e.name == name)
+            .index
+            .get(name)
+            .map(|&i| &self.entries[i])
             .ok_or_else(|| format!("{name} is missing"))?;
         let bad = || format!("{name} is damaged");
         let at = e.offset as usize;
@@ -356,30 +440,43 @@ impl<'a> Zip<'a> {
             .bytes
             .get(start..start + e.compressed as usize)
             .ok_or_else(bad)?;
+        let left = self.budget.get();
         let mut out = Vec::new();
         match e.method {
-            0 => out.extend_from_slice(data),
+            0 => out.extend_from_slice(&data[..data.len().min(left as usize)]),
             8 => {
                 flate2::read::DeflateDecoder::new(data)
-                    .take(UNPACK_CAP)
+                    .take(left)
                     .read_to_end(&mut out)
                     .map_err(|_| bad())?;
             }
             m => return Err(format!("{name} uses zip method {m}")),
         }
+        self.budget.set(left - out.len() as u64);
+        if self.budget.get() == 0 {
+            self.cut.set(true);
+        }
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 }
 
-/// The text a PDF's content streams draw, in stream order. Layout is lost;
-/// a scanned PDF has none.
-fn pdf(bytes: &[u8]) -> Result<String, String> {
+/// The text a PDF's content streams draw, in stream order, and whether
+/// the streams went on past [`UNPACK_CAP`]. Layout is lost; a scanned PDF
+/// has none.
+fn pdf(bytes: &[u8]) -> Result<(String, bool), String> {
     if !bytes.starts_with(b"%PDF") {
         return Err("not a PDF".into());
     }
     let mut out = String::new();
     let mut rest = bytes;
+    // What the streams may still unpack to, all of them together.
+    let mut left = UNPACK_CAP;
+    let mut cut = false;
     while let Some(i) = find(rest, b"stream") {
+        if left == 0 || out.len() > TEXT_CAP {
+            cut = true;
+            break;
+        }
         let dict_start = rest[..i].windows(2).rposition(|w| w == b"<<").unwrap_or(0);
         let dict = String::from_utf8_lossy(&rest[dict_start..i]).into_owned();
         let mut body = i + b"stream".len();
@@ -403,12 +500,13 @@ fn pdf(bytes: &[u8]) -> Result<String, String> {
         }
         let data = if dict.contains("/FlateDecode") {
             let mut v = Vec::new();
-            if flate2::read::ZlibDecoder::new(raw)
-                .take(UNPACK_CAP)
+            let failed = flate2::read::ZlibDecoder::new(raw)
+                .take(left)
                 .read_to_end(&mut v)
-                .is_err()
-                && v.is_empty()
-            {
+                .is_err();
+            left -= v.len() as u64;
+            cut |= left == 0;
+            if failed && v.is_empty() {
                 continue;
             }
             v
@@ -419,14 +517,17 @@ fn pdf(bytes: &[u8]) -> Result<String, String> {
         };
         pdf_ops(&data, &mut out);
     }
-    let text = out.trim().to_string();
+    let mut text = out.trim().to_string();
+    cut |= shorten(&mut text, TEXT_CAP);
     if text.is_empty() {
-        return Err(
+        return Err(if cut {
+            format!("a PDF whose streams unpack to more than {UNPACK_CAP} bytes before any text")
+        } else {
             "a PDF with no text this judge can read (scanned, or its fonts use custom encodings)"
-                .into(),
-        );
+                .into()
+        });
     }
-    Ok(text)
+    Ok((text, cut))
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -606,6 +707,172 @@ pub(crate) mod tests {
             read("budget.xlsx", &book),
             "=== sheet: Budget ===\nA1=Revenue\tB1=4700\nA2=Cost\tB2=n/a\n"
         );
+    }
+
+    /// A document of many parts stops at the unpack limit in total (each
+    /// sheet alone is under it), and gives the text read until then, marked
+    /// as cut, rather than nothing: the judge shows only the start of a
+    /// file anyway. Guards the D7b fix of 859fc713, which made such a
+    /// document unreadable.
+    #[test]
+    fn a_document_of_many_parts_stops_at_the_unpack_limit_in_total() {
+        // Five sheets: a small first one, then four of about 20 MiB that
+        // are mostly room between cells, so the shared unpack budget (not
+        // the text cap) is what stops the reading; each alone is under it.
+        let big = format!(
+            "<row><c r=\"A1\"><v>more</v></c></row>{}",
+            " ".repeat(20 << 20)
+        );
+        let names: Vec<String> = (1..=5)
+            .map(|i| format!("xl/worksheets/sheet{i}.xml"))
+            .collect();
+        let mut files: Vec<(&str, &str)> =
+            names.iter().map(|n| (n.as_str(), big.as_str())).collect();
+        let first = "<row><c r=\"A1\"><v>Total 4.7</v></c></row>";
+        files[0].1 = first;
+        match to_text("bomb.xlsx", &zip(&files)) {
+            Text::Read { text, cut, .. } => {
+                assert!(cut);
+                assert!(
+                    text.starts_with("=== sheet: sheet 1 ===\nA1=Total 4.7\n"),
+                    "{}",
+                    &text[..80]
+                );
+                // Far under the text cap: the shared budget cut it, part way
+                // into the fifth sheet (a budget per part never would).
+                assert!(text.len() < 1000, "{text}");
+            }
+            Text::Unreadable(why) => panic!("{why}"),
+        }
+        // No text before the limit: nothing to show.
+        let big = format!("<w:document>{}</w:document>", " ".repeat(70 << 20));
+        match to_text("blank.docx", &zip(&[("word/document.xml", big.as_str())])) {
+            Text::Unreadable(why) => assert!(why.contains("before any text"), "{why}"),
+            Text::Read { text, .. } => panic!("read {} bytes", text.len()),
+        }
+        // A sheet numbered 0 is a sheet without a name, not a panic.
+        let book = zip(&[(
+            "xl/worksheets/sheet0.xml",
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+        )]);
+        assert_eq!(read("zero.xlsx", &book), "=== sheet: sheet 0 ===\nA1=1\n");
+    }
+
+    /// A small spreadsheet whose many cells all name one long shared string
+    /// unpacks to little but would expand to gigabytes of text, one copy
+    /// per cell; the text stops at its cap instead. Guards the D7b fix of
+    /// FIX-REVIEW-B 2 (859fc713 capped only what the zip unpacks to).
+    #[test]
+    fn shared_strings_named_by_many_cells_stop_at_the_text_cap() {
+        let shared = format!("<sst><si><t>{}</t></si></sst>", "S".repeat(1 << 20));
+        let cells: String = (0..50_000)
+            .map(|i| format!("<c r=\"A{i}\" t=\"s\"><v>0</v></c>"))
+            .collect();
+        let sheet =
+            format!("<worksheet><sheetData><row r=\"1\">{cells}</row></sheetData></worksheet>");
+        let book = zip(&[
+            ("xl/sharedStrings.xml", shared.as_str()),
+            ("xl/worksheets/sheet1.xml", sheet.as_str()),
+        ]);
+        assert!(book.len() < 4 << 20, "{}", book.len());
+        match to_text("wide.xlsx", &book) {
+            Text::Read { text, cut, .. } => {
+                assert!(cut);
+                assert!(text.len() <= TEXT_CAP, "{}", text.len());
+                assert!(text.starts_with("=== sheet: sheet 1 ===\nA0=SSS"));
+            }
+            Text::Unreadable(why) => panic!("{why}"),
+        }
+    }
+
+    /// A workbook that names one empty sheet part many times, each with a
+    /// long title, spends nothing of the unpack budget but would repeat the
+    /// title without bound: the titles count against the text cap, and a
+    /// zip that names a part twice is refused. Guards the D7b fix of
+    /// REVIEW-CORRECT H1 on 37687b73.
+    #[test]
+    fn sheet_titles_count_and_a_part_named_twice_is_refused() {
+        let title = "T".repeat(300_000);
+        let workbook: String = (1..=8)
+            .map(|i| format!("<sheet name=\"{title}\" sheetId=\"{i}\"/>"))
+            .collect();
+        let workbook = format!("<workbook><sheets>{workbook}</sheets></workbook>");
+        let names: Vec<String> = (1..=8)
+            .map(|i| format!("xl/worksheets/sheet{i}.xml"))
+            .collect();
+        let mut files: Vec<(&str, &str)> = vec![("xl/workbook.xml", workbook.as_str())];
+        files.extend(names.iter().map(|n| (n.as_str(), "")));
+        match to_text("titles.xlsx", &zip(&files)) {
+            Text::Read { text, cut, .. } => {
+                assert!(cut);
+                assert!(text.len() <= TEXT_CAP, "{}", text.len());
+            }
+            Text::Unreadable(why) => panic!("{why}"),
+        }
+        let twice = zip(&[
+            (
+                "xl/worksheets/sheet1.xml",
+                "<row><c r=\"A1\"><v>1</v></c></row>",
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                "<row><c r=\"A1\"><v>1</v></c></row>",
+            ),
+        ]);
+        match to_text("twice.xlsx", &twice) {
+            Text::Unreadable(why) => assert!(why.contains("names a part twice"), "{why}"),
+            Text::Read { text, .. } => panic!("read {text}"),
+        }
+    }
+
+    /// A workbook of 60,000 empty sheet parts is read quickly: each part is
+    /// found by name, not by a scan of all of them (about 1.8 billion name
+    /// comparisons before; on the machine this was written on, 0.2 s in a
+    /// debug build against 4.3 s for the scan). Guards the D7c fix of
+    /// REVIEW-SECURITY 1.
+    #[test]
+    fn a_workbook_of_very_many_parts_is_read_quickly() {
+        let names: Vec<String> = (1..=60_000)
+            // One length for every name, so no comparison ends early.
+            .map(|i| format!("xl/worksheets/sheet{i:05}.xml"))
+            .collect();
+        let files: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "")).collect();
+        let book = zip(&files);
+        let started = std::time::Instant::now();
+        let _ = to_text("many.xlsx", &book);
+        let took = started.elapsed();
+        eprintln!("read 60,000 parts in {took:?}");
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    }
+
+    /// A PDF whose streams together unpack past the limit gives the text of
+    /// the streams read before it, marked as cut.
+    #[test]
+    fn a_pdf_past_the_unpack_limit_gives_the_text_before_it() {
+        let deflated = |body: &[u8]| {
+            let mut enc =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            enc.write_all(body).unwrap();
+            enc.finish().unwrap()
+        };
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut stream = |body: &[u8]| {
+            pdf.extend_from_slice(b"1 0 obj << /Filter /FlateDecode >>\nstream\n");
+            pdf.extend_from_slice(&deflated(body));
+            pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        };
+        stream(b"BT (Total: 4.7 billion) Tj ET");
+        let filler = vec![b' '; 40 << 20];
+        stream(&filler);
+        stream(&filler);
+        stream(b"BT (never read) Tj ET");
+        match to_text("r.pdf", &pdf) {
+            Text::Read { text, cut, .. } => {
+                assert!(cut);
+                assert_eq!(text, "Total: 4.7 billion");
+            }
+            Text::Unreadable(why) => panic!("{why}"),
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //!   the image's `WORKDIR` (root's home when there is none). Commands of one
 //!   session run one after another, so every command gets its own session.
 //!   A bare `exit` would end the session's bash, so every command is wrapped
-//!   in `sh -c`.
+//!   in `/bin/sh -c`. The session's `PATH` is the image's.
 //! - A command's stdin, stdout and stderr are FIFOs, not a terminal: no echo
 //!   and no line editing. `POST .../input` writes to stdin; with
 //!   `suppressInputEcho` the input is not copied into the output log.
@@ -23,8 +23,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::api::{Api, ApiError, Retry};
+use super::build::IMAGE_ENV_DIR;
 use super::types::{CommandDto, LogsDto, SessionExec, SessionExecAnswer};
-use crate::shell::{as_user, login_free_shell, quote};
+use crate::shell::{
+    SYSTEM_PATH, as_user_in, command_shell_in, keep_path, quote, stash_loader_vars, unset_vars,
+};
 use crate::{EXEC_ID_ENV, SandboxError};
 
 /// Root-only folder for env files and transfer archives.
@@ -340,6 +343,17 @@ pub(crate) enum Stdin {
 /// staged env file (then delete it), change folder, then run the command
 /// under `setsid`, as `user` when that is not root.
 ///
+/// Daytona's session shell runs every line as root with the container's
+/// `PATH` and loader variables. On an image BenchFlow built these are the
+/// system folders and empty ([`IMAGE_ENV_DIR`]); on another image the
+/// `PATH` may start with a folder the agent user can write and the loader
+/// variables may name files there. So the line names `/bin/sh` by its path,
+/// the wrapper finds its own programs (`setsid`, `mkdir`, `cat`, `rm`) in
+/// the system folders only and runs them without the loader variables
+/// ([`stash_loader_vars`]), and the command gets the image's `PATH` and
+/// loader variables back as it starts (the env file's win; see
+/// [`restore_image_env`] and [`keep_path`]).
+///
 /// Daytona reports a command's exit code only once its stdout closes, so a
 /// command that leaves a background process holding stdout (`server &`)
 /// would never finish. A command run to completion ([`Stdin::Null`])
@@ -348,45 +362,130 @@ pub(crate) enum Stdin {
 /// Only the command carries the exec id, so a timeout kills it and leaves the
 /// wrapper to print what it wrote. A spawned command ([`Stdin::Pipe`])
 /// streams its output and is not wrapped this way.
-pub(crate) fn wrap(
-    command: &str,
-    exec_id: &str,
-    env_file: Option<&str>,
-    cwd: Option<&str>,
-    user: Option<&str>,
-    stdin: Stdin,
-) -> String {
-    wrap_in(STAGING, command, exec_id, env_file, cwd, user, stdin)
+pub(crate) fn wrap(w: &Wrap) -> String {
+    wrap_in(STAGING, SYSTEM_PATH, IMAGE_ENV_DIR, w)
 }
 
-/// [`wrap`], with the output files in `staging`.
-fn wrap_in(
-    staging: &str,
-    command: &str,
-    exec_id: &str,
-    env_file: Option<&str>,
-    cwd: Option<&str>,
-    user: Option<&str>,
-    stdin: Stdin,
-) -> String {
+/// Shell that gives the command the image's own `PATH` and loader variables
+/// for any it does not already have, read from [`IMAGE_ENV_DIR`] (one file
+/// per name; present only on an image BenchFlow built, and only for a
+/// variable the image set). "Does not have" means empty or unset: the
+/// container's `PATH` is the system folders and its loader variables empty,
+/// so empty means the env file set nothing. Runs with builtins only (`read`,
+/// `export`), no `PATH` needed.
+fn restore_image_env(dir: &str) -> String {
+    let names: Vec<&str> = std::iter::once("PATH")
+        .chain(crate::shell::LOADER_VARS.iter().copied())
+        .collect();
+    // Restore only variables the env file left unset (tested by presence,
+    // `${v+x}`): a value the task set empty on purpose stays empty. The
+    // value is read with the `read` builtin (no program, since `PATH` may
+    // not be set yet); a recorded value with a newline keeps its first line
+    // only, which `PATH` and the loader variables never have.
+    let tmpl = r#"for bf_v in @NAMES@; do eval "bf_set=\${$bf_v+x}"; if [ -z "$bf_set" ] && [ -r @DIR@/$bf_v ]; then IFS= read -r bf_lv < @DIR@/$bf_v; export "$bf_v=$bf_lv"; fi; done"#;
+    tmpl.replace("@NAMES@", &names.join(" "))
+        .replace("@DIR@", &quote(dir))
+}
+
+/// One command for [`wrap`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Wrap<'a> {
+    pub command: &'a str,
+    /// Tags the command's processes ([`EXEC_ID_ENV`]).
+    pub exec_id: &'a str,
+    /// The staged env file to load, then delete.
+    pub env_file: Option<&'a str>,
+    pub cwd: Option<&'a str>,
+    /// Who runs the command; root when `None`.
+    pub user: Option<&'a str>,
+    pub stdin: Stdin,
+    /// Variables the command runs without ([`crate::Exec::unset`]).
+    pub unset: &'a [String],
+}
+
+impl<'a> Wrap<'a> {
+    pub(crate) fn new(command: &'a str, exec_id: &'a str, stdin: Stdin) -> Self {
+        Self {
+            command,
+            exec_id,
+            env_file: None,
+            cwd: None,
+            user: None,
+            stdin,
+            unset: &[],
+        }
+    }
+}
+
+/// [`wrap`], with the output files in `staging`, the wrapper's own
+/// programs looked up in `sys`, and the image's env read from
+/// `image_env_dir`.
+fn wrap_in(staging: &str, sys: &str, image_env_dir: &str, w: &Wrap) -> String {
+    let Wrap {
+        command,
+        exec_id,
+        env_file,
+        cwd,
+        user,
+        stdin,
+        unset,
+    } = *w;
     let inner = match user.filter(|u| !is_root(u)) {
-        Some(user) => as_user(user, command),
-        None => login_free_shell(command),
+        Some(user) => as_user_in(sys, user, command, unset),
+        None => command_shell_in(sys, command, unset),
     };
+    let stash = stash_loader_vars();
     let mut script = format!("export {EXEC_ID_ENV}={}\n", quote(exec_id));
+    // The session's `PATH`, kept for the fallback below; then unset, so the
+    // env file and the image record can be told to have set one or not.
+    script.push_str(&format!("bf_sp=${{PATH-{}}}; unset PATH\n", quote(sys)));
+    // Clear the container's loader variables (the image layer sets the
+    // file-naming ones empty) before the env file runs, so afterwards a
+    // loader variable is set only if the env file set it. Non-empty values
+    // (none, on a BenchFlow-built image) are kept in `BF_KEEP_*`.
+    script.push_str(&stash);
+    script.push('\n');
     if let Some(file) = env_file {
         let f = quote(file);
+        // Loading the file runs only `export`, a builtin.
         script.push_str(&format!(
-            "if ! . {f}; then rm -f {f}; echo 'benchflow: could not load the command environment' >&2; exit 126; fi\nrm -f {f}\n"
+            "if ! . {f}; then PATH={s}; rm -f {f}; echo 'benchflow: could not load the command environment' >&2; exit 126; fi\n",
+            s = quote(sys)
         ));
+    }
+    // A BenchFlow-built image keeps its real `PATH` and loader variables in
+    // a file each (see [`IMAGE_ENV_DIR`]). For any the env file did not set
+    // (tested by presence, so a value the task set empty on purpose is
+    // kept), take the image's, so the command runs as it would have on the
+    // image.
+    script.push_str(&restore_image_env(image_env_dir));
+    script.push('\n');
+    // A command that still has no `PATH` (an image BenchFlow did not build,
+    // whose `PATH` the session carries) gets the session's.
+    script.push_str("if [ -z \"${PATH-}\" ]; then PATH=$bf_sp; fi; export PATH\n");
+    // Stash again: the env file and the image record just set the command's
+    // loader variables into the live environment, and the wrapper's own
+    // programs must not get them. `command_body` and the user switch put
+    // them back for the command.
+    script.push_str(&stash);
+    script.push('\n');
+    script.push_str(&keep_path(sys));
+    script.push('\n');
+    if let Some(file) = env_file {
+        script.push_str(&format!("rm -f {}\n", quote(file)));
     }
     if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
         script.push_str(&format!("cd {} || exit 126\n", quote(dir)));
     }
-    let i = quote(&inner);
-    let run = format!(
-        "if command -v setsid >/dev/null 2>&1; then exec setsid sh -c {i}; else exec sh -c {i}; fi"
+    script.push_str(
+        "bf_setsid=$(command -v setsid 2>/dev/null)\ncase \"$bf_setsid\" in /*) ;; *) bf_setsid=;; esac\n",
     );
+    let i = quote(&inner);
+    // Runs in a subshell, so the wrapper keeps the system `PATH`. `$bf_setsid`
+    // is a `setsid` path or empty, named once so the command script is not
+    // copied (unquoted on purpose: a path has no spaces, and empty must
+    // vanish). An absolute `/bin/sh` runs the script.
+    let run = format!("PATH=$bf_path; exec $bf_setsid /bin/sh -c {i} sh");
     match stdin {
         // The wrapper waits for the command instead of becoming it, so a
         // kill leaves the wrapper to exit with the command's code: Daytona's
@@ -415,7 +514,15 @@ fn wrap_in(
             ));
         }
     }
-    let mut line = format!("sh -c {}", quote(&script));
+    // The session's shell runs this line, as root, with the image's
+    // environment: the variables the command runs without go first, then
+    // the loader variables are stashed, so no root program the wrapper
+    // starts loads or reads what they name.
+    let mut line = format!(
+        "{}{stash}/bin/sh -c {} sh",
+        unset_vars(unset),
+        quote(&script)
+    );
     if stdin == Stdin::Null {
         line.push_str(" </dev/null");
     }
@@ -429,6 +536,33 @@ pub(crate) fn is_root(user: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder that is not there: a sandbox whose image BenchFlow did not
+    /// build, with no env recorded.
+    const NO_IMAGE_ENV: &str = "/nonexistent/benchflow/image-env";
+
+    /// The line for `command` (exec id `x`), with the output files in
+    /// `staging` and the real system folders.
+    fn line_in(
+        staging: &str,
+        command: &str,
+        env_file: Option<&str>,
+        cwd: Option<&str>,
+        user: Option<&str>,
+        stdin: Stdin,
+    ) -> String {
+        wrap_in(
+            staging,
+            SYSTEM_PATH,
+            NO_IMAGE_ENV,
+            &Wrap {
+                env_file,
+                cwd,
+                user,
+                ..Wrap::new(command, "x", stdin)
+            },
+        )
+    }
 
     fn run(line: &str) -> (i32, String, String) {
         let out = std::process::Command::new("sh")
@@ -450,12 +584,17 @@ mod tests {
         std::fs::write(&env_file, "export GREETING='hello world'\n").unwrap();
         let line = wrap_in(
             dir.path().to_str().unwrap(),
-            "echo \"$GREETING from $(pwd)\"; echo id=$BENCHFLOW_EXEC_ID; exit 7",
-            "abc123",
-            Some(env_file.to_str().unwrap()),
-            Some(dir.path().to_str().unwrap()),
-            None,
-            Stdin::Null,
+            SYSTEM_PATH,
+            NO_IMAGE_ENV,
+            &Wrap {
+                env_file: env_file.to_str(),
+                cwd: dir.path().to_str(),
+                ..Wrap::new(
+                    "echo \"$GREETING from $(pwd)\"; echo id=$BENCHFLOW_EXEC_ID; exit 7",
+                    "abc123",
+                    Stdin::Null,
+                )
+            },
         );
         let (code, out, _) = run(&line);
         assert_eq!(code, 7);
@@ -471,14 +610,10 @@ mod tests {
 
     #[test]
     fn a_missing_folder_fails_with_126() {
-        let line = wrap(
-            "echo never",
-            "x",
-            None,
-            Some("/no/such/folder"),
-            None,
-            Stdin::Null,
-        );
+        let line = wrap(&Wrap {
+            cwd: Some("/no/such/folder"),
+            ..Wrap::new("echo never", "x", Stdin::Null)
+        });
         let (code, out, err) = run(&line);
         assert_eq!(code, 126);
         assert!(out.is_empty());
@@ -488,10 +623,9 @@ mod tests {
     #[test]
     fn stdin_is_closed_unless_piped() {
         let staging = tempfile::tempdir().unwrap();
-        let line = wrap_in(
+        let line = line_in(
             staging.path().to_str().unwrap(),
             "cat; echo done",
-            "x",
             None,
             None,
             None,
@@ -499,7 +633,7 @@ mod tests {
         );
         let (code, out, _) = run(&line);
         assert_eq!((code, out.as_str()), (0, "done\n"));
-        assert!(!wrap("cat", "x", None, None, None, Stdin::Pipe).ends_with("</dev/null"));
+        assert!(!wrap(&Wrap::new("cat", "x", Stdin::Pipe)).ends_with("</dev/null"));
     }
 
     /// Daytona reports an exit code only once stdout closes, so a command
@@ -509,10 +643,9 @@ mod tests {
     #[test]
     fn a_background_child_does_not_hold_the_command_open() {
         let staging = tempfile::tempdir().unwrap();
-        let line = wrap_in(
+        let line = line_in(
             staging.path().to_str().unwrap(),
             "(sleep 20 &); echo out; echo err >&2; exit 3",
-            "x",
             None,
             None,
             None,
@@ -528,7 +661,7 @@ mod tests {
         let left: Vec<_> = std::fs::read_dir(staging.path()).unwrap().collect();
         assert!(left.is_empty(), "the output files are removed");
         // A spawned command streams its output instead.
-        let piped = wrap_in("/s", "true", "x", None, None, None, Stdin::Pipe);
+        let piped = line_in("/s", "true", None, None, None, Stdin::Pipe);
         assert!(!piped.contains("/s/out-x"), "{piped}");
     }
 
@@ -539,10 +672,9 @@ mod tests {
     fn a_killed_command_leaves_no_notice_in_its_output() {
         let staging = tempfile::tempdir().unwrap();
         for stdin in [Stdin::Pipe, Stdin::Null] {
-            let line = wrap_in(
+            let line = line_in(
                 staging.path().to_str().unwrap(),
                 "echo before >&2; kill -9 $$",
-                "x",
                 None,
                 None,
                 None,
@@ -562,9 +694,444 @@ mod tests {
         }
     }
 
+    /// Daytona's session shell runs the line as root with the image's
+    /// `PATH`. With a folder the agent can write first on it, nothing the
+    /// wrapper runs (the shells, `setsid`, `mkdir`, `cat`, `rm`, and for a
+    /// user `id`, `awk`, `grep`, `setpriv` or `su`) may come from there,
+    /// and the command still gets the `PATH` it would have had.
+    #[test]
+    fn the_wrapper_finds_no_program_through_the_sessions_path() {
+        let m = crate::shell::markers::Markers::new();
+        let staging = tempfile::tempdir().unwrap();
+        let st = staging.path().to_str().unwrap();
+        let print = r#"printf %s "$PATH""#;
+        // A root command with the session's PATH, run to completion and
+        // spawned.
+        for stdin in [Stdin::Null, Stdin::Pipe] {
+            let line = line_in(st, print, None, Some("/"), None, stdin);
+            let (code, out, err) = m.sh(&line);
+            assert_eq!(code, 0, "{stdin:?}: {err}");
+            assert_eq!(out, m.path(), "{stdin:?}");
+        }
+        // A root command whose env file sets `PATH`: the file is loaded
+        // after the wrapper started, and its `PATH` is the command's alone.
+        let env_file = staging.path().join("env-x");
+        let given = format!("{}:/usr/bin:/bin", m.bin());
+        std::fs::write(&env_file, format!("export PATH={}; ", quote(&given))).unwrap();
+        let line = line_in(st, print, env_file.to_str(), None, None, Stdin::Null);
+        let (code, out, err) = m.sh(&line);
+        assert_eq!((code, out.as_str()), (0, given.as_str()), "{err}");
+        assert!(!env_file.exists());
+        // A user's command. No one has this uid, so the switch fails on this
+        // host (or, run as root, runs `true` as that uid); what matters is
+        // which programs root looked up on the way.
+        let line = line_in(st, "true", None, None, Some("4242424"), Stdin::Null);
+        let _ = m.sh(&line);
+        assert!(m.ran().is_empty(), "{:?}", m.ran());
+    }
+
+    /// Daytona's session shell carries the image's environment, and the
+    /// env file may add to it. The wrapper's own root programs (`setsid`,
+    /// `mkdir`, `cat`, `rm`, and for a user `id`, `awk`, `grep`, `setpriv`)
+    /// start without the loader variables either sets; the command's shell
+    /// gets them back (and reads `BASH_ENV`, as a plain `bash -c` would),
+    /// unless the command runs without them (`unset`).
+    #[test]
+    fn the_wrappers_root_programs_start_without_loader_variables() {
+        use crate::shell::recorders::{PRINT_LOADER_VARS, Recorders, loader_env};
+        let m = crate::shell::markers::Markers::new();
+        let staging = tempfile::tempdir().unwrap();
+        let st = staging.path().to_str().unwrap();
+        let all: Vec<String> = crate::shell::LOADER_VARS
+            .iter()
+            .map(|v| v.to_string())
+            .collect();
+        for user in [None, Some("nobody")] {
+            for stdin in [Stdin::Null, Stdin::Pipe] {
+                for (unset, with_file) in [
+                    (&[][..], true),
+                    (&[][..], false),
+                    (&all[..], true),
+                    (&all[..], false),
+                ] {
+                    let case = format!(
+                        "{user:?} {stdin:?} unset={} env file={with_file}",
+                        unset.len()
+                    );
+                    let r = Recorders::new();
+                    let env = loader_env(&r.read_file());
+                    let env: Vec<(&str, &str)> =
+                        env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                    let env_file = staging.path().join("env-x");
+                    std::fs::write(&env_file, "export LD_LIBRARY_PATH=/nonexistent-env-file; ")
+                        .unwrap();
+                    let line = wrap_in(
+                        st,
+                        &r.sys(),
+                        NO_IMAGE_ENV,
+                        &Wrap {
+                            env_file: env_file.to_str().filter(|_| with_file),
+                            user,
+                            unset,
+                            ..Wrap::new(PRINT_LOADER_VARS, "x", stdin)
+                        },
+                    );
+                    let (code, out, err) = m.sh_env(&line, &env);
+                    assert_eq!(code, 0, "{case}: {err}");
+                    let ran = r.ran();
+                    let (shell, plumbing): (Vec<_>, Vec<_>) =
+                        ran.iter().partition(|l| l.starts_with("bash"));
+                    // No loader or start-up variable reaches any program on
+                    // the way; the command's shell puts them back itself.
+                    assert!(
+                        plumbing.iter().all(|l| !l.contains(' ')),
+                        "{case}: a program on the way saw a loader variable: {ran:?}"
+                    );
+                    let mut steps = vec!["setsid"];
+                    if stdin == Stdin::Null {
+                        steps.extend(["mkdir", "cat", "rm"]);
+                    }
+                    if user.is_some() {
+                        steps.extend(["id", "awk", "grep", "setpriv"]);
+                    }
+                    for step in steps {
+                        assert!(
+                            plumbing.iter().any(|l| l.split(' ').next() == Some(step)),
+                            "{case}: no {step}: {ran:?}"
+                        );
+                    }
+                    assert_eq!(shell.len(), 1, "{case}: {ran:?}");
+                    let read = r.read_file();
+                    if unset.is_empty() {
+                        let lib = if with_file {
+                            "/nonexistent-env-file"
+                        } else {
+                            "/nonexistent-bf-lib"
+                        };
+                        // The command sees the loader variables and the
+                        // start-up files; its shell, which starts with none,
+                        // sources BASH_ENV once after the loader variables
+                        // are back.
+                        assert_eq!(out, format!("[ ][{lib}][{read}][{read}]"), "{case}");
+                        assert_eq!(shell[0], "bash", "{case}");
+                        assert_eq!(r.reads(), 1, "{case}");
+                    } else {
+                        // The command drops them all, start-up files too.
+                        assert_eq!(out, "[unset][unset][unset][unset]", "{case}");
+                        assert_eq!(shell[0], "bash", "{case}");
+                        assert_eq!(r.reads(), 0, "{case}");
+                    }
+                }
+            }
+        }
+        assert!(m.ran().is_empty(), "{:?}", m.ran());
+    }
+
+    /// On Linux an `LD_PRELOAD` naming a missing file makes the loader
+    /// complain once in every process it starts, so the complaints count
+    /// the processes that loaded with it, `/bin/sh` included. The outer
+    /// shell (standing in for Daytona's session shell, which BenchFlow
+    /// neutralizes on its own images) loads it; after that only a program
+    /// the command `exec`s does, and nothing the wrapper itself runs, none
+    /// with `unset`, and none for the kill.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_linux_only_the_commands_shell_loads_the_images_ld_preload() {
+        let staging = tempfile::tempdir().unwrap();
+        let st = staging.path().to_str().unwrap();
+        let preload = "/nonexistent-bf-preload.so";
+        let all: Vec<String> = crate::shell::LOADER_VARS
+            .iter()
+            .map(|v| v.to_string())
+            .collect();
+        let count = |line: &str| {
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(line)
+                .env("LD_PRELOAD", preload)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stderr)
+                .matches(preload)
+                .count()
+        };
+        for stdin in [Stdin::Null, Stdin::Pipe] {
+            // `exec true` so the command's shell replaces itself with a
+            // program that loads the image's LD_PRELOAD (the shell itself
+            // starts clean and restores it first); with `unset` that program
+            // starts without it.
+            let plain = wrap_in(
+                st,
+                SYSTEM_PATH,
+                NO_IMAGE_ENV,
+                &Wrap::new("exec true", "x", stdin),
+            );
+            assert_eq!(count(&plain), 2, "{stdin:?}");
+            let clean = wrap_in(
+                st,
+                SYSTEM_PATH,
+                NO_IMAGE_ENV,
+                &Wrap {
+                    unset: &all,
+                    ..Wrap::new("exec true", "x", stdin)
+                },
+            );
+            assert_eq!(count(&clean), 1, "{stdin:?}");
+        }
+        assert_eq!(count(&super::super::exec::kill_line("no-such-exec")), 1);
+        // The control: the line as 35524763 wrote it, `sh -c` with no
+        // stash, loads it in every process on the way.
+        assert!(count("sh -c 'setsid sh -c \"bash -c true\"'") >= 4);
+    }
+
+    /// On an image BenchFlow built, the session (Daytona's daemon) has the
+    /// system folders as its `PATH`, and the image's own is recorded in a
+    /// file. A command that sets no `PATH` gets the recorded one, one whose
+    /// env file sets it keeps its own, and the wrapper itself still finds
+    /// nothing through either.
+    #[test]
+    fn a_command_gets_the_images_recorded_path_back() {
+        let m = crate::shell::markers::Markers::new();
+        let staging = tempfile::tempdir().unwrap();
+        let st = staging.path().to_str().unwrap();
+        // The image-env folder: PATH and BASH_ENV recorded, one file each.
+        let dir = staging.path().join("image-env");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("PATH"), m.path()).unwrap();
+        std::fs::write(dir.join("BASH_ENV"), "/app/.venv/env.sh").unwrap();
+        let d = dir.to_str().unwrap();
+        let print = r#"printf '%s|%s' "$PATH" "${BASH_ENV-}""#;
+        let run = |line: &str| {
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(line)
+                .env("PATH", SYSTEM_PATH)
+                .env("BASH_ENV", "") // the container neutralized it
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            (
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+            )
+        };
+        // A command that sets nothing: it gets the image's PATH and BASH_ENV.
+        for user in [None, Some("4242424")] {
+            for stdin in [Stdin::Null, Stdin::Pipe] {
+                let line = wrap_in(
+                    st,
+                    SYSTEM_PATH,
+                    d,
+                    &Wrap {
+                        user,
+                        ..Wrap::new(print, "x", stdin)
+                    },
+                );
+                let (code, out) = run(&line);
+                if user.is_none() {
+                    assert_eq!(
+                        (code, out.as_str()),
+                        (0, format!("{}|/app/.venv/env.sh", m.path()).as_str()),
+                        "{stdin:?}"
+                    );
+                }
+            }
+        }
+        // An env file that sets PATH keeps its own; BASH_ENV it left unset
+        // still comes from the image.
+        let env_file = staging.path().join("env-x");
+        std::fs::write(&env_file, "export PATH=/usr/bin:/bin; ").unwrap();
+        let line = wrap_in(
+            st,
+            SYSTEM_PATH,
+            d,
+            &Wrap {
+                env_file: env_file.to_str(),
+                ..Wrap::new(print, "x", Stdin::Null)
+            },
+        );
+        assert_eq!(
+            run(&line),
+            (0, "/usr/bin:/bin|/app/.venv/env.sh".to_string())
+        );
+        // No folder (an image BenchFlow did not build): the session's PATH,
+        // and the session's BASH_ENV (here the neutralized empty).
+        let line = wrap_in(
+            st,
+            SYSTEM_PATH,
+            NO_IMAGE_ENV,
+            &Wrap::new(print, "x", Stdin::Null),
+        );
+        assert_eq!(run(&line), (0, format!("{SYSTEM_PATH}|")));
+        assert!(m.ran().is_empty(), "{:?}", m.ran());
+    }
+
+    /// The whole session line names a command once, however deep it nests
+    /// (root, a user, each stdin mode): a long command no longer overflows
+    /// the argument (D2 found it pasted a dozen times).
+    #[test]
+    fn the_session_line_names_the_command_once() {
+        let marker = "BF_UNIQUE_COMMAND_MARKER";
+        for user in [None, Some("agent")] {
+            for stdin in [Stdin::Null, Stdin::Pipe] {
+                let line = wrap(&Wrap {
+                    user,
+                    ..Wrap::new(marker, "x", stdin)
+                });
+                assert_eq!(line.matches(marker).count(), 1, "{user:?} {stdin:?}");
+            }
+        }
+    }
+
+    /// Run `line` as Daytona's session shell does on an image BenchFlow
+    /// built: `PATH` the system folders, the file-naming loader variables
+    /// and start-up files empty (the layer's `ENV`), nothing else.
+    fn layer_session(line: &str) -> (i32, String, String) {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(line)
+            .env_clear()
+            .env("PATH", SYSTEM_PATH)
+            .env("HOME", "/root")
+            .stdin(std::process::Stdio::null());
+        for v in crate::shell::FILE_LOADER_VARS
+            .iter()
+            .chain(crate::shell::STARTUP_VARS)
+        {
+            cmd.env(v, "");
+        }
+        let out = cmd.output().unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// A stand-in for the image record, one file per variable.
+    fn image_record(dir: &std::path::Path, vars: &[(&str, &str)]) -> String {
+        let d = dir.join("image-env");
+        std::fs::create_dir_all(&d).unwrap();
+        for (k, v) in vars {
+            std::fs::write(d.join(k), v).unwrap();
+        }
+        d.to_str().unwrap().to_string()
+    }
+
+    /// An image whose `ENV` sets `LD_LIBRARY_PATH` (a CUDA base) and whose
+    /// `BASH_ENV` setup file prepends to it: the command sees the setup
+    /// file's value, as with Docker and a plain `bash -c`, as root and as a
+    /// user. Before this, the loader variables came back after the setup
+    /// file ran and reset it to the image's value.
+    #[test]
+    fn a_bash_env_change_to_an_image_loader_variable_survives() {
+        let r = crate::shell::recorders::Recorders::new();
+        let dir = tempfile::tempdir().unwrap();
+        let setup = dir.path().join("setup.sh");
+        std::fs::write(
+            &setup,
+            "export LD_LIBRARY_PATH=/opt/conda/envs/x/lib:$LD_LIBRARY_PATH\n",
+        )
+        .unwrap();
+        let record = image_record(
+            dir.path(),
+            &[
+                ("PATH", SYSTEM_PATH),
+                ("LD_LIBRARY_PATH", "/usr/local/nvidia/lib64"),
+                ("BASH_ENV", setup.to_str().unwrap()),
+            ],
+        );
+        let want = "/opt/conda/envs/x/lib:/usr/local/nvidia/lib64";
+        for user in [None, Some("nobody")] {
+            let line = wrap_in(
+                dir.path().to_str().unwrap(),
+                &r.sys(),
+                &record,
+                &Wrap {
+                    user,
+                    ..Wrap::new(r#"printf %s "$LD_LIBRARY_PATH""#, "x", Stdin::Null)
+                },
+            );
+            let (code, out, err) = layer_session(&line);
+            assert_eq!(code, 0, "{user:?}: {err}");
+            assert_eq!(out, want, "{user:?}");
+        }
+        // The Docker path, where the image's environment reaches the shell
+        // directly, gives the same.
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(crate::shell::command_shell(
+                r#"printf %s "$LD_LIBRARY_PATH""#,
+                &[],
+            ))
+            .env_clear()
+            .env("PATH", SYSTEM_PATH)
+            .env("LD_LIBRARY_PATH", "/usr/local/nvidia/lib64")
+            .env("BASH_ENV", &setup)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want);
+    }
+
+    /// On the layer's environment, a command sees exactly the loader and
+    /// start-up variables the image recorded (here only `BASH_ENV`), tested
+    /// by presence: none of the layer's empties come back, as root and as a
+    /// user, with and without an env file.
+    #[test]
+    fn a_command_sees_only_the_recorded_loader_variables() {
+        let r = crate::shell::recorders::Recorders::new();
+        let dir = tempfile::tempdir().unwrap();
+        let noop = dir.path().join("noop.sh");
+        std::fs::write(&noop, ":\n").unwrap();
+        let record = image_record(
+            dir.path(),
+            &[("PATH", SYSTEM_PATH), ("BASH_ENV", noop.to_str().unwrap())],
+        );
+        let names = crate::shell::LOADER_VARS.join(" ");
+        let print = format!(
+            r#"for v in {names}; do eval "[ -n \"\${{$v+x}}\" ]" && printf '%s ' "$v"; done; true"#
+        );
+        let env_file = dir.path().join("env-x");
+        for user in [None, Some("nobody")] {
+            for with_file in [false, true] {
+                std::fs::write(&env_file, "export BF_TEST_OTHER=1; ").unwrap();
+                let line = wrap_in(
+                    dir.path().to_str().unwrap(),
+                    &r.sys(),
+                    &record,
+                    &Wrap {
+                        user,
+                        env_file: env_file.to_str().filter(|_| with_file),
+                        ..Wrap::new(&print, "x", Stdin::Null)
+                    },
+                );
+                let (code, out, err) = layer_session(&line);
+                assert_eq!(code, 0, "{user:?} {with_file}: {err}");
+                assert_eq!(out, "BASH_ENV ", "{user:?} env file={with_file}");
+            }
+        }
+    }
+
+    /// The kill's session line names `/bin/sh` by its path too.
+    #[test]
+    fn the_kill_line_finds_no_program_through_the_sessions_path() {
+        let m = crate::shell::markers::Markers::new();
+        let line = super::super::exec::kill_line("no-such-exec");
+        let (code, _, err) = m.sh(&line);
+        assert_eq!(code, 0, "{err}");
+        assert!(m.ran().is_empty(), "{:?}", m.ran());
+    }
+
     #[test]
     fn root_needs_no_privilege_drop() {
-        assert!(!wrap("id", "x", None, None, Some("root"), Stdin::Null).contains("setpriv"));
-        assert!(wrap("id", "x", None, None, Some("agent"), Stdin::Null).contains("setpriv"));
+        let as_user = |user| {
+            wrap(&Wrap {
+                user: Some(user),
+                ..Wrap::new("id", "x", Stdin::Null)
+            })
+        };
+        assert!(!as_user("root").contains("setpriv"));
+        assert!(as_user("agent").contains("setpriv"));
     }
 }

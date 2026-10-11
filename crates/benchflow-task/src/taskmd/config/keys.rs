@@ -75,11 +75,12 @@ pub(super) fn top_level(c: &mut Checker<'_>) {
 
 /// The help for a Harbor spelling: the reference checker's message names
 /// task-md's converter, which bench users may not have.
-const HARBOR_HELP: &str = "`bench import <folder>` converts a whole Harbor task into task.md";
+const HARBOR_HELP: &str = "`bench import <folder>` converts a whole split-layout task into task.md";
 
 fn unknown_top(c: &mut Checker<'_>, key: &str, path: &str) {
     if let Some(hint) = harbor_name(key) {
-        let message = format!("{key} is Harbor's name; task.md uses {hint} ({IMPORT_HINT})");
+        let message =
+            format!("{key} is the split layout's name; task.md uses {hint} ({IMPORT_HINT})");
         c.err(code::HARBOR_KEY, At::Key(path), message.clone()).help = Some(HARBOR_HELP.into());
         harbor_fix(c, "", key, path, &message);
         return;
@@ -120,8 +121,9 @@ pub(super) fn closed_tables(c: &mut Checker<'_>) {
             let path = join(&table_path, k);
             let where_ = format!("[{name}] ");
             if let Some(hint) = harbor_name(k) {
-                let message =
-                    format!("{where_}{k} is Harbor's name; task.md uses {hint} ({IMPORT_HINT})");
+                let message = format!(
+                    "{where_}{k} is the split layout's name; task.md uses {hint} ({IMPORT_HINT})"
+                );
                 c.err(code::HARBOR_KEY, At::Key(&path), message.clone())
                     .help = Some(HARBOR_HELP.into());
                 harbor_fix(c, &table_path, k, &path, &message);

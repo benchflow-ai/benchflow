@@ -274,12 +274,12 @@ _BRANCH = "benchflow.trajectories.export_branch.export_branch_jsonl"
 
 TRAIN_CONVERT: dict[str, Equivalent] = {
     "--out": _mod(
-        f"{_PRIME}(out)", "same parameter on the TRL and branch-tree exporters"
+        f"{_PRIME}(out)", "same parameter on the trl-sft and branch-tree exporters"
     ),
     "--format": _mod(
         _PRIME,
-        f"one function per format: prime-sft {_PRIME}, trl-sft {_TRL}, "
-        f"branch-tree {_BRANCH}",
+        f"one function per format: `prime-sft` `{_PRIME}`, `trl-sft` `{_TRL}`, "
+        f"`branch-tree` `{_BRANCH}`",
     ),
     "--pairs": _mod(f"{_BRANCH}(pairs_out)"),
     "--pairs-any-request": _mod(f"{_BRANCH}(any_request_pairs)"),
@@ -297,10 +297,10 @@ TRAIN_CONVERT: dict[str, Equivalent] = {
     "--subagent-rows": _mod(f"{_PRIME}(subagent_rows)"),
     "--reward-vector": _mod(
         f"{_PRIME}(reward_vector)",
-        "same on the TRL exporter; benchflow.trajectories.training_signal."
+        "same on the trl-sft exporter; benchflow.trajectories.training_signal."
         "rollout_training_signals() reads the vectors without converting",
     ),
-    "--group-advantage": _mod(f"{_PRIME}(group_advantage)", "same on the TRL exporter"),
+    "--group-advantage": _mod(f"{_PRIME}(group_advantage)", "same on the trl-sft exporter"),
     "--group-by": _mod(
         f"{_PRIME}(group_by)", "comma-separated on the CLI, a tuple in Python"
     ),

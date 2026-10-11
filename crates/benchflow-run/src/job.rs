@@ -174,6 +174,23 @@ fn latest_run(jobs_dir: &Path, fingerprint: &str) -> Option<PathBuf> {
 /// The file a running `bench run` holds locked in its job folder.
 pub const RUNNING_FILE: &str = ".bench-run.lock";
 
+/// Whether a live process holds `dir`'s run lock (a `bench run` or `bench
+/// regrade` still running the job). Probes with a shared lock it drops at
+/// once, which [`hold`] tolerates.
+pub fn is_running(dir: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(dir.join(RUNNING_FILE)) else {
+        return false;
+    };
+    match file.try_lock_shared() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
 /// Lock the job folder for this process: trial folders are named the same
 /// in every run of a job, so two runs at once would write the same trials.
 /// The lock goes with the process, so a crashed run leaves nothing to clear.
@@ -352,7 +369,6 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
             Some(c) if c.action == crate::diff::Action::Regrade => {
                 match regrade_input(c, &t, scratch.path()) {
                     Ok(r) => {
-                        crate::regrade::copy_agent_files(&c.dir, &t.dir);
                         earlier.insert(t.name.clone());
                         // The agent does not run: no agent layers.
                         let spec = TrialSpec {
@@ -387,8 +403,7 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
         let rt = rt.clone();
         let halt = halt.clone();
         // Each image is released after the last trial that needs it.
-        let image_key =
-            crate::images::key_for(&t.task, &t.attempt, rt.provider.capabilities().root_service);
+        let image_key = crate::images::key_for(&t.task, &t.attempt, &rt.provider.capabilities());
         let job_dir = dir.clone();
         rt.images.expect(&image_key);
         set.spawn(async move {
@@ -556,31 +571,34 @@ fn regrade_input(
         agent: c.record.agent.clone(),
         model: c.record.model.clone(),
         output: crate::regrade::recorded_agent(&c.record),
+        agent_files: c.dir.clone(),
     })
 }
 
 /// Move an earlier attempt at a trial out of the way before it runs again,
 /// into `<job>/.rerun/<trial>-<n>/`, so no stale file is mixed into the new
-/// one and the old result is kept.
+/// one and the old result is kept. Any folder is moved, with or without a
+/// result.json: one left by a crash or an unsaved record (R107) holds the
+/// lost attempt's verifier output, outputs, and logs.
 fn set_aside(job: &Path, trial_dir: &Path) {
-    if !trial_dir.join("result.json").is_file() {
-        return;
+    move_aside(job, trial_dir, ".rerun");
+}
+
+/// Move `trial_dir` into `<job>/<store>/<trial>-<n>/`; where it went.
+pub(crate) fn move_aside(job: &Path, trial_dir: &Path, store: &str) -> Option<PathBuf> {
+    if !trial_dir.is_dir() {
+        return None;
     }
-    let Some(name) = trial_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-    else {
-        return;
-    };
-    let store = job.join(".rerun");
-    if std::fs::create_dir_all(&store).is_err() {
-        return;
-    }
+    let name = trial_dir.file_name()?.to_string_lossy().to_string();
+    let store = job.join(store);
+    std::fs::create_dir_all(&store).ok()?;
     let mut n = 1;
     while store.join(format!("{name}-{n}")).exists() {
         n += 1;
     }
-    let _ = std::fs::rename(trial_dir, store.join(format!("{name}-{n}")));
+    let to = store.join(format!("{name}-{n}"));
+    std::fs::rename(trial_dir, &to).ok()?;
+    Some(to)
 }
 
 /// Write `lock.json` into a job folder.
@@ -636,7 +654,7 @@ fn evaluation_json(spec: &JobSpec, rt: &Runtime, name: &str, fp: &str) -> Value 
 /// Per-task statistics for the model-agent trials (controls excluded).
 pub fn task_stats(records: &[TrialRecord]) -> BTreeMap<String, TaskStats> {
     let mut m: BTreeMap<String, TaskStats> = BTreeMap::new();
-    for r in records {
+    for r in records.iter().filter(|r| !r.stopped()) {
         let s = m.entry(r.task_name.clone()).or_default();
         s.trials += 1;
         if r.status == Status::Scored {
@@ -670,7 +688,7 @@ pub(crate) fn write_results(
             )
         })
         .collect();
-    std::fs::write(dir.join("results.jsonl"), rows)
+    crate::record::write_atomic(&dir.join("results.jsonl"), rows.as_bytes())
 }
 
 /// What a job's summary says ran it.
@@ -689,12 +707,10 @@ pub(crate) fn summary_json(
     elapsed: f64,
     not_started: usize,
 ) -> Value {
-    let total = records.len();
-    let passed = records.iter().filter(|r| r.passed == Some(true)).count();
-    let scored = records
-        .iter()
-        .filter(|r| r.status == Status::Scored)
-        .count();
+    // Trials the user stopped are counted apart.
+    let tally = crate::record::Tally::of(records);
+    let (total, passed, scored, stopped) =
+        (tally.counted, tally.passed, tally.scored, tally.stopped);
     let failed = scored - passed;
     let errored = records
         .iter()
@@ -748,7 +764,11 @@ pub(crate) fn summary_json(
         "fail": failed,
         "error": errored,
         "not_started": not_started,
-        "score": format!("{:.1}%", rate.value * 100.0),
+        "stopped": stopped,
+        // Trials stopped or never started: the score is not the whole job's.
+        "partial": stopped + not_started > 0,
+        // Null when no trial counted (all stopped), not a 0.0% score.
+        "score": (total > 0).then(|| format!("{:.1}%", rate.value * 100.0)),
         "score_ratio": rate.value,
         "score_interval": [rate.low, rate.high],
         "score_excl_errors": format!("{:.1}%", rate_excl.value * 100.0),
@@ -779,7 +799,7 @@ async fn run_counted(
     job_dir: &Path,
 ) -> Option<TrialRecord> {
     let _permit = sem.clone().acquire_owned().await.ok()?;
-    if halt.load(Ordering::SeqCst) || rt.stopping() {
+    if halt.load(Ordering::SeqCst) || !rt.starting_new() {
         return None;
     }
     let mut attempt_no = 0;
@@ -796,7 +816,7 @@ async fn run_counted(
         if transient
             && attempt_no < rt.options.retries
             && !halt.load(Ordering::SeqCst)
-            && !rt.stopping()
+            && rt.starting_new()
         {
             attempt_no += 1;
             rt.events.send(Event::Retrying {
@@ -820,6 +840,22 @@ async fn run_counted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review of rust/d4-chaos (7cd50c84 tested only its helper): the job's
+    /// results.jsonl goes through the temporary file, so a write that fails
+    /// leaves the old file whole.
+    #[test]
+    fn a_failed_results_write_leaves_the_old_file_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        write_results(dir.path(), &serde_json::json!({}), &[]).unwrap();
+        std::fs::write(dir.path().join("results.jsonl"), "{\"kept\":1}\n").unwrap();
+        std::fs::create_dir(dir.path().join("results.jsonl.tmp")).unwrap();
+        assert!(write_results(dir.path(), &serde_json::json!({}), &[]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("results.jsonl")).unwrap(),
+            "{\"kept\":1}\n"
+        );
+    }
 
     /// A named job resumed with other agent options or effort runs its
     /// trials again; a trial recorded before either was recorded counts as

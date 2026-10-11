@@ -40,8 +40,25 @@ use crate::trial::sandbox_problem;
 
 /// The agent's name.
 pub const NAME: &str = "external";
-/// Its aliases (Karotte's name for it).
-pub const ALIASES: &[&str] = &["karotte-external"];
+/// An older name still accepted for it, never shown: it names another
+/// framework, which BenchFlow's text does not.
+const OLD_NAMES: &[&str] = &["karotte-external"];
+/// What `bench.lock` records as the agent's install: nothing is installed,
+/// so only the protocol counts.
+pub(crate) const FINGERPRINT: &str = "external:backend-protocol";
+/// The same, as earlier builds recorded it; `bench run --diff` treats the
+/// two as one install.
+const OLD_FINGERPRINT: &str = "external:karotte-backend-protocol";
+
+/// `fingerprint` as this build records it: an earlier build's name for the
+/// same install becomes today's.
+pub(crate) fn current_fingerprint(fingerprint: &str) -> &str {
+    if fingerprint == OLD_FINGERPRINT {
+        FINGERPRINT
+    } else {
+        fingerprint
+    }
+}
 /// How often the trajectory file is rewritten while the loop works.
 const TRAJECTORY_EVERY: Duration = Duration::from_secs(2);
 /// Where Karotte's transcript is kept in the trial folder.
@@ -49,7 +66,7 @@ const TRANSCRIPT: &str = "agent/backend_transcript.json";
 
 /// Whether `name` means the external agent.
 pub fn is_external(name: &str) -> bool {
-    name == NAME || ALIASES.contains(&name)
+    name == NAME || OLD_NAMES.contains(&name)
 }
 
 /// A run whose steps a backend decides.
@@ -79,7 +96,7 @@ impl ExternalAgent {
                 Owner::You,
                 Phase::Setup,
                 "the external agent takes its steps from a backend, and no --backend was given",
-                "pass --backend <url> with the address of a service that speaks Karotte's backend protocol (GET /api/internal/get_message, ...)",
+                "pass --backend <url> with the address of a service that speaks the backend protocol (GET /api/internal/get_message, ...)",
             )),
             Some(url) => BackendClient::new(url, "check", None, BackendOptions::default())
                 .map(|c| c.base_url().to_string())
@@ -157,7 +174,7 @@ impl ModelAgent for ExternalAgent {
     }
 
     fn fingerprint(&self) -> String {
-        "external:karotte-backend-protocol".into()
+        FINGERPRINT.into()
     }
 
     fn preflight(&self) -> Result<(), Problem> {
@@ -467,5 +484,32 @@ mod tests {
         assert!(!a.needs_network());
         assert!(a.install_layers().is_empty());
         assert!(is_external("karotte-external") && is_external("external"));
+    }
+
+    /// The token file's variable keeps working under its older name, and
+    /// the new name wins when both are set.
+    #[test]
+    fn the_token_path_variable_is_read_under_either_name() {
+        let path = |vars: &[(&str, &str)]| {
+            let host = HostEnv::new(
+                vars.iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                None,
+            );
+            ExternalAgent::new(Some("http://127.0.0.1:8000"), None, None, &host).token_path
+        };
+        assert_eq!(path(&[]), None);
+        assert_eq!(
+            path(&[("KAROTTE_BACKEND_TOKEN_PATH", "/old")]),
+            Some(PathBuf::from("/old"))
+        );
+        assert_eq!(
+            path(&[
+                ("KAROTTE_BACKEND_TOKEN_PATH", "/old"),
+                ("BENCHFLOW_BACKEND_TOKEN_PATH", "/new"),
+            ]),
+            Some(PathBuf::from("/new"))
+        );
     }
 }

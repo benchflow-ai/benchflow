@@ -18,10 +18,12 @@ use serde_json::Value as Json;
 use super::doc;
 use super::files::{self, Rel};
 use super::harbor::{self, Loss, LossSeverity, harbor_record};
-use super::import::ORIGINALS;
+use super::import::originals;
+use super::import::originals as originals_dir;
 use super::tomltext::{self, Comments};
 use super::value::{KPath, Seg, Table, Val, canonical_json, parse_toml};
 use super::{ConvertError, ExportReport, ExportStatus, RewardKitExport, Rewritten, io_err};
+use crate::taskmd::{split_record, split_record_ignored};
 
 const MODEL_JUDGES: [&str; 4] = ["llm", "agent", "vlm", "panel"];
 const TASKMD_SCHEMA: &str = "https://task.md/schema/";
@@ -39,6 +41,26 @@ pub(crate) struct HarborFiles {
     /// Each step's instruction.md, by step name.
     pub steps: IndexMap<String, String>,
     pub losses: Vec<Loss>,
+}
+
+/// The name of the split-layout record in `cfg`'s `[import]` table.
+fn record_name(cfg: &Table) -> &'static str {
+    let import = cfg.get("import").and_then(Val::as_table);
+    split_record(|k| import.is_some_and(|i| i.contains_key(k)))
+}
+
+/// The other record, when `cfg` has both names: export ignores it.
+fn ignored_record(cfg: &Table) -> Option<&'static str> {
+    let import = cfg.get("import").and_then(Val::as_table);
+    split_record_ignored(|k| import.is_some_and(|i| i.contains_key(k)))
+}
+
+/// The split-layout record import kept in `cfg`, if any.
+fn record(cfg: &Table) -> Option<&Table> {
+    cfg.get("import")?
+        .as_table()?
+        .get(record_name(cfg))?
+        .as_table()
 }
 
 fn invalid(message: String) -> ConvertError {
@@ -66,7 +88,13 @@ pub(crate) fn taskmd_to_harbor(
     if let Some(edit) = edit {
         (cfg, comments) = edit(cfg, comments);
     }
-    let exported = harbor::config_to_harbor(&cfg, "harbor", &[]).map_err(invalid)?;
+    // A record export ignores goes nowhere, and neither do its comments
+    // (remapped, they would land at the top of task.toml).
+    if let Some(other) = ignored_record(&cfg) {
+        let under = [Seg::Key("import".into()), Seg::Key(other.into())];
+        comments.retain(|path, _| !path.starts_with(&under));
+    }
+    let exported = harbor::config_to_harbor(&cfg, record_name(&cfg), &[]).map_err(invalid)?;
     let comments = harbor::remap_comments(&comments, &exported.moves, &exported.config);
     let toml = tomltext::dumps(&exported.config, &comments)
         .ok_or_else(|| invalid("a value TOML cannot hold".into()))?;
@@ -98,10 +126,7 @@ pub(crate) fn taskmd_to_harbor(
             };
             steps.insert(name.clone(), text);
         }
-        cfg.get("import")
-            .and_then(Val::as_table)
-            .and_then(|i| i.get("harbor"))
-            .and_then(Val::as_table)
+        record(&cfg)
             .and_then(|h| h.get("instruction"))
             .and_then(Val::as_str)
             .map(str::to_string)
@@ -112,7 +137,7 @@ pub(crate) fn taskmd_to_harbor(
         if b.kind == "role" || b.kind == "user" || (b.kind == "stage" && !has_steps) {
             losses.push(Loss {
                 path: format!("the ```{} block", b.info),
-                reason: "Harbor shows the agent instruction.md and each step's instruction only"
+                reason: "a split-layout runner shows the agent instruction.md and each step's instruction only"
                     .into(),
                 severity: LossSeverity::RunAffecting,
                 text: format!("the ```{} block", b.info),
@@ -167,7 +192,7 @@ fn file_losses(src: &Path, cfg: &Table, rk: Option<&Restore>) -> Vec<Loss> {
             c.join(", ")
         ),
         (Some(c), None) => format!(
-            "; its judges came from RewardKit ({}), so export the original Harbor task instead",
+            "; its judges came from RewardKit ({}), so export the original split-layout task instead",
             c.join(", ")
         ),
         _ => String::new(),
@@ -200,10 +225,10 @@ fn file_losses(src: &Path, cfg: &Table, rk: Option<&Restore>) -> Vec<Loss> {
             losses.push(Loss {
                 path: format!("{vdir}/rubric.json"),
                 reason: format!(
-                    "Harbor reads no rubric: its reward comes from test.sh alone{hint}"
+                    "a split-layout runner reads no rubric: its reward comes from test.sh alone{hint}"
                 ),
                 severity: LossSeverity::RunAffecting,
-                text: format!("{vdir}/rubric.json (copied to tests/, which Harbor does not read)"),
+                text: format!("{vdir}/rubric.json (copied to tests/, which a split-layout runner does not read)"),
             });
         }
         if let Some(behaviors) = taskmd_json(&src.join(vdir).join("behaviors.json")) {
@@ -218,7 +243,7 @@ fn file_losses(src: &Path, cfg: &Table, rk: Option<&Restore>) -> Vec<Loss> {
             losses.push(Loss {
                 path: format!("{vdir}/behaviors.json"),
                 reason: format!(
-                    "Harbor watches no behaviors{}",
+                    "the split layout watches no behaviors{}",
                     if reward {
                         ", so their consequences never touch the reward"
                     } else {
@@ -231,7 +256,7 @@ fn file_losses(src: &Path, cfg: &Table, rk: Option<&Restore>) -> Vec<Loss> {
                     LossSeverity::Metadata
                 },
                 text: format!(
-                    "{vdir}/behaviors.json (copied to tests/, which Harbor does not read)"
+                    "{vdir}/behaviors.json (copied to tests/, which a split-layout runner does not read)"
                 ),
             });
         }
@@ -262,10 +287,10 @@ fn file_losses(src: &Path, cfg: &Table, rk: Option<&Restore>) -> Vec<Loss> {
                 losses.push(Loss {
                     path: brief.clone(),
                     reason: format!(
-                        "the brief task.md's model judges read; Harbor runs no task.md judges{hint}"
+                        "the brief task.md's model judges read; a split-layout runner runs no task.md judges{hint}"
                     ),
                     severity: LossSeverity::RunAffecting,
-                    text: format!("{brief} (copied to tests/, which Harbor does not read)"),
+                    text: format!("{brief} (copied to tests/, which a split-layout runner does not read)"),
                 });
             }
         }
@@ -274,12 +299,7 @@ fn file_losses(src: &Path, cfg: &Table, rk: Option<&Restore>) -> Vec<Loss> {
 }
 
 fn rk_record(cfg: &Table) -> Option<&Table> {
-    cfg.get("import")?
-        .as_table()?
-        .get("harbor")?
-        .as_table()?
-        .get("rewardkit")?
-        .as_table()
+    record(cfg)?.get("rewardkit")?.as_table()
 }
 
 /// Every `[verifier.judges.<role>]` table, by dotted name.
@@ -342,6 +362,7 @@ struct Restore {
 }
 
 fn rk_restore(src: &Path, cfg: &Table) -> Option<Restore> {
+    let dir = originals(record_name(cfg));
     let rk = rk_record(cfg)?;
     let (Some(Val::Table(kept)), Some(Val::Table(wrote))) = (rk.get("kept"), rk.get("wrote"))
     else {
@@ -395,14 +416,14 @@ fn rk_restore(src: &Path, cfg: &Table) -> Option<Restore> {
         }
     }
     for (rel, h) in kept {
-        let r = files::rel(&format!("{ORIGINALS}/{rel}"));
+        let r = files::rel(&format!("{dir}/{rel}"));
         let f = files::under(src, &r);
         let same = f.is_file() && files::sha256_file(&f).ok().as_deref() == h.as_str();
         if !same {
             if out.ok {
                 out.ok = false;
                 out.why = Some(format!(
-                    "{ORIGINALS}/{rel} is missing or no longer matches its recorded hash"
+                    "{dir}/{rel} is missing or no longer matches its recorded hash"
                 ));
             }
         } else {
@@ -540,11 +561,8 @@ pub(crate) fn plan(
             !r.skip.contains(&l.path) && !tables.iter().any(|t| l.path.starts_with(t.as_str()))
         });
     }
-    let kept: Option<&Table> = cfg
-        .get("import")
-        .and_then(Val::as_table)
-        .and_then(|i| i.get("harbor"))
-        .and_then(Val::as_table);
+    let kept: Option<&Table> = record(&cfg);
+    let dir = originals(record_name(&cfg));
     let originals: Table = kept
         .and_then(|k| {
             harbor_record("originals", k.get("originals"))
@@ -575,7 +593,7 @@ pub(crate) fn plan(
         let field = |r: &Table, k: &str| r.get(k).and_then(Val::as_str).map(str::to_string);
         let same =
             rec.is_some_and(|r| field(r, "converted").as_deref() == Some(converted_hash.as_str()));
-        let kept_file = files::under(src, &files::rel(&format!("{ORIGINALS}/{rel}")));
+        let kept_file = files::under(src, &files::rel(&format!("{dir}/{rel}")));
         if same && rec.is_some_and(|r| field(r, "original") == field(r, "converted")) {
             restored.push(rel.clone());
         } else if same
@@ -599,14 +617,14 @@ pub(crate) fn plan(
                 } else if rec.is_some() && !same {
                     "its settings or text changed since import".to_string()
                 } else if rec.is_some() {
-                    format!("{ORIGINALS}/{rel} is missing or no longer matches its recorded hash")
+                    format!("{dir}/{rel} is missing or no longer matches its recorded hash")
                 } else {
                     "import kept no original: the package predates the record".to_string()
                 };
                 rewritten.push(Rewritten {
                     path: rel.clone(),
                     reason: format!(
-                        "{why}, so export wrote the converted form, and Harbor's content digest differs from the original's"
+                        "{why}, so export wrote the converted form, and the split layout's content digest differs from the original's"
                     ),
                 });
             }
@@ -615,14 +633,10 @@ pub(crate) fn plan(
     }
     let mut skip: BTreeSet<Rel> = originals
         .keys()
-        .map(|r| files::rel(&format!("{ORIGINALS}/{r}")))
+        .map(|r| files::rel(&format!("{dir}/{r}")))
         .collect();
     if let Some(r) = &rk {
-        skip.extend(
-            r.kept
-                .iter()
-                .map(|k| files::rel(&format!("{ORIGINALS}/{k}"))),
-        );
+        skip.extend(r.kept.iter().map(|k| files::rel(&format!("{dir}/{k}"))));
     }
     let mut rk_files = Vec::new();
     if let (true, Some(r)) = (undo, &rk) {
@@ -637,9 +651,32 @@ pub(crate) fn plan(
             .collect();
     }
     let steps: BTreeSet<String> = generated.steps.keys().cloned().collect();
+    // With both records, neither folder is the package's own files: the one
+    // read gave back its originals, and the other is left out.
+    let ignored = ignored_record(&cfg);
+    let folders: Vec<String> = match ignored {
+        Some(other) => vec![format!("{dir}/"), format!("{}/", originals_dir(other))],
+        None => Vec::new(),
+    };
+    let in_folders = |rel: &Rel| {
+        let p = files::posix(rel);
+        folders.iter().any(|d| p.starts_with(d.as_str()))
+    };
+    if let Some(other) = ignored {
+        losses.push(Loss {
+            path: format!("[import.{other}]"),
+            reason: format!(
+                "the package also has [import.{}], which export read, restoring its originals from {dir}/; [import.{other}], {}/, and the other files in {dir}/ are left out",
+                record_name(&cfg),
+                originals_dir(other)
+            ),
+            severity: LossSeverity::Metadata,
+            text: format!("[import.{other}] and {}/", originals_dir(other)),
+        });
+    }
     let mut copies: Vec<(Rel, Rel)> = Vec::new();
     for rel in files::list(src).map_err(io_err(src))? {
-        if skip.contains(&rel) {
+        if skip.contains(&rel) || in_folders(&rel) {
             continue;
         }
         if let Some(to) = to_harbor_path(&rel, &steps) {
@@ -671,14 +708,14 @@ pub(crate) fn plan(
     };
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let summary = match status {
-        ExportStatus::Lossless => "Harbor holds everything".to_string(),
+        ExportStatus::Lossless => "the split layout holds everything".to_string(),
         ExportStatus::Refused => format!(
-            "Harbor would drop {fatal} run-affecting setting{}, so nothing was written (allow a degraded export to write it anyway)",
+            "the split layout would drop {fatal} run-affecting setting{}, so nothing was written (allow a degraded export to write it anyway)",
             plural(fatal)
         ),
         ExportStatus::Degraded => {
             let mut s = format!(
-                "exported without {} thing{} Harbor cannot hold",
+                "exported without {} thing{} the split layout cannot hold",
                 losses.len(),
                 plural(losses.len())
             );
@@ -692,7 +729,7 @@ pub(crate) fn plan(
         .map(|k| {
             k.iter()
                 .filter(|(key, v)| *key != "instruction" && !harbor_record(key, Some(v)))
-                .map(|(key, _)| format!("import.harbor.{key}"))
+                .map(|(key, _)| format!("import.{}.{key}", record_name(&cfg)))
                 .collect()
         })
         .unwrap_or_default();
@@ -727,6 +764,7 @@ pub(crate) fn plan(
     let report = ExportReport {
         report: "export",
         from: "task.md",
+        // As convert.py writes it: a format identifier other tools read.
         to: "harbor",
         tool: "bench export",
         status,

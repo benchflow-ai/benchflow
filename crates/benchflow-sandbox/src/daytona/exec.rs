@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use super::SandboxCore;
-use super::toolbox::{STAGING, Stdin, Toolbox, wrap};
+use super::toolbox::{STAGING, Stdin, Toolbox, Wrap, wrap};
 use crate::capture::{OUTPUT_CAP, TailBuffer};
 use crate::shell::{exports, quote};
 use crate::{EXEC_ID_ENV, Exec, ExecOutput, SandboxError, TIMEOUT_EXIT_CODE};
@@ -44,6 +44,9 @@ pub(crate) async fn prepare(
     };
     env.extend(exec.env.clone());
     env.remove(EXEC_ID_ENV);
+    for name in &exec.unset {
+        env.remove(name);
+    }
     let env_file = if env.is_empty() {
         None
     } else {
@@ -61,23 +64,31 @@ pub(crate) async fn prepare(
     } else {
         (exec.cwd.clone(), exec.user.clone())
     };
-    let line = wrap(
-        &exec.command,
-        &exec_id,
-        env_file.as_deref(),
-        cwd.as_deref(),
-        user.as_deref(),
-        stdin,
-    );
+    let line = wrap(&Wrap {
+        env_file: env_file.as_deref(),
+        cwd: cwd.as_deref(),
+        user: user.as_deref(),
+        unset: &exec.unset,
+        ..Wrap::new(&exec.command, &exec_id, stdin)
+    });
     Ok(Prepared { exec_id, line })
+}
+
+/// The session line that kills every process tagged with `exec_id`. It
+/// runs as root with the image's environment, so it names `/bin/sh` by its
+/// path and starts it without the loader variables (and the script finds
+/// `grep` in the system folders).
+pub(crate) fn kill_line(exec_id: &str) -> String {
+    format!(
+        "unset {}; /bin/sh -c {} sh",
+        crate::shell::LOADER_VARS.join(" "),
+        quote(&crate::shell::kill_tagged(exec_id))
+    )
 }
 
 /// Kill every process in the sandbox tagged with `exec_id`.
 pub(crate) async fn kill_tagged(toolbox: &Toolbox, exec_id: &str) -> Result<(), SandboxError> {
-    let script = crate::shell::kill_tagged(exec_id);
-    let (code, output) = toolbox
-        .run_quick(&format!("sh -c {}", quote(&script)))
-        .await?;
+    let (code, output) = toolbox.run_quick(&kill_line(exec_id)).await?;
     if code == 0 {
         Ok(())
     } else {

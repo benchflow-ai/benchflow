@@ -57,7 +57,9 @@ pub struct Cli {
 #[derive(Debug, Args, Clone)]
 pub struct Global {
     /// Run as if bench started in DIR
-    #[arg(short = 'C', value_name = "DIR", global = true)]
+    // Its own id: a subcommand's `--dir` (bench new) is also named `dir`,
+    // and clap would fill both from either flag.
+    #[arg(short = 'C', id = "chdir", value_name = "DIR", global = true)]
     pub dir: Option<PathBuf>,
 
     /// Print JSON instead of text (stable fields; see each command's docs)
@@ -132,7 +134,7 @@ Targets are task folders, folders of tasks, or GitHub repositories:
   bench run https://github.com/org/repo/tree/v1/tasks
 
 Or a dataset from a registry, every task pinned to a git commit:
-  bench run -d terminal-bench@2.0                   # BenchFlow's registry, then the public one
+  bench run -d terminal-bench@2.0                   # BenchFlow's registry, then the public dataset registry
   bench run -d mine@1.0 --registry registry.json    # a registry file or URL
   bench run -d datasets/mine/dataset.toml           # a local dataset
 
@@ -151,6 +153,10 @@ exactly what ran.
 (same task, agent, model, effort, and settings; copied in), regrade (only the
 tests or verifier changed, and outputs were saved; graded again without the
 agent), or rerun, with the reason. With --dry-run it only prints the plan.
+
+Ctrl-C drains the run: no new trial starts and running ones finish. A second
+Ctrl-C stops them (their sandboxes are removed; they are left out of the pass
+rate and listed apart), and a third quits at once.
 
 Examples:
   bench run tasks/ -a claude -m claude-sonnet-4-6 -j 8
@@ -494,11 +500,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub fresh: bool,
 
-    /// Only tasks whose names match (glob; repeatable)
+    /// Only tasks whose names match: an exact name, or a pattern of `*`, `?`, `[...]` and `[!...]` (repeatable)
     #[arg(short, long, value_name = "PATTERN")]
     pub include: Vec<String>,
 
-    /// Skip tasks whose names match (glob; repeatable)
+    /// Skip tasks whose names match: an exact name, or a pattern of `*`, `?`, `[...]` and `[!...]` (repeatable)
     #[arg(short = 'x', long, value_name = "PATTERN")]
     pub exclude: Vec<String>,
 
@@ -558,7 +564,7 @@ pub struct RunArgs {
     #[arg(short = 'd', long, value_name = "NAME@VERSION")]
     pub dataset: Option<String>,
 
-    /// The registry for --dataset: a URL or a file (default: BenchFlow's, then the public one)
+    /// The registry for --dataset: a URL or a file (default: BenchFlow's, then the public dataset registry)
     #[arg(long, value_name = "URL-OR-FILE")]
     pub registry: Option<String>,
 
@@ -578,7 +584,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "JOB")]
     pub diff: Vec<PathBuf>,
 
-    /// Print the plan and run nothing
+    /// Print the plan and run nothing; exits 0 and names what a run would stop on (a missing login)
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -731,7 +737,9 @@ pub struct DoctorArgs {
   bench agents goose                 # how goose is installed, started, and logged in
   bench agents acp:goose             # the same for the ACP registry's goose entry
   bench agents --registry            # every entry of the public ACP registry
-  bench agents check goose -s daytona"
+  bench agents check goose -s daytona
+
+With --json, the list is an array of {name, aliases, kind, harnesses, description, options}: kind is script (oracle, nop), manifest, native, or backend (external), and harnesses are the values --harness takes, the default first. One agent's page is its entry; --registry gives {name, version, installs, built_in_as, description} per entry."
 )]
 pub struct AgentsArgs {
     #[command(subcommand)]

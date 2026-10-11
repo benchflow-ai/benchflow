@@ -79,6 +79,16 @@ async fn serve(replies: &[(&str, &[&str])]) -> (Shared, BTreeMap<String, String>
     (script, vars)
 }
 
+/// Whether the `!slow-once:` probe already ran past its time.
+static SLOW_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the `!exec-fail-once:` probe's exec already failed.
+static FAIL_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What a runtime prints when it fails an exec in a running container.
+const EXEC_FAILED: &str =
+    "OCI runtime exec failed: exec failed: unable to start container process: unknown";
+
 /// A sandbox holding `files`: it answers the judge's probe and downloads.
 struct Files(BTreeMap<String, Vec<u8>>, Mutex<Vec<String>>);
 
@@ -91,6 +101,34 @@ impl Sandbox for Files {
         "fake"
     }
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
+        // A sandbox that has gone away, for the test that says so.
+        if self.0.contains_key("!gone") {
+            return Err(SandboxError::Transport("connection reset by peer".into()));
+        }
+        let answer = |stdout: String, timed_out: bool| ExecOutput {
+            exit_code: if timed_out { -1 } else { 0 },
+            stdout,
+            stderr: String::new(),
+            timed_out,
+            duration: Duration::from_millis(1),
+        };
+        // The backend failing an exec while the container runs: exit 126
+        // and no output, as Docker's runtime does under load.
+        let failed = || ExecOutput {
+            exit_code: 126,
+            stdout: String::new(),
+            stderr: EXEC_FAILED.into(),
+            timed_out: false,
+            duration: Duration::from_millis(1),
+        };
+        // The liveness check after a slow probe; `!stuck` never answers,
+        // and under `!exec-dead` the backend fails every exec.
+        if exec.command == "true" {
+            if self.0.contains_key("!exec-dead") {
+                return Ok(failed());
+            }
+            return Ok(answer(String::new(), self.0.contains_key("!stuck")));
+        }
         // The probe names the path as `f=<path>;`, quoted when it must be.
         let path = exec
             .command
@@ -98,6 +136,30 @@ impl Sandbox for Files {
             .and_then(|r| r.split(';').next())
             .unwrap_or("")
             .trim_matches('\'');
+        // `!slow:<path>`: the probe runs past its time; `!listing:<path>`:
+        // what it prints.
+        if self.0.contains_key(&format!("!slow:{path}")) {
+            return Ok(answer(String::new(), true));
+        }
+        // `!slow-once:<path>`: only the first probe runs past its time.
+        if self.0.contains_key(&format!("!slow-once:{path}"))
+            && !SLOW_ONCE.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(answer(String::new(), true));
+        }
+        // `!exec-fail:<path>`: the backend fails the probe's exec every
+        // time; `!exec-fail-once:<path>`: only the first time.
+        if self.0.contains_key("!exec-dead") || self.0.contains_key(&format!("!exec-fail:{path}")) {
+            return Ok(failed());
+        }
+        if self.0.contains_key(&format!("!exec-fail-once:{path}"))
+            && !FAIL_ONCE.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(failed());
+        }
+        if let Some(listing) = self.0.get(&format!("!listing:{path}")) {
+            return Ok(answer(String::from_utf8_lossy(listing).into(), false));
+        }
         let stdout = match self.0.get(path) {
             Some(b) => format!("BF file {} {path}\n", b.len()),
             None => {
@@ -114,13 +176,7 @@ impl Sandbox for Files {
                 }
             }
         };
-        Ok(ExecOutput {
-            exit_code: 0,
-            stdout,
-            stderr: String::new(),
-            timed_out: false,
-            duration: Duration::from_millis(1),
-        })
+        Ok(answer(stdout, false))
     }
     async fn spawn(&self, _exec: Exec) -> Result<Process, SandboxError> {
         Err(SandboxError::Unsupported("no processes".into()))
@@ -132,8 +188,30 @@ impl Sandbox for Files {
         Ok(())
     }
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
+        // `!down-lost:<path>`: the sandbox drops the download;
+        // `!down-gone:<path>`: the file is no longer there.
+        if self.0.contains_key(&format!("!down-lost:{remote}")) {
+            return Err(SandboxError::Transport("502 Bad Gateway".into()));
+        }
+        if self.0.contains_key(&format!("!down-full:{remote}")) {
+            return Err(SandboxError::Transport(
+                "copying it out of Daytona sandbox x failed: its disk is full".into(),
+            ));
+        }
+        if self.0.contains_key(&format!("!down-gone:{remote}")) {
+            return Err(SandboxError::io(
+                format!("downloading {remote}"),
+                std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+            ));
+        }
         self.1.lock().unwrap().push(remote.to_string());
         std::fs::write(local, &self.0[remote]).unwrap();
+        // `!mode000:<path>`: the copy keeps the mode the agent gave the
+        // file, none at all.
+        if self.0.contains_key(&format!("!mode000:{remote}")) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(local, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
         Ok(())
     }
     async fn destroy(&self) -> Result<(), SandboxError> {
@@ -229,7 +307,7 @@ async fn each_criterion_is_judged_alone_with_the_reference_labeled() {
         BTreeMap::from([("/app/memo.md".to_string(), MEMO.as_bytes().to_vec())]),
         Mutex::new(Vec::new()),
     );
-    let evidence = judge::fetch(&sb, "/app", &plan).await;
+    let evidence = judge::fetch(&sb, "/app", &plan).await.unwrap();
     // One download for an item four criteria name.
     assert_eq!(*sb.1.lock().unwrap(), vec!["/app/memo.md".to_string()]);
     let reviewer = judge::connect(&plan, &vars).await.unwrap();
@@ -340,7 +418,7 @@ async fn a_reply_that_never_parses_leaves_its_criterion_not_judged() {
         BTreeMap::from([("/app/memo.md".to_string(), MEMO.as_bytes().to_vec())]),
         Mutex::new(Vec::new()),
     );
-    let evidence = judge::fetch(&sb, "/app", &plan).await;
+    let evidence = judge::fetch(&sb, "/app", &plan).await.unwrap();
     let reviewer = judge::connect(&plan, &vars).await.unwrap();
     let out = tempfile::tempdir().unwrap();
     let judged = judge::judge(&plan, &evidence, &reviewer, out.path()).await;
@@ -393,7 +471,7 @@ async fn evidence_is_capped_and_unreadable_files_are_noted() {
         ]),
         Mutex::new(Vec::new()),
     );
-    let evidence = judge::fetch(&sb, "/app", &plan).await;
+    let evidence = judge::fetch(&sb, "/app", &plan).await.unwrap();
     assert_eq!(evidence["/out"].len(), 3);
     let user = judge::user_prompt(&plan, &plan.items[0], &evidence);
     assert!(user.contains("=== AGENT'S WORK: /out/report.md (markdown, 240000 bytes) ==="));
@@ -446,4 +524,268 @@ fn bad_judge_settings_are_the_tasks_to_fix() {
             .model,
         "openai/gpt-x"
     );
+}
+
+/// A sandbox that cannot say what the evidence is fails the fetch, rather
+/// than have the agent's work judged as missing.
+#[tokio::test]
+async fn evidence_from_a_sandbox_that_is_gone_is_not_judged_missing() {
+    let (_d, t) = task(
+        json!({"criteria": [{"id": "a", "text": "t", "judge": "llm", "points": 1, "evidence": ["memo.md"]}]}),
+        &[],
+    );
+    let plan = judge::plan(&t, Some("openai/gpt-x")).unwrap().unwrap();
+    let sb = Files(
+        BTreeMap::from([("!gone".to_string(), Vec::new())]),
+        Mutex::new(Vec::new()),
+    );
+    assert!(judge::fetch(&sb, "/app", &plan).await.is_err());
+}
+
+fn one_item(evidence: &[&str]) -> (tempfile::TempDir, Plan) {
+    let (d, t) = task(
+        json!({"criteria": [{"id": "a", "text": "t", "judge": "llm", "points": 1, "evidence": evidence}]}),
+        &[],
+    );
+    let plan = judge::plan(&t, Some("openai/gpt-x")).unwrap().unwrap();
+    (d, plan)
+}
+
+/// A probe that runs past its time while the sandbox still answers (a
+/// folder of very many files) leaves that item unreadable and the rest
+/// judged; only a sandbox that then does not answer fails the fetch.
+/// Guards the D7b fix of 431d4f35, which made every slow probe a lost
+/// sandbox, so an agent could have its trial retried instead of judged.
+#[tokio::test]
+async fn a_slow_evidence_check_is_not_a_lost_sandbox() {
+    let (_d, plan) = one_item(&["big", "memo.md"]);
+    let mut files = BTreeMap::from([
+        ("!slow:/app/big".to_string(), Vec::new()),
+        ("/app/memo.md".to_string(), MEMO.as_bytes().to_vec()),
+    ]);
+    let sb = Files(files.clone(), Mutex::new(Vec::new()));
+    let evidence = judge::fetch(&sb, "/app", &plan).await.unwrap();
+    match &evidence["big"][..] {
+        [f] => match &f.text {
+            judge::Text::Unreadable(why) => assert!(why.contains("ran past 60 s"), "{why}"),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        evidence["memo.md"][0].text,
+        judge::Text::Read { .. }
+    ));
+    files.insert("!stuck".into(), Vec::new());
+    let sb = Files(files, Mutex::new(Vec::new()));
+    assert!(judge::fetch(&sb, "/app", &plan).await.is_err());
+    // A probe that is slow once (a busy backend) is asked again, and the
+    // item is read (REVIEW-CORRECT L8).
+    let (_d, plan) = one_item(&["memo.md"]);
+    let sb = Files(
+        BTreeMap::from([
+            ("!slow-once:/app/memo.md".to_string(), Vec::new()),
+            ("/app/memo.md".to_string(), MEMO.as_bytes().to_vec()),
+        ]),
+        Mutex::new(Vec::new()),
+    );
+    let evidence = judge::fetch(&sb, "/app", &plan).await.unwrap();
+    assert!(matches!(
+        evidence["memo.md"][0].text,
+        judge::Text::Read { .. }
+    ));
+}
+
+/// Files the probe reached through links that stay in the agent's folder
+/// are named as the item's and downloaded from where they are; a listed
+/// path outside the item, a hard-linked file, and one without a size are
+/// never downloaded, and the last two are named rather than dropped (the
+/// item would read as an empty folder). Guards the D7b fixes of 859fc713.
+#[tokio::test]
+async fn evidence_found_through_a_link_is_named_as_the_item() {
+    let (_d, plan) = one_item(&["out"]);
+    let listing = "BF real /srv/app/build/out\n\
+        BF file 6 /srv/app/build/out/r.md\n\
+        BF file 6 /tests/answers.toml\n\
+        BF hardlink /srv/app/build/out/h.md\n\
+        BF unsized /srv/app/build/out/u.md\n\
+        BF file ? /srv/app/build/out/v.md\n";
+    let sb = Files(
+        BTreeMap::from([
+            ("!listing:/app/out".to_string(), listing.as_bytes().to_vec()),
+            ("/srv/app/build/out/r.md".to_string(), b"report".to_vec()),
+            ("/tests/answers.toml".to_string(), b"secret".to_vec()),
+        ]),
+        Mutex::new(Vec::new()),
+    );
+    let evidence = judge::fetch(&sb, "/app", &plan).await.unwrap();
+    let got: Vec<(&str, bool)> = evidence["out"]
+        .iter()
+        .map(|f| (f.path.as_str(), matches!(f.text, judge::Text::Read { .. })))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("/app/out/r.md", true),
+            ("/app/out/h.md", false),
+            ("/app/out/u.md", false),
+            ("/app/out/v.md", false),
+        ]
+    );
+    assert_eq!(
+        *sb.1.lock().unwrap(),
+        vec!["/srv/app/build/out/r.md".to_string()]
+    );
+}
+
+/// A file read only in part (too large to unpack to its end) says so to
+/// the judge, and the count of characters not shown says "more than".
+#[test]
+fn a_file_read_only_in_part_says_so_to_the_judge() {
+    let (_d, plan) = one_item(&["big.xlsx"]);
+    let shown = |text: &str, cut: bool| {
+        let evidence = BTreeMap::from([(
+            "big.xlsx".to_string(),
+            vec![judge::Fetched {
+                path: "/app/big.xlsx".into(),
+                bytes: Some(9),
+                text: judge::Text::Read {
+                    kind: "xlsx",
+                    text: text.into(),
+                    cut,
+                },
+            }],
+        )]);
+        judge::user_prompt(&plan, &plan.items[0], &evidence)
+    };
+    let short = shown("A1=1", true);
+    assert!(
+        short.contains("the rest of this file was not read; it is too large to read to its end"),
+        "{short}"
+    );
+    let long = "x".repeat(judge::FILE_TEXT_CAP + 10);
+    assert!(shown(&long, true).contains("more than 10 more characters"));
+    assert!(shown(&long, false).contains("cut for size: 10 more characters"));
+    assert!(!shown("A1=1", false).contains("cut for size"));
+}
+
+/// A download the sandbox fails is not judged as missing work: the fetch
+/// fails (the trial ends as a lost sandbox and is retried), as when the
+/// probe cannot run. A file gone from the sandbox is the work's own state
+/// and is shown as such. Guards the D7c fix of REVIEW-OUTCOMES M1.
+#[tokio::test]
+async fn a_download_the_sandbox_fails_is_not_judged_missing() {
+    let (_d, plan) = one_item(&["memo.md"]);
+    let files = |fault: &str| {
+        Files(
+            BTreeMap::from([
+                (format!("{fault}/app/memo.md"), Vec::new()),
+                ("/app/memo.md".to_string(), MEMO.as_bytes().to_vec()),
+            ]),
+            Mutex::new(Vec::new()),
+        )
+    };
+    let err = judge::fetch(&files("!down-lost:"), "/app", &plan)
+        .await
+        .unwrap_err();
+    assert!(err.is_transient(), "{err}");
+    let evidence = judge::fetch(&files("!down-gone:"), "/app", &plan)
+        .await
+        .unwrap();
+    match &evidence["memo.md"][0].text {
+        judge::Text::Unreadable(why) => assert!(why.contains("gone"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// What the agent did to its own evidence never ends the trial as an
+/// error rerun on every resume: a file it made unreadable (`chmod 000`) is
+/// read all the same (the host copy is BenchFlow's), a name as long as the
+/// system allows is downloaded, and a disk it filled leaves the file
+/// unreadable. A "gone" file from a sandbox that no longer answers fails
+/// the fetch instead (a stopped container looks the same). Guards the D7d
+/// fixes of REVIEW-OUTCOMES (d7c) H1, H2 and M1.
+#[tokio::test]
+async fn what_the_agent_did_to_its_evidence_is_judged_not_errored() {
+    let one = |fault: &str, path: &str| {
+        Files(
+            BTreeMap::from([
+                (format!("{fault}{path}"), Vec::new()),
+                (path.to_string(), MEMO.as_bytes().to_vec()),
+            ]),
+            Mutex::new(Vec::new()),
+        )
+    };
+    let (_d, plan) = one_item(&["memo.md"]);
+    let evidence = judge::fetch(&one("!mode000:", "/app/memo.md"), "/app", &plan)
+        .await
+        .expect("a file the agent made unreadable is no error of yours");
+    assert!(matches!(
+        evidence["memo.md"][0].text,
+        judge::Text::Read { .. }
+    ));
+    let long = format!("{}.md", "n".repeat(250));
+    let (_d, plan) = one_item(&[long.as_str()]);
+    let evidence = judge::fetch(&one("", &format!("/app/{long}")), "/app", &plan)
+        .await
+        .expect("a 253-byte name is downloaded");
+    assert!(matches!(evidence[&long][0].text, judge::Text::Read { .. }));
+    let (_d, plan) = one_item(&["memo.md"]);
+    let evidence = judge::fetch(&one("!down-full:", "/app/memo.md"), "/app", &plan)
+        .await
+        .unwrap();
+    match &evidence["memo.md"][0].text {
+        judge::Text::Unreadable(why) => assert!(why.contains("disk was full"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    let mut dead = one("!down-gone:", "/app/memo.md");
+    dead.0.insert("!stuck".into(), Vec::new());
+    assert!(judge::fetch(&dead, "/app", &plan).await.is_err());
+}
+
+/// A probe that runs always exits 0, so one the backend failed (exit 126,
+/// no `BF` line, the container still running) is not an empty folder: the
+/// sandbox is asked whether it answers, the probe runs once more, and a
+/// second failure fails the fetch (R103, retried), as a dead sandbox's
+/// does. A probe that ran and listed nothing is still an empty folder.
+/// Guards the D7e fix of REVIEW-B (d7d) F2: the failed exec was judged as
+/// "an empty folder", so the criterion was judged without the agent's work.
+#[tokio::test]
+async fn an_evidence_probe_the_backend_failed_is_not_an_empty_folder() {
+    let (_d, plan) = one_item(&["out"]);
+    let with = |fault: &str| {
+        Files(
+            BTreeMap::from([
+                (fault.to_string(), Vec::new()),
+                ("/app/out/r.md".to_string(), MEMO.as_bytes().to_vec()),
+            ]),
+            Mutex::new(Vec::new()),
+        )
+    };
+    let err = judge::fetch(&with("!exec-fail:/app/out"), "/app", &plan)
+        .await
+        .expect_err("a probe the backend failed twice fails the fetch");
+    assert!(matches!(err, SandboxError::Transport(_)), "{err:?}");
+    assert!(err.to_string().contains("exit 126"), "{err}");
+    let err = judge::fetch(&with("!exec-dead"), "/app", &plan)
+        .await
+        .expect_err("a sandbox that fails every exec does not answer");
+    assert!(matches!(err, SandboxError::Transport(_)), "{err:?}");
+    // A backend's hiccup passes: the second probe lists the agent's work.
+    let evidence = judge::fetch(&with("!exec-fail-once:/app/out"), "/app", &plan)
+        .await
+        .unwrap();
+    assert_eq!(evidence["out"][0].path, "/app/out/r.md");
+    assert!(matches!(evidence["out"][0].text, judge::Text::Read { .. }));
+    // A probe that ran (exit 0) and listed nothing is still an empty folder.
+    let evidence = judge::fetch(&with("!listing:/app/out"), "/app", &plan)
+        .await
+        .unwrap();
+    match &evidence["out"][..] {
+        [f] => match &f.text {
+            judge::Text::Unreadable(why) => assert_eq!(why, "an empty folder"),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
 }

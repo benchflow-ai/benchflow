@@ -199,7 +199,7 @@ Each run writes under `--jobs-dir` (default `jobs/`):
     <task>__<hash8>/                # one rollout: task name + 8-char id
       result.json                   # rollout summary: rewards, errors, token usage/cost
       config.json                   # the rollout's resolved configuration (secret values left out)
-      results.jsonl                 # Verifiers/Prime-RL shaped rollout row
+      results.jsonl                 # rollout row in the shape RL trainers ingest
       rewards.jsonl                 # reward record for this rollout
       timing.json                   # per-phase timing breakdown
       prompts.json                  # prompts sent to the agent
@@ -208,7 +208,7 @@ Each run writes under `--jobs-dir` (default `jobs/`):
         acp_trajectory.jsonl        # full agent trace (ACP events)
         llm_trajectory.jsonl        # raw provider requests/responses (when the usage-tracking proxy captured exchanges; not for subscription logins)
       trainer/
-        verifiers.jsonl             # trainer-ready scored trajectory (Verifiers/ORS record)
+        verifiers.jsonl             # trainer-ready scored trajectory (prompt/completion/reward/metrics/info record)
         atif.json                   # ATIF trajectory record (omitted if the trajectory is empty)
         adp.jsonl                   # ADP trajectory record
       verifier/

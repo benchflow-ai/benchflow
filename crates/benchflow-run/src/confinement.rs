@@ -221,7 +221,7 @@ async fn start(
 
 async fn root(sb: &dyn Sandbox, script: String) -> Result<String, SandboxError> {
     Ok(sb
-        .exec(Exec::new(script).root().timeout(STEP_TIMEOUT))
+        .exec(Exec::new(script).system().timeout(STEP_TIMEOUT))
         .await?
         .stdout)
 }
@@ -322,7 +322,9 @@ async fn read_back(
     confine::add_safepath(&mut env, &BTreeMap::new(), benchflow_task::Format::TaskMd);
     let unset = hardening::unset_vars(&BTreeMap::new());
     let exec = Exec::new(String::new()).root().cwd(WORKDIR).envs(env);
-    let venv = confine::check_verifier_env(sb, &exec, &unset, None).await?;
+    // A fresh sandbox no agent has used: the check may see the image's
+    // variables itself.
+    let venv = confine::check_verifier_env(sb, &exec, &unset, None, None).await?;
 
     let mut s = Vec::new();
     s.push(system_folders(&state, applied.get("locked_system_dirs")));

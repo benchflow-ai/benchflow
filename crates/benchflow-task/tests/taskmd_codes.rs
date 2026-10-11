@@ -1109,3 +1109,61 @@ fn a_folder_without_task_md_is_refused() {
     assert_eq!(report.diagnostics[0].code, code::UNREADABLE);
     assert!(report.diagnostics[0].message.contains("not UTF-8"));
 }
+
+/// `bench import` records what task.md has no home for under
+/// `[import.harbor]`, the name task.md's convert.py and earlier `bench`
+/// builds wrote, which other tools read. `[import.split]`, which an
+/// unreleased build wrote instead, is read too; a package with both is
+/// warned about, since only one is read.
+#[test]
+fn the_import_record_is_read_under_either_name_and_both_are_warned_about() {
+    let trajectory = |report: &CheckReport| -> Vec<String> {
+        report
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == code::IMPORTED && d.message.contains("trajectory:"))
+            .map(|d| d.message.clone())
+            .collect()
+    };
+    let both = |report: &CheckReport| -> Vec<Diagnostic> {
+        report
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == code::IMPORTED && d.message.contains("both record"))
+            .cloned()
+            .collect()
+    };
+    for name in ["harbor", "split"] {
+        let dir = package(
+            &format!("[import.{name}]\ntrajectory = \"trajectory.json\"\n"),
+            &[],
+        );
+        let report = check(dir.path());
+        let said = trajectory(&report);
+        assert_eq!(said.len(), 1, "{name}: {:?}", report.diagnostics);
+        assert!(said[0].starts_with(&format!("[import.{name}] trajectory:")));
+        assert!(both(&report).is_empty());
+    }
+    let dir = package(
+        "[import.harbor]\ntrajectory = \"trajectory.json\"\n[import.split]\ntrajectory = \"other.json\"\n",
+        &[],
+    );
+    let report = check(dir.path());
+    let said = trajectory(&report);
+    assert_eq!(said.len(), 1, "{:?}", report.diagnostics);
+    assert!(said[0].contains("trajectory.json"), "{said:?}");
+    let warned = both(&report);
+    assert_eq!(warned.len(), 1, "{:?}", report.diagnostics);
+    assert_eq!(warned[0].severity, Severity::Warning);
+    assert!(
+        warned[0].message.contains("ignores [import.split]"),
+        "{}",
+        warned[0].message
+    );
+    // `bench explain T222` covers this warning too.
+    let t222 = EXPLANATIONS
+        .iter()
+        .find(|e| e.code == code::IMPORTED)
+        .unwrap();
+    assert!(t222.body.contains("two such records"), "{}", t222.body);
+}

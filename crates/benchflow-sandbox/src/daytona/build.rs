@@ -31,8 +31,61 @@ use super::api::{Api, Retry};
 use super::dockerignore::DockerIgnore;
 use super::s3::Bucket;
 use super::types::PushAccess;
-use crate::shell::login_free_shell;
+use crate::shell::{SYSTEM_PATH, login_free_shell};
 use crate::{SandboxError, archive};
+
+/// Where a Daytona image built by BenchFlow keeps the image's own `PATH`
+/// and loader variables, one file per name, root's to write. The recipe's
+/// last layer records them there and neutralizes them in the container
+/// (`PATH` = [`SYSTEM_PATH`], the loader variables empty): Daytona's daemon
+/// (root) looks programs up through the container's `PATH`, and its shells
+/// read and load what the container's `BASH_ENV`, `LD_PRELOAD`, ... name,
+/// for every command, and an image may point any of these at a folder the
+/// agent can write. The command wrapper reads these files back and gives
+/// each command the image's values (see [`super::toolbox::wrap`]).
+pub(crate) const IMAGE_ENV_DIR: &str = "/etc/benchflow/image-env";
+
+/// The names the layer records and neutralizes: `PATH` and every loader
+/// variable. A space-separated list for the recipe's `for` loop and the
+/// wrapper's.
+pub(crate) fn recorded_env_names() -> String {
+    let mut names = vec!["PATH"];
+    names.extend_from_slice(crate::shell::LOADER_VARS);
+    names.join(" ")
+}
+
+/// The recipe's last lines: record the image's `PATH` and loader variables
+/// in [`IMAGE_ENV_DIR`] (one file each, only those that are set), then
+/// neutralize them in the container.
+fn system_env_layer() -> String {
+    let names = recorded_env_names();
+    // `read`-free capture: one file per name, written only when the
+    // variable is set, so the wrapper can tell "the image set it" from
+    // "the image did not". `mkdir` and `chmod` are named by absolute path:
+    // the step runs before `ENV PATH=` below, so the image's own `PATH`
+    // (which may omit `/bin`) must not be relied on to find them.
+    let record = format!(
+        "/bin/mkdir -p {IMAGE_ENV_DIR} && for bf_v in {names}; do \
+         eval \"bf_set=\\${{$bf_v+x}}; bf_val=\\${{$bf_v-}}\"; \
+         if [ -n \"$bf_set\" ]; then printf '%s' \"$bf_val\" > {IMAGE_ENV_DIR}/$bf_v; fi; \
+         done && /bin/chmod -R a-w,a+rX {IMAGE_ENV_DIR}"
+    );
+    let argv = serde_json::json!(["/bin/sh", "-c", record]);
+    // The container's `PATH` is the system folders, and the file-naming
+    // loader variables and the shells' start-up files are empty (glibc and
+    // the shells treat empty as none). The flags are never set, not even
+    // empty, because glibc acts on their presence; they stay as the image
+    // left them (normally unset). The command wrapper restores the image's
+    // real values from the record.
+    let mut env = format!("ENV PATH={SYSTEM_PATH}");
+    for v in crate::shell::FILE_LOADER_VARS
+        .iter()
+        .chain(crate::shell::STARTUP_VARS)
+    {
+        env.push_str(&format!(" {v}="));
+    }
+    format!("RUN {argv}\n{env}\n")
+}
 
 /// What a sandbox is built from.
 #[derive(Debug, Clone)]
@@ -59,6 +112,7 @@ impl Recipe {
             }
         }
         dockerfile.push_str("USER root\n");
+        dockerfile.push_str(&system_env_layer());
         Self {
             dockerfile,
             context_hashes,
@@ -66,15 +120,17 @@ impl Recipe {
         }
     }
 
-    /// The same recipe under a new content key: a label no build reads.
-    /// Daytona keeps a build that was canceled (a run stopped while it
-    /// built) and answers every later build of the same content with
-    /// `context canceled`; a relabeled recipe builds afresh.
-    pub(crate) fn relabeled(&self, salt: &str) -> Self {
+    /// The recipe under another content key for its `n`th rebuild (`n` 0
+    /// is the recipe itself): a comment line, which no build step reads.
+    /// Daytona keeps a build that was cancelled and fails every later build
+    /// of the same content at once; another key builds afresh.
+    pub(crate) fn rebuilt(&self, n: u32) -> Self {
         let mut again = self.clone();
-        again
-            .dockerfile
-            .push_str(&format!("LABEL ai.benchflow.rebuild=\"{salt}\"\n"));
+        if n > 0 {
+            again.dockerfile.push_str(&format!(
+                "# benchflow: rebuild-{n} after a cancelled build\n"
+            ));
+        }
         again
     }
 
@@ -222,15 +278,74 @@ mod tests {
         assert_eq!(lines[2], "USER agent");
         assert_eq!(lines[3], "USER root");
         assert!(lines[4].starts_with(r#"RUN ["/bin/sh","-c","#));
-        assert_eq!(*lines.last().unwrap(), "USER root");
+        assert_eq!(lines[5], "USER root");
         assert_eq!(r.default_user.as_deref(), Some("agent"));
     }
 
     #[test]
     fn a_prebuilt_image_gets_a_from_line() {
         let r = Recipe::new("FROM ubuntu:24.04\n", &[], vec![]);
-        assert_eq!(r.dockerfile, "FROM ubuntu:24.04\nUSER root\n");
+        assert_eq!(
+            r.dockerfile,
+            format!("FROM ubuntu:24.04\nUSER root\n{}", system_env_layer())
+        );
         assert_eq!(r.default_user, None);
+    }
+
+    /// The image ends with the system folders as its `PATH` and empty
+    /// loader variables, so Daytona's daemon never looks a program up in,
+    /// loads a library from, or reads a start-up file in a folder of the
+    /// task's; the image's own values are recorded first, for the commands.
+    #[test]
+    fn the_image_records_its_env_then_neutralizes_it() {
+        let r = Recipe::new(
+            "FROM x\nENV PATH=/app/.venv/bin:$PATH BASH_ENV=/app/.venv/env.sh\n",
+            &[],
+            vec![],
+        );
+        let lines: Vec<&str> = r.dockerfile.lines().collect();
+        let env = lines[lines.len() - 1];
+        assert!(
+            env.starts_with(&format!("ENV PATH={SYSTEM_PATH} ")),
+            "{env}"
+        );
+        assert!(env.contains(" LD_PRELOAD= "), "{env}");
+        assert!(env.ends_with(" ENV="), "{env}");
+        // A flag loader variable is never set, not even empty: glibc acts on
+        // its presence (an empty `LD_SHOW_AUXV` prints the auxiliary vector
+        // from every program).
+        for flag in crate::shell::FLAG_LOADER_VARS {
+            assert!(
+                !env.split(' ').any(|w| w.starts_with(&format!("{flag}="))),
+                "{flag} in the layer's ENV line: {env}"
+            );
+        }
+        let record = lines[lines.len() - 2];
+        assert!(record.starts_with(r#"RUN ["/bin/sh","-c","#), "{record}");
+        assert!(record.contains(IMAGE_ENV_DIR), "{record}");
+        // The recording step is valid sh and writes each set variable's
+        // value, and nothing for an unset one.
+        let argv: Vec<String> = serde_json::from_str(record.strip_prefix("RUN ").unwrap()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("etc-benchflow");
+        let script = argv[2].replace("/etc/benchflow", root.to_str().unwrap());
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&script)
+            .env("PATH", "/opt/x/bin:/usr/bin:/bin")
+            .env("BASH_ENV", "/app/.venv/env.sh")
+            .env_remove("LD_PRELOAD")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got = |n: &str| std::fs::read_to_string(root.join("image-env").join(n)).ok();
+        assert_eq!(got("PATH").as_deref(), Some("/opt/x/bin:/usr/bin:/bin"));
+        assert_eq!(got("BASH_ENV").as_deref(), Some("/app/.venv/env.sh"));
+        assert_eq!(got("LD_PRELOAD"), None, "an unset variable is not recorded");
     }
 
     #[test]

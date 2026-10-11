@@ -163,7 +163,7 @@ impl FakeSandbox {
         let mut w = self.world.lock().unwrap();
         // The engine's own setup and teardown. The fixture's image builds
         // `WORKDIR /app`, which a task without a declared workdir works in.
-        if c == "pwd" {
+        if c.lines().last() == Some("pwd") {
             return ok("/app\n");
         }
         if c.contains("useradd") {
@@ -434,6 +434,40 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// A run variable holding the endpoint's key (`--env AI_GATEWAY_API_KEY=...`,
+/// the hint the native loops gave until 820ee045) never reaches the
+/// sandbox's commands; the other run variables do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_variable_holding_the_key_stays_out_of_the_sandbox() {
+    let script = Script {
+        replies: VecDeque::from([(
+            200,
+            tool_reply("c1", "submit", json!({"summary": "nothing to do"})),
+        )]),
+        ..Script::default()
+    };
+    let mut options = options();
+    options.agent_env = BTreeMap::from([
+        ("AI_GATEWAY_API_KEY".to_string(), KEY.to_string()),
+        ("TASK_HINT".to_string(), "kept".to_string()),
+        ("AUTH_HEADER".to_string(), format!("Bearer {KEY}")),
+    ]);
+    let r = run_trial("builtin", script, options).await;
+    assert!(
+        r.rec.env_keys.contains(&"TASK_HINT".to_string()),
+        "{:?}",
+        r.rec.env_keys
+    );
+    for held in ["AI_GATEWAY_API_KEY", "AUTH_HEADER"] {
+        assert!(
+            !r.rec.env_keys.contains(&held.to_string()),
+            "{:?}",
+            r.rec.env_keys
+        );
+    }
+    assert_no_key(&r.dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

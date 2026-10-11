@@ -147,7 +147,7 @@ bench skills eval skills/citation-management \
 ### `hub` — check external-environment-hub compatibility
 
 ```bash
-bench hub check          # inventory/structurally-check representative Harbor-registry tasks
+bench hub check          # inventory/structurally-check representative tasks from the public registry.json that lists Terminal-Bench 2 (not BenchFlow's SkillsBench registry)
 ```
 
 ### `agents` — list available agents

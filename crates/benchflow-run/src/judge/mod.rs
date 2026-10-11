@@ -25,7 +25,7 @@ use std::time::Duration;
 use benchflow_agent::credentials::HostEnv;
 use benchflow_agent::native::ClientOptions;
 use benchflow_agent::native::chat::Message;
-use benchflow_sandbox::{Exec, Sandbox};
+use benchflow_sandbox::{Exec, ExecOutput, Sandbox, SandboxError};
 use benchflow_task::TaskPackage;
 use benchflow_task::rubric::{Judge, Outcome, Rubric, Verdict};
 use serde_json::{Map, Value, json};
@@ -50,6 +50,9 @@ pub const EVIDENCE_CAP: usize = 150_000;
 pub const REFERENCE_CAP: usize = 40_000;
 /// Files read from one evidence folder.
 const FOLDER_FILES: usize = 20;
+/// Files of one evidence folder the probe looks at to pick
+/// [`FOLDER_FILES`] of them.
+const FOLDER_SCAN: usize = 10_000;
 /// Output tokens a verdict may use (reasoning models spend some first).
 const MAX_TOKENS: u32 = 4_000;
 
@@ -247,7 +250,8 @@ pub fn reference(root: &Path, spec: &str) -> Result<Reference, String> {
 /// One evidence file as fetched from the sandbox.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fetched {
-    /// The path in the sandbox.
+    /// The path in the sandbox, named under the evidence item even when
+    /// links (that stay in the agent's folder) led the probe elsewhere.
     pub path: String,
     /// The file's size in bytes, when it exists.
     pub bytes: Option<u64>,
@@ -283,15 +287,21 @@ fn sandbox_path(item: &str, workdir: &str) -> String {
     }
 }
 
-/// Download and read every evidence item the plan names. Links are not
-/// followed, folders give their first [`FOLDER_FILES`] files, and files
-/// over [`DOWNLOAD_CAP`] are noted, not downloaded.
-pub async fn fetch(sb: &dyn Sandbox, workdir: &str, plan: &Plan) -> Evidence {
+/// Download and read every evidence item the plan names. Links that could
+/// lead out of the agent's work are not followed ([`probe_script`]),
+/// folders give their first [`FOLDER_FILES`] files, and files over
+/// [`DOWNLOAD_CAP`] are noted, not downloaded. A sandbox that cannot say
+/// what an item is fails the whole fetch: judging the agent's work as
+/// missing would score the sandbox's failure; so does a download the
+/// sandbox fails, or a failure on this machine. A check that runs past its
+/// time while the sandbox still answers leaves that item unreadable.
+pub async fn fetch(sb: &dyn Sandbox, workdir: &str, plan: &Plan) -> Result<Evidence, SandboxError> {
     let mut items: Vec<&String> = plan.items.iter().flat_map(|i| &i.evidence).collect();
     items.sort();
     items.dedup();
     let mut out = Evidence::new();
-    let tmp = tempfile::tempdir().ok();
+    let tmp = tempfile::tempdir()
+        .map_err(|e| SandboxError::io("making a temporary folder for the rubric's evidence", e))?;
     for item in items {
         if RUNTIME_ITEMS.contains(&item.as_str()) || item.starts_with("trajectory") {
             out.insert(
@@ -307,52 +317,139 @@ pub async fn fetch(sb: &dyn Sandbox, workdir: &str, plan: &Plan) -> Evidence {
             continue;
         }
         let path = sandbox_path(item, workdir);
-        let q = benchflow_sandbox::shell::quote(&path);
-        let probe = format!(
-            "f={q}; if [ -L \"$f\" ]; then echo \"BF link\"; \
-             elif [ -f \"$f\" ]; then echo \"BF file $(stat -c %s \"$f\") $f\"; \
-             elif [ -d \"$f\" ]; then find \"$f\" -type f 2>/dev/null | LC_ALL=C sort | head -n {FOLDER_FILES} | \
-             while IFS= read -r g; do echo \"BF file $(stat -c %s \"$g\") $g\"; done; \
-             else echo \"BF missing\"; fi"
-        );
-        let listing = match sb
-            .exec(
-                Exec::new(probe)
-                    .root()
-                    .env("PATH", benchflow_sandbox::shell::SYSTEM_PATH)
+        let probe = probe_script(&path, workdir);
+        let run = || {
+            sb.exec(
+                Exec::new(probe.clone())
+                    .system()
                     .timeout(Duration::from_secs(60)),
             )
-            .await
-        {
-            Ok(o) => o.stdout,
-            Err(e) => format!("BF error {e}"),
+        };
+        let mut o = run().await?;
+        let unreadable = |why: String| Fetched {
+            path: path.clone(),
+            bytes: None,
+            text: Text::Unreadable(why),
+        };
+        if o.timed_out {
+            // A slow listing is not a lost sandbox: one that still answers
+            // is asked once more (a busy backend's hiccup passes), and then
+            // has the item judged as unreadable.
+            let alive = sb
+                .exec(Exec::new("true").system().timeout(Duration::from_secs(30)))
+                .await?;
+            if alive.timed_out {
+                return Err(SandboxError::Transport(format!(
+                    "checking the evidence {item} ran past 60s, and the sandbox then did not answer"
+                )));
+            }
+            o = run().await?;
+            if o.timed_out {
+                out.insert(
+                    item.clone(),
+                    vec![unreadable(
+                        "checking what is there ran past 60 s twice, so it could not be read"
+                            .into(),
+                    )],
+                );
+                continue;
+            }
+        }
+        // A probe that runs always exits 0 (each branch ends in an `echo`
+        // or the listing's loop), so one that exits otherwise with no `BF`
+        // line did not run: the backend failed the exec, as Docker's runtime
+        // can under load while the container runs. Read as an empty folder,
+        // that would judge the item without the agent's work. A sandbox that
+        // still runs a command is asked once more; a second failure, or one
+        // that runs nothing, fails the fetch.
+        let ran = |o: &ExecOutput| {
+            o.exit_code == 0 || o.stdout.lines().any(|line| line.starts_with("BF "))
+        };
+        if !ran(&o) {
+            let failed = |o: &ExecOutput| {
+                let said: String = o.combined().chars().take(300).collect();
+                format!("exit {}: {said}", o.exit_code)
+            };
+            let alive = sb
+                .exec(Exec::new("true").system().timeout(Duration::from_secs(30)))
+                .await?;
+            if !alive.success() {
+                return Err(SandboxError::Transport(format!(
+                    "checking the evidence {item} failed ({}), and the sandbox then did not run a command",
+                    failed(&o)
+                )));
+            }
+            o = run().await?;
+            if o.timed_out || !ran(&o) {
+                return Err(SandboxError::Transport(format!(
+                    "checking the evidence {item} failed twice ({})",
+                    failed(&o)
+                )));
+            }
+        }
+        let item_path = path.trim_end_matches('/');
+        // Where the probe read the item, when it followed links to it.
+        let mut real: Option<String> = None;
+        // Only the item itself or a file inside it, named as the item's:
+        // a listed path anywhere else did not come from this item's folder.
+        let shown = |real: &Option<String>, p: &str| -> Option<String> {
+            let at = real.as_deref().unwrap_or(item_path);
+            let rest = p.strip_prefix(at)?;
+            (rest.is_empty() || rest.starts_with('/')).then(|| format!("{item_path}{rest}"))
         };
         let mut files = Vec::new();
-        for line in listing.lines() {
+        for line in o.stdout.lines() {
             let Some(rest) = line.strip_prefix("BF ") else {
                 continue;
             };
-            let unreadable = |why: String| Fetched {
-                path: path.clone(),
-                bytes: None,
-                text: Text::Unreadable(why),
-            };
             if rest == "link" {
                 files.push(unreadable(
-                    "a symbolic link, which the judge does not follow".into(),
+                    "a symbolic link that leads out of the agent's folder, which the judge does not follow".into(),
                 ));
             } else if rest == "missing" {
                 files.push(unreadable("the agent left no file here".into()));
+            } else if let Some(r) = rest.strip_prefix("real ") {
+                if real.is_none() && files.is_empty() {
+                    real = Some(r.trim_end_matches('/').to_string());
+                }
             } else if let Some(e) = rest.strip_prefix("error ") {
                 files.push(unreadable(format!("could not be checked: {e}")));
+            } else if let Some(p) = rest.strip_prefix("hardlink ") {
+                if let Some(shown) = shown(&real, p) {
+                    files.push(Fetched {
+                        path: shown,
+                        bytes: None,
+                        text: Text::Unreadable(
+                            "a file with more than one hard link, which may be a file outside the agent's work, so the judge does not read it".into(),
+                        ),
+                    });
+                }
+            } else if let Some(p) = rest.strip_prefix("unsized ") {
+                if let Some(shown) = shown(&real, p) {
+                    files.push(Fetched {
+                        path: shown,
+                        bytes: None,
+                        text: Text::Unreadable("its size could not be read".into()),
+                    });
+                }
             } else if let Some(f) = rest.strip_prefix("file ") {
                 let Some((size, p)) = f.split_once(' ') else {
                     continue;
                 };
-                let size: u64 = size.parse().unwrap_or(0);
+                let Some(name) = shown(&real, p) else {
+                    continue;
+                };
+                let Ok(size) = size.parse::<u64>() else {
+                    files.push(Fetched {
+                        path: name,
+                        bytes: None,
+                        text: Text::Unreadable("its size could not be read".into()),
+                    });
+                    continue;
+                };
                 if size > DOWNLOAD_CAP {
                     files.push(Fetched {
-                        path: p.to_string(),
+                        path: name,
                         bytes: Some(size),
                         text: Text::Unreadable(format!(
                             "{size} bytes, over the judge's {DOWNLOAD_CAP}-byte download limit"
@@ -360,7 +457,9 @@ pub async fn fetch(sb: &dyn Sandbox, workdir: &str, plan: &Plan) -> Evidence {
                     });
                     continue;
                 }
-                files.push(download(sb, p, size, tmp.as_ref().map(|t| t.path())).await);
+                let mut got = download(sb, p, size, tmp.path()).await?;
+                got.path = name;
+                files.push(got);
             }
         }
         if files.is_empty() {
@@ -372,37 +471,147 @@ pub async fn fetch(sb: &dyn Sandbox, workdir: &str, plan: &Plan) -> Evidence {
         }
         out.insert(item.clone(), files);
     }
-    out
+    Ok(out)
 }
 
-async fn download(sb: &dyn Sandbox, path: &str, size: u64, tmp: Option<&Path>) -> Fetched {
+/// The root-run shell probe that says what an evidence item is.
+///
+/// - `BF link` when a link on the item's way could lead root anywhere.
+///   From the workdir on, the agent may have made any folder or the item
+///   a link; the handoff kept only links that resolve inside the workdir,
+///   so a link there is followed only when the item resolves inside the
+///   workdir. Outside the workdir, the image's links (root's, such as
+///   `/var/run`) are followed and anyone else's are not.
+/// - `BF real <path>` when links were followed: the place the item
+///   resolves to, which the listing below names instead of the item.
+/// - `BF file <size> <path>` for a file, or for each of a folder's first
+///   [`FOLDER_FILES`] files (of the first [`FOLDER_SCAN`] found, so a
+///   folder of very many files cannot stall the probe); `BF hardlink
+///   <path>` for one with more than one hard link, which may be a file
+///   outside the agent's work (the agent can link a root-only file into its
+///   folder); `BF unsized <path>` when its size could not be read.
+/// - `BF missing` otherwise.
+///
+/// A file whose path holds a line break is skipped: its path would read as
+/// two lines of the listing.
+pub(crate) fn probe_script(path: &str, workdir: &str) -> String {
+    use benchflow_sandbox::shell::quote;
+    let path = match path.trim_end_matches('/') {
+        "" => "/",
+        p => p,
+    };
+    let w = workdir.trim_end_matches('/');
+    let inside = !w.is_empty() && (path == w || path.starts_with(&format!("{w}/")));
+    // Folders up to the workdir are the image's; from there on the agent
+    // could have made one a link.
+    let (base, rel, on_link, resolved) = if inside {
+        (
+            w,
+            path[w.len()..].trim_start_matches('/'),
+            "l=1",
+            r#"rw=$(readlink -f "$w" 2>/dev/null); case "$t" in "$rw"|"$rw"/*) ;; *) t=;; esac; [ -n "$rw" ] || t="#,
+        )
+    } else {
+        (
+            "",
+            path.trim_start_matches('/'),
+            r#"[ "$(stat -c %u "$d" 2>/dev/null)" = 0 ] || { echo "BF link"; exit 0; }"#,
+            ":",
+        )
+    };
+    format!(
+        r#"f={f}; w={w}; r={r}; nl='
+'
+l=; d={b}; set -f; IFS=/
+for c in $r; do [ -n "$c" ] || continue; d="$d/$c"; if [ -L "$d" ]; then {on_link}; fi; done
+unset IFS; set +f
+if [ -n "$l" ] || [ -L "$f" ]; then
+  t=$(readlink -f "$f" 2>/dev/null); case "$t" in *"$nl"*) t=;; esac
+  {resolved}
+  [ -n "$t" ] || {{ echo "BF link"; exit 0; }}
+  [ "$t" = "$f" ] || {{ echo "BF real $t"; f=$t; }}
+fi
+one() {{ s=$(stat -c '%h %s' "$1" 2>/dev/null); case "$s" in "1 "[0-9]*) echo "BF file ${{s#1 }} $1";; [0-9]*" "[0-9]*) echo "BF hardlink $1";; *) echo "BF unsized $1";; esac; }}
+if [ -f "$f" ]; then one "$f"
+elif [ -d "$f" ]; then find "$f" -type f ! -path "*$nl*" 2>/dev/null | head -n {FOLDER_SCAN} | LC_ALL=C sort | head -n {FOLDER_FILES} | while IFS= read -r g; do one "$g"; done
+else echo "BF missing"; fi"#,
+        f = quote(path),
+        w = quote(w),
+        b = quote(base),
+        r = quote(rel),
+    )
+}
+
+/// Download one evidence file and read it as text. Only what is wrong
+/// with the file itself leaves it unreadable: gone from the sandbox, a
+/// sandbox disk the agent filled, over the cap, or unreadable once here. A
+/// sandbox that fails the download, or stops answering, fails the fetch, as
+/// the probe's does: judging the work as missing would score the failure.
+/// So does a failure on this machine that has nothing to do with the file.
+async fn download(
+    sb: &dyn Sandbox,
+    path: &str,
+    size: u64,
+    tmp: &Path,
+) -> Result<Fetched, SandboxError> {
     let name = path.rsplit('/').next().unwrap_or("file").to_string();
     let fail = |why: String| Fetched {
         path: path.to_string(),
         bytes: Some(size),
         text: Text::Unreadable(why),
     };
-    let Some(tmp) = tmp else {
-        return fail("no temporary folder on the host".into());
-    };
-    let local: PathBuf = tmp.join(format!("{}-{name}", uuid_like(path)));
-    if let Err(e) = sb.download(path, &local).await {
-        return fail(format!("could not be downloaded: {e}"));
+    // Named by the path's hash alone: a name the agent chose may be as long
+    // as the system allows, with no room for anything before it.
+    let local: PathBuf = tmp.join(uuid_like(path));
+    match sb.download(path, &local).await {
+        Ok(()) => {}
+        Err(e) if e.is_missing_in_sandbox() || e.to_string().contains("disk is full") => {
+            // Either may also be how a sandbox that just stopped looks:
+            // only one that still answers has the file judged so.
+            let alive = sb
+                .exec(Exec::new("true").system().timeout(Duration::from_secs(30)))
+                .await?;
+            if alive.timed_out {
+                return Err(SandboxError::Transport(format!(
+                    "downloading the evidence {path} failed ({e}), and the sandbox then did not answer"
+                )));
+            }
+            return Ok(fail(if e.is_missing_in_sandbox() {
+                "the file was gone when it was downloaded".into()
+            } else {
+                "the sandbox's disk was full, so it could not be copied out".into()
+            }));
+        }
+        Err(e) => return Err(e),
     }
     // A backend may unpack a file into a folder of its name.
     let file = if local.is_dir() {
         local.join(&name)
     } else {
-        local
+        local.clone()
     };
+    // The copy keeps the mode the file had in the sandbox, where the agent
+    // may have taken every permission away (`chmod 000`); the copy is
+    // BenchFlow's own, so it can read it.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if local.is_dir() {
+            let _ = std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o700));
+        }
+        let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+    }
     match std::fs::read(&file) {
-        Ok(bytes) if bytes.len() as u64 <= DOWNLOAD_CAP => Fetched {
+        Ok(bytes) if bytes.len() as u64 <= DOWNLOAD_CAP => Ok(Fetched {
             path: path.to_string(),
             bytes: Some(bytes.len() as u64),
             text: text::to_text(&name, &bytes),
-        },
-        Ok(bytes) => fail(format!("{} bytes, over the download limit", bytes.len())),
-        Err(e) => fail(format!("could not be read after download: {e}")),
+        }),
+        Ok(bytes) => Ok(fail(format!(
+            "{} bytes, over the download limit",
+            bytes.len()
+        ))),
+        // What is left is the file's own doing (not a regular file, say).
+        Err(e) => Ok(fail(format!("could not be read after download: {e}"))),
     }
 }
 
@@ -431,7 +640,9 @@ pub async fn connect(
     plan: &Plan,
     vars: &BTreeMap<String, String>,
 ) -> Result<Reviewer, crate::review::ReviewError> {
-    let host = HostEnv::from_process().with_overrides(vars.clone());
+    // `vars` are the program's own (`RunOptions::judge_env`), never the
+    // run's `--env`, so they count as the environment.
+    let host = HostEnv::from_process().with_environment(vars.clone());
     Reviewer::connect(&plan.model, &host, Vec::new(), ClientOptions::default()).await
 }
 
@@ -585,7 +796,11 @@ pub fn user_prompt(plan: &Plan, item: &Item, evidence: &Evidence) -> String {
                         f.path
                     ));
                 }
-                Text::Read { kind, text } => {
+                Text::Read {
+                    kind,
+                    text,
+                    cut: unread,
+                } => {
                     let cap = FILE_TEXT_CAP.min(budget);
                     let (t, cut) = capped(text, cap);
                     budget = budget.saturating_sub(t.chars().count());
@@ -595,10 +810,17 @@ pub fn user_prompt(plan: &Plan, item: &Item, evidence: &Evidence) -> String {
                         f.bytes.unwrap_or(0),
                         t.trim_end()
                     ));
-                    if let Some(n) = cut {
-                        s.push_str(&format!(
+                    match (cut, unread) {
+                        (Some(n), false) => s.push_str(&format!(
                             "[... cut for size: {n} more characters of this file were not shown]\n"
-                        ));
+                        )),
+                        (Some(n), true) => s.push_str(&format!(
+                            "[... cut for size: more than {n} more characters of this file were not shown; it is too large to read to its end]\n"
+                        )),
+                        (None, true) => s.push_str(
+                            "[... cut for size: the rest of this file was not read; it is too large to read to its end]\n",
+                        ),
+                        (None, false) => {}
                     }
                     s.push_str("=== END OF FILE ===\n");
                 }
@@ -763,9 +985,10 @@ async fn judge_one(plan: &Plan, item: &Item, evidence: &Evidence, reviewer: &Rev
         .iter()
         .flat_map(|e| evidence.get(e).into_iter().flatten())
         .map(|f| match &f.text {
-            Text::Read { kind, text } => json!({
+            Text::Read { kind, text, cut } => json!({
                 "path": f.path, "bytes": f.bytes, "kind": kind,
-                "chars": text.chars().count(), "cut": text.chars().count() > FILE_TEXT_CAP,
+                "chars": text.chars().count(),
+                "cut": *cut || text.chars().count() > FILE_TEXT_CAP,
             }),
             Text::Unreadable(why) => json!({"path": f.path, "bytes": f.bytes, "not_shown": why}),
         })
@@ -835,6 +1058,171 @@ fn message_json(m: &Message) -> Value {
 
 #[cfg(test)]
 mod tests {
+
+    /// Run the evidence probe under the host's `sh`, with a stand-in
+    /// `stat -c` (the host's may not take `-c`): `%u` prints the owner of a
+    /// link itself, anything else the link count and size, and a file
+    /// named `unsized` cannot be read. With `as_root`, the test's own user
+    /// stands in for root as the owner of the image's links.
+    fn probe_as(root: &Path, path: &str, workdir: &str, as_root: bool) -> String {
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("stat"),
+            "#!/bin/sh\nfmt=; f=\nfor a; do case \"$a\" in -c) ;; %*) fmt=$a;; *) f=$a;; esac; done\n\
+             case \"$f\" in *unsized) exit 1;; esac\n\
+             if [ \"$fmt\" = %u ]; then ls -lnd \"$f\" | awk '{print $3}'; exit; fi\n\
+             echo \"$(ls -ln \"$f\" | awk '{print $2}') $(wc -c < \"$f\" | tr -d ' ')\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("stat"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let mut script = probe_script(path, workdir);
+        if as_root {
+            let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+            let uid = String::from_utf8(uid.stdout).unwrap();
+            script = script.replace("\" = 0 ]", &format!("\" = {} ]", uid.trim()));
+        }
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn probe(root: &Path, path: &str, workdir: &str) -> String {
+        probe_as(root, path, workdir, false)
+    }
+
+    #[test]
+    fn the_probe_lists_only_the_items_own_files_and_follows_no_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let real = root.join("real");
+        let out = real.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("memo.md"), "mine").unwrap();
+        // The task's private answer key, outside the agent's folder.
+        let tests = root.join("tests");
+        std::fs::create_dir(&tests).unwrap();
+        std::fs::write(tests.join("answers.toml"), "secret").unwrap();
+        // A file name that reads as two lines of a listing.
+        let forged = format!("a\n{}", tests.join("answers.toml").display());
+        std::fs::create_dir_all(out.join(&forged).parent().unwrap()).unwrap();
+        std::fs::write(out.join(&forged), "x").unwrap();
+        // Links the agent made: to a folder, and as a folder on the way.
+        std::os::unix::fs::symlink(&tests, real.join("evil")).unwrap();
+        std::fs::create_dir(real.join("deep")).unwrap();
+        std::os::unix::fs::symlink(&tests, real.join("deep/sub")).unwrap();
+        // A workdir that is itself a link is the image's, and fine.
+        let workdir = root.join("app");
+        std::os::unix::fs::symlink(&real, &workdir).unwrap();
+        let w = workdir.to_str().unwrap();
+
+        let listing = probe(&root, &format!("{w}/out"), w);
+        assert_eq!(listing, format!("BF file 4 {w}/out/memo.md\n"));
+        assert!(!listing.contains("secret") && !listing.contains("tests"));
+        for item in [
+            "evil",
+            "evil/",
+            "evil/answers.toml",
+            "deep/sub/answers.toml",
+        ] {
+            assert_eq!(
+                probe(&root, &format!("{w}/{item}"), w),
+                "BF link\n",
+                "{item}"
+            );
+        }
+        assert_eq!(
+            probe(&root, &format!("{w}/out/memo.md"), w),
+            format!("BF file 4 {w}/out/memo.md\n")
+        );
+        assert_eq!(probe(&root, &format!("{w}/nope"), w), "BF missing\n");
+    }
+
+    /// Links the handoff keeps (they resolve inside the workdir) are
+    /// followed and the item is read where it resolves to, as is the
+    /// workdir itself when the image made it a link; a link outside the
+    /// workdir is followed only when root (the image) made it. Guards the
+    /// D7b fix of the probe added in 859fc713, which refused all of these.
+    #[test]
+    fn the_probe_follows_links_that_stay_inside_the_workdir_and_the_images_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let real = root.join("real");
+        std::fs::create_dir_all(real.join("build/out")).unwrap();
+        std::fs::write(real.join("build/out/r.md"), "report").unwrap();
+        std::os::unix::fs::symlink("build/out", real.join("out")).unwrap();
+        let workdir = root.join("app");
+        std::os::unix::fs::symlink(&real, &workdir).unwrap();
+        let w = workdir.to_str().unwrap();
+        let r = real.display();
+
+        assert_eq!(
+            probe(&root, &format!("{w}/out"), w),
+            format!("BF real {r}/build/out\nBF file 6 {r}/build/out/r.md\n")
+        );
+        assert_eq!(
+            probe(&root, &format!("{w}/out/r.md"), w),
+            format!("BF real {r}/build/out/r.md\nBF file 6 {r}/build/out/r.md\n")
+        );
+        // The whole workdir, itself the image's link.
+        assert_eq!(
+            probe(&root, &format!("{w}/"), w),
+            format!("BF real {r}\nBF file 6 {r}/build/out/r.md\n")
+        );
+        // Outside the workdir: a link someone other than root made is not
+        // followed; the image's (root's) is.
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("d.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink(&data, root.join("run")).unwrap();
+        let item = format!("{}/run/d.txt", root.display());
+        // Run as root, the test's link is root's, the image's case.
+        let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+        if String::from_utf8_lossy(&uid.stdout).trim() != "0" {
+            assert_eq!(probe(&root, &item, w), "BF link\n");
+        }
+        assert_eq!(
+            probe_as(&root, &item, w, true),
+            format!("BF file 2 {item}\n")
+        );
+    }
+
+    /// A file with more than one hard link may be a root-only file the agent
+    /// linked into its folder, so the probe names it apart rather than have
+    /// root read it; a file whose size cannot be read is named too, rather
+    /// than dropped. Guards the D7b fix of the probe added in 859fc713.
+    #[test]
+    fn the_probe_names_hard_links_and_files_it_cannot_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let w = root.join("app");
+        std::fs::create_dir_all(w.join("out")).unwrap();
+        let secret = root.join("shadow");
+        std::fs::write(&secret, "root only").unwrap();
+        std::fs::hard_link(&secret, w.join("out/linked.md")).unwrap();
+        std::fs::write(w.join("out/unsized"), "x").unwrap();
+        std::fs::write(w.join("out/plain.md"), "mine").unwrap();
+        let w = w.to_str().unwrap();
+        assert_eq!(
+            probe(&root, &format!("{w}/out"), w),
+            format!(
+                "BF hardlink {w}/out/linked.md\nBF file 4 {w}/out/plain.md\nBF unsized {w}/out/unsized\n"
+            )
+        );
+        assert_eq!(
+            probe(&root, &format!("{w}/out/linked.md"), w),
+            format!("BF hardlink {w}/out/linked.md\n")
+        );
+    }
+
     use super::*;
 
     fn item(scale: Scale, outcome: Outcome) -> Item {

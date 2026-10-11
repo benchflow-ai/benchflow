@@ -72,11 +72,11 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | Key | Meaning |
 |---|---|
 | `schema_version` (alias `version`) | Config schema version, currently `"1.3"` |
-| `task` | Package identity: `name` (`org/name` format), `description`, `authors`, `keywords`, `version` (informational Harbor 1.3 field, stored verbatim) |
+| `task` | Package identity: `name` (`org/name` format), `description`, `authors`, `keywords`, `version` (informational field of split-layout schema 1.3, stored verbatim) |
 | `metadata` | Freeform mapping — difficulty, category, tags, anything descriptive |
 | `agent` | Agent run policy: `timeout_sec`, `user`, `network_mode`, `allowed_hosts` |
 | `verifier` | Verifier run policy: `timeout_sec` (default 600), `env`, `user`, `service`, … |
-| `sandbox` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `allowed_hosts`, `blocked_urls`, `blocked_hosts`, `env`, `workdir`, … (legacy `task.toml` imports convert the Harbor `environment` table to this key; `environment:` in `task.md` is rejected with a rename hint) |
+| `sandbox` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `allowed_hosts`, `blocked_urls`, `blocked_hosts`, `env`, `workdir`, … (legacy `task.toml` imports convert the split layout's `environment` table to this key; `environment:` in `task.md` is rejected with a rename hint) |
 | `oracle` | Oracle run policy: `env`, `timeout_sec` (import alias: `solution`) |
 | `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance, artifact, and reward metadata |
 
@@ -146,7 +146,7 @@ directory. Read the
 [sandbox hardening notes](./sandbox-hardening.md#network-policy-denylist-egress)
 before relying on it: a blocklist hides pages, not knowledge.
 
-`allowlist` is the opposite: the agent reaches only what is listed. Declare it on `sandbox`, or on `agent` over a public sandbox (Harbor's recommended form; BenchFlow treats both the same, because it filters the agent's uid only):
+`allowlist` is the opposite: the agent reaches only what is listed. Declare it on `sandbox`, or on `agent` over a public sandbox (the form another split-layout runner recommends; BenchFlow treats both the same, because it filters the agent's uid only):
 
 ```yaml
 agent:
@@ -157,7 +157,7 @@ agent:
     - 10.0.0.0/8
 ```
 
-Entries follow Harbor: an exact hostname (no subdomains, no implied `www.`), a leading-wildcard hostname (`*.example.com` matches subdomains at any depth but not `example.com` itself), an IPv4 or IPv6 address, or a strict CIDR range (`10.0.0.0/8`, not `10.0.0.1/8`). The list must be non-empty. Hostname entries are reachable over HTTP(S) through the egress proxy; IP and CIDR entries are also reachable directly, for any protocol. A CIDR entry never admits a name: to reach a compose sibling by name, list both its name and its network range (`sidecar` and `172.16.0.0/12`). The model API stays reachable without listing it (see the [hardening notes](./sandbox-hardening.md#network-policy-allowlist-egress)). `verifier.network_mode: allowlist` is refused, because the verifier runs as root outside the agent's firewall. The mode needs a non-root `sandbox_user`, `python3` and `openssl` in the task image, and runs on `docker` and `daytona`; other backends refuse it at preflight.
+Entries follow the split layout: an exact hostname (no subdomains, no implied `www.`), a leading-wildcard hostname (`*.example.com` matches subdomains at any depth but not `example.com` itself), an IPv4 or IPv6 address, or a strict CIDR range (`10.0.0.0/8`, not `10.0.0.1/8`). The list must be non-empty. Hostname entries are reachable over HTTP(S) through the egress proxy; IP and CIDR entries are also reachable directly, for any protocol. A CIDR entry never admits a name: to reach a compose sibling by name, list both its name and its network range (`sidecar` and `172.16.0.0/12`). The model API stays reachable without listing it (see the [hardening notes](./sandbox-hardening.md#network-policy-allowlist-egress)). `verifier.network_mode: allowlist` is refused, because the verifier runs as root outside the agent's firewall. The mode needs a non-root `sandbox_user`, `python3` and `openssl` in the task image, and runs on `docker` and `daytona`; other backends refuse it at preflight.
 
 ---
 

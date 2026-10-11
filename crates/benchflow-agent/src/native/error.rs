@@ -102,7 +102,7 @@ impl ModelError {
 
 /// Phrases providers use for a prompt that no longer fits (Harbor's
 /// `_is_context_length_error`, plus Anthropic's own wording).
-const CONTEXT_PHRASES: &[&str] = &[
+pub(crate) const CONTEXT_PHRASES: &[&str] = &[
     "context length exceeded",
     "context_length_exceeded",
     "maximum context length",

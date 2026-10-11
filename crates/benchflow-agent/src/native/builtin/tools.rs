@@ -658,6 +658,92 @@ mod tests {
         assert_eq!(capped_timeout(None, max), max);
     }
 
+    /// A sandbox that records each command and answers as if the file had
+    /// 3 lines and the command printed nothing.
+    #[derive(Default)]
+    struct EmptyFile {
+        commands: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Sandbox for EmptyFile {
+        fn id(&self) -> &str {
+            "test"
+        }
+        fn backend(&self) -> &str {
+            "fake"
+        }
+        async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
+            self.commands.lock().unwrap().push(exec.command.clone());
+            Ok(ExecOutput {
+                stdout: "\n".into(),
+                stderr: "BF_LINES 3\n".into(),
+                ..ExecOutput::default()
+            })
+        }
+        async fn spawn(&self, _exec: Exec) -> Result<benchflow_sandbox::Process, SandboxError> {
+            unimplemented!()
+        }
+        async fn upload(&self, _l: &std::path::Path, _r: &str) -> Result<(), SandboxError> {
+            unimplemented!()
+        }
+        async fn write_file(&self, _r: &str, _c: &[u8], _m: u32) -> Result<(), SandboxError> {
+            unimplemented!()
+        }
+        async fn download(&self, _r: &str, _l: &std::path::Path) -> Result<(), SandboxError> {
+            unimplemented!()
+        }
+        async fn destroy(&self) -> Result<(), SandboxError> {
+            Ok(())
+        }
+    }
+
+    /// Guards the D5 fix in 1a17782d: a model's `from_line` near
+    /// `i64::MAX` overflowed `from + 999` (the default `to_line`) and
+    /// `to + 1` (where `sed` stops), a panic in debug builds.
+    #[tokio::test]
+    async fn view_takes_any_from_line_without_overflowing() {
+        let sandbox = EmptyFile::default();
+        let env = BTreeMap::new();
+        let ctx = ToolContext {
+            sandbox: &sandbox,
+            user: "agent",
+            workdir: "/app",
+            env: &env,
+            bash_timeout: Duration::from_secs(60),
+        };
+        let max = i64::MAX;
+        for (args, from, to) in [
+            (json!({"from_line": max}), max, max),
+            (json!({"from_line": 1e300}), max, max),
+            (json!({"from_line": max - 5, "to_line": max}), max - 5, max),
+            (json!({"from_line": "9223372036854775807"}), max, max),
+        ] {
+            let mut args = args.as_object().unwrap().clone();
+            args.insert("file_path".into(), json!("f.txt"));
+            let out = run(&ctx, "view", &args).await.unwrap();
+            assert!(out.is_error, "{out:?}");
+            assert_eq!(
+                out.text,
+                format!("Error: File /app/f.txt has 3 lines, but you requested lines {from}-{to}")
+            );
+            let command = sandbox.commands.lock().unwrap().pop().unwrap();
+            assert!(
+                command.contains(&format!("sed -n '{from},{to}p;{max}q'")),
+                "{command}"
+            );
+        }
+        // Out of order or below 1: refused before anything runs.
+        for args in [
+            json!({"file_path": "f.txt", "from_line": max, "to_line": i64::MIN}),
+            json!({"file_path": "f.txt", "from_line": i64::MIN}),
+        ] {
+            let out = run(&ctx, "view", args.as_object().unwrap()).await.unwrap();
+            assert!(out.is_error, "{out:?}");
+        }
+        assert!(sandbox.commands.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn every_tool_has_a_schema_with_its_required_arguments() {
         let specs = specs(Duration::from_secs(600));

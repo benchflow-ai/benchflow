@@ -55,11 +55,29 @@ async fn fake_provider() -> (u16, SeenLog) {
     let dropped: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
-            tokio::spawn(serve(stream, log.clone(), dropped.clone()));
+            let task = tokio::spawn(serve(stream, log.clone(), dropped.clone()));
+            // A panic here would only drop one connection; it goes in the
+            // log instead, where the test that reads it sees it.
+            let log = log.clone();
+            tokio::spawn(async move {
+                if let Err(e) = task.await
+                    && e.is_panic()
+                {
+                    log.lock().unwrap_or_else(|p| p.into_inner()).push(Seen {
+                        method: PANICKED.into(),
+                        path: String::new(),
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                    });
+                }
+            });
         }
     });
     (port, seen)
 }
+
+/// The method of the entry a panic in the fake provider leaves in its log.
+const PANICKED: &str = "(the fake provider panicked)";
 
 async fn serve(
     stream: TcpStream,
@@ -95,10 +113,21 @@ async fn serve(
                 headers.push((name, value));
             }
         }
-        let mut body = vec![0; length];
-        if reader.read_exact(&mut body).await.is_err() {
-            return;
-        }
+        let chunked = headers
+            .iter()
+            .any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
+        let body = if chunked {
+            match read_chunked(&mut reader).await {
+                Some(body) => body,
+                None => return,
+            }
+        } else {
+            let mut body = vec![0; length];
+            if reader.read_exact(&mut body).await.is_err() {
+                return;
+            }
+            body
+        };
         let seen = Seen {
             method,
             path: path.clone(),
@@ -168,6 +197,30 @@ async fn serve(
         if stream.write_all(answer.as_bytes()).await.is_err() {
             return;
         }
+    }
+}
+
+/// A chunked request body, or `None` when the framing is broken.
+async fn read_chunked(reader: &mut BufReader<TcpStream>) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.ok()?;
+        let size = usize::from_str_radix(line.split(';').next()?.trim(), 16).ok()?;
+        if size == 0 {
+            // Trailers, if any, up to the blank line.
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.ok()? == 0 || line.trim_end().is_empty() {
+                    return Some(body);
+                }
+            }
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader.read_exact(&mut body[start..]).await.ok()?;
+        let mut end = [0u8; 2];
+        reader.read_exact(&mut end).await.ok()?;
     }
 }
 
@@ -425,12 +478,53 @@ async fn the_forwarder_adds_the_key_streams_and_serves_nothing_else() {
     let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut answer)).await;
     assert!(answer.starts_with("HTTP/1.1 501"), "{answer}");
 
+    // The same body sent again: the log gives both the same hash, and
+    // another body another (D7e: a refusal's wait runs until the request is
+    // sent again).
+    for body in [
+        r#"{"model": "m", "max_tokens": 2}"#,
+        r#"{"model": "m", "max_tokens": 2}"#,
+        r#"{"model": "m", "max_tokens": 3}"#,
+    ] {
+        let answer = client
+            .post(fwd.url("/anthropic/v1/messages"))
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), 200);
+    }
+    // Each line is written once its answer is sent, which may be after the
+    // client has read it.
+    for _ in 0..50 {
+        if fwd.stderr.lock().unwrap().matches("body_hash").count() >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     let log = fwd.stop().await;
     assert!(!log.contains(KEY), "{log}");
     // One line per request, with its path and status.
     assert!(
         log.contains(r#""path":"/anthropic/v1/messages","status":200"#),
         "{log}"
+    );
+    let hashes: Vec<String> = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["path"] == "/anthropic/v1/messages")
+        .filter_map(|v| v["body_hash"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(hashes.len(), 4, "{log}");
+    assert_ne!(hashes[0], hashes[1]);
+    assert_eq!(hashes[1], hashes[2]);
+    assert_ne!(hashes[2], hashes[3]);
+    assert!(
+        hashes
+            .iter()
+            .all(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{hashes:?}"
     );
 }
 
@@ -1233,12 +1327,18 @@ fn fuzz_request(rng: &mut Rng) -> (String, Vec<u8>) {
         "/anthropic/sse",
         "/anthropic/status/401",
         "/anthropic/reset-once",
+        // The fake provider's routes that send the key back.
+        "/anthropic/echo",
+        "/openai/echo",
+        "/anthropic/header-echo",
+        "/openai/header-echo",
         "/",
         "*",
         "http://evil.example/anthropic/x",
         "//anthropic/x",
         "/anthropic/../../etc/passwd",
         "/anthropic/%2e%2e/x",
+        "/anthropic/.%2E/echo",
         "/anthropic%00/x",
         "/openai?model=x",
         "/anthropic/v1/messages?x=%ZZ",
@@ -1335,11 +1435,213 @@ fn fuzz_request(rng: &mut Rng) -> (String, Vec<u8>) {
     (path, bytes)
 }
 
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Where the first final (not 1xx) answer in `buf` ends, once all of it is
+/// there: by its content-length or its chunked framing. `None` while it is
+/// incomplete, and for an answer that ends only when the connection closes.
+fn answer_end(buf: &[u8]) -> Option<usize> {
+    let mut at = 0;
+    loop {
+        let body = at + find(&buf[at..], b"\r\n\r\n")? + 4;
+        let head = String::from_utf8_lossy(&buf[at..body]).to_ascii_lowercase();
+        let status: u16 = head.get(9..12)?.parse().ok()?;
+        if (100..200).contains(&status) {
+            at = body;
+            continue;
+        }
+        let header = |name: &str| {
+            head.lines()
+                .find_map(|l| l.strip_prefix(name)?.strip_prefix(':').map(str::trim))
+        };
+        if let Some(length) = header("content-length") {
+            let end = body + length.parse::<usize>().ok()?;
+            return (buf.len() >= end).then_some(end);
+        }
+        if !header("transfer-encoding").is_some_and(|v| v.contains("chunked")) {
+            return None;
+        }
+        let mut at = body;
+        loop {
+            let line = find(&buf[at..], b"\r\n")?;
+            let size = String::from_utf8_lossy(&buf[at..at + line]);
+            let size = usize::from_str_radix(size.split(';').next()?.trim(), 16).ok()?;
+            at += line + 2;
+            if size == 0 {
+                // Node's server sends no trailers: a blank line ends it.
+                return (buf.len() >= at + 2).then_some(at + 2);
+            }
+            at += size + 2;
+            if buf.len() < at {
+                return None;
+            }
+        }
+    }
+}
+
+/// The status of the first final answer in `answer`, or "none".
+fn final_status(answer: &[u8]) -> String {
+    let mut at = 0;
+    while let Some(end) = find(&answer[at..], b"\r\n\r\n") {
+        let status = String::from_utf8_lossy(answer.get(at + 9..at + 12).unwrap_or_default());
+        if !status.starts_with('1') {
+            return status.into_owned();
+        }
+        at += end + 4;
+    }
+    "none".into()
+}
+
+/// A well-formed request to one of the fake provider's routes that send the
+/// key back, carrying the agent's own credentials for the forwarder to
+/// replace. Every one must be forwarded and answered with the key masked.
+fn probe_request(rng: &mut Rng) -> (String, Vec<u8>) {
+    let path = rng.pick(&["/anthropic/echo", "/openai/echo", "/anthropic/header-echo"]);
+    let method = rng.pick(&["GET", "POST"]);
+    let body = r#"{"model": "m", "max_tokens": 1}"#;
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer agent-key\r\nx-api-key: sk-agent\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    (path.to_string(), request.into_bytes())
+}
+
+/// Sends one raw request and reads the answer without half-closing the
+/// connection first (Node drops a request it would forward once the client
+/// half-closes). A request the forwarder is still waiting on (a truncated
+/// one, or one with a body shorter than its length) gets no first byte
+/// within `first_byte` seconds; the connection is then half-closed, and what
+/// the forwarder sends after that is kept too, as is anything it sends after
+/// a complete answer (an answer to bytes after the first request).
+async fn exchange(port: u16, request: &[u8], first_byte: u64) -> Option<Vec<u8>> {
+    let mut stream = tokio::time::timeout(
+        Duration::from_secs(5),
+        TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.write_all(request)).await;
+    let mut answer = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut closed = false;
+    loop {
+        let wait = if answer.is_empty() { first_byte } else { 5 };
+        match tokio::time::timeout(Duration::from_secs(wait), stream.read(&mut chunk)).await {
+            Ok(Ok(0) | Err(_)) => {
+                closed = true;
+                break;
+            }
+            Ok(Ok(n)) => {
+                answer.extend_from_slice(&chunk[..n]);
+                if answer_end(&answer).is_some() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if !closed {
+        let _ = stream.shutdown().await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+    }
+    Some(answer)
+}
+
+/// What a request the fake provider got must look like: under one of the
+/// routes' upstream paths (`/claude-code`, `/v1`), with no dot segments,
+/// to the provider's own host, and with the forwarder's key in the route's
+/// header as the only credential (none of the agent's).
+fn check_upstream(seen: &Seen, upstream: u16) -> Result<(), String> {
+    if seen.method == PANICKED {
+        return Err("a request that made it panic (its message is above)".into());
+    }
+    let path = seen.path.split('?').next().unwrap_or_default();
+    let under = |base: &str| path == base || path.starts_with(&format!("{base}/"));
+    let want = if under("/claude-code") {
+        ("authorization", format!("Bearer {KEY}"))
+    } else if under("/v1") {
+        ("x-api-key", KEY.to_string())
+    } else {
+        return Err(format!(
+            "a request outside the provider's paths: {}",
+            seen.path
+        ));
+    };
+    let decoded = path.replace("%2e", ".").replace("%2E", ".");
+    if decoded.split('/').any(|s| s == "." || s == "..") || path.contains(['\\', '\0']) {
+        return Err(format!("a path that climbs: {}", seen.path));
+    }
+    for name in [
+        "authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "proxy-authorization",
+    ] {
+        let values: Vec<&str> = seen
+            .headers
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let expected: Vec<&str> = if name == want.0 {
+            vec![want.1.as_str()]
+        } else {
+            vec![]
+        };
+        if values != expected {
+            return Err(format!(
+                "{} {}: {name} was {values:?}, not the forwarder's key alone",
+                seen.method, seen.path
+            ));
+        }
+    }
+    let host = format!("127.0.0.1:{upstream}");
+    if seen.header("host") != Some(host.as_str()) {
+        return Err(format!(
+            "{} {}: host {:?}",
+            seen.method,
+            seen.path,
+            seen.header("host")
+        ));
+    }
+    Ok(())
+}
+
+/// The seed of a fuzz run: `BENCH_FUZZ_SEED`, else a fixed one in CI (`CI`
+/// set) so a failure there can be run again, else from the clock.
+fn fuzz_seed() -> u64 {
+    if let Some(seed) = std::env::var("BENCH_FUZZ_SEED")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+    {
+        return seed;
+    }
+    if std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "0" && v != "false") {
+        return 20_261_010;
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64
+        | 1
+}
+
 /// Random and malformed requests (bad request lines, conflicting lengths,
 /// broken chunking, huge headers, truncated bodies, raw bytes) never stop
-/// the forwarder and never show the key, and it still serves a good request
-/// afterwards. `BENCH_FUZZ_FORWARDER_CASES` sets the count (default 150),
-/// `BENCH_FUZZ_SEED` the seed (printed on failure).
+/// the forwarder, never show the key (in an answer or its log, the fake
+/// provider's echo routes included, whose answers carry it masked), never
+/// reach the provider anywhere but under a route's upstream path with the
+/// forwarder's key alone, never throw inside the forwarder (`internal:` in
+/// its log), and it still serves a good request afterwards. A quarter or so
+/// of the random requests are forwarded, and every tenth request is a
+/// well-formed one to an echo route that must come back 2xx with the key
+/// masked, so these checks always have something to check.
+/// `BENCH_FUZZ_FORWARDER_CASES` sets the count (default 150),
+/// `BENCH_FUZZ_SEED` the seed (printed on failure; fixed in CI).
 #[tokio::test]
 async fn random_requests_never_stop_the_forwarder_or_show_the_key() {
     if node().is_none() {
@@ -1350,65 +1652,86 @@ async fn random_requests_never_stop_the_forwarder_or_show_the_key() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(150);
-    let seed: u64 = std::env::var("BENCH_FUZZ_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64
-                | 1
-        });
+    let seed = fuzz_seed();
     let mut rng = Rng(seed);
-    let (upstream, _seen) = fake_provider().await;
+    let (upstream, seen) = fake_provider().await;
     let dir = tempfile::tempdir().unwrap();
     let mut fwd = start(dir.path(), routes(upstream), 0o600).await.unwrap();
     let client = reqwest::Client::new();
+    let mask = "*".repeat(KEY.len());
     let mut statuses: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut masked = 0;
     for i in 0..cases {
-        let (path, request) = fuzz_request(&mut rng);
-        if let Ok(Ok(mut stream)) = tokio::time::timeout(
-            Duration::from_secs(5),
-            TcpStream::connect(("127.0.0.1", fwd.port)),
-        )
-        .await
-        {
-            let _ = stream.write_all(&request).await;
-            // Half-closing ends a truncated request at once instead of
-            // after a timeout; Node then drops a request it would answer
-            // asynchronously, so some requests get no answer (status none).
-            let _ = stream.shutdown().await;
-            let mut answer = Vec::new();
-            let _ =
-                tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
-            let answer = String::from_utf8_lossy(&answer);
-            let status = answer.get(9..12).unwrap_or("none").to_string();
-            if std::env::var_os("BENCH_FUZZ_SHOW").is_some() && i < 40 {
+        let probe = i % 10 == 9;
+        let (path, request) = if probe {
+            probe_request(&mut rng)
+        } else {
+            fuzz_request(&mut rng)
+        };
+        let shown = || {
+            String::from_utf8_lossy(&request)
+                .chars()
+                .take(400)
+                .collect::<String>()
+        };
+        let before = seen.lock().unwrap().len();
+        let answer = exchange(fwd.port, &request, if probe { 15 } else { 1 }).await;
+        if probe {
+            let status = answer.as_deref().map(final_status);
+            assert!(
+                status.as_deref().is_some_and(|s| s.starts_with('2')),
+                "seed {seed} case {i}: a well-formed request got {status:?}: {:?}\nfor {:?}",
+                answer.as_deref().map(String::from_utf8_lossy),
+                shown()
+            );
+        }
+        if let Some(answer) = answer {
+            let status = final_status(&answer);
+            let text = String::from_utf8_lossy(&answer);
+            if std::env::var_os("BENCH_FUZZ_SHOW").is_some() {
                 eprintln!(
                     "{:?} -> {:?}",
-                    String::from_utf8_lossy(&request)
-                        .chars()
-                        .take(160)
-                        .collect::<String>(),
-                    answer.chars().take(200).collect::<String>()
+                    shown().chars().take(160).collect::<String>(),
+                    text.chars().take(200).collect::<String>()
                 );
             }
-            *statuses.entry(status).or_default() += 1;
-            if !path.contains("echo") {
+            assert!(
+                !text.contains(KEY),
+                "seed {seed} case {i}: the key in {text:.600}\nfor {:?}",
+                shown()
+            );
+            // An echo of the key comes back masked: the provider got it and
+            // the forwarder hid it.
+            let echoes = path.ends_with("/echo")
+                || (path.starts_with("/anthropic/") && path.ends_with("/header-echo"));
+            if echoes && status.starts_with('2') {
                 assert!(
-                    !answer.contains(KEY),
-                    "seed {seed} case {i}: the key in {answer:.400}"
+                    text.contains(&mask),
+                    "seed {seed} case {i}: no masked key in {text:.600}\nfor {:?}",
+                    shown()
+                );
+                masked += 1;
+            }
+            *statuses.entry(status).or_default() += 1;
+        }
+        for got in &seen.lock().unwrap()[before..] {
+            if let Err(e) = check_upstream(got, upstream) {
+                panic!(
+                    "seed {seed} case {i}: the provider got {e}\nfor {:?}",
+                    shown()
                 );
             }
         }
         assert!(
             fwd.child.try_wait().unwrap().is_none(),
             "seed {seed} case {i}: the forwarder exited on {:?}\n{}",
-            String::from_utf8_lossy(&request)
-                .chars()
-                .take(400)
-                .collect::<String>(),
+            shown(),
+            fwd.stderr.lock().unwrap()
+        );
+        assert!(
+            !fwd.stderr.lock().unwrap().contains("internal:"),
+            "seed {seed} case {i} (or just before): the forwarder threw on {:?}\n{}",
+            shown(),
             fwd.stderr.lock().unwrap()
         );
         if i % 25 == 24 || i + 1 == cases {
@@ -1424,10 +1747,27 @@ async fn random_requests_never_stop_the_forwarder_or_show_the_key() {
             );
         }
     }
-    eprintln!("forwarder fuzz: seed {seed}, {cases} requests, answers by status {statuses:?}");
+    let forwarded = seen.lock().unwrap().len();
+    eprintln!(
+        "forwarder fuzz: seed {seed}, {cases} requests, {forwarded} forwarded, {masked} masked echoes, answers by status {statuses:?}"
+    );
+    // At least the probes: the checks above had answers to check.
+    assert!(
+        masked >= cases / 10,
+        "seed {seed}: {masked} masked echoes in {cases} requests: {statuses:?}"
+    );
     let log = fwd.stop().await;
+    for got in seen.lock().unwrap().iter() {
+        if let Err(e) = check_upstream(got, upstream) {
+            panic!("seed {seed}: the provider got {e}");
+        }
+    }
     assert!(
         !log.contains(KEY),
         "seed {seed}: the key in the forwarder's log"
+    );
+    assert!(
+        !log.contains("internal:"),
+        "seed {seed}: the forwarder threw:\n{log}"
     );
 }

@@ -19,6 +19,10 @@
 //! followed; it stops at a link, a missing folder, a mount, or a `.` or `..`
 //! in the path. Every command runs with `PATH` set to the system folders,
 //! never the image's (a folder on the image's `PATH` may be the agent's).
+//!
+//! A stage's own files go into the workdir the same way ([`tree_for_agent`]):
+//! the agent owns the workdir too, and root extracting them there would
+//! write through any link the agent left, wherever it points.
 
 use std::time::Duration;
 
@@ -57,6 +61,13 @@ pub(crate) struct AgentUser<'a> {
 /// How long each step may take.
 const STEP: Duration = Duration::from_secs(120);
 
+/// How long handing over and copying a stage's folder may take: a stage
+/// may ship a dataset.
+const TREE_STEP: Duration = Duration::from_secs(900);
+
+/// What a failed copy of a stage's files asks of the task.
+const TREE_NEXT: &str = "make the workdir, and what the stage's files replace, the agent user's in the image; keep the stage's files off paths the task makes read-only (its mounts); or set [agent] user = \"root\" in the task (the agent-user defense is then off)";
+
 /// The last line the agent user's copy prints when it ran to the end.
 const DONE: &str = "BF placement done";
 
@@ -64,14 +75,12 @@ const DONE: &str = "BF placement done";
 const NEXT: &str = "make the agent's home and the folders in it the agent user's in the image, or set [agent] user = \"root\" in the task (the agent-user defense is then off)";
 
 /// Root's commands here: the system folders' programs only, and none of
-/// the image's shell start-up files or `cd` search folders.
+/// the image's loader variables, shell start-up files ([`Exec::system`])
+/// or `cd` search folders.
 fn as_root(script: String) -> Exec {
-    Exec::new(script)
-        .root()
-        .env("PATH", SYSTEM_PATH)
+    Exec::new(crate::hardening::with_plumbing_umask(&script))
+        .system()
         .env("CDPATH", "")
-        .env("BASH_ENV", "")
-        .env("ENV", "")
         .timeout(STEP)
 }
 
@@ -111,6 +120,11 @@ fn prepare_script(user: &AgentUser, stage: &str, files: &[ForAgent]) -> String {
     for folders in folders_on_the_way(user.home, files) {
         let list: Vec<String> = folders.iter().map(|d| q(d)).collect();
         give.push_str(&format!("  give {}\n", list.join(" ")));
+    }
+    if give.is_empty() {
+        // No folder to give (a stage's files, for the workdir): `if` needs
+        // a command all the same.
+        give.push_str("  :\n");
     }
     format!(
         r#"r={root}; s={stage}; u={user}; h={home}
@@ -195,12 +209,23 @@ fn reported(out: &ExecOutput, marker: &str) -> bool {
 /// of time (retried on resume), R307 when it exited 0 but said nothing
 /// (something on the image's `PATH` answered in its place), else R104.
 fn failed(out: &ExecOutput, what: &str, message: String) -> Problem {
+    failed_next(out, what, message, NEXT, STEP)
+}
+
+/// [`failed`], with its own next step for R104 and the step's time limit.
+fn failed_next(
+    out: &ExecOutput,
+    what: &str,
+    message: String,
+    next: &str,
+    step: Duration,
+) -> Problem {
     if out.timed_out {
         return Problem::new(
             "R103",
             Owner::Sandbox,
             Phase::Setup,
-            format!("{what} did not finish in {} s", STEP.as_secs()),
+            format!("{what} did not finish in {} s", step.as_secs()),
             "retry; if it repeats, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder",
         )
         .detail(out.tail(2000))
@@ -209,7 +234,7 @@ fn failed(out: &ExecOutput, what: &str, message: String) -> Problem {
     if out.success() {
         return unreported_in(Phase::Setup, what, out);
     }
-    Problem::new("R104", Owner::Task, Phase::Setup, message, NEXT).detail(out.tail(2000))
+    Problem::new("R104", Owner::Task, Phase::Setup, message, next).detail(out.tail(2000))
 }
 
 /// Write `files` for `user`, who is not root, as the module docs describe.
@@ -221,6 +246,21 @@ pub(crate) async fn for_agent(
     if files.is_empty() {
         return Ok(());
     }
+    let (stage, mounted) = make_stage(sb, user, files).await?;
+    let result = stage_and_copy(sb, user, &stage, files, mounted).await;
+    // Best effort: what is left there is the agent user's own, in a folder
+    // only root may change.
+    let _ = sb.exec(as_root(format!("rm -rf {}", q(&stage)))).await;
+    result
+}
+
+/// Root's first step ([`prepare_script`]): the stage made, and whether a
+/// mount stopped the folders on the way from being given.
+async fn make_stage(
+    sb: &dyn Sandbox,
+    user: &AgentUser<'_>,
+    files: &[ForAgent<'_>],
+) -> Result<(String, bool), Problem> {
     let stage = format!("{STAGE_ROOT}/{}", uuid::Uuid::new_v4().simple());
     let out = sb
         .exec(as_root(prepare_script(user, &stage, files)))
@@ -255,11 +295,250 @@ pub(crate) async fn for_agent(
     // A mount on the way is the task's (the agent cannot mount), so what
     // it blocks is too.
     let mounted = !Report::parse(&out.stdout).all("mount").is_empty();
-    let result = stage_and_copy(sb, user, &stage, files, mounted).await;
-    // Best effort: what is left there is the agent user's own, in a folder
-    // only root may change.
-    let _ = sb.exec(as_root(format!("rm -rf {}", q(&stage)))).await;
+    Ok((stage, mounted))
+}
+
+/// The last line the agent user's copy of a folder prints when it ran to
+/// the end.
+const TREE_DONE: &str = "BF tree placed";
+
+/// Root's hand-over of what it uploaded to `<stage>/t`: every path to the
+/// agent user, the deepest first, so no folder is the agent's while root
+/// still works inside it (the agent can find the stage's name in root's
+/// command lines). Links change themselves. Ends with `BF staged`.
+fn hand_over_script(user: &str, stage: &str) -> String {
+    format!(
+        "g=$(id -gn {u}) || exit 3; find {t} -depth -exec chown -h {u}:\"$g\" {{}} + && echo \"BF staged\"",
+        u = q(user),
+        t = q(&format!("{stage}/t")),
+    )
+}
+
+/// The agent user's copy of `<stage>/t` to `dest`: a folder's entries into
+/// the folder `dest` (made when missing, merged with what is there), or a
+/// file to the path `dest`. Modes and times are kept. Each error is printed
+/// as `BF uncopied <error>` (at most 20), then [`TREE_DONE`].
+fn tree_copy_script(stage: &str, dest: &str) -> String {
+    format!(
+        r#"umask 022; s={t}; d={dest}
+fail() {{ while IFS= read -r l; do [ -n "$l" ] && printf 'BF uncopied %s
+' "$l"; done; }}
+{{
+if [ -d "$s" ] && [ ! -L "$s" ]; then
+  mkdir -p "$d" || echo "mkdir: could not make $d" >&2
+  for e in "$s"/* "$s"/.[!.]* "$s"/..?*; do
+    {{ [ -e "$e" ] || [ -L "$e" ]; }} || continue
+    cp -R -p "$e" "$d/" || echo "cp: could not copy ${{e##*/}} into $d" >&2
+  done
+else
+  mkdir -p "$(dirname "$d")" 2>/dev/null
+  if [ -d "$d" ] && [ ! -L "$d" ]; then echo "cp: $d is a folder" >&2
+  else rm -f "$d" 2>/dev/null; cp -p "$s" "$d" || echo "cp: could not copy to $d" >&2; fi
+fi
+}} 2>&1 >/dev/null | head -n 20 | fail
+echo "{TREE_DONE}""#,
+        t = q(&format!("{stage}/t")),
+        dest = q(dest),
+    )
+}
+
+/// Put the file or folder `local` (on this machine) at `dest` for `user`,
+/// who is not root, as the module docs describe: root uploads it into a
+/// fresh stage of its own and hands it over ([`hand_over_script`]); the
+/// agent user copies it ([`tree_copy_script`]). What it copies is the
+/// agent user's. `task_paths` are the paths the task itself placed (its
+/// mounts): a copy that fails under one, or under a mount point, is the
+/// task's, not the agent's.
+///
+/// The handed-over tree is the agent user's, so the agent user removes it
+/// after: root's `rm -rf` of a tree a running agent owns could be led out
+/// of it (busybox's walks by path). Root then removes only empty folders.
+pub(crate) async fn tree_for_agent(
+    sb: &dyn Sandbox,
+    user: &AgentUser<'_>,
+    local: &std::path::Path,
+    dest: &str,
+    task_paths: &[String],
+) -> Result<(), Problem> {
+    let (stage, mounted) = make_stage(sb, user, &[]).await?;
+    let mut handed = false;
+    let result = upload_and_copy(
+        sb,
+        user,
+        &stage,
+        local,
+        dest,
+        mounted,
+        task_paths,
+        &mut handed,
+    )
+    .await;
+    let t = q(&format!("{stage}/t"));
+    if handed {
+        let _ = sb
+            .exec(
+                Exec::new(format!("rm -rf {t}"))
+                    .user(user.name.to_string())
+                    .env("PATH", SYSTEM_PATH)
+                    .timeout(TREE_STEP),
+            )
+            .await;
+        let _ = sb
+            .exec(as_root(format!(
+                "rmdir {t} {s} 2>/dev/null; true",
+                s = q(&stage)
+            )))
+            .await;
+    } else {
+        // Still root's alone: nothing of the agent's in it.
+        let _ = sb.exec(as_root(format!("rm -rf {}", q(&stage)))).await;
+    }
     result
+}
+
+/// Whether a copy's errors are the task's: one names a path under a path
+/// the task placed, or under a mount point below `dest` (the agent cannot
+/// mount). A mount elsewhere in `dest` says nothing about the others.
+async fn task_blocked(
+    sb: &dyn Sandbox,
+    dest: &str,
+    errors: &[&str],
+    task_paths: &[String],
+) -> bool {
+    if errors.iter().any(|l| names_task_path(l, task_paths)) {
+        return true;
+    }
+    let Ok(out) = sb.exec(as_root("cat /proc/mounts".into())).await else {
+        return false;
+    };
+    blocked_by_mounts(errors, &out.stdout, dest)
+}
+
+/// Whether an error names a path under a mount point (from `/proc/mounts`)
+/// below `dest`.
+fn blocked_by_mounts(errors: &[&str], proc_mounts: &str, dest: &str) -> bool {
+    let dest = dest.trim_end_matches('/');
+    let mounts: Vec<String> = proc_mounts
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .filter(|m| m.starts_with(&format!("{dest}/")))
+        .map(str::to_string)
+        .collect();
+    errors.iter().any(|l| names_task_path(l, &mounts))
+}
+
+/// Whether an error line names one of `task_paths` or a path under one.
+fn names_task_path(line: &str, task_paths: &[String]) -> bool {
+    task_paths.iter().any(|p| {
+        let p = p.trim_end_matches('/');
+        !p.is_empty()
+            && (line.contains(&format!("{p}/"))
+                || line.contains(&format!("'{p}'"))
+                || line.contains(&format!("{p}:"))
+                || line.ends_with(p))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn upload_and_copy(
+    sb: &dyn Sandbox,
+    user: &AgentUser<'_>,
+    stage: &str,
+    local: &std::path::Path,
+    dest: &str,
+    mounted: bool,
+    task_paths: &[String],
+    handed: &mut bool,
+) -> Result<(), Problem> {
+    sb.upload(local, &format!("{stage}/t"))
+        .await
+        .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+    *handed = true;
+    let out = sb
+        .exec(as_root(hand_over_script(user.name, stage)).timeout(TREE_STEP))
+        .await
+        .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+    if !reported(&out, "BF staged") {
+        return Err(failed_next(
+            &out,
+            "handing the stage's files to the agent user",
+            format!(
+                "could not give the agent user `{}` the stage's files (the image needs `id`, `find`, and `chown`)",
+                user.name
+            ),
+            TREE_NEXT,
+            TREE_STEP,
+        ));
+    }
+    let out = sb
+        .exec(
+            Exec::new(tree_copy_script(stage, dest))
+                .user(user.name.to_string())
+                .env("PATH", SYSTEM_PATH)
+                .timeout(TREE_STEP),
+        )
+        .await
+        .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+    let agents = user.earlier_turns && !mounted;
+    if !reported(&out, TREE_DONE) {
+        if out.timed_out && agents {
+            return Err(Problem::new(
+                "R205",
+                Owner::Agent,
+                Phase::Setup,
+                format!(
+                    "the agent user `{}`'s copy of the stage's files to {dest} did not finish in {} s; the agent already worked in this sandbox, and what it left there (a pipe where a file goes) is the likely cause",
+                    user.name,
+                    TREE_STEP.as_secs()
+                ),
+                "read the earlier stages' trajectories for what the agent did there",
+            )
+            .detail(out.tail(2000)));
+        }
+        return Err(failed_next(
+            &out,
+            "the agent user's copy of the stage's files",
+            format!(
+                "the agent user `{}` could not copy the stage's files to {dest}",
+                user.name
+            ),
+            TREE_NEXT,
+            TREE_STEP,
+        ));
+    }
+    let report = Report::parse(&out.stdout);
+    let errors = report.all("uncopied");
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let first: Vec<&str> = errors.iter().take(5).copied().collect();
+    let list = first.join("; ");
+    let agents = agents && !task_blocked(sb, dest, &errors, task_paths).await;
+    Err(if agents {
+        Problem::new(
+            "R205",
+            Owner::Agent,
+            Phase::Setup,
+            format!(
+                "the agent user `{}` could not copy the stage's files to {dest} ({list}); the agent already worked in this sandbox, and what it did there (a root-owned file it linked in, a folder it made read-only) is the likely cause",
+                user.name
+            ),
+            "read the earlier stages' trajectories for what the agent did there",
+        )
+        .detail(errors.join("\n"))
+    } else {
+        Problem::new(
+            "R104",
+            Owner::Task,
+            Phase::Setup,
+            format!(
+                "the agent user `{}` could not copy the stage's files to {dest} ({list}): a folder there is not its to write (root's, read-only, or a path the task placed or mounted)",
+                user.name
+            ),
+            TREE_NEXT,
+        )
+        .detail(errors.join("\n"))
+    })
 }
 
 async fn stage_and_copy(
@@ -605,6 +884,198 @@ mod tests {
             "{out}"
         );
         assert!(out.ends_with(&format!("{DONE}\n")), "{out}");
+    }
+
+    /// The agent user's copy of a stage's folder merges its entries into
+    /// the destination (dotfiles and nested folders too, modes kept),
+    /// writes a file source to a path, and names what it could not write
+    /// rather than stopping there.
+    #[cfg(unix)]
+    #[test]
+    fn the_tree_copy_merges_a_folder_and_names_what_it_could_not_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("stage");
+        let t = stage.join("t");
+        std::fs::create_dir_all(t.join("src/deep")).unwrap();
+        std::fs::write(t.join("conftest.py"), "SHIPPED\n").unwrap();
+        std::fs::write(t.join(".hidden"), "h").unwrap();
+        std::fs::write(t.join("src/deep/run.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(
+            t.join("src/deep/run.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::create_dir_all(t.join("locked")).unwrap();
+        std::fs::write(t.join("locked/x"), "x").unwrap();
+        let w = tmp.path().join("work");
+        std::fs::create_dir_all(w.join("src")).unwrap();
+        std::fs::write(w.join("src/kept.txt"), "mine").unwrap();
+        std::fs::write(w.join("conftest.py"), "OLD\n").unwrap();
+        // A folder the copy cannot write into.
+        std::fs::create_dir_all(w.join("locked")).unwrap();
+        std::fs::set_permissions(w.join("locked"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let run = |stage: &std::path::Path, dest: &std::path::Path| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(tree_copy_script(
+                    stage.to_str().unwrap(),
+                    dest.to_str().unwrap(),
+                ))
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let out = run(&stage, &w);
+        std::fs::set_permissions(w.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(w.join("conftest.py")).unwrap(),
+            "SHIPPED\n"
+        );
+        assert_eq!(std::fs::read_to_string(w.join(".hidden")).unwrap(), "h");
+        assert_eq!(
+            std::fs::read_to_string(w.join("src/kept.txt")).unwrap(),
+            "mine"
+        );
+        let mode = std::fs::metadata(w.join("src/deep/run.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+        let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+        if String::from_utf8_lossy(&uid.stdout).trim() != "0" {
+            assert!(out.contains("BF uncopied "), "{out}");
+        }
+        assert!(out.ends_with(&format!("{TREE_DONE}\n")), "{out}");
+        // A file source goes to the path named; a folder there is named.
+        let one = tmp.path().join("one");
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::write(one.join("t"), "file").unwrap();
+        let out = run(&one, &tmp.path().join("placed/answers.txt"));
+        assert_eq!(out, format!("{TREE_DONE}\n"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("placed/answers.txt")).unwrap(),
+            "file"
+        );
+        let out = run(&one, &w.join("src"));
+        assert!(out.contains("BF uncopied cp: "), "{out}");
+    }
+
+    /// Root hands a staged tree to the agent user from the deepest path
+    /// up: a folder is the agent's only once root is done inside it, so the
+    /// agent cannot slip a link or a hard link in while root still works.
+    #[cfg(unix)]
+    #[test]
+    fn root_hands_a_staged_tree_over_from_the_deepest_path_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let t = root.join("stage/t");
+        std::fs::create_dir_all(t.join("a/b")).unwrap();
+        std::fs::write(t.join("a/b/f"), "f").unwrap();
+        std::fs::write(t.join("top"), "t").unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = root.join("log");
+        std::fs::write(
+            bin.join("chown"),
+            format!(
+                "#!/bin/sh\nfor a; do case \"$a\" in -*|*:*) ;; *) echo \"$a\";; esac; done >> {}\n",
+                q(log.to_str().unwrap())
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("chown"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let me = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .unwrap();
+        let me = String::from_utf8(me.stdout).unwrap().trim().to_string();
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(hand_over_script(&me, root.join("stage").to_str().unwrap()))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "BF staged\n");
+        let order: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let at = |p: &std::path::Path| {
+            order
+                .iter()
+                .position(|l| l == p.to_str().unwrap())
+                .unwrap_or_else(|| panic!("{p:?} not in {order:?}"))
+        };
+        assert!(at(&t.join("a/b/f")) < at(&t.join("a/b")));
+        assert!(at(&t.join("a/b")) < at(&t.join("a")));
+        assert!(at(&t.join("a")) < at(&t));
+        assert!(at(&t.join("top")) < at(&t));
+    }
+
+    /// A copy error under a path the task placed is the task's; one under
+    /// a folder that only shares a prefix is not. Guards the D7b fix of
+    /// REVIEW-CORRECT L7.
+    #[test]
+    fn a_copy_error_under_a_path_the_task_placed_is_named() {
+        let task = vec!["/app/data".to_string()];
+        for line in [
+            "cp: can't create '/app/data/new.csv': Permission denied",
+            "cp: cannot create regular file '/app/data/x': Read-only file system",
+            "mkdir: could not make /app/data",
+            "cp: '/app/data': Permission denied",
+        ] {
+            assert!(names_task_path(line, &task), "{line}");
+        }
+        for line in [
+            "cp: can't create '/app/database/x': Permission denied",
+            "cp: can't create '/app/other': Permission denied",
+        ] {
+            assert!(!names_task_path(line, &task), "{line}");
+        }
+        assert!(!names_task_path("anything", &[String::new()]));
+    }
+
+    /// A stage copy that runs past its time says its own limit (900 s), not
+    /// a single file's (REVIEW-OUTCOMES (d7c) L6).
+    #[test]
+    fn a_tree_copys_timeout_names_its_own_limit() {
+        let out = ExecOutput {
+            timed_out: true,
+            ..Default::default()
+        };
+        let p = failed_next(&out, "the copy", "m".into(), TREE_NEXT, TREE_STEP);
+        assert!(p.message.contains("900 s"), "{}", p.message);
+        let p = failed(&out, "the copy", "m".into());
+        assert!(p.message.contains("120 s"), "{}", p.message);
+    }
+
+    /// Only copy errors under a mount point below the destination are the
+    /// task's; a mount elsewhere in the workdir says nothing about the rest.
+    /// Guards D7c's narrowing of task_blocked (REVIEW-OUTCOMES (d7c) L6).
+    #[test]
+    fn only_errors_under_a_mount_point_are_the_tasks() {
+        let mounts = "overlay / overlay rw 0 0\n/dev/sdb /app/cache ext4 ro 0 0\n";
+        assert!(blocked_by_mounts(
+            &["cp: can't create '/app/cache/x': Read-only file system"],
+            mounts,
+            "/app"
+        ));
+        assert!(!blocked_by_mounts(
+            &["cp: can't create '/app/out/x': Permission denied"],
+            mounts,
+            "/app"
+        ));
+        assert!(!blocked_by_mounts(
+            &["cp: can't create '/app/cache/x': Read-only file system"],
+            mounts,
+            "/srv"
+        ));
     }
 
     /// A step ran to its end only when its marker is its last line.

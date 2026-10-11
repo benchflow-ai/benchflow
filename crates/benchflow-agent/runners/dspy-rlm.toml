@@ -6,7 +6,7 @@
 # pinned to the allowed upstreams.
 name = "dspy-rlm"
 aliases = ["dspy"]
-description = "DSPy's recursive language model (dspy.RLM) from Harbor: the model writes Python in a Deno/Pyodide REPL whose tools act on the task; headless through BenchFlow's runner"
+description = "DSPy's recursive language model (dspy.RLM): the model writes Python in a Deno/Pyodide REPL whose tools act on the task; headless through BenchFlow's runner"
 
 [install]
 # dspy 3.4.0 pins Pyodide (0.29.4) in its REPL; deno comes from PyPI.

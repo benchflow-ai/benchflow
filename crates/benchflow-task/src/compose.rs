@@ -18,6 +18,11 @@
 //! (P012). Every other key is refused by name, never skipped: a named
 //! volume, a published port, or a capability the runtime silently dropped
 //! would change the task.
+//!
+//! A `command` written as one string is split into words as Compose splits
+//! it ([`crate::shellwords`]): a string Compose refuses is an error (P014)
+//! and refused, and one Compose cuts at a shell operator runs the words
+//! before it, with a warning (P013).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -53,8 +58,8 @@ pub static EXPLANATIONS: &[Explanation] = &[
     Explanation {
         code: "P010",
         title: "Compose settings BenchFlow manages itself",
-        body: "Harbor's Compose template fills service `main` with what Harbor's harness manages: the \
-task's own build, the image name, an idle command (`sleep infinity`), `network_mode`, Harbor's log folders \
+        body: "The split layout's Compose template fills service `main` with what a split-layout runner manages: the \
+task's own build, the image name, an idle command (`sleep infinity`), `network_mode`, the runner's log folders \
 (`${HOST_VERIFIER_LOGS_PATH}:${ENV_VERIFIER_LOGS_PATH}`), `deploy` CPU and memory limits, and `networks`. \
 BenchFlow builds the task's Dockerfile, keeps the container running, sets the network and limits from the \
 task's config, and collects /logs itself, so these settings are read and ignored. The note lists each one. \
@@ -78,6 +83,32 @@ variable is warned about too; it is passed on as written, never filled in from t
 example `${HOME}/.config/gcloud:/root/.config/gcloud:ro`). BenchFlow never mounts host folders into a \
 sandbox, so the entry is dropped. A task that needs credentials or files must declare them another way: \
 files in the package or the image, or a secret the run passes.",
+    },
+    Explanation {
+        code: "P013",
+        title: "Service command cut at a shell operator",
+        body: "A service's `command` written as one string is split into words as Docker Compose splits it \
+(BenchFlow 0.8 handed it to Compose), and no shell runs it. Compose stops reading at the first `;`, `&`, \
+`|`, `<` or `>` outside quotes, runs the words before it, and drops the rest, along with a word of digits \
+right before a `>` (the `2` of `2>&1`): `redis-server --save 60 1 > /dev/null` runs \
+`redis-server --save 60 1`. BenchFlow runs the same words and warns. To redirect, pipe, or chain commands, run a shell: \
+`sh -c 'redis-server --save 60 1 > /dev/null'`, or the list `[sh, -c, '...']`. The split is Docker Compose \
+v5.4.0 to v5.6.0's (go-shellwords v1.0.14 and v1.0.15); older Compose releases treat a word of digits before \
+`>` differently.",
+    },
+    Explanation {
+        code: "P014",
+        title: "Service command Docker Compose cannot split",
+        body: "A service's `command` written as one string is split into words as Docker Compose splits it \
+(BenchFlow 0.8 handed it to Compose). Compose refuses a string with an unclosed quote, backtick, or `$(`, a `(` \
+outside quotes that does not open a `$(` (`python -c print(1)`), a `)` that closes none, or a lone backslash at \
+the end, and with it the whole file, so the task did not start under 0.8 either. BenchFlow reports it when the \
+task is checked and does not run the task. Write the command as a list (`[python, -c, 'print(1)']`), or quote \
+the characters (`python -c 'print(1)'`). The split is Docker Compose v5.4.0 to v5.6.0's (go-shellwords v1.0.14 \
+and v1.0.15). Other releases differ on a few strings around backslashes, backticks, and `$(`: Compose v5.3.1 \
+and older run `echo a\\\\$(date)`, which these refuse. BenchFlow splits the string as written, while Compose \
+first replaces `$$` with `$` and `${VAR:-default}` with its value, so a command that uses them next to a `(` can \
+be judged differently: Compose refuses `'\\'$$(x)` and runs `echo ${X:-$}(1)`.",
     },
 ];
 
@@ -212,85 +243,78 @@ fn healthcheck(v: &Value, field: &str, refused: &mut Vec<Unsupported>) -> Option
     Some(ready)
 }
 
-/// Split a command string into words as Python's `shlex.split` does (and
-/// as Compose does): POSIX quotes and backslashes, and no comments, so
-/// `--requirepass #x` keeps `#x`. The `shlex` crate drops an unquoted
-/// word starting with `#` and the rest of the line. `None` when a quote
-/// does not close or the text ends in a lone backslash.
-pub(crate) fn split_words(s: &str) -> Option<Vec<String>> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            ' ' | '\t' | '\r' | '\n' => {
-                if in_word {
-                    words.push(std::mem::take(&mut word));
-                    in_word = false;
-                }
-            }
-            '\\' => {
-                word.push(chars.next()?);
-                in_word = true;
-            }
-            '\'' => {
-                loop {
-                    match chars.next()? {
-                        '\'' => break,
-                        c => word.push(c),
-                    }
-                }
-                in_word = true;
-            }
-            '"' => {
-                loop {
-                    match chars.next()? {
-                        '"' => break,
-                        '\\' => match chars.next()? {
-                            c @ ('"' | '\\') => word.push(c),
-                            c => {
-                                word.push('\\');
-                                word.push(c);
-                            }
-                        },
-                        c => word.push(c),
-                    }
-                }
-                in_word = true;
-            }
-            c => {
-                word.push(c);
-                in_word = true;
-            }
-        }
-    }
-    if in_word {
-        words.push(word);
-    }
-    Some(words)
+/// How [`refused_command`] begins, so [`is_refused_command`] knows its
+/// refusals.
+const REFUSED_COMMAND: &str = "Docker Compose cannot split it into words";
+
+/// Why a service's `command` string cannot run: Docker Compose refuses it.
+pub(crate) fn refused_command(why: crate::shellwords::Refusal) -> String {
+    format!(
+        "{REFUSED_COMMAND} ({why}) and refuses the file, so the task failed under BenchFlow 0.8; write the command as a list, or quote those characters"
+    )
 }
 
-fn command(v: &Value, field: &str, refused: &mut Vec<Unsupported>) -> Vec<String> {
+/// Whether a refused field is a service command Docker Compose cannot split
+/// ([`refused_command`], reported as P014).
+pub(crate) fn is_refused_command(u: &Unsupported) -> bool {
+    u.reason.starts_with(REFUSED_COMMAND)
+}
+
+/// P013: Compose stopped reading a service's `command` string at a shell
+/// operator and dropped the rest; BenchFlow runs the same words.
+pub(crate) fn cut_command(field: &str, argv: &[String], dropped: &str) -> Diagnostic {
+    Diagnostic::warning(
+        "P013",
+        format!(
+            "{field}: Docker Compose stops reading the command at a shell operator and drops {dropped:?}; BenchFlow runs the words before it, as 0.8 did: {}",
+            serde_json::to_string(argv).unwrap_or_default()
+        ),
+    )
+    .help("no shell runs a command string; to redirect, pipe, or chain commands, run one: `sh -c '...'`, or the list `[sh, -c, '...']`")
+}
+
+/// The Compose releases whose split [`crate::shellwords`] ports: P013 and
+/// P014 are what they do. Compose v5.3.1 (go-shellwords v1.0.13) accepts
+/// `echo a\\$(date)`, which these refuse, and older v2 releases differ on
+/// more strings.
+const COMPOSE_SPLIT: &str = "as Docker Compose v5.4.0 to v5.6.0 split it, with go-shellwords v1.0.14 and v1.0.15; other versions differ on a few strings";
+
+/// P014: a service's `command` string Docker Compose refuses, for `bench
+/// check`; the field is refused too ([`refused_command`]).
+pub(crate) fn unsplittable_command(field: &str, why: crate::shellwords::Refusal) -> Diagnostic {
+    Diagnostic::error(
+        "P014",
+        format!("{field}: Docker Compose cannot split the command into words: {why} ({COMPOSE_SPLIT})"),
+    )
+    .help("write the command as a list, or quote those characters; Compose refuses the whole file, so the task did not start under BenchFlow 0.8 either")
+}
+
+/// Why a service's `command` cannot run.
+enum BadCommand {
+    /// Docker Compose refuses the string.
+    Compose(crate::shellwords::Refusal),
+    /// Neither a string nor a list of strings.
+    NotStrings,
+}
+
+/// A service's `command`: a list as written, or a string split into words
+/// as Docker Compose splits it ([`crate::shellwords`]), with the text Compose
+/// drops at a shell operator.
+fn command(v: &Value) -> Result<(Vec<String>, Option<&str>), BadCommand> {
     match v {
-        Value::String(s) => split_words(s).unwrap_or_else(|| {
-            refuse(refused, field.to_string(), "its quotes do not close");
-            Vec::new()
-        }),
-        Value::Array(items) if items.iter().all(Value::is_string) => items
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        Value::Null => Vec::new(),
-        _ => {
-            refuse(
-                refused,
-                field.to_string(),
-                "must be a string or a list of strings",
-            );
-            Vec::new()
-        }
+        Value::String(s) => crate::shellwords::parse(s)
+            .map(|split| (split.words, split.dropped))
+            .map_err(BadCommand::Compose),
+        Value::Array(items) if items.iter().all(Value::is_string) => Ok((
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+            None,
+        )),
+        Value::Null => Ok((Vec::new(), None)),
+        _ => Err(BadCommand::NotStrings),
     }
 }
 
@@ -399,20 +423,31 @@ struct Reading<'a> {
     /// Settings BenchFlow manages itself, ignored: `services.main.build:
     /// BenchFlow builds environment/Dockerfile itself`.
     ignored: Vec<String>,
-    /// Warnings: host values and host folders dropped.
-    warnings: Vec<Diagnostic>,
+    /// Warnings (host values and host folders dropped, commands cut at a
+    /// shell operator) and errors (command strings Compose refuses).
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Reading<'_> {
     fn refuse(&mut self, field: String, reason: impl Into<String>) {
         refuse(self.refused, field, reason);
     }
+    fn bad_command(&mut self, field: String, why: BadCommand) {
+        match why {
+            BadCommand::Compose(why) => {
+                self.diagnostics
+                    .push(unsplittable_command(&field, why).in_file(self.label));
+                self.refuse(field, refused_command(why));
+            }
+            BadCommand::NotStrings => self.refuse(field, "must be a string or a list of strings"),
+        }
+    }
     fn ignore(&mut self, field: &str, why: &str) {
         self.ignored.push(format!("{field}: {why}"));
     }
     fn drop_host_env(&mut self, field: &str, key: &str, names: &[String]) {
         let names: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
-        self.warnings.push(
+        self.diagnostics.push(
             Diagnostic::warning(
                 "P011",
                 format!(
@@ -429,7 +464,7 @@ impl Reading<'_> {
     /// written, with a warning.
     fn keep_host_text(&mut self, field: &str, text: &str, names: &[String]) {
         let names: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
-        self.warnings.push(
+        self.diagnostics.push(
             Diagnostic::warning(
                 "P011",
                 format!(
@@ -442,7 +477,7 @@ impl Reading<'_> {
         );
     }
     fn drop_host_mount(&mut self, field: &str, spec: &str) {
-        self.warnings.push(
+        self.diagnostics.push(
             Diagnostic::warning(
                 "P012",
                 format!("{field}: `{spec}` mounts a folder of the host; dropped, never mounted"),
@@ -551,7 +586,7 @@ fn volumes(v: &Value, field: &str, r: &mut Reading<'_>) {
         if variable_name(&source).is_some_and(|n| HARBOR_LOG_SOURCES.contains(&n)) {
             r.ignore(
                 &format!("{field} {spec}"),
-                "Harbor's log folder; BenchFlow collects /logs itself",
+                "a split-layout runner's log folder; BenchFlow collects /logs itself",
             );
         } else if source.starts_with('/') || source.starts_with('~') || source.starts_with('$') {
             r.drop_host_mount(field, &spec);
@@ -715,18 +750,16 @@ fn main_service(
                     "main's image is the task's (its Dockerfile or docker_image); Compose cannot choose another",
                 ),
             },
-            "command" => {
-                let mut scratch = Vec::new();
-                let argv = command(value, &at, &mut scratch);
-                if scratch.is_empty() && is_idle(&argv) {
+            "command" => match command(value) {
+                Ok((argv, _)) if is_idle(&argv) => {
                     r.ignore(&at, "BenchFlow keeps the agent's container running itself");
-                } else {
-                    r.refuse(
-                        at,
-                        "main's command is not run; BenchFlow keeps the agent's container idle itself (only `sleep infinity` is accepted)",
-                    );
                 }
-            }
+                Ok(_) => r.refuse(
+                    at,
+                    "main's command is not run; BenchFlow keeps the agent's container idle itself (only `sleep infinity` is accepted)",
+                ),
+                Err(why) => r.bad_command(at, why),
+            },
             "network_mode" => match value.as_str() {
                 Some(s)
                 if s == "bridge"
@@ -826,7 +859,7 @@ pub(crate) fn read(
         label,
         refused,
         ignored: Vec::new(),
-        warnings: Vec::new(),
+        diagnostics: Vec::new(),
     };
     let mut declared = Vec::new();
     for (key, value) in &top {
@@ -889,7 +922,7 @@ pub(crate) fn read(
         }
         compose.diagnostics.push(note);
     }
-    compose.diagnostics.extend(r.warnings);
+    compose.diagnostics.extend(r.diagnostics);
     compose
 }
 
@@ -1014,10 +1047,20 @@ fn sidecar(
             return None;
         }
     };
-    let command = svc
-        .get("command")
-        .map(|c| command(c, &format!("{field}.command"), r.refused))
-        .unwrap_or_default();
+    let command = match svc.get("command").map(command) {
+        None => Vec::new(),
+        Some(Ok((argv, dropped))) => {
+            if let Some(dropped) = dropped {
+                let warning = cut_command(&format!("{field}.command"), &argv, dropped);
+                r.diagnostics.push(warning.in_file(r.label));
+            }
+            argv
+        }
+        Some(Err(why)) => {
+            r.bad_command(format!("{field}.command"), why);
+            Vec::new()
+        }
+    };
     for word in &command {
         if let Err(names) = literal(word) {
             r.keep_host_text(&format!("{field}.command"), word, &names);
@@ -1047,30 +1090,73 @@ fn sidecar(
 mod tests {
     use super::*;
 
-    /// Guards the D5 fix: the `shlex` crate read an unquoted word starting
-    /// with `#` as a comment and dropped it with the rest of the line
-    /// (`--requirepass #hunter2` lost its password). `split_words` must give
-    /// what Python's `shlex.split` gives on every case in the fixture
-    /// (generated by Python 3 from random text of quotes, backslashes, `#`
-    /// and whitespace; `null` where Python raises).
+    /// A string command is split as Docker Compose splits it (0.8 handed it
+    /// to Compose, which keeps `#hunter2`). One Compose refuses is an error
+    /// and refused by name, with the cause, when the task is read: 0.8 failed
+    /// when Compose read the file.
     #[test]
-    fn split_words_matches_python_shlex() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/shlex/python-shlex-split.jsonl");
-        let text = std::fs::read_to_string(path).unwrap();
-        let mut n = 0;
-        for line in text.lines() {
-            let case: serde_json::Value = serde_json::from_str(line).unwrap();
-            let input = case["text"].as_str().unwrap();
-            let want: Option<Vec<String>> = serde_json::from_value(case["words"].clone()).unwrap();
-            assert_eq!(split_words(input), want, "{input:?}");
-            n += 1;
-        }
-        assert!(n > 2000);
+    fn command_strings_split_as_compose_splits_them() {
+        let dir = package(
+            "services:\n  main:\n    command: \"sleep 'infinity\"\n  cache:\n    image: redis:7\n    command: \"redis-server --save '' --requirepass #hunter2\"\n  web:\n    image: python:3\n    command: python -c print(1)\n",
+            &[],
+        );
+        let (c, refused) = read_package(&dir);
         assert_eq!(
-            split_words("redis-server --save '' --requirepass #hunter2").unwrap(),
+            c.services[0].command,
             ["redis-server", "--save", "", "--requirepass", "#hunter2"]
         );
+        let refused: Vec<(&str, &str)> = refused
+            .iter()
+            .map(|u| (u.field.as_str(), u.reason.as_str()))
+            .collect();
+        assert_eq!(refused.len(), 2, "{refused:#?}");
+        assert_eq!(refused[0].0, format!("{LABEL} services.main.command"));
+        assert!(
+            refused[0].1.contains("a single quote is not closed"),
+            "{}",
+            refused[0].1
+        );
+        assert_eq!(refused[1].0, format!("{LABEL} services.web.command"));
+        assert!(
+            refused[1]
+                .1
+                .starts_with("Docker Compose cannot split it into words (a `(` outside quotes does not open a `$(`)"),
+            "{}",
+            refused[1].1
+        );
+        // And `bench check` says so.
+        assert_eq!(codes(&c), ["P014", "P014"]);
+        assert!(c.diagnostics.iter().all(|d| d.is_error()));
+        // It names the Compose releases it splits as (the D5b review of
+        // cbf42071, finding 7: other releases split a few strings otherwise).
+        assert_eq!(
+            c.diagnostics[1].message,
+            "services.web.command: Docker Compose cannot split the command into words: a `(` outside quotes does not open a `$(` (as Docker Compose v5.4.0 to v5.6.0 split it, with go-shellwords v1.0.14 and v1.0.15; other versions differ on a few strings)"
+        );
+    }
+
+    /// Compose stops reading a command string at a shell operator and runs
+    /// the words before it; BenchFlow runs the same words and says so.
+    #[test]
+    fn a_command_cut_at_a_shell_operator_runs_the_words_before_it() {
+        let dir = package(
+            "services:\n  cache:\n    image: redis:7\n    command: redis-server --save 60 1 > /dev/null\n  log:\n    image: busybox\n    command: \"syslogd -n 2>&1\"\n  web:\n    image: nginx\n    command: \"nginx -g 'daemon off;'\"\n",
+            &[],
+        );
+        let (c, refused) = read_package(&dir);
+        assert!(refused.is_empty(), "{refused:?}");
+        let argv: Vec<&[String]> = c.services.iter().map(|s| s.command.as_slice()).collect();
+        assert_eq!(argv[0], ["redis-server", "--save", "60", "1"]);
+        assert_eq!(argv[1], ["syslogd", "-n"]);
+        assert_eq!(argv[2], ["nginx", "-g", "daemon off;"]);
+        assert_eq!(codes(&c), ["P013", "P013"]);
+        let d = &c.diagnostics[0];
+        assert_eq!(d.severity, crate::diag::Severity::Warning);
+        assert_eq!(
+            d.message,
+            r#"services.cache.command: Docker Compose stops reading the command at a shell operator and drops "> /dev/null"; BenchFlow runs the words before it, as 0.8 did: ["redis-server","--save","60","1"]"#
+        );
+        assert!(c.diagnostics[1].message.contains(r#"drops "2>&1""#));
     }
 
     #[test]

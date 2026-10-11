@@ -20,7 +20,6 @@
   ],
   "v06/demo-task": [],
   "v06/flaky-oracle": [],
-  "v06/harbor-parity": [],
   "v06/multi-scene": [
     "nothing grades this task: add verifier/rubric.json, or verifier/test.sh, the script the runtime runs to check the solver's work (docs/package.md, Verifier scripts), or name a verifier image that holds its own scripts in [verifier.sandbox] image",
     "nothing says what the agent runs in: set [sandbox] image to a prebuilt image, or add sandbox/Dockerfile for the runtime to build"
@@ -31,5 +30,6 @@
   ],
   "v06/private-facts-nudges": [],
   "v06/regex-email-parser": [],
-  "v06/report-writer": []
+  "v06/report-writer": [],
+  "v06/split-parity": []
 }

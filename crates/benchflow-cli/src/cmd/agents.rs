@@ -296,6 +296,60 @@ pub fn login_lines() -> Vec<(String, bool, String, Option<String>)> {
         .collect()
 }
 
+/// An agent as `bench --json agents` lists it: `kind` is `script` (oracle,
+/// nop), `manifest` (installed from a manifest), `native` (bench's own
+/// loops) or `backend` (external); `harnesses` are the values `--harness`
+/// takes for it, the default first (none for the other kinds).
+fn agent_json(
+    name: &str,
+    aliases: &[String],
+    kind: &str,
+    harnesses: &[&str],
+    description: &str,
+    options: &[benchflow_agent::manifest::AgentOption],
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "aliases": aliases,
+        "kind": kind,
+        "harnesses": harnesses,
+        "description": description,
+        "options": options,
+    })
+}
+
+fn manifest_json(m: &AgentManifest) -> serde_json::Value {
+    let harnesses: Vec<&str> = std::iter::once(m.harness)
+        .chain(m.harnesses.iter().copied().filter(|h| *h != m.harness))
+        .map(|h| h.as_str())
+        .collect();
+    agent_json(
+        &m.name,
+        &m.aliases,
+        "manifest",
+        &harnesses,
+        &m.description,
+        &m.options,
+    )
+}
+
+fn external_json() -> serde_json::Value {
+    agent_json(
+        benchflow_run::external_agent::NAME,
+        &[],
+        "backend",
+        &[],
+        EXTERNAL_WHAT,
+        &[],
+    )
+}
+
+/// Under `--json`, one agent's page as its entry in the list.
+fn print_json(v: serde_json::Value) -> Result<Exit> {
+    println!("{v}");
+    Ok(Exit::Ok)
+}
+
 pub async fn run(args: AgentsArgs) -> Result<Exit> {
     if let Some(AgentsCommand::Check(check)) = args.command {
         return run_checks(check).await;
@@ -304,6 +358,29 @@ pub async fn run(args: AgentsArgs) -> Result<Exit> {
         return list_registry().await;
     }
     let registry = registry()?;
+    if crate::ui::ui().json
+        && let Some(name) = &args.name
+    {
+        // A tuple, not an `if let` guard, which needs a newer Rust than the
+        // workspace's declared minimum.
+        return match (name.as_str(), benchflow_agent::native::find(name.as_str())) {
+            (n, _) if benchflow_run::dspy_agent::is_dspy_rlm(n) => {
+                print_json(manifest_json(benchflow_run::dspy_agent::manifest()))
+            }
+            (n, _) if benchflow_run::external_agent::is_external(n) => print_json(external_json()),
+            (_, Some(canonical)) => {
+                let (name, aliases, what) = benchflow_agent::native::AGENTS
+                    .iter()
+                    .find(|(a, _, _)| *a == canonical)
+                    .copied()
+                    .expect("find names a native agent");
+                let aliases: Vec<String> = aliases.iter().map(|a| a.to_string()).collect();
+                let options = benchflow_agent::native::options::declared(name);
+                print_json(agent_json(name, &aliases, "native", &[], what, &options))
+            }
+            (n, None) => print_json(manifest_json(&manifest(n, &registry).await?)),
+        };
+    }
     match args.name {
         None => list(&registry),
         Some(name) if benchflow_run::dspy_agent::is_dspy_rlm(&name) => {
@@ -319,8 +396,7 @@ pub async fn run(args: AgentsArgs) -> Result<Exit> {
             Ok(Exit::Ok)
         }
         Some(name) => {
-            let manifest = manifest(&name, &registry).await?;
-            show(&manifest);
+            show(&manifest(&name, &registry).await?);
             Ok(Exit::Ok)
         }
     }
@@ -384,15 +460,28 @@ fn list(registry: &Registry) -> Result<Exit> {
     });
     rows.push(AgentRow {
         name: benchflow_run::external_agent::NAME.into(),
-        aliases: benchflow_run::external_agent::ALIASES
-            .iter()
-            .map(|a| a.to_string())
-            .collect(),
+        aliases: Vec::new(),
         harness: "backend".into(),
         login: dim("--backend <url>"),
         checked: dim("-"),
         what: EXTERNAL_WHAT.into(),
     });
+    if crate::ui::ui().json {
+        let mut v = vec![
+            agent_json("oracle", &[], "script", &[], rows[0].what.as_str(), &[]),
+            agent_json("nop", &[], "script", &[], rows[1].what.as_str(), &[]),
+        ];
+        v.extend(registry.agents().iter().map(manifest_json));
+        for (name, aliases, what) in benchflow_agent::native::AGENTS {
+            let aliases: Vec<String> = aliases.iter().map(|a| a.to_string()).collect();
+            let options = benchflow_agent::native::options::declared(name);
+            v.push(agent_json(name, &aliases, "native", &[], what, &options));
+        }
+        v.push(manifest_json(dspy));
+        v.push(external_json());
+        println!("{}", serde_json::Value::Array(v));
+        return Ok(Exit::Ok);
+    }
     let width = wrap_width();
     say!("{}", agents_table(&rows, width));
     say!(
@@ -518,6 +607,16 @@ pub fn keyed_providers(m: &AgentManifest, host: &HostEnv) -> Vec<(String, String
     for spec in &m.providers {
         for provider in registry.providers() {
             if provider.usable_by(spec).is_none() || found.iter().any(|(n, _)| *n == provider.name)
+            {
+                continue;
+            }
+            // A prefix the agent strips sends `-m <provider>/…` to its own
+            // login, not to this key (qwen-code's `openai/`).
+            let model = format!("{}/x", provider.name);
+            if m.model
+                .strip_prefixes
+                .iter()
+                .any(|p| model.starts_with(p.as_str()))
             {
                 continue;
             }
@@ -881,13 +980,62 @@ fn script_lines(script: &str, width: usize) -> (Vec<String>, bool) {
     (lines, cut)
 }
 
+/// The registry's providers the native loops also take, with their keys:
+/// `zai (ZAI_API_KEY), deepseek (DEEPSEEK_API_KEY), mimo (MIMO_API_KEY)`.
+fn registry_providers() -> String {
+    let own = [
+        "vercel",
+        "vercel-anthropic",
+        "openai",
+        "anthropic",
+        "openrouter",
+    ];
+    let registry = benchflow_agent::providers::ProviderRegistry::builtin();
+    benchflow_agent::native::endpoint::known_providers()
+        .into_iter()
+        .filter(|p| !own.contains(&p.as_str()))
+        .filter_map(|name| {
+            let p = registry.find(&name)?;
+            Some(format!("{name} ({})", p.key.env.join(" or ")))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The keys native agents can use here, by provider (never a value).
 fn native_login(host: &HostEnv) -> String {
     use benchflow_agent::native::{BuiltinProviders, EndpointResolver};
-    let ready: Vec<&str> = ["vercel", "openai", "anthropic", "openrouter"]
-        .into_iter()
+    // Every provider a native loop takes, its own and the registry's (MiMo,
+    // Z.ai, DeepSeek); `vercel-anthropic/` uses the same key as `vercel/`.
+    let names = benchflow_agent::native::endpoint::known_providers();
+    let ready: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|p| *p != "vercel-anthropic")
         .filter(|p| BuiltinProviders.resolve(&format!("{p}/x"), host).is_ok())
         .collect();
+    // A key that is set but whose base URL is refused is not "no key".
+    let refused: Vec<String> = names
+        .iter()
+        .filter(|p| *p != "vercel-anthropic")
+        .filter_map(
+            |p| match BuiltinProviders.resolve(&format!("{p}/x"), host) {
+                Err(benchflow_agent::native::EndpointError::BaseUrl { variable, .. }) => {
+                    Some(format!("{p} (key set, {variable} refused)"))
+                }
+                _ => None,
+            },
+        )
+        .collect();
+    if !refused.is_empty() {
+        let mut line = if ready.is_empty() {
+            String::new()
+        } else {
+            format!("{} {}/… · ", ok_mark(), ready.join("/…, "))
+        };
+        line.push_str(&format!("{} {}", fail_mark(), refused.join(", ")));
+        return line;
+    }
     if ready.is_empty() {
         format!("{} no provider key", fail_mark())
     } else {
@@ -895,7 +1043,7 @@ fn native_login(host: &HostEnv) -> String {
     }
 }
 
-const EXTERNAL_WHAT: &str =
+pub(crate) const EXTERNAL_WHAT: &str =
     "an outside backend (an RL trainer) decides each step over HTTP; the tools run in the sandbox";
 
 fn show_external() {
@@ -903,11 +1051,6 @@ fn show_external() {
         "{}  {}",
         bold(benchflow_run::external_agent::NAME),
         EXTERNAL_WHAT
-    );
-    say!(
-        "  {:<10} {}",
-        dim("aliases"),
-        benchflow_run::external_agent::ALIASES.join(", ")
     );
     say!(
         "  {:<10} backend: bench speaks the backend protocol to --backend <url> from this machine",
@@ -924,7 +1067,7 @@ fn show_external() {
     say!(
         "  {:<10} {}",
         dim("login"),
-        "none; a bearer token from the file BENCHFLOW_BACKEND_TOKEN_PATH names, when it exists"
+        "none; a bearer token from the file BENCHFLOW_BACKEND_TOKEN_PATH names (default /var/run/secrets/service-account-token), when it exists"
     );
     say!(
         "  {:<10} --idle-timeout (the longest wait for a message), the task's timeout, --max-tool-calls",
@@ -1054,8 +1197,9 @@ fn show_native(name: &str) {
         dim("model")
     );
     say!(
-        "  {:<10} vercel (AI_GATEWAY_API_KEY), openai (OPENAI_API_KEY), anthropic (ANTHROPIC_API_KEY), openrouter (OPENROUTER_API_KEY)",
-        dim("providers")
+        "  {:<10} vercel (AI_GATEWAY_API_KEY), openai (OPENAI_API_KEY), anthropic (ANTHROPIC_API_KEY), openrouter (OPENROUTER_API_KEY), and from the provider registry: {}",
+        dim("providers"),
+        registry_providers()
     );
     say!(
         "  {:<10} {}",
@@ -1099,6 +1243,29 @@ fn show_native(name: &str) {
 async fn list_registry() -> Result<Exit> {
     let (loaded, _) = registry_index().await?;
     let builtins = registry()?;
+    if crate::ui::ui().json {
+        let v: Vec<serde_json::Value> = loaded
+            .index
+            .agents
+            .iter()
+            .map(|entry| {
+                let builtin = builtins
+                    .agents()
+                    .iter()
+                    .find(|a| a.acp_registry.as_deref() == Some(entry.id.as_str()))
+                    .map(|a| a.name.clone());
+                serde_json::json!({
+                    "name": format!("acp:{}", entry.id),
+                    "version": entry.version,
+                    "installs": entry.install_summary(),
+                    "built_in_as": builtin,
+                    "description": entry.description,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::Value::Array(v));
+        return Ok(Exit::Ok);
+    }
     let mut t = Table::new(&["agent", "version", "installs", "built in as", "what"]);
     for entry in &loaded.index.agents {
         let builtin = builtins
@@ -1344,6 +1511,20 @@ mod tests {
         assert_eq!(
             example_model("vercel"),
             "vercel/deepseek/deepseek-v4-flash-0731"
+        );
+        // qwen-code strips `openai/`: `-m openai/…` goes to its own login,
+        // so an OpenAI key under another name does not make it ready.
+        let qwen = registry.find("qwen-code").unwrap();
+        let codex_key = HostEnv::new(
+            BTreeMap::from([("CODEX_API_KEY".to_string(), "k".to_string())]),
+            Some(std::env::temp_dir().join("bench-keyed-providers-empty-home")),
+        );
+        assert!(
+            keyed_providers(qwen, &codex_key)
+                .iter()
+                .all(|(p, _)| p != "openai"),
+            "{:?}",
+            keyed_providers(qwen, &codex_key)
         );
     }
 

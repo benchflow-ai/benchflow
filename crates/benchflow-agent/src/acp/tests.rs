@@ -1236,6 +1236,61 @@ async fn codex_gets_model_effort_ids_through_set_model() {
     );
 }
 
+/// `-a codex -e high` with no `-m`: the session's own model at that
+/// effort, from the variants it offers (on 2026-10-10 every trial failed
+/// after it started, saying Codex offers no effort option). An effort the
+/// session does not offer for its model is refused, naming the ones it does.
+#[tokio::test]
+async fn codex_effort_without_a_model_picks_the_sessions_variant() {
+    let codex_session = |available: &[&str]| {
+        json!({
+            "sessionId": "sess-1",
+            "models": {
+                "currentModelId": "gpt-6.1-sol[low]",
+                "availableModels": available.iter().map(|id| json!({"modelId": id, "name": "x"})).collect::<Vec<_>>(),
+            },
+            "configOptions": [{"id": "model", "type": "select", "currentValue": "gpt-6.1-sol", "options": []}],
+        })
+    };
+    let session = codex_session(&[
+        "gpt-6.1-sol[low]",
+        "gpt-6.1-sol[medium]",
+        "gpt-6.1-sol[high]",
+    ]);
+    let (mut client, mut agent, _) = ready_client(ClientOptions::new("codex"), session).await;
+    let agent_side = async {
+        let (id, params) = agent.expect("session/set_model").await;
+        assert_eq!(
+            params,
+            json!({"sessionId": "sess-1", "modelId": "gpt-6.1-sol[high]"})
+        );
+        agent.respond(&id, json!({})).await;
+    };
+    let codex_spec = spec("codex");
+    let (choice, ()) = tokio::join!(
+        client.select_model(&codex_spec, None, Some("high")),
+        agent_side
+    );
+    let choice = choice.unwrap();
+    assert_eq!(choice.model_id.as_deref(), Some("gpt-6.1-sol[high]"));
+    assert_eq!(
+        choice.effort_via.as_deref(),
+        Some("model id gpt-6.1-sol[high]")
+    );
+
+    let session = codex_session(&["gpt-6.1-sol[low]", "gpt-6.1-sol[medium]"]);
+    let (mut client, _agent, _) = ready_client(ClientOptions::new("codex"), session).await;
+    let error = client
+        .select_model(&spec("codex"), None, Some("xhigh"))
+        .await
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(
+        text.contains("offers gpt-6.1-sol only at low, medium"),
+        "{text}"
+    );
+}
+
 #[tokio::test]
 async fn auto_selection_follows_what_the_session_offers() {
     // No model option: session/set_model.

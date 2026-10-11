@@ -89,6 +89,10 @@ pub enum EndpointError {
     UnknownProvider { provider: String, model: String },
     #[error("no key for provider `{provider}`: {wanted} is not set")]
     NoKey { provider: String, wanted: String },
+    /// A base URL override that would send the key somewhere unsafe, or
+    /// that came from somewhere other than this shell's environment.
+    #[error("{message}")]
+    BaseUrl { message: String, variable: String },
 }
 
 impl EndpointError {
@@ -104,6 +108,10 @@ impl EndpointError {
             EndpointError::NoKey { wanted, .. } => {
                 format!("export {wanted}=<key> in this shell, then run again")
             }
+            EndpointError::BaseUrl { variable, .. } => format!(
+                "export {variable}=https://... in this shell (http:// only for this machine: \
+                 localhost, 127.0.0.1, ::1), or unset it"
+            ),
         }
     }
 }
@@ -173,6 +181,101 @@ pub struct BuiltinProviders;
 /// Overrides every provider's base URL (tests, proxies).
 pub const BASE_URL_OVERRIDE_ENV: &str = "BENCHFLOW_NATIVE_BASE_URL";
 
+/// Variables that move where a provider key is sent. They are read only
+/// from this shell's environment, never from `--env`, a job file,
+/// bench.toml, or a project `.env` (which a cloned repository brings), and
+/// only as https, or http to this machine.
+pub const BASE_URL_VARIABLES: &[&str] = &[
+    BASE_URL_OVERRIDE_ENV,
+    "AI_GATEWAY_BASE_URL",
+    "OPENAI_BASE_URL",
+];
+
+/// The base URL `variable` sets, checked: `None` when it is not set.
+pub fn base_url_from(host: &HostEnv, variable: &str) -> Result<Option<String>, EndpointError> {
+    let refuse = |message: String| EndpointError::BaseUrl {
+        message,
+        variable: variable.to_string(),
+    };
+    if let Some((_, crate::credentials::Origin::AgentEnv)) = host.get(variable) {
+        return Err(refuse(format!(
+            "{variable} was set for the run (--env, a job file, or bench.toml); it moves where the \
+             provider key is sent, so it is read only from this shell's environment"
+        )));
+    }
+    let Some(value) = host.environment(variable) else {
+        return Ok(None);
+    };
+    let value = value.trim().trim_end_matches('/').to_string();
+    let url = reqwest::Url::parse(&value)
+        .map_err(|e| refuse(format!("{variable} is not a URL ({e})")))?;
+    let name = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let loopback = name.eq_ignore_ascii_case("localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    match url.scheme() {
+        "https" => Ok(Some(value)),
+        "http" if loopback => Ok(Some(value)),
+        _ => Err(refuse(format!(
+            "{variable} is {}://{}: the provider key would go there unencrypted; it must be \
+             https, or http to this machine",
+            url.scheme(),
+            host_of(&value)
+        ))),
+    }
+}
+
+/// The host of a URL, for messages.
+fn host_of(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            let host = u.host_str()?.to_string();
+            Some(match u.port() {
+                Some(p) => format!("{host}:{p}"),
+                None => host,
+            })
+        })
+        .unwrap_or_else(|| url.to_string())
+}
+
+/// A note for the run's start when a variable sends `model`'s calls (and
+/// its key) to a host other than its provider's own; `None` otherwise.
+pub fn base_url_note(model: &str, host: &HostEnv) -> Option<String> {
+    let endpoint = BuiltinProviders.resolve(model, host).ok()?;
+    let own = default_base_url(&endpoint.provider)?;
+    let (now, own) = (host_of(&endpoint.base_url), host_of(&own));
+    (now != own).then(|| {
+        let variable = BASE_URL_VARIABLES
+            .iter()
+            .find(|v| host.environment(v).is_some())
+            .copied()
+            .unwrap_or(BASE_URL_OVERRIDE_ENV);
+        format!(
+            "model calls for {} go to {now} ({variable}), not {own}; the {} key goes with them",
+            endpoint.provider, endpoint.provider
+        )
+    })
+}
+
+/// A provider's own base URL.
+fn default_base_url(provider: &str) -> Option<String> {
+    if let Some(spec) = BUILTIN.iter().find(|p| p.name == provider) {
+        return Some(spec.base_url.to_string());
+    }
+    let registry = crate::providers::ProviderRegistry::builtin();
+    let p = registry.find(provider)?;
+    p.openai
+        .as_ref()
+        .map(|e| e.base_url.clone())
+        .or_else(|| p.anthropic.as_ref().map(|e| e.base_url.clone()))
+}
+
 impl EndpointResolver for BuiltinProviders {
     fn resolve(&self, model: &str, host: &HostEnv) -> Result<Endpoint, EndpointError> {
         let Some((provider, rest)) = model
@@ -215,12 +318,13 @@ impl EndpointResolver for BuiltinProviders {
                 wanted: spec.keys.join(" or "),
             });
         };
-        let base_url = host
-            .get(BASE_URL_OVERRIDE_ENV)
-            .or_else(|| spec.base_url_env.and_then(|v| host.get(v)))
-            .map(|(v, _)| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| spec.base_url.to_string());
+        let mut base_url = base_url_from(host, BASE_URL_OVERRIDE_ENV)?;
+        if base_url.is_none()
+            && let Some(variable) = spec.base_url_env
+        {
+            base_url = base_url_from(host, variable)?;
+        }
+        let base_url = base_url.unwrap_or_else(|| spec.base_url.to_string());
         Ok(Endpoint {
             api: spec.api,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -265,11 +369,7 @@ fn resolve_from_registry(
             provider: provider.to_string(),
             wanted: p.key.env.join(" or "),
         })?;
-    let base_url = host
-        .get(BASE_URL_OVERRIDE_ENV)
-        .map(|(v, _)| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or(base_url);
+    let base_url = base_url_from(host, BASE_URL_OVERRIDE_ENV)?.unwrap_or(base_url);
     Ok(Endpoint {
         api,
         base_url: base_url.trim_end_matches('/').to_string(),
@@ -282,7 +382,7 @@ fn resolve_from_registry(
 }
 
 /// Every provider a native loop can name: its own, then the registry's.
-fn known_providers() -> Vec<String> {
+pub fn known_providers() -> Vec<String> {
     let mut names: Vec<String> = BUILTIN.iter().map(|p| p.name.to_string()).collect();
     for p in crate::providers::ProviderRegistry::builtin().providers() {
         if !names.contains(&p.name) {
@@ -305,6 +405,75 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             None,
         )
+    }
+
+    /// The review's case: a cloned repository's bench.toml or job file sets
+    /// `BENCHFLOW_NATIVE_BASE_URL=http://evil/v1`, and the MiMo key would go
+    /// there. Base URLs come only from this shell's environment, as https
+    /// or http to this machine.
+    #[test]
+    fn base_urls_come_only_from_this_shell_as_https_or_loopback() {
+        let key = [("MIMO_API_KEY", "k")];
+        // From the run's own variables (--env, a job file, bench.toml).
+        let run_set = host(&key).with_overrides(BTreeMap::from([(
+            BASE_URL_OVERRIDE_ENV.to_string(),
+            "https://evil.example/v1".to_string(),
+        )]));
+        let err = BuiltinProviders
+            .resolve("mimo/mimo-v2.6-flash", &run_set)
+            .unwrap_err();
+        assert!(matches!(err, EndpointError::BaseUrl { .. }), "{err}");
+        assert!(err.to_string().contains("--env"), "{err}");
+        // Plain http to another machine, from the shell.
+        for model in ["mimo/m", "openai/m"] {
+            let h = host(&[
+                ("MIMO_API_KEY", "k"),
+                ("OPENAI_API_KEY", "k"),
+                (BASE_URL_OVERRIDE_ENV, "http://evil.example/v1"),
+            ]);
+            let err = BuiltinProviders.resolve(model, &h).unwrap_err();
+            assert!(err.to_string().contains("unencrypted"), "{model}: {err}");
+        }
+        // The message never prints the URL's user and password.
+        let h = host(&[
+            ("MIMO_API_KEY", "k"),
+            (BASE_URL_OVERRIDE_ENV, "http://user:tok3n@evil.example/v1"),
+        ]);
+        let err = BuiltinProviders
+            .resolve("mimo/m", &h)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("http://evil.example") && !err.contains("tok3n"),
+            "{err}"
+        );
+        let h = host(&[
+            ("OPENAI_API_KEY", "k"),
+            ("OPENAI_BASE_URL", "http://10.0.0.1/v1"),
+        ]);
+        assert!(BuiltinProviders.resolve("openai/m", &h).is_err());
+        // https anywhere, http to this machine.
+        for url in [
+            "https://proxy.example/v1",
+            "http://127.0.0.1:8317/v1",
+            "http://localhost:9/v1",
+            "http://[::1]:9/v1",
+        ] {
+            let h = host(&[("MIMO_API_KEY", "k"), (BASE_URL_OVERRIDE_ENV, url)]);
+            let e = BuiltinProviders.resolve("mimo/m", &h).unwrap();
+            assert_eq!(e.base_url, url);
+        }
+        // The note names the host when it is not the provider's own.
+        let h = host(&[
+            ("MIMO_API_KEY", "k"),
+            (BASE_URL_OVERRIDE_ENV, "https://proxy.example/v1"),
+        ]);
+        let note = base_url_note("mimo/m", &h).unwrap();
+        assert!(
+            note.contains("go to proxy.example (BENCHFLOW_NATIVE_BASE_URL)"),
+            "{note}"
+        );
+        assert!(base_url_note("mimo/m", &host(&key)).is_none());
     }
 
     #[test]

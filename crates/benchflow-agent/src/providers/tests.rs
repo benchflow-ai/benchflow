@@ -1558,6 +1558,14 @@ fn a_misspelled_model_is_answered_with_the_closest_listed_one() {
     let close = closest_model("deepseek/deepseek-v4-flsh", &ids);
     assert_eq!(close.as_deref(), Some("deepseek/deepseek-v4-flash"));
     assert_eq!(closest_model("qwen/qwen3-coder", &ids), None);
+    // A listed model is not misspelled: neither its own name nor another
+    // model's is a correction (the D7b fix of 01b1811f, which suggested
+    // deepseek-v4-flash here). A case-only typo gets the listed spelling.
+    assert_eq!(closest_model("deepseek/deepseek-v4-pro", &ids), None);
+    assert_eq!(
+        closest_model("DeepSeek/DeepSeek-V4-Pro", &ids).as_deref(),
+        Some("deepseek/deepseek-v4-pro")
+    );
     let e = PinError::NotServed {
         provider: "vercel".into(),
         model: "deepseek/deepseek-v4-flsh".into(),

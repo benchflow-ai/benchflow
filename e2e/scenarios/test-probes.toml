@@ -1,0 +1,11 @@
+# bench test with every exploit probe: none gets through on hello.
+tier = "full"
+needs = ["sandbox"]
+tasks = ["hello"]
+
+[[step]]
+run = ["test", "tasks/hello", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+timeout = 1800
+output_has = ['probes\s+8/8', 'exploits refused']
+output_lacks = ['VULNERABLE']

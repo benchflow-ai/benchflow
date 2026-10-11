@@ -1,0 +1,37 @@
+# bench run -d: a local dataset.toml, and a registry file.
+tier = "full"
+needs = ["sandbox"]
+tasks = ["hello", "always-passes"]
+
+[[step]]
+sh = '''
+mkdir -p ds && cp -R tasks/hello tasks/always-passes ds/
+cat > ds/dataset.toml <<'J'
+[dataset]
+name = "e2e-mini"
+version = "1.0"
+
+[[tasks]]
+name = "hello"
+
+[[tasks]]
+name = "always-passes"
+J
+'''
+
+[[step]]
+run = ["run", "-d", "ds/dataset.toml", "--dry-run", "-s", "{backend}"]
+exit = 0
+stdout_has = ['hello', 'always-passes']
+
+[[step]]
+run = ["run", "-d", "ds/dataset.toml", "-s", "{backend}", "-j", "{j}", "--job", "d", "-i", "hello"]
+exit = 0
+trials = [{ job = "d", task = "hello", status = "scored", reward = 1.0, result = { dataset_name = "e2e-mini", dataset_version = "1.0" } }]
+json = [{ file = "jobs/d/summary.json", total = 1 }]
+
+[[step]]
+name = "a public registry dataset plans without fetching"
+run = ["run", "-d", "terminal-bench@2.0", "-n", "2", "--dry-run", "--fresh", "-s", "{backend}"]
+exit = 0
+stdout_has = ['2 tasks', 'nothing runs or is fetched']

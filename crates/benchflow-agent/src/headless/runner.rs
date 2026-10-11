@@ -342,7 +342,9 @@ impl Runner {
         }
         // BenchFlow's own launch wrapper refused the run's settings (a
         // missing variable, a model the agent cannot take): the user's to fix.
-        if let Some(line) = wrapper_refusal(stderr) {
+        // It refuses before the agent starts; once the agent has worked, a
+        // line like it on stderr may be the agent's own output.
+        if !did_something && let Some(line) = wrapper_refusal(stderr) {
             return HeadlessError::Setup {
                 message: cap(&redact(line)),
                 fix: None,
@@ -430,10 +432,17 @@ impl Runner {
                 retryable: true,
                 category: "infra_failure",
             },
+            // A refused request is not retried (0.8: permanent).
             Signal::Rejected => HeadlessError::Provider {
                 message: line,
                 retryable: false,
                 category: "provider_rejected",
+            },
+            // A prompt over the context window is the agent's to manage, as
+            // on every ACP path (0.8's fault "agent").
+            Signal::Overflow => HeadlessError::AgentFailed {
+                message: line,
+                code: None,
             },
         }
     }
@@ -445,8 +454,14 @@ impl Runner {
         if bytes.len() <= limit {
             return String::from_utf8_lossy(bytes).into_owned();
         }
-        if let Some(value) = wire::shrink(bytes, limit) {
-            return value.to_string();
+        if let Some(shrunk) = wire::shrink(bytes, limit) {
+            if !shrunk.fits {
+                tracing::warn!(
+                    "could not rewrite a {}-byte agent output line to fit the {limit}-byte limit (what may not be cut is too long); passed it on over the limit",
+                    bytes.len()
+                );
+            }
+            return shrunk.value.to_string();
         }
         let text = String::from_utf8_lossy(&bytes[..limit]);
         format!(

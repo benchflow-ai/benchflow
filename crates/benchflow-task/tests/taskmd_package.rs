@@ -424,6 +424,77 @@ fn as_0_8_refuses_them() {
     assert_eq!(pkg.sandbox.env["PRICE"], "${");
 }
 
+/// A `[[sandbox.services]]` command string is split as Docker Compose split
+/// it under 0.8 (`#hunter2` stays); one Compose refuses is a check error
+/// (P014) and refused by name, where 0.8 failed when Compose read its file.
+#[test]
+fn service_command_strings_split_as_compose_splits_them() {
+    let (d, pkg) = package(
+        "[[sandbox.services]]\nname = \"cache\"\nimage = \"redis:7\"\ncommand = \"redis-server --save '' --requirepass #hunter2\"\n\n[[sandbox.services]]\nname = \"web\"\nimage = \"python:3\"\ncommand = \"python -c print(1)\"\n",
+        &[],
+        "Fix it.",
+    );
+    assert_eq!(pkg.extras.services.len(), 1);
+    assert_eq!(
+        pkg.extras.services[0].command,
+        ["redis-server", "--save", "", "--requirepass", "#hunter2"]
+    );
+    assert_eq!(refused(&pkg), [("[sandbox.services.web] command", false)]);
+    assert!(
+        pkg.unsupported[0]
+            .reason
+            .contains("(a `(` outside quotes does not open a `$(`)"),
+        "{}",
+        pkg.unsupported[0].reason
+    );
+    let report = benchflow_task::load::check(d.path(), &CheckOptions { deep: true });
+    assert!(!report.ok());
+    let errors: Vec<(&str, &str)> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.code, d.message.as_str()))
+        .collect();
+    assert_eq!(
+        errors,
+        [(
+            "P014",
+            "[sandbox.services.web] command: Docker Compose cannot split the command into words: a `(` outside quotes does not open a `$(` (as Docker Compose v5.4.0 to v5.6.0 split it, with go-shellwords v1.0.14 and v1.0.15; other versions differ on a few strings)"
+        )]
+    );
+}
+
+/// Compose stops reading a command string at a shell operator; BenchFlow
+/// runs the words before it, as 0.8 did through Compose, and warns (P013).
+#[test]
+fn a_service_command_cut_at_a_shell_operator_is_warned_about() {
+    let (_d, pkg) = package(
+        "[[sandbox.services]]\nname = \"cache\"\nimage = \"redis:7\"\ncommand = \"redis-server --save 60 1 > /dev/null\"\n",
+        &[],
+        "Fix it.",
+    );
+    assert!(pkg.unsupported.is_empty(), "{:#?}", pkg.unsupported);
+    assert_eq!(
+        pkg.extras.services[0].command,
+        ["redis-server", "--save", "60", "1"]
+    );
+    let warned: Vec<(&str, &str)> = pkg
+        .extras
+        .diagnostics
+        .iter()
+        .map(|d| (d.code, d.message.as_str()))
+        .collect();
+    assert_eq!(warned.len(), 1, "{warned:#?}");
+    assert_eq!(warned[0].0, "P013");
+    assert!(
+        warned[0]
+            .1
+            .starts_with("[sandbox.services.cache] command: Docker Compose stops reading the command at a shell operator and drops \"> /dev/null\""),
+        "{}",
+        warned[0].1
+    );
+}
+
 #[test]
 fn a_yaml_config_block_is_read() {
     let dir = tempfile::tempdir().unwrap();

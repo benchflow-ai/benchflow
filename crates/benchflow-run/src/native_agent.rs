@@ -263,7 +263,9 @@ impl ModelAgent for NativeAgent {
         };
         let client = Arc::new(client);
 
-        let mut env = ctx.env.clone();
+        // The key stays on this machine: a run variable holding it (`--env
+        // MIMO_API_KEY=...`) never reaches the sandbox's commands.
+        let mut env = without_key(&ctx.env, client.endpoint().key.expose());
         env.insert("HOME".into(), ctx.home.to_string());
         out.env_keys = env.keys().cloned().collect();
         let prompts: Vec<String> = std::iter::once(ctx.instruction.to_string())
@@ -450,6 +452,19 @@ fn engine_usage(u: &TokenUsage) -> Usage {
         cost_source: u.cost_usd.map(|_| COST_BY_PROVIDER.into()),
         cost_note: None,
     }
+}
+
+/// `env` without the variables whose value is `key`.
+fn without_key(
+    env: &std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> std::collections::BTreeMap<String, String> {
+    env.iter()
+        // As the forwarder does: a value that holds the key anywhere
+        // (`Bearer <key>`) stays out too.
+        .filter(|(_, v)| key.trim().is_empty() || !v.contains(key.trim()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ home_dirs = [".vibe"]
 # writes also lists it under `skill_paths`, as Harbor's does, so it is found
 # when a task moves VIBE_HOME.
 skill_paths = ["$HOME/.vibe/skills"]
-skills_via = "Vibe's global skills folder, also listed as `skill_paths` in the config.toml BenchFlow writes"
+skills_via = "Vibe's global skills folder, also listed as `skill_paths` in the config.toml BenchFlow writes, when it writes one (on a provider, or headless)"
 
 [install]
 uvx = "mistral-vibe==2.26.1"

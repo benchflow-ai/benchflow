@@ -1,0 +1,33 @@
+# A model agent end to end: BenchFlow's builtin loop on the gateway's DeepSeek model, with agent options and budgets.
+tier = "full"
+needs = ["sandbox", "gateway"]
+tasks = ["hello"]
+
+[[step]]
+run = ["run", "tasks/hello", "-a", "builtin", "-m", "{judge}", "--ak", "temperature=0", "--max-tool-calls", "8", "-s", "{backend}", "--job", "m"]
+exit = 0
+timeout = 900
+trials = [{ job = "m", status = "scored", result = { agent = "builtin", n_tool_calls = { min = 1, max = 8 } }, files = ["agent/model_calls.jsonl", "trainer/atif.json"] }]
+
+[[step]]
+name = "the key never reaches the job folder"
+# Every value bench could have used as the key (the provider's variables, then
+# its key file); finding none is a failure, not a pass.
+sh = '''
+keys=$(printf '%s\n' "$AI_GATEWAY_API_KEY" "$VERCEL_AI_GATEWAY_API_KEY" "$VERCEL_OIDC_TOKEN"
+       (. ~/.config/benchflow/vercel-ai-gateway.env 2>/dev/null
+        printf '%s\n' "$AI_GATEWAY_API_KEY" "$VERCEL_AI_GATEWAY_API_KEY" "$VERCEL_OIDC_TOKEN"))
+n=0
+for k in $keys; do
+  n=$((n + 1))
+  # The key goes to grep on stdin, never on its command line.
+  if printf '%s\n' "$k" | grep -rqF -f - jobs/m; then echo "a gateway key is in jobs/m"; exit 1; fi
+done
+[ "$n" -gt 0 ] || { echo "found no gateway key to look for"; exit 1; }
+'''
+exit = 0
+
+[[step]]
+run = ["export", "jobs/m", "hf", "--sharegpt"]
+exit = 0
+files = ["hf/data/train.jsonl"]

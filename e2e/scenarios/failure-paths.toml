@@ -1,0 +1,37 @@
+# The main failure paths: each trial ends with the right status, code, and owner, and the job says so.
+tier = "smoke"
+needs = ["sandbox"]
+tasks = ["agent-timeout", "no-reward", "broken-image", "verifier-timeout", "bad-oracle"]
+
+[[step]]
+run = ["run", "tasks", "-s", "{backend}", "-j", "{j}", "--job", "f"]
+exit = 1
+timeout = 1500
+output_has = ['R101', 'R301', 'R303', "the task's problem"]
+trials = [
+  { job = "f", task = "agent-timeout", status = "scored", reward = 0.0, result = { timed_out = true } },
+  { job = "f", task = "bad-oracle", status = "scored", reward = 0.0 },
+  { job = "f", task = "broken-image", status = "errored", code = "R101", owner = "task", files = ["image.log"] },
+  { job = "f", task = "no-reward", status = "unscored", code = "R301", owner = "task" },
+  { job = "f", task = "verifier-timeout", status = "unscored", code = "R303", owner = "task" },
+]
+json = [{ file = "jobs/f/summary.json", total = 5, errored = 1, unscored = 2 }]
+
+[[step]]
+sh = "cat jobs/f/no-reward__*/result.json | cksum > nr.txt && cat jobs/f/agent-timeout__*/result.json | cksum > at.txt"
+
+[[step]]
+name = "--rerun errored,unscored runs those again and keeps the rest"
+run = ["run", "tasks", "-s", "{backend}", "-j", "{j}", "--job", "f", "--rerun", "errored,unscored", "-i", "no-reward", "-i", "agent-timeout"]
+exit = 1
+stdout_has = ['1 reused, 1 ran now']
+trials = [{ job = "f", task = "no-reward", count = 1, status = "unscored" }, { job = "f", task = "agent-timeout", count = 1 }]
+
+[[step]]
+name = "the unscored trial ran again; the scored one is the same"
+sh = "! { cat jobs/f/no-reward__*/result.json | cksum | cmp -s - nr.txt; } && cat jobs/f/agent-timeout__*/result.json | cksum | cmp -s - at.txt"
+
+[[step]]
+run = ["results", "jobs/f"]
+exit = 0
+stdout_has = ['R301', 'R303', 'R101']

@@ -98,9 +98,18 @@ function placeSkills(dir) {
   for (const entry of readdirSync(from, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.startsWith(".") || !existsSync(join(from, entry.name, "SKILL.md"))) continue;
     const to = join(into, `benchflow_${entry.name}`);
-    mkdirSync(into, { recursive: true });
-    rmSync(to, { recursive: true, force: true });
-    cpSync(join(from, entry.name), to, { recursive: true });
+    try {
+      mkdirSync(into, { recursive: true });
+      rmSync(to, { recursive: true, force: true });
+      cpSync(join(from, entry.name), to, { recursive: true });
+    } catch (error) {
+      // The app's folder, not the agent: a prebuilt app the agent user
+      // cannot write cannot take the run's skills.
+      throw new SetupError(
+        `could not copy skill ${entry.name} into ${into}: ${error.message}`,
+        "make the Eve app's folder writable by the agent user, or run without skills",
+      );
+    }
     placed.push(to);
   }
   if (placed.length) process.stderr.write(`eve: skills: ${placed.join(", ")}\n`);

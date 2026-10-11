@@ -11,9 +11,7 @@ allowed-tools:
 
 # BenchFlow — Agent Benchmarking
 
-BenchFlow runs AI coding agents against tasks in sandboxed environments and
-scores their output. It combines Harbor (environments, verifier) with ACP
-(multi-turn agent communication).
+BenchFlow runs AI coding agents against tasks in sandboxed environments and scores their output. It combines split-layout tasks (environments, verifier) with ACP (multi-turn agent communication).
 
 Arguments passed: `$ARGUMENTS`
 
@@ -79,7 +77,7 @@ concurrency: 64
 max_retries: 1
 ```
 
-Harbor-compatible YAML also works:
+Job YAML in the format other split-layout runners use also works:
 ```yaml
 jobs_dir: jobs
 n_attempts: 2

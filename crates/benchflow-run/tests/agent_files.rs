@@ -199,7 +199,7 @@ impl Sandbox for FakeSandbox {
             } else {
                 ok("BF placement done\n")
             }
-        } else if c.trim() == "pwd" {
+        } else if c.lines().last().map(str::trim) == Some("pwd") {
             ok("/app\n")
         } else {
             ok("")
@@ -773,6 +773,13 @@ async fn a_root_oracle_may_run_git_in_the_agent_owned_workdir() {
         "{}",
         execs[trust]
     );
+    // The solution runs with HOME=/root; an image's ENV HOME must not send
+    // the entry anywhere else.
+    assert!(
+        execs[trust].contains("HOME=/root git config --global"),
+        "{}",
+        execs[trust]
+    );
 }
 
 #[tokio::test]
@@ -1048,7 +1055,7 @@ async fn a_file_the_agent_user_cannot_write_stops_the_run() {
     assert!(
         w.execs()
             .iter()
-            .any(|c| c.starts_with("rm -rf /var/lib/benchflow-place/")),
+            .any(|c| c.contains("rm -rf /var/lib/benchflow-place/")),
         "the stage was left behind: {:#?}",
         w.execs()
     );

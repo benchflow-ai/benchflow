@@ -1,0 +1,34 @@
+# The binary starts, names its version, and refuses what it does not know.
+tier = "smoke"
+
+[[step]]
+run = ["--version"]
+exit = 0
+stdout_has = ['^bench \d+\.\d+\.\d+']
+
+[[step]]
+run = ["--help"]
+exit = 0
+stdout_has = ['^  run\s', '^  test\s', '^  check\s']
+
+[[step]]
+name = "an unknown command is a usage error"
+run = ["frobnicate"]
+exit = 2
+
+[[step]]
+name = "an unknown flag is a usage error"
+run = ["run", "--bogus"]
+exit = 2
+stderr_has = ["--bogus"]
+
+[[step]]
+name = "-C changes folder; a missing one is a usage error"
+run = ["-C", "nowhere", "check"]
+exit = 2
+stderr_has = ["nowhere"]
+
+[[step]]
+name = "bare bench describes this folder"
+run = []
+exit = 0

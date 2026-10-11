@@ -72,7 +72,7 @@ network_mode \"allowlist\", or a time limit that is not a positive number of sec
     Explanation {
         code: "X203",
         title: "renamed key in task.md frontmatter",
-        body: "0.8 renamed Harbor's `environment` to `sandbox` and `verifier.environment_mode` to \
+        body: "0.8 renamed the split layout's `environment` to `sandbox` and `verifier.environment_mode` to \
 `verifier.sandbox_mode`. task.md accepts only the new names; task.toml imports convert the old ones.",
     },
     Explanation {
@@ -85,8 +85,9 @@ user-persona`) may each appear once.",
         code: "X205",
         title: "invalid authoring shorthand or profile",
         body: "`name`, `image`, `verifier: <path>`, `oracle: <path>`, and `profile`/`profiles` expand into \
-the config. A profile must be one 0.8 ships (code-change, harbor-compatible, reward-kit, acceptance-live, \
-multi-agent, leaderboard-local), and a path must stay inside the package.",
+the config. A profile must be one 0.8 ships: code-change, reward-kit, acceptance-live, multi-agent, \
+leaderboard-local, or 0.8's profile for split-layout compatibility, which bench still reads under 0.8's name \
+but does not list. A path must stay inside the package.",
     },
     Explanation {
         code: "X206",

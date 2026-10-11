@@ -8,8 +8,8 @@
 //!
 //! | Policy | Docker | Daytona |
 //! |---|---|---|
-//! | `none` in every phase | `--network none` | Daytona blocks all traffic |
-//! | `none` in one phase | uid firewall for that phase | Daytona blocks all traffic during that phase |
+//! | `none` in every phase | `--network none` | Daytona blocks all traffic but IPv6; the uid firewall closes IPv6 |
+//! | `none` in one phase | uid firewall for that phase | Daytona blocks all traffic but IPv6 during that phase; the uid firewall closes IPv6 |
 //! | allowlist | uid firewall: only the listed ranges; DNS refused, names pinned in `/etc/hosts` | Daytona's own allow list (at most 10 ranges) during that phase, plus the uid firewall |
 //! | blocklist | uid firewall: the listed ranges refused, names pinned to an unroutable address | uid firewall only (Daytona has no deny list) |
 //!
@@ -57,13 +57,11 @@ use benchflow_task::values::Network;
 use crate::hardening::Report;
 use crate::outcome::{DefenseState, Owner, Phase, Problem};
 
-/// One of BenchFlow's own root commands: programs from the system folders
-/// only, since a folder on the image's `PATH` may be the agent's.
+/// One of BenchFlow's own root commands ([`Exec::system`]): programs from
+/// the system folders only, and none of the image's loader variables,
+/// since a folder or file they name may be the agent's.
 fn as_root(script: impl Into<String>) -> Exec {
-    Exec::new(script)
-        .root()
-        .env("PATH", benchflow_sandbox::shell::SYSTEM_PATH)
-        .timeout(STEP_TIMEOUT)
+    Exec::new(script).system().cwd("/").timeout(STEP_TIMEOUT)
 }
 
 pub use rules::Scope;
@@ -272,6 +270,10 @@ pub struct Plan {
     pub verifier: PhaseNet,
     /// The verifier grades in a sandbox of its own.
     pub separate: bool,
+    /// Whether the agent's user comes from the task (`[agent] user`), not
+    /// from the `sandbox-user` setting: a root agent the setting made is the
+    /// user's doing, not the task's.
+    pub agent_user_from_task: bool,
 }
 
 impl Plan {
@@ -286,6 +288,7 @@ impl Plan {
             agent,
             verifier,
             separate: task.verifier.isolation == Isolation::Separate,
+            agent_user_from_task: task.agent.user.is_some(),
         })
     }
 
@@ -349,6 +352,26 @@ impl Plan {
         }
     }
 
+    /// Whether `stage` is a `none` the backend blocks itself except for
+    /// IPv6 (Daytona's block): the uid firewall must then close IPv6, and is
+    /// needed unless the sandbox's kernel has no IPv6 at all.
+    fn v6_gap(&self, stage: Stage, host: Host, caps: &Capabilities) -> bool {
+        self.phase(stage).network == Network::None
+            && caps.network_none_leaks_ipv6
+            && self.native(stage, host, caps) == NetworkPolicy::None
+    }
+
+    /// Whether the IPv6 gap is all that needs a firewall in this sandbox:
+    /// a backend whose own `none` holds (Docker's `--network none`) would
+    /// run it with none, because every phase the sandbox hosts is `none`.
+    /// Only then is a refusal for the gap the backend's (owner you, run it
+    /// on Docker), not the task's.
+    fn only_the_gap(&self, host: Host) -> bool {
+        self.stages(host)
+            .iter()
+            .all(|s| self.phase(*s).network == Network::None)
+    }
+
     /// Whether `stage` needs the uid firewall, and whether it must have it
     /// (nothing else would enforce the policy).
     fn firewall(&self, stage: Stage, host: Host, caps: &Capabilities) -> (bool, bool) {
@@ -356,9 +379,13 @@ impl Plan {
         match &self.phase(stage).network {
             Network::Open => (false, false),
             Network::None => {
-                let need = native != NetworkPolicy::None;
+                let need = native != NetworkPolicy::None || self.v6_gap(stage, host, caps);
                 (need, need)
             }
+            // The backend's own list or block covers IPv4 only where its
+            // `none` leaks IPv6 (Daytona's list takes IPv4 ranges): the
+            // firewall must hold, IPv6 included.
+            Network::Allow(_) if caps.network_none_leaks_ipv6 => (true, true),
             Network::Allow(_) => {
                 let covered = matches!(native, NetworkPolicy::Filtered { allow: Some(_) })
                     || native == NetworkPolicy::None;
@@ -370,13 +397,14 @@ impl Plan {
 }
 
 /// An image layer that installs iptables when the image lacks it, for a
-/// sandbox whose policy may need the uid firewall, and for every agent
-/// sandbox on a backend with a root service (`root_service`), which the
-/// daemon guard needs. The layer never fails: an image without a package
-/// manager is refused later, by name, if the firewall is required, and
-/// records the guard as not supported otherwise.
-pub fn firewall_layer(task: &TaskPackage, host: Host, root_service: bool) -> Option<String> {
-    if root_service && host == Host::Agent {
+/// sandbox whose policy may need the uid firewall (a `none` phase too, on a
+/// backend whose own block leaves IPv6 open), and for every agent sandbox
+/// on a backend with a root service, which the daemon guard needs. The
+/// layer never fails: an image without a package manager is refused later,
+/// by name, if the firewall is required, and records the guard as not
+/// supported otherwise.
+pub fn firewall_layer(task: &TaskPackage, host: Host, caps: &Capabilities) -> Option<String> {
+    if caps.root_service && host == Host::Agent {
         return Some(rules::INSTALL_LAYER.to_string());
     }
     let nets: Vec<&Network> = match host {
@@ -389,9 +417,10 @@ pub fn firewall_layer(task: &TaskPackage, host: Host, root_service: bool) -> Opt
     let filtered = nets
         .iter()
         .any(|n| matches!(n, Network::Allow(_) | Network::Block(_)));
-    let mixed =
-        nets.iter().any(|n| **n == Network::None) && nets.iter().any(|n| **n != Network::None);
-    (filtered || mixed).then(|| rules::INSTALL_LAYER.to_string())
+    let none = nets.iter().any(|n| **n == Network::None);
+    let mixed = none && nets.iter().any(|n| **n != Network::None);
+    let v6_gap = none && caps.network_none_leaks_ipv6;
+    (filtered || mixed || v6_gap).then(|| rules::INSTALL_LAYER.to_string())
 }
 
 /// Fields of a task's network this runner refuses, for the trial's refusal.
@@ -487,6 +516,19 @@ fn list(ports: &[u16]) -> String {
 /// before the agent starts, and again before the verifier runs. On a
 /// backend with a root service, the agent's stage also guards the daemon's
 /// ports, open network included.
+/// The environment the stage's own self-test runs with. After the agent's
+/// turn (the verifier stage) a folder on the image's `PATH` may be the
+/// agent's, so the self-test — which runs as the stage's user and looks up
+/// `timeout`, `bash`, `python3`, … — must use the verifier's trusted `PATH`
+/// and drop the image's loader variables, as the verifier itself does.
+/// Before the agent's turn there is nothing planted, so the image's `PATH`
+/// is left alone.
+#[derive(Clone, Copy, Default)]
+pub struct SelfTest<'a> {
+    pub path: Option<&'a str>,
+    pub unset: &'a [String],
+}
+
 pub async fn enforce(
     sb: &dyn Sandbox,
     caps: &Capabilities,
@@ -494,8 +536,9 @@ pub async fn enforce(
     stage: Stage,
     host: Host,
     user: &str,
+    self_test: SelfTest<'_>,
 ) -> Outcome {
-    let mut out = enforce_stage(sb, caps, plan, stage, host, user).await;
+    let mut out = enforce_stage(sb, caps, plan, stage, host, user, self_test).await;
     // With an open network only the daemon guard ran: a failure is its own.
     if plan.phase(stage).network == Network::Open
         && let Some(failed) = out.defense.take()
@@ -512,6 +555,7 @@ async fn enforce_stage(
     stage: Stage,
     host: Host,
     user: &str,
+    self_test: SelfTest<'_>,
 ) -> Outcome {
     let net = plan.phase(stage);
     let phase = match stage {
@@ -594,8 +638,45 @@ async fn enforce_stage(
     // The ports the chain refuses, and those the daemon was found on.
     let mut guard_ports: Vec<u16> = guard.to_vec();
     let mut listening: Option<Vec<u16>> = None;
+    // What the agent phase's install saw: the sandbox's IPv6, and whether
+    // it has no working ip6tables, for the verifier phase's needs.
+    let mut seen_v6: Option<(String, bool)> = None;
+    // The backend blocks IPv4 itself; the chain closes IPv6.
+    let v6_only = want && plan.v6_gap(stage, host, caps);
+    let only_gap = v6_only && plan.only_the_gap(host);
+    // Who made the agent root: the task, or the user's sandbox-user setting.
+    let (root_who, root_fix) = if plan.agent_user_from_task {
+        (
+            "the task runs its agent as root",
+            "drop [agent] user = \"root\" so the agent runs as the non-root sandbox user",
+        )
+    } else {
+        (
+            "your sandbox-user = \"root\" setting runs the agent as root",
+            "set sandbox-user to a non-root user (or drop the setting) for this task",
+        )
+    };
     if stage == Stage::Agent && root_user && (want || !guard.is_empty()) {
-        if want && need {
+        if only_gap {
+            // Root could remove the chain that closes IPv6, and, with the
+            // capabilities the chain needs, bring an IPv6 address up later
+            // where the sandbox has none yet: refused wherever IPv6 leaks.
+            return Outcome::failed(
+                "agent: no network not enforced over IPv6: the agent runs as root".into(),
+                Problem::new(
+                    "R108",
+                    Owner::You,
+                    phase,
+                    format!(
+                        "the {} backend's network block leaves IPv6 open, and {root_who}, which could remove the firewall that closes it",
+                        sb.backend()
+                    ),
+                    format!(
+                        "run the task on Docker (-s docker), whose network none has no IPv6 either, or {root_fix}"
+                    ),
+                ),
+            );
+        } else if want && need {
             return Outcome::failed(
                 format!(
                     "agent: {} not enforced: the agent runs as root",
@@ -603,10 +684,16 @@ async fn enforce_stage(
                 ),
                 Problem::new(
                     "R108",
-                    Owner::Task,
+                    if plan.agent_user_from_task {
+                        Owner::Task
+                    } else {
+                        Owner::You
+                    },
                     phase,
-                    "the task runs its agent as root, and a network allowlist, blocklist, or a \"none\" that differs from the verifier's is enforced by a firewall that root could remove",
-                    "remove [agent] user = \"root\" so the agent runs as the non-root sandbox user",
+                    format!(
+                        "{root_who}, and a network allowlist, blocklist, or a \"none\" that differs from the verifier's is enforced by a firewall that root could remove"
+                    ),
+                    root_fix,
                 ),
             );
         }
@@ -618,7 +705,13 @@ async fn enforce_stage(
         // Only the guard when the policy itself needs no firewall.
         let guard_only = PhaseNet::plain(Network::Open);
         let rules_net = if want { net } else { &guard_only };
-        let script = rules::install(&scope, rules_net, guard);
+        // Where IPv6 must be closed by the chain: the IPv6 gap, or a policy
+        // that must hold on a backend whose daemon answers on [::1] (an
+        // agent that reached it there could flush the chain). Then any IPv6
+        // at all needs ip6tables, not just an address that routes out.
+        let v6_required =
+            v6_only || (want && need && (caps.network_none_leaks_ipv6 || !guard.is_empty()));
+        let script = rules::install(&scope, rules_net, guard, v6_only, v6_required);
         let out = match sb.exec(as_root(script)).await {
             Ok(o) => o,
             Err(e) => {
@@ -629,11 +722,21 @@ async fn enforce_stage(
             }
         };
         let report = Report::parse(&out.stdout);
+        // Closing IPv6 is needed unless the kernel has no IPv6 at all: a
+        // link-local address now may route out later (an address arriving
+        // by router advertisement), and without the chain the daemon guard
+        // is missing too, which gives the agent root to bring one up.
+        let v6_state = report.first("fw-v6").unwrap_or("unknown");
+        let no_fw6 = report
+            .first("fw")
+            .is_some_and(|how| how.split_whitespace().any(|w| w == "fw6=none"));
+        seen_v6 = Some((v6_state.to_string(), no_fw6));
+        let need = need && !(v6_only && v6_state == "absent");
         match (report.first("fw"), report.first("fw-error")) {
             (Some(how), None) => {
                 installed = report.first("fw-sum").map(str::to_string);
                 if want {
-                    notes.push(rules::describe(&scope, net, how));
+                    notes.push(rules::describe(&scope, net, how, v6_only));
                 }
                 if let Some(gap) = report.first("fw-guard-gap") {
                     open_ports = Some((gap.to_string(), false));
@@ -650,19 +753,83 @@ async fn enforce_stage(
             (_, error) => {
                 let error = error.unwrap_or("the install script failed").to_string();
                 let (owner, msg, next) = rules::explain_error(&error, sb.backend());
+                // An image that cannot close IPv6 where Docker would not need
+                // it closed is the backend's gap, not the task's: Docker
+                // runs a none sandbox with no firewall, and checks ip6tables
+                // only where IPv6 routes out. Other install errors (no
+                // permission, no conntrack, a failed rule, no output) keep
+                // their own owners.
+                let kind = error.split_whitespace().next().unwrap_or("");
+                let gap_error = (kind == "no-iptables" && only_gap)
+                    || (kind == "ipv6-unfiltered" && (only_gap || v6_state != "global"));
+                let (owner, msg, next) = if gap_error {
+                    (
+                        Owner::You,
+                        format!(
+                            "on the {} backend BenchFlow's firewall must close IPv6, and the image cannot: {msg}",
+                            sb.backend()
+                        ),
+                        "run the task on Docker (-s docker), or add iptables and ip6tables to the image".to_string(),
+                    )
+                } else {
+                    (owner, msg.to_string(), next.to_string())
+                };
                 if want && need {
                     return Outcome::failed(
                         format!("{}: no firewall: {error}", stage.label()),
                         Problem::new("R108", owner, phase, msg, next).detail(out.tail(1500)),
                     );
                 }
-                if want {
+                if want && v6_only {
+                    notes.push(format!(
+                        "no uid firewall ({error}), and none needed: the sandbox has no IPv6 (IPv6 {v6_state})"
+                    ));
+                } else if want {
                     notes.push(format!("no uid firewall ({error})"));
                 }
                 if !guard.is_empty() {
                     open_ports = Some((rules::guard_error(&error), false));
                 }
             }
+        }
+    }
+    // A later verifier phase in this sandbox that must close IPv6 with no
+    // ip6tables here would be refused only after the agent ran: refuse now.
+    if stage == Stage::Agent
+        && shared
+        && let Some((v6, true)) = &seen_v6
+        && v6 != "absent"
+    {
+        let (vw, vn) = plan.firewall(Stage::Verifier, host, caps);
+        let required =
+            plan.v6_gap(Stage::Verifier, host, caps) || (vw && vn && caps.network_none_leaks_ipv6);
+        if vw && vn && required {
+            // Docker checks ip6tables only for IPv6 that routes out.
+            let owner = if v6 == "global" {
+                Owner::Task
+            } else {
+                Owner::You
+            };
+            return Outcome::failed(
+                format!(
+                    "verifier: {} cannot be enforced: no ip6tables",
+                    plan.phase(Stage::Verifier).describe()
+                ),
+                Problem::new(
+                    "R108",
+                    owner,
+                    phase,
+                    format!(
+                        "the verifier's network must have IPv6 closed on the {} backend, and the image has IPv6 but no ip6tables; refused before the agent runs rather than after",
+                        sb.backend()
+                    ),
+                    if owner == Owner::You {
+                        "run the task on Docker (-s docker), or add ip6tables to the image"
+                    } else {
+                        "add ip6tables to the task's Dockerfile (Debian's iptables package has it)"
+                    },
+                ),
+            );
         }
     }
     // The self-test, as the stage's own user.
@@ -678,10 +845,21 @@ async fn enforce_stage(
         };
     }
     let test = selftest::Test::new(net, installed.is_some(), stage, guarded);
-    let ran = match sb
-        .exec(Exec::new(test.script()).user(user).timeout(STEP_TIMEOUT))
-        .await
-    {
+    // The self-test runs as the stage's user. After the agent's turn it uses
+    // the verifier's trusted PATH and drops the image's loader variables, so
+    // a program the agent planted on the image's PATH is never found or
+    // preloaded (see [`SelfTest`]).
+    // From `/`, not the workdir the sandbox would start it in: nothing the
+    // agent left there is picked up.
+    let mut test_exec = Exec::new(test.script())
+        .user(user)
+        .cwd("/")
+        .timeout(STEP_TIMEOUT);
+    if let Some(path) = self_test.path {
+        test_exec = test_exec.env("PATH", path);
+    }
+    test_exec = test_exec.unset(self_test.unset.iter().cloned());
+    let ran = match sb.exec(test_exec).await {
         Ok(o) => o,
         Err(e) => {
             return Outcome::failed(
@@ -705,9 +883,14 @@ async fn enforce_stage(
                 "the rules or the pinned names changed after the agent user tried to change them"
                     .into(),
             ),
-            Err(e) => verdict.leaks.push(format!(
-                "the rules could not be checked after the self-test: {e}"
-            )),
+            // The sandbox went away (D4 chaos runs: deleted through
+            // Daytona's API): not a leak, and not BenchFlow's.
+            Err(e) => {
+                return Outcome::failed(
+                    format!("{}: the rules could not be checked: {e}", stage.label()),
+                    crate::trial::sandbox_problem(phase, e),
+                );
+            }
         }
     }
     // An allowed canary that failed: blocked by the firewall, or down?
@@ -912,6 +1095,7 @@ mod tests {
     fn daytona() -> Capabilities {
         Capabilities {
             network_none: true,
+            network_none_leaks_ipv6: true,
             firewall: true,
             network_allow_cidrs: Some(10),
             network_switch: true,
@@ -934,6 +1118,7 @@ mod tests {
             agent: phase(agent),
             verifier: phase(verifier),
             separate: false,
+            agent_user_from_task: true,
         }
     }
 
@@ -976,18 +1161,26 @@ mod tests {
                 allow: Some(vec!["140.82.114.4/32".into()])
             }
         );
-        // Daytona's list holds, so the uid firewall is wanted but not needed.
+        // Daytona's list takes IPv4 only and its block leaves IPv6 open, so
+        // the uid firewall must hold under the list too.
         assert_eq!(
             p.firewall(Stage::Agent, Host::Agent, &daytona()),
-            (true, false)
+            (true, true)
         );
+        // Where the backend's none holds, its list is enough.
+        let tight = Capabilities {
+            network_none_leaks_ipv6: false,
+            ..daytona()
+        };
+        assert_eq!(p.firewall(Stage::Agent, Host::Agent, &tight), (true, false));
         assert_eq!(
             p.native(Stage::Verifier, Host::Agent, &daytona()),
             NetworkPolicy::None
         );
+        // Daytona's block leaves IPv6 open, so the firewall must hold too.
         assert_eq!(
             p.firewall(Stage::Verifier, Host::Agent, &daytona()),
-            (false, false)
+            (true, true)
         );
         // Eleven ranges are more than Daytona takes: the firewall must hold.
         let many: Vec<String> = (0..11).map(|i| format!("10.0.{i}.0/24")).collect();
@@ -1033,8 +1226,15 @@ mod tests {
         svc: &'static str,
         /// What root's probe of the daemon's ports gets.
         root_svc: &'static str,
+        /// The sandbox is gone by the time the rules are checked again.
+        lost: bool,
         ran: std::sync::Mutex<Vec<(Option<String>, String)>>,
+        /// (command, PATH, unset) of every exec, for the self-test checks.
+        env: std::sync::Mutex<Vec<ExecEnv>>,
     }
+
+    /// One exec's command, its `PATH`, and the variables it dropped.
+    type ExecEnv = (String, Option<String>, Vec<String>);
 
     impl Fake {
         fn new(install: &'static str, svc: &'static str) -> Self {
@@ -1042,7 +1242,9 @@ mod tests {
                 install,
                 svc,
                 root_svc: "reached",
+                lost: false,
                 ran: Default::default(),
+                env: Default::default(),
             }
         }
 
@@ -1060,8 +1262,33 @@ mod tests {
                 .collect()
         }
 
+        /// A refusal for every blocked address and no answer for every
+        /// name a self-test script tries.
+        fn canary_lines(c: &str) -> String {
+            let mut o = String::new();
+            for l in c.lines() {
+                if l.contains("BF canary block") {
+                    o.push_str("BF canary block refused 192.0.2.9:443\n");
+                } else if l.contains("BF canary dns") {
+                    o.push_str("BF canary dns unresolved example.org\n");
+                }
+            }
+            o
+        }
+
         fn ran(&self) -> Vec<(Option<String>, String)> {
             self.ran.lock().unwrap().clone()
+        }
+
+        /// The PATH and unset of the one exec whose command holds `needle`.
+        fn env_of(&self, needle: &str) -> (Option<String>, Vec<String>) {
+            self.env
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(c, _, _)| c.contains(needle))
+                .map(|(_, p, u)| (p.clone(), u.clone()))
+                .unwrap_or_else(|| panic!("no exec with {needle}"))
         }
     }
 
@@ -1082,14 +1309,27 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((exec.user.clone(), c.clone()));
+            self.env.lock().unwrap().push((
+                c.clone(),
+                exec.env.get("PATH").cloned(),
+                exec.unset.clone(),
+            ));
+            if self.lost && !c.contains("jump_new") && c.contains("BF fw-sum $(fingerprint)") {
+                return Err(SandboxError::Transport(
+                    "Daytona lost the sandbox while checking a command (HTTP 404)".into(),
+                ));
+            }
             let stdout = if c.contains("jump_new") {
                 self.install.to_string()
             } else if c.contains("BF tamper") {
                 let mut o = Self::svc_lines(&c, self.svc);
+                o.push_str(&Self::canary_lines(&c));
                 o.push_str("BF tamper tried\n");
                 o
             } else if c.contains("BF canary svc") {
                 Self::svc_lines(&c, self.root_svc)
+            } else if c.contains("BF canary") {
+                Self::canary_lines(&c)
             } else if c.contains("BF reached") {
                 "BF reached 127.0.0.1:2280\n".into()
             } else if c.contains("hosts.tmp") {
@@ -1141,6 +1381,7 @@ mod tests {
             Stage::Agent,
             Host::Agent,
             user,
+            SelfTest::default(),
         )
         .await
     }
@@ -1285,6 +1526,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sandbox_lost_after_the_self_test_is_the_sandboxs() {
+        let mut fake = Fake::new(INSTALLED, "refused");
+        fake.lost = true;
+        let out = agent_stage(&fake, Network::Open, "agent").await;
+        let p = out.problem.expect("a problem");
+        assert_eq!(
+            (p.code.as_str(), p.owner),
+            ("R103", Owner::Sandbox),
+            "{p:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_guard_that_leaks_stops_the_trial_and_a_root_agent_turns_it_off() {
         let fake = Fake::new(INSTALLED, "reached");
         let out = agent_stage(&fake, Network::Open, "agent").await;
@@ -1307,10 +1561,212 @@ mod tests {
         assert_eq!(out.root_service.unwrap().0, DefenseState::Enforced);
         let install = &fake.ran()[0].1;
         assert!(install.contains("--dport \"$port\""), "{install}");
+        // Daytona's block leaves IPv6 open, so the chain closes IPv6 too:
+        // after the IPv6 chain is set up, loopback returns (a task's own
+        // resolver on it included) and the rest is refused.
+        assert!(install.contains("jump_new 2"), "the install: {install}");
+        let v6 = &install[install.find("setup \"$fw6\"").expect("an IPv6 chain")..];
+        let lo = v6.find("-o lo -j RETURN").expect("loopback returns");
+        let rej = v6
+            .find("-j \"$REJ\" || exit_rule")
+            .expect("the rest refused");
+        assert!(lo < rej, "{v6}");
+        assert!(!install.contains("--dport 53"), "{install}");
+    }
+
+    /// The agent's phase on Daytona with `verifier` as the verifier's
+    /// network, in the same sandbox.
+    async fn agent_stage_with(
+        fake: &Fake,
+        agent: Network,
+        verifier: Network,
+        user: &str,
+    ) -> Outcome {
+        let p = plan(agent, verifier, &[]);
+        enforce(
+            fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            user,
+            SelfTest::default(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_root_agent_with_no_network_on_daytona_is_refused_by_name() {
+        // Every phase none: Docker would run it, so the refusal is the
+        // backend's (owner you, run it on Docker). Root could remove the
+        // chain, or bring IPv6 up where there is none yet, so the sandbox's
+        // IPv6 now does not matter.
+        let fake = Fake::new(INSTALLED, "refused");
+        let out = agent_stage_with(&fake, Network::None, Network::None, "root").await;
+        let p = out.problem.expect("refused");
+        assert_eq!((p.code.as_str(), p.owner), ("R108", Owner::You));
+        assert!(p.message.contains("leaves IPv6 open"), "{}", p.message);
+        assert!(p.next.contains("-s docker"), "{}", p.next);
+        assert!(fake.ran().is_empty(), "nothing ran");
+        // None in the agent's phase only: Docker needs a firewall root
+        // could remove too, so the task is refused as the task's.
+        let fake = Fake::new(INSTALLED, "refused");
+        let out = agent_stage_with(&fake, Network::None, Network::Open, "root").await;
+        let p = out.problem.expect("refused");
+        assert_eq!((p.code.as_str(), p.owner), ("R108", Owner::Task));
         assert!(
-            !install.contains("--dport 53"),
-            "Daytona blocks the rest: {install}"
+            p.message.contains("differs from the verifier"),
+            "{}",
+            p.message
         );
+        assert!(!p.next.contains("docker"), "{}", p.next);
+        assert!(p.next.contains("[agent] user"), "{}", p.next);
+        // An allowlist on Daytona needs the firewall (IPv6): refused too.
+        let fake = Fake::new(INSTALLED, "refused");
+        // With a range Daytona applies itself (its list covers IPv4 only).
+        let p = plan(
+            Network::Allow(vec!["10.0.0.0/8".into()]),
+            Network::Open,
+            &["10.0.0.0/8"],
+        );
+        assert!(matches!(
+            p.native(Stage::Agent, Host::Agent, &daytona()),
+            NetworkPolicy::Filtered { allow: Some(_) }
+        ));
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "root",
+            SelfTest::default(),
+        )
+        .await;
+        assert_eq!(
+            out.problem.map(|p| (p.code, p.owner)),
+            Some(("R108".into(), Owner::Task))
+        );
+    }
+
+    #[tokio::test]
+    async fn no_iptables_stops_a_none_on_daytona_unless_the_kernel_has_no_ipv6() {
+        // Global or link-local IPv6: refused. Link-local may route out
+        // later, and the missing chain leaves the daemon unguarded too.
+        for v6 in ["global", "local"] {
+            let install: &'static str = if v6 == "global" {
+                "BF fw-v6 global\nBF fw-error no-iptables\n"
+            } else {
+                "BF fw-v6 local\nBF fw-error no-iptables\n"
+            };
+            let fake = Fake::new(install, "refused");
+            let out = agent_stage_with(&fake, Network::None, Network::None, "agent").await;
+            let p = out.problem.expect("refused");
+            // Every phase none: the backend's gap, owner you.
+            assert_eq!((p.code.as_str(), p.owner), ("R108", Owner::You), "{v6}");
+            assert!(p.message.contains("must close IPv6"), "{}", p.message);
+            assert!(
+                p.next.contains("-s docker") && p.next.contains("ip6tables"),
+                "{}",
+                p.next
+            );
+        }
+        // Agent phase only: Docker needs the firewall too, the task's.
+        let fake = Fake::new("BF fw-v6 local\nBF fw-error no-iptables\n", "refused");
+        let out = agent_stage_with(&fake, Network::None, Network::Open, "agent").await;
+        assert_eq!(out.problem.map(|p| p.owner), Some(Owner::Task));
+        // No IPv6 in the kernel: Daytona's block is the whole policy.
+        let fake = Fake::new("BF fw-v6 absent\nBF fw-error no-iptables\n", "refused");
+        let out = agent_stage_with(&fake, Network::None, Network::None, "agent").await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        let (state, note) = out.defense.unwrap();
+        assert_eq!(state, DefenseState::Enforced);
+        assert!(note.contains("none needed"), "{note}");
+    }
+
+    #[tokio::test]
+    async fn a_separate_verifier_with_no_network_on_daytona_closes_ipv6_for_everyone() {
+        let fake = Fake::new(
+            "BF fw-v6 global\nBF fw /usr/sbin/iptables v6=global fw6=/usr/sbin/ip6tables reject=REJECT\nBF fw-sum 42\n",
+            "refused",
+        );
+        let mut p = plan(Network::Open, Network::None, &[]);
+        p.separate = true;
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Verifier,
+            Host::SeparateVerifier,
+            "root",
+            SelfTest::default(),
+        )
+        .await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        let install = &fake.ran()[0].1;
+        // The first command is the install, for everyone, root included.
+        assert!(install.contains("jump_new 1"), "the install: {install}");
+        assert!(!install.contains("--uid-owner"), "everyone: {install}");
+        assert!(!install.contains("--dport 53"), "{install}");
+        let v6 = &install[install.find("setup \"$fw6\"").expect("an IPv6 chain")..];
+        let lo = v6.find("-o lo -j RETURN").expect("loopback returns");
+        let rej = v6
+            .find("-j \"$REJ\" || exit_rule")
+            .expect("the rest refused");
+        assert!(lo < rej, "{v6}");
+    }
+
+    #[test]
+    fn none_on_a_backend_whose_block_misses_ipv6_needs_the_firewall() {
+        let p = plan(Network::None, Network::None, &[]);
+        let leaky = daytona();
+        let tight = Capabilities {
+            network_none_leaks_ipv6: false,
+            ..daytona()
+        };
+        assert_eq!(p.firewall(Stage::Agent, Host::Agent, &leaky), (true, true));
+        assert_eq!(
+            p.firewall(Stage::Verifier, Host::Agent, &leaky),
+            (true, true)
+        );
+        assert_eq!(
+            p.firewall(Stage::Agent, Host::Agent, &tight),
+            (false, false)
+        );
+        assert_eq!(
+            p.firewall(Stage::Agent, Host::Agent, &docker()),
+            (false, false)
+        );
+    }
+
+    /// The verifier-stage self-test runs after the agent's turn. It must
+    /// use the verifier's trusted PATH and drop the loader variables, not
+    /// the image's PATH, so a `timeout` the agent planted on the image's
+    /// PATH is never run as root (security review finding 2).
+    #[tokio::test]
+    async fn the_verifier_self_test_uses_the_trusted_path_without_loader_variables() {
+        let fake = Fake::new(INSTALLED, "refused");
+        let p = plan(Network::Open, Network::None, &[]);
+        let unset = vec!["LD_PRELOAD".to_string(), "LD_SHOW_AUXV".to_string()];
+        let _ = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Verifier,
+            Host::Agent,
+            "root",
+            SelfTest {
+                path: Some("/trusted/bin"),
+                unset: &unset,
+            },
+        )
+        .await;
+        // `bf_try()` is defined only in the self-test script.
+        let (path, got) = fake.env_of("bf_try()");
+        assert_eq!(path.as_deref(), Some("/trusted/bin"), "self-test PATH");
+        for v in &unset {
+            assert!(got.contains(v), "{v} kept for the self-test: {got:?}");
+        }
     }
 
     #[tokio::test]
@@ -1324,6 +1780,7 @@ mod tests {
             Stage::Verifier,
             Host::Agent,
             "root",
+            SelfTest::default(),
         )
         .await;
         assert!(out.problem.is_none() && out.root_service.is_none());
@@ -1331,7 +1788,16 @@ mod tests {
         assert_eq!(ran.len(), 1);
         assert!(ran[0].1.contains("unhook \"$fw4\""), "{}", ran[0].1);
         let fake = Fake::new(INSTALLED, "refused");
-        let out = enforce(&fake, &docker(), &p, Stage::Agent, Host::Agent, "agent").await;
+        let out = enforce(
+            &fake,
+            &docker(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+        )
+        .await;
         assert!(out.root_service.is_none() && out.defense.is_none());
         assert!(fake.ran().is_empty());
     }
@@ -1342,9 +1808,17 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello");
         let task = benchflow_task::load(&fixture).expect("the hello fixture loads");
         assert_eq!(*task.agent_network(), Network::Open);
-        assert!(firewall_layer(&task, Host::Agent, true).is_some());
-        assert!(firewall_layer(&task, Host::Agent, false).is_none());
-        assert!(firewall_layer(&task, Host::SeparateVerifier, true).is_none());
+        assert!(firewall_layer(&task, Host::Agent, &daytona_root_service()).is_some());
+        assert!(firewall_layer(&task, Host::Agent, &docker()).is_none());
+        assert!(firewall_layer(&task, Host::SeparateVerifier, &daytona_root_service()).is_none());
+        // A separate verifier with no network on a backend whose block
+        // leaves IPv6 open needs iptables too.
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/tasks/separate-verifier");
+        let mut task = benchflow_task::load(&fixture).expect("the fixture loads");
+        task.verifier.network = Some(Network::None);
+        assert!(firewall_layer(&task, Host::SeparateVerifier, &daytona()).is_some());
+        assert!(firewall_layer(&task, Host::SeparateVerifier, &docker()).is_none());
     }
 
     #[tokio::test]
@@ -1354,5 +1828,176 @@ mod tests {
         assert_eq!(p.ranges, vec!["10.0.0.0/8", "192.0.2.7/32"]);
         assert!(p.names.is_empty());
         assert_eq!(p.describe(), "only 10.0.0.0/8, 192.0.2.7/32");
+    }
+
+    #[tokio::test]
+    async fn a_root_agent_the_sandbox_user_setting_made_is_yours_not_the_tasks() {
+        // A shared sandbox with none in the agent's phase only: refused on
+        // every backend, but the setting made the agent root, not the task.
+        let fake = Fake::new(INSTALLED, "refused");
+        let mut p = plan(Network::None, Network::Open, &[]);
+        p.agent_user_from_task = false;
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "root",
+            SelfTest::default(),
+        )
+        .await;
+        let pr = out.problem.expect("refused");
+        assert_eq!((pr.code.as_str(), pr.owner), ("R108", Owner::You));
+        assert!(pr.message.contains("sandbox-user"), "{}", pr.message);
+        assert!(!pr.message.contains("the task runs"), "{}", pr.message);
+        assert!(pr.next.contains("sandbox-user"), "{}", pr.next);
+        // Every phase none on Daytona: yours either way, naming the setting.
+        let fake = Fake::new(INSTALLED, "refused");
+        let mut p = plan(Network::None, Network::None, &[]);
+        p.agent_user_from_task = false;
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "root",
+            SelfTest::default(),
+        )
+        .await;
+        let pr = out.problem.expect("refused");
+        assert_eq!(pr.owner, Owner::You);
+        assert!(pr.message.contains("sandbox-user"), "{}", pr.message);
+    }
+
+    #[tokio::test]
+    async fn an_allowlist_on_daytona_needs_ip6tables_wherever_there_is_ipv6() {
+        // The daemon answers on [::1]: with no IPv6 chain the agent could
+        // reach it and flush the rules. The install must refuse any IPv6
+        // without ip6tables, not only an address that routes out.
+        let allow = Network::Allow(vec!["10.0.0.0/8".into()]);
+        let fake = Fake::new(INSTALLED, "refused");
+        let p = plan(allow.clone(), Network::Open, &["10.0.0.0/8"]);
+        let _ = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+        )
+        .await;
+        let install = &fake.ran()[0].1;
+        assert!(
+            install.contains("[ \"$v6\" != absent ] && [ -z \"$fw6\" ]"),
+            "{install}"
+        );
+        // Docker has no daemon: an IPv6 address that routes out is what
+        // needs ip6tables there.
+        let fake = Fake::new(INSTALLED, "refused");
+        let _ = enforce(
+            &fake,
+            &docker(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+        )
+        .await;
+        let install = &fake.ran()[0].1;
+        assert!(
+            install.contains("[ \"$v6\" = global ] && [ -z \"$fw6\" ]"),
+            "{install}"
+        );
+        // Refused without ip6tables and with IPv6 that does not route out:
+        // yours, since Docker would run the image; with a global address,
+        // Docker needs ip6tables too, so the task's.
+        for (v6, owner) in [("local", Owner::You), ("global", Owner::Task)] {
+            let install: &'static str = if v6 == "local" {
+                "BF fw-v6 local\nBF fw-error ipv6-unfiltered\n"
+            } else {
+                "BF fw-v6 global\nBF fw-error ipv6-unfiltered\n"
+            };
+            let fake = Fake::new(install, "refused");
+            let out = enforce(
+                &fake,
+                &daytona_root_service(),
+                &p,
+                Stage::Agent,
+                Host::Agent,
+                "agent",
+                SelfTest::default(),
+            )
+            .await;
+            let pr = out.problem.expect("refused");
+            assert_eq!((pr.code.as_str(), pr.owner), ("R108", owner), "{v6}");
+            if owner == Owner::You {
+                assert!(
+                    pr.next.contains("-s docker") && pr.next.contains("ip6tables"),
+                    "{}",
+                    pr.next
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_missing_tool_is_blamed_on_the_ipv6_gap() {
+        // Every phase none on Daytona: a missing iptables is the gap's
+        // (yours); no permission is the sandbox's, a failed rule BenchFlow's.
+        let cases: [(&'static str, Owner); 3] = [
+            ("BF fw-v6 global\nBF fw-error no-iptables\n", Owner::You),
+            (
+                "BF fw-v6 global\nBF fw-error no-permission denied\n",
+                Owner::Sandbox,
+            ),
+            (
+                "BF fw-v6 global\nBF fw-error rule-failed ip6tables\n",
+                Owner::Benchflow,
+            ),
+        ];
+        for (install, owner) in cases {
+            let fake = Fake::new(install, "refused");
+            let out = agent_stage_with(&fake, Network::None, Network::None, "agent").await;
+            let pr = out.problem.expect("refused");
+            assert_eq!(pr.owner, owner, "{install}: {}", pr.message);
+            if owner != Owner::You {
+                assert!(
+                    !pr.next.contains("add iptables and ip6tables"),
+                    "{}",
+                    pr.next
+                );
+            }
+        }
+        // None in the agent's phase only, no ip6tables, link-local IPv6:
+        // Docker would run it (it checks only routable IPv6), so yours.
+        let fake = Fake::new("BF fw-v6 local\nBF fw-error ipv6-unfiltered\n", "refused");
+        let out = agent_stage_with(&fake, Network::None, Network::Open, "agent").await;
+        assert_eq!(out.problem.map(|p| p.owner), Some(Owner::You));
+    }
+
+    #[tokio::test]
+    async fn a_verifier_that_will_need_ip6tables_is_refused_before_the_agent() {
+        // Open agent phase, none for the verifier, the same sandbox: the
+        // agent's guard install sees IPv6 loopback and no ip6tables.
+        let fake = Fake::new(
+            "BF fw-v6 local\nBF fw-guard-ports 2280\nBF fw-guard-gap no ip6tables\nBF fw /usr/sbin/iptables v6=local fw6=none reject=REJECT\nBF fw-sum 42\n",
+            "refused",
+        );
+        let out = agent_stage_with(&fake, Network::Open, Network::None, "agent").await;
+        let pr = out.problem.expect("refused before the agent");
+        assert_eq!((pr.code.as_str(), pr.owner), ("R108", Owner::You));
+        assert!(
+            pr.message.contains("before the agent runs"),
+            "{}",
+            pr.message
+        );
+        // With ip6tables there it goes on.
+        let fake = Fake::new(INSTALLED, "refused");
+        let out = agent_stage_with(&fake, Network::Open, Network::None, "agent").await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
     }
 }

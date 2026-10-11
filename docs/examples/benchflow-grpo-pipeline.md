@@ -1,8 +1,6 @@
-# BenchFlow + TRL GRPO Pipeline
+# BenchFlow GRPO Pipeline
 
-This runbook shows the intended end-to-end workflow for training
-`Qwen/Qwen3-4B` on a BenchFlow-compatible task suite with TRL GRPO, then
-measuring held-out lift with BenchFlow eval artifacts.
+This runbook shows the intended end-to-end workflow for training `Qwen/Qwen3-4B` on a BenchFlow-compatible task suite with an external GRPO trainer, then measuring held-out lift with BenchFlow eval artifacts.
 
 To train on runs that branched (several children from one checkpoint, with rewards and advantages per child, or preference pairs of siblings), use `bench train convert --format branch-tree` instead; the recipe is in [Training on branch runs](../branching.md#training-on-branch-runs).
 
@@ -19,8 +17,7 @@ Both repositories contain BenchFlow-native `task.md` packages with
 the published `manifest.parquet`; the source task-level difficulty metadata is
 not a reliable distribution field.
 
-BenchFlow owns task loading, Daytona/Docker sandbox lifecycle, verifier
-execution, artifacts, and lift reporting. TRL owns optimization.
+BenchFlow owns task loading, Daytona/Docker sandbox lifecycle, verifier execution, artifacts, and lift reporting. The trainer owns optimization.
 
 ## 1. Install Extras And Credentials
 
@@ -102,7 +99,7 @@ bench eval run \
 
 ## 4. Run GRPO Training
 
-The training script should use `BenchFlowSpec` as the adapter into TRL:
+The training script should use `BenchFlowSpec` as the adapter into the GRPO trainer:
 
 ```python
 from trl import GRPOConfig, GRPOTrainer

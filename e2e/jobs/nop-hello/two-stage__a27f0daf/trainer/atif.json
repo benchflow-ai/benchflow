@@ -1,0 +1,21 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "two-stage__a27f0daf",
+  "agent": {
+    "name": "nop",
+    "version": "unknown"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Write the word `alpha` to `/app/one.txt`, with no trailing newline.\n"
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 1,
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0
+  }
+}

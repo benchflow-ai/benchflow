@@ -155,6 +155,93 @@ struct JsonRewards {
     extra: Map<String, Value>,
 }
 
+/// What a Python `NaN`, `Infinity` or `-Infinity` is read as at first: a
+/// string no verifier writes, so where it stood can be told afterwards.
+const NON_FINITE: &str = "\u{0}BenchFlow non-finite ";
+
+/// `text` with Python's `NaN`, `Infinity` and `-Infinity` outside strings
+/// (which 0.8's `json.loads` reads) written as [`NON_FINITE`] strings;
+/// `None` when it holds none. [`place_non_finite`] then refuses each one
+/// where 0.8 range-checks a number and nulls the rest.
+fn python_constants_marked(text: &str) -> Option<String> {
+    const WORDS: [&str; 3] = ["-Infinity", "Infinity", "NaN"];
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let (mut in_string, mut escaped, mut last, mut i) = (false, false, 0, 0);
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+        } else if b == b'"' {
+            in_string = true;
+        } else if let Some(word) = WORDS.iter().find(|w| bytes[i..].starts_with(w.as_bytes())) {
+            out.push_str(&text[last..i]);
+            out.push_str(&Value::String(format!("{NON_FINITE}{word}")).to_string());
+            i += word.len();
+            last = i;
+            continue;
+        }
+        i += 1;
+    }
+    (last > 0).then(|| {
+        out.push_str(&text[last..]);
+        out
+    })
+}
+
+/// The constant a [`python_constants_marked`] string stands for.
+fn non_finite(v: &Value) -> Option<&str> {
+    v.as_str()?.strip_prefix(NON_FINITE)
+}
+
+/// Refuses a Python constant where 0.8's `validate_reward_map` range-checks
+/// a number (strict 0.8 refuses it there: `reward`, a top-level key outside
+/// [`UNCHECKED_KEYS`], a `metrics` entry, a `rubric` item's `score`), and
+/// writes the others as `null`, as 0.8's writers scrub them; 0.8 passes
+/// those through (`{"details": {"x": NaN}}`).
+fn place_non_finite(map: &mut Map<String, Value>) -> Result<(), String> {
+    fn nulled(v: &mut Value) {
+        match v {
+            Value::String(_) if non_finite(v).is_some() => *v = Value::Null,
+            Value::Array(items) => items.iter_mut().for_each(nulled),
+            Value::Object(map) => map.values_mut().for_each(nulled),
+            _ => {}
+        }
+    }
+    let refused = |key: String, c: &str| {
+        Err(format!(
+            "{key} is {c}, not a number in [0, 1] (BenchFlow 0.8 refuses it too)"
+        ))
+    };
+    for (key, value) in map.iter_mut() {
+        if key == "reward" || !UNCHECKED_KEYS.contains(&key.as_str()) {
+            if let Some(c) = non_finite(value) {
+                return refused(key.clone(), c);
+            }
+        } else if key == "metrics"
+            && let Value::Object(metrics) = &*value
+            && let Some((k, c)) = metrics.iter().find_map(|(k, v)| Some((k, non_finite(v)?)))
+        {
+            return refused(format!("metrics.{k}"), c);
+        } else if key == "rubric"
+            && let Value::Array(items) = &*value
+            && let Some((i, c)) = items
+                .iter()
+                .enumerate()
+                .find_map(|(i, item)| Some((i, non_finite(item.get("score")?)?)))
+        {
+            return refused(format!("rubric[{i}].score"), c);
+        }
+        nulled(value);
+    }
+    Ok(())
+}
+
 /// `reward.json`: its numbers, its `reward` if it has one, and the other
 /// keys of an envelope.
 fn parse_json(file: &Path, text: &str) -> Result<JsonRewards, RewardError> {
@@ -162,8 +249,18 @@ fn parse_json(file: &Path, text: &str) -> Result<JsonRewards, RewardError> {
         file: file.to_path_buf(),
         detail,
     };
-    let value: Value =
-        serde_json::from_str(text).map_err(|e| err(format!("it is not JSON ({e})")))?;
+    let value: Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(e) => {
+            let mut value: Value = python_constants_marked(text)
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .ok_or_else(|| err(format!("it is not JSON ({e})")))?;
+            if let Value::Object(map) = &mut value {
+                place_non_finite(map).map_err(err)?;
+            }
+            value
+        }
+    };
     let Value::Object(map) = value else {
         return Err(err("it is not an object of numbers".into()));
     };
@@ -191,6 +288,13 @@ fn parse_json(file: &Path, text: &str) -> Result<JsonRewards, RewardError> {
             other if reward.is_some() => {
                 extra.insert(k.clone(), other.clone());
             }
+            _ if map.contains_key("metrics")
+                && map.get("aggregate").is_some_and(Value::is_object) =>
+            {
+                return Err(err(
+                    "it has metrics and an aggregate policy but no reward key: BenchFlow 0.8 computes the reward from them, which bench does not do yet; have the verifier write the reward too".into(),
+                ));
+            }
             other => {
                 return Err(err(format!(
                     "{k} is {other}, not a number, and there is no numeric reward key"
@@ -208,23 +312,106 @@ fn parse_json(file: &Path, text: &str) -> Result<JsonRewards, RewardError> {
 /// Read the rewards in a downloaded `/logs/verifier` folder.
 ///
 /// `reward.json` is preferred; its scalar reward is `reward`, else
-/// `reward.txt`'s number, else its only number. When both files exist, the
-/// JSON's `reward` must equal the text's. The reward must be in [0, 1], as
-/// in 0.8 (`is_valid_reward_number`); a task's wider `reward_range` is
-/// refused at load, so [0, 1] is the only range a run meets.
+/// `reward.txt`'s number, else its `score` or `rewards` (the keys 0.8 takes
+/// a reward from in place of `reward`). When both files exist, the
+/// JSON's `reward` must equal the text's. The reward must be in [0, 1], and
+/// so must the other numbers 0.8's `validate_reward_map` range-checks: a
+/// top-level number under any key but its structured ones
+/// ([`UNCHECKED_KEYS`]), each number in `metrics`, and each `rubric` item's
+/// `score`. A task's wider `reward_range` is refused at load, so [0, 1] is
+/// the only range a run meets.
+///
+/// Only that numeric rule is 0.8's. Its default (strict) mode also refuses
+/// non-numbers that bench accepts beside a numeric reward (`"done": true`, a
+/// string in `metrics`, a `space` it does not know); its lenient mode
+/// (`BENCHFLOW_REWARD_LENIENT=1`) drops an out-of-range number and keeps the
+/// trial, where bench refuses the file. Python's `NaN` and `Infinity`, which
+/// 0.8's `json.loads` reads, are refused where 0.8 range-checks a number and
+/// read as `null` where it passes values through.
 pub fn read_rewards(dir: &Path) -> Result<Rewards, RewardError> {
     let r = read_any_rewards(dir)?;
-    if !(0.0..=1.0).contains(&r.reward) {
-        let name = match r.source {
+    let file = || {
+        dir.join(match r.source {
             RewardSource::Text => "reward.txt",
             RewardSource::Json | RewardSource::Both => "reward.json",
-        };
+        })
+    };
+    if !(0.0..=1.0).contains(&r.reward) {
         return Err(RewardError::Parse {
-            file: dir.join(name),
+            file: file(),
             detail: format!("the reward is {}, outside [0, 1]", r.reward),
         });
     }
+    if let Some((key, value)) = scored_numbers(&r).find(|(_, v)| !(0.0..=1.0).contains(v)) {
+        return Err(RewardError::Parse {
+            file: dir.join("reward.json"),
+            detail: format!(
+                "{key} is {value}, outside [0, 1] (BenchFlow 0.8 refuses this number too; numbers under its reserved keys such as raw, errors or details are not checked)"
+            ),
+        });
+    }
     Ok(r)
+}
+
+/// Keys a reward.json without `reward` takes its reward from, in this
+/// order: 0.8's `_LENIENT_REWARD_ALIASES`. 0.8 takes a reward from no other
+/// key (but for an aggregate policy over `metrics`, which bench does not
+/// apply), so a lone `{"errors": 1}` is not a reward of 1.
+const REWARD_ALIASES: [&str; 2] = ["score", "rewards"];
+
+/// Top-level keys whose numbers 0.8's `validate_reward_map` does not
+/// range-check: its structured keys (`_STRUCTURED_REWARD_KEYS`), passed
+/// through as they are, and the keys it validates in their own way
+/// (`reward` itself, `rubric`, `metrics`, `space`, `granularity`,
+/// `aggregate`).
+pub const UNCHECKED_KEYS: [&str; 20] = [
+    "aggregate",
+    "artifacts",
+    "debug",
+    "details",
+    "details_path",
+    "errors",
+    "evidence",
+    "items",
+    "metadata",
+    "participants",
+    "raw",
+    "reason",
+    "reasons",
+    "regressions",
+    "winner",
+    "reward",
+    "rubric",
+    "metrics",
+    "space",
+    "granularity",
+];
+
+/// The numbers 0.8's `validate_reward_map` range-checks besides `reward`:
+/// top-level numbers outside [`UNCHECKED_KEYS`], the numbers in `metrics`,
+/// and the `score` of each `rubric` item.
+pub fn scored_numbers(r: &Rewards) -> impl Iterator<Item = (String, f64)> + '_ {
+    let top = r
+        .values
+        .iter()
+        .filter(|(k, _)| !UNCHECKED_KEYS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), *v));
+    let metrics = r
+        .extra
+        .get("metrics")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, v)| Some((format!("metrics.{k}"), v.as_f64()?)));
+    let rubric = r
+        .extra
+        .get("rubric")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(i, item)| Some((format!("rubric[{i}].score"), item.get("score")?.as_f64()?)));
+    top.chain(metrics).chain(rubric)
 }
 
 /// [`read_rewards`] without the range check.
@@ -263,19 +450,15 @@ fn read_any_rewards(dir: &Path) -> Result<Rewards, RewardError> {
                     values.insert("reward".into(), b);
                     (b, RewardSource::Both)
                 }
-                (None, None) if values.len() == 1 => (
-                    *values.values().next().expect("one value"),
-                    RewardSource::Json,
-                ),
-                (None, None) => {
-                    return Err(RewardError::Parse {
-                        file: json_file,
-                        detail: format!(
-                            "it holds {} numbers and no reward key, so it does not say which one is the reward",
-                            values.len()
-                        ),
-                    });
-                }
+                (None, None) => match REWARD_ALIASES.iter().find_map(|k| values.get(*k)) {
+                    Some(&r) => (r, RewardSource::Json),
+                    None => {
+                        return Err(RewardError::Parse {
+                            file: json_file,
+                            detail: "it has no reward key, nor score or rewards (the keys BenchFlow 0.8 takes a reward from in their place), so it does not say which number is the reward".into(),
+                        });
+                    }
+                },
             };
             Ok(Rewards {
                 reward,
@@ -321,6 +504,168 @@ mod tests {
             let d = dir(&[("reward.txt", text)]);
             assert!(read_rewards(d.path()).is_ok(), "{text}");
         }
+    }
+
+    /// The numbers 0.8's `validate_reward_map` range-checks must be in
+    /// [0, 1]: `{"reward": 0.5, "tests": 12}` is a verifier error there.
+    #[test]
+    fn every_scored_number_must_be_in_zero_to_one() {
+        for (text, key) in [
+            (r#"{"reward": 0.5, "tests": 12}"#, "tests is 12"),
+            (r#"{"reward": 0.5, "penalty": -0.1}"#, "penalty is -0.1"),
+            (
+                r#"{"reward": 0.5, "metrics": {"acc": 3}}"#,
+                "metrics.acc is 3",
+            ),
+            (
+                r#"{"reward": 0.5, "rubric": [{"score": 1}, {"score": 2.5}]}"#,
+                "rubric[1].score is 2.5",
+            ),
+        ] {
+            let d = dir(&[("reward.json", text)]);
+            let e = read_rewards(d.path()).unwrap_err();
+            assert!(
+                matches!(&e, RewardError::Parse { detail, .. } if detail.starts_with(key) && detail.contains("outside [0, 1]")),
+                "{text}: {e:?}"
+            );
+        }
+    }
+
+    /// 0.8 passes numbers under its structured keys through unchecked, so
+    /// it scores these (they gave R302 on the first cut of the range check).
+    #[test]
+    fn numbers_under_0_8s_reserved_keys_are_not_range_checked() {
+        for text in [
+            r#"{"reward": 0.42, "raw": 42, "errors": 3, "winner": 2, "items": 10, "details_path": 3, "regressions": 2, "participants": 5, "debug": 7}"#,
+            r#"{"reward": 0.875, "artifacts": 9, "evidence": -1, "metadata": 11, "reason": 12, "reasons": 13, "details": 14}"#,
+            r#"{"reward": 0, "errors": 3}"#,
+        ] {
+            let d = dir(&[("reward.json", text)]);
+            let r = read_rewards(d.path()).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            assert!(r.reward <= 1.0);
+        }
+    }
+
+    /// Where bench is more lenient than 0.8's default (strict) mode, listed
+    /// so that a change is deliberate: strict 0.8 refuses each of these
+    /// (an unknown non-numeric key, a non-numeric metric, a `space`,
+    /// `granularity` or `aggregate` it does not know); its lenient mode
+    /// drops those keys and keeps the trial.
+    #[test]
+    fn non_numbers_beside_a_numeric_reward_are_accepted_unlike_strict_0_8() {
+        for text in [
+            r#"{"reward": 1, "done": true}"#,
+            r#"{"reward": 0.5, "metrics": {"acc": 1, "note": "x"}}"#,
+            r#"{"reward": 0.5, "space": 0.7, "granularity": 2}"#,
+            r#"{"reward": 0.875, "aggregate": 15}"#,
+        ] {
+            let d = dir(&[("reward.json", text)]);
+            assert!(read_rewards(d.path()).is_ok(), "{text}");
+        }
+    }
+
+    /// 0.8's `json.loads` reads Python's `NaN` and `Infinity`; under a key
+    /// 0.8 passes through, the file loads.
+    #[test]
+    fn python_nan_and_infinity_load_where_0_8_passes_them_through() {
+        for text in [
+            r#"{"reward": 0.5, "details": {"x": NaN}}"#,
+            r#"{"reward": 0.5, "raw": Infinity, "debug": -Infinity}"#,
+        ] {
+            let d = dir(&[("reward.json", text)]);
+            let r = read_rewards(d.path()).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            assert_eq!(r.reward, 0.5);
+        }
+        let d = dir(&[(
+            "reward.json",
+            r#"{"reward": 0.5, "details": "NaN \"Infinity\""}"#,
+        )]);
+        let r = read_rewards(d.path()).unwrap();
+        assert_eq!(r.extra["details"], r#"NaN "Infinity""#);
+        for text in [r#"{"reward": NaN}"#, r#"{"reward": Infinity}"#] {
+            let d = dir(&[("reward.json", text)]);
+            assert!(read_rewards(d.path()).is_err(), "{text}");
+        }
+    }
+
+    /// Strict 0.8 refuses a NaN or Infinity wherever it range-checks a
+    /// number; Python's json.dump writes NaN for a 0/0 metric. Reading them
+    /// as null let these through.
+    #[test]
+    fn python_nan_and_infinity_are_refused_where_0_8_checks_numbers() {
+        for (text, what) in [
+            (r#"{"reward": 0.0, "accuracy": NaN}"#, "accuracy is NaN"),
+            (
+                r#"{"reward": 1, "metrics": {"loss": Infinity}}"#,
+                "metrics.loss is Infinity",
+            ),
+            (
+                r#"{"reward": 0.5, "metrics": {"acc": NaN}}"#,
+                "metrics.acc is NaN",
+            ),
+            (
+                r#"{"reward": 0.5, "rubric": [{"score": 1}, {"score": NaN}]}"#,
+                "rubric[1].score is NaN",
+            ),
+            (r#"{"reward": -Infinity}"#, "reward is -Infinity"),
+        ] {
+            let d = dir(&[("reward.json", text)]);
+            let e = read_rewards(d.path()).unwrap_err();
+            assert!(
+                matches!(&e, RewardError::Parse { detail, .. } if detail.starts_with(what) && detail.contains("not a number in [0, 1]")),
+                "{text}: {e:?}"
+            );
+        }
+        // Where 0.8 passes values through, they are read as null.
+        let d = dir(&[(
+            "reward.json",
+            r#"{"reward": 0.5, "details": {"x": NaN}, "rubric": [{"score": 1, "raw": NaN}]}"#,
+        )]);
+        let r = read_rewards(d.path()).unwrap();
+        assert_eq!(r.extra["details"]["x"], Value::Null);
+        assert_eq!(r.extra["rubric"][0]["raw"], Value::Null);
+    }
+
+    /// Without `reward`, 0.8 takes a reward only from `score` or `rewards`
+    /// (its lenient aliases): `{"errors": 1}` scored 1.0 and passed.
+    #[test]
+    fn a_reward_comes_only_from_keys_0_8_takes_one_from() {
+        for text in [
+            r#"{"errors": 1}"#,
+            r#"{"errors": 0}"#,
+            r#"{"aggregate": 0.25}"#,
+            r#"{"accuracy": 0.7}"#,
+        ] {
+            let d = dir(&[("reward.json", text)]);
+            let e = read_rewards(d.path()).unwrap_err();
+            assert!(
+                matches!(&e, RewardError::Parse { detail, .. } if detail.contains("no reward key, nor score or rewards")),
+                "{text}: {e:?}"
+            );
+        }
+        for (text, want) in [
+            (r#"{"score": 0.4}"#, 0.4),
+            (r#"{"rewards": 0.3}"#, 0.3),
+            (r#"{"score": 0.4, "rewards": 1, "accuracy": 1}"#, 0.4),
+        ] {
+            let d = dir(&[("reward.json", text)]);
+            assert_eq!(read_rewards(d.path()).unwrap().reward, want, "{text}");
+        }
+    }
+
+    /// 0.8 computes a reward from `metrics` and an `aggregate` policy;
+    /// bench does not, and says so instead of "metrics is ..., not a number".
+    #[test]
+    fn metrics_with_an_aggregate_policy_and_no_reward_say_what_is_missing() {
+        let d = dir(&[(
+            "reward.json",
+            r#"{"metrics": {"a": 1, "b": 0}, "aggregate": {"method": "mean"}}"#,
+        )]);
+        let e = read_rewards(d.path()).unwrap_err();
+        assert!(
+            matches!(&e, RewardError::Parse { detail, .. } if detail.contains("aggregate policy but no reward key")),
+            "{e:?}"
+        );
     }
 
     #[test]

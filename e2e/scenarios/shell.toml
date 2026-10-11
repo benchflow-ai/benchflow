@@ -1,0 +1,14 @@
+# bench shell on Docker: a scripted session leaves the answer, then grading scores it.
+tier = "full"
+needs = ["sandbox"]
+backends = ["docker"]
+tasks = ["hello"]
+
+[[step]]
+run = ["shell", "tasks/hello", "-s", "{backend}"]
+stdin = "printf 'Hello, world!' > /app/hello.txt\nexit\n"
+exit = 0
+timeout = 600
+stdout_has = ['passed \(reward 1\)']
+output_lacks = ['not a TTY']
+trials = [{ job = "shell/*", status = "scored", reward = 1.0 }]

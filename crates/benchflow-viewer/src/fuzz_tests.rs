@@ -147,7 +147,7 @@ proptest! {
             std::fs::write(file, if as_text { text.clone() } else { doc.to_string() }).unwrap();
         }
         let q: String = query.bytes().map(|b| format!("%{b:02X}")).collect();
-        timed("viewer", || {
+        timed("viewer", move || {
             let runs = catalog::discover(tmp.path(), 1000);
             let _ = page::browse_boot(&runs, false);
             for run in &runs {
@@ -186,7 +186,7 @@ proptest! {
         mutated(seeds(&["benchflow-viewer/tests/fixtures/jobs"], &|n| n.ends_with(".json"), 100)),
         "\\PC{0,64}",
     ]) {
-        timed("pyjson", || {
+        timed("pyjson", move || {
             if let Some(v) = pyjson::parse(&text) {
                 let once = pyjson::dumps(&v);
                 let again = pyjson::parse(&once).expect("dumps output parses");
@@ -201,7 +201,8 @@ proptest! {
 }
 
 /// The viewer's float formatting against Python's `repr(float)` on the
-/// 7,014 floats of the agent crate's fixture (0.8's Python 3.12).
+/// 9,111 floats (4,000 of them ties) of the agent crate's fixture (0.8's
+/// Python 3.12).
 #[test]
 fn float_repr_matches_python() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -1,0 +1,72 @@
+# bench import and bench export of tasks: split layout, 0.8 task.md, Terminal-Bench v1.
+tier = "smoke"
+tasks = ["hello", "hello-split", "hello-v06", "always-passes"]
+
+[[step]]
+name = "split layout to task.md"
+run = ["import", "tasks/hello-split", "conv/hello-split"]
+exit = 0
+files = ["conv/hello-split/task.md"]
+
+[[step]]
+run = ["check", "conv/hello-split"]
+exit = 0
+
+[[step]]
+name = "an existing output is refused without --overwrite"
+run = ["import", "tasks/hello-split", "conv/hello-split"]
+exit = [1, 2]
+output_has = ["exists"]
+
+[[step]]
+run = ["import", "tasks/hello-split", "conv/hello-split", "--overwrite"]
+exit = 0
+
+[[step]]
+name = "0.8 task.md to task.md"
+run = ["import", "tasks/hello-v06", "conv/hello-v06"]
+exit = 0
+files = ["conv/hello-v06/task.md"]
+
+[[step]]
+name = "Terminal-Bench v1 to task.md"
+run = ["import", "{repo}/crates/benchflow-task/tests/fixtures/tbench/input/hello", "conv/tb-hello", "--cpus", "1"]
+exit = 0
+files = ["conv/tb-hello/task.md"]
+
+[[step]]
+name = "solution.yaml is refused"
+run = ["import", "{repo}/crates/benchflow-task/tests/fixtures/tbench/input/yaml-solution", "conv/tb-yaml"]
+exit = [1, 2]
+output_has = ["solution.yaml"]
+
+[[step]]
+name = "a task with a rubric does not export without --allow-degraded"
+run = ["export", "tasks/hello", "conv/hello-out"]
+exit = [1, 2]
+output_has = ["rubric", "--allow-degraded"]
+absent = ["conv/hello-out/task.toml"]
+
+[[step]]
+run = ["export", "tasks/hello", "conv/hello-out", "--allow-degraded"]
+exit = 0
+files = ["conv/hello-out/task.toml", "conv/hello-out/instruction.md", "conv/hello-out/tests/test.sh", "conv/hello-out/solution/solve.sh"]
+
+[[step]]
+name = "a plain task exports cleanly and comes back"
+run = ["export", "tasks/always-passes", "conv/ap-split"]
+exit = 0
+files = ["conv/ap-split/task.toml"]
+
+[[step]]
+run = ["import", "conv/ap-split", "conv/ap-back"]
+exit = 0
+
+[[step]]
+run = ["check", "conv/ap-back", "conv/hello-out", "conv/hello-v06", "conv/tb-hello"]
+exit = 0
+
+[[step]]
+name = "the round trip keeps the instruction"
+sh = "head -1 tasks/always-passes/task.md > a.txt && head -1 conv/ap-back/task.md > b.txt && cmp a.txt b.txt"
+exit = 0

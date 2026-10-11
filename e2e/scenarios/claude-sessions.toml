@@ -1,0 +1,45 @@
+# Claude Code on the gateway's DeepSeek model (the gateway key, no Claude login): skills placed where it looks, --resume-sessions across stages, a real handoff --dry-run, and --load-trajectory from the saved session.
+tier = "full"
+needs = ["sandbox", "gateway"]
+tasks = ["two-stage", "hello"]
+
+[[step]]
+name = "two stages, the second resuming the first's session, with a --skill"
+run = ["run", "tasks/two-stage", "-a", "claude", "-m", "{judge}", "--resume-sessions", "--skill", "{e2e}/skills/e2e-skill", "-s", "{backend}", "--job", "c"]
+exit = 0
+timeout = 1500
+trials = [{ job = "c", status = "scored", result = { agent = "claude", "agent_session" = { present = true } }, files = ["agent/sessions/**/*.jsonl", "steps/second"], file_has = { "config.json" = ['"names": \[\s*"e2e-skill"', '.claude/skills'] } }]
+
+[[step]]
+name = "handoff --dry-run names the session and the command, copies nothing"
+sh = "t=$(ls -d jobs/c/two-stage__*) && HOME={work}/home CLAUDE_CONFIG_DIR={work}/home/.claude {bench} handoff $t --dry-run > h.out 2>&1 && grep -q 'would copy' h.out && grep -q 'claude --resume' h.out && test ! -e {work}/home/.claude"
+exit = 0
+
+[[step]]
+name = "--load-trajectory starts Claude Code on the saved session (the file keeps its <session-id>.jsonl name)"
+sh = "mkdir -p saved && cp \"$(find jobs/c -path '*agent/sessions*' -name '*.jsonl' | head -1)\" saved/ && {bench} run tasks/hello -a claude -m {judge} --load-trajectory saved/*.jsonl -s {backend} --job l"
+exit = 0
+timeout = 1200
+
+[[step]]
+trials = [{ job = "l", status = "scored" }]
+
+[[step]]
+name = "a session file under another name is refused before anything starts"
+sh = "cp saved/*.jsonl renamed.jsonl && {bench} run tasks/hello -a claude -m {judge} --load-trajectory renamed.jsonl -s {backend} --job r --dry-run"
+exit = 2
+
+[[step]]
+name = "the gateway key never reaches the jobs (Claude Code's saved sessions included)"
+sh = '''
+keys=$(printf '%s\n' "$AI_GATEWAY_API_KEY" "$VERCEL_AI_GATEWAY_API_KEY" "$VERCEL_OIDC_TOKEN"
+       (. ~/.config/benchflow/vercel-ai-gateway.env 2>/dev/null
+        printf '%s\n' "$AI_GATEWAY_API_KEY" "$VERCEL_AI_GATEWAY_API_KEY" "$VERCEL_OIDC_TOKEN"))
+n=0
+for k in $keys; do
+  n=$((n + 1))
+  # The key goes to grep on stdin, never on its command line.
+  if printf '%s\n' "$k" | grep -rqF -f - jobs; then echo "a gateway key is in jobs/"; exit 1; fi
+done
+[ "$n" -gt 0 ] || { echo "found no gateway key to look for"; exit 1; }
+'''
