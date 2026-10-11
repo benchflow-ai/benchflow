@@ -288,7 +288,7 @@ class TestLiveSinkCoalescing:
     not grow with its chunk count."""
 
     def test_streamed_chunks_do_not_each_rewrite_the_file(self, tmp_path: Path) -> None:
-        """Guards the live sink from PR #566 against rewriting the whole
+        """PR #1165 guards the live sink from PR #566 against rewriting the whole
         trajectory on every streamed chunk, which made a long thought
         quadratic and left the ACP read loop behind the agent."""
         traj_path = tmp_path / "acp_trajectory.jsonl"
@@ -312,7 +312,7 @@ class TestLiveSinkCoalescing:
     def test_boundaries_are_written_at_once_and_growth_per_interval(
         self, tmp_path: Path
     ) -> None:
-        """Guards the live sink from PR #566: coalescing streamed growth must
+        """PR #1165 guards the live sink from PR #566: coalescing streamed growth must
         not delay a new event, a tool status change, or the end of a prompt."""
         traj_path = tmp_path / "acp_trajectory.jsonl"
         clock = _Clock()
@@ -370,7 +370,7 @@ class TestLiveSinkCoalescing:
     def test_scene_sinks_keep_prior_scenes_once_while_coalescing(
         self, tmp_path: Path
     ) -> None:
-        """Guards PR #566's cumulative multi-scene sink: with coalescing, the
+        """PR #1165 guards PR #566's cumulative multi-scene sink: with coalescing, the
         file holds the prior scenes' events exactly once, both mid-stream and
         after the prompt ends."""
         traj_path = tmp_path / "acp_trajectory.jsonl"
@@ -400,7 +400,7 @@ class TestLiveSinkCoalescing:
         assert _read_jsonl(traj_path) == prior + _capture_session_trajectory(scene2)
 
     def test_tool_kind_change_is_written_at_once(self, tmp_path: Path) -> None:
-        """Guards the live sink from PR #566: an update that reclassifies a
+        """PR #1165 guards the live sink from PR #566: an update that reclassifies a
         running tool call as a skill (issue #507) is a boundary, not growth."""
         traj_path = tmp_path / "acp_trajectory.jsonl"
         session = ACPSession("s1")
@@ -445,7 +445,7 @@ class _NoConcatText(str):
 
 class TestPendingTextMerge:
     def test_text_runs_are_merged_with_one_join(self) -> None:
-        """Guards the pending-text merge from commit b588c9e8 and PR #566:
+        """PR #1165 guards the pending-text merge from commit b588c9e8 and PR #566:
         growing a run with ``+=`` copied the whole run again on every chunk,
         quadratic in the chunk count of a long streamed thought."""
         session = ACPSession("s1")
@@ -466,7 +466,7 @@ class TestPendingTextMerge:
         assert _capture_session_trajectory(session) == expected
 
     def test_lone_chunk_is_kept_as_sent(self) -> None:
-        """Guards the pending-text merge from PR #566: a run of one chunk is
+        """PR #1165 guards the pending-text merge from PR #566: a run of one chunk is
         copied as is, so a null text stays null instead of raising."""
         session = ACPSession("s1")
         session.handle_update(
@@ -776,7 +776,7 @@ class TestMultiScenePartialCaptureFix:
         assert r._partial_trajectory is False
 
     def test_partial_capture_publishes_coalesced_stream(self, tmp_path: Path) -> None:
-        """Guards PR #566's partial capture once the live sink coalesces
+        """PR #1165 guards PR #566's partial capture once the live sink coalesces
         streamed chunks: a cancelled run skips write_final, so teardown must
         publish what the sink held back."""
         traj_path = tmp_path / "acp_trajectory.jsonl"
@@ -802,7 +802,7 @@ class TestMultiScenePartialCaptureFix:
     def test_partial_capture_without_a_prompt_writes_no_file(
         self, tmp_path: Path
     ) -> None:
-        """Guards PR #566's partial capture: teardown of a session that never
+        """PR #1165 guards PR #566's partial capture: teardown of a session that never
         got a prompt must not create an empty live trajectory."""
         traj_path = tmp_path / "acp_trajectory.jsonl"
         session = ACPSession("s1")
