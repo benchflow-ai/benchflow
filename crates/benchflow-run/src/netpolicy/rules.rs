@@ -150,8 +150,14 @@ fn pins(net: &PhaseNet) -> String {
 }
 
 /// The chain's rules for one address family, as lines of shell that use
-/// `$t` (the binary), `$REJ` (the refusal target), and, with `guard`,
-/// `$GUARD` (the daemon's ports, found when the script runs).
+/// `$t` (the binary), `$REJ` (the refusal target), `$RT $RTO` (the refusal
+/// for TCP: a reset where the kernel has one), and, with `guard`, `$GUARD`
+/// (the daemon's ports, found when the script runs).
+///
+/// TCP is refused with a reset before the general refusal: an ICMP
+/// unreachable only fails a TCP connect after a SYN retry, about a second
+/// later, and the self-test's twelve refused daemon connections made every
+/// Daytona trial's setup 13 s longer.
 fn chain_rules(net: &PhaseNet, v6: bool, guard: bool) -> String {
     let ranges: Vec<&String> = net
         .ranges
@@ -163,33 +169,39 @@ fn chain_rules(net: &PhaseNet, v6: bool, guard: bool) -> String {
     // lo, whichever of the sandbox's addresses it is sent to).
     if guard {
         s.push_str(
-            "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$REJ\" || exit_rule; done\n",
+            "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$RT\" $RTO || exit_rule; done\n",
         );
     }
     let mut add = |rule: &str| s.push_str(&format!("\"$t\" -w -A \"$CH\" {rule} || exit_rule\n"));
+    // `match` refused: TCP with a reset first, then everything else.
+    let refuse = |add: &mut dyn FnMut(&str), matching: &str| {
+        let sep = if matching.is_empty() { "" } else { " " };
+        add(&format!("{matching}{sep}-p tcp -j \"$RT\" $RTO"));
+        add(&format!("{matching}{sep}-j \"$REJ\""));
+    };
     match &net.network {
         Network::Allow(_) | Network::None => {
             // Resolvers on loopback (Docker's embedded one is 127.0.0.11,
             // reached on a rewritten port) would answer for any name.
             add("-o lo -p udp --dport 53 -j \"$REJ\"");
-            add("-o lo -p tcp --dport 53 -j \"$REJ\"");
+            add("-o lo -p tcp --dport 53 -j \"$RT\" $RTO");
             if !v6 {
-                add("-d 127.0.0.11 -j \"$REJ\"");
+                refuse(&mut add, "-d 127.0.0.11");
             }
             add("-o lo -j RETURN");
             for r in &ranges {
                 add(&format!("-d {} -j RETURN", quote(r)));
             }
-            add("-j \"$REJ\"");
+            refuse(&mut add, "");
         }
         Network::Block(_) => {
             if v6 {
-                add("-d 100::/64 -j \"$REJ\"");
+                refuse(&mut add, "-d 100::/64");
             } else {
-                add(&format!("-d {PINNED_NOWHERE} -j \"$REJ\""));
+                refuse(&mut add, &format!("-d {PINNED_NOWHERE}"));
             }
             for r in &ranges {
-                add(&format!("-d {} -j \"$REJ\"", quote(r)));
+                refuse(&mut add, &format!("-d {}", quote(r)));
             }
         }
         Network::Open => {}
@@ -227,6 +239,10 @@ setup() {{
   unhook "$t"
   "$t" -w -N "$CH" || exit_rule
   if "$t" -w -A "$CH" -j REJECT 2>/dev/null; then "$t" -w -D "$CH" -j REJECT; REJ=REJECT; else REJ=DROP; fi
+  RT=$REJ; RTO=""
+  if [ "$REJ" = REJECT ] && "$t" -w -A "$CH" -p tcp -j REJECT --reject-with tcp-reset 2>/dev/null; then
+    "$t" -w -D "$CH" -p tcp -j REJECT --reject-with tcp-reset; RTO="--reject-with tcp-reset"
+  fi
   if "$t" -w -A "$CH" -m conntrack ! --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null; then
     "$t" -w -D "$CH" -m conntrack ! --ctstate ESTABLISHED,RELATED -j RETURN; TRACK=conntrack
   elif "$t" -w -A "$CH" -m state ! --state ESTABLISHED,RELATED -j RETURN 2>/dev/null; then
@@ -234,6 +250,9 @@ setup() {{
   else
     echo "BF fw-error no-conntrack"; unhook "$t"; exit 0
   fi
+  # A probe's rule whose removal failed would stay at the head of the
+  # chain (a reset of every TCP connection): start the chain empty.
+  "$t" -w -F "$CH" || exit_rule
 }}
 jump_new() {{
   pos=$1; shift
@@ -442,9 +461,14 @@ mod tests {
             &["140.82.114.4/32", "2001:db8::/32"],
         );
         let v4 = chain_rules(&allow, false, false);
+        assert!(v4.contains("-d 127.0.0.11 -p tcp -j \"$RT\" $RTO"), "{v4}");
         assert!(v4.contains("-d 127.0.0.11 -j \"$REJ\""), "{v4}");
         assert!(v4.contains("-d 140.82.114.4/32 -j RETURN"), "{v4}");
         assert!(!v4.contains("2001:db8"), "{v4}");
+        assert!(
+            v4.contains("\"$CH\" -p tcp -j \"$RT\" $RTO || exit_rule"),
+            "{v4}"
+        );
         assert!(v4.trim_end().ends_with("-j \"$REJ\" || exit_rule"), "{v4}");
         let v6 = chain_rules(&allow, true, false);
         assert!(v6.contains("-d 2001:db8::/32 -j RETURN"), "{v6}");
@@ -459,6 +483,10 @@ mod tests {
             &["128.31.0.62/32"],
         );
         let v4 = chain_rules(&block, false, false);
+        assert!(
+            v4.contains("-d 128.31.0.62/32 -p tcp -j \"$RT\" $RTO"),
+            "{v4}"
+        );
         assert!(v4.contains("-d 128.31.0.62/32 -j \"$REJ\""), "{v4}");
         assert!(!v4.contains("RETURN"), "a blocklist falls through: {v4}");
         assert_eq!(
@@ -468,6 +496,50 @@ mod tests {
         assert!(chain_rules(&block, true, false).contains("-d 100::/64"));
     }
 
+    /// An ICMP unreachable fails a TCP connect only after a SYN retry (about
+    /// 1 s; measured 1,066 ms on Daytona against 10 ms for a reset), and the
+    /// self-test's twelve refused daemon connections made each Daytona
+    /// trial's setup 13 s longer. TCP is refused with a reset, before any
+    /// other refusal of the same destination, where the kernel has one.
+    #[test]
+    fn tcp_is_refused_with_a_reset_first() {
+        let s = install(
+            &Scope::AgentUser("agent".into()),
+            &net(Network::Open, &[], &[]),
+            &[2280],
+        );
+        bash_ok(&s);
+        let probe = s
+            .find("--reject-with tcp-reset 2>/dev/null")
+            .expect("probed");
+        assert!(
+            s[probe..].contains("RTO=\"--reject-with tcp-reset\""),
+            "{s}"
+        );
+        assert!(s.contains("RT=$REJ; RTO=\"\""), "falls back to $REJ: {s}");
+        let block = net(
+            Network::Block(vec!["www.debian.org".into()]),
+            &[("www.debian.org", "128.31.0.62")],
+            &["128.31.0.62/32"],
+        );
+        for v6 in [false, true] {
+            let rules = chain_rules(&block, v6, false);
+            let mut tcp_first = 0;
+            for (i, line) in rules.lines().enumerate() {
+                if line.contains("-j \"$REJ\"") {
+                    let prev = rules.lines().nth(i.wrapping_sub(1)).unwrap_or("");
+                    assert_eq!(
+                        prev.replace(" -p tcp -j \"$RT\" $RTO", " -j \"$REJ\""),
+                        line,
+                        "{rules}"
+                    );
+                    tcp_first += 1;
+                }
+            }
+            assert!(tcp_first > 0, "{rules}");
+        }
+    }
+
     #[test]
     fn the_guard_alone_refuses_only_the_daemon_ports_on_loopback() {
         let open = net(Network::Open, &[], &[]);
@@ -475,7 +547,7 @@ mod tests {
         for v6 in [false, true] {
             assert_eq!(
                 chain_rules(&open, v6, true),
-                "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$REJ\" || exit_rule; done\n"
+                "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$RT\" $RTO || exit_rule; done\n"
             );
         }
         let s = install(&Scope::AgentUser("agent".into()), &open, &ports);

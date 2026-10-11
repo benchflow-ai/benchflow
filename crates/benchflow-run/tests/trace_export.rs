@@ -244,3 +244,76 @@ fn links_in_a_shared_job_are_not_exported() {
         Err(e) => assert!(e.to_string().contains("skipped"), "{e}"),
     }
 }
+
+/// A job of `n` copies of rust-claude's trial, trial `i` run by agent
+/// `agents[i % len]` on model `models[i % len]` ("" for none).
+fn many_trials(at: &Path, n: usize, agents: &[&str], models: &[&str]) {
+    let from = job("rust-claude");
+    for f in ["lock.json", "summary.json"] {
+        std::fs::copy(from.join(f), at.join(f)).unwrap();
+    }
+    for i in 0..n {
+        let name = format!("hello__{i:08x}");
+        let dir = at.join(&name);
+        copy_dir(&from.join("hello__5af89adc"), &dir);
+        let path = dir.join("result.json");
+        let mut r: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        r["rollout_name"] = name.into();
+        r["agent"] = agents[i % agents.len()].into();
+        let model = models[i % models.len()];
+        r["model"] = if model.is_empty() {
+            Value::Null
+        } else {
+            model.into()
+        };
+        std::fs::write(&path, serde_json::to_string(&r).unwrap()).unwrap();
+    }
+}
+
+/// The export reads a job one trial at a time (an export of 10,000 trials
+/// held every result.json and peaked at 434 MB); the dataset card still
+/// counts every trial and names each agent and model once, in order.
+#[test]
+fn card_counts_every_trial_agent_and_model() {
+    let work = tempfile::tempdir().unwrap();
+    let at = work.path().join("many");
+    std::fs::create_dir(&at).unwrap();
+    many_trials(
+        &at,
+        12,
+        &["codex", "claude", "claude"],
+        &["", "z/m2", "a/m1", "z/m2"],
+    );
+    let out = work.path().join("hf");
+    let rep = traces::export_hf(&at, &out, &ExportOptions::default()).unwrap();
+    assert_eq!(rep.trials.len(), 12);
+    assert!(rep.trials.iter().all(|t| t.written > 0), "{:?}", rep.trials);
+    let rows = lines(&std::fs::read_to_string(out.join("data/train.jsonl")).unwrap());
+    assert_eq!(rows.len(), rep.written);
+    let card = std::fs::read_to_string(out.join("README.md")).unwrap();
+    assert!(
+        card.contains("of 12 trials in the BenchFlow job `many`")
+            && card.contains("Agents: `claude`, `codex`. Models: `a/m1`, `z/m2`."),
+        "{card}"
+    );
+}
+
+/// `cargo test --release -p benchflow-run --test trace_export -- --ignored --nocapture`:
+/// time an export of 10,000 trials (`/usr/bin/time -l` on the binary gives
+/// its peak memory; see the soak report).
+#[test]
+#[ignore = "benchmark: writes 10,000 trial folders"]
+fn export_of_10000_trials() {
+    let work = tempfile::tempdir().unwrap();
+    let at = work.path().join("big");
+    std::fs::create_dir(&at).unwrap();
+    many_trials(&at, 10_000, &["claude"], &["anthropic/m"]);
+    let started = std::time::Instant::now();
+    let rep = traces::export_hf(&at, &work.path().join("hf"), &ExportOptions::default()).unwrap();
+    eprintln!(
+        "exported {} rows from 10,000 trials in {:?}",
+        rep.written,
+        started.elapsed()
+    );
+    assert_eq!(rep.trials.len(), 10_000);
+}

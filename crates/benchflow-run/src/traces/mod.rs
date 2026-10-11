@@ -129,7 +129,10 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> ExportError + '_ {
 struct Trial {
     dir: PathBuf,
     rec: TrialRecord,
-    raw: Value,
+    /// result.json's `started_at` as written (the HF `date` column). Only
+    /// this is kept: holding each trial's whole result.json made an export
+    /// of a 10,000-trial job peak at over 400 MB.
+    started_at: String,
 }
 
 /// The largest file an export reads from a trial.
@@ -164,7 +167,10 @@ fn refused(dir: &Path, rel: &str) -> bool {
     dir.join(rel).exists() && plain_file(dir, rel).is_none()
 }
 
-fn trials(job: &Path) -> Vec<Trial> {
+/// A job's trials, read one at a time as the export reaches them: an export
+/// reads one trial's record and trajectory at a time (the rows it writes
+/// are still all held until the end).
+fn trials(job: &Path) -> impl Iterator<Item = Trial> {
     let dirs: Vec<PathBuf> = if job.join("result.json").is_file() {
         vec![job.to_path_buf()]
     } else {
@@ -176,9 +182,17 @@ fn trials(job: &Path) -> Vec<Trial> {
             let text = std::fs::read_to_string(plain_file(&dir, "result.json")?).ok()?;
             let raw: Value = serde_json::from_str(&text).ok()?;
             let rec = crate::read::record_from_json(&raw, &dir)?;
-            Some(Trial { dir, rec, raw })
+            let started_at = raw
+                .get("started_at")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some(Trial {
+                dir,
+                rec,
+                started_at,
+            })
         })
-        .collect()
 }
 
 /// A trial's ATIF document, and where it came from.
@@ -269,12 +283,7 @@ fn run_meta(t: &Trial, run_id: &str) -> hf::RunMeta {
         },
         model: model.unwrap_or_else(|| "unknown-model".into()),
         model_provider: provider,
-        date: t
-            .raw
-            .get("started_at")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        date: t.started_at.clone(),
         run_id: run_id.to_string(),
         task: t.rec.task_name.clone(),
         trial_name: t.rec.rollout_name.clone(),
@@ -325,12 +334,30 @@ fn prepare(out: &Path, overwrite: bool, dir: bool) -> Result<(), ExportError> {
     Ok(())
 }
 
-fn check_job(job: &Path) -> Result<Vec<Trial>, ExportError> {
-    let all = trials(job);
-    if all.is_empty() {
+fn check_job(job: &Path) -> Result<std::iter::Peekable<impl Iterator<Item = Trial>>, ExportError> {
+    let mut all = trials(job).peekable();
+    if all.peek().is_none() {
         return Err(ExportError::NotAJob(job.to_path_buf()));
     }
     Ok(all)
+}
+
+/// What the dataset card says about the trials it read.
+#[derive(Default)]
+struct Seen {
+    trials: usize,
+    agents: std::collections::BTreeSet<String>,
+    models: std::collections::BTreeSet<String>,
+}
+
+impl Seen {
+    fn add(&mut self, rec: &TrialRecord) {
+        self.trials += 1;
+        self.agents.insert(rec.agent.clone());
+        if let Some(m) = rec.model.as_ref().filter(|m| !m.is_empty()) {
+            self.models.insert(m.clone());
+        }
+    }
 }
 
 /// Write `job`'s trajectories as a Hugging Face dataset folder at `out`.
@@ -343,7 +370,9 @@ pub fn export_hf(
     let run_id = job_name(job);
     let mut lines = Vec::new();
     let mut report = Vec::new();
-    for t in &all {
+    let mut seen = Seen::default();
+    for t in all {
+        seen.add(&t.rec);
         let mut entry = TrialExport {
             trial: t.rec.rollout_name.clone(),
             written: 0,
@@ -359,7 +388,7 @@ pub fn export_hf(
             Err(why) => entry.skipped = Some(why),
             Ok((doc, from)) => {
                 entry.atif = Some(from);
-                match hf::rows(&doc, &run_meta(t, &run_id)) {
+                match hf::rows(&doc, &run_meta(&t, &run_id)) {
                     Err(e) => entry.skipped = Some(e.to_string()),
                     Ok(mut rows) => {
                         if opts.episodes == Episodes::Last && rows.len() > 1 {
@@ -410,7 +439,7 @@ pub fn export_hf(
         written: lines.len(),
         trials: report,
     };
-    std::fs::write(&card, dataset_card(&run_id, &all, &rep, opts)).map_err(io(&card))?;
+    std::fs::write(&card, dataset_card(&run_id, &seen, &rep, opts)).map_err(io(&card))?;
     Ok(rep)
 }
 
@@ -424,7 +453,7 @@ pub fn export_otel(
     let all = check_job(job)?;
     let mut lines = Vec::new();
     let mut report = Vec::new();
-    for t in &all {
+    for t in all {
         let name = t
             .dir
             .file_name()
@@ -468,17 +497,8 @@ pub fn export_otel(
     })
 }
 
-fn dataset_card(run_id: &str, all: &[Trial], rep: &ExportReport, opts: &ExportOptions) -> String {
-    let mut agents: Vec<String> = all.iter().map(|t| t.rec.agent.clone()).collect();
-    agents.sort();
-    agents.dedup();
-    let mut models: Vec<String> = all
-        .iter()
-        .filter_map(|t| t.rec.model.clone())
-        .filter(|m| !m.is_empty())
-        .collect();
-    models.sort();
-    models.dedup();
+fn dataset_card(run_id: &str, seen: &Seen, rep: &ExportReport, opts: &ExportOptions) -> String {
+    let (agents, models) = (&seen.agents, &seen.models);
     let exported = rep.trials.iter().filter(|t| t.written > 0).count();
     let count = |s: AtifSource| {
         rep.trials
@@ -547,7 +567,7 @@ fn dataset_card(run_id: &str, all: &[Trial], rep: &ExportReport, opts: &ExportOp
     s.push_str(&format!(
         "{} from {exported} of {} in the BenchFlow job `{run_id}`: one row per agent step, holding the conversation up to that step (`--episodes last` keeps one row per trial). Agents: {}. Models: {}.\n\n",
         count_of(rep.written, "row"),
-        count_of(all.len(), "trial"),
+        count_of(seen.trials, "trial"),
         agents.iter().map(|a| format!("`{a}`")).collect::<Vec<_>>().join(", "),
         if models.is_empty() { "none recorded".to_string() } else { models.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ") },
     ));
@@ -599,7 +619,7 @@ mod tests {
                 Path::new("."),
             )
             .unwrap(),
-            raw: json!({"started_at": "2026-10-10 05:37:38.402901"}),
+            started_at: "2026-10-10 05:37:38.402901".into(),
         };
         let m = run_meta(&t, "job");
         assert_eq!(m.model_provider, "vercel");

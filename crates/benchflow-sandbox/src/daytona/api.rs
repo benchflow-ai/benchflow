@@ -321,8 +321,16 @@ impl Api {
         loop {
             attempt += 1;
             let request = build(&self.http)?.headers(headers.clone());
+            let sent = std::time::Instant::now();
             match request.send().await {
-                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) if response.status().is_success() => {
+                    tracing::debug!(
+                        "Daytona {what}: HTTP {} in {} ms",
+                        response.status().as_u16(),
+                        sent.elapsed().as_millis()
+                    );
+                    return Ok(response);
+                }
                 Ok(response) => {
                     let status = response.status();
                     let wait = retry_after(&response);
@@ -344,6 +352,8 @@ impl Api {
                 Err(err) => {
                     let unsent = err.is_connect();
                     if (retry == Retry::Safe || unsent) && attempt < MAX_ATTEMPTS {
+                        // The URL may carry a signed query (a build log's).
+                        let err = err.without_url();
                         tracing::debug!("Daytona {what}: {err}, retrying");
                         tokio::time::sleep(backoff(attempt, None)).await;
                         continue;
