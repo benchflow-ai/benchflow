@@ -34,7 +34,7 @@ fn refuse(refused: &mut Vec<Unsupported>, field: impl Into<String>, reason: impl
 }
 
 fn seconds(v: Option<&Value>) -> Option<Duration> {
-    duration_s(v).and_then(|s| Duration::try_from_secs_f64(s).ok())
+    duration_s(v).map(crate::values::duration_from_secs)
 }
 
 /// `"<package path>:<sandbox path>"` entries as mounts.
@@ -143,7 +143,17 @@ fn services(v: &Value, root: &Path, refused: &mut Vec<Unsupported>) -> Vec<Servi
         };
         let command = match s.get("command") {
             None | Some(Value::Null) => Vec::new(),
-            Some(Value::String(c)) => shlex::split(c).unwrap_or_default(),
+            Some(Value::String(c)) => match crate::compose::split_words(c) {
+                Some(words) => words,
+                None => {
+                    refuse(
+                        refused,
+                        format!("{where_} command"),
+                        "its quotes do not close",
+                    );
+                    continue;
+                }
+            },
             Some(Value::Array(a)) => a.iter().map(str_of).collect(),
             Some(_) => {
                 refuse(

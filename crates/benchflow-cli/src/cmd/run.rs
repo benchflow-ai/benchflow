@@ -11,6 +11,7 @@ use benchflow_run::outcome::{Owner, Status};
 use benchflow_run::project::RunDefaults;
 use benchflow_run::registry::{self, DigestCheck, RegistryError};
 use benchflow_run::source;
+use benchflow_task::fnmatch::name_matches;
 use serde_json::{Value, json};
 
 use crate::cli::RunArgs;
@@ -776,26 +777,12 @@ fn filter_dataset(
     exclude: &[String],
     limit: Option<usize>,
 ) -> Result<Vec<registry::DatasetTask>> {
-    let compile = |pats: &[String]| -> Result<Option<globset::GlobSet>> {
-        if pats.is_empty() {
-            return Ok(None);
-        }
-        let mut b = globset::GlobSetBuilder::new();
-        for p in pats {
-            b.add(
-                globset::Glob::new(p)
-                    .map_err(|e| CliError::usage(format!("bad pattern `{p}`: {e}")))?,
-            );
-        }
-        Ok(Some(b.build().map_err(|e| CliError::usage(e.to_string()))?))
-    };
-    let inc = compile(include)?;
-    let exc = compile(exclude)?;
+    let hit = |pats: &[String], name: &str| pats.iter().any(|p| name_matches(name, p));
     let names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
     let mut out: Vec<registry::DatasetTask> = tasks
         .into_iter()
-        .filter(|t| inc.as_ref().is_none_or(|g| g.is_match(&t.name)))
-        .filter(|t| exc.as_ref().is_none_or(|g| !g.is_match(&t.name)))
+        .filter(|t| include.is_empty() || hit(include, &t.name))
+        .filter(|t| !hit(exclude, &t.name))
         .collect();
     if let Some(n) = limit {
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -830,11 +817,7 @@ fn dataset_line(d: &registry::Dataset, width: usize) -> String {
 fn no_tasks_left(names: &[String], include: &[String]) -> CliError {
     let unmatched: Vec<String> = include
         .iter()
-        .filter(|p| {
-            globset::Glob::new(p)
-                .map(|g| g.compile_matcher())
-                .is_ok_and(|g| !names.iter().any(|n| g.is_match(n)))
-        })
+        .filter(|p| !names.iter().any(|n| name_matches(n, p)))
         .map(|p| {
             match benchflow_agent::suggest::did_you_mean(p, names.iter().map(String::as_str)) {
                 Some(close) => format!("`{p}` (did you mean `{close}`?)"),

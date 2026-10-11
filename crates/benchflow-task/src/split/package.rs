@@ -101,7 +101,7 @@ pub(crate) struct Parts<'a> {
 }
 
 fn secs(s: f64) -> Duration {
-    Duration::from_secs_f64(s.max(0.0))
+    crate::values::duration_from_secs(s)
 }
 
 fn phase_network(p: &PhaseNetwork) -> Option<Network> {

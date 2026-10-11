@@ -31,6 +31,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 # A fake model server for the native harnesses' tests.
 axum.workspace = true
 # A compressed request body for the forwarder's tests.

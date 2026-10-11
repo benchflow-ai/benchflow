@@ -303,9 +303,7 @@ impl ModelClient {
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|s| s.is_finite() && *s >= 0.0)
-            .map(Duration::from_secs_f64);
+            .and_then(retry_after_header);
         let text = response.text().await?;
         Ok((status, text, retry_after))
     }
@@ -393,6 +391,39 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 /// Where a trial keeps the model calls.
 pub fn calls_path(trial_dir: &Path) -> PathBuf {
     trial_dir.join("agent").join("model_calls.jsonl")
+}
+
+/// A `Retry-After` header in seconds. A value that is not a finite number
+/// of seconds of 0 or more, or too big for a Duration (`1e20`), is ignored.
+fn retry_after_header(text: &str) -> Option<Duration> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .and_then(|s| Duration::try_from_secs_f64(s).ok())
+}
+
+#[cfg(test)]
+mod retry_after_tests {
+    use super::*;
+
+    /// Guards the D5 fix: `Retry-After: 1e20` from a provider or proxy
+    /// passed the finite check and panicked in `Duration::from_secs_f64`.
+    #[test]
+    fn odd_retry_after_values_are_ignored() {
+        assert_eq!(retry_after_header(" 2 "), Some(Duration::from_secs(2)));
+        assert_eq!(retry_after_header("0.5"), Some(Duration::from_millis(500)));
+        for bad in [
+            "1e20",
+            "-1",
+            "inf",
+            "nan",
+            "Wed, 21 Oct 2026 07:28:00 GMT",
+            "",
+        ] {
+            assert_eq!(retry_after_header(bad), None, "{bad}");
+        }
+    }
 }
 
 #[cfg(test)]

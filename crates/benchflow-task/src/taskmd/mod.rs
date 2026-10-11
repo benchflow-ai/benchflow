@@ -27,7 +27,7 @@ mod json_spans;
 mod judges;
 mod judgment;
 mod map;
-mod pyfmt;
+pub(crate) mod pyfmt;
 mod pyval;
 mod report;
 mod scan;

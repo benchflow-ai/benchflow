@@ -181,7 +181,7 @@ pub(crate) fn py_float_repr(f: f64) -> String {
             "0.0".into()
         };
     }
-    let sci = format!("{:e}", f.abs());
+    let sci = crate::taskmd::pyfmt::shortest_e(f.abs());
     let (mantissa, exp) = sci.split_once('e').expect("{:e} has an exponent");
     let exp: i32 = exp.parse().expect("an integer exponent");
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
@@ -455,5 +455,27 @@ mod tests {
     fn canonical_json_sorts_keys() {
         let t = parse_toml("b = 1.0\na = \"é\"\n").unwrap();
         assert_eq!(canonical_json(&Val::Table(t)), "{\"a\":\"é\",\"b\":1.0}");
+    }
+}
+
+#[cfg(test)]
+mod python_repr_tests {
+    /// Guards the D5 fix: `{:e}` breaks a tie between equally short digits
+    /// upward where Python rounds half to even (755133721037486.25), and the
+    /// Terminal-Bench importer printed `1e-5` where Python writes `1e-05`.
+    /// Every float in the fixture (7,014, with 0.8's Python 3.12 `repr`)
+    /// must come out as Python wrote it, through each of the crate's ports.
+    #[test]
+    fn float_reprs_match_python() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../benchflow-agent/tests/fixtures/python-float-repr.jsonl");
+        let text = std::fs::read_to_string(path).unwrap();
+        for line in text.lines() {
+            let case: serde_json::Value = serde_json::from_str(line).unwrap();
+            let value = f64::from_bits(case["bits"].as_u64().unwrap());
+            let want = case["repr"].as_str().unwrap();
+            assert_eq!(super::py_float_repr(value), want, "{value:e}");
+            assert_eq!(crate::taskmd::pyfmt::float_repr(value), want, "{value:e}");
+        }
     }
 }

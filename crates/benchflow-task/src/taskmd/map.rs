@@ -56,7 +56,7 @@ impl Refusals {
 }
 
 fn seconds(v: Option<&Value>) -> Option<Duration> {
-    duration_s(v).and_then(|s| Duration::try_from_secs_f64(s).ok())
+    duration_s(v).map(crate::values::duration_from_secs)
 }
 
 /// An env table as strings, refusing `${VAR}` values, which a runtime may
@@ -190,7 +190,7 @@ pub(super) fn ready(v: &Value) -> Option<Ready> {
     let dur = |key: &str, default: f64| {
         duration_s(r.get(key)).map_or_else(
             || Duration::from_secs_f64(default),
-            |s| Duration::try_from_secs_f64(s).unwrap_or_default(),
+            crate::values::duration_from_secs,
         )
     };
     Some(Ready {

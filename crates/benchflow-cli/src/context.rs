@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use benchflow_run::project::Project;
 use benchflow_sandbox::Provider;
+use benchflow_task::fnmatch::name_matches;
 use benchflow_task::{CheckOptions, CheckReport, TaskPackage};
 
 use crate::error::{CliError, Exit, Result};
@@ -110,7 +111,7 @@ pub fn check_all(paths: &[PathBuf], opts: &CheckOptions) -> Vec<CheckReport> {
                 s.spawn(move || {
                     c.iter()
                         .enumerate()
-                        .map(|(j, p)| (i * chunk + j, benchflow_task::check(p, opts)))
+                        .map(|(j, p)| (i * chunk + j, check_one(p, opts)))
                         .collect::<Vec<_>>()
                 })
             })
@@ -124,6 +125,33 @@ pub fn check_all(paths: &[PathBuf], opts: &CheckOptions) -> Vec<CheckReport> {
         }
     });
     out.into_iter().flatten().collect()
+}
+
+/// Check one package. A crash while checking is a P005 error on that
+/// package; before, the thread's tasks vanished and `bench check` said
+/// "0 tasks: 0 ok".
+fn check_one(path: &std::path::Path, opts: &CheckOptions) -> CheckReport {
+    guarded(path, || benchflow_task::check(path, opts))
+}
+
+/// `check()`, with a crash turned into a P005 error on `path`.
+fn guarded(path: &std::path::Path, check: impl FnOnce() -> CheckReport) -> CheckReport {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)).unwrap_or_else(|e| {
+        let what = e
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no message".into());
+        let mut report = CheckReport::new(path, benchflow_task::detect(path));
+        report.diagnostics.push(
+            benchflow_task::Diagnostic::error(
+                "P005",
+                format!("checking this task crashed BenchFlow: {what}"),
+            )
+            .help("this is a BenchFlow bug; report it with the task folder"),
+        );
+        report
+    })
 }
 
 /// Load tasks for running: discover, check, and keep the ones that load.
@@ -157,31 +185,15 @@ pub fn select(
     exclude: &[String],
     limit: Option<usize>,
 ) -> Result<Vec<Arc<TaskPackage>>> {
-    let compile = |pats: &[String]| -> Result<Option<globset::GlobSet>> {
-        if pats.is_empty() {
-            return Ok(None);
-        }
-        let mut b = globset::GlobSetBuilder::new();
-        for p in pats {
-            b.add(
-                globset::Glob::new(p)
-                    .map_err(|e| CliError::usage(format!("bad pattern `{p}`: {e}")))?,
-            );
-        }
-        Ok(Some(b.build().map_err(|e| CliError::usage(e.to_string()))?))
+    // 0.8's matching (exact names, else fnmatch), so no pattern is invalid.
+    let hit = |pats: &[String], t: &TaskPackage| {
+        pats.iter()
+            .any(|p| name_matches(&t.name, p) || name_matches(&t.id, p))
     };
-    let inc = compile(include)?;
-    let exc = compile(exclude)?;
     let mut out: Vec<Arc<TaskPackage>> = tasks
         .into_iter()
-        .filter(|t| {
-            inc.as_ref()
-                .is_none_or(|g| g.is_match(&t.name) || g.is_match(&t.id))
-        })
-        .filter(|t| {
-            exc.as_ref()
-                .is_none_or(|g| !(g.is_match(&t.name) || g.is_match(&t.id)))
-        })
+        .filter(|t| include.is_empty() || hit(include, t))
+        .filter(|t| !hit(exclude, t))
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     if let Some(n) = limit {
@@ -280,11 +292,57 @@ pub fn agent_option_pairs(
 /// Parse a duration like `10m`, `90s`, `1h30m`, or a number of seconds.
 pub fn parse_duration(text: &str) -> Result<std::time::Duration> {
     if let Ok(n) = text.parse::<f64>() {
-        return Ok(std::time::Duration::from_secs_f64(n));
+        if !n.is_finite() || n < 0.0 {
+            return Err(CliError::usage(format!(
+                "`{text}` is not a duration; write a number of seconds of 0 or more, or a time like 90s, 10m, or 1h30m"
+            )));
+        }
+        return Ok(benchflow_task::values::duration_from_secs(n));
     }
     benchflow_task::values::parse_duration(text).ok_or_else(|| {
         CliError::usage(format!(
             "`{text}` is not a duration; write it like 90s, 10m, or 1h30m"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards the D5 fix: a task whose check panicked (timeout_sec = 1e20,
+    /// before that was fixed) disappeared, and `bench check` said
+    /// "0 tasks: 0 ok" and exited 0.
+    #[test]
+    fn a_crash_while_checking_is_an_error_on_the_task() {
+        let r = guarded(std::path::Path::new("/nonexistent/t"), || panic!("boom"));
+        assert_eq!(r.root, std::path::Path::new("/nonexistent/t"));
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "P005" && d.is_error() && d.message.contains("boom"))
+        );
+    }
+
+    /// Guards the D5 fix: `--idle-timeout -1`, `nan`, `inf` or `1e30` (also
+    /// from bench.toml or a fetched job file) panicked in
+    /// `Duration::from_secs_f64`.
+    #[test]
+    fn odd_numbers_of_seconds_are_refused_or_capped() {
+        assert_eq!(
+            parse_duration("90").unwrap(),
+            std::time::Duration::from_secs(90)
+        );
+        assert_eq!(
+            parse_duration("1h30m").unwrap(),
+            std::time::Duration::from_secs(5400)
+        );
+        for bad in ["-1", "nan", "NaN", "inf", "-inf"] {
+            assert!(parse_duration(bad).is_err(), "{bad} should be refused");
+        }
+        assert_eq!(
+            parse_duration("1e30").unwrap(),
+            benchflow_task::values::LONGEST
+        );
+    }
 }

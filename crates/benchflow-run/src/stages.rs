@@ -411,7 +411,7 @@ impl Trial<'_> {
         let opts = &self.rt.options;
         let timeout = st
             .timeout
-            .map(|d| d.mul_f64(opts.timeout_multiplier.max(0.01)))
+            .map(|d| benchflow_task::values::scale_duration(d, opts.timeout_multiplier.max(0.01)))
             .or_else(|| agent_timeout(&task, opts));
         let prompt = match &opts.extra_instruction {
             Some(extra) => format!("{}\n\n{}", st.prompt.trim_end(), extra),

@@ -45,6 +45,8 @@ mod views;
 
 #[cfg(test)]
 mod corpus_tests;
+#[cfg(test)]
+mod fuzz_tests;
 
 pub use page::render_static;
 pub use server::{ServeOptions, ServerHandle, app, serve, serve_jobs};

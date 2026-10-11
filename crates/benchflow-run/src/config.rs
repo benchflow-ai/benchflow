@@ -121,9 +121,10 @@ fn one() -> f64 {
 impl RunOptions {
     /// A task's verifier time limit (or the run's default), scaled.
     pub fn verifier_timeout(&self, task_timeout: Option<Duration>) -> Duration {
-        task_timeout
-            .unwrap_or(self.default_verifier_timeout)
-            .mul_f64(self.verifier_timeout_multiplier.max(0.01))
+        benchflow_task::values::scale_duration(
+            task_timeout.unwrap_or(self.default_verifier_timeout),
+            self.verifier_timeout_multiplier.max(0.01),
+        )
     }
 }
 

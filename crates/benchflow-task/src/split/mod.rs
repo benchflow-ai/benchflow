@@ -358,7 +358,7 @@ fn facts(cfg: &Config, layout: &Layout) -> Vec<String> {
         format!("grading needs a model: {model}"),
         format!(
             "worst-case grading time: {}",
-            format_duration(std::time::Duration::from_secs_f64(cfg.verifier.timeout_sec))
+            format_duration(crate::values::duration_from_secs(cfg.verifier.timeout_sec))
         ),
     ];
     match layout.oracle_dir {

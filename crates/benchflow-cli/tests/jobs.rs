@@ -800,3 +800,34 @@ fn a_dry_run_says_whether_it_would_resume_a_job() {
     assert!(dry(&["--fresh"]).contains("would start a new job"));
     assert!(dry(&["--job", "other"]).contains("would start a new job"));
 }
+
+/// Guards the D5 fix: 0.8 writes `started_at` as a naive local time, and in
+/// the hour repeated when clocks go back the time has two readings; Rust
+/// took that as no time at all and showed the trial as started in 1970.
+#[test]
+fn a_08_start_time_in_the_repeated_hour_reads() {
+    let d = tempfile::tempdir().unwrap();
+    let job = d.path().join("jobs/old");
+    let trial = job.join("a__00000001");
+    std::fs::create_dir_all(&trial).unwrap();
+    std::fs::write(
+        trial.join("result.json"),
+        serde_json::json!({
+            "task_name": "a", "agent": "claude", "rewards": {"reward": 1.0},
+            "started_at": "2026-11-01 01:30:00.250000",
+            "finished_at": "2026-11-01 01:59:00.000000",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(job.join("summary.json"), "{}").unwrap();
+    let out = bench(d.path(), &d.path().join("cache"))
+        .env("TZ", "America/Los_Angeles")
+        .args(["results", "--trials", "--json"])
+        .arg(&job)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("2026-11-01"), "{text}");
+    assert!(!text.contains("1969") && !text.contains("1970"), "{text}");
+}

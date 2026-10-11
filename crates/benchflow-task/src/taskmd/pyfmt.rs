@@ -96,8 +96,8 @@ pub(crate) fn float_repr(f: f64) -> String {
             "0.0".into()
         };
     }
-    // Rust's `{:e}` gives the shortest round-trip digits, as Python's repr does.
-    let e = format!("{:e}", f.abs());
+    // The shortest round-trip digits, as Python's repr gives them.
+    let e = shortest_e(f.abs());
     let (mantissa, exp) = e.split_once('e').unwrap_or((&e, "0"));
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
     let exp: i32 = exp.parse().unwrap_or(0);
@@ -124,6 +124,23 @@ pub(crate) fn float_repr(f: f64) -> String {
         format!("{a}.{b}")
     };
     format!("{sign}{body}")
+}
+
+/// The shortest digits that read back as `value`, in `{:e}` form. Rust's
+/// `{:e}` finds them but breaks a tie upward, where Python's `repr` (and
+/// the exact `{:.Ne}`) rounds half to even: 755133721037486.25 is
+/// `755133721037486.2` in Python, not `.3`.
+pub(crate) fn shortest_e(value: f64) -> String {
+    let shortest = format!("{value:e}");
+    let digits = shortest
+        .split_once('e')
+        .map_or(0, |(m, _)| m.chars().filter(char::is_ascii_digit).count());
+    let even = format!("{value:.*e}", digits.saturating_sub(1));
+    if even.parse::<f64>() == Ok(value) {
+        even
+    } else {
+        shortest
+    }
 }
 
 /// Python's text of a number: integers as digits, floats as [`float_repr`].

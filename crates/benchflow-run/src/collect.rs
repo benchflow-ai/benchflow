@@ -310,9 +310,9 @@ pub(super) fn write_artifacts(unpacked: &Path, outputs: &[Output], artifacts: &P
     for o in outputs {
         let from = unpacked.join(o.path.trim_start_matches('/'));
         let to = artifacts.join(&o.save_as);
-        let exclude = globs(&o.exclude);
+        let exclude = &o.exclude;
         let (kind, status) = if from.is_dir() {
-            let copied = copy_tree(&from, &to, &exclude);
+            let copied = copy_tree(&from, &to, exclude);
             ("directory", if copied == 0 { "empty" } else { "ok" })
         } else if from.is_file() {
             if let Some(parent) = to.parent() {
@@ -341,37 +341,37 @@ pub(super) fn write_artifacts(unpacked: &Path, outputs: &[Output], artifacts: &P
     );
 }
 
-fn globs(patterns: &[String]) -> Option<globset::GlobSet> {
-    if patterns.is_empty() {
-        return None;
-    }
-    let mut b = globset::GlobSetBuilder::new();
-    for p in patterns {
-        if let Ok(g) = globset::Glob::new(p) {
-            b.add(g);
-        }
-    }
-    b.build().ok()
-}
-
-/// Copy regular files under `from` to `to`, skipping what `exclude`
-/// matches (by relative path or file name). Returns the files copied.
-fn copy_tree(from: &Path, to: &Path, exclude: &Option<globset::GlobSet>) -> usize {
+/// Copy regular files under `from` to `to`, skipping what an `exclude`
+/// pattern matches (by `/`-separated relative path or by name, with 0.8's
+/// `fnmatch.fnmatchcase`, so no pattern is invalid); an excluded folder is
+/// skipped whole, as 0.8's capture does. Returns the files copied.
+fn copy_tree(from: &Path, to: &Path, exclude: &[String]) -> usize {
+    use benchflow_task::fnmatch::fnmatchcase;
+    let excluded = |rel: &Path| {
+        let path = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let name = rel
+            .file_name()
+            .map(|f| f.to_string_lossy())
+            .unwrap_or_default();
+        exclude
+            .iter()
+            .any(|p| fnmatchcase(&path, p) || fnmatchcase(&name, p))
+    };
     let mut n = 0;
     for entry in walkdir::WalkDir::new(from)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|e| {
+            e.depth() == 0 || e.path().strip_prefix(from).is_ok_and(|rel| !excluded(rel))
+        })
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
     {
         let Ok(rel) = entry.path().strip_prefix(from) else {
             continue;
         };
-        if let Some(set) = exclude
-            && (set.is_match(rel) || rel.file_name().is_some_and(|f| set.is_match(f)))
-        {
-            continue;
-        }
         let dest: PathBuf = to.join(rel);
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -387,6 +387,38 @@ fn copy_tree(from: &Path, to: &Path, exclude: &Option<globset::GlobSet>) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards the D5 fix: `exclude` was matched against files only, so
+    /// `exclude = ["node_modules"]` still copied node_modules/x/index.js;
+    /// 0.8 drops an excluded folder with everything under it.
+    #[test]
+    fn an_excluded_folder_is_skipped_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let from = d.path().join("from");
+        for f in [
+            "report.txt",
+            "node_modules/x/index.js",
+            "cache/a.bin",
+            "src/__pycache__/m.pyc",
+            "src/main.py",
+            "data[1/x.csv",
+        ] {
+            let p = from.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+        }
+        let to = d.path().join("to");
+        let exclude: Vec<String> = ["node_modules", "cache", "__pycache__", "data[1"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(copy_tree(&from, &to, &exclude), 2);
+        assert!(to.join("report.txt").is_file() && to.join("src/main.py").is_file());
+        assert!(!to.join("node_modules").exists() && !to.join("cache").exists());
+        assert!(!to.join("src/__pycache__").exists());
+        // An unclosed `[` is a literal, as in fnmatch; globset refused the
+        // pattern and the folder was copied.
+        assert!(!to.join("data[1").exists());
+    }
 
     #[test]
     fn the_manifest_lists_each_output_in_harbors_shape() {

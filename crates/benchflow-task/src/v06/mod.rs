@@ -428,7 +428,7 @@ pub fn check(dir: &Path, _opts: &CheckOptions) -> CheckReport {
         ),
         format!(
             "worst-case grading time: {}",
-            format_duration(std::time::Duration::from_secs_f64(cfg.verifier.timeout_sec))
+            format_duration(crate::values::duration_from_secs(cfg.verifier.timeout_sec))
         ),
         match layout.oracle_dir {
             Some(d) => format!("reference solution: {d}/{}", layout.oracle_entry),

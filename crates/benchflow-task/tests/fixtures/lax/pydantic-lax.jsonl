@@ -1,0 +1,66 @@
+{"value": "", "int": null, "float": null, "bool": null}
+{"value": "\t3\n", "int": 3, "float": 3.0, "bool": null}
+{"value": "  ", "int": null, "float": null, "bool": null}
+{"value": " 12 ", "int": 12, "float": 12.0, "bool": null}
+{"value": " true ", "int": null, "float": null, "bool": null}
+{"value": "+0", "int": 0, "float": 0.0, "bool": null}
+{"value": "+1", "int": 1, "float": 1.0, "bool": null}
+{"value": "-0", "int": 0, "float": -0.0, "bool": null}
+{"value": "-1", "int": -1, "float": -1.0, "bool": null}
+{"value": "-9223372036854775809", "int": -9223372036854775809, "float": -9.223372036854776e+18, "bool": null}
+{"value": "-inf", "int": null, "float": "-inf", "bool": null}
+{"value": "..1", "int": null, "float": null, "bool": null}
+{"value": ".5", "int": null, "float": 0.5, "bool": null}
+{"value": "0", "int": 0, "float": 0.0, "bool": false}
+{"value": "00012", "int": 12, "float": 12.0, "bool": null}
+{"value": "0b1", "int": null, "float": null, "bool": null}
+{"value": "0o7", "int": null, "float": null, "bool": null}
+{"value": "0x10", "int": null, "float": null, "bool": null}
+{"value": "1", "int": 1, "float": 1.0, "bool": true}
+{"value": "1 000", "int": null, "float": null, "bool": null}
+{"value": "1,000", "int": null, "float": null, "bool": null}
+{"value": "1.", "int": null, "float": 1.0, "bool": null}
+{"value": "1.0", "int": 1, "float": 1.0, "bool": null}
+{"value": "1.5", "int": null, "float": 1.5, "bool": null}
+{"value": "1E3", "int": null, "float": 1000.0, "bool": null}
+{"value": "1_", "int": null, "float": null, "bool": null}
+{"value": "1_000", "int": 1000, "float": 1000.0, "bool": null}
+{"value": "1__0", "int": null, "float": null, "bool": null}
+{"value": "1e3", "int": null, "float": 1000.0, "bool": null}
+{"value": "1e400", "int": null, "float": "inf", "bool": null}
+{"value": "2.0e0", "int": null, "float": 2.0, "bool": null}
+{"value": "5.", "int": null, "float": 5.0, "bool": null}
+{"value": "9223372036854775807", "int": 9223372036854775807, "float": 9.223372036854776e+18, "bool": null}
+{"value": "9223372036854775808", "int": 9223372036854775808, "float": 9.223372036854776e+18, "bool": null}
+{"value": "NaN", "int": null, "float": "nan", "bool": null}
+{"value": "True", "int": null, "float": null, "bool": true}
+{"value": "YES", "int": null, "float": null, "bool": true}
+{"value": "_1", "int": null, "float": null, "bool": null}
+{"value": "f", "int": null, "float": null, "bool": false}
+{"value": "false", "int": null, "float": null, "bool": false}
+{"value": "inf", "int": null, "float": "inf", "bool": null}
+{"value": "infinity", "int": null, "float": "inf", "bool": null}
+{"value": "n", "int": null, "float": null, "bool": false}
+{"value": "nan", "int": null, "float": "nan", "bool": null}
+{"value": "no", "int": null, "float": null, "bool": false}
+{"value": "off", "int": null, "float": null, "bool": false}
+{"value": "on", "int": null, "float": null, "bool": true}
+{"value": "t", "int": null, "float": null, "bool": true}
+{"value": "true", "int": null, "float": null, "bool": true}
+{"value": "true ", "int": null, "float": null, "bool": null}
+{"value": "y", "int": null, "float": null, "bool": true}
+{"value": "yes", "int": null, "float": null, "bool": true}
+{"value": "\u0661", "int": null, "float": null, "bool": null}
+{"value": "\uff11", "int": null, "float": null, "bool": null}
+{"value": 0, "int": 0, "float": 0.0, "bool": false}
+{"value": 1, "int": 1, "float": 1.0, "bool": true}
+{"value": 2, "int": 2, "float": 2.0, "bool": null}
+{"value": -1, "int": -1, "float": -1.0, "bool": null}
+{"value": 0.0, "int": 0, "float": 0.0, "bool": false}
+{"value": 1.0, "int": 1, "float": 1.0, "bool": true}
+{"value": 1.5, "int": null, "float": 1.5, "bool": null}
+{"value": 2.0, "int": 2, "float": 2.0, "bool": null}
+{"value": -0.0, "int": 0, "float": -0.0, "bool": false}
+{"value": 1e+20, "int": null, "float": 1e+20, "bool": null}
+{"value": true, "int": 1, "float": 1.0, "bool": true}
+{"value": false, "int": 0, "float": 0.0, "bool": false}

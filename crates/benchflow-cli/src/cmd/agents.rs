@@ -1223,9 +1223,9 @@ async fn run_checks(args: AgentsCheckArgs) -> Result<Exit> {
                 } else {
                     r.auth_methods.join(", ")
                 },
-                crate::ui::duration(Duration::from_secs_f64(r.install_secs)),
+                crate::ui::duration(benchflow_task::values::duration_from_secs(r.install_secs)),
                 r.start_secs
-                    .map(|s| crate::ui::duration(Duration::from_secs_f64(s)))
+                    .map(|s| crate::ui::duration(benchflow_task::values::duration_from_secs(s)))
                     .unwrap_or_else(|| dim("-")),
             ]);
         }
@@ -1243,7 +1243,7 @@ async fn run_checks(args: AgentsCheckArgs) -> Result<Exit> {
 }
 
 fn print_check(r: &CheckRecord, log_path: &std::path::Path) {
-    let install = crate::ui::duration(Duration::from_secs_f64(r.install_secs));
+    let install = crate::ui::duration(benchflow_task::values::duration_from_secs(r.install_secs));
     if r.ok() {
         say!(
             "  {} {}: {} {} answered initialize (protocol {}; login methods: {}); install {}{}, start {}",
@@ -1260,7 +1260,7 @@ fn print_check(r: &CheckRecord, log_path: &std::path::Path) {
             install,
             if r.built_now { "" } else { " (cached)" },
             r.start_secs
-                .map(|s| crate::ui::duration(Duration::from_secs_f64(s)))
+                .map(|s| crate::ui::duration(benchflow_task::values::duration_from_secs(s)))
                 .unwrap_or_default(),
         );
     } else {

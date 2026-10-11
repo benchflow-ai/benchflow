@@ -4,6 +4,8 @@ mod cli;
 mod cmd;
 mod context;
 mod error;
+#[cfg(test)]
+mod fuzz_tests;
 mod legacy;
 #[cfg(test)]
 mod reference;

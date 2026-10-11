@@ -80,7 +80,9 @@ pub fn score(
         let _ = std::fs::write(
             verifier_dir.join("reward.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "reward": s.reward, "partial": s.partial, "strict": s.strict,
+                // Numbers, as 0.8 writes them: its reward validator refuses a
+                // bool, so 0.8 could not re-read a bench-scored trial.
+                "reward": s.reward, "partial": s.partial, "strict": if s.strict { 1.0 } else { 0.0 },
             }))
             .unwrap_or_default(),
         );
@@ -135,6 +137,30 @@ mod tests {
             std::fs::write(d.path().join(n), c).unwrap();
         }
         d
+    }
+
+    /// Guards the D5 fix: a rubric-scored trial's reward.json said
+    /// `"strict": true`; 0.8 writes 1.0 and its validator refuses a bool.
+    #[test]
+    fn a_rubric_writes_a_numeric_reward_json() {
+        let task = benchflow_task::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello"),
+        )
+        .unwrap();
+        let d = dir_with(&[(
+            "ctrf.json",
+            r#"{"results":{"tests":[{"name":"test_hello","status":"passed"}]}}"#,
+        )]);
+        let s = score(&task, d.path(), None).unwrap();
+        assert!(s.passed);
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(d.path().join("reward.json")).unwrap())
+                .unwrap();
+        assert_eq!(written["strict"], 1.0);
+        assert!(
+            written.as_object().unwrap().values().all(Value::is_number),
+            "{written}"
+        );
     }
 
     #[test]

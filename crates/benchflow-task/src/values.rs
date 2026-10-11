@@ -23,6 +23,28 @@ static SIZE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\d+(?:\.\d+)?) ?(MB|GB|TB)$").unwrap());
 static COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+(?:\.\d+)?)([KM])$").unwrap());
 
+/// The longest time limit kept: a century. A task or a flag may write a
+/// larger number (`timeout_sec = 1e20`) to mean "no limit", as 0.8 allowed;
+/// `Duration` cannot hold some of those, and converting them must not crash.
+pub const LONGEST: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
+
+/// A number of seconds as a `Duration`: zero for a negative number or NaN,
+/// [`LONGEST`] for anything longer.
+pub fn duration_from_secs(secs: f64) -> Duration {
+    if secs.is_nan() || secs <= 0.0 {
+        Duration::ZERO
+    } else if secs >= LONGEST.as_secs_f64() {
+        LONGEST
+    } else {
+        Duration::from_secs_f64(secs)
+    }
+}
+
+/// `d` scaled by `factor` (a timeout multiplier), within [`LONGEST`].
+pub fn scale_duration(d: Duration, factor: f64) -> Duration {
+    duration_from_secs(d.as_secs_f64() * factor)
+}
+
 /// Parse a task.md duration such as `"1h30m"`. `None` when it is not one.
 pub fn parse_duration(text: &str) -> Option<Duration> {
     if !text.starts_with(|c: char| c.is_ascii_digit()) {
@@ -35,7 +57,7 @@ pub fn parse_duration(text: &str) -> Option<Duration> {
             secs += m.as_str().parse::<f64>().ok()? * mult;
         }
     }
-    Some(Duration::from_secs_f64(secs))
+    Some(duration_from_secs(secs))
 }
 
 /// Format seconds the way task.md writes them: `"1h30m"`, `"90s"`, `"2m"`.
@@ -82,7 +104,7 @@ pub fn parse_size_mb(text: &str) -> Option<u64> {
 pub fn parse_bytes(value: &serde_json::Value) -> Option<u64> {
     match value {
         serde_json::Value::Number(n) => n.as_u64(),
-        serde_json::Value::String(s) => parse_size_mb(s).map(|mb| mb * 1024 * 1024),
+        serde_json::Value::String(s) => parse_size_mb(s).map(|mb| mb.saturating_mul(1024 * 1024)),
         _ => None,
     }
 }
@@ -193,6 +215,28 @@ impl fmt::Display for Network {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Guards the D5 fixes: numbers too big for `Duration` (or a byte count
+    /// past u64) panicked (`Duration::from_secs_f64`, `mb * 1024 * 1024`).
+    #[test]
+    fn huge_numbers_saturate_instead_of_panicking() {
+        assert_eq!(parse_duration("6000000000000000h"), Some(LONGEST));
+        assert_eq!(
+            parse_duration(&format!("{}s", "9".repeat(400))),
+            Some(LONGEST)
+        );
+        assert_eq!(duration_from_secs(1e20), LONGEST);
+        assert_eq!(duration_from_secs(f64::INFINITY), LONGEST);
+        assert_eq!(duration_from_secs(-1.0), Duration::ZERO);
+        assert_eq!(duration_from_secs(f64::NAN), Duration::ZERO);
+        assert_eq!(duration_from_secs(1.5), Duration::from_millis(1500));
+        assert_eq!(scale_duration(Duration::from_secs(3600), 1e16), LONGEST);
+        assert_eq!(
+            scale_duration(Duration::from_secs(10), 0.5),
+            Duration::from_secs(5)
+        );
+        assert_eq!(parse_bytes(&json!("99999999999999 TB")), Some(u64::MAX));
+    }
 
     #[test]
     fn durations() {

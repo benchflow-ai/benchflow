@@ -547,7 +547,9 @@ pub(crate) fn error_message(body: &str) -> String {
             return shorten(&message);
         }
     }
-    let lower = body.to_lowercase();
+    // ASCII lowercasing keeps every byte offset, so they index `body` too
+    // (Unicode lowercasing changes lengths: `İ` grows, `K` shrinks).
+    let lower = body.to_ascii_lowercase();
     if let Some(start) = lower.find("<title>")
         && let Some(end) = lower[start..].find("</title>")
     {
@@ -591,6 +593,18 @@ mod tests {
         );
         assert_eq!(error_message("  plain\n text "), "plain text");
         assert_eq!(error_message(""), "no details");
+    }
+
+    /// Guards the D5 fix: the title was found in `body.to_lowercase()` and
+    /// cut from `body`, so text whose lowercase is longer or shorter (`İ`,
+    /// the Kelvin sign) before the title cut inside a character and panicked.
+    #[test]
+    fn an_error_page_with_non_ascii_text_keeps_its_title() {
+        assert_eq!(error_message("<p>İstanbul</p><title>日本</title>"), "日本");
+        assert_eq!(
+            error_message("<p>\u{212a}\u{212a}\u{212a}</p><TITLE>Bad Gateway</TITLE>"),
+            "Bad Gateway"
+        );
     }
 
     #[test]

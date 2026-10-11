@@ -1278,7 +1278,7 @@ mod ratio {
                         if !f.is_finite() {
                             return None;
                         }
-                        Ratio::parse(&format!("{f:e}"))
+                        Ratio::parse(&crate::taskmd::pyfmt::shortest_e(f))
                     }
                 }
                 Value::String(s) => Ratio::parse(s),

@@ -451,7 +451,7 @@ pub fn agent_timeout(task: &TaskPackage, opts: &RunOptions) -> Option<Duration> 
     task.agent
         .timeout
         .or(opts.default_agent_timeout)
-        .map(|d| d.mul_f64(opts.timeout_multiplier.max(0.01)))
+        .map(|d| benchflow_task::values::scale_duration(d, opts.timeout_multiplier.max(0.01)))
 }
 
 struct Trial<'a> {

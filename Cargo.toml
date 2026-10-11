@@ -65,6 +65,8 @@ walkdir = "2.5"
 # dev
 assert_cmd = "2.2"
 insta = "1.49"
+# Property tests over every parser of outside input (tests/fuzz_*.rs).
+proptest = { version = "1.7", default-features = false, features = ["std"] }
 predicates = "3.1"
 tower = { version = "0.5", features = ["util"] }
 

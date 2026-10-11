@@ -1,0 +1,2567 @@
+{"text": "redis-server --save '' --requirepass #hunter2", "words": ["redis-server", "--save", "", "--requirepass", "#hunter2"]}
+{"text": "echo \"a \\\"b\\\" \\c\"", "words": ["echo", "a \"b\" \\c"]}
+{"text": "a\\ b 'c d' \"e f\"", "words": ["a b", "c d", "e f"]}
+{"text": "#x y", "words": ["#x", "y"]}
+{"text": "a#b #c", "words": ["a#b", "#c"]}
+{"text": "sh -c 'echo $HOME'", "words": ["sh", "-c", "echo $HOME"]}
+{"text": "''", "words": [""]}
+{"text": "\"\"", "words": [""]}
+{"text": "a\\\nb", "words": ["a\nb"]}
+{"text": "   ", "words": []}
+{"text": "\nb\r\"#", "words": null}
+{"text": "\\\r  #", "words": ["\r", "#"]}
+{"text": "éa\u0000'\"é \t\\''=", "words": null}
+{"text": "-b-\r\"#'bé# #", "words": null}
+{"text": "b$ \t-\"'$", "words": null}
+{"text": "\t#$=\"a**", "words": null}
+{"text": "\r a\u0000-$ $", "words": ["a\u0000-$", "$"]}
+{"text": "*\r\t $'\\\n-'\r", "words": ["*", "$\\\n-"]}
+{"text": "\rba\u0000 \n\rba\t", "words": ["ba\u0000", "ba"]}
+{"text": "\u0000=", "words": ["\u0000="]}
+{"text": "\u0000b\u0000 \n#  \na", "words": ["\u0000b\u0000", "#", "a"]}
+{"text": "", "words": []}
+{"text": "a*#\u0000=a  \"a $b*", "words": null}
+{"text": "\né#é\u0000\\= \u0000\t*#", "words": ["é#é\u0000=", "\u0000", "*#"]}
+{"text": "\tb'\\#é=\n\n$\u0000", "words": null}
+{"text": "$\\a é", "words": ["$a", "é"]}
+{"text": "a\néb-", "words": ["a", "éb-"]}
+{"text": "\"\t\"", "words": ["\t"]}
+{"text": "*b\\\n", "words": ["*b\n"]}
+{"text": "#=$a\u0000\r '\\éaa", "words": null}
+{"text": "$a\u0000", "words": ["$a\u0000"]}
+{"text": "#--é", "words": ["#--é"]}
+{"text": "=b-ba*#\\#=-é", "words": ["=b-ba*##=-é"]}
+{"text": " ", "words": []}
+{"text": "é\"*\r \n-a\t\\", "words": null}
+{"text": "=\nb\u0000\n'\u0000\t *#\t", "words": null}
+{"text": "\r", "words": []}
+{"text": "\t\n\r \n", "words": []}
+{"text": "\n\\aéa\u0000$\u0000\t\r$$a\t", "words": ["aéa\u0000$\u0000", "$$a"]}
+{"text": "*\n", "words": ["*"]}
+{"text": "*' é -#éé#é\u0000", "words": null}
+{"text": " \"\"é\n* \\\t*$'", "words": null}
+{"text": "a \néé'\u0000é\"\n\t", "words": null}
+{"text": "a\"#é", "words": null}
+{"text": " b \r*a", "words": ["b", "*a"]}
+{"text": "\\a \" *b$*é", "words": null}
+{"text": "\u0000 \n= =", "words": ["\u0000", "=", "="]}
+{"text": "\"\n$a", "words": null}
+{"text": "'a=#\n -\u0000", "words": null}
+{"text": "\\\\a -b\rééa#a", "words": ["\\a", "-b", "ééa#a"]}
+{"text": "-é\\$\r  ", "words": ["-é$"]}
+{"text": "=*\"*\t a \n=", "words": null}
+{"text": "\u0000", "words": ["\u0000"]}
+{"text": "\\=\t\u0000a\u0000#'\\a'", "words": ["=", "\u0000a\u0000#\\a"]}
+{"text": "\\\t\r'", "words": null}
+{"text": "a \n=#", "words": ["a", "=#"]}
+{"text": "='#*\\#$ ééb\u0000\n=", "words": null}
+{"text": "é=\"\t'a-'", "words": null}
+{"text": "$aa$\\\\--\r\"-\né\n", "words": null}
+{"text": "\\ ", "words": [" "]}
+{"text": " #'\r\\-a$*'=\n'#", "words": null}
+{"text": "=\\#é", "words": ["=#é"]}
+{"text": "b\"\\\t", "words": null}
+{"text": "aaa", "words": ["aaa"]}
+{"text": "\t  $\\\"\r\n", "words": ["$\""]}
+{"text": "' a\u0000\\ *  \t", "words": null}
+{"text": "-$\r\u0000'", "words": null}
+{"text": " é", "words": ["é"]}
+{"text": "\t*\r*\r##\u0000", "words": ["*", "*", "##\u0000"]}
+{"text": "é$\r =\\\u0000 \n#", "words": ["é$", "=\u0000", "#"]}
+{"text": "a*\"\"\\b$#\t\r", "words": ["a*b$#"]}
+{"text": " \\a'", "words": null}
+{"text": "b\u0000\t\u0000-#* \\\\\n", "words": ["b\u0000", "\u0000-#*", "\\"]}
+{"text": "a\r*\n#'-=\r\u0000*#\r", "words": null}
+{"text": "\u0000 ", "words": ["\u0000"]}
+{"text": "\\a", "words": ["a"]}
+{"text": "-\u0000$", "words": ["-\u0000$"]}
+{"text": "é", "words": ["é"]}
+{"text": "$-\n-é\\a\n=$*b\"", "words": null}
+{"text": "\t\u0000é\u0000-\"", "words": null}
+{"text": " é#=\n", "words": ["é#="]}
+{"text": "\\ \ré-\"a'", "words": null}
+{"text": " -#-\\\"b\\\\'#é ", "words": null}
+{"text": "#$aé -\r\n\"\u0000\t\\", "words": null}
+{"text": "*#*-aé\r", "words": ["*#*-aé"]}
+{"text": "ba\t\"  =\t", "words": null}
+{"text": "'\n\"a\na ", "words": null}
+{"text": "\"'$ b\r\"$", "words": ["'$ b\r$"]}
+{"text": " é=-", "words": ["é=-"]}
+{"text": " -é\\\u0000\t $ é\n", "words": ["-é\u0000", "$", "é"]}
+{"text": "-\\b\"", "words": null}
+{"text": "\"\t-\"\u0000#a\t\"\rb#\u0000#", "words": null}
+{"text": "a'é'\n\"", "words": null}
+{"text": "$-b\t$# \u0000'*= ", "words": null}
+{"text": "\"  é* =b  '-é\r", "words": null}
+{"text": "\"", "words": null}
+{"text": "'\t", "words": null}
+{"text": "#", "words": ["#"]}
+{"text": "  '\n", "words": null}
+{"text": "a\t\"\u0000", "words": null}
+{"text": "\" \t-   a\t\\'*\r", "words": null}
+{"text": "\" \u0000b=\n\"\n-#'", "words": null}
+{"text": "'-\r$\u0000\\=ab ", "words": null}
+{"text": "-''$", "words": ["-$"]}
+{"text": "\n", "words": []}
+{"text": "-bb\u0000é'a=$= \"\n ", "words": null}
+{"text": "\t\" bb- ", "words": null}
+{"text": "-\n\\ b--a\r\n'é$b", "words": null}
+{"text": "\r\né", "words": ["é"]}
+{"text": "\\\" ' $  b$\r\"\nb", "words": null}
+{"text": "b\r\r\u0000\t\t*\"aé \r*\u0000", "words": null}
+{"text": "\\é=$*\u0000\r\u0000", "words": ["é=$*\u0000", "\u0000"]}
+{"text": "\"éa#*\na\n\t $-", "words": null}
+{"text": "a'-* '- ", "words": ["a-* -"]}
+{"text": "\u0000-#\réé\\\ra'\r", "words": null}
+{"text": "#\\é=-b#", "words": ["#é=-b#"]}
+{"text": "\r \" $\"-*#b", "words": [" $-*#b"]}
+{"text": "*#\"=a\\", "words": null}
+{"text": "\\\t\u0000\n\n\r", "words": ["\t\u0000"]}
+{"text": "a\né'$'$\r", "words": ["a", "é$$"]}
+{"text": "=\n\\é", "words": ["=", "é"]}
+{"text": "é \\*\\\u0000 ba'\t", "words": null}
+{"text": "\\==\t\\-#\"\r\r\r a*", "words": null}
+{"text": "é'é\"$'\n", "words": ["éé\"$"]}
+{"text": "\r ##b  ", "words": ["##b"]}
+{"text": "-", "words": ["-"]}
+{"text": "\\$$", "words": ["$$"]}
+{"text": "$ #\t*'\"$ \"\"", "words": null}
+{"text": "a\rb", "words": ["a", "b"]}
+{"text": "\n \n\tb\"\r=\u0000\"\"\"", "words": ["b\r=\u0000"]}
+{"text": "\" # ", "words": null}
+{"text": "$\r#\\é\r  b", "words": ["$", "#é", "b"]}
+{"text": "b\\ ", "words": ["b "]}
+{"text": " '$é\r\n\nb\n\t\t$\t", "words": null}
+{"text": " \t  \\\tb$\u0000#", "words": ["\tb$\u0000#"]}
+{"text": "\\$\t#=\\ -$\\=\r", "words": ["$", "#= -$="]}
+{"text": "\n$#éa=a\\a\n", "words": ["$#éa=aa"]}
+{"text": "aé'$b= é#-", "words": null}
+{"text": "-\\\\=* \u0000'", "words": null}
+{"text": "b#* \u0000b\n==# #", "words": ["b#*", "\u0000b", "==#", "#"]}
+{"text": "é\\ \u0000-*'\r   a", "words": null}
+{"text": "= \n\u0000\t-= ", "words": ["=", "\u0000", "-="]}
+{"text": "é  -b\\ \t\\=*##'", "words": null}
+{"text": "é\u0000 \na$=", "words": ["é\u0000", "a$="]}
+{"text": "éé\t  a-é $ *\"", "words": null}
+{"text": " \\$#b#", "words": ["$#b#"]}
+{"text": "\\$é\t", "words": ["$é"]}
+{"text": "bé\\*\u0000bé\" \n-", "words": null}
+{"text": "$é-é'$=-é", "words": null}
+{"text": " \\ -$#", "words": [" -$#"]}
+{"text": "a\"", "words": null}
+{"text": "\u0000$$=a- \r\"b'\"", "words": ["\u0000$$=a-", "b'"]}
+{"text": "\r'=b\t\\=", "words": null}
+{"text": "-$*\r=a\r=a##é ", "words": ["-$*", "=a", "=a##é"]}
+{"text": "a  \t\n\u0000#' bé*", "words": null}
+{"text": "* $bb\n", "words": ["*", "$bb"]}
+{"text": "\t", "words": []}
+{"text": "* \r$$a\\\t$", "words": ["*", "$$a\t$"]}
+{"text": "\r\t\\\n'a\"-", "words": null}
+{"text": "-$ \\\\\t", "words": ["-$", "\\"]}
+{"text": "a\n-\\*'a", "words": null}
+{"text": "b# é\\ ", "words": ["b#", "é "]}
+{"text": "\\\r*\"éb\"\\$' -\"#", "words": null}
+{"text": "\"#\r \"", "words": ["#\r "]}
+{"text": "=", "words": ["="]}
+{"text": "#\\ \n$--bé*", "words": ["# ", "$--bé*"]}
+{"text": "é-b ==$- ", "words": ["é-b", "==$-"]}
+{"text": "a ", "words": ["a"]}
+{"text": "'\u0000*#\t\"'\"\raa\r\t", "words": null}
+{"text": "*é*é \n\nb \t$ $\t", "words": ["*é*é", "b", "$", "$"]}
+{"text": " \t##  **\\\"\t\\", "words": null}
+{"text": "a=#\u0000", "words": ["a=#\u0000"]}
+{"text": "#\r#\t'\\ bb\r$é=*", "words": null}
+{"text": "'\"\t*bb#", "words": null}
+{"text": " \t' \n\ra\"'", "words": [" \n\ra\""]}
+{"text": "$ \u0000'\u0000\t'*\\\" *\n", "words": ["$", "\u0000\u0000\t*\"", "*"]}
+{"text": "$- \u0000aééé =", "words": ["$-", "\u0000aééé", "="]}
+{"text": "\"*'\t\r\r*$é*\r", "words": null}
+{"text": "\r#é=\n", "words": ["#é="]}
+{"text": "\r\t\n", "words": []}
+{"text": "b\"\\\u0000b", "words": null}
+{"text": "*-=\\\"é", "words": ["*-=\"é"]}
+{"text": "-\\$\t ", "words": ["-$"]}
+{"text": "b'é", "words": null}
+{"text": "\n\r\n*$", "words": ["*$"]}
+{"text": "=\n'\u0000#\n", "words": null}
+{"text": " b-\t \r \"", "words": null}
+{"text": "'\\b\t*\"\t=\"=", "words": null}
+{"text": "\n\"", "words": null}
+{"text": "*\"*=#\"b=", "words": ["**=#b="]}
+{"text": "\"b=éa \ra\t\u0000#'é\r", "words": null}
+{"text": "$=$", "words": ["$=$"]}
+{"text": " é \r*= \t", "words": ["é", "*="]}
+{"text": "\"\\\\#", "words": null}
+{"text": "é\ra$\t", "words": ["é", "a$"]}
+{"text": "'#\u0000# \"é-\n'", "words": ["#\u0000# \"é-\n"]}
+{"text": "\n*\t", "words": ["*"]}
+{"text": "\t= #\u0000\"=", "words": null}
+{"text": "é\\##a\t\u0000=\n'", "words": null}
+{"text": "ba\\* *", "words": ["ba*", "*"]}
+{"text": "'\r\n\"a# *", "words": null}
+{"text": "\u0000' b\té#\u0000$\u0000", "words": null}
+{"text": "#$$'\n$\"=", "words": null}
+{"text": "$a*é\n\n\t #\u0000\"\n\u0000 ", "words": null}
+{"text": "\\\"\"é\t\r'\r", "words": null}
+{"text": "é-\r\u0000=a\\ #a\r\u0000", "words": ["é-", "\u0000=a #a", "\u0000"]}
+{"text": "*\n\r=$#\u0000\u0000 -\n*b ", "words": ["*", "=$#\u0000\u0000", "-", "*b"]}
+{"text": "\n#éé", "words": ["#éé"]}
+{"text": "\\=\u0000a \n#$\t$\n=\n*", "words": ["=\u0000a", "#$", "$", "=", "*"]}
+{"text": "\\*#'\u0000b=", "words": null}
+{"text": "a*#*b\u0000\"$ $baa=", "words": null}
+{"text": "\\=b\t-é", "words": ["=b", "-é"]}
+{"text": "\u0000 *é a\t\u0000b", "words": ["\u0000", "*é", "a", "\u0000b"]}
+{"text": "a-ba\n", "words": ["a-ba"]}
+{"text": "#b-#é\t\"\nb", "words": null}
+{"text": "\\éa=é", "words": ["éa=é"]}
+{"text": "\t\r\"*-\r\u0000", "words": null}
+{"text": "\r*", "words": ["*"]}
+{"text": "\ra\r\\\\*b$-\\é", "words": ["a", "\\*b$-é"]}
+{"text": "*\t\r", "words": ["*"]}
+{"text": "'-\"' \"\\  ", "words": null}
+{"text": "a$", "words": ["a$"]}
+{"text": "*#", "words": ["*#"]}
+{"text": "# \r\t ", "words": ["#"]}
+{"text": "\r- \r\u0000\\\r", "words": ["-", "\u0000\r"]}
+{"text": "'\u0000\t-bb\u0000 ' ", "words": ["\u0000\t-bb\u0000 "]}
+{"text": "=a\"\"\u0000\u0000\r\t a \u0000=", "words": ["=a\u0000\u0000", "a", "\u0000="]}
+{"text": " a", "words": ["a"]}
+{"text": "#'='", "words": ["#="]}
+{"text": " \n", "words": []}
+{"text": "#\n-*$\" ", "words": null}
+{"text": "é==a*#", "words": ["é==a*#"]}
+{"text": "\n\néé\r=a-b", "words": ["éé", "=a-b"]}
+{"text": "##-\\ éabb$'-", "words": null}
+{"text": "$\t\u0000# '-", "words": null}
+{"text": "\"é\n\u0000\n\n", "words": null}
+{"text": "#\\\rbb#", "words": ["#\rbb#"]}
+{"text": "\\ $- \"\r##é=#", "words": null}
+{"text": "\\#\ré$-é ", "words": ["#", "é$-é"]}
+{"text": "\\\"\né\\\\b=\\\n*' ", "words": null}
+{"text": "-\r-'a$", "words": null}
+{"text": "\\a\t\\éb'", "words": null}
+{"text": "\r\n", "words": []}
+{"text": "-=  # baé=a ", "words": ["-=", "#", "baé=a"]}
+{"text": "$$\\*\r=*-\"\\b", "words": null}
+{"text": " \n\t$ \u0000bé", "words": ["$", "\u0000bé"]}
+{"text": " é=b=", "words": ["é=b="]}
+{"text": "\"é#", "words": null}
+{"text": "a", "words": ["a"]}
+{"text": "=*é'*a *", "words": null}
+{"text": "\t\"\\\\é\na\r\tb\\", "words": null}
+{"text": "é$\"\t\t*-b#'é '", "words": null}
+{"text": "-'\n$\u0000='$'\r", "words": null}
+{"text": "$é\\=\rb=\rb", "words": ["$é=", "b=", "b"]}
+{"text": " =\\*'é\t\"b  b", "words": null}
+{"text": "\t\\-$#\\", "words": null}
+{"text": "\t*\\\"\"-\n*\n=\"", "words": ["*\"-\n*\n="]}
+{"text": " =é\r", "words": ["=é"]}
+{"text": "= **\t\r=\\", "words": null}
+{"text": " $", "words": ["$"]}
+{"text": "\u0000\\ é", "words": ["\u0000 é"]}
+{"text": "-a \"é#\n\u0000#\u0000\"\u0000'", "words": null}
+{"text": "*\\", "words": null}
+{"text": "\u0000é\ta##-bb'\"'\r\\", "words": null}
+{"text": "'\t$ '\"'", "words": null}
+{"text": "\t \t\t\t\u0000  =", "words": ["\u0000", "="]}
+{"text": "$\n\"#", "words": null}
+{"text": "\r\n-\r ='\\  -'", "words": ["-", "=\\  -"]}
+{"text": "éb'éaé= \t'# \u0000-", "words": ["ébéaé= \t#", "\u0000-"]}
+{"text": "é\r\t\n'", "words": null}
+{"text": "\"\t\n\u0000*\\", "words": null}
+{"text": "\"\u0000\"#a\u0000b \tb'\r", "words": null}
+{"text": " -#", "words": ["-#"]}
+{"text": "\\*", "words": ["*"]}
+{"text": "-\t", "words": ["-"]}
+{"text": "\u0000\\", "words": null}
+{"text": "-\"\u0000$-\r\"", "words": ["-\u0000$-\r"]}
+{"text": "\na\"# ", "words": null}
+{"text": " -$\na\\", "words": null}
+{"text": "$=\r\r\u0000é   \\-", "words": ["$=", "\u0000é", "-"]}
+{"text": "b\nb*  \\\t", "words": ["b", "b*", "\t"]}
+{"text": "\"é\n\\", "words": null}
+{"text": "='a\t--é'#\r#\t", "words": ["=a\t--é#", "#"]}
+{"text": "\t**b\u0000", "words": ["**b\u0000"]}
+{"text": "-*\\bé\t\\ '* a", "words": null}
+{"text": "\\-$\r- ", "words": ["-$", "-"]}
+{"text": "'-\r\"$\u0000$=b\r#b", "words": null}
+{"text": "\t$\r#b\u0000b", "words": ["$", "#b\u0000b"]}
+{"text": "\"b-\r=a =é", "words": null}
+{"text": "$\" #\\\u0000 ", "words": null}
+{"text": "'\u0000-\rb'é\r\t\u0000#", "words": ["\u0000-\rbé", "\u0000#"]}
+{"text": "\"\u0000\\\\", "words": null}
+{"text": "$a*\u0000\\ ''- \n $", "words": ["$a*\u0000 -", "$"]}
+{"text": "\té'é\t\"\tba\ré-", "words": null}
+{"text": "$é\"  \u0000", "words": null}
+{"text": "-é-*a$* ", "words": ["-é-*a$*"]}
+{"text": "aé\n=*=\"\r#$", "words": null}
+{"text": "\u0000é \" \\b", "words": null}
+{"text": "b$\" -a\\'  \\", "words": null}
+{"text": "\né\ré=\"\\\t\\\r\r\"b", "words": ["é", "é=\\\t\\\r\rb"]}
+{"text": "aé\"\"**aéé\"$", "words": null}
+{"text": "\u0000= -\r#\r'\u0000\r=a\r\"", "words": null}
+{"text": "\u0000**= '-\t\r#\\-\r", "words": null}
+{"text": "\\'\tb*  -$\\", "words": null}
+{"text": "*\"\r", "words": null}
+{"text": "=\n' \t \r**", "words": null}
+{"text": "#\"", "words": null}
+{"text": " #\\", "words": null}
+{"text": "-\u0000$ =$ébé", "words": ["-\u0000$", "=$ébé"]}
+{"text": "b$ #\"b-$=\u0000", "words": null}
+{"text": "# #-\\$", "words": ["#", "#-$"]}
+{"text": "a*éa\u0000b", "words": ["a*éa\u0000b"]}
+{"text": "=#$ \r=#é ", "words": ["=#$", "=#é"]}
+{"text": "\t\n-é==ba\nab", "words": ["-é==ba", "ab"]}
+{"text": "\\\n#*\ra $ ", "words": ["\n#*", "a", "$"]}
+{"text": "\"a\"=\r", "words": ["a="]}
+{"text": "a -", "words": ["a", "-"]}
+{"text": "\"\\\n ", "words": null}
+{"text": "$a =-\t'#-", "words": null}
+{"text": "\t*'\n\\", "words": null}
+{"text": "*a#\"\t#\"\"\u0000\" é\"é", "words": null}
+{"text": "#é\\", "words": null}
+{"text": " \u0000\"$*\\#b-\t\u0000", "words": null}
+{"text": "'\r\n\r- -* \"\t", "words": null}
+{"text": "\n\t\n=aéa$\r", "words": ["=aéa$"]}
+{"text": "\ré#**é", "words": ["é#**é"]}
+{"text": "éa  \r$\r\\\"", "words": ["éa", "$", "\""]}
+{"text": "--\nab\u0000='\n$a\t\r*", "words": null}
+{"text": "\n'\\$$ba\u0000", "words": null}
+{"text": "=b \t", "words": ["=b"]}
+{"text": "a\t$ \n\u0000-\u0000\nb #\t", "words": ["a", "$", "\u0000-\u0000", "b", "#"]}
+{"text": "=\n\tbb$é' \"a", "words": null}
+{"text": "$#'$-\t#$\r\\\t", "words": null}
+{"text": "b  -'*-\u0000\r", "words": null}
+{"text": "'-\r\"$", "words": null}
+{"text": "b-$éb-\n", "words": ["b-$éb-"]}
+{"text": "'-é\"", "words": null}
+{"text": "=é-' *\u0000\\\tab", "words": null}
+{"text": "\nb=\u0000#", "words": ["b=\u0000#"]}
+{"text": "\u0000 a", "words": ["\u0000", "a"]}
+{"text": "=*\u0000", "words": ["=*\u0000"]}
+{"text": "*", "words": ["*"]}
+{"text": "\"\\é\"*", "words": ["\\é*"]}
+{"text": "*\r\t '*-\n#ba", "words": null}
+{"text": "\\\t*#\rba\r $b \t-", "words": ["\t*#", "ba", "$b", "-"]}
+{"text": " $a\u0000é", "words": ["$a\u0000é"]}
+{"text": "=\\=*a\"\t\t\\", "words": null}
+{"text": "a''", "words": ["a"]}
+{"text": "\\-", "words": ["-"]}
+{"text": "a\"\" \\\"-\r\u0000\n\\-", "words": ["a", "\"-", "\u0000", "-"]}
+{"text": "-= \r $", "words": ["-=", "$"]}
+{"text": "'''-$$a a\u0000\t=\n", "words": null}
+{"text": "\u0000$\u0000\n'a\"a\n=$\"$\u0000", "words": null}
+{"text": "b=' $*'", "words": ["b= $*"]}
+{"text": "\n ", "words": []}
+{"text": "\\a\"", "words": null}
+{"text": "'=\n\u0000- \"", "words": null}
+{"text": "\u0000 \r'é", "words": null}
+{"text": "\\é'\r#", "words": null}
+{"text": "\"-\"", "words": ["-"]}
+{"text": "=$ 'b$ # #\u0000$", "words": null}
+{"text": "-éa \u0000\u0000=\t* a#\na", "words": ["-éa", "\u0000\u0000=", "*", "a#", "a"]}
+{"text": "=\"'*a -$\\", "words": null}
+{"text": "\t*", "words": ["*"]}
+{"text": "\"'='''#=", "words": null}
+{"text": "a\t", "words": ["a"]}
+{"text": " \"éaé \t$\u0000 \\-", "words": null}
+{"text": "$'$\\-\té\t-\r", "words": null}
+{"text": "\"\u0000é\"\u0000\té'é-", "words": null}
+{"text": "-\r\\\\\t#é\"$\u0000", "words": null}
+{"text": "=- \\#é'\t\u0000'", "words": ["=-", "#é\t\u0000"]}
+{"text": "\r##*\t", "words": ["##*"]}
+{"text": "é\u0000\\\n*a\"\t=éb", "words": null}
+{"text": "\\\n* \r", "words": ["\n*"]}
+{"text": "#=\u0000\\\"", "words": ["#=\u0000\""]}
+{"text": "\u0000'", "words": null}
+{"text": "bé \n\\a-b$=", "words": ["bé", "a-b$="]}
+{"text": "-\t\" \" \r'$\u0000b-é", "words": null}
+{"text": "'", "words": null}
+{"text": "\"**\r\nab\"\"\u0000#", "words": null}
+{"text": " -*#  \n=é\"\u0000", "words": null}
+{"text": "bb'\rb", "words": null}
+{"text": "b\r\r\"é#é\t\u0000*'", "words": null}
+{"text": "-é*a=#\n'*'", "words": ["-é*a=#", "*"]}
+{"text": "'*-é -", "words": null}
+{"text": "b'\r\\ b#a\"a # ", "words": null}
+{"text": "\\", "words": null}
+{"text": "*\n\r#\t \u0000b\\-", "words": ["*", "#", "\u0000b-"]}
+{"text": "\r-baaa\r\u0000", "words": ["-baaa", "\u0000"]}
+{"text": "$", "words": ["$"]}
+{"text": "'\\\r\u0000#\"#  =#\"", "words": null}
+{"text": "\\\u0000\r  =", "words": ["\u0000", "="]}
+{"text": "\r b*=#\\\u0000--\ré", "words": ["b*=#\u0000--", "é"]}
+{"text": "# =\té=", "words": ["#", "=", "é="]}
+{"text": "'#\n\r", "words": null}
+{"text": "= \\-", "words": ["=", "-"]}
+{"text": "é\\\u0000##$\n\u0000", "words": ["é\u0000##$", "\u0000"]}
+{"text": "'b -", "words": null}
+{"text": "\u0000\" ", "words": null}
+{"text": "a= \t$a\r*-a -'é", "words": null}
+{"text": " \n\t'", "words": null}
+{"text": "-a", "words": ["-a"]}
+{"text": "\r#-'=a\t \né a-", "words": null}
+{"text": "#=#* -=", "words": ["#=#*", "-="]}
+{"text": "-*b\n'\n#", "words": null}
+{"text": "b  =", "words": ["b", "="]}
+{"text": "*#=#$\u0000", "words": ["*#=#$\u0000"]}
+{"text": "-a*=-a", "words": ["-a*=-a"]}
+{"text": "b\nb \u0000#\n#é", "words": ["b", "b", "\u0000#", "#é"]}
+{"text": " b\u0000\r\r\u0000$#", "words": ["b\u0000", "\u0000$#"]}
+{"text": " a--éa '$\t#-", "words": null}
+{"text": "\"\n$\t\"  #=--\n\t#", "words": ["\n$\t", "#=--", "#"]}
+{"text": "a -#\r\t##\u0000=\t$$", "words": ["a", "-#", "##\u0000=", "$$"]}
+{"text": "\r-*\"\t$'\n#*\r", "words": null}
+{"text": "' \t\"\r\r=a--\té", "words": null}
+{"text": "\"é'\t", "words": null}
+{"text": "bb\t\r* \n'  -\\*", "words": null}
+{"text": "*\u0000-\\", "words": null}
+{"text": " \\*", "words": ["*"]}
+{"text": "-$$*a*\\-a-é *", "words": ["-$$*a*-a-é", "*"]}
+{"text": "$#a\\=\ré", "words": ["$#a=", "é"]}
+{"text": "\né\u0000\"\r*\u0000\"-#\u0000\t\r", "words": ["é\u0000\r*\u0000-#\u0000"]}
+{"text": " \"aba\\\\=", "words": null}
+{"text": "\"#-", "words": null}
+{"text": "*\nb ", "words": ["*", "b"]}
+{"text": "\u0000$a", "words": ["\u0000$a"]}
+{"text": "-=\"\tb\"  \r=é\"", "words": null}
+{"text": " a#-\\$# *$=$\t", "words": ["a#-$#", "*$=$"]}
+{"text": "-a\\*a'\"\\* =$", "words": null}
+{"text": "a\u0000'é \u0000 \r 'é", "words": ["a\u0000é \u0000 \r é"]}
+{"text": "=-\"", "words": null}
+{"text": "é*", "words": ["é*"]}
+{"text": "\\$a", "words": ["$a"]}
+{"text": "#  $ $-\\=\t", "words": ["#", "$", "$-="]}
+{"text": "=*\n\t\tb\\b *\"", "words": null}
+{"text": "#$#é-- \u0000\t#\r##", "words": ["#$#é--", "\u0000", "#", "##"]}
+{"text": "\tb$'\t =-=\r#\r#\"", "words": null}
+{"text": "$'\t\ré", "words": null}
+{"text": "ab\\\n -b\r#", "words": ["ab\n", "-b", "#"]}
+{"text": "'\n#-'\n", "words": ["\n#-"]}
+{"text": "b\t\r-\"\r --- \r", "words": null}
+{"text": " b'\r", "words": null}
+{"text": "\\é", "words": ["é"]}
+{"text": "\t\\$\n", "words": ["$"]}
+{"text": "b-\u0000=\\\r\r\u0000#a#a=\"", "words": null}
+{"text": "=\"\u0000$ \t b * b'\t", "words": null}
+{"text": "\\'", "words": ["'"]}
+{"text": "'#", "words": null}
+{"text": "\"$a\r-# b#a\"", "words": ["$a\r-# b#a"]}
+{"text": " '", "words": null}
+{"text": "\"=a\r*\r éb- \u0000", "words": null}
+{"text": "\t*b-#''-*", "words": ["*b-#-*"]}
+{"text": "\u0000\t$=aébaé$ $", "words": ["\u0000", "$=aébaé$", "$"]}
+{"text": "é \"*é\ra#", "words": null}
+{"text": "\u0000$*\\\u0000\\*'éa'", "words": ["\u0000$*\u0000*éa"]}
+{"text": "  =é#\"$$\\", "words": null}
+{"text": "\n\\' =\u0000\u0000$\t\\=\t#", "words": ["'", "=\u0000\u0000$", "=", "#"]}
+{"text": "bé\"a é\t= 'a*-", "words": null}
+{"text": " =\r'\\\n ééa", "words": null}
+{"text": "'*#$#\"\"é'é#$é\n", "words": ["*#$#\"\"éé#$é"]}
+{"text": "\n\n \t\"- \r", "words": null}
+{"text": " \"b\"b*\n*\t *=$", "words": ["bb*", "*", "*=$"]}
+{"text": "\u0000 \\#\ta=  é\u0000", "words": ["\u0000", "#", "a=", "é\u0000"]}
+{"text": "\ra é-#\t", "words": ["a", "é-#"]}
+{"text": "a'é\\\t$ ", "words": null}
+{"text": "=\"$\n", "words": null}
+{"text": "\r' \r -#\n\tb\r\néb", "words": null}
+{"text": "-*$\u0000\\#'\\=a-$", "words": null}
+{"text": "\ra\r\u0000éb$$*a ", "words": ["a", "\u0000éb$$*a"]}
+{"text": "##\t é", "words": ["##", "é"]}
+{"text": "b\r$-é-", "words": ["b", "$-é-"]}
+{"text": "\n#=#\u0000b*\"", "words": null}
+{"text": "'é", "words": null}
+{"text": "\\$éb\u0000-==", "words": ["$éb\u0000-=="]}
+{"text": "$  \r$é*\r*'--\t\n", "words": null}
+{"text": "'$\n=b\rb''b'-", "words": ["$\n=b\rbb-"]}
+{"text": " \n  =\t\r\tb", "words": ["=", "b"]}
+{"text": "abb\"\"a=*'", "words": null}
+{"text": "$##a\\ \u0000\\\\\u0000# é", "words": ["$##a \u0000\\\u0000#", "é"]}
+{"text": "\"*b", "words": null}
+{"text": "\u0000b-", "words": ["\u0000b-"]}
+{"text": " b\n\na\\\r", "words": ["b", "a\r"]}
+{"text": "# a$a\\a\"= \u0000", "words": null}
+{"text": " \r\t\r\t ", "words": []}
+{"text": "\n  \r*\r\u0000\u0000\ra\t \r", "words": ["*", "\u0000\u0000", "a"]}
+{"text": "\" -\u0000\n\n 'é", "words": null}
+{"text": "\t\"-\n\t\n- \\\r\u0000=  ", "words": null}
+{"text": " \r\n\u0000\r\r= $", "words": ["\u0000", "=", "$"]}
+{"text": "\\a ", "words": ["a"]}
+{"text": "\\\t\u0000b", "words": ["\t\u0000b"]}
+{"text": "\u0000a\tb\ta$ '\n \u0000é", "words": null}
+{"text": "\n\u0000 $\t$\t\r* \n \u0000", "words": ["\u0000", "$", "$", "*", "\u0000"]}
+{"text": "\té\\\té\u0000a\n*-\r", "words": ["é\té\u0000a", "*-"]}
+{"text": "\"*éé", "words": null}
+{"text": " $'", "words": null}
+{"text": "é\u0000\r\u0000 --", "words": ["é\u0000", "\u0000", "--"]}
+{"text": "*b\"-a* -*'=\ra ", "words": null}
+{"text": " \\'=a\n\\b#\u0000é", "words": ["'=a", "b#\u0000é"]}
+{"text": "\r\"#", "words": null}
+{"text": "\\\r$  =", "words": ["\r$", "="]}
+{"text": "\u0000=\"#'", "words": null}
+{"text": " \té", "words": ["é"]}
+{"text": "'\n", "words": null}
+{"text": " \\\n$ -'-\\é* \r", "words": null}
+{"text": "\r=-b=*\"b\\\t='", "words": null}
+{"text": "a\\\" $\"*", "words": null}
+{"text": "''\n'  a", "words": null}
+{"text": "-\r\\\r\"*", "words": null}
+{"text": "=\u0000-=\"b\n$'", "words": null}
+{"text": "$\u0000\u0000\t\\'\tb*#é \ré", "words": ["$\u0000\u0000", "'", "b*#é", "é"]}
+{"text": "\\\\\\b#''\u0000#  #$", "words": ["\\b#\u0000#", "#$"]}
+{"text": "a'*\"é -\"#-\"b\r", "words": null}
+{"text": "\"$ é", "words": null}
+{"text": "\na'\\''\t  b\t#\"é", "words": null}
+{"text": "\u0000=\" \"=", "words": ["\u0000= ="]}
+{"text": "#-#\n\t#'#\u0000\u0000", "words": null}
+{"text": "a- ", "words": ["a-"]}
+{"text": "==aa\u0000é-$", "words": ["==aa\u0000é-$"]}
+{"text": "\n\r-* ", "words": ["-*"]}
+{"text": "\t-##b\n$aé='\n", "words": null}
+{"text": "a=", "words": ["a="]}
+{"text": "*a=' ", "words": null}
+{"text": "\u0000#", "words": ["\u0000#"]}
+{"text": "=*b-\r\u0000##'", "words": null}
+{"text": "* -", "words": ["*", "-"]}
+{"text": "=\n\n \r", "words": ["="]}
+{"text": "$\"**-\"", "words": ["$**-"]}
+{"text": "aé'*b'*\\\\\\\r #", "words": ["aé*b*\\\r", "#"]}
+{"text": "a\t\u0000", "words": ["a", "\u0000"]}
+{"text": "=\t*'aa\n\u0000*aé aé", "words": null}
+{"text": "-=a\u0000-\n=\\'$'é\\=", "words": null}
+{"text": "-\r \\=#é \" ", "words": null}
+{"text": " =' \\'\t$\"'  ", "words": null}
+{"text": "é= ", "words": ["é="]}
+{"text": "-b\t", "words": ["-b"]}
+{"text": "\n a*", "words": ["a*"]}
+{"text": "$=a\u0000\"\n\"--*é-", "words": ["$=a\u0000\n--*é-"]}
+{"text": "\\\t=-\r#*é a\u0000\n", "words": ["\t=-", "#*é", "a\u0000"]}
+{"text": "$*a", "words": ["$*a"]}
+{"text": " = \\#-", "words": ["=", "#-"]}
+{"text": "-*\r'\"#\n*", "words": null}
+{"text": "*-\r=\u0000\n#b\u0000\n '", "words": null}
+{"text": "*\t \n ", "words": ["*"]}
+{"text": " *ééé-\t ", "words": ["*ééé-"]}
+{"text": "\t**a\n\t$éé=  \t", "words": ["**a", "$éé="]}
+{"text": "\t\n##\\\u0000\ré", "words": ["##\u0000", "é"]}
+{"text": "é*'é$*\\' -\\", "words": null}
+{"text": "\r\naa", "words": ["aa"]}
+{"text": "-\"  =$*b*a#'' ", "words": null}
+{"text": "\ra", "words": ["a"]}
+{"text": "\r b =\t", "words": ["b", "="]}
+{"text": "\té$'\u0000\"\"é$", "words": null}
+{"text": "b\\\\ é\n\"\t \r", "words": null}
+{"text": "b'\\é'\\", "words": null}
+{"text": "\"\né*\u0000#", "words": null}
+{"text": "\"=\"$é\u0000\"", "words": null}
+{"text": "éaa\u0000'#\u0000\u0000*a", "words": null}
+{"text": "-$ a-b", "words": ["-$", "a-b"]}
+{"text": "=-=\n-é*'b$", "words": null}
+{"text": "\n*\\--", "words": ["*--"]}
+{"text": "b$\"-", "words": null}
+{"text": "$$\"", "words": null}
+{"text": "b=$*'\"b=*'=", "words": ["b=$*\"b=*="]}
+{"text": "\r\u0000b#\n", "words": ["\u0000b#"]}
+{"text": "*$'\u0000##", "words": null}
+{"text": "$##ab\u0000\r", "words": ["$##ab\u0000"]}
+{"text": "b", "words": ["b"]}
+{"text": " -=\n", "words": ["-="]}
+{"text": "\\\u0000 \\ $ \u0000 \r", "words": ["\u0000", " $", "\u0000"]}
+{"text": "$\nbb\r\\\u0000 *", "words": ["$", "bb", "\u0000", "*"]}
+{"text": "*b\t#b \u0000=é \t\u0000", "words": ["*b", "#b", "\u0000=é", "\u0000"]}
+{"text": "'é * a'*'\rbb\u0000", "words": null}
+{"text": "\nb", "words": ["b"]}
+{"text": " \u0000'é\r$\"é'", "words": ["\u0000é\r$\"é"]}
+{"text": "'\n\r#a$b\u0000\"\\ ", "words": null}
+{"text": "\\é $\n'$\"'\n#\ta", "words": ["é", "$", "$\"", "#", "a"]}
+{"text": "$\\\u0000\r\"\"*é", "words": ["$\u0000", "*é"]}
+{"text": "a=\u0000\u0000*\u0000'", "words": null}
+{"text": "\u0000\\\u0000", "words": ["\u0000\u0000"]}
+{"text": "a$\r\\=\tbé'\r\"*\"", "words": null}
+{"text": "\" ", "words": null}
+{"text": " $* \\*\u0000=\r", "words": ["$*", "*\u0000="]}
+{"text": "\"'*= \u0000'bb", "words": null}
+{"text": "* \n'$-", "words": null}
+{"text": "$**\t\u0000#= $", "words": ["$**", "\u0000#=", "$"]}
+{"text": "b -#$=\\aa", "words": ["b", "-#$=aa"]}
+{"text": "'\t \r\u0000\u0000\r\n$", "words": null}
+{"text": "\r#a* \n\né\\éb\n", "words": ["#a*", "ééb"]}
+{"text": "\\b", "words": ["b"]}
+{"text": "=$\u0000bé#é\n\u0000 ", "words": ["=$\u0000bé#é", "\u0000"]}
+{"text": " \u0000-\t$", "words": ["\u0000-", "$"]}
+{"text": "ba \\\"", "words": ["ba", "\""]}
+{"text": " *\r\\ ", "words": ["*", " "]}
+{"text": "\té$ é", "words": ["é$", "é"]}
+{"text": "\u0000\ré=\u0000\t--a$\"", "words": null}
+{"text": "b\"\n\"\n==\n-\t# ", "words": ["b\n", "==", "-", "#"]}
+{"text": "\t\r", "words": []}
+{"text": "#a* \\\" \té\"*", "words": null}
+{"text": "\n é\\", "words": null}
+{"text": "\"\\ \rab ", "words": null}
+{"text": "b#\r-*  é' '$ ", "words": ["b#", "-*", "é $"]}
+{"text": "é\r#$\\*\"\u0000\r", "words": null}
+{"text": "bé   \\\u0000b\t'a", "words": null}
+{"text": "\tbbé", "words": ["bbé"]}
+{"text": "$\n\"é$#\ré\u0000'\n#\\b", "words": null}
+{"text": "\t# b", "words": ["#", "b"]}
+{"text": "\ta \" \t\u0000=é*\"$", "words": ["a", " \t\u0000=é*$"]}
+{"text": "*b\t $*\t", "words": ["*b", "$*"]}
+{"text": "=\"='\n \"\t='\r $", "words": null}
+{"text": "a$*", "words": ["a$*"]}
+{"text": "b\u0000$*  ", "words": ["b\u0000$*"]}
+{"text": "\"\"a'é'", "words": ["aé"]}
+{"text": "é*\t\\b\n", "words": ["é*", "b"]}
+{"text": "'\"", "words": null}
+{"text": "\\\n", "words": ["\n"]}
+{"text": "a-#\t*\t\\*\"==*\n-", "words": null}
+{"text": "=# \r \u0000b\tbb$\\*", "words": ["=#", "\u0000b", "bb$*"]}
+{"text": " \n#\u0000é\t \\-\\-\u0000\r\t", "words": ["#\u0000é", "--\u0000"]}
+{"text": "\t\u0000\" \t-b  \\\n ", "words": null}
+{"text": "=éé'\n ", "words": null}
+{"text": "#b", "words": ["#b"]}
+{"text": "\" \r\\='\r$ bb\u0000", "words": null}
+{"text": "*\t \n- é\u0000=", "words": ["*", "-", "é\u0000="]}
+{"text": "é$*a", "words": ["é$*a"]}
+{"text": " \t\n\n*é#é", "words": ["*é#é"]}
+{"text": "\r#$b\\", "words": null}
+{"text": "=='*\n\u0000", "words": null}
+{"text": "b-a\t*#=\n\\", "words": null}
+{"text": "a\n*\u0000\"\r$*=", "words": null}
+{"text": "b\né'a\r\t\n\\\n", "words": null}
+{"text": "é\u0000 ", "words": ["é\u0000"]}
+{"text": "$\\'", "words": ["$'"]}
+{"text": "\u0000 -bb'\\'é\u0000-#b\n", "words": ["\u0000", "-bb\\é\u0000-#b"]}
+{"text": "*$#a'b\u0000", "words": null}
+{"text": "\u0000\\ $é*aaé#", "words": ["\u0000 $é*aaé#"]}
+{"text": "\rb$$==", "words": ["b$$=="]}
+{"text": "\"*\\a\u0000\r$ \rb\\ *", "words": null}
+{"text": "-é \t =\"a \\\t\u0000é-", "words": null}
+{"text": "a ab\u0000#\r#", "words": ["a", "ab\u0000#", "#"]}
+{"text": "* \r\\\\\r  $'$\t'", "words": ["*", "\\", "$$\t"]}
+{"text": " \\\u0000 é\ré\"\t\u0000", "words": null}
+{"text": "#'\n #'é\t==\u0000", "words": ["#\n #é", "==\u0000"]}
+{"text": "\"b\"\ra\n", "words": ["b", "a"]}
+{"text": "\ra\n= b $\r\\=\u0000-", "words": ["a", "=", "b", "$", "=\u0000-"]}
+{"text": "\\\r \t", "words": ["\r"]}
+{"text": "\t## '\\ *#\r$b\\\n", "words": null}
+{"text": "baé\"  #=$'\u0000'", "words": null}
+{"text": " =b\"b\ta'$# a *", "words": null}
+{"text": "-\r a#b é#", "words": ["-", "a#b", "é#"]}
+{"text": "*\r\u0000'b\"\u0000 *# a$é", "words": null}
+{"text": "#b\"\"\\é-\u0000\" \"\né", "words": ["#bé-\u0000 ", "é"]}
+{"text": "#b=a-$-\" \" ", "words": ["#b=a-$- "]}
+{"text": "\r\u0000ba\n\t", "words": ["\u0000ba"]}
+{"text": "-\u0000a\u0000\n\n\"", "words": null}
+{"text": "$ \u0000\n\"'\n\r\rb", "words": null}
+{"text": "$*\t'$$ \\", "words": null}
+{"text": "='", "words": null}
+{"text": "'#=", "words": null}
+{"text": "\"-- \"\n\ré\u0000' #éb", "words": null}
+{"text": "#$ -\u0000é'", "words": null}
+{"text": "-'\u0000", "words": null}
+{"text": "-é", "words": ["-é"]}
+{"text": "é\n", "words": ["é"]}
+{"text": " =\r='#\n'", "words": ["=", "=#\n"]}
+{"text": "#\u0000#a\n\"\\*  a-", "words": null}
+{"text": "''é=\"éb\r", "words": null}
+{"text": "*\\é\\", "words": null}
+{"text": "\"# \\#--$\"\t ", "words": ["# \\#--$"]}
+{"text": "$é\"\"é\"\t a#\n\t", "words": null}
+{"text": "b''*\"éa* a =", "words": null}
+{"text": "ébé '", "words": null}
+{"text": " \"", "words": null}
+{"text": "\t-$ é \n=$-$**=", "words": ["-$", "é", "=$-$**="]}
+{"text": "b'\\\na*é ", "words": null}
+{"text": "'\t\t\u0000 \néé\nb\u0000", "words": null}
+{"text": "$b\"", "words": null}
+{"text": "\"  \\$-\"\r$-\u0000\ra'", "words": null}
+{"text": "#'a\u0000 -\"'\\", "words": null}
+{"text": "* $\\\"  \"\\ '$\u0000=", "words": null}
+{"text": "'\"\u0000a'", "words": ["\"\u0000a"]}
+{"text": "éb*", "words": ["éb*"]}
+{"text": "\u0000aa'ba-*é \\\r", "words": null}
+{"text": "ab #b\n\t\"#", "words": null}
+{"text": "\u0000*\\ \\\\\"#\t*", "words": null}
+{"text": "\\\u0000ab-\n\t", "words": ["\u0000ab-"]}
+{"text": "\u0000$\u0000a'", "words": null}
+{"text": "='a ='\n\"\"a\n=b", "words": ["=a =", "a", "=b"]}
+{"text": "#$$\\\u0000\t#-\r a$# ", "words": ["#$$\u0000", "#-", "a$#"]}
+{"text": "=\"=*#\"éb$", "words": ["==*#éb$"]}
+{"text": "\r'\"b", "words": null}
+{"text": "éa$\t\r\r\r''-#*", "words": ["éa$", "-#*"]}
+{"text": "=#= ", "words": ["=#="]}
+{"text": "a\\\r\t", "words": ["a\r"]}
+{"text": " é =ba", "words": ["é", "=ba"]}
+{"text": "* $\"$ 'é*\\ é ", "words": null}
+{"text": "'$\n \t'\tb \t\t", "words": ["$\n \t", "b"]}
+{"text": "# \n**#\n#\t* '", "words": null}
+{"text": "$$'*=\u0000\"=bb\\", "words": null}
+{"text": "\\\r \\b\\#' \r\r", "words": null}
+{"text": "\t-\r $é#\t 'é\\$", "words": null}
+{"text": "' \"-a*\r$a#-=\\\\", "words": null}
+{"text": "\\' \t\n\"\"=", "words": ["'", "="]}
+{"text": "-*=é", "words": ["-*=é"]}
+{"text": "  é", "words": ["é"]}
+{"text": "b\né\\\r\r=\\a*é\\=b", "words": ["b", "é\r", "=a*é=b"]}
+{"text": "-a- '#''\ta$#- ", "words": null}
+{"text": "$\r*  \r  b\né$ ", "words": ["$", "*", "b", "é$"]}
+{"text": "#\t\"", "words": null}
+{"text": "\u0000a$-", "words": ["\u0000a$-"]}
+{"text": " \u0000=é$\\\n'-b=", "words": null}
+{"text": "\r\\* é", "words": ["*", "é"]}
+{"text": "  -\r $ #", "words": ["-", "$", "#"]}
+{"text": "'\u0000\u0000", "words": null}
+{"text": "\téaa-", "words": ["éaa-"]}
+{"text": "\\\n-$-=\n* '-é=\"", "words": null}
+{"text": "$#", "words": ["$#"]}
+{"text": "*--b a\r", "words": ["*--b", "a"]}
+{"text": "'\t=a\u0000\ra\n#-\u0000", "words": null}
+{"text": "a# '\r\"\t $\t\t", "words": null}
+{"text": "\\#", "words": ["#"]}
+{"text": "\u0000'\\$", "words": null}
+{"text": " -\\$ #*", "words": ["-$", "#*"]}
+{"text": "\\\r*a", "words": ["\r*a"]}
+{"text": "\"\t-b\"\r *", "words": ["\t-b", "*"]}
+{"text": "\t\t\\", "words": null}
+{"text": "b'* *$$", "words": null}
+{"text": "b\t=\"*'-# \t#", "words": null}
+{"text": "\r\r\r'é\u0000\n ='\\-b", "words": ["é\u0000\n =-b"]}
+{"text": "*b*\ré\nb$b#", "words": ["*b*", "é", "b$b#"]}
+{"text": "'a\u0000'$=$aé'é", "words": null}
+{"text": "\\ \\", "words": null}
+{"text": "\"* \t* ", "words": null}
+{"text": "=a$bé#", "words": ["=a$bé#"]}
+{"text": "=\na#-\"", "words": null}
+{"text": "*é*\r", "words": ["*é*"]}
+{"text": "=\\#\t\"\"##é é", "words": ["=#", "##é", "é"]}
+{"text": "\r\né\n", "words": ["é"]}
+{"text": "\r '\\-\t", "words": null}
+{"text": " bb$'\u0000\n \rb$\n", "words": null}
+{"text": "b\\é", "words": ["bé"]}
+{"text": "a \u0000\t*#\r\\\"'a'éb", "words": ["a", "\u0000", "*#", "\"aéb"]}
+{"text": "\r\r\t\\\t\n", "words": ["\t"]}
+{"text": "=*  ", "words": ["=*"]}
+{"text": "é ", "words": ["é"]}
+{"text": "b\t-", "words": ["b", "-"]}
+{"text": "\u0000$\"  a\u0000", "words": null}
+{"text": "\"'", "words": null}
+{"text": "\u0000\n", "words": ["\u0000"]}
+{"text": "=\t\"\\*\\a\t-$", "words": null}
+{"text": " aa", "words": ["aa"]}
+{"text": "'#\t*", "words": null}
+{"text": "\n $-a\\", "words": null}
+{"text": "#\\a\\\u0000=", "words": ["#a\u0000="]}
+{"text": "*$\r \\* \"bé\t\\'", "words": null}
+{"text": "a#    \n#\r", "words": ["a#", "#"]}
+{"text": "$\u0000a-'\r-$=\n#a\n", "words": null}
+{"text": "$\\ \\$\t\"é", "words": null}
+{"text": "'\"=-b='éab\ra", "words": ["\"=-b=éab", "a"]}
+{"text": "#\\'\\ é '\\", "words": null}
+{"text": "#'\u0000\u0000", "words": null}
+{"text": "\u0000 $a'\u0000  éé\t*", "words": null}
+{"text": "-=#\"$=''\u0000é\"", "words": ["-=#$=''\u0000é"]}
+{"text": "*\\# a\" \nb\r-é*", "words": null}
+{"text": "\\\n\n$'\"é\tb", "words": null}
+{"text": "\u0000\u0000=", "words": ["\u0000\u0000="]}
+{"text": "###b*\\ b\\b\t-", "words": ["###b* bb", "-"]}
+{"text": "-* bé## \u0000 bb\r", "words": ["-*", "bé##", "\u0000", "bb"]}
+{"text": "- \n-b \n'$b$\u0000é ", "words": null}
+{"text": "$=\t*\u0000 \u0000'\t$=\n* ", "words": null}
+{"text": "\n#\\", "words": null}
+{"text": "$'\\* a#b#", "words": null}
+{"text": "\né\r \\", "words": null}
+{"text": "=\"", "words": null}
+{"text": "\r'*\n é\" \u0000*''\\\u0000", "words": null}
+{"text": " \r\\#'\"\"\u0000 '$$$ ", "words": ["#\"\"\u0000 $$$"]}
+{"text": "b*", "words": ["b*"]}
+{"text": "\r#\\=éé a#", "words": ["#=éé", "a#"]}
+{"text": "\n\u0000-", "words": ["\u0000-"]}
+{"text": "b\\\r*-\r\"\\#*a", "words": null}
+{"text": "#\r-*=é*\ra'\r\"\\\u0000", "words": null}
+{"text": "\"\t\t\n\"'é= '\n*", "words": ["\t\t\né= ", "*"]}
+{"text": "\r\\a \u0000", "words": ["a", "\u0000"]}
+{"text": "b'*a\"\"\\ \\é", "words": null}
+{"text": "\r#", "words": ["#"]}
+{"text": "\u0000b\\\"\r a ", "words": ["\u0000b\"", "a"]}
+{"text": "b\tb *a\r ", "words": ["b", "b", "*a"]}
+{"text": "a  *\\", "words": null}
+{"text": "\n\\$='#\\bé ", "words": null}
+{"text": "=\tb\r# \n \t\u0000\\\r-", "words": ["=", "b", "#", "\u0000\r-"]}
+{"text": "\nb\"", "words": null}
+{"text": "a'", "words": null}
+{"text": "a*'ab", "words": null}
+{"text": "''\r= #\t-=\t =\n", "words": ["", "=", "#", "-=", "="]}
+{"text": "aé\\-\t# ", "words": ["aé-", "#"]}
+{"text": "\nb\té'- ", "words": null}
+{"text": "\n#", "words": ["#"]}
+{"text": "'$", "words": null}
+{"text": "#\n-=", "words": ["#", "-="]}
+{"text": "$*\"$\r\"#\n", "words": ["$*$\r#"]}
+{"text": "*\t#\n=b=a", "words": ["*", "#", "=b=a"]}
+{"text": "b\t*aa#\n-\u0000", "words": ["b", "*aa#", "-\u0000"]}
+{"text": "'\nb\n-\\* ", "words": null}
+{"text": "#a# b\t ", "words": ["#a#", "b"]}
+{"text": "$é#\ré\"=", "words": null}
+{"text": "\" *éa", "words": null}
+{"text": " \u0000é\\b$\u0000\t = -", "words": ["\u0000éb$\u0000", "=", "-"]}
+{"text": "#\té\u0000a\r\"\r'b#=", "words": null}
+{"text": "\n\t-=\r#\\\r$*\"$", "words": null}
+{"text": "=\t \r=\"\n\r\n#'", "words": null}
+{"text": "\r\r", "words": []}
+{"text": "bé", "words": ["bé"]}
+{"text": " $=\\\n -", "words": ["$=\n", "-"]}
+{"text": "\n'", "words": null}
+{"text": "b\u0000#\r", "words": ["b\u0000#"]}
+{"text": "#\"- \r- \u0000\"==  ", "words": ["#- \r- \u0000=="]}
+{"text": "*\r$=\r '\\", "words": null}
+{"text": " \n=a$=b*\n*-", "words": ["=a$=b*", "*-"]}
+{"text": "é\"*\t\u0000\u0000", "words": null}
+{"text": "é\n*=\né-\n-=\n", "words": ["é", "*=", "é-", "-="]}
+{"text": "\\é\\-", "words": ["é-"]}
+{"text": " é  b\r\"b\u0000", "words": null}
+{"text": "éé\n\t=é'''$\t*'", "words": ["éé", "=é$\t*"]}
+{"text": "#a\\'\n ", "words": ["#a'"]}
+{"text": "-b", "words": ["-b"]}
+{"text": "a=$\n\t\na \r\u0000b", "words": ["a=$", "a", "\u0000b"]}
+{"text": "=-\r \t\\", "words": null}
+{"text": "a#*a*", "words": ["a#*a*"]}
+{"text": "\n\n\n #a\ré", "words": ["#a", "é"]}
+{"text": "a -\"\r", "words": null}
+{"text": "b\"\t\u0000", "words": null}
+{"text": " \t\"-b", "words": null}
+{"text": "é\ré$\\\t\t'=-$", "words": null}
+{"text": "\r\t\t#", "words": ["#"]}
+{"text": "éb' **\rb", "words": null}
+{"text": " # a =\r\"\r", "words": null}
+{"text": "é\té*é\\a= $\r", "words": ["é", "é*éa=", "$"]}
+{"text": "\"'\n", "words": null}
+{"text": "aéa$\\$", "words": ["aéa$$"]}
+{"text": "-\t'=$'é", "words": ["-", "=$é"]}
+{"text": "é' \"=\t=", "words": null}
+{"text": "'a=\n ='\"", "words": null}
+{"text": "\"é\"=\\\"\té'", "words": null}
+{"text": "é\r\"", "words": null}
+{"text": "#\n\r =\t", "words": ["#", "="]}
+{"text": "\u0000a\u0000'\"*\n# b ", "words": null}
+{"text": "\\\u0000-", "words": ["\u0000-"]}
+{"text": "$\n#\raa\r\r=\u0000a\n=#", "words": ["$", "#", "aa", "=\u0000a", "=#"]}
+{"text": "\r$\u0000-a \t", "words": ["$\u0000-a"]}
+{"text": "*\t\t$", "words": ["*", "$"]}
+{"text": "\\*\\\u0000", "words": ["*\u0000"]}
+{"text": "\" \n\nb é\u0000", "words": null}
+{"text": "'\n\"", "words": null}
+{"text": "b\t\r\\='", "words": null}
+{"text": "\" -\\\u0000\"\\*\" -", "words": null}
+{"text": "a\"\"", "words": ["a"]}
+{"text": " \"\n-'é'a", "words": null}
+{"text": " ba\t\\bb=", "words": ["ba", "bb="]}
+{"text": "\n\r\\\n'\"\\\"\n*\r-b-", "words": null}
+{"text": " -=", "words": ["-="]}
+{"text": "$- $\t", "words": ["$-", "$"]}
+{"text": " \t\r #\"#\t$\t=", "words": null}
+{"text": "é=\"b\u0000'b", "words": null}
+{"text": "#é'#\\\nb-\\=\\", "words": null}
+{"text": "\\\n\"\r\"$=bé$", "words": ["\n\r$=bé$"]}
+{"text": "\\\n-\u0000 \t \u0000'b*", "words": null}
+{"text": "bb\r\u0000'\n$ - $", "words": null}
+{"text": "b\"é", "words": null}
+{"text": "\n \t\r\\\"\ta*\"\\", "words": null}
+{"text": "\u0000\n\u0000 \\b ", "words": ["\u0000", "\u0000", "b"]}
+{"text": "b$-b", "words": ["b$-b"]}
+{"text": "\raa#'* \r", "words": null}
+{"text": "\t\"\\=\né é", "words": null}
+{"text": "=  a\t$a\\\t", "words": ["=", "a", "$a\t"]}
+{"text": " =", "words": ["="]}
+{"text": "b\\", "words": null}
+{"text": "- \u0000'\r$ ", "words": null}
+{"text": "\\$$##\t\t  'b-#", "words": null}
+{"text": "\r \"a -*'*\u0000\n\t\\$", "words": null}
+{"text": "''#\" a\"$\t=\n=#", "words": ["# a$", "=", "=#"]}
+{"text": "*-$\t\\\r", "words": ["*-$", "\r"]}
+{"text": "*'\"\r", "words": null}
+{"text": "*'b#   \r\"#**", "words": null}
+{"text": " *", "words": ["*"]}
+{"text": "éé\t*\n\\bé\n\\é*", "words": ["éé", "*", "bé", "é*"]}
+{"text": "\rab\r $", "words": ["ab", "$"]}
+{"text": "\r' =\"\t", "words": null}
+{"text": "-b'#-", "words": null}
+{"text": "'$=###", "words": null}
+{"text": "é*'=\n==\\$b '\u0000=", "words": ["é*=\n==\\$b \u0000="]}
+{"text": "\"*a\\\"\t  ", "words": null}
+{"text": "é \\é# éaé\\a", "words": ["é", "é#", "éaéa"]}
+{"text": "-b\\\"\\b'\\*#' -", "words": ["-b\"b\\*#", "-"]}
+{"text": "\t  \\\"\" =\"-", "words": ["\" =-"]}
+{"text": " b\r\u0000*$\"é * \\", "words": null}
+{"text": "$\u0000 \u0000==é", "words": ["$\u0000", "\u0000==é"]}
+{"text": "\u0000b  \ra#\n  \\\u0000a=", "words": ["\u0000b", "a#", "\u0000a="]}
+{"text": "\"b\n*\r\né", "words": null}
+{"text": "\\é-\"é$\\ ", "words": null}
+{"text": "-=bbéé", "words": ["-=bbéé"]}
+{"text": "\n=\r\\a\"=", "words": null}
+{"text": "\u0000*b\tb", "words": ["\u0000*b", "b"]}
+{"text": "\té\"", "words": null}
+{"text": " \"\n", "words": null}
+{"text": "\t\r#é\tb\\'=#b", "words": ["#é", "b'=#b"]}
+{"text": "\t#-#\ra\n", "words": ["#-#", "a"]}
+{"text": "'- \r-\t''b$", "words": null}
+{"text": "\" \r", "words": null}
+{"text": "éb\\", "words": null}
+{"text": "\"éba b\"", "words": ["éba b"]}
+{"text": "ba* b", "words": ["ba*", "b"]}
+{"text": "$'é", "words": null}
+{"text": "- \u0000 éé=  #' ", "words": null}
+{"text": "\u0000\r\\$", "words": ["\u0000", "$"]}
+{"text": "-'-", "words": null}
+{"text": "\\\n\nééé=", "words": ["\n", "ééé="]}
+{"text": "* \rb\r*", "words": ["*", "b", "*"]}
+{"text": "# é \n=é-*\n\\$", "words": ["#", "é", "=é-*", "$"]}
+{"text": "=#='", "words": null}
+{"text": "\\*b b'", "words": null}
+{"text": "\ta$*é\\\r-*\n*", "words": ["a$*é\r-*", "*"]}
+{"text": "-$ \n*b", "words": ["-$", "*b"]}
+{"text": "\r#$b\\'#a*\"\u0000##", "words": null}
+{"text": "\"\\=$\n=-\rb\r", "words": null}
+{"text": "\"*' \r\u0000 \t\\aa", "words": null}
+{"text": " \"\r-\u0000 #*", "words": null}
+{"text": "$ \" 'a é\n", "words": null}
+{"text": "$\t-$", "words": ["$", "-$"]}
+{"text": "- #-\u0000#\\$--=", "words": ["-", "#-\u0000#$--="]}
+{"text": "\\\"\\-*ba\na'a'", "words": ["\"-*ba", "aa"]}
+{"text": "\\\\a\\\t$ ", "words": ["\\a\t$"]}
+{"text": "  \n", "words": []}
+{"text": "' \r\u0000#\\é* ", "words": null}
+{"text": "'*#é\u0000\u0000$=*$", "words": null}
+{"text": "\\\\\n\"\u0000bb#", "words": null}
+{"text": "=b$\r=a #é*'é-'", "words": ["=b$", "=a", "#é*é-"]}
+{"text": "#*\t=#\t\\é\\'  \r", "words": ["#*", "=#", "é'"]}
+{"text": "\" \n-\u0000", "words": null}
+{"text": " aa*", "words": ["aa*"]}
+{"text": "'é\r$$\\\n* \" \t b", "words": null}
+{"text": "\t*$b$ \n", "words": ["*$b$"]}
+{"text": " é\"#\u0000a \r'#\r\\- ", "words": null}
+{"text": "$-$$\" - ", "words": null}
+{"text": "'\t\r\u0000é#\t\"\u0000a*\r'\\", "words": null}
+{"text": "é*-\r\\ =#é", "words": ["é*-", " =#é"]}
+{"text": "\r\" =*'", "words": null}
+{"text": "#' '*b", "words": ["# *b"]}
+{"text": "\n \u0000é", "words": ["\u0000é"]}
+{"text": "b*=a\r", "words": ["b*=a"]}
+{"text": "\"*\r\r'\ré*", "words": null}
+{"text": " \r#", "words": ["#"]}
+{"text": "aé\t\\\"\n\\", "words": null}
+{"text": "b\\é\r", "words": ["bé"]}
+{"text": "\t 'bé\r-\n=aé'- ", "words": ["bé\r-\n=aé-"]}
+{"text": "b*\u0000$*\r-\rb\\'\r-", "words": ["b*\u0000$*", "-", "b'", "-"]}
+{"text": "b'*", "words": null}
+{"text": "\rb\t", "words": ["b"]}
+{"text": "==\n\tab\r**b\n", "words": ["==", "ab", "**b"]}
+{"text": "- 'aa\" ", "words": null}
+{"text": "\t \n\t\t--=$- \"\n-", "words": null}
+{"text": "\r#*  ", "words": ["#*"]}
+{"text": " \"='", "words": null}
+{"text": "-'-a$\\'$=  \"\"", "words": ["--a$\\$=", ""]}
+{"text": "\ta'\n\n\\-\" \u0000\r\"\u0000", "words": null}
+{"text": "'\u0000\rbébb\t*\\=$", "words": null}
+{"text": "*$ #\r= \u0000-\"= '\t", "words": null}
+{"text": "é#", "words": ["é#"]}
+{"text": "$\\\t\r\n", "words": ["$\t"]}
+{"text": "-b'", "words": null}
+{"text": "\n-##-=-b\u0000 \r\n", "words": ["-##-=-b\u0000"]}
+{"text": "\"\\b\\a\r=\u0000a$b*a=", "words": null}
+{"text": "a\r'$\r$ #-*\r\"$\u0000", "words": null}
+{"text": "'$\u0000'\t\n", "words": ["$\u0000"]}
+{"text": "b\n'-\t ", "words": null}
+{"text": "\r\u0000#'\n-éb-\\\u0000=", "words": null}
+{"text": "\n\u0000\u0000\t a\r\r=  b'$", "words": null}
+{"text": " \\=\\#é$*#é \r", "words": ["=#é$*#é"]}
+{"text": "\u0000*b'  *\r ", "words": null}
+{"text": " \"\n\t\r'\\$\"\"", "words": null}
+{"text": "\t$\u0000", "words": ["$\u0000"]}
+{"text": "='#", "words": null}
+{"text": "$-\t\n\\==a\u0000a\" #a", "words": null}
+{"text": "\t$b$a$'b\\'", "words": ["$b$a$b\\"]}
+{"text": "\n\n#\u0000\"", "words": null}
+{"text": "\t\n=$\tb''\n$", "words": ["=$", "b", "$"]}
+{"text": "\t\\\u0000bb\té$", "words": ["\u0000bb", "é$"]}
+{"text": "b\t\"a*#a a *", "words": null}
+{"text": "\u0000\n \t#", "words": ["\u0000", "#"]}
+{"text": "-\"$", "words": null}
+{"text": " b\r'\\\"", "words": null}
+{"text": "= --=#\n\n \u0000", "words": ["=", "--=#", "\u0000"]}
+{"text": "*$ \r$é", "words": ["*$", "$é"]}
+{"text": "\t\\\u0000-* *\r", "words": ["\u0000-*", "*"]}
+{"text": "' # \"'\t#\" \"\n", "words": [" # \"", "# "]}
+{"text": "*éé##é- \n=a'", "words": null}
+{"text": "*\"=$\r-\\é=\\*a$=", "words": null}
+{"text": "\n #$é é*$\r'a", "words": null}
+{"text": "\té \"\" \"$  *", "words": null}
+{"text": " \r\n  '$\r*a*\r  ", "words": null}
+{"text": " \r \\$=é", "words": ["$=é"]}
+{"text": "#$b*é", "words": ["#$b*é"]}
+{"text": "-'-\"== \u0000\\-$", "words": null}
+{"text": "\n bé$é", "words": ["bé$é"]}
+{"text": "#\n#\n\n $\té", "words": ["#", "#", "$", "é"]}
+{"text": "\t \"", "words": null}
+{"text": "aaaa $#", "words": ["aaaa", "$#"]}
+{"text": "*a=$'", "words": null}
+{"text": "-\n-$\"", "words": null}
+{"text": "#=é\u0000\u0000", "words": ["#=é\u0000\u0000"]}
+{"text": "\\\u0000a\"é-\"\"", "words": null}
+{"text": "\t='$\\\u0000*** *\n=", "words": null}
+{"text": "*'\t\r \u0000ab'\\\\\\ ", "words": ["*\t\r \u0000ab\\ "]}
+{"text": "\t ", "words": []}
+{"text": "\u0000a\"\r\n", "words": null}
+{"text": "  \\-=\t\u0000-", "words": ["-=", "\u0000-"]}
+{"text": "\r*=-#", "words": ["*=-#"]}
+{"text": "\u0000=\r*#\né b\"\r", "words": null}
+{"text": "=$\u0000\n\"#*", "words": null}
+{"text": "a=\u0000#b#", "words": ["a=\u0000#b#"]}
+{"text": "é\r\u0000=$-\u0000\n\n", "words": ["é", "\u0000=$-\u0000"]}
+{"text": "#\t -éb", "words": ["#", "-éb"]}
+{"text": "=\r", "words": ["="]}
+{"text": "'=#-\\b\n'\t\n\t-\n-", "words": ["=#-\\b\n", "-", "-"]}
+{"text": "a*\t\r\t--\t\r", "words": ["a*", "--"]}
+{"text": "aé==*-", "words": ["aé==*-"]}
+{"text": "\\ $\t*\n\r\u0000\\ab\u0000", "words": [" $", "*", "\u0000ab\u0000"]}
+{"text": " -\"#*é'= é*#", "words": null}
+{"text": "$é\n\\\u0000a##=b", "words": ["$é", "\u0000a##=b"]}
+{"text": "\\\t'\\\t=-\r*#\r\"", "words": null}
+{"text": "a=b\ré - 'ab\r", "words": null}
+{"text": "#$a*\t a", "words": ["#$a*", "a"]}
+{"text": "\\\n* aé*", "words": ["\n*", "aé*"]}
+{"text": "\"\\ a\rb-\t=", "words": null}
+{"text": "é\u0000\\", "words": null}
+{"text": "=\u0000*a$*#\\\"\t$", "words": ["=\u0000*a$*#\"", "$"]}
+{"text": "'a-é\t'a=", "words": ["a-é\ta="]}
+{"text": "#éa\né'-ab#\t ", "words": null}
+{"text": "'=\u0000 '", "words": ["=\u0000 "]}
+{"text": "\r- b**b\\\t#\"\"\r", "words": ["-", "b**b\t#"]}
+{"text": " #a\t'é-#'", "words": ["#a", "é-#"]}
+{"text": "   *", "words": ["*"]}
+{"text": "\r \"b-=\ra-éé ", "words": null}
+{"text": "  #a\"\tb '-é\r'-", "words": null}
+{"text": "a\"#a\r\"'# *\n ", "words": null}
+{"text": "'*\n$*\u0000", "words": null}
+{"text": "é'*b-é=#* béa\r", "words": null}
+{"text": "$-$\nb #b*-\u0000\n", "words": ["$-$", "b", "#b*-\u0000"]}
+{"text": "\u0000\u0000#", "words": ["\u0000\u0000#"]}
+{"text": "\n\\\r-a*\r\n#=", "words": ["\r-a*", "#="]}
+{"text": "\rb*\\ #\n \n\n-  ", "words": ["b* #", "-"]}
+{"text": "=-$*#-a\u0000' ", "words": null}
+{"text": "b\u0000\t*\r=*bb$#", "words": ["b\u0000", "*", "=*bb$#"]}
+{"text": "'a\u0000-'\u0000", "words": ["a\u0000-\u0000"]}
+{"text": "a#\"*b-'*b  ", "words": null}
+{"text": " '$b  aaa'$\u0000 ", "words": ["$b  aaa$\u0000"]}
+{"text": "\u0000b\r\u0000$\u0000#é\u0000\u0000\r  ", "words": ["\u0000b", "\u0000$\u0000#é\u0000\u0000"]}
+{"text": "\"$$* # \u0000\tb\r", "words": null}
+{"text": "#é\u0000\"-\u0000", "words": null}
+{"text": "\" a\\\\\réé", "words": null}
+{"text": "#\n  \"\ré \t", "words": null}
+{"text": "-a \"=$#\"= a\\\u0000\r", "words": ["-a", "=$#=", "a\u0000"]}
+{"text": "$\r   \\\n\\ é=\n", "words": ["$", "\n é="]}
+{"text": "#\r", "words": ["#"]}
+{"text": "-\"##", "words": null}
+{"text": "\u0000*\né =\n\" a-", "words": null}
+{"text": "$  ", "words": ["$"]}
+{"text": "\\  \r\\$*a-\"' \u0000", "words": null}
+{"text": "é\t\u0000 \"#\t\t'*", "words": null}
+{"text": "$\u0000", "words": ["$\u0000"]}
+{"text": "=-* béba \"='", "words": null}
+{"text": "='#\u0000ab\nabb", "words": null}
+{"text": "\u0000\"'\u0000 \"' \u0000", "words": null}
+{"text": " \u0000$", "words": ["\u0000$"]}
+{"text": "$=\\=*\n\u0000\r\r\u0000", "words": ["$==*", "\u0000", "\u0000"]}
+{"text": "\u0000  \\-b a#\r'\u0000\r", "words": null}
+{"text": " $é*  $\\#-\r\n\r*", "words": ["$é*", "$#-", "*"]}
+{"text": "=b\u0000 #---=", "words": ["=b\u0000", "#---="]}
+{"text": "b\n* ", "words": ["b", "*"]}
+{"text": "\\\n\u0000\t$", "words": ["\n\u0000", "$"]}
+{"text": "# \"\r\rb", "words": null}
+{"text": "*\t=-\t\"* -$é\u0000\"\r", "words": ["*", "=-", "* -$é\u0000"]}
+{"text": "éa#\\ \r#bé\n", "words": ["éa# ", "#bé"]}
+{"text": " \r=*\\", "words": null}
+{"text": "\u0000*-aa = ", "words": ["\u0000*-aa", "="]}
+{"text": "'#\\=b$- \n", "words": null}
+{"text": "$\t '\u0000#\té'=\u0000'=\r", "words": null}
+{"text": "$$a=a  \\$'- 'b", "words": ["$$a=a", "$- b"]}
+{"text": "\u0000\r*\\\n$$é$é", "words": ["\u0000", "*\n$$é$é"]}
+{"text": "ba#  # '=\"= ", "words": null}
+{"text": "\té--", "words": ["é--"]}
+{"text": "\\=\" -\r", "words": null}
+{"text": " \" \u0000\"$*$éb*a#", "words": [" \u0000$*$éb*a#"]}
+{"text": "ba- '\t", "words": null}
+{"text": "\u0000-", "words": ["\u0000-"]}
+{"text": "*a\n", "words": ["*a"]}
+{"text": "##*\u0000 \r   *\u0000", "words": ["##*\u0000", "*\u0000"]}
+{"text": " é\"ba$\"\"\tb\r", "words": null}
+{"text": "\r#$-\"'", "words": null}
+{"text": "* \u0000*", "words": ["*", "\u0000*"]}
+{"text": "\u0000é-\u0000 b\r", "words": ["\u0000é-\u0000", "b"]}
+{"text": "\u0000\t bb'\t\r\"=é", "words": null}
+{"text": "\\ ab\r\\=\t\ré", "words": [" ab", "=", "é"]}
+{"text": "\té= ==é", "words": ["é=", "==é"]}
+{"text": "-\\\"# = \u0000\u0000' #--", "words": null}
+{"text": "b\u0000*", "words": ["b\u0000*"]}
+{"text": " \r\\ \\\na$-\\a'", "words": null}
+{"text": "é\\  -\r*'#", "words": null}
+{"text": " b \té\r\u0000\n", "words": ["b", "é", "\u0000"]}
+{"text": "a$\t\n\\\"*\n\u0000''bé", "words": ["a$", "\"*", "\u0000bé"]}
+{"text": "a\r*\r\\ =$\r'\n", "words": null}
+{"text": " aa\t", "words": ["aa"]}
+{"text": " \"b a-\u0000éé -\t'*", "words": null}
+{"text": "\\\\- b'\r-aé*éaé", "words": null}
+{"text": "-a#\t \u0000", "words": ["-a#", "\u0000"]}
+{"text": "\\=\u0000\u0000 \r-\t\t\n#", "words": ["=\u0000\u0000", "-", "#"]}
+{"text": "$\r\t-", "words": ["$", "-"]}
+{"text": "ba-\n b", "words": ["ba-", "b"]}
+{"text": "a\" a\t", "words": null}
+{"text": "\\*\r-\u0000-=*b$\u0000", "words": ["*", "-\u0000-=*b$\u0000"]}
+{"text": "\r#-\u0000$-*\n\" \t", "words": null}
+{"text": "é\u0000#--", "words": ["é\u0000#--"]}
+{"text": "é\\aa\u0000", "words": ["éaa\u0000"]}
+{"text": "b\u0000\u0000é", "words": ["b\u0000\u0000é"]}
+{"text": " \n'$\n#\n\\\\a\\$ \"", "words": null}
+{"text": "\\-'\t", "words": null}
+{"text": "'\\ ", "words": null}
+{"text": " \t#a\\'\\'\\ \u0000", "words": ["#a'' \u0000"]}
+{"text": "\r\u0000 \r#'\u0000", "words": null}
+{"text": "\r\t", "words": []}
+{"text": "\u0000*#*\t b#\té\"=", "words": null}
+{"text": "\"b \r*-", "words": null}
+{"text": "== \r\ra-\"aab#-\n", "words": null}
+{"text": "\\\t=*\r", "words": ["\t=*"]}
+{"text": "   $  ", "words": ["$"]}
+{"text": "\r\t-\r", "words": ["-"]}
+{"text": "\r'#ba \u0000=\u0000b", "words": null}
+{"text": "\u0000b=\\", "words": null}
+{"text": "é\\ ", "words": ["é "]}
+{"text": "\t\n", "words": []}
+{"text": "=$'\u0000-é\na", "words": null}
+{"text": "-\u0000\n \n- ab*-", "words": ["-\u0000", "-", "ab*-"]}
+{"text": "\na\n\t\r", "words": ["a"]}
+{"text": "#'=é 'b\u0000'", "words": null}
+{"text": "=-$ = \\ \"", "words": null}
+{"text": "a \\\"-\r\r", "words": ["a", "\"-"]}
+{"text": "-b=\t", "words": ["-b="]}
+{"text": " éa", "words": ["éa"]}
+{"text": "\t\r-\r\\", "words": null}
+{"text": "éé'$", "words": null}
+{"text": "\"\\-a\"'\t", "words": null}
+{"text": " =\"'#\"*=\"'-\\a", "words": null}
+{"text": "b$\u0000\\-'-a\n", "words": null}
+{"text": "\r\\ #a' ", "words": null}
+{"text": "-'a$\" b#' ", "words": ["-a$\" b#"]}
+{"text": "$'$ \n$", "words": null}
+{"text": "\u0000*=\u0000\t ", "words": ["\u0000*=\u0000"]}
+{"text": "* $#é\"*a '-", "words": null}
+{"text": "\\\ré", "words": ["\ré"]}
+{"text": "#  \" \tba\\ '#'a", "words": null}
+{"text": "'\"aa*#\u0000", "words": null}
+{"text": "\"aa\ra\n\t\ré   ", "words": null}
+{"text": "*\r\\\r*\\\"a\n-\n ", "words": ["*", "\r*\"a", "-"]}
+{"text": "\r#-\u0000$\\$=*", "words": ["#-\u0000$$=*"]}
+{"text": "\"\t#é'\r'\u0000 ", "words": null}
+{"text": "-#*b", "words": ["-#*b"]}
+{"text": "'éb\\", "words": null}
+{"text": "\\a-\té$b$\"\u0000a\n'", "words": null}
+{"text": "é'\ré\n", "words": null}
+{"text": "\"bb\n\u0000aé\té", "words": null}
+{"text": "$\\$", "words": ["$$"]}
+{"text": "*'\n'  \ra\n$é", "words": ["*\n", "a", "$é"]}
+{"text": "\u0000a\t\u0000a\u0000\u0000 ##", "words": ["\u0000a", "\u0000a\u0000\u0000", "##"]}
+{"text": "$*", "words": ["$*"]}
+{"text": "=\r-$b\n#b\\", "words": null}
+{"text": "\n'*==\t=\t", "words": null}
+{"text": "##$ \"", "words": null}
+{"text": "\t $'-\"=\\##'", "words": ["$-\"=\\##"]}
+{"text": "é$=\r-a'\t*#é ", "words": null}
+{"text": "\ra ' é", "words": null}
+{"text": "\\\" '\\\"", "words": null}
+{"text": " a-='$\t\ré\\*", "words": null}
+{"text": "\\é a\r- '", "words": null}
+{"text": "-=\u0000 \n\r", "words": ["-=\u0000"]}
+{"text": "$a #\t-\n", "words": ["$a", "#", "-"]}
+{"text": " =-é  é *\u0000", "words": ["=-é", "é", "*\u0000"]}
+{"text": "\\#\\\\\r=*\"-#\r*\u0000\n", "words": null}
+{"text": "##'a#= *\n \u0000", "words": null}
+{"text": "-\n\u0000'\t\u0000--é\n\t\"", "words": null}
+{"text": "'#a'a \u0000#'#$", "words": null}
+{"text": "*\n\r\"\u0000#\n\"ab#$\n\n", "words": ["*", "\u0000#\nab#$"]}
+{"text": "'\"é\u0000b'#bé\u0000aéa", "words": ["\"é\u0000b#bé\u0000aéa"]}
+{"text": "\\ \n\t\r#\r\n\t\n ", "words": [" ", "#"]}
+{"text": "\r\t\\# *", "words": ["#", "*"]}
+{"text": "=\n", "words": ["="]}
+{"text": "é -\\\u0000'\\", "words": null}
+{"text": "*$", "words": ["*$"]}
+{"text": "*é-*=*-''=\t$", "words": ["*é-*=*-=", "$"]}
+{"text": "'é=\t#$#é\t a", "words": null}
+{"text": "a=\n '", "words": null}
+{"text": "\u0000é\r", "words": ["\u0000é"]}
+{"text": "'a-\t", "words": null}
+{"text": "$$= $é-#\n'$", "words": null}
+{"text": "\r\"\\\"\"=\n #\r\u0000\u0000 $", "words": ["\"=", "#", "\u0000\u0000", "$"]}
+{"text": "\u0000=**#", "words": ["\u0000=**#"]}
+{"text": "$ \\#*é#a\u0000#\t", "words": ["$", "#*é#a\u0000#"]}
+{"text": "é\u0000\u0000\u0000", "words": ["é\u0000\u0000\u0000"]}
+{"text": "=\t\"$a\\#a$-$", "words": null}
+{"text": " $\u0000 b", "words": ["$\u0000", "b"]}
+{"text": "éé\nbé\r='*#$\u0000a", "words": null}
+{"text": "\\b\\\"\u0000\t\"é$\n$", "words": null}
+{"text": "##=\\--", "words": ["##=--"]}
+{"text": "\t#$*=-", "words": ["#$*=-"]}
+{"text": "=\r' é\\\r\\\\*", "words": null}
+{"text": "a$\\b' *=", "words": null}
+{"text": "\\a*\t\né'a\\\n  =", "words": null}
+{"text": "é\\\"\\\n \né$a", "words": ["é\"\n", "é$a"]}
+{"text": "=\\\\-# '\né \"", "words": null}
+{"text": "  \\ *\raé\" ", "words": null}
+{"text": "  =", "words": ["="]}
+{"text": "\n\t\u0000'\u0000\t- $", "words": null}
+{"text": "\"\u0000é ", "words": null}
+{"text": " =$'\u0000 é*\\=", "words": null}
+{"text": "'  -=' \n$*", "words": ["  -=", "$*"]}
+{"text": " \u0000#'$\"\\ é\\bé-", "words": null}
+{"text": "\\'\"\"\r=", "words": ["'", "="]}
+{"text": " =\na", "words": ["=", "a"]}
+{"text": "\u0000-\\é$#\\\ta\n \tb", "words": ["\u0000-é$#\ta", "b"]}
+{"text": "=a\t\r", "words": ["=a"]}
+{"text": "-é#\n", "words": ["-é#"]}
+{"text": "- -'\r\t-\\", "words": null}
+{"text": "#\n\n\\$'é*é ", "words": null}
+{"text": "\\$", "words": ["$"]}
+{"text": "# *\n\\- - ", "words": ["#", "*", "-", "-"]}
+{"text": "\u0000\r\"  $#", "words": null}
+{"text": "  \" $-*\r'=-\t\n=", "words": null}
+{"text": "\n\t\t\r\u0000#\\$\t", "words": ["\u0000#$"]}
+{"text": "-=*\\", "words": null}
+{"text": " \u0000'\u0000 -é#b''\r-\u0000", "words": null}
+{"text": "*- #\té' ", "words": null}
+{"text": "$\\", "words": null}
+{"text": "'#=\"#a \n'$ ", "words": ["#=\"#a \n$"]}
+{"text": "\"\\=é'\n=\u0000\\*$\t", "words": null}
+{"text": "#'\n\"", "words": null}
+{"text": "*\\#", "words": ["*#"]}
+{"text": "=-", "words": ["=-"]}
+{"text": "a\"\"\u0000\"$", "words": null}
+{"text": "--#\r\"\t-", "words": null}
+{"text": "#\tb\r-$ \" = # ", "words": null}
+{"text": "éb\r#", "words": ["éb", "#"]}
+{"text": "'é **\t\tb\"#*", "words": null}
+{"text": "'-bb'**'#'\r\"'", "words": null}
+{"text": "''\t", "words": [""]}
+{"text": " é$\n-$#", "words": ["é$", "-$#"]}
+{"text": " *\t*b\n\"#\\\t\r\"$", "words": ["*", "*b", "#\\\t\r$"]}
+{"text": "- \téé*=$\u0000 ", "words": ["-", "éé*=$\u0000"]}
+{"text": "\n\n\n aé", "words": ["aé"]}
+{"text": "*=", "words": ["*="]}
+{"text": "#$", "words": ["#$"]}
+{"text": "\u0000\"-=#==", "words": null}
+{"text": "#$ '\\\u0000\"é \\-", "words": null}
+{"text": "\n\r#-\\--\r\r\r\\", "words": null}
+{"text": "$\t\n-\\#-*#a\t=#", "words": ["$", "-#-*#a", "=#"]}
+{"text": " b$-- a", "words": ["b$--", "a"]}
+{"text": " \u0000'\u0000", "words": null}
+{"text": " \r\\$\r\"\"é\n\té$\t", "words": ["$", "é", "é$"]}
+{"text": "\u0000\n-b#b\\é\u0000a\r#a", "words": ["\u0000", "-b#bé\u0000a", "#a"]}
+{"text": "éé'b'", "words": ["ééb"]}
+{"text": "bé '\t\"-b\r#$", "words": null}
+{"text": "= \r-", "words": ["=", "-"]}
+{"text": "b= =", "words": ["b=", "="]}
+{"text": "##=a ", "words": ["##=a"]}
+{"text": "\u0000é#\" *b  * b", "words": null}
+{"text": "= ", "words": ["="]}
+{"text": " '=\u0000a\u0000\\\t\t #\t", "words": null}
+{"text": "\t\\b", "words": ["b"]}
+{"text": "\t--=\u0000\t\t\ré", "words": ["--=\u0000", "é"]}
+{"text": "\r*b\n$#'", "words": null}
+{"text": "-\u0000-", "words": ["-\u0000-"]}
+{"text": "$$=$-\\\n\"", "words": null}
+{"text": "\t#\\\n $'bé\r ", "words": null}
+{"text": "\"'#\"\u0000\\\n", "words": ["'#\u0000\n"]}
+{"text": "=-$$a$b", "words": ["=-$$a$b"]}
+{"text": "\"\"$\t\\'=-\r\t\\é", "words": ["$", "'=-", "é"]}
+{"text": "\u0000-\r\n", "words": ["\u0000-"]}
+{"text": "\\  'é \tb \r\u0000", "words": null}
+{"text": " =\" \\'*-\"", "words": ["= \\'*-"]}
+{"text": " b-\"\u0000a éé", "words": null}
+{"text": "\n-\t#\t*\t= -$'b-", "words": null}
+{"text": "\n=\"$\\ \té-\"", "words": ["=$\\ \té-"]}
+{"text": "\né$\"aa'", "words": null}
+{"text": "'bé-a\n - ", "words": null}
+{"text": "a\"=é", "words": null}
+{"text": "a\"a\\ \"\t-", "words": ["aa\\ ", "-"]}
+{"text": "=-#= 'b\n ", "words": null}
+{"text": "=*a$b *\\\t\t \"", "words": null}
+{"text": "#\n\u0000b#=$\t- \r", "words": ["#", "\u0000b#=$", "-"]}
+{"text": "-$= \n\\# *'", "words": null}
+{"text": "'\rb =\n \t\té\u0000\\", "words": null}
+{"text": "*\r\r \n", "words": ["*"]}
+{"text": "$\\\n\t-=", "words": ["$\n", "-="]}
+{"text": "$\"b\r\t =a-\r\n#", "words": null}
+{"text": "--\u0000 a-\\-=$*a", "words": ["--\u0000", "a--=$*a"]}
+{"text": "'$a\tb =\\ # ", "words": null}
+{"text": " - ' =", "words": null}
+{"text": "\"\"\r\r $", "words": ["", "$"]}
+{"text": "\r=\r\t", "words": ["="]}
+{"text": "a\\\t$\néa*", "words": ["a\t$", "éa*"]}
+{"text": " \u0000#-b* \"\u0000-", "words": null}
+{"text": "\\'$#--\\\\\n\n", "words": ["'$#--\\"]}
+{"text": "éb\\\" \n $*bé", "words": ["éb\"", "$*bé"]}
+{"text": "==a# \t\n#a", "words": ["==a#", "#a"]}
+{"text": "é é-#a\"", "words": null}
+{"text": " a--\\a\u0000\né", "words": ["a--a\u0000", "é"]}
+{"text": "\r\u0000='éé", "words": null}
+{"text": "='#a='#\ré", "words": ["=#a=#", "é"]}
+{"text": "*é#\r", "words": ["*é#"]}
+{"text": "\u0000#\t", "words": ["\u0000#"]}
+{"text": "\\\t$\\\\\ra\u0000", "words": ["\t$\\", "a\u0000"]}
+{"text": "\"=", "words": null}
+{"text": "\t\r\n", "words": []}
+{"text": "\"a '*", "words": null}
+{"text": "\"\"\"", "words": null}
+{"text": "\n\\", "words": null}
+{"text": "\t a \\***  \n\né\\", "words": null}
+{"text": "\\'\\a*a**\\\ra", "words": ["'a*a**\ra"]}
+{"text": "\"é\n - é\t\r", "words": null}
+{"text": "#b\\", "words": null}
+{"text": "a \r$é-b\\'=", "words": ["a", "$é-b'="]}
+{"text": "--#\rb=$", "words": ["--#", "b=$"]}
+{"text": "\t' -", "words": null}
+{"text": "éb*\rb   \r b #", "words": ["éb*", "b", "b", "#"]}
+{"text": "\n\t $ ", "words": ["$"]}
+{"text": "\"#\u0000\u0000\nb \n\\é\t  ", "words": null}
+{"text": " $'\r\" \na", "words": null}
+{"text": "b\r\n a=a a \tb", "words": ["b", "a=a", "a", "b"]}
+{"text": "\n* $$'", "words": null}
+{"text": "b\r-", "words": ["b", "-"]}
+{"text": "\t \"\"\u0000\\a*# - ", "words": ["\u0000a*#", "-"]}
+{"text": "\u0000\"-\n\u0000*=\u0000\n\u0000  ", "words": null}
+{"text": "\\#b'éaé", "words": null}
+{"text": "'é- -$a=-é ", "words": null}
+{"text": "\"# *'a-\r\t #*\r\r", "words": null}
+{"text": "# é=\t\u0000\u0000\n\"\n", "words": null}
+{"text": "\\\tb\t'\\$\n\\\n\n", "words": null}
+{"text": "é\r$ -\"\na\r#\n*", "words": null}
+{"text": "##\t\u0000\r ", "words": ["##", "\u0000"]}
+{"text": "*=\u0000*é\n'# \r\"\"\t=", "words": null}
+{"text": "a *'*\u0000=\u0000\u0000", "words": null}
+{"text": "$\"$$\n\"'\t=é\r\\\\$", "words": null}
+{"text": "\t =$\"", "words": null}
+{"text": "aa - é\t\r-\t", "words": ["aa", "-", "é", "-"]}
+{"text": "-\u0000#\r=$\nb", "words": ["-\u0000#", "=$", "b"]}
+{"text": "\n\r$a\n##\\\\ '-a#", "words": null}
+{"text": "b\"**é#", "words": null}
+{"text": "#é'\rb$-\ta$#-", "words": null}
+{"text": "# \"\"  $b", "words": ["#", "", "$b"]}
+{"text": "-*\ré\r\r ", "words": ["-*", "é"]}
+{"text": "a\r\n\t\n\r$$*é - ", "words": ["a", "$$*é", "-"]}
+{"text": "\u0000b-\r$\" \"#\r\r", "words": ["\u0000b-", "$ #"]}
+{"text": "\t \t\u0000\"\u0000$'\\", "words": null}
+{"text": "b-$*", "words": ["b-$*"]}
+{"text": "# #", "words": ["#", "#"]}
+{"text": "#\n", "words": ["#"]}
+{"text": "éb\t$##a*b\\\t \t-", "words": ["éb", "$##a*b\t", "-"]}
+{"text": "ba#\t\"*a\\$ éb", "words": null}
+{"text": "'*\t\n'='\t\\#", "words": null}
+{"text": "\\a*#\u0000\n =", "words": ["a*#\u0000", "="]}
+{"text": "\u0000\rb-\\\"-", "words": ["\u0000", "b-\"-"]}
+{"text": "a- -é", "words": ["a-", "-é"]}
+{"text": "\ta\r\\\u0000a='b", "words": null}
+{"text": "=  '*\\\n\na \t", "words": null}
+{"text": "\n\"-#", "words": null}
+{"text": "=\\\t\r#$", "words": ["=\t", "#$"]}
+{"text": "=\u0000=*b =$\r$b\u0000", "words": ["=\u0000=*b", "=$", "$b\u0000"]}
+{"text": "*b$\u0000=\u0000$a", "words": ["*b$\u0000=\u0000$a"]}
+{"text": "b\"'-\t\t\r ", "words": null}
+{"text": "*'\né'\n'", "words": null}
+{"text": "$\t#\na\"*éé", "words": null}
+{"text": "é\t#", "words": ["é", "#"]}
+{"text": "\"\"$-\\= '-", "words": null}
+{"text": "b=*\\\r\t*'\r\t\r '", "words": ["b=*\r", "*\r\t\r "]}
+{"text": "'b#-#-\\", "words": null}
+{"text": "\t\"*\\*\n'*= \r $b", "words": null}
+{"text": "= $", "words": ["=", "$"]}
+{"text": "\"$éb'$\r", "words": null}
+{"text": "\r-b \"\\", "words": null}
+{"text": "'a", "words": null}
+{"text": "**\\", "words": null}
+{"text": " -*'\r", "words": null}
+{"text": "\t*- aéb\n*", "words": ["*-", "aéb", "*"]}
+{"text": "'\tb* '-\tb\\\u0000", "words": ["\tb* -", "b\u0000"]}
+{"text": "\r\"\u0000\"=-=\r \r\"", "words": null}
+{"text": "\n$", "words": ["$"]}
+{"text": "b'##\r\u0000#\"-\n", "words": null}
+{"text": "' #\né\\\u0000$*", "words": null}
+{"text": "-b#-é-$b\"\"", "words": ["-b#-é-$b"]}
+{"text": "a\na* #é aaa", "words": ["a", "a*", "#é", "aaa"]}
+{"text": " \"\t#é*=\r\u0000\nb\"\"$", "words": null}
+{"text": "éb\t=", "words": ["éb", "="]}
+{"text": "\"\néé$-\r\r\n", "words": null}
+{"text": "\"\n$  '\\*$\\\t", "words": null}
+{"text": "'*#b#\\", "words": null}
+{"text": "$#aaé\t-\\b\\é*=", "words": ["$#aaé", "-bé*="]}
+{"text": "\r$b-\t\n=", "words": ["$b-", "="]}
+{"text": "é\\#b'\n\t ", "words": null}
+{"text": "\n\" a-'\nb#\t-\u0000\r=", "words": null}
+{"text": "$*\\\na' \\\t$'\t'", "words": null}
+{"text": " $\u0000a$", "words": ["$\u0000a$"]}
+{"text": "\u0000  '' ' ", "words": null}
+{"text": "\"\r\r", "words": null}
+{"text": "\r\té\r=$ ", "words": ["é", "=$"]}
+{"text": "' \n=\\\n=\t", "words": null}
+{"text": "\tbaa-# a", "words": ["baa-#", "a"]}
+{"text": " b''  é\r\t\n\r\"", "words": null}
+{"text": "-\"$b\r'$ ", "words": null}
+{"text": "é'aa #'-'\r\"\r\u0000", "words": null}
+{"text": "\r\t'é*\\#\"", "words": null}
+{"text": "\t\u0000-*", "words": ["\u0000-*"]}
+{"text": "'*\t\r", "words": null}
+{"text": "\"*'\raé#-b==#=", "words": null}
+{"text": "$-#'\\b", "words": null}
+{"text": "é\"", "words": null}
+{"text": "'\r\\'", "words": ["\r\\"]}
+{"text": " -é -\u0000\t#'", "words": null}
+{"text": "'\n=$=b''$#*", "words": null}
+{"text": "#\\b  \r#  \n\t\t=", "words": ["#b", "#", "="]}
+{"text": "\n#\naé \u0000\r", "words": ["#", "aé", "\u0000"]}
+{"text": "\\\u0000*\\\\ \\", "words": null}
+{"text": "b* \t-*a b", "words": ["b*", "-*a", "b"]}
+{"text": "'\tb", "words": null}
+{"text": "é**b'\\\r\"", "words": null}
+{"text": " -=\t\\\t* \r", "words": ["-=", "\t*"]}
+{"text": "é\u0000# ", "words": ["é\u0000#"]}
+{"text": "\u0000\u0000'$é \"$ \\#\"", "words": null}
+{"text": "\"\"$*", "words": ["$*"]}
+{"text": "a\t#' b\u0000", "words": null}
+{"text": "\"**", "words": null}
+{"text": " $\"'é \"\"#", "words": null}
+{"text": "\"é \\\n b\\\r$\r\u0000bb", "words": null}
+{"text": "\t-\"* ", "words": null}
+{"text": "aa\r\\  aa'", "words": null}
+{"text": "=b\\a*\\\u0000b#--*", "words": ["=ba*\u0000b#--*"]}
+{"text": "\t\t\"\rb\\\"a'", "words": null}
+{"text": "é #$", "words": ["é", "#$"]}
+{"text": "*b", "words": ["*b"]}
+{"text": "\t-\\-\u0000\u0000a'\"*", "words": null}
+{"text": " \r*\" b'\n '", "words": null}
+{"text": " \u0000'", "words": null}
+{"text": "\u0000b -é\u0000$\\- b", "words": ["\u0000b", "-é\u0000$-", "b"]}
+{"text": " \u0000a  ", "words": ["\u0000a"]}
+{"text": " #\u0000=é-*-\t\t\\é\n\t", "words": ["#\u0000=é-*-", "é"]}
+{"text": "\\a '", "words": null}
+{"text": " =\"a=- éa*-\"", "words": ["=a=- éa*-"]}
+{"text": "\ré# béa\r\r", "words": ["é#", "béa"]}
+{"text": "a=b*é", "words": ["a=b*é"]}
+{"text": "\u0000-é$é é\n\r\"*#\\", "words": null}
+{"text": "\\\u0000\ré\t\"'\"", "words": ["\u0000", "é", "'"]}
+{"text": "*-\u0000-a*$ \u0000\u0000\r--\"", "words": null}
+{"text": "bé\t \t = \n*- \\\"", "words": ["bé", "=", "*-", "\""]}
+{"text": "$'\u0000#-b\\\t =", "words": null}
+{"text": "#*", "words": ["#*"]}
+{"text": "=\"'-\u0000\"\t'", "words": null}
+{"text": "$\n\u0000\r", "words": ["$", "\u0000"]}
+{"text": "aaé \" ", "words": null}
+{"text": "=#= #=-'\t--\\a", "words": null}
+{"text": "'\" '$  #\"b$", "words": null}
+{"text": "\u0000b#é", "words": ["\u0000b#é"]}
+{"text": "\u0000'é", "words": null}
+{"text": "'*$ =\ta\t", "words": null}
+{"text": "\\\r#\"$-\rbé", "words": null}
+{"text": "#a= $-$\"\u0000 \n", "words": null}
+{"text": "$-a$\n =*a\ra$\t", "words": ["$-a$", "=*a", "a$"]}
+{"text": "=\"\né$$", "words": null}
+{"text": "'\u0000$\té-=**\u0000", "words": null}
+{"text": "\n*b=\r   ", "words": ["*b="]}
+{"text": "\t\rb*a", "words": ["b*a"]}
+{"text": "\r #\r\"\r**#\r #\n#", "words": null}
+{"text": "$\\  ", "words": ["$ "]}
+{"text": "abé-=\t\r *-$ \t\"", "words": null}
+{"text": "=\u0000-- \r\t\n\\* é", "words": ["=\u0000--", "*", "é"]}
+{"text": "a' bééaa", "words": null}
+{"text": "=\n-", "words": ["=", "-"]}
+{"text": "* ", "words": ["*"]}
+{"text": "\r\"\t\r=\t", "words": null}
+{"text": " *=\r$#\n", "words": ["*=", "$#"]}
+{"text": "\\ - éé#a\u0000\\\r\\", "words": null}
+{"text": "b-b= 'é\u0000", "words": null}
+{"text": "=b\t\t -$", "words": ["=b", "-$"]}
+{"text": "\" -$* ", "words": null}
+{"text": " a#\u0000#= \r#\r==", "words": ["a#\u0000#=", "#", "=="]}
+{"text": "\r=a\"a é-\u0000 \\#\u0000=", "words": null}
+{"text": "\\bb#\t\ra=\\\u0000\r-", "words": ["bb#", "a=\u0000", "-"]}
+{"text": "aé$\"#", "words": null}
+{"text": "é *b\t= $#", "words": ["é", "*b", "=", "$#"]}
+{"text": "\\\\#=aé\"é é#-", "words": null}
+{"text": "* '\n", "words": null}
+{"text": "\u0000\"\t - \\éaé\n", "words": null}
+{"text": "*  \u0000-", "words": ["*", "\u0000-"]}
+{"text": " # =bé\rb\u0000'", "words": null}
+{"text": "éa-#-é-a", "words": ["éa-#-é-a"]}
+{"text": "=\"a\na =", "words": null}
+{"text": "\n\u0000\r #'\\$'b\n", "words": ["\u0000", "#\\$b"]}
+{"text": "a=\n", "words": ["a="]}
+{"text": "a\u0000\"\u0000", "words": null}
+{"text": "-b \\ -", "words": ["-b", " -"]}
+{"text": "'\r \r-\u0000\"-' '#", "words": null}
+{"text": "\\é\"-\n*b '", "words": null}
+{"text": "\tbé\\\r#b '=", "words": null}
+{"text": "é\n\n\"\\\u0000éabé\t -b", "words": null}
+{"text": "'\r\\ \t-", "words": null}
+{"text": "\r*a éé*\n'", "words": null}
+{"text": "# a\"=", "words": null}
+{"text": "éb$''\nb", "words": ["éb$", "b"]}
+{"text": "\" \u0000\n\u0000a'", "words": null}
+{"text": "\"'bb-a *b=b'\n", "words": null}
+{"text": "\r*\u0000 bb$\"'\\", "words": null}
+{"text": "\\\\'é '\u0000\u0000= $", "words": ["\\é \u0000\u0000=", "$"]}
+{"text": "\\\r\r\r\r\"\"=\r===", "words": ["\r", "=", "==="]}
+{"text": "\\a#*\raéa *\t-\t", "words": ["a#*", "aéa", "*", "-"]}
+{"text": "\t*#a=  é\u0000=*é\t\"", "words": null}
+{"text": "*\u0000\n# 'b-\t#é a", "words": null}
+{"text": "b $'\\bbb\u0000\n#-#\n", "words": null}
+{"text": "\r-é#\u0000=$$\u0000", "words": ["-é#\u0000=$$\u0000"]}
+{"text": "=  \t=\u0000#-$a\\'\t", "words": ["=", "=\u0000#-$a'"]}
+{"text": "=\"a\u0000a\"=é\n\r ", "words": ["=a\u0000a=é"]}
+{"text": "*-aé#'\n \"\r- ", "words": null}
+{"text": "\r\u0000b\\aa\t*$", "words": ["\u0000baa", "*$"]}
+{"text": " \r#= =", "words": ["#=", "="]}
+{"text": "-\r ", "words": ["-"]}
+{"text": "\t\nab\t\r\t", "words": ["ab"]}
+{"text": "*\\**", "words": ["***"]}
+{"text": "*'' a$\"\\=*\u0000a*", "words": null}
+{"text": "\r$*-'-\"$\n", "words": null}
+{"text": "aaéba\"\u0000$\t\\  \ra", "words": null}
+{"text": "-é*\t\u0000\n\"-", "words": null}
+{"text": " \r== \"a''\t", "words": null}
+{"text": " \t\r--é'=\u0000\\'\n#", "words": ["--é=\u0000\\", "#"]}
+{"text": "\r ", "words": []}
+{"text": "*\n*b\r*$\n '\\\t", "words": null}
+{"text": "a\n\\éb", "words": ["a", "éb"]}
+{"text": "a\n#b\ra\t\r", "words": ["a", "#b", "a"]}
+{"text": "=-$aa\r\u0000\t* ", "words": ["=-$aa", "\u0000", "*"]}
+{"text": "\r=#b\nb-\r''\n\u0000a=", "words": ["=#b", "b-", "", "\u0000a="]}
+{"text": " \nbé", "words": ["bé"]}
+{"text": "=b \u0000\\\"\r*", "words": ["=b", "\u0000\"", "*"]}
+{"text": "bb' * \u0000", "words": null}
+{"text": "'\"é\t\\= \t\n\\", "words": null}
+{"text": "é\u0000", "words": ["é\u0000"]}
+{"text": "=*#b*-#", "words": ["=*#b*-#"]}
+{"text": "\\#=#$#=\"é'", "words": null}
+{"text": "-\t\u0000-é ", "words": ["-", "\u0000-é"]}
+{"text": "\u0000$\t\u0000\t=\"ba\t\t", "words": null}
+{"text": "\"-\t\"$-a\u0000'", "words": null}
+{"text": "#b =", "words": ["#b", "="]}
+{"text": "*\t  \"a\u0000 #", "words": null}
+{"text": "é\\*$\u0000=\u0000-\n\\\"é", "words": ["é*$\u0000=\u0000-", "\"é"]}
+{"text": "#'*b# \t\"- a", "words": null}
+{"text": " \u0000\r\t'-*#\n\\\n\t-", "words": null}
+{"text": "\t-\\$$", "words": ["-$$"]}
+{"text": "a \r", "words": ["a"]}
+{"text": "\\-#ba\né", "words": ["-#ba", "é"]}
+{"text": "b # b\n\u0000b\tb\t*$", "words": ["b", "#", "b", "\u0000b", "b", "*$"]}
+{"text": "é=", "words": ["é="]}
+{"text": "*\"##\t\r=\"\t\n", "words": ["*##\t\r="]}
+{"text": "*\u0000\t -=\n\r#  -\t#", "words": ["*\u0000", "-=", "#", "-", "#"]}
+{"text": "-\"-\r=*", "words": null}
+{"text": "* *#a\t\tb", "words": ["*", "*#a", "b"]}
+{"text": "* \\\"\\a\r #", "words": ["*", "\"a", "#"]}
+{"text": "b*\\", "words": null}
+{"text": " =$\u0000\u0000\r", "words": ["=$\u0000\u0000"]}
+{"text": "a \r\u0000####\\  \t ", "words": ["a", "\u0000#### "]}
+{"text": "$-\"$'='\r\t\na#$", "words": null}
+{"text": "b\r#\u0000#", "words": ["b", "#\u0000#"]}
+{"text": "\t-éb\\$\r-\né$\u0000b ", "words": ["-éb$", "-", "é$\u0000b"]}
+{"text": " \\\t-' \n\r'$*a\t", "words": ["\t- \n\r$*a"]}
+{"text": "\u0000a a", "words": ["\u0000a", "a"]}
+{"text": "-* $#", "words": ["-*", "$#"]}
+{"text": "$$\\=\"#\"b\r' ", "words": null}
+{"text": "= #\u0000'-\r\\", "words": null}
+{"text": "-aa", "words": ["-aa"]}
+{"text": "ba \n\t# $#-", "words": ["ba", "#", "$#-"]}
+{"text": "\r''", "words": [""]}
+{"text": "-a aa==é*\r-\\\u0000", "words": ["-a", "aa==é*", "-\u0000"]}
+{"text": "\r#\t- \u0000=", "words": ["#", "-", "\u0000="]}
+{"text": "éb -$*$bé ", "words": ["éb", "-$*$bé"]}
+{"text": "b'", "words": null}
+{"text": "=#'$b*\n$\\é- -", "words": null}
+{"text": "\u0000b-- '", "words": null}
+{"text": "'--\\", "words": null}
+{"text": "\u0000é ", "words": ["\u0000é"]}
+{"text": "\"\n", "words": null}
+{"text": "-#*\\\t#", "words": ["-#*\t#"]}
+{"text": "-a#= \ta$\"\u0000 =\ta", "words": null}
+{"text": "$\r\r\t*b- ", "words": ["$", "*b-"]}
+{"text": "b$ =\\é$a\"\\", "words": null}
+{"text": "\\\n\"\" \r# ", "words": ["\n", "#"]}
+{"text": "\"\\$ -\ta-", "words": null}
+{"text": "\"-", "words": null}
+{"text": "\t''\t$a\"$$", "words": null}
+{"text": "'\t$ a\r\n\na\t\\", "words": null}
+{"text": "\\\\**\\a\r*", "words": ["\\**a", "*"]}
+{"text": "=-#\"\" \"b-=a'\u0000", "words": null}
+{"text": "\t \r\u0000$b", "words": ["\u0000$b"]}
+{"text": "\u0000\n \\ *aa\"", "words": null}
+{"text": "\r\u0000-\ra\r$b", "words": ["\u0000-", "a", "$b"]}
+{"text": "'\u0000 b#é\" ", "words": null}
+{"text": "'  \"-\\\r\r\n", "words": null}
+{"text": "#\\b\\", "words": null}
+{"text": "-a\u0000'\u0000*é'", "words": ["-a\u0000\u0000*é"]}
+{"text": "''\t\t**b*bé\r\t$b", "words": ["", "**b*bé", "$b"]}
+{"text": "\"\n\\a a\t\n*\"  ", "words": ["\n\\a a\t\n*"]}
+{"text": "\r\\'\n ", "words": ["'"]}
+{"text": "-\r*$\u0000-*", "words": ["-", "*$\u0000-*"]}
+{"text": "  \na\"b'é\"'*\\", "words": null}
+{"text": "#a#\nb'\u0000-\n=é\u0000\u0000", "words": null}
+{"text": "é\rb", "words": ["é", "b"]}
+{"text": "abé**' -\n\u0000é-", "words": null}
+{"text": "*  \t-=", "words": ["*", "-="]}
+{"text": "a$'\\*- a", "words": null}
+{"text": "- \r \\\u0000\"\"\"\r\\$a\"", "words": ["-", "\u0000\r\\$a"]}
+{"text": "\"a 'é ", "words": null}
+{"text": "\\é*\n\u0000$\n\t", "words": ["é*", "\u0000$"]}
+{"text": "bé- \t ", "words": ["bé-"]}
+{"text": "a\n\"-#\tab\u0000", "words": null}
+{"text": "\"b'**-$=$\"'==#", "words": null}
+{"text": "#é\r=*\u0000 b \u0000*\\=a", "words": ["#é", "=*\u0000", "b", "\u0000*=a"]}
+{"text": " \r\n\t  ", "words": []}
+{"text": "\"é*#\u0000-a-é'\t=a", "words": null}
+{"text": "é\t-$b=ab", "words": ["é", "-$b=ab"]}
+{"text": "a\tabaa-", "words": ["a", "abaa-"]}
+{"text": "b #é\n* éb#-\u0000\\", "words": null}
+{"text": "\"\\##'b", "words": null}
+{"text": "b-\u0000b$=\"b' *\u0000", "words": null}
+{"text": "=-=$-\r\u0000\r=#", "words": ["=-=$-", "\u0000", "=#"]}
+{"text": "a\\b-\u0000b=\té\n-=", "words": ["ab-\u0000b=", "é", "-="]}
+{"text": "a-'$=é\u0000-a*", "words": null}
+{"text": "\u0000\u0000 ", "words": ["\u0000\u0000"]}
+{"text": "\"\r\r-", "words": null}
+{"text": "\u0000é=-*\u0000éé\t'*\u0000\u0000", "words": null}
+{"text": "'*", "words": null}
+{"text": "a\"a\\", "words": null}
+{"text": "\"'\né-", "words": null}
+{"text": "#\n$\\a\r' éabb#", "words": null}
+{"text": "\té\\'", "words": ["é'"]}
+{"text": "\t\u0000$#\\\r \\- =", "words": ["\u0000$#\r", "-", "="]}
+{"text": "a$\\#- \tb $ *\r", "words": ["a$#-", "b", "$", "*"]}
+{"text": " \tb-#\\", "words": null}
+{"text": " \n\"$$\r\u0000\u0000b'a", "words": null}
+{"text": "#='*- ", "words": null}
+{"text": "\r\u0000# \n\r# b$a#b", "words": ["\u0000#", "#", "b$a#b"]}
+{"text": "b\rbb*é \r$é\r ", "words": ["b", "bb*é", "$é"]}
+{"text": "\u0000b-\"é=#=*b $", "words": null}
+{"text": " -*", "words": ["-*"]}
+{"text": "a a\u0000='a $-'é=", "words": ["a", "a\u0000=a $-é="]}
+{"text": "é#*\n *", "words": ["é#*", "*"]}
+{"text": "\r$a'\u0000$#'\r", "words": ["$a\u0000$#"]}
+{"text": " \r \"*=\\\u0000\t\"\u0000", "words": ["*=\\\u0000\t\u0000"]}
+{"text": "a'bb", "words": null}
+{"text": "*## \\\r*", "words": ["*##", "\r*"]}
+{"text": "=\\-é\\\\'* \u0000\raé ", "words": null}
+{"text": "a=\ré \u0000 ", "words": ["a=", "é", "\u0000"]}
+{"text": "=\n\" \u0000'\t", "words": null}
+{"text": "*éé\r\" \u0000b\" ", "words": ["*éé", " \u0000b"]}
+{"text": " \n#\u0000\n*=éb*", "words": ["#\u0000", "*=éb*"]}
+{"text": "*b \r", "words": ["*b"]}
+{"text": "#é", "words": ["#é"]}
+{"text": " \u0000aé aé", "words": ["\u0000aé", "aé"]}
+{"text": "\nb * --=\t", "words": ["b", "*", "--="]}
+{"text": "#* \u0000 #=ébé'", "words": null}
+{"text": "a\ra", "words": ["a", "a"]}
+{"text": "\n\u0000'\\a*a\"-\u0000\t*", "words": null}
+{"text": "\t\r\n'", "words": null}
+{"text": "a\\a\"\\", "words": null}
+{"text": "=\r= ", "words": ["=", "="]}
+{"text": "=é =\r=  \u0000", "words": ["=é", "=", "=", "\u0000"]}
+{"text": "\n\r*\n\"é*\u0000'$'", "words": null}
+{"text": "\\ \"\u0000-a-\\==bé", "words": null}
+{"text": "\"\nba$é$# \"a-\r=", "words": ["\nba$é$# a-", "="]}
+{"text": "\n\\#'= #\"#", "words": null}
+{"text": "'\n\\'\n'b\"'*=*'\u0000", "words": null}
+{"text": " b\t\"\\\nbé\n\n \\", "words": null}
+{"text": " \u0000'  #$\r -\r", "words": null}
+{"text": " $\\ab'$#$ \u0000 ", "words": null}
+{"text": " \n\"\" \n", "words": [""]}
+{"text": "a=b=é", "words": ["a=b=é"]}
+{"text": "$ b\u0000=-#é\r\r-#", "words": ["$", "b\u0000=-#é", "-#"]}
+{"text": "\"\u0000\t", "words": null}
+{"text": "b\"\u0000' \"=\"b\r\t", "words": null}
+{"text": "a \n\nb#-é\"$", "words": null}
+{"text": "$\r='' \u0000 $", "words": ["$", "=", "\u0000", "$"]}
+{"text": "b'\\\u0000\ra\t\\$-'", "words": ["b\\\u0000\ra\t\\$-"]}
+{"text": "\"\ré\u0000\\ \u0000a$", "words": null}
+{"text": "b$", "words": ["b$"]}
+{"text": "\n\t'\u0000-", "words": null}
+{"text": "a-\n\t\r =\"", "words": null}
+{"text": "*# ", "words": ["*#"]}
+{"text": " *$\r\u0000ab\u0000  é\"#\r", "words": null}
+{"text": "\u0000#\u0000\n", "words": ["\u0000#\u0000"]}
+{"text": "$\n", "words": ["$"]}
+{"text": "b\n-'*\r", "words": null}
+{"text": " = \n-#", "words": ["=", "-#"]}
+{"text": "$'é-\r\\ \t\\-$", "words": null}
+{"text": "\r#b*\u0000\t* $$ a", "words": ["#b*\u0000", "*", "$$", "a"]}
+{"text": "*\n\t-\\\\\n", "words": ["*", "-\\"]}
+{"text": "b'a*\ré*-\n\"$'\n", "words": ["ba*\ré*-\n\"$"]}
+{"text": "\r \t -a--\n$\n", "words": ["-a--", "$"]}
+{"text": "é  é-\t*\r", "words": ["é", "é-", "*"]}
+{"text": "é$'#", "words": null}
+{"text": "é\n\\", "words": null}
+{"text": "\"\u0000=a-= \n", "words": null}
+{"text": "\"-\ta=#- \r \n", "words": null}
+{"text": "\n$\n$$#\t b'é", "words": null}
+{"text": "#\\éb\"'#\u0000é\n #", "words": null}
+{"text": "\\\"é=*\u0000*é", "words": ["\"é=*\u0000*é"]}
+{"text": "ab\\\\#\\ #\u0000a\"\"a'", "words": null}
+{"text": "éé", "words": ["éé"]}
+{"text": " \r= =b$\n$'\"*", "words": null}
+{"text": "'b\"\t#*a\t\n", "words": null}
+{"text": "\"\ré-'#\t", "words": null}
+{"text": "$$\n\r'\t =$a", "words": null}
+{"text": "b*'\"*\té==\u0000\n\u0000\n", "words": null}
+{"text": "*\\\t\r'b= ", "words": null}
+{"text": " \\ \r\t\n\t'\u0000\r\u0000a-", "words": null}
+{"text": "$-\r=*béb\t**-", "words": ["$-", "=*béb", "**-"]}
+{"text": "bb- \u0000\"*\"-$\t-$\"", "words": null}
+{"text": "-é\"#\t#b", "words": null}
+{"text": "#\\ \"b \\\u0000b\"'\"\n", "words": null}
+{"text": " \u0000\tb=b=a ", "words": ["\u0000", "b=b=a"]}
+{"text": "\n=\\\u0000 é", "words": ["=\u0000", "é"]}
+{"text": "-\tb\nb=$\t\u0000\n", "words": ["-", "b", "b=$", "\u0000"]}
+{"text": "é \"", "words": null}
+{"text": "\" é\\\r é*$# \té", "words": null}
+{"text": "-é-\\=*\"\u0000\tb#**", "words": null}
+{"text": "='*", "words": null}
+{"text": "* =-", "words": ["*", "=-"]}
+{"text": "b-a#\t'a", "words": null}
+{"text": "  \r", "words": []}
+{"text": "\rb", "words": ["b"]}
+{"text": "\\*'\t\u0000", "words": null}
+{"text": "*\"\"$ab#\t#\r\\", "words": null}
+{"text": "#a#-", "words": ["#a#-"]}
+{"text": "\"\n#*\u0000\u0000\t\"", "words": ["\n#*\u0000\u0000\t"]}
+{"text": "#bb\n\n= $ab", "words": ["#bb", "=", "$ab"]}
+{"text": "\u0000\"b\"  \u0000é\u0000\\", "words": null}
+{"text": "-é\na\n-$b\u0000 ", "words": ["-é", "a", "-$b\u0000"]}
+{"text": "-$", "words": ["-$"]}
+{"text": "\t'é--b'=='\\b\\*", "words": null}
+{"text": "\\\n\"'\r\\#\t=b#", "words": null}
+{"text": "\"'$b-#\té", "words": null}
+{"text": "a*\u0000-\u0000\u0000*é'", "words": null}
+{"text": "\n\t\t \né", "words": ["é"]}
+{"text": "=*\u0000*$\r=b\\a  ", "words": ["=*\u0000*$", "=ba"]}
+{"text": "é*a \t\n-", "words": ["é*a", "-"]}
+{"text": "é\u0000*=\r \"-#\r \\#\n", "words": null}
+{"text": " *\u0000$b#\\\\a \u0000a* ", "words": ["*\u0000$b#\\a", "\u0000a*"]}
+{"text": "=é\u0000", "words": ["=é\u0000"]}
+{"text": "\u0000\u0000\u0000 \\\u0000\"\\''#", "words": null}
+{"text": "'\n\t", "words": null}
+{"text": "\na\n$", "words": ["a", "$"]}
+{"text": "\"\t\n '$é\"\\#\\\r", "words": ["\t\n '$é#\r"]}
+{"text": "  \"$'é$a*", "words": null}
+{"text": "-a\n==", "words": ["-a", "=="]}
+{"text": "$=$é$\\", "words": null}
+{"text": "\r\u0000\u0000\r\u0000\u0000'#\u0000\r-*= ", "words": null}
+{"text": "\t '\"#\\é a\\#", "words": null}
+{"text": " \\=#\u0000\n b='  ", "words": null}
+{"text": "b*\u0000b-b\\'$ ", "words": ["b*\u0000b-b'$"]}
+{"text": "\u0000\"-=#\u0000\né\"''=", "words": ["\u0000-=#\u0000\né="]}
+{"text": "bb\\", "words": null}
+{"text": "*\\\u0000\"aa\n$\u0000\n", "words": null}
+{"text": "\té\n", "words": ["é"]}
+{"text": "*a", "words": ["*a"]}
+{"text": "\r -#\u0000#=b-", "words": ["-#\u0000#=b-"]}
+{"text": "éab\u0000é\"\r\r", "words": null}
+{"text": "\"\n*-b\n-$\n", "words": null}
+{"text": "*\r-", "words": ["*", "-"]}
+{"text": "\"\"é", "words": ["é"]}
+{"text": "a$\"\n#\n\n\u0000\\*  ", "words": null}
+{"text": "-\t=' é\\#\ré$ba\n", "words": null}
+{"text": "-\t\t\n", "words": ["-"]}
+{"text": "-\u0000\n\n-é\t\r\n\n", "words": ["-\u0000", "-é"]}
+{"text": " \né\\\tb\t $ba\ta\u0000", "words": ["é\tb", "$ba", "a\u0000"]}
+{"text": "é\n$#\u0000#\r#", "words": ["é", "$#\u0000#", "#"]}
+{"text": "*a'''\u0000'", "words": ["*a\u0000"]}
+{"text": "* \u0000\u0000b*\"\u0000\u0000\\b", "words": null}
+{"text": " \t\n- \\ ='\u0000aa-", "words": null}
+{"text": "\r-aa$\\é", "words": ["-aa$é"]}
+{"text": "\r\r$*'\"*=*", "words": null}
+{"text": "=\r'", "words": null}
+{"text": "\\$\\\u0000", "words": ["$\u0000"]}
+{"text": "\u0000-\né'é", "words": null}
+{"text": "-\u0000 aé\t \n==\n\n", "words": ["-\u0000", "aé", "=="]}
+{"text": "\\ =a \u0000\t ", "words": [" =a", "\u0000"]}
+{"text": "$\\\" é$\\$ -\n\n*é", "words": ["$\"", "é$$", "-", "*é"]}
+{"text": "\tb*-- 'é\"", "words": null}
+{"text": "$=é\\\n'", "words": null}
+{"text": "\"-\ra\ré#", "words": null}
+{"text": "$'#\r\r", "words": null}
+{"text": "$$éé\r\t", "words": ["$$éé"]}
+{"text": "a\\  #\\ =\n\u0000*", "words": ["a ", "# =", "\u0000*"]}
+{"text": "é#\tb\"$\nb\"$-a=", "words": ["é#", "b$\nb$-a="]}
+{"text": "\t\t$\\$a\r #a\r ", "words": ["$$a", "#a"]}
+{"text": "#=\"\n'#b'\n \r\u0000#\\", "words": null}
+{"text": " -* -\u0000a\"\u0000\"", "words": ["-*", "-\u0000a\u0000"]}
+{"text": "\rb#", "words": ["b#"]}
+{"text": "a# \r$*#bb", "words": ["a#", "$*#bb"]}
+{"text": " #\t'\ré", "words": null}
+{"text": "a\\#\\bb\t é é- ", "words": ["a#bb", "é", "é-"]}
+{"text": " $b  \"\"*é#", "words": ["$b", "*é#"]}
+{"text": "é$\tbé'*", "words": null}
+{"text": "é\\#\t=", "words": ["é#", "="]}
+{"text": "\t-\"-\n", "words": null}
+{"text": "\" \"a\n", "words": [" a"]}
+{"text": "é\"\"*", "words": ["é*"]}
+{"text": "\t'\n", "words": null}
+{"text": "\r\"é\t\n-", "words": null}
+{"text": "-é \n $=# ='\"#'", "words": ["-é", "$=#", "=\"#"]}
+{"text": "é$\t$ -", "words": ["é$", "$", "-"]}
+{"text": "-a$=bé", "words": ["-a$=bé"]}
+{"text": " ' b\n= #\t", "words": null}
+{"text": "\r=##\u0000é=bb\t", "words": ["=##\u0000é=bb"]}
+{"text": "\n#\\ba\"==", "words": null}
+{"text": "\\\r$*=\n\\*", "words": ["\r$*=", "*"]}
+{"text": "\"'-=", "words": null}
+{"text": "-=\ré-\té", "words": ["-=", "é-", "é"]}
+{"text": "\n#$ $\"a*b", "words": null}
+{"text": "\"\"-'' ", "words": ["-"]}
+{"text": "-\"'\\", "words": null}
+{"text": "\ré'-ééé\ré", "words": null}
+{"text": "$\u0000a*", "words": ["$\u0000a*"]}
+{"text": "\u0000='é*b\\ a-$a", "words": null}
+{"text": " \"a\n-b\u0000\\=", "words": null}
+{"text": "-\taé$\\\t*", "words": ["-", "aé$\t*"]}
+{"text": "\\# ", "words": ["#"]}
+{"text": "éé\u0000a\n\\a $ b", "words": ["éé\u0000a", "a", "$", "b"]}
+{"text": "$ \t \t  \\\t\\=a$", "words": ["$", "\t=a$"]}
+{"text": " b=*$\r=", "words": ["b=*$", "="]}
+{"text": "$  #\"\"\r", "words": ["$", "#"]}
+{"text": " 'a\r", "words": null}
+{"text": "* \r-$\r =", "words": ["*", "-$", "="]}
+{"text": "\u0000a", "words": ["\u0000a"]}
+{"text": "*$$'*", "words": null}
+{"text": "\n\u0000é*b\\=a\t  ", "words": ["\u0000é*b=a"]}
+{"text": "'\\*=", "words": null}
+{"text": "b \n\u0000*\\$=*a \n\"é", "words": null}
+{"text": "\t#=\r\u0000#\"#", "words": null}
+{"text": "# é$\" b", "words": null}
+{"text": "\"\t\ra ", "words": null}
+{"text": "  \u0000", "words": ["\u0000"]}
+{"text": "\n-'\u0000", "words": null}
+{"text": "\"\\-b* \n\n\t", "words": null}
+{"text": "éaéb \u0000 é$#=", "words": ["éaéb", "\u0000", "é$#="]}
+{"text": "=$", "words": ["=$"]}
+{"text": "b=\\", "words": null}
+{"text": "=-b\\*=a\\#", "words": ["=-b*=a#"]}
+{"text": " é \u0000\t#\rb\n-\u0000\u0000", "words": ["é", "\u0000", "#", "b", "-\u0000\u0000"]}
+{"text": "\t--\\\r\"\n\t\"#a=\u0000", "words": ["--\r\n\t#a=\u0000"]}
+{"text": "\\é=\" \t*b$b'", "words": null}
+{"text": "-\t\"\\\\-\t\\\ra\" '", "words": null}
+{"text": "\\\u0000", "words": ["\u0000"]}
+{"text": "\tba'-\t#'\u0000", "words": ["ba-\t#\u0000"]}
+{"text": " ##\"#b 'é#a", "words": null}
+{"text": " *#\r", "words": ["*#"]}
+{"text": "'aéb\"'é\r", "words": ["aéb\"é"]}
+{"text": "\u0000 b#\\*\\=\r", "words": ["\u0000", "b#*="]}
+{"text": "\\a$\" \tb\\ \t", "words": null}
+{"text": "\r\t#-a", "words": ["#-a"]}
+{"text": "=a ' -=", "words": null}
+{"text": "\"\u0000 $= \r=", "words": null}
+{"text": "\\\\\r\r-'=***\\\r", "words": null}
+{"text": "'*a#ba=\u0000'b bb", "words": ["*a#ba=\u0000b", "bb"]}
+{"text": "$=a", "words": ["$=a"]}
+{"text": "a$\"\n$", "words": null}
+{"text": "*#\u0000 -=\" ", "words": null}
+{"text": " b", "words": ["b"]}
+{"text": "$\r", "words": ["$"]}
+{"text": "\\#\t*a\u0000 \"é\r \rb", "words": null}
+{"text": "$b \"\u0000*$=$= \"a", "words": ["$b", "\u0000*$=$= a"]}
+{"text": "\n\na#é\"é\n*\\", "words": null}
+{"text": "'b\n", "words": null}
+{"text": "é$#\r", "words": ["é$#"]}
+{"text": "b$\u0000b", "words": ["b$\u0000b"]}
+{"text": "\u0000*\u0000\r\u0000#", "words": ["\u0000*\u0000", "\u0000#"]}
+{"text": "\\==\\\\\u0000 -\r", "words": ["==\\\u0000", "-"]}
+{"text": "\r 'b$é\"\r$#\r\r\t\n", "words": null}
+{"text": "'* \u0000\u0000--\r*\"", "words": null}
+{"text": "baé\t *b \"", "words": null}
+{"text": "\\ \t é\\#* =\" \r", "words": null}
+{"text": "b\"\\*\"", "words": ["b\\*"]}
+{"text": "a\t=# b ", "words": ["a", "=#", "b"]}
+{"text": "\"b", "words": null}
+{"text": "'=#**", "words": null}
+{"text": " \u0000$a", "words": ["\u0000$a"]}
+{"text": " \t \né*", "words": ["é*"]}
+{"text": "\t\n#=\\a\r-$", "words": ["#=a", "-$"]}
+{"text": "a#", "words": ["a#"]}
+{"text": "\u0000$\"\t\"'", "words": null}
+{"text": " \n-$*é", "words": ["-$*é"]}
+{"text": " \rb=a \r bé \t=", "words": ["b=a", "bé", "="]}
+{"text": " -\\ \r- 'a#", "words": null}
+{"text": "a \\", "words": null}
+{"text": " \\\nb\"é\tb'", "words": null}
+{"text": "#\\ a\"'\u0000'a", "words": null}
+{"text": " == é\u0000='a\t\"é", "words": null}
+{"text": "$*\"\"-\r", "words": ["$*-"]}
+{"text": "\nb  \" ", "words": null}
+{"text": "é-\u0000#\\", "words": null}
+{"text": " '=*\"'* ab-\\$", "words": ["=*\"*", "ab-$"]}
+{"text": "=\r a\u0000\"é#", "words": null}
+{"text": " $-\u0000", "words": ["$-\u0000"]}
+{"text": "é*$\r\n #\n", "words": ["é*$", "#"]}
+{"text": "-#\r# \"", "words": null}
+{"text": "\u0000- \r\u0000 é\u0000\\\u0000é\"\\", "words": null}
+{"text": "éa '-#-bé#", "words": null}
+{"text": "*\\-\t' b\t", "words": null}
+{"text": "\r#a'\t-\t=#$", "words": null}
+{"text": "\n$-b\n=\ta", "words": ["$-b", "=", "a"]}
+{"text": "\t=\t  \r -\n'\u0000=", "words": null}
+{"text": "\"\u0000\r\n*\r\\$#\n", "words": null}
+{"text": "  b\" '", "words": null}
+{"text": "\u0000\r=\u0000\té", "words": ["\u0000", "=\u0000", "é"]}
+{"text": "\na\\ \\\r", "words": ["a \r"]}
+{"text": "$\u0000a$b='", "words": null}
+{"text": "\\#\t-\té ", "words": ["#", "-", "é"]}
+{"text": "\r\n*-\u0000é\\\na\t$\u0000", "words": ["*-\u0000é\na", "$\u0000"]}
+{"text": "a\\\\a\n\r\"$ b", "words": null}
+{"text": "-\"\t\\\\#  == #\r", "words": null}
+{"text": "\" \u0000\r*=\t*a", "words": null}
+{"text": "éé'$\rb\u0000\"\n \na  ", "words": null}
+{"text": "\"#b \"\t\\", "words": null}
+{"text": "#*é\t", "words": ["#*é"]}
+{"text": "=é#=a\t$-", "words": ["=é#=a", "$-"]}
+{"text": "\n#$-éé\u0000$\t", "words": ["#$-éé\u0000$"]}
+{"text": " *\n-=\t\r\té", "words": ["*", "-=", "é"]}
+{"text": "\t# \\é==\\'ba\r", "words": ["#", "é=='ba"]}
+{"text": "\u0000 *#'\t$b'", "words": ["\u0000", "*#\t$b"]}
+{"text": "#\\\t\r\"\"a", "words": ["#\t", "a"]}
+{"text": "\t\r-*b\\\" \u0000b\n='", "words": null}
+{"text": "é\t \\= $", "words": ["é", "=", "$"]}
+{"text": "\"-\u0000*a  b\"", "words": ["-\u0000*a  b"]}
+{"text": "*\r", "words": ["*"]}
+{"text": "\té\u0000\"\r\raa\u0000\r b", "words": null}
+{"text": "\"=\"a#a*\n#=\"a=*", "words": null}
+{"text": "\rb='ba\r- #-*", "words": null}
+{"text": "-a\r'=", "words": null}
+{"text": "\na b\r-'* -\t$", "words": null}
+{"text": "\rabb#\u0000a", "words": ["abb#\u0000a"]}
+{"text": "b\u0000a\nb\u0000", "words": ["b\u0000a", "b\u0000"]}
+{"text": "-\n -\n\r$\n", "words": ["-", "-", "$"]}
+{"text": "*\\#\r$", "words": ["*#", "$"]}
+{"text": " a# $$\ra", "words": ["a#", "$$", "a"]}
+{"text": "\"#*\r==-#", "words": null}
+{"text": "=bé-$\r", "words": ["=bé-$"]}
+{"text": "--\\#$", "words": ["--#$"]}
+{"text": "*é", "words": ["*é"]}
+{"text": "\"\"*é\n#\t#-", "words": ["*é", "#", "#-"]}
+{"text": " -#*", "words": ["-#*"]}
+{"text": "\na\u0000\t--$\u0000\"#'b", "words": null}
+{"text": "\r#\t\u0000\r #", "words": ["#", "\u0000", "#"]}
+{"text": "$ a*\na", "words": ["$", "a*", "a"]}
+{"text": "'a- \"", "words": null}
+{"text": "-\r\n#*", "words": ["-", "#*"]}
+{"text": "'é\t$\\ =\t", "words": null}
+{"text": "\n\"\t-  -\"#", "words": ["\t-  -#"]}
+{"text": "b\"b\\'=", "words": null}
+{"text": "b#b\u0000#\t *-", "words": ["b#b\u0000#", "*-"]}
+{"text": "= \té b--\\\u0000$#\\\n", "words": ["=", "é", "b--\u0000$#\n"]}
+{"text": "--#\u0000- 'b \t", "words": null}
+{"text": "-\u0000'- =\t \"a-=a", "words": null}
+{"text": " 'a\r' b", "words": ["a\r", "b"]}
+{"text": "*\r-=é\t \\-= ", "words": ["*", "-=é", "-="]}
+{"text": "\\ é=*#\t 'b", "words": null}
+{"text": "\t $'\"-\nb\"*", "words": null}
+{"text": "#'*''a \ta ", "words": null}
+{"text": "\t\n='", "words": null}
+{"text": "\t=$\t*b'\u0000", "words": null}
+{"text": "#\t#$ #\r-=\t*", "words": ["#", "#$", "#", "-=", "*"]}
+{"text": "' b''$= ", "words": null}
+{"text": "\\*##*-=", "words": ["*##*-="]}
+{"text": "-$\t\n\néb $#*\n\u0000", "words": ["-$", "éb", "$#*", "\u0000"]}
+{"text": "é'\\$", "words": null}
+{"text": " '=-\"\u0000= \\", "words": null}
+{"text": "\" b \u0000\u0000\u0000 =\"a\u0000'=", "words": null}
+{"text": "\r\r\\\"b-#\\", "words": null}
+{"text": "a\"\té\r\t=\na", "words": null}
+{"text": "\t\\a\\a'\\a= $é*b", "words": null}
+{"text": "*$- \"b é\t\\", "words": null}
+{"text": " \r$", "words": ["$"]}
+{"text": "' #a$ab $\t\\\t", "words": null}
+{"text": " a\n*\t b\r\r\"\r*\u0000\"", "words": ["a", "*", "b", "\r*\u0000"]}
+{"text": " \r\t#\rab\\\r", "words": ["#", "ab\r"]}
+{"text": "bbb $\t\r\ra$\n\\\ta", "words": ["bbb", "$", "a$", "\ta"]}
+{"text": "$'-* \t=-\r\\- *\r", "words": null}
+{"text": "*-'a\n\u0000\r'=*\rb-", "words": ["*-a\n\u0000\r=*", "b-"]}
+{"text": "'\r$\r '\n\t\n$", "words": ["\r$\r ", "$"]}
+{"text": "\t-\n-  \"a\"\\\u0000#", "words": ["-", "-", "a\u0000#"]}
+{"text": "\"a'\r#\u0000", "words": null}
+{"text": "\\ \tb\r\u0000\u0000é*# a ", "words": [" ", "b", "\u0000\u0000é*#", "a"]}
+{"text": "\r\u0000$\n$\r*", "words": ["\u0000$", "$", "*"]}
+{"text": "b\n\u0000é\"b=", "words": null}
+{"text": "é#\"#$ \u0000é\\", "words": null}
+{"text": " *\tb=", "words": ["*", "b="]}
+{"text": "ba =*\n#\u0000\"--\\$", "words": null}
+{"text": "\\\n \t#\"a'\\\u0000$ ", "words": null}
+{"text": "\n'==\na'b", "words": ["==\nab"]}
+{"text": "\u0000= \"\" '  *é#", "words": null}
+{"text": "*\u0000*\u0000#  \n\r$\nb#\n", "words": ["*\u0000*\u0000#", "$", "b#"]}
+{"text": "\u0000\u0000-a =\ta $\n=\nb", "words": ["\u0000\u0000-a", "=", "a", "$", "=", "b"]}
+{"text": " \"\\\n* a$b\"a\\", "words": null}
+{"text": "\u0000é'bb* #", "words": null}
+{"text": "a$\\b\"", "words": null}
+{"text": "b\" =\"-é=a", "words": ["b =-é=a"]}
+{"text": " #b##$\\\" *\\", "words": null}
+{"text": "-=\u0000-\u0000\\é\r\\ \r'ba", "words": null}
+{"text": "b*a\r\\*", "words": ["b*a", "*"]}
+{"text": "$\"", "words": null}
+{"text": "\t'-\n-$*a- \n", "words": null}
+{"text": "é-é\n'", "words": null}
+{"text": "ab", "words": ["ab"]}
+{"text": "\n\n", "words": []}
+{"text": "*\r$\r", "words": ["*", "$"]}
+{"text": "b\" $#'b\t\ré#é\t\\", "words": null}
+{"text": "*$\"'\"*\r#'# *=", "words": null}
+{"text": "\u0000==$\u0000-ab *=\r\n=", "words": ["\u0000==$\u0000-ab", "*=", "="]}
+{"text": "  $-\n=\n\t", "words": ["$-", "="]}
+{"text": "\"\t- *\n'", "words": null}
+{"text": " ##\u0000 #\t-a ", "words": ["##\u0000", "#", "-a"]}
+{"text": "\\\t=$#", "words": ["\t=$#"]}
+{"text": "$\t", "words": ["$"]}
+{"text": "\"\u0000a'-\n##é\u0000\"", "words": ["\u0000a'-\n##é\u0000"]}
+{"text": "\\\r\u0000\n\ra\n\ra a#a\t", "words": ["\r\u0000", "a", "a", "a#a"]}
+{"text": "\n==b \\\n-éaé", "words": ["==b", "\n-éaé"]}
+{"text": "é*- $*\\ $\r*-", "words": ["é*-", "$* $", "*-"]}
+{"text": "*\t '=\t$\\ \na'", "words": ["*", "=\t$\\ \na"]}
+{"text": " $\r\\b' $=", "words": null}
+{"text": "=a", "words": ["=a"]}
+{"text": "#\"\\\\", "words": null}
+{"text": "-\ra -b\r-", "words": ["-", "a", "-b", "-"]}
+{"text": "-\r\r \raaaé\n$b", "words": ["-", "aaaé", "$b"]}
+{"text": "\t\u0000*\u0000$\r\n$'\r-", "words": null}
+{"text": "é\r\"-", "words": null}
+{"text": "b*- $\t", "words": ["b*-", "$"]}
+{"text": "$''-$'-\\\"-b\t", "words": null}
+{"text": "\u0000\t  ", "words": ["\u0000"]}
+{"text": "\u0000$\"", "words": null}
+{"text": "\tb-*$#", "words": ["b-*$#"]}
+{"text": "\\b=\r\nb$é= \n\u0000*\t", "words": ["b=", "b$é=", "\u0000*"]}
+{"text": "$#'\n", "words": null}
+{"text": "* é\r", "words": ["*", "é"]}
+{"text": "\r-  \\\t\rb$$\té*\"", "words": null}
+{"text": "  b #é \u0000=\u0000", "words": ["b", "#é", "\u0000=\u0000"]}
+{"text": "\n#-*$\r\\ #a$\n\\", "words": null}
+{"text": " \u0000*é ", "words": ["\u0000*é"]}
+{"text": "\\\r\n", "words": ["\r"]}
+{"text": "* é##", "words": ["*", "é##"]}
+{"text": " \r\"'\t \u0000é", "words": null}
+{"text": "\ra\t\n$ b ", "words": ["a", "$", "b"]}
+{"text": "a-$\rb", "words": ["a-$", "b"]}
+{"text": "#\"é#=\r\u0000a", "words": null}
+{"text": "\"b=a\"\\éé\u0000", "words": ["b=aéé\u0000"]}
+{"text": "\t\" éa -*\\\r*#\\", "words": null}
+{"text": "* =\\-\"-=\\\\* bb", "words": null}
+{"text": " ==#", "words": ["==#"]}
+{"text": "é=' \\\t é#", "words": null}
+{"text": "#-é", "words": ["#-é"]}
+{"text": " \"a", "words": null}
+{"text": "\r-\n", "words": ["-"]}
+{"text": "\t\\\u0000a-\t$ *=$# \r", "words": ["\u0000a-", "$", "*=$#"]}
+{"text": "\"\r\\'#\u0000ba\"= =\\\n", "words": ["\r\\'#\u0000ba=", "=\n"]}
+{"text": "=\té-b =-é#", "words": ["=", "é-b", "=-é#"]}
+{"text": "  =\n*", "words": ["=", "*"]}
+{"text": "'#a*\t' b", "words": ["#a*\t", "b"]}
+{"text": "\"\taé", "words": null}
+{"text": "-\r\n\na", "words": ["-", "a"]}
+{"text": "\tbébb#*-#\t=a", "words": ["bébb#*-#", "=a"]}
+{"text": "=a =-$b\"#\ta\"-#", "words": ["=a", "=-$b#\ta-#"]}
+{"text": "\\\\", "words": ["\\"]}
+{"text": "\n\u0000é\\", "words": null}
+{"text": "b \n=\na'\r$#\r", "words": null}
+{"text": "\t-\u0000b\n\\", "words": null}
+{"text": "\rb=\u0000b\r\"\u0000\u0000", "words": null}
+{"text": "=é'=éb*", "words": null}
+{"text": "\t\n$a", "words": ["$a"]}
+{"text": "é\"\\ *$\ta", "words": null}
+{"text": "a\"=\u0000\\\"\r \" b\u0000\r", "words": ["a=\u0000\"\r ", "b\u0000"]}
+{"text": "\ta\\\u0000a", "words": ["a\u0000a"]}
+{"text": "a\"*é\u0000", "words": null}
+{"text": "\u0000\n\"ab$\"b-b-\\", "words": null}
+{"text": "\n-b\t \u0000é\\\t$", "words": ["-b", "\u0000é\t$"]}
+{"text": "**\"*\t'", "words": null}
+{"text": "$'\u0000\ra ", "words": null}
+{"text": "\\-'*#$  a$\n", "words": null}
+{"text": "\né \\a  -b\\\\*", "words": ["é", "a", "-b\\*"]}
+{"text": "\n\r\" é\\-\\\t\u0000* ", "words": null}
+{"text": "'\t =a\n\u0000\rbb", "words": null}
+{"text": " é* $\"\" ", "words": ["é*", "$"]}
+{"text": "\" \ra\"\n=é\n\\ $", "words": [" \ra", "=é", " $"]}
+{"text": "- '\" --", "words": null}
+{"text": "\"\"é\\#\té\t\"-\u0000- \t", "words": null}
+{"text": "\u0000=b\ra$-\"béb#", "words": null}
+{"text": "=\r*\u0000\u0000'\u0000=\n\"", "words": null}
+{"text": " \taa#é\\'\t#=$\r", "words": ["aa#é'", "#=$"]}
+{"text": "\u0000' - -\u0000#\r'a\\b\\", "words": null}
+{"text": "'='aa*\" \r*", "words": null}
+{"text": "\r \r", "words": []}
+{"text": "\\#-\n \t$b \u0000-=b", "words": ["#-", "$b", "\u0000-=b"]}
+{"text": "'é\r==*\n", "words": null}
+{"text": "a\r\"\"\ta", "words": ["a", "", "a"]}
+{"text": "éb\"'=", "words": null}
+{"text": "-\t\\b * =é'\\*", "words": null}
+{"text": "#\t $-", "words": ["#", "$-"]}
+{"text": "'=a=\u0000 b\\'*b ", "words": ["=a=\u0000 b\\*b"]}
+{"text": " \r  $\\\u0000 \t\r*#", "words": ["$\u0000", "*#"]}
+{"text": " -=* -ab= \r\"\t'", "words": null}
+{"text": " \u0000\r= \"", "words": null}
+{"text": "\ra\"'\t \r\"'\n'\r#", "words": ["a'\t \r\n", "#"]}
+{"text": "\r==b\"-\n \"b$\t", "words": ["==b-\n b$"]}
+{"text": "\u0000 \r\"$\\'-- \r ", "words": null}
+{"text": "bé\u0000' *b\n\"#", "words": null}
+{"text": "*\u0000 #=\t\\\r$=", "words": ["*\u0000", "#=", "\r$="]}
+{"text": "$\t=\r#\u0000 b", "words": ["$", "=", "#\u0000", "b"]}
+{"text": " b\ra*=é'b\u0000\t", "words": null}
+{"text": "\u0000\ta\n\u0000\t\na'b", "words": null}
+{"text": "\rb\\*-=\n\r", "words": ["b*-="]}
+{"text": "$\u0000\t\u0000\"b", "words": null}
+{"text": "\\=='\t", "words": null}
+{"text": "\n *é=\r=\n\r", "words": ["*é=", "="]}
+{"text": "*\t '\\é\u0000\u0000' = a\u0000", "words": ["*", "\\é\u0000\u0000", "=", "a\u0000"]}
+{"text": "b'$\t#\r\"\r\u0000\r-$#", "words": null}
+{"text": "\r'\t'\u0000$\u0000 \n", "words": ["\t\u0000$\u0000"]}
+{"text": "' \r*'$\"  ", "words": null}
+{"text": " é-\u0000$b", "words": ["é-\u0000$b"]}
+{"text": "$*\r=é \u0000# \r\r", "words": ["$*", "=é", "\u0000#"]}
+{"text": "\r b*\n \n\u0000", "words": ["b*", "\u0000"]}
+{"text": "é#\\\u0000a\u0000 b", "words": ["é#\u0000a\u0000", "b"]}
+{"text": "b=\\\"#", "words": ["b=\"#"]}
+{"text": "\n\"\r$\t*\\b", "words": null}
+{"text": "\u0000\\\"-$'\\\n\n\\#\\b", "words": null}
+{"text": "\"$\\\t $", "words": null}
+{"text": "\réa-=#a", "words": ["éa-=#a"]}
+{"text": "\u0000b\"=**'*", "words": null}
+{"text": "$=-#= *#", "words": ["$=-#=", "*#"]}
+{"text": "\"\u0000\\  \"b= \r", "words": ["\u0000\\  b="]}
+{"text": "\\a\\\u0000#\n =a\t\u0000\"", "words": null}
+{"text": "'# #-\n\n=\"$  \u0000", "words": null}
+{"text": "é\u0000\t *b ", "words": ["é\u0000", "*b"]}
+{"text": "# \" b \"b''", "words": ["#", " b b"]}
+{"text": "\t$é\"", "words": null}
+{"text": "***\\", "words": null}
+{"text": "\r=# \\\\#é\"\r", "words": null}
+{"text": "\t \r\\\n\r\ta'é", "words": null}
+{"text": "#\ra\t#b#=", "words": ["#", "a", "#b#="]}
+{"text": "a-\t *#\\", "words": null}
+{"text": "\\\t", "words": ["\t"]}
+{"text": "\u0000'=é#", "words": null}
+{"text": "-\u0000\n\n", "words": ["-\u0000"]}
+{"text": "\r #\\$* \"$\\b\n\t=", "words": null}
+{"text": " $b'\t", "words": null}
+{"text": "\r#éb$\t\u0000$", "words": ["#éb$", "\u0000$"]}
+{"text": "a\r'a\r\t-- \r", "words": null}
+{"text": "*'\n=#\u0000#é", "words": null}
+{"text": "é  ", "words": ["é"]}
+{"text": "##*b\"a\\ \r'##\"\r", "words": ["##*ba\\ \r'##"]}
+{"text": "é=\n#\" \t\\\t", "words": null}
+{"text": "*\rbb \\ # \u0000", "words": ["*", "bb", " #", "\u0000"]}
+{"text": "=*\t", "words": ["=*"]}
+{"text": "\r$b*=#é=\\", "words": null}
+{"text": "éa\n$", "words": ["éa", "$"]}
+{"text": "\t  a'é\\ ", "words": null}
+{"text": "\\$\u0000**= '*=", "words": null}
+{"text": "\u0000\ra\r\n\n#\né\\*\ré", "words": ["\u0000", "a", "#", "é*", "é"]}
+{"text": "\u0000\"'é#\r\u0000", "words": null}
+{"text": "b \n\t\r *a\u0000=\t#$", "words": ["b", "*a\u0000=", "#$"]}
+{"text": "\\\r*\r\\\r", "words": ["\r*", "\r"]}
+{"text": "-\n#*\t\u0000-\u0000", "words": ["-", "#*", "\u0000-\u0000"]}
+{"text": "*= \r\"= \n# b\u0000$", "words": null}
+{"text": "$é\r", "words": ["$é"]}
+{"text": "\"\naa\t \n", "words": null}
+{"text": "\"\r-\r\u0000=a\n$'", "words": null}
+{"text": "\na\"''a'-\\-\t", "words": null}
+{"text": "a\\", "words": null}
+{"text": "#\\#", "words": ["##"]}
+{"text": " aa=*# \\\ta-", "words": ["aa=*#", "\ta-"]}
+{"text": " \r$\u0000'\\\"-=-\\-", "words": null}
+{"text": "'*\u0000\"é\"", "words": null}
+{"text": "\n \t\"$'\" é$\r\r\r ", "words": ["$'", "é$"]}
+{"text": "\nb ***#'\t'é\t=\\", "words": null}
+{"text": "é=\\", "words": null}
+{"text": "\rb*\r é\t '\"*\n\u0000", "words": null}
+{"text": "b\ta'b=a", "words": null}
+{"text": "b*#b*$-\n#\\", "words": null}
+{"text": "\r-$=\n#é", "words": ["-$=", "#é"]}
+{"text": " -* \n\"\u0000'", "words": null}
+{"text": " b*$", "words": ["b*$"]}
+{"text": " \u0000 \\bé$-\t", "words": ["\u0000", "bé$-"]}
+{"text": "-'", "words": null}
+{"text": "\n*#\\-#\"--", "words": null}
+{"text": "$'\r*", "words": null}
+{"text": "-\raaaé\t=- a", "words": ["-", "aaaé", "=-", "a"]}
+{"text": "\\#\n-$a*", "words": ["#", "-$a*"]}
+{"text": "é\\-\u0000ba\"é", "words": null}
+{"text": "-a--\na-$aé", "words": ["-a--", "a-$aé"]}
+{"text": "#*éb$=\\\"\t", "words": ["#*éb$=\""]}
+{"text": "\u0000\" é 'é #\\'#$", "words": null}
+{"text": "\t\u0000\tbé \\-#\r\" \t", "words": null}
+{"text": "\"*éa\t\r\\*\n\u0000\n*\\", "words": null}
+{"text": "b\\ \n$=\r a =", "words": ["b ", "$=", "a", "="]}
+{"text": "\u0000-\\'é", "words": ["\u0000-'é"]}
+{"text": "'##\n -é*\nb=\\ba", "words": null}
+{"text": "a-\"é\n==*é\r\n \\$", "words": null}
+{"text": "'$ é *\\*-\n\u0000  \\", "words": null}
+{"text": "\u0000\"\n\r", "words": null}
+{"text": "\n\\=\r=\\é\n \ra", "words": ["=", "=é", "a"]}
+{"text": "#\"#=-ab-éé", "words": null}
+{"text": "\t#\r- \t \u0000", "words": ["#", "-", "\u0000"]}
+{"text": "\nbab*\r\u0000$$#= #\u0000", "words": ["bab*", "\u0000$$#=", "#\u0000"]}
+{"text": "'$\n#=\"'-'", "words": null}
+{"text": "\\b\nb=\r#$-", "words": ["b", "b=", "#$-"]}
+{"text": "\\\\\r ", "words": ["\\"]}
+{"text": "*b\r**\r", "words": ["*b", "**"]}
+{"text": "#\"b#$#- ", "words": null}
+{"text": " *'\n''b\t\" $", "words": null}
+{"text": "$\\ ", "words": ["$ "]}
+{"text": "\u0000\\#*##=\tb", "words": ["\u0000#*##=", "b"]}
+{"text": "\\=*#*\u0000a\u0000\n$\n", "words": ["=*#*\u0000a\u0000", "$"]}
+{"text": "-\u0000\r\r$=$\r", "words": ["-\u0000", "$=$"]}
+{"text": "*\\\"'\u0000  b#\t", "words": null}
+{"text": "  $\na\u0000\\'*", "words": ["$", "a\u0000'*"]}
+{"text": "$-$", "words": ["$-$"]}
+{"text": "a\u0000= a#éé", "words": ["a\u0000=", "a#éé"]}
+{"text": "'*#é  a", "words": null}
+{"text": "b\t\n#", "words": ["b", "#"]}
+{"text": "*$\"* $\"éé#=", "words": ["*$* $éé#="]}
+{"text": "\né b=\t#-\\", "words": null}
+{"text": "\\é\u0000'a\\\r\"*\t\n#", "words": null}
+{"text": "#\\\na*\\=*", "words": ["#\na*=*"]}
+{"text": "b\"\"b", "words": ["bb"]}
+{"text": "*é\n\\\rb\"-=", "words": null}
+{"text": " $# ", "words": ["$#"]}
+{"text": " -## '\r  ", "words": null}
+{"text": "a\r\" =\n ", "words": null}
+{"text": "$ ", "words": ["$"]}
+{"text": " \n\\\"=é", "words": ["\"=é"]}
+{"text": "\n\u0000\\\"\" $$", "words": null}
+{"text": "\taa'#é ''\"", "words": null}
+{"text": " =\\\u0000*\u0000\t''\n=\u0000", "words": ["=\u0000*\u0000", "", "=\u0000"]}
+{"text": "'$\\\t\"a", "words": null}
+{"text": "\"* ", "words": null}
+{"text": "'--#\\ #'*", "words": ["--#\\ #*"]}
+{"text": "\"\u0000\"", "words": ["\u0000"]}
+{"text": "-a \u0000=-=", "words": ["-a", "\u0000=-="]}
+{"text": "$#-\n*\n$a # =\t ", "words": ["$#-", "*", "$a", "#", "="]}
+{"text": "\"é\r\n\t-b\\\u0000", "words": null}
+{"text": "$\rba'b\r\t\t\n", "words": null}
+{"text": "-# \\#é $\n\"#\n'", "words": null}
+{"text": "\r=", "words": ["="]}
+{"text": "$#\né \r '\u0000#'*\"", "words": null}
+{"text": "\u0000- \t\r\n=é\"$\r$*", "words": null}
+{"text": "$- \tébbaa#", "words": ["$-", "ébbaa#"]}
+{"text": "b\"\t'", "words": null}
+{"text": "*\"\t\"  \t=b", "words": ["*\t", "=b"]}
+{"text": "\"\r*a =$\\#", "words": null}
+{"text": "\"\"*'b \u0000=*\\", "words": null}
+{"text": "\t=\"b\t", "words": null}
+{"text": "a\r\\\n\t\u0000\t", "words": ["a", "\n", "\u0000"]}
+{"text": "b--$  *'\r", "words": null}
+{"text": "-'a \r", "words": null}
+{"text": "\\\ra$\n#$é\\", "words": null}
+{"text": "b\nb\\- b\r", "words": ["b", "b-", "b"]}
+{"text": "\r=\\\\*é\t \\\n\u0000=", "words": ["=\\*é", "\n\u0000="]}
+{"text": "-\t\u0000\"\n\"'\t\u0000 $\r\t", "words": null}
+{"text": "\u0000 \u0000=\t", "words": ["\u0000", "\u0000="]}
+{"text": "$ b #b$\t\"", "words": null}
+{"text": "'\r\r$", "words": null}
+{"text": "$ '-b$\r", "words": null}
+{"text": "\té é$-\ra*\t# \"*", "words": null}
+{"text": "é'-=", "words": null}
+{"text": "\ta#\"\rb\\\t*a=", "words": null}
+{"text": "##'\\\n#=\"\n", "words": null}
+{"text": "- ", "words": ["-"]}
+{"text": "\n#\"-b*#", "words": null}
+{"text": " '\\-b\n\n", "words": null}
+{"text": "$'\t\t \u0000\r=$$- ", "words": null}
+{"text": "-'*#-=- ", "words": null}
+{"text": " \r  *", "words": ["*"]}
+{"text": "$*\"\n\r \n  b\u0000", "words": null}
+{"text": "  bé=\t", "words": ["bé="]}
+{"text": "\n\u0000 *-=é-=b\n\r", "words": ["\u0000", "*-=é-=b"]}
+{"text": "=\"a'-*a'é*", "words": null}
+{"text": "\"\n\u0000'-=-#\t a-", "words": null}
+{"text": "--\r$\n-\\", "words": null}
+{"text": " #=\n-# $#bé*", "words": ["#=", "-#", "$#bé*"]}
+{"text": "'\u0000\"*\n\r\t", "words": null}
+{"text": "\ta-b ='\r\" \n a", "words": null}
+{"text": "\\\t\u0000\u0000b\u0000\r*\r$*a", "words": ["\t\u0000\u0000b\u0000", "*", "$*a"]}
+{"text": "\t  ", "words": []}
+{"text": "\t\r\u0000 b\u0000 ", "words": ["\u0000", "b\u0000"]}
+{"text": "\u0000\u0000\\$a\u0000\\*b -\\\r", "words": ["\u0000\u0000$a\u0000*b", "-\r"]}
+{"text": "bé-", "words": ["bé-"]}
+{"text": "-\t\r\t\" éa", "words": null}
+{"text": "$$'\u0000'\\$' ", "words": null}
+{"text": "\" \n\n# #a \u0000\"", "words": [" \n\n# #a \u0000"]}
+{"text": "#*#$-$aé\"", "words": null}
+{"text": "* aa\u0000 \r=", "words": ["*", "aa\u0000", "="]}
+{"text": "\tbb\\a==\\\"\t\u0000", "words": ["bba==\"", "\u0000"]}
+{"text": "=# '", "words": null}
+{"text": "'é\t$=aé\n*", "words": null}
+{"text": "\"\\$é\r\n *\u0000", "words": null}
+{"text": " $ a -*#", "words": ["$", "a", "-*#"]}
+{"text": " 'é#\ré*#\"\r", "words": null}
+{"text": "$=a$=a", "words": ["$=a$=a"]}
+{"text": "a\\ é\u0000\r*é\u0000", "words": ["a é\u0000", "*é\u0000"]}
+{"text": "\ré$'\\b# ", "words": null}
+{"text": "é\t'", "words": null}
+{"text": " \u0000\"-", "words": null}
+{"text": "baé\\\u0000\n", "words": ["baé\u0000"]}
+{"text": " \u0000*", "words": ["\u0000*"]}
+{"text": "é aéa", "words": ["é", "aéa"]}
+{"text": " #*a \t=$\"\"", "words": ["#*a", "=$"]}
+{"text": "  -\"\u0000\u0000= b$aé", "words": null}
+{"text": "b--a\\$\\#", "words": ["b--a$#"]}
+{"text": "\\\\\u0000 \u0000\"", "words": null}
+{"text": " $$$*", "words": ["$$$*"]}
+{"text": "\u0000\"\\b\n\n", "words": null}
+{"text": "-\n\\=\" \té=\\", "words": null}
+{"text": "\r-\r\tb'", "words": null}
+{"text": "\t\"", "words": null}
+{"text": "*é##a=b#é\r-\"''", "words": null}
+{"text": "$\t bé ba\u0000 ", "words": ["$", "bé", "ba\u0000"]}
+{"text": "- $", "words": ["-", "$"]}
+{"text": "$*b-\t\t*$'a", "words": null}
+{"text": "\\ é*\\\t\u0000b=\taa ", "words": [" é*\t\u0000b=", "aa"]}
+{"text": "\r'\\é# \"\\'\n\u0000\t\"\\", "words": null}
+{"text": "\" *\"\u0000\"\u0000\r\né\r*-é", "words": null}
+{"text": "\réb#\t#'", "words": null}
+{"text": "\u0000\\éab", "words": ["\u0000éab"]}
+{"text": "a\t$* *\té\té\"\"\u0000\u0000", "words": ["a", "$*", "*", "é", "é\u0000\u0000"]}
+{"text": "\n\r-", "words": ["-"]}
+{"text": "é #-\n a#", "words": ["é", "#-", "a#"]}
+{"text": "\"$\"'é\t \\#b", "words": null}
+{"text": "\t\n\\\n* a\" #\nb*", "words": null}
+{"text": "='\t\n\u0000a é", "words": null}
+{"text": "\t\n\\b  #", "words": ["b", "#"]}
+{"text": "#\"a' $", "words": null}
+{"text": "\ra\nb", "words": ["a", "b"]}
+{"text": "\\# '\"*'\"", "words": null}
+{"text": "aéa$\na\"é\u0000\u0000''\n", "words": null}
+{"text": "$\u0000b\né\\b'", "words": null}
+{"text": "\n*b\r=bé##\r\\$é", "words": ["*b", "=bé##", "$é"]}
+{"text": " '\t*é'b", "words": ["\t*éb"]}
+{"text": "é#\"\t\\  'a", "words": null}
+{"text": " =\\\"ab=\"-\\\u0000", "words": null}
+{"text": "\"'  'a\"$-", "words": ["'  'a$-"]}
+{"text": "'\r\r-", "words": null}
+{"text": "\t -==$''\"\\\n b", "words": null}
+{"text": "\rb=b'é\n\t\u0000\" é", "words": null}
+{"text": "-\\aé\\", "words": null}
+{"text": "\u0000\"\"-\\$*$", "words": ["\u0000-$*$"]}
+{"text": "b\"'", "words": null}
+{"text": "\r\\\u0000b\n\\ ", "words": ["\u0000b", " "]}
+{"text": "\\-\t-'=\r\\# =\\-\u0000", "words": null}
+{"text": "\"'$\t\\", "words": null}
+{"text": "#$\\\n\r#\"\"\"\r$\nbb", "words": null}
+{"text": "\"\\\n\ra\r'*", "words": null}
+{"text": "\"$'-", "words": null}
+{"text": " \na''-é", "words": ["a-é"]}
+{"text": "b\n'", "words": null}
+{"text": "b*\"\t$é=é ", "words": null}
+{"text": " #\n", "words": ["#"]}
+{"text": "'  é$\u0000\u0000'\r\u0000\r-*", "words": ["  é$\u0000\u0000", "\u0000", "-*"]}
+{"text": "\né\r\\\u0000\r\"#$", "words": null}
+{"text": "\"$\\=\"b", "words": ["$\\=b"]}
+{"text": "\\ é\r'\t$\"\u0000$\\", "words": null}
+{"text": "*-\r\"$\t\"a \n", "words": ["*-", "$\ta"]}
+{"text": "* é#éé\tb\u0000\n\n#a", "words": ["*", "é#éé", "b\u0000", "#a"]}
+{"text": "\r\u0000#\"#' -*=\n", "words": null}
+{"text": "\"\\\\\\*=$#$\u0000'\\\u0000é", "words": null}
+{"text": "'\r$\"'$\"\\a#  ", "words": null}
+{"text": "$ b$'\\\t*b\"", "words": null}
+{"text": "\"=\t", "words": null}
+{"text": "$ =", "words": ["$", "="]}
+{"text": "=b\r=\\*\r \n\\ \"", "words": null}
+{"text": "\n\\a *\t \r\ra ", "words": ["a", "*", "a"]}
+{"text": "b\r-*$ \"$$#$", "words": null}
+{"text": " a'\u0000 \r\r--éé\n\u0000\\", "words": null}
+{"text": "#\u0000b=éb\t*\"$\"\t-", "words": ["#\u0000b=éb", "*$", "-"]}
+{"text": "é-** \"\n b\"", "words": ["é-**", "\n b"]}
+{"text": "\t$$é*éb", "words": ["$$é*éb"]}
+{"text": "bbé\"\u0000\ta\\\u0000*\u0000\r", "words": null}
+{"text": " é-", "words": ["é-"]}
+{"text": " é$ \\$*\t=\r*b'-", "words": null}
+{"text": " -ba\"b\u0000=", "words": null}
+{"text": "\r*\u0000\u0000\u0000b", "words": ["*\u0000\u0000\u0000b"]}
+{"text": "\"'b", "words": null}
+{"text": "-\t\"*' ", "words": null}
+{"text": "=\"é$\"\r$*\\#*\"#$", "words": null}
+{"text": "\t\\a\t\r\t*$=b*\ta", "words": ["a", "*$=b*", "a"]}
+{"text": "\\\"# ", "words": ["\"#"]}
+{"text": "'## \r#\"'é\u0000#", "words": ["## \r#\"é\u0000#"]}
+{"text": "$b aé *é\u0000", "words": ["$b", "aé", "*é\u0000"]}
+{"text": "-   \"'=\"aa", "words": ["-", "'=aa"]}
+{"text": "a$'a**b\t==", "words": null}
+{"text": "\u0000 \"\"\"ab \t*", "words": null}
+{"text": "'é*\t$a= '\u0000*é", "words": ["é*\t$a= \u0000*é"]}
+{"text": "-*a#", "words": ["-*a#"]}
+{"text": "a\r\\$\\'é\t -*\"\"a", "words": ["a", "$'é", "-*a"]}
+{"text": "\t\u0000#$'#b\u0000a$'", "words": ["\u0000#$#b\u0000a$"]}
+{"text": "\n\t\r$ *' ", "words": null}
+{"text": "\\=", "words": ["="]}
+{"text": "\t-\"  ", "words": null}
+{"text": "= *b\u0000\u0000 a*", "words": ["=", "*b\u0000\u0000", "a*"]}
+{"text": "$\\=\"=# \n*é\u0000", "words": null}
+{"text": "\r\\==é-\tbé\u0000", "words": ["==é-", "bé\u0000"]}
+{"text": "* -\u0000\n", "words": ["*", "-\u0000"]}
+{"text": "a\r' =\\a \r#", "words": null}
+{"text": "\t$ \\-=é\u0000*\r", "words": ["$", "-=é\u0000*"]}
+{"text": "'\u0000$é", "words": null}
+{"text": "\"\"\u0000 é# é", "words": ["\u0000", "é#", "é"]}
+{"text": "\u0000\t=aé$''#aé\ra\"", "words": null}
+{"text": "b*\u0000$ \r\n$é*\"\u0000\\", "words": null}
+{"text": "é \\ab**-=", "words": ["é", "ab**-="]}
+{"text": "$\\= é$b=-", "words": ["$=", "é$b=-"]}
+{"text": "\"-= '  a", "words": null}
+{"text": "-\"\"\u0000\u0000é\n#\r-*=#", "words": ["-\u0000\u0000é", "#", "-*=#"]}
+{"text": "= b\t\\", "words": null}
+{"text": "\taa$-\u0000  *'", "words": null}
+{"text": "\t$'bé#\\é#é*\\$\r", "words": null}
+{"text": "\\\n\n$\rb-", "words": ["\n", "$", "b-"]}
+{"text": "a\t#", "words": ["a", "#"]}
+{"text": "\nb\n\r*b\u0000a\"", "words": null}
+{"text": "*#é*'", "words": null}
+{"text": "\r\t\n#*", "words": ["#*"]}
+{"text": "\\=\\a'#$", "words": null}
+{"text": "=éb\"'\"$*\t\\\r-", "words": ["=éb'$*", "\r-"]}
+{"text": "b*aé\t*# \"=- \\\"", "words": null}
+{"text": "$#\t#--", "words": ["$#", "#--"]}
+{"text": "b*é\t", "words": ["b*é"]}
+{"text": "\n $#b\r", "words": ["$#b"]}
+{"text": "éa\na$#$\r-", "words": ["éa", "a$#$", "-"]}
+{"text": "*#b'\"\u0000'b'b'\u0000 \t", "words": ["*#b\"\u0000bb\u0000"]}
+{"text": "a\t$b", "words": ["a", "$b"]}
+{"text": "\r#\"='*\ta'*b*é", "words": null}
+{"text": "b-\"a\nbb-'=ba\na", "words": null}
+{"text": "=\t\n\r\t#=", "words": ["=", "#="]}
+{"text": "$#b\\\n\n\\*\u0000*\"", "words": null}
+{"text": "\r'\t#\t#-é\n\nbé", "words": null}
+{"text": "'ab\r#\u0000$", "words": null}
+{"text": "'\u0000 ", "words": null}
+{"text": "\n-\u0000\u0000'\" \\\u0000 #\u0000\\\"", "words": null}
+{"text": "a*'\n", "words": null}
+{"text": "\\#é* ", "words": ["#é*"]}
+{"text": "\n#=a\\", "words": null}
+{"text": "=\t\t#\\\"\r=", "words": ["=", "#\"", "="]}
+{"text": "\\\t=", "words": ["\t="]}
+{"text": "a*\r-", "words": ["a*", "-"]}
+{"text": "\n '#\t*\t\t", "words": null}
+{"text": "\\$ ", "words": ["$"]}
+{"text": "\u0000=\na  \" *", "words": null}
+{"text": "\u0000\u0000*é", "words": ["\u0000\u0000*é"]}
+{"text": "*=\"", "words": null}
+{"text": " -a$\r#=\u0000= \r\u0000", "words": ["-a$", "#=\u0000=", "\u0000"]}
+{"text": "b \rbé  =\r\t", "words": ["b", "bé", "="]}
+{"text": "*\t\n==' -é-", "words": null}
+{"text": " \t", "words": []}
+{"text": "\"*\"$\"=", "words": null}
+{"text": "\r-$b\"#\\$", "words": null}
+{"text": " =*\\\\", "words": ["=*\\"]}
+{"text": " \"$\r\u0000", "words": null}
+{"text": "'\r\rb=b", "words": null}
+{"text": " $ \n$ *$* -\"", "words": null}
+{"text": "\\a$*\n*", "words": ["a$*", "*"]}
+{"text": "ab\u0000\néa\u0000a#é\u0000\t", "words": ["ab\u0000", "éa\u0000a#é\u0000"]}
+{"text": "\t\n\u0000 =\u0000", "words": ["\u0000", "=\u0000"]}
+{"text": "\\$'\n\"\né \u0000  b", "words": null}
+{"text": " '\"-'b=é\t\" -\u0000", "words": null}
+{"text": "aé =a*\t\t\u0000-\u0000", "words": ["aé", "=a*", "\u0000-\u0000"]}
+{"text": "#=\réé$\" a -$\"", "words": ["#=", "éé$ a -$"]}
+{"text": "' \\'\\ \\\u0000\\", "words": null}
+{"text": "\t\té\\ \u0000\\", "words": null}
+{"text": "a$\"\"\na\t\"''aé", "words": null}
+{"text": "é\r'* -#\"\t'$", "words": ["é", "* -#\"\t$"]}
+{"text": "aa-", "words": ["aa-"]}
+{"text": "'$\n", "words": null}
+{"text": "b=\n", "words": ["b="]}
+{"text": "\r-\\'$\u0000\u0000", "words": ["-'$\u0000\u0000"]}
+{"text": "\n=\t\"\u0000#bé ", "words": null}
+{"text": " é #\r\t\u0000ba#\"-b", "words": null}
+{"text": "\u0000*-éé", "words": ["\u0000*-éé"]}
+{"text": "é$\nb", "words": ["é$", "b"]}
+{"text": " b'#\u0000\n =-**\"\u0000", "words": null}
+{"text": "\u0000é-aa\ra\\\u0000\u0000é", "words": ["\u0000é-aa", "a\u0000\u0000é"]}
+{"text": "\n'#a\\ b\ré*\t \n", "words": null}
+{"text": "'\\\u0000  b\"$", "words": null}
+{"text": "$-\r", "words": ["$-"]}
+{"text": "\r\r*é\"éb ", "words": null}
+{"text": "\r #$-$'=\u0000\\", "words": null}
+{"text": "=\u0000", "words": ["=\u0000"]}
+{"text": "\n\t'  b=\r", "words": null}
+{"text": "b#\u0000a'é$", "words": null}
+{"text": "'-", "words": null}
+{"text": "é\r", "words": ["é"]}
+{"text": "\u0000\\a*\r\r \r", "words": ["\u0000a*"]}
+{"text": "'\"\u0000\r*", "words": null}
+{"text": " -$\"\u0000b\r\u0000", "words": null}
+{"text": "\t=  \\\\=\\aé\u0000\"", "words": null}
+{"text": "é\r ", "words": ["é"]}
+{"text": "é*****", "words": ["é*****"]}
+{"text": "'b-\"\ré\n", "words": null}
+{"text": "\u0000$bb= \"\\", "words": null}
+{"text": "\\\u0000\raba \t*#\"=", "words": null}
+{"text": "é\n\u0000\r'#\\\u0000*b\u0000  ", "words": null}
+{"text": "\r\u0000'", "words": null}
+{"text": "b\\é#", "words": ["bé#"]}
+{"text": "é\né\\\"=#\r-", "words": ["é", "é\"=#", "-"]}
+{"text": "- ' '\"\\ \"=", "words": ["-", " \\ ="]}
+{"text": "\\é\\\\", "words": ["é\\"]}
+{"text": "'#=\r\n* #\t", "words": null}
+{"text": " =ab'\"#\\a$'b", "words": ["=ab\"#\\a$b"]}
+{"text": "é=* ", "words": ["é=*"]}
+{"text": "\n-==", "words": ["-=="]}
+{"text": "**#\n", "words": ["**#"]}
+{"text": " #$\u0000$\\-**", "words": ["#$\u0000$-**"]}
+{"text": "\u0000\t'=é \té=\r", "words": null}
+{"text": "-é\n'\n", "words": null}
+{"text": "\\b'éa\"", "words": null}
+{"text": " * #b'", "words": null}
+{"text": "$\u0000$=  a' #\u0000\u0000aa", "words": null}
+{"text": "\t#\r\"* *## \\##\t", "words": null}
+{"text": "*\\'*", "words": ["*'*"]}
+{"text": " *-\u0000'=\\**\"ééé", "words": null}
+{"text": "\n a- b* ", "words": ["a-", "b*"]}
+{"text": "-é\\$#*$ '=\r", "words": null}
+{"text": "\"b$a \t=\"\n ", "words": ["b$a \t="]}
+{"text": "a=-\\éba\"\\\r\"\n", "words": ["a=-éba\\\r"]}
+{"text": "*=*a$\r\"\u0000b** \n$", "words": null}
+{"text": "$\"* a'  ", "words": null}
+{"text": "b  ", "words": ["b"]}
+{"text": "#\té-'\né\n", "words": null}
+{"text": "\"\ra\t-\n \\", "words": null}
+{"text": "-*b-é\n", "words": ["-*b-é"]}
+{"text": "##\"\"a\\'\u0000\u0000-=\"-'", "words": null}
+{"text": "\n$\t-\n * \n$'-\n", "words": null}
+{"text": "\n'#-'-", "words": ["#--"]}
+{"text": "é\"\"\t\"\"\t\"'é", "words": null}
+{"text": "\n-é$'\"é", "words": null}
+{"text": "\r#\"*b$\n$ \n\r$\t", "words": null}
+{"text": "\\ *\" **-=*=b\u0000b", "words": null}
+{"text": "\"\\a$*b=b-=", "words": null}
+{"text": "#$*$\r \\' \u0000=*", "words": ["#$*$", "'", "\u0000=*"]}
+{"text": "a\r", "words": ["a"]}
+{"text": "\u0000 ##\" b\r\u0000\t\u0000a", "words": null}
+{"text": " '\t \\é", "words": null}
+{"text": "b\n\t=-", "words": ["b", "=-"]}
+{"text": "é\u0000-\u0000=$'", "words": null}
+{"text": "\n- \téé\r\u0000a\u0000\"#b", "words": null}
+{"text": "\n\t\n$ \u0000\"\r", "words": null}
+{"text": "=é$é\\'*", "words": ["=é$é'*"]}
+{"text": "'* $", "words": null}
+{"text": "-\na\t==-$\ra#\r", "words": ["-", "a", "==-$", "a#"]}
+{"text": " \"\\=-\"a\"\t-$", "words": null}
+{"text": "#\"=*#*\n=#=\u0000'*$", "words": null}
+{"text": "\n\"=\t\u0000\t\na=  ", "words": null}
+{"text": "*\\\"'é*\"*", "words": null}
+{"text": "\u0000=\r=\ré\"#'#", "words": null}
+{"text": "\" \ré = ", "words": null}
+{"text": "\\  =baé#é\u0000\n\r\r", "words": [" ", "=baé#é\u0000"]}
+{"text": "b'$\\\r$\r\t\tb'", "words": ["b$\\\r$\r\t\tb"]}
+{"text": " =\ta\"\r\\", "words": null}

@@ -111,7 +111,7 @@ R301 · the task's problem · verifying · the verifier writes no reward
 
 R302 · the task's problem · verifying · the verifier writes a reward that is not a number
   verifier/reward.txt is not a reward: "passed" is not a number
-  next: reward.txt holds one finite number; reward.json holds an object of finite numbers, or a numeric "reward" beside other keys
+  next: reward.txt holds one number from 0 to 1; reward.json holds an object of finite numbers, or a numeric "reward" (from 0 to 1) beside other keys
   detail: 1 passed
 
 R303 · the task's problem · verifying · the verifier runs past its timeout

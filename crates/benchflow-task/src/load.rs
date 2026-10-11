@@ -54,6 +54,13 @@ criterion's `reference`, is text or a file in a private folder of the package (v
 verifier/answers.toml#total for one value of a TOML or JSON file), which the agent never sees. One of them \
 could not be used; the message says which. A run would stop on it with R313.",
     },
+    Explanation {
+        code: "P005",
+        title: "checking the task crashed BenchFlow",
+        body: "BenchFlow stopped with an internal error while it checked this task, so the task was neither \
+loaded nor run. The message holds the error. This is a BenchFlow bug, whatever the task holds: report it with \
+the task folder (or the value that set it off). The other tasks are checked as usual.",
+    },
 ];
 
 /// Folders [`discover`] never enters.

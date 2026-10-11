@@ -359,7 +359,7 @@ fn compare(views: &[JobView]) -> Result<Exit> {
     }
     let mut header: Vec<String> = vec!["task".into()];
     for (i, v) in views.iter().enumerate() {
-        header.push(format!("{} {}", (b'A' + i as u8) as char, v.agent()));
+        header.push(format!("{} {}", label(i), v.agent()));
     }
     let header_refs: Vec<&str> = header.iter().map(String::as_str).collect();
     let mut t = Table::new(&header_refs);
@@ -379,15 +379,11 @@ fn compare(views: &[JobView]) -> Result<Exit> {
         t.row(row);
     }
     for (i, v) in views.iter().enumerate() {
-        say!(
-            "  {} {}",
-            bold((b'A' + i as u8) as char),
-            dim(ui::path(&v.dir))
-        );
+        say!("  {} {}", bold(label(i)), dim(ui::path(&v.dir)));
     }
     say!("\n{}", t.render(2));
     for (i, (v, p)) in pairs.iter().enumerate() {
-        let b = (b'B' + i as u8) as char;
+        let b = label(i + 1);
         match p {
             Some(p) => {
                 let parts = [
@@ -509,5 +505,34 @@ mod paired_tests {
             super::paired_interval(3, -0.5, 0.25),
             "95% CI -0.500 to +0.250"
         );
+    }
+}
+
+/// The letter naming the `i`th job compared: A to Z, then AA, AB, and on.
+fn label(i: usize) -> String {
+    let mut n = i + 1;
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    /// Guards the D5 fix: jobs were named `b'A' + i as u8`, which gave `[`
+    /// and `\\` past 26 jobs and overflowed past 190.
+    #[test]
+    fn job_labels_go_past_z() {
+        let got: Vec<String> = [0, 1, 25, 26, 27, 51, 52, 701, 702]
+            .into_iter()
+            .map(label)
+            .collect();
+        assert_eq!(got, ["A", "B", "Z", "AA", "AB", "AZ", "BA", "ZZ", "AAA"]);
     }
 }

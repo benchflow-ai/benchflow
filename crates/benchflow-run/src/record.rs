@@ -482,13 +482,20 @@ fn category(p: &Problem) -> String {
     }
 }
 
-/// A reward for people: `1`, `0`, `0.75`.
+/// A reward for people: `1`, `0`, `0.75`. Three places at most, but a
+/// reward that is not exactly 0 or 1 never shows as `0` or `1` (0.9996
+/// shows as 0.9996, not as a pass).
 pub fn fmt_reward(r: f64) -> String {
     if r.fract() == 0.0 {
         format!("{}", r as i64)
     } else {
         let s = format!("{r:.3}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        if matches!(s, "0" | "1" | "-0" | "-1") {
+            format!("{r}")
+        } else {
+            s.to_string()
+        }
     }
 }
 
@@ -503,6 +510,18 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards the D5 fix: rounding to three places showed a failed 0.9996
+    /// as `1` (and 0.0004 as `0`) in the live view and in results.
+    #[test]
+    fn a_reward_near_0_or_1_does_not_show_as_0_or_1() {
+        assert_eq!(fmt_reward(1.0), "1");
+        assert_eq!(fmt_reward(0.0), "0");
+        assert_eq!(fmt_reward(0.75), "0.75");
+        assert_eq!(fmt_reward(2.0 / 3.0), "0.667");
+        assert_eq!(fmt_reward(0.9996), "0.9996");
+        assert_eq!(fmt_reward(0.0004), "0.0004");
+    }
 
     /// `bench run -a codex -m <a model Codex does not offer>` wrote
     /// `error_category: "internal"`, which reads as a BenchFlow bug.

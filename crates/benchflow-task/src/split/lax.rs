@@ -48,8 +48,23 @@ pub(crate) fn int(v: &Value) -> Result<i64, String> {
             }
         }
         Value::String(s) => {
+            // A zero fraction is a whole number ("1.0", "2.00"; not "1."),
+            // and `_` may only sit between digits of the whole part.
             let t = s.trim();
-            let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
+            let whole = match t.split_once('.') {
+                Some((whole, frac)) if !frac.is_empty() && frac.bytes().all(|b| b == b'0') => whole,
+                Some(_) => return fail(),
+                None => t,
+            };
+            let b = whole.as_bytes();
+            let between_digits = |i: usize| {
+                i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(u8::is_ascii_digit)
+            };
+            if (0..b.len()).any(|i| b[i] == b'_' && !between_digits(i)) {
+                return fail();
+            }
+            let t = whole.replace('_', "");
+            let digits = t.strip_prefix(['+', '-']).unwrap_or(&t);
             if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
                 t.parse::<i64>().or_else(|_| fail())
             } else {
@@ -60,6 +75,18 @@ pub(crate) fn int(v: &Value) -> Result<i64, String> {
     }
 }
 
+/// A number's text with its underscores removed, as pydantic reads
+/// `"1_000"`: `None` when one starts or ends the text or two are together.
+fn without_underscores(t: &str) -> Option<String> {
+    if !t.contains('_') {
+        return Some(t.to_string());
+    }
+    if t.starts_with('_') || t.ends_with('_') || t.contains("__") {
+        return None;
+    }
+    Some(t.replace('_', ""))
+}
+
 /// A float field: numbers, booleans, and strings that hold a number.
 pub(crate) fn float(v: &Value) -> Result<f64, String> {
     match v {
@@ -67,10 +94,9 @@ pub(crate) fn float(v: &Value) -> Result<f64, String> {
         Value::Number(n) => n
             .as_f64()
             .ok_or_else(|| format!("expected a number, found {n}")),
-        Value::String(s) => s
-            .trim()
-            .parse::<f64>()
-            .map_err(|_| format!("expected a number, found {}", describe(v))),
+        Value::String(s) => without_underscores(s.trim())
+            .and_then(|t| t.parse::<f64>().ok())
+            .ok_or_else(|| format!("expected a number, found {}", describe(v))),
         other => Err(format!("expected a number, found {}", describe(other))),
     }
 }
@@ -85,7 +111,8 @@ pub(crate) fn boolean(v: &Value) -> Result<bool, String> {
         Value::Number(n) if n.as_f64() == Some(1.0) => Ok(true),
         Value::Number(n) if n.as_f64() == Some(0.0) => Ok(false),
         Value::String(s) => {
-            let t = s.trim().to_ascii_lowercase();
+            // pydantic does not strip spaces here (" true " is refused).
+            let t = s.to_ascii_lowercase();
             if TRUE.contains(&t.as_str()) {
                 Ok(true)
             } else if FALSE.contains(&t.as_str()) {
@@ -167,6 +194,70 @@ pub(crate) fn choice(v: &Value, allowed: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards the D5 fix: int, float and boolean against pydantic 2.12's lax
+    /// mode (0.8's loader) on 66 spellings (`"1_000"`, `"1.0"`, `" 12 "`,
+    /// `" true "`, `"0x10"`, `"1e400"`, Unicode digits, JSON numbers and
+    /// bools). The fixture holds what pydantic returned (`null` when it
+    /// refused; `"inf"`/`"nan"` for those). Integers past i64 (which pydantic
+    /// keeps) are left out. pydantic-core also has quirks on random text that
+    /// are not ported (it reads the integer `"0-495"` as -495).
+    #[test]
+    fn int_float_and_boolean_match_pydantic() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/lax/pydantic-lax.jsonl");
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut failures = Vec::new();
+        for line in text.lines() {
+            let case: Value = serde_json::from_str(line).unwrap();
+            let v = &case["value"];
+            match &case["int"] {
+                Value::Number(n) if n.as_i64().is_none() => {}
+                Value::Number(n) => {
+                    if int(v).ok() != n.as_i64() {
+                        failures.push(format!("int {v}: {:?}, pydantic {n}", int(v)));
+                    }
+                }
+                _ => {
+                    if let Ok(i) = int(v) {
+                        failures.push(format!("int {v}: {i}, pydantic refuses"));
+                    }
+                }
+            }
+            let got = float(v).ok();
+            let ok = match &case["float"] {
+                Value::Number(n) => got == n.as_f64(),
+                Value::String(s) if s == "nan" => got.is_some_and(f64::is_nan),
+                Value::String(s) => {
+                    got.is_some_and(|f| f.is_infinite() && (f > 0.0) == !s.starts_with('-'))
+                }
+                _ => got.is_none(),
+            };
+            if !ok {
+                failures.push(format!("float {v}: {got:?}, pydantic {}", case["float"]));
+            }
+            if boolean(v).ok() != case["bool"].as_bool() {
+                failures.push(format!(
+                    "bool {v}: {:?}, pydantic {}",
+                    boolean(v),
+                    case["bool"]
+                ));
+            }
+        }
+        // Underscores off digits, which pydantic 2.12 refuses as int.
+        for s in ["1_.0", "1._0", "1.0_0", "+_1", "-_1"] {
+            if let Ok(i) = int(&Value::from(s)) {
+                failures.push(format!("int {s:?}: {i}, pydantic refuses"));
+            }
+        }
+        assert_eq!(int(&Value::from("1_000.0")), Ok(1000));
+        assert!(
+            failures.is_empty(),
+            "{} differences:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
     use serde_json::json;
 
     #[test]

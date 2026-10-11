@@ -290,7 +290,7 @@ fn parse_age(text: &str) -> Result<Duration> {
     let t = text.trim();
     for (suffix, secs) in [("d", 86_400u64), ("w", 7 * 86_400)] {
         if let Some(n) = t.strip_suffix(suffix).and_then(|n| n.parse::<u64>().ok()) {
-            return Ok(Duration::from_secs(n * secs));
+            return Ok(Duration::from_secs(n.saturating_mul(secs)));
         }
     }
     context::parse_duration(t).map_err(|_| {
@@ -309,4 +309,21 @@ fn older(t: chrono::DateTime<chrono::Local>, age: Duration) -> bool {
 
 fn short_id(id: &str) -> String {
     id.trim_start_matches("sha256:").chars().take(12).collect()
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::*;
+
+    /// Guards the D5 fix: `--older-than 99999999999999999w` overflowed
+    /// `n * secs` (a panic in debug builds, a wrapped small age in release,
+    /// so a prune removed more than asked).
+    #[test]
+    fn a_huge_age_saturates() {
+        assert_eq!(parse_age("2w").unwrap(), Duration::from_secs(14 * 86_400));
+        assert_eq!(
+            parse_age("99999999999999999w").unwrap(),
+            Duration::from_secs(u64::MAX)
+        );
+    }
 }

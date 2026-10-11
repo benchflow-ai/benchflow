@@ -17,6 +17,7 @@ pub mod ctrf;
 pub mod diag;
 pub mod digest;
 pub mod extras;
+pub mod fnmatch;
 pub mod load;
 pub mod package;
 pub mod reward;

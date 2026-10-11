@@ -157,7 +157,7 @@ struct Plan {
 
 /// Claude Code's folder name for a working folder: every character but
 /// ASCII letters, digits, and `-` becomes `-`.
-fn claude_slug(cwd: &Path) -> String {
+pub(crate) fn claude_slug(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .chars()
         .map(|c| {
@@ -178,7 +178,7 @@ const MAX_FILE_BYTES: u64 = benchflow_run::hardening::MAX_OUTPUT_FILE_BYTES;
 /// to the CLI: letters, digits, `-` and `_`, starting with a letter or
 /// digit. A trial folder can come from someone else, and the id becomes an
 /// argument of the command the handoff starts.
-fn safe_id(id: &str) -> bool {
+pub(crate) fn safe_id(id: &str) -> bool {
     id.len() <= 128
         && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id
@@ -237,7 +237,7 @@ fn modified(p: &Path) -> SystemTime {
 
 /// The id a Codex rollout carries: its first line's `session_meta` id, else
 /// the UUID its file name ends with.
-fn codex_id(file: &Path) -> Option<String> {
+pub(crate) fn codex_id(file: &Path) -> Option<String> {
     let first = std::fs::read_to_string(file)
         .ok()
         .and_then(|t| t.lines().next().map(str::to_string));

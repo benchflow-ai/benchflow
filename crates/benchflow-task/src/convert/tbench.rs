@@ -241,16 +241,9 @@ fn toml_str(s: &str) -> String {
     out
 }
 
-/// A float as Python's `repr` writes it (`180.0`, `0.5`, `1e+16`).
+/// A float as Python's `repr` writes it (`180.0`, `0.5`, `1e+16`, `1e-05`).
 fn py_float(v: f64) -> String {
-    if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e16 {
-        return format!("{v:.1}");
-    }
-    let s = format!("{v:?}");
-    match s.split_once('e') {
-        Some((m, e)) if !e.starts_with('-') => format!("{m}e+{e}"),
-        _ => s,
-    }
+    super::value::py_float_repr(v)
 }
 
 /// Python's `json.dumps` of a list of strings (ASCII only, `", "` between).

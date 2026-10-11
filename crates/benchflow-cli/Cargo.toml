@@ -23,7 +23,6 @@ anstyle.workspace = true
 anyhow.workspace = true
 annotate-snippets.workspace = true
 async-trait.workspace = true
-globset.workspace = true
 chrono.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
@@ -44,6 +43,7 @@ unicode-width.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true

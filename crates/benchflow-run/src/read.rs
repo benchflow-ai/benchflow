@@ -134,7 +134,7 @@ fn parse_time(v: Option<&Value>) -> DateTime<Local> {
     let s = v.and_then(Value::as_str).unwrap_or("");
     for fmt in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"] {
         if let Ok(t) = NaiveDateTime::parse_from_str(s, fmt)
-            && let Some(l) = Local.from_local_datetime(&t).single()
+            && let Some(l) = local(t)
         {
             return l;
         }
@@ -146,6 +146,20 @@ fn parse_time(v: Option<&Value>) -> DateTime<Local> {
         .timestamp_opt(0, 0)
         .single()
         .unwrap_or_else(Local::now)
+}
+
+/// A naive local time (0.8 writes `str(datetime.now())`) as Python reads
+/// it: in the hour repeated when clocks go back, the first of the two
+/// (`fold=0`); in the hour skipped when they go forward, with the offset
+/// from before the change, so `02:30` reads as `03:30`.
+fn local(t: NaiveDateTime) -> Option<DateTime<Local>> {
+    use chrono::LocalResult;
+    match Local.from_local_datetime(&t) {
+        LocalResult::Single(l) | LocalResult::Ambiguous(l, _) => Some(l),
+        LocalResult::None => Local
+            .from_local_datetime(&t.checked_add_signed(chrono::TimeDelta::hours(1))?)
+            .earliest(),
+    }
 }
 
 /// Build a record from a result.json, written by either engine.

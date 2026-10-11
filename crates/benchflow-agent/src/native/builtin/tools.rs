@@ -255,10 +255,7 @@ async fn bash(
         Err(e) => return Ok(e),
     };
     let max = ctx.bash_timeout;
-    let timeout = match args.get("timeout_s").and_then(Value::as_f64) {
-        Some(t) if t.is_finite() && t > 0.0 => Duration::from_secs_f64(t).min(max),
-        _ => max,
-    };
+    let timeout = capped_timeout(args.get("timeout_s").and_then(Value::as_f64), max);
     let exec = Exec::new(command)
         .user(ctx.user.to_string())
         .cwd(ctx.workdir.to_string())
@@ -312,7 +309,7 @@ async fn view(
         Err(e) => return Ok(e),
     };
     let from = int_arg(args, "from_line").unwrap_or(1);
-    let to = int_arg(args, "to_line").unwrap_or(from + MAX_VIEW_LINES as i64 - 1);
+    let to = int_arg(args, "to_line").unwrap_or(from.saturating_add(MAX_VIEW_LINES as i64 - 1));
     if from < 1 {
         return Ok(ToolOutcome::error(
             "`from_line` must be greater than or equal to 1",
@@ -336,7 +333,7 @@ async fn view(
          if [ ! -r {p} ]; then echo 'BF_DENIED' >&2; exit 3; fi; \
          sed -n '{from},{to}p;{next}q' {p} | head -c {cap}; \
          echo; echo \"BF_LINES $(wc -l < {p})\" >&2",
-        next = to + 1,
+        next = to.saturating_add(1),
         cap = MAX_VIEW_BYTES + 1
     );
     let out = exec_as_agent(ctx, script, FILE_OP_TIMEOUT).await?;
@@ -619,6 +616,18 @@ async fn write(
     })))
 }
 
+/// The bash tool's time limit: the model's `timeout_s` up to `max`. A
+/// number too big for a Duration (1e300) means `max`; zero, negative or
+/// not a number means `max` too.
+fn capped_timeout(asked: Option<f64>, max: Duration) -> Duration {
+    match asked {
+        Some(t) if t.is_finite() && t > 0.0 => {
+            Duration::try_from_secs_f64(t).map_or(max, |d| d.min(max))
+        }
+        _ => max,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +645,17 @@ mod tests {
         let d = snippet_diff("a\nb\nhello world\nc\n", "hello", "goodbye", "/f");
         assert!(d.contains("-hello world\n+goodbye world\n"), "{d}");
         assert!(d.contains(" b\n"), "{d}");
+    }
+
+    /// Guards the D5 fix: a model's `"timeout_s": 1e300` panicked in
+    /// `Duration::from_secs_f64` before the cap applied.
+    #[test]
+    fn a_huge_bash_timeout_is_the_cap() {
+        let max = Duration::from_secs(600);
+        assert_eq!(capped_timeout(Some(1e300), max), max);
+        assert_eq!(capped_timeout(Some(30.0), max), Duration::from_secs(30));
+        assert_eq!(capped_timeout(Some(-1.0), max), max);
+        assert_eq!(capped_timeout(None, max), max);
     }
 
     #[test]

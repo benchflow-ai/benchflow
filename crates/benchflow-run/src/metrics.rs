@@ -93,10 +93,16 @@ impl TaskStats {
     }
 }
 
-/// pass@k averaged over tasks, for every k up to the smallest trial count.
+/// pass@k averaged over tasks, for every k up to the smallest scored-trial
+/// count. A task with no scored trial is left out, as 0.8 leaves it out.
 pub fn pass_at_k_table(tasks: &BTreeMap<String, TaskStats>) -> BTreeMap<usize, f64> {
     let mut out = BTreeMap::new();
-    let min_n = tasks.values().map(|t| t.scored).min().unwrap_or(0);
+    let min_n = tasks
+        .values()
+        .map(|t| t.scored)
+        .filter(|&n| n > 0)
+        .min()
+        .unwrap_or(0);
     for k in 1..=min_n {
         let vals: Vec<f64> = tasks
             .values()
@@ -176,6 +182,77 @@ fn t_975(df: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// pass@k and the Wilson interval against 0.8's `pass_at_k.py` (Python
+    /// 3.12) on every n up to 40, every c and k: the fixture holds 0.8's
+    /// value (`null` when n < k, `"error"` for k = 0, which 0.8 refuses).
+    /// The Wilson z differs in the seventh digit (0.8's 1.959964), hence the
+    /// tolerance.
+    #[test]
+    fn pass_at_k_and_wilson_match_08() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/python-pass-at-k.json");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let mut n_cases = 0;
+        for case in v["pass_at_k"].as_array().unwrap() {
+            let get = |k: &str| case[k].as_u64().unwrap() as usize;
+            let got = pass_at_k(get("n"), get("c"), get("k"));
+            match &case["pass_at_k"] {
+                serde_json::Value::Number(want) => {
+                    let (want, got) = (want.as_f64().unwrap(), got.unwrap());
+                    assert!((want - got).abs() < 1e-12, "{case}: {got}");
+                }
+                _ => assert_eq!(got, None, "{case}"),
+            }
+            n_cases += 1;
+        }
+        assert!(n_cases > 20_000);
+        for case in v["wilson"].as_array().unwrap() {
+            let (Some(lo), Some(hi)) = (case["lo"].as_f64(), case["hi"].as_f64()) else {
+                continue;
+            };
+            let (l, h) = wilson(
+                case["k"].as_u64().unwrap() as usize,
+                case["n"].as_u64().unwrap() as usize,
+            );
+            assert!(
+                (l - lo).abs() < 1e-6 && (h - hi).abs() < 1e-6,
+                "{case}: {l} {h}"
+            );
+        }
+    }
+
+    /// Guards the D5 fix: one task whose trials all errored made the
+    /// smallest trial count 0, so summary.json's pass@k was `{}`. 0.8 leaves
+    /// unscored tasks out (`pass_at_k.py`) and gives {1: 0.5, 2: 1.0} here.
+    #[test]
+    fn an_unscored_task_does_not_empty_pass_at_k() {
+        let tasks = BTreeMap::from([
+            (
+                "a".to_string(),
+                TaskStats {
+                    trials: 2,
+                    passed: 1,
+                    scored: 2,
+                    reward_sum: 1.0,
+                },
+            ),
+            (
+                "b".to_string(),
+                TaskStats {
+                    trials: 2,
+                    passed: 0,
+                    scored: 0,
+                    reward_sum: 0.0,
+                },
+            ),
+        ]);
+        assert_eq!(
+            pass_at_k_table(&tasks),
+            BTreeMap::from([(1, 0.5), (2, 1.0)])
+        );
+    }
 
     #[test]
     fn wilson_known_values() {

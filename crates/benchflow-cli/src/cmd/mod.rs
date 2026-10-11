@@ -7,7 +7,7 @@ mod convert;
 mod doctor;
 mod engine;
 mod explain;
-mod handoff;
+pub(crate) mod handoff;
 mod home;
 mod new;
 mod regrade;

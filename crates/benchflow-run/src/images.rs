@@ -119,9 +119,9 @@ impl Images {
     ) -> Result<Image, Problem> {
         let mut spec = spec.clone();
         if self.build_timeout_multiplier > 0.0 {
-            spec.build_timeout = spec
-                .build_timeout
-                .map(|t| t.mul_f64(self.build_timeout_multiplier.max(0.01)));
+            spec.build_timeout = spec.build_timeout.map(|t| {
+                benchflow_task::values::scale_duration(t, self.build_timeout_multiplier.max(0.01))
+            });
         }
         let spec = &spec;
         cell.get_or_init(|| async {

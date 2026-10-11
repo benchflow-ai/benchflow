@@ -64,8 +64,8 @@ task a rubric so the reward is computed"
                 "the verifier created the file but wrote nothing: write the reward, such as 1 or 0.5"
             }
             RewardError::Parse { .. } => {
-                "reward.txt holds one finite number; reward.json holds an object of finite numbers, or a numeric \"reward\" beside \
-other keys"
+                "reward.txt holds one number from 0 to 1; reward.json holds an object of finite numbers, or a numeric \"reward\" \
+(from 0 to 1) beside other keys"
             }
             RewardError::Disagree { .. } => {
                 "write the same reward to both files, or only one of them"
@@ -209,8 +209,26 @@ fn parse_json(file: &Path, text: &str) -> Result<JsonRewards, RewardError> {
 ///
 /// `reward.json` is preferred; its scalar reward is `reward`, else
 /// `reward.txt`'s number, else its only number. When both files exist, the
-/// JSON's `reward` must equal the text's.
+/// JSON's `reward` must equal the text's. The reward must be in [0, 1], as
+/// in 0.8 (`is_valid_reward_number`); a task's wider `reward_range` is
+/// refused at load, so [0, 1] is the only range a run meets.
 pub fn read_rewards(dir: &Path) -> Result<Rewards, RewardError> {
+    let r = read_any_rewards(dir)?;
+    if !(0.0..=1.0).contains(&r.reward) {
+        let name = match r.source {
+            RewardSource::Text => "reward.txt",
+            RewardSource::Json | RewardSource::Both => "reward.json",
+        };
+        return Err(RewardError::Parse {
+            file: dir.join(name),
+            detail: format!("the reward is {}, outside [0, 1]", r.reward),
+        });
+    }
+    Ok(r)
+}
+
+/// [`read_rewards`] without the range check.
+fn read_any_rewards(dir: &Path) -> Result<Rewards, RewardError> {
     let json_file = dir.join("reward.json");
     let text_file = dir.join("reward.txt");
     let json = read_nonempty(&json_file)?;
@@ -279,6 +297,30 @@ mod tests {
             std::fs::write(d.path().join(name), text).unwrap();
         }
         d
+    }
+
+    /// Guards the D5 fix: a reward outside [0, 1] was scored (reward 2 or
+    /// -0.2 raised or lowered the job's mean); 0.8 makes it a verifier error.
+    #[test]
+    fn a_reward_outside_zero_to_one_is_refused() {
+        for (name, text) in [
+            ("reward.txt", "2"),
+            ("reward.txt", "-0.2"),
+            ("reward.txt", "1e3"),
+            ("reward.json", r#"{"reward": 1.5}"#),
+            ("reward.json", r#"{"score": 7}"#),
+        ] {
+            let d = dir(&[(name, text)]);
+            let e = read_rewards(d.path()).unwrap_err();
+            assert!(
+                matches!(&e, RewardError::Parse { detail, .. } if detail.contains("outside [0, 1]")),
+                "{name} {text}: {e:?}"
+            );
+        }
+        for text in ["0", "1", "0.25", "-0", "1.0"] {
+            let d = dir(&[("reward.txt", text)]);
+            assert!(read_rewards(d.path()).is_ok(), "{text}");
+        }
     }
 
     #[test]

@@ -1203,3 +1203,231 @@ async fn the_key_is_masked_in_response_headers() {
     assert!(!echoed.contains(KEY), "{echoed}");
     fwd.stop().await;
 }
+
+/// A small PRNG for the forwarder fuzz test (xorshift64*).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items[self.below(items.len())]
+    }
+}
+
+/// One random, often malformed, HTTP request.
+fn fuzz_request(rng: &mut Rng) -> (String, Vec<u8>) {
+    const METHODS: &[&str] = &[
+        "GET", "POST", "PUT", "DELETE", "OPTIONS", "CONNECT", "TRACE", "get", "P OST", "", "\u{0}",
+    ];
+    const PATHS: &[&str] = &[
+        "/anthropic/v1/messages",
+        "/openai/chat/completions",
+        "/anthropic/sse",
+        "/anthropic/status/401",
+        "/anthropic/reset-once",
+        "/",
+        "*",
+        "http://evil.example/anthropic/x",
+        "//anthropic/x",
+        "/anthropic/../../etc/passwd",
+        "/anthropic/%2e%2e/x",
+        "/anthropic%00/x",
+        "/openai?model=x",
+        "/anthropic/v1/messages?x=%ZZ",
+        "/ANTHROPIC/x",
+        "/anthropicx/y",
+        "",
+    ];
+    const VERSIONS: &[&str] = &["HTTP/1.1", "HTTP/1.0", "HTTP/2", "HTTP/9.9", "", "http/1.1"];
+    const HEADERS: &[&str] = &[
+        "host: 127.0.0.1",
+        "host: evil.example",
+        "connection: close",
+        "connection: keep-alive",
+        "content-length: 5",
+        "content-length: -1",
+        "content-length: 99999999999999999999",
+        "content-length: 3\r\ncontent-length: 7",
+        "transfer-encoding: chunked",
+        "transfer-encoding: gzip, chunked",
+        "content-encoding: gzip",
+        "content-encoding: br",
+        "expect: 100-continue",
+        "authorization: Bearer benchflow-forwarder-holds-the-key",
+        "x-api-key: sk-other",
+        "authorization: Basic Zm9vOmJhcg==",
+        "x-forwarded-host: evil.example",
+        "content-type: application/json",
+        "x: \u{1}\u{7f}",
+        "bad header line",
+        ": empty-name",
+        "x-very-long: VERYLONG",
+    ];
+    const BODIES: &[&str] = &[
+        "",
+        "{}",
+        r#"{"model": "m", "max_tokens": 1}"#,
+        "{\"model\": ",
+        "5\r\nhello\r\n0\r\n\r\n",
+        "zz\r\nhello\r\n",
+        "ffffffffffffffff\r\nx",
+        "\u{0}\u{0}\u{0}",
+        "not json",
+    ];
+    let path = format!(
+        "{}{}",
+        rng.pick(PATHS),
+        if rng.below(4) == 0 {
+            rng.pick(PATHS)
+        } else {
+            ""
+        }
+    );
+    // Mostly well-formed, so most requests get past the HTTP parser to the
+    // forwarder's own handling; one part in a few is broken.
+    let method = if rng.below(8) == 0 {
+        rng.pick(METHODS)
+    } else {
+        rng.pick(&["GET", "POST"])
+    };
+    let version = if rng.below(8) == 0 {
+        rng.pick(VERSIONS)
+    } else {
+        "HTTP/1.1"
+    };
+    let line = format!("{method} {path} {version}");
+    let mut head = format!("{line}\r\nhost: 127.0.0.1");
+    for _ in 0..rng.below(4) {
+        let h = rng
+            .pick(HEADERS)
+            .replace("VERYLONG", &"a".repeat(rng.below(70_000)));
+        head.push_str("\r\n");
+        head.push_str(&h);
+    }
+    let body = rng.pick(BODIES);
+    let framed = head.contains("content-length") || head.contains("transfer-encoding");
+    if !framed && rng.below(8) != 0 {
+        head.push_str(&format!("\r\ncontent-length: {}", body.len()));
+    }
+    head.push_str(if rng.below(16) == 0 {
+        "\n\n"
+    } else {
+        "\r\n\r\n"
+    });
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body.as_bytes());
+    if rng.below(12) == 0 {
+        let n = rng.below(4096);
+        bytes.extend((0..n).map(|_| rng.next() as u8));
+    }
+    if rng.below(12) == 0 {
+        let keep = rng.below(bytes.len() + 1);
+        bytes.truncate(keep);
+    }
+    (path, bytes)
+}
+
+/// Random and malformed requests (bad request lines, conflicting lengths,
+/// broken chunking, huge headers, truncated bodies, raw bytes) never stop
+/// the forwarder and never show the key, and it still serves a good request
+/// afterwards. `BENCH_FUZZ_FORWARDER_CASES` sets the count (default 150),
+/// `BENCH_FUZZ_SEED` the seed (printed on failure).
+#[tokio::test]
+async fn random_requests_never_stop_the_forwarder_or_show_the_key() {
+    if node().is_none() {
+        eprintln!("skipped: no `node` on PATH to run the forwarder with");
+        return;
+    }
+    let cases: usize = std::env::var("BENCH_FUZZ_FORWARDER_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(150);
+    let seed: u64 = std::env::var("BENCH_FUZZ_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+                | 1
+        });
+    let mut rng = Rng(seed);
+    let (upstream, _seen) = fake_provider().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut fwd = start(dir.path(), routes(upstream), 0o600).await.unwrap();
+    let client = reqwest::Client::new();
+    let mut statuses: std::collections::BTreeMap<String, usize> = Default::default();
+    for i in 0..cases {
+        let (path, request) = fuzz_request(&mut rng);
+        if let Ok(Ok(mut stream)) = tokio::time::timeout(
+            Duration::from_secs(5),
+            TcpStream::connect(("127.0.0.1", fwd.port)),
+        )
+        .await
+        {
+            let _ = stream.write_all(&request).await;
+            // Half-closing ends a truncated request at once instead of
+            // after a timeout; Node then drops a request it would answer
+            // asynchronously, so some requests get no answer (status none).
+            let _ = stream.shutdown().await;
+            let mut answer = Vec::new();
+            let _ =
+                tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+            let answer = String::from_utf8_lossy(&answer);
+            let status = answer.get(9..12).unwrap_or("none").to_string();
+            if std::env::var_os("BENCH_FUZZ_SHOW").is_some() && i < 40 {
+                eprintln!(
+                    "{:?} -> {:?}",
+                    String::from_utf8_lossy(&request)
+                        .chars()
+                        .take(160)
+                        .collect::<String>(),
+                    answer.chars().take(200).collect::<String>()
+                );
+            }
+            *statuses.entry(status).or_default() += 1;
+            if !path.contains("echo") {
+                assert!(
+                    !answer.contains(KEY),
+                    "seed {seed} case {i}: the key in {answer:.400}"
+                );
+            }
+        }
+        assert!(
+            fwd.child.try_wait().unwrap().is_none(),
+            "seed {seed} case {i}: the forwarder exited on {:?}\n{}",
+            String::from_utf8_lossy(&request)
+                .chars()
+                .take(400)
+                .collect::<String>(),
+            fwd.stderr.lock().unwrap()
+        );
+        if i % 25 == 24 || i + 1 == cases {
+            let ok = client
+                .post(fwd.url("/anthropic/v1/messages"))
+                .body(r#"{"model": "m", "max_tokens": 1}"#)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await;
+            assert!(
+                ok.as_ref().is_ok_and(|a| a.status() == 200),
+                "seed {seed} case {i}: a good request failed after fuzzing: {ok:?}"
+            );
+        }
+    }
+    eprintln!("forwarder fuzz: seed {seed}, {cases} requests, answers by status {statuses:?}");
+    let log = fwd.stop().await;
+    assert!(
+        !log.contains(KEY),
+        "seed {seed}: the key in the forwarder's log"
+    );
+}

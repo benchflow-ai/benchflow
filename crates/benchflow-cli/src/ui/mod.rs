@@ -141,7 +141,7 @@ pub fn duration(d: Duration) -> String {
 }
 
 pub fn secs(s: f64) -> String {
-    duration(Duration::from_secs_f64(s.max(0.0)))
+    duration(benchflow_task::values::duration_from_secs(s))
 }
 
 /// The terminal's width, or 100.

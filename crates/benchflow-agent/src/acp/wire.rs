@@ -53,7 +53,14 @@ impl LineReader {
             if buf.is_empty() {
                 return Ok(match (line.is_empty(), dropped) {
                     (true, 0) => None,
-                    (_, 0) => Some(Line::Text(line)),
+                    (_, 0) => {
+                        // A last line without its newline loses its `\r`
+                        // too, like every other line.
+                        if line.last() == Some(&b'\r') {
+                            line.pop();
+                        }
+                        Some(Line::Text(line))
+                    }
                     _ => Some(Line::TooLong(dropped + line.len())),
                 });
             }

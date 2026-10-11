@@ -46,7 +46,7 @@ fn table<'a>(v: &'a Value, key: &str) -> Option<&'a Map<String, Value>> {
 
 fn secs(v: Option<&Value>) -> Option<Duration> {
     v.and_then(Value::as_f64)
-        .map(|s| Duration::from_secs_f64(s.max(0.0)))
+        .map(crate::values::duration_from_secs)
 }
 
 /// Read the extras, adding what the runtime cannot honor to `refused`.
@@ -185,7 +185,7 @@ fn verifier_image(cx: &Context<'_>, refused: &mut Vec<Unsupported>) -> Option<Ve
 }
 
 fn healthcheck(m: &Map<String, Value>) -> Option<Ready> {
-    let get = |k: &str, d: f64| secs(m.get(k)).unwrap_or(Duration::from_secs_f64(d));
+    let get = |k: &str, d: f64| secs(m.get(k)).unwrap_or(crate::values::duration_from_secs(d));
     Some(Ready {
         run: m.get("command").and_then(Value::as_str)?.to_string(),
         interval: get("interval_sec", 5.0),
