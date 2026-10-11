@@ -231,7 +231,20 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             && args.diff.is_empty()
             && !may_resume(&st.jobs_dir, args.job.as_deref(), args.fresh, &d)
         {
-            return dataset_plan(&d, listed, &resolved, None);
+            // The agent's preflight checks this machine, fetching no task
+            // (an `acp:` agent may refresh the registry index), so the
+            // plan still names a missing login.
+            let attempt = engine::attempt(
+                &agent_name,
+                resolved.run.model.as_deref(),
+                resolved.run.reasoning_effort.as_deref(),
+                resolved.run.harness.as_deref(),
+                args.backend.as_deref(),
+                &resolved.run.env,
+                &context::agent_option_pairs(&resolved.run.agent_options),
+            )
+            .await?;
+            return dataset_plan(&d, listed, &resolved, None, preflight(&attempt).as_ref());
         }
         let fetched = registry::fetch(&d, &cache, &|m: &str| {
             note!("  {} {}", dim("fetching"), m);
@@ -349,10 +362,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
     let load_trajectory = loaded_session(&resolved.run, &attempt)?;
     // A missing login stops a run here, before any sandbox starts; a plan
     // (--dry-run) needs no key, so it says what is missing instead.
-    let not_ready = match &attempt {
-        benchflow_run::Attempt::Model(m) => m.preflight().err(),
-        _ => None,
-    };
+    let not_ready = preflight(&attempt);
     // A native loop whose calls (and key) a base URL sends elsewhere.
     if benchflow_agent::native::find(&agent_name).is_some()
         && let Some(m) = model.as_deref()
@@ -415,14 +425,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             &options,
         );
         if let Some((d, _)) = &dataset {
-            let plan = dataset_plan(d, listed, &resolved, Some(&preview));
-            if !ui().json {
-                say_not_ready(not_ready.as_ref());
-            }
-            return match (plan?, not_ready.is_some()) {
-                (Exit::Ok, true) => Ok(Exit::NotReady),
-                (exit, _) => Ok(exit),
-            };
+            return dataset_plan(d, listed, &resolved, Some(&preview), not_ready.as_ref());
         }
         let plan = json!({
             "agent": attempt.label(),
@@ -1135,7 +1138,9 @@ fn dataset_plan(
     listed: usize,
     resolved: &JobFile,
     preview: Option<&benchflow_run::job::Preview>,
+    not_ready: Option<&benchflow_run::outcome::Problem>,
 ) -> Result<Exit> {
+    let exit = dry_run_exit(not_ready);
     let tasks: Vec<Value> = d
         .tasks
         .iter()
@@ -1153,13 +1158,14 @@ fn dataset_plan(
             "model": resolved.run.model,
             "trials_per_task": resolved.run.trials,
             "tasks": tasks,
+            "not_ready": not_ready.map(|p| json!({"code": p.code, "message": p.message, "next": p.next})),
             "job": job_json(preview),
         });
         println!(
             "{}",
             serde_json::to_string_pretty(&plan).unwrap_or_default()
         );
-        return Ok(Exit::Ok);
+        return Ok(exit);
     }
     // With a preview, the tasks were fetched to tell whether it resumes.
     say!(
@@ -1200,7 +1206,8 @@ fn dataset_plan(
             ))
         );
     }
-    Ok(Exit::Ok)
+    say_not_ready(not_ready);
+    Ok(exit)
 }
 
 /// Why a task was skipped, on its one line: the first error itself, so a
@@ -1276,6 +1283,15 @@ fn dry_run_exit(problem: Option<&benchflow_run::outcome::Problem>) -> Exit {
         Exit::NotReady
     } else {
         Exit::Ok
+    }
+}
+
+/// What a model agent's run would stop on before any sandbox starts (a
+/// missing login); scripts need nothing.
+fn preflight(attempt: &benchflow_run::Attempt) -> Option<benchflow_run::outcome::Problem> {
+    match attempt {
+        benchflow_run::Attempt::Model(m) => m.preflight().err(),
+        _ => None,
     }
 }
 

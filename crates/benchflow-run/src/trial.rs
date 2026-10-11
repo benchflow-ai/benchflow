@@ -2739,7 +2739,11 @@ pub fn throttled(agent_dir: &Path, elapsed: Option<Duration>) -> Option<Problem>
                 .get("body_hash")
                 .and_then(Value::as_str)
                 .map(|h| Sent::Body(h.to_string()))
-                .or_else(|| v.get("attempt").and_then(Value::as_u64).map(Sent::Attempt));
+                .or_else(|| {
+                    let attempt = v.get("attempt").and_then(Value::as_u64)?;
+                    let seq = v.get("seq").and_then(Value::as_u64);
+                    Some(Sent::Attempt { seq, attempt })
+                });
             calls.push(Call {
                 span: call_span(&v),
                 refused: refusal,
@@ -2801,18 +2805,40 @@ struct Call {
 }
 
 /// What says a later request is an earlier one sent again: the same body
-/// (the forwarder's `body_hash`), or the native client's next `attempt`.
+/// (the forwarder's `body_hash`), or a later `attempt` of the native
+/// client's same call (its `seq`).
 enum Sent {
     Body(String),
-    Attempt(u64),
+    Attempt { seq: Option<u64>, attempt: u64 },
 }
 
 impl Sent {
-    /// Whether `later` is this request sent again.
+    /// Whether `later` is this request sent again. A native try the log
+    /// skips (one with no status: a reset or a timeout) leaves a gap in the
+    /// call's attempts; a log without `seq` can only take the next attempt.
     fn again(&self, later: &Sent) -> bool {
         match (self, later) {
             (Sent::Body(a), Sent::Body(b)) => a == b,
-            (Sent::Attempt(a), Sent::Attempt(b)) => a.checked_add(1) == Some(*b),
+            (
+                Sent::Attempt {
+                    seq: Some(x),
+                    attempt: a,
+                },
+                Sent::Attempt {
+                    seq: Some(y),
+                    attempt: b,
+                },
+            ) => x == y && b > a,
+            (
+                Sent::Attempt {
+                    seq: None,
+                    attempt: a,
+                },
+                Sent::Attempt {
+                    seq: None,
+                    attempt: b,
+                },
+            ) => a.checked_add(1) == Some(*b),
             _ => false,
         }
     }
@@ -3558,6 +3584,45 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("model_calls.jsonl"), native.join("\n")).unwrap();
+        assert!(throttled(dir.path(), thirty).is_some());
+        // A native call's refusal waits for that call's next try, never
+        // another call's (SMALL-DELTAS-B, d7e): three calls refused, their
+        // second tries lost (no status) and their third answered 20 s
+        // later, 25 minutes of the agent's own turns, then one late 429 and
+        // its retry. About 70 s of waiting, not held back; matching the
+        // attempt alone ran each early refusal to the late call's retry.
+        let call = |seq: u64, attempt: u32, start_s: i64, status: &str| {
+            let at = chrono::DateTime::from_timestamp(1_760_000_000 + start_s, 0).unwrap();
+            format!(
+                r#"{{"seq": {seq}, "attempt": {attempt}, "started_at": "{}", "duration_ms": 2000, "status": {status}}}"#,
+                at.to_rfc3339()
+            )
+        };
+        let mut calls = Vec::new();
+        for seq in 1..=3 {
+            let t = (seq as i64 - 1) * 30;
+            calls.push(call(seq, 1, t, "429"));
+            calls.push(call(seq, 2, t + 8, "null"));
+            calls.push(call(seq, 3, t + 20, "200"));
+        }
+        for seq in 4..=6 {
+            calls.push(call(seq, 1, (seq as i64 - 3) * 300, "200"));
+        }
+        calls.push(call(7, 1, 1_700, "429"));
+        calls.push(call(7, 2, 1_710, "200"));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("model_calls.jsonl"), calls.join("\n")).unwrap();
+        assert!(throttled(dir.path(), thirty).is_none());
+        // The same calls retried after long backoffs did hold it back.
+        let mut slow = Vec::new();
+        for seq in 1..=12 {
+            let t = (seq as i64 - 1) * 136;
+            slow.push(call(seq, 1, t, "429"));
+            slow.push(call(seq, 2, t + 62, "null"));
+            slow.push(call(seq, 3, t + 124, "200"));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("model_calls.jsonl"), slow.join("\n")).unwrap();
         assert!(throttled(dir.path(), thirty).is_some());
         // Three refusals in the first minute, an hour of the agent's own
         // work, then one refused side request last in a log that has no

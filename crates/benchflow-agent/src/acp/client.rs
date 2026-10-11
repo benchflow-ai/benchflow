@@ -1058,7 +1058,7 @@ impl AcpClient {
         };
         let text = format!("{message}\n{}", details.unwrap_or_default());
         if let Some((crate::headless::classify::Signal::UsageLimit(info), line)) =
-            crate::headless::classify::classify(&text, chrono::Utc::now())
+            crate::headless::classify::classify_error(&text, chrono::Utc::now())
         {
             let detail = if info.detail.is_empty() {
                 line

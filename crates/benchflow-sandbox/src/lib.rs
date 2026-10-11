@@ -49,8 +49,11 @@ pub(crate) fn track_cleanup(cleanup: tokio::task::JoinHandle<()>) {
     all.push(cleanup);
 }
 
-/// Wait, up to `limit`, for the removals [`track_cleanup`] started. True
-/// when all finished.
+/// The backend name [`left_behind`] gives a Daytona builder left to finish
+/// its build (or whose state could not be read): deleting it now would
+/// cancel a build other runs may share, so it is not one to remove by hand.
+pub const DAYTONA_BUILDING: &str = "daytona-building";
+
 /// Sandboxes this process could not remove inside a backend (a builder
 /// whose delete failed, one left building, a failed start's cleanup), as
 /// `<backend> <id>`, for the end-of-run list.
@@ -71,6 +74,8 @@ pub fn left_behind() -> Vec<String> {
         .clone()
 }
 
+/// Wait, up to `limit`, for the removals [`track_cleanup`] started. True
+/// when all finished.
 pub async fn settle_cleanups(limit: std::time::Duration) -> bool {
     let all = std::mem::take(&mut *CLEANUPS.lock().unwrap_or_else(|e| e.into_inner()));
     tokio::time::timeout(limit, futures::future::join_all(all))

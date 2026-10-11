@@ -10,7 +10,7 @@ use chrono::Utc;
 use tokio::io::AsyncRead;
 use tokio::time::Instant;
 
-use super::classify::{Signal, classify};
+use super::classify::{Signal, classify, classify_error};
 use super::error::HeadlessError;
 use super::parser::{Failure, Hint, Out, Parser};
 use crate::acp::wire::{self, Line, LineReader};
@@ -351,13 +351,19 @@ impl Runner {
             };
         }
         let noise_text: Vec<&str> = noise.iter().map(String::as_str).collect();
+        // A reported failure is one error; stderr and the noise are blocks.
         let candidates = fatal
-            .map(|f| f.message.clone())
+            .map(|f| (f.message.clone(), true))
             .into_iter()
-            .chain(failures.iter().rev().map(|f| f.message.clone()))
-            .chain([stderr.to_string(), noise_text.join("\n")]);
-        for text in candidates {
-            if let Some((signal, line)) = classify(&text, now) {
+            .chain(failures.iter().rev().map(|f| (f.message.clone(), true)))
+            .chain([(stderr.to_string(), false), (noise_text.join("\n"), false)]);
+        for (text, one_error) in candidates {
+            let found = if one_error {
+                classify_error(&text, now)
+            } else {
+                classify(&text, now)
+            };
+            if let Some((signal, line)) = found {
                 return self.error_for(signal, cap(&redact(&line)));
             }
         }

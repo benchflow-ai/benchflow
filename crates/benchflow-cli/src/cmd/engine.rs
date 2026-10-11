@@ -353,7 +353,7 @@ where
         // sandbox running, and only the trial's log said so.
         let mut left = benchflow_run::trial::left_behind();
         left.extend(benchflow_sandbox::left_behind());
-        if let Some(note) = left_behind_note(&left) {
+        for note in left_behind_note(&left) {
             anstream::eprintln!("  {} {note}", warn_mark());
         }
     }
@@ -363,32 +363,56 @@ where
     outcome
 }
 
-/// The end-of-run warning for sandboxes the run could not remove (each
-/// `<backend> <id>`): which, and what removes them.
-fn left_behind_note(left: &[String]) -> Option<String> {
-    if left.is_empty() {
-        return None;
+/// The end-of-run warnings for sandboxes the run could not remove (each
+/// `<backend> <id>`): which, and what removes them. A Daytona builder left
+/// building gets its own line with no way to delete it: deleting it would
+/// cancel a build other runs may share.
+fn left_behind_note(left: &[String]) -> Vec<String> {
+    let mut notes = Vec::new();
+    let (building, left): (Vec<&String>, Vec<&String>) = left.iter().partition(|e| {
+        e.split_once(' ')
+            .is_some_and(|(b, _)| b == benchflow_sandbox::DAYTONA_BUILDING)
+    });
+    if !left.is_empty() {
+        let mut by_backend: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for entry in &left {
+            let (backend, id) = entry.split_once(' ').unwrap_or(("", entry.as_str()));
+            by_backend.entry(backend).or_default().push(id);
+        }
+        let it = if left.len() == 1 { "it" } else { "them" };
+        let ways: Vec<String> = by_backend
+            .iter()
+            .map(|(backend, ids)| match *backend {
+                "docker" | "podman" => format!("`{backend} rm -f {}`", ids.join(" ")),
+                "daytona" => format!("Daytona's dashboard ({})", ids.join(", ")),
+                other => format!("the {other} backend ({})", ids.join(", ")),
+            })
+            .collect();
+        let names: Vec<&str> = left.iter().map(|e| e.as_str()).collect();
+        notes.push(format!(
+            "could not remove {}: {}; a later `bench run` on this machine removes {it} once idle and done building, or remove {it} now: {}",
+            plural(left.len(), "sandbox"),
+            names.join(", "),
+            ways.join("; ")
+        ));
     }
-    let mut by_backend: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for entry in left {
-        let (backend, id) = entry.split_once(' ').unwrap_or(("", entry.as_str()));
-        by_backend.entry(backend).or_default().push(id);
+    if !building.is_empty() {
+        let ids: Vec<&str> = building
+            .iter()
+            .map(|e| e.split_once(' ').map_or(e.as_str(), |(_, id)| id))
+            .collect();
+        let (it, its) = if building.len() == 1 {
+            ("it", "its image")
+        } else {
+            ("them", "their images")
+        };
+        notes.push(format!(
+            "left {} still building {its} (or not answering) to finish: daytona {}; deleting {it} now would cancel a build other runs may share, so leave {it}: a later `bench run` on this machine removes {it} once done building and idle",
+            plural(building.len(), "Daytona sandbox"),
+            ids.join(", daytona "),
+        ));
     }
-    let it = if left.len() == 1 { "it" } else { "them" };
-    let ways: Vec<String> = by_backend
-        .iter()
-        .map(|(backend, ids)| match *backend {
-            "docker" | "podman" => format!("`{backend} rm -f {}`", ids.join(" ")),
-            "daytona" => format!("Daytona's dashboard ({})", ids.join(", ")),
-            other => format!("the {other} backend ({})", ids.join(", ")),
-        })
-        .collect();
-    Some(format!(
-        "could not remove {}: {}; a later `bench run` on this machine removes {it} once idle and done building, or remove {it} now: {}",
-        plural(left.len(), "sandbox"),
-        left.join(", "),
-        ways.join("; ")
-    ))
+    notes
 }
 
 /// Wait for signals: a first Ctrl-C calls `on_drain`; the next one (or a
@@ -804,23 +828,64 @@ mod report_tests {
     /// backend's dashboard".
     #[test]
     fn sandboxes_left_behind_are_named_with_what_removes_them() {
-        assert_eq!(left_behind_note(&[]), None);
-        let note = left_behind_note(&["docker bf-hello-1".to_string()]).unwrap();
+        assert!(left_behind_note(&[]).is_empty());
+        let notes = left_behind_note(&["docker bf-hello-1".to_string()]);
         assert_eq!(
-            note,
-            "could not remove 1 sandbox: docker bf-hello-1; a later `bench run` on this machine removes it once idle and done building, or remove it now: `docker rm -f bf-hello-1`"
+            notes,
+            [
+                "could not remove 1 sandbox: docker bf-hello-1; a later `bench run` on this machine removes it once idle and done building, or remove it now: `docker rm -f bf-hello-1`"
+            ]
         );
-        let note = left_behind_note(&[
+        let notes = left_behind_note(&[
             "daytona 6f1c".to_string(),
             "podman bf-a".to_string(),
             "daytona 9e2d".to_string(),
-        ])
-        .unwrap();
+        ]);
+        let [note] = notes.as_slice() else {
+            panic!("{notes:?}")
+        };
         assert!(note.starts_with("could not remove 3 sandboxes: "), "{note}");
         assert!(note.contains(", or remove them now: "), "{note}");
         assert!(note.contains("Daytona's dashboard (6f1c, 9e2d)"), "{note}");
         assert!(note.contains("`podman rm -f bf-a`"), "{note}");
         assert!(!note.contains("backend's dashboard"), "{note}");
+    }
+
+    /// A Daytona builder still building at the end of the run is left to
+    /// finish, with no way to delete it: deleting it would cancel a build
+    /// other runs may share (D4C-DAYTONA 1). A failed delete still gets one.
+    #[test]
+    fn a_builder_still_building_is_left_with_no_delete_advice() {
+        let building = format!("{} 7a3b", benchflow_sandbox::DAYTONA_BUILDING);
+        let notes = left_behind_note(std::slice::from_ref(&building));
+        assert_eq!(
+            notes,
+            [
+                "left 1 Daytona sandbox still building its image (or not answering) to finish: daytona 7a3b; deleting it now would cancel a build other runs may share, so leave it: a later `bench run` on this machine removes it once done building and idle"
+            ]
+        );
+        let two = left_behind_note(&[
+            format!("{} 7a3b", benchflow_sandbox::DAYTONA_BUILDING),
+            format!("{} 8c4d", benchflow_sandbox::DAYTONA_BUILDING),
+        ]);
+        assert_eq!(
+            two,
+            [
+                "left 2 Daytona sandboxes still building their images (or not answering) to finish: daytona 7a3b, daytona 8c4d; deleting them now would cancel a build other runs may share, so leave them: a later `bench run` on this machine removes them once done building and idle"
+            ]
+        );
+        let notes = left_behind_note(&[building, "daytona 6f1c".to_string()]);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].starts_with("could not remove 1 sandbox: daytona 6f1c;")
+                && notes[0].contains("remove it now: Daytona's dashboard (6f1c)"),
+            "{notes:?}"
+        );
+        assert!(!notes[0].contains("7a3b"), "{notes:?}");
+        assert!(
+            notes[1].contains("daytona 7a3b") && !notes[1].contains("remove it now"),
+            "{notes:?}"
+        );
     }
 
     fn trial(name: &str, input: u64, cost: Option<f64>) -> TrialRecord {

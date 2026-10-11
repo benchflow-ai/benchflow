@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::headless::classify::{Signal, classify};
+use crate::headless::classify::{Signal, classify, classify_error};
 
 /// Whose problem a failure is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -375,7 +375,7 @@ impl AcpError {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        classify(&format!("{message}\n{details}"), Utc::now()).map(|(s, _)| s)
+        classify_error(&format!("{message}\n{details}"), Utc::now()).map(|(s, _)| s)
     }
 
     /// The model-provider failure an agent error carries: 0.8's markers, read
@@ -394,7 +394,7 @@ impl AcpError {
         };
         let text = format!("{message} {details}").to_lowercase();
         let any = |markers: &[&str]| markers.iter().any(|m| text.contains(m));
-        let signal = classify(&format!("{message}\n{details}"), Utc::now()).map(|(s, _)| s);
+        let signal = classify_error(&format!("{message}\n{details}"), Utc::now()).map(|(s, _)| s);
         // A prompt over the context window is the agent's own (0.8's
         // canonical `provider_rejected` case, its fault "agent"), even when
         // the message also says `HTTP 400`; as on the reply and log paths.

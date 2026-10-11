@@ -140,17 +140,22 @@ static RETRY_HINT: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)\bretry (?:in|after) \d|retrydelay"));
 static DAILY: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)per.?day|\bdaily\b"));
 
-/// What one line says, if anything.
-fn classify_line(line: &str, now: DateTime<Utc>) -> Option<Signal> {
+/// What one line says, if anything. A spent-quota sentence's retry delay
+/// and day are looked for with `around`, which says whether the error that
+/// holds the line matches a pattern (the delay is often on a line of its
+/// own, and the day only in a quota id in the details).
+fn classify_line(
+    line: &str,
+    around: &dyn Fn(&Regex) -> bool,
+    now: DateTime<Utc>,
+) -> Option<Signal> {
     if let Some(info) = parse_limit_text(line, now) {
         return Some(Signal::UsageLimit(info));
     }
     PATTERNS.iter().find_map(|(re, signal)| {
         let m = re.find(line)?;
         Some(match signal {
-            Signal::UsageLimit(_) if RETRY_HINT.is_match(line) && !DAILY.is_match(line) => {
-                Signal::RateLimit
-            }
+            Signal::UsageLimit(_) if around(&RETRY_HINT) && !around(&DAILY) => Signal::RateLimit,
             Signal::UsageLimit(_) => {
                 // Not Claude's or Codex's exact words: keep the line as the detail.
                 let detail = line[m.start()..].trim().to_string();
@@ -165,13 +170,54 @@ fn classify_line(line: &str, now: DateTime<Utc>) -> Option<Signal> {
     })
 }
 
-/// What a block of text says, the last line that says something winning.
+/// What a block of text says (a log, stderr), the last line that says
+/// something winning. A line's error runs from it to the next blank line:
+/// a retry notice earlier in the block does not relabel a later spent
+/// balance.
 pub(crate) fn classify(text: &str, now: DateTime<Utc>) -> Option<(Signal, String)> {
-    text.lines()
-        .rev()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .find_map(|line| classify_line(line, now).map(|s| (s, line.to_string())))
+    let lines: Vec<&str> = text.lines().collect();
+    (0..lines.len()).rev().find_map(|i| {
+        let line = lines[i].trim();
+        if line.is_empty() {
+            return None;
+        }
+        // Both patterns match within a line.
+        let around = |re: &Regex| {
+            lines[i..]
+                .iter()
+                .take_while(|l| !l.trim().is_empty())
+                .any(|l| re.is_match(l))
+        };
+        classify_line(line, &around, now).map(|s| (s, line.to_string()))
+    })
+}
+
+/// What one error says (an ACP error's message and `data.details`, one
+/// failure a headless agent reported): as [`classify`], but the retry delay
+/// and day are read over the whole error, and its spent-quota sentence wins
+/// over a rate-limit word on a later line (Google's help link,
+/// `…/docs/rate-limits`).
+pub(crate) fn classify_error(text: &str, now: DateTime<Utc>) -> Option<(Signal, String)> {
+    let found = |pick: &dyn Fn(&Signal) -> bool| {
+        text.lines()
+            .rev()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .find_map(|line| {
+                classify_line(line, &|re: &Regex| re.is_match(text), now)
+                    .filter(|s| pick(s))
+                    .map(|s| (s, line.to_string()))
+            })
+    };
+    match found(&|_| true) {
+        Some((Signal::RateLimit, line)) => {
+            // A quota sentence is read with the whole error's delay and
+            // day, so it is a rate limit itself unless the quota is spent.
+            let quota = found(&|s| matches!(s, Signal::UsageLimit(_)));
+            Some(quota.unwrap_or((Signal::RateLimit, line)))
+        }
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +268,48 @@ mod tests {
             ),
         ] {
             assert_eq!(kind(text), Some(want), "{text}");
+        }
+    }
+
+    /// Google's 429 message puts the retry delay on its own line, and the
+    /// day only in the quota id: read from the quota sentence to the next
+    /// blank line in a block (stderr), and over the whole of one error. A
+    /// retry notice before a blank line does not relabel a later spent
+    /// balance (REVIEW-C (orch) 1).
+    #[test]
+    fn a_quota_errors_retry_delay_and_day_may_be_on_other_lines() {
+        let google = "You exceeded your current quota, please check your plan and billing details. \
+                      For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n\
+                      * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests\n\
+                      Please retry in 20.6s.";
+        assert_eq!(kind(google), Some("rate"), "{google}");
+        let daily =
+            format!("{google}\n* Quota id: GenerateRequestsPerDayPerProjectPerModel-FreeTier");
+        assert_eq!(kind(&daily), Some("usage"), "{daily}");
+        let apart = "Please retry in 5s.\n\nYou exceeded your current quota";
+        assert_eq!(kind(apart), Some("usage"), "{apart}");
+        let one = |text: &str| classify_error(text, now()).map(|(s, _)| s);
+        for (text, want) in [
+            (
+                "Internal error: You exceeded your current quota\n{\"retryDelay\":\"20s\"}",
+                Signal::RateLimit,
+            ),
+            (
+                "Internal error: You exceeded your current quota. Please retry in 33s.\n\
+                 {\"quotaId\":\"GenerateRequestsPerDayPerProjectPerModel-FreeTier\",\
+                 \"links\":[{\"url\":\"https://ai.google.dev/gemini-api/docs/rate-limits\"}]}",
+                Signal::UsageLimit(LimitInfo {
+                    detail: "exceeded your current quota. Please retry in 33s.".into(),
+                    window: None,
+                    resets_at: None,
+                }),
+            ),
+            (
+                "Internal error: API Error: 429 rate limit exceeded",
+                Signal::RateLimit,
+            ),
+        ] {
+            assert_eq!(one(text), Some(want), "{text}");
         }
     }
 

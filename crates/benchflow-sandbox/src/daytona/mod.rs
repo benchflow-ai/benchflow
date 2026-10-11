@@ -453,7 +453,8 @@ async fn retire(api: &Api, id: &str, until: Instant) {
             tracing::warn!(
                 "builder sandbox {id} is still building or cannot be checked ({state}); leaving it to finish"
             );
-            crate::note_left_behind("daytona", id);
+            // Not one to delete by hand: that would cancel the build.
+            crate::note_left_behind(crate::DAYTONA_BUILDING, id);
             return;
         }
         tokio::time::sleep(RETIRE_POLL).await;
@@ -1740,6 +1741,29 @@ mod tests {
         assert_eq!(deleted.len(), 1, "{deleted:?}");
         assert_eq!(deleted[0].0, "b1");
         assert!(deleted[0].1 >= Duration::from_secs(4), "{deleted:?}");
+    }
+
+    /// A builder still building when its wait ends is recorded as left
+    /// building, not as a failed delete, so the end-of-run note gives no
+    /// way to delete it (that would cancel a build other runs may share);
+    /// nothing deletes it (D4C-DAYTONA 1).
+    #[tokio::test]
+    async fn a_builder_left_building_is_not_noted_as_one_to_delete() {
+        let (url, deleted) = building_for(Duration::from_secs(3600)).await;
+        let provider = DaytonaProvider::new(DaytonaConfig {
+            api_key: Some("k".into()),
+            api_url: url,
+            target: None,
+        })
+        .unwrap();
+        retire(&provider.api, "retire-7a3b", Instant::now()).await;
+        let left = crate::left_behind();
+        assert!(
+            left.iter().any(|e| e == "daytona-building retire-7a3b"),
+            "{left:?}"
+        );
+        assert!(!left.iter().any(|e| e == "daytona retire-7a3b"), "{left:?}");
+        assert!(deleted.lock().unwrap().is_empty());
     }
 
     /// Wait up to 30 s for `done`.

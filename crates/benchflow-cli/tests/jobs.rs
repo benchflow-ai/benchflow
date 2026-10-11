@@ -380,6 +380,57 @@ fn a_local_dataset_toml_runs_its_tasks() {
         .stdout(predicate::str::contains("mine@0.1").and(predicate::str::contains("hello")));
 }
 
+/// A dataset dry run with no earlier job fetches nothing, yet still runs
+/// the agent's preflight: with no login it names what a run would stop on
+/// and exits 3 (not ready), as a real run would, with or without --json.
+#[test]
+fn a_dataset_dry_run_without_a_login_exits_not_ready() {
+    let d = tempfile::tempdir().unwrap();
+    let ds = d.path().join("ds");
+    copy_dir(&fixture_task(), &ds.join("hello"));
+    std::fs::write(
+        ds.join("dataset.toml"),
+        "[dataset]\nname = \"mine\"\nversion = \"0.1\"\n\n[[tasks]]\nname = \"hello\"\n",
+    )
+    .unwrap();
+    let plan = |json: bool| {
+        let mut c = bench(d.path(), &d.path().join("cache"));
+        c.env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", d.path())
+            .env("NO_COLOR", "1")
+            .env("BENCHFLOW_CACHE_DIR", d.path().join("cache"));
+        if json {
+            c.arg("--json");
+        }
+        let out = c
+            .args(["run", "-d", "ds", "-a", "claude", "--dry-run"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let out = plan(false);
+    assert!(out.contains("mine@0.1"), "{out}");
+    assert!(
+        out.contains(
+            "a run would stop here, before any sandbox starts: [R211] no login for agent `claude`"
+        ),
+        "{out}"
+    );
+    let out = plan(true);
+    let doc: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(doc["dataset"]["name"], "mine", "{out}");
+    // A script reading the plan learns why, as from a task's plan.
+    assert_eq!(doc["not_ready"]["code"], "R211", "{out}");
+    assert!(
+        doc["not_ready"]["next"]
+            .as_str()
+            .is_some_and(|n| !n.is_empty()),
+        "{out}"
+    );
+}
+
 #[test]
 fn regrade_lists_trials_without_outputs_and_how_to_fix_it() {
     let d = tempfile::tempdir().unwrap();

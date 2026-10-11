@@ -165,6 +165,9 @@ enum Act {
     Error(&'static str),
     /// The same, after writing a line to its log (stderr).
     ErrorLogged(&'static str, &'static str),
+    /// Answers the prompt with a JSON-RPC error whose `data.details` is
+    /// this JSON (the ACP TypeScript SDK's place for the thrown error).
+    ErrorDetails(&'static str, &'static str),
     /// Answers the prompt with codex-acp's usage-limit error.
     Spent,
     /// Ends its turn with this as its only message, and no tool call.
@@ -617,6 +620,9 @@ fn fake_acp_agent(act: Act, world: Arc<Mutex<World>>) -> Process {
                         out.push(json!({"jsonrpc": "2.0", "id": id,
                             "error": {"code": -32603, "message": message}}));
                     }
+                    Act::ErrorDetails(message, details) => out.push(json!({"jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32603, "message": message, "data": {"details":
+                            serde_json::from_str::<serde_json::Value>(details).unwrap()}}})),
                     Act::Spent => out.push(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32603, "message": "Internal error",
                             "data": {"codexErrorInfo": "usageLimitExceeded",
@@ -1919,6 +1925,53 @@ async fn an_answer_that_reads_like_a_provider_error_is_graded() {
     let rec = run(&spent).await.unwrap();
     let p = rec.problem.unwrap();
     assert_eq!(p.code, "R213", "{}", p.message);
+    // A quota error whose retry delay is on another line of the message,
+    // or only in `data.details`, is a per-minute rate limit (R214, retried);
+    // one whose per-day quota id is only in the details is spent (R213).
+    // Both reviews' inputs (REVIEW-C (orch) 1).
+    for (code, transient, why, message, details) in [
+        (
+            "R214",
+            true,
+            "a quota error, its retry delay on the next line",
+            "Internal error: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\nPlease retry in 20.5s.",
+            r#"{"retryDelay": "20s"}"#,
+        ),
+        (
+            "R214",
+            true,
+            "a quota error, its retry delay only in the details",
+            "Internal error: You exceeded your current quota",
+            r#"{"retryDelay": "20s"}"#,
+        ),
+        (
+            "R213",
+            false,
+            "a daily quota error, its day only in the details",
+            "Internal error: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\nPlease retry in 33s.",
+            r#"{"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}], "links": [{"url": "https://ai.google.dev/gemini-api/docs/rate-limits"}], "retryDelay": "33s"}"#,
+        ),
+    ] {
+        let case = Case::new(code, Owner::Model, why).act(Act::ErrorDetails(message, details));
+        let rec = run(&case).await.unwrap();
+        let p = rec.problem.unwrap();
+        assert_eq!(
+            (p.code.as_str(), p.transient),
+            (code, transient),
+            "{why}: {}",
+            p.message
+        );
+    }
+    let delay = Case::new("R214", Owner::Model, "a quota error with a retry delay").act(
+        Act::Error("Internal error: You exceeded your current quota. Please retry in 20.5s."),
+    );
+    let p = run(&delay).await.unwrap().problem.unwrap();
+    assert_eq!(
+        (p.code.as_str(), p.owner, p.transient),
+        ("R214", Owner::Model, true),
+        "{}",
+        p.message
+    );
     // A JSON-RPC error that is a refused request: the provider's, not
     // retried; one that names the context window: the agent's, whatever
     // the log says (REVIEW-OUTCOMES L1, L7).
