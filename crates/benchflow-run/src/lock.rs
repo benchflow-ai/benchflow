@@ -158,6 +158,21 @@ pub struct LockTrial {
     /// --diff`), when it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_from: Option<LockCarry>,
+    /// The fork this trial is a child of (`bench branch`), when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branched_from: Option<LockBranch>,
+}
+
+/// Where a branch child came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LockBranch {
+    /// The parent trial's folder name.
+    pub trial: String,
+    /// The checkpoint the child started from (a backend reference), when
+    /// one was taken.
+    pub checkpoint: Option<String>,
+    /// The agent session the child resumed; `None`: a fresh session.
+    pub session_id: Option<String>,
 }
 
 /// Where a carried-over trial came from.
@@ -279,6 +294,7 @@ pub fn build(header: LockHeader<'_>, planned: &[TrialSpec], options: &RunOptions
                 image,
                 sandbox: options.sandbox.clone(),
                 carried_from: None,
+                branched_from: None,
             }
         })
         .collect();

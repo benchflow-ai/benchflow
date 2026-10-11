@@ -12,8 +12,10 @@
 //!   (default: no limit).
 //!
 //! Never removed: images this process prepared (a running job may still need
-//! them), images a container uses (`rmi` without `--force` refuses them), and
-//! images used in the last 30 minutes. Docker does not record when an image
+//! them), images a container uses (`rmi` without `--force` refuses them),
+//! images used in the last 30 minutes, and checkpoint images (their tags are
+//! not BenchFlow's cache tags; the sweep removes them), which still count
+//! toward `BENCHFLOW_IMAGE_CACHE_MAX_GB`. Docker does not record when an image
 //! was last used, so BenchFlow keeps that in `<cache>/docker-image-use.json`.
 
 use std::collections::{BTreeMap, HashSet};
@@ -233,7 +235,19 @@ pub(super) async fn trim(cli: &Cli, log: &(dyn for<'a> Fn(&'a str) + Send + Sync
         }
     };
     let free = free_bytes(cli).await;
-    let protected = in_use().lock().map(|s| s.clone()).unwrap_or_default();
+    let mut protected = in_use().lock().map(|s| s.clone()).unwrap_or_default();
+    // Checkpoints count toward the budget but are never chosen.
+    let mut images = images;
+    for stored in super::checkpoint::list(cli).await.unwrap_or_default() {
+        protected.insert(stored.id.clone());
+        images.push(Cached {
+            id: stored.id,
+            tags: Vec::new(),
+            size: stored.size,
+            last_used: stored.created.unwrap_or_else(Utc::now),
+            used_recorded: false,
+        });
+    }
     let chosen = plan(&images, free, &policy, &protected, Utc::now());
     let mut done = Trimmed::default();
     for i in chosen {
@@ -536,6 +550,9 @@ mod tests {
         assert!(images[1].tags.is_empty());
         // An image built FROM one of ours inherits the owner label: it is
         // not listed, and a shared image loses only BenchFlow's tag.
+        // A checkpoint committed from one of ours inherits the label too.
+        let text = "sha256:ee\t1\t2026-10-01T00:00:00Z\tbf-ckpt-bench-abcdef-012345-7-0123456789ab:latest,\n";
+        assert!(parse_inspect(text, &uses).is_empty());
         let text = "sha256:cc\t1\t2026-10-01T00:00:00Z\tmyapp:1,\nsha256:dd\t1\t2026-10-01T00:00:00Z\tbenchflow/x:h,myapp:2,localhost/benchflow/y:h,\n";
         let images = parse_inspect(text, &uses);
         assert_eq!(images.len(), 1, "{images:?}");

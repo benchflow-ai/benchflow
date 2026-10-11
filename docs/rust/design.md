@@ -32,7 +32,7 @@ The goal is not a line-by-line port. It is the same engine, with the developer e
 | `bench export <job>` | Writes a job's trajectories as a Hugging Face dataset (optionally with ShareGPT conversations) or OpenTelemetry JSON lines | `bench train convert` |
 | `bench explain <code>` | Explains a diagnostic or failure code | — |
 
-`bench regrade <job>` scores a finished job again with each task's current verifier, and `bench schema` prints the JSON Schemas of BenchFlow's files. Everything else in 0.8 (branching, training export, hub, hosted environments, embodied rollouts) is not ported yet; see [status.md](./status.md).
+`bench regrade <job>` scores a finished job again with each task's current verifier, and `bench schema` prints the JSON Schemas of BenchFlow's files. `bench branch` forks a rollout at `start`, after a prompt, or after a graded stage into graded children from a checkpoint, and can let the parent go on ([branching.md](./branching.md)). Everything else in 0.8 (later fork points, training export, hub, hosted environments, embodied rollouts) is not ported yet; see [status.md](./status.md).
 
 ### What `bench run` takes
 

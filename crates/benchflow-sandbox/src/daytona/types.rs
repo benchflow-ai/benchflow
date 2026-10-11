@@ -6,10 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use super::api::Secret;
 
-/// `POST /sandbox`.
+/// `POST /sandbox`: from a recipe (`build_info`), or from a snapshot
+/// (`snapshot`, with no build info and no resources).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateSandbox<'a> {
+    /// The snapshot's name (or id) to start from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<&'a str>,
     pub labels: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<&'a str>,
@@ -30,7 +34,8 @@ pub(crate) struct CreateSandbox<'a> {
     pub auto_stop_interval: u32,
     /// Minutes after a stop before Daytona deletes it; 0 deletes at once.
     pub auto_delete_interval: i32,
-    pub build_info: BuildInfo<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_info: Option<BuildInfo<'a>>,
 }
 
 /// `POST /sandbox/{id}/network-settings`.
@@ -67,12 +72,58 @@ pub(crate) struct SandboxDto {
     pub created_at: Option<String>,
     #[serde(default)]
     pub last_activity_at: Option<String>,
+    /// CPUs, and GiB of memory and disk.
+    #[serde(default)]
+    pub cpu: Option<f64>,
+    #[serde(default)]
+    pub memory: Option<f64>,
+    #[serde(default)]
+    pub disk: Option<f64>,
 }
 
 impl SandboxDto {
     pub(crate) fn state(&self) -> &str {
         self.state.as_deref().unwrap_or("unknown")
     }
+}
+
+/// `POST /sandbox/{id}/snapshot`.
+#[derive(Debug, Serialize)]
+pub(crate) struct CreateSnapshot<'a> {
+    pub name: &'a str,
+}
+
+/// A snapshot, as `GET /snapshots/{id or name}` and the listing return it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotDto {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    /// GB, once Daytona has measured it.
+    #[serde(default)]
+    pub size: Option<f64>,
+    #[serde(default)]
+    pub error_reason: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+impl SnapshotDto {
+    pub(crate) fn state(&self) -> &str {
+        self.state.as_deref().unwrap_or("unknown")
+    }
+}
+
+/// One page of `GET /snapshots`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotPage {
+    #[serde(default)]
+    pub items: Vec<SnapshotDto>,
+    #[serde(default)]
+    pub total_pages: Option<f64>,
 }
 
 /// One page of `GET /sandbox`.
@@ -152,6 +203,7 @@ mod tests {
     fn create_body_uses_daytonas_field_names() {
         let hashes = vec!["abc".to_string()];
         let body = CreateSandbox {
+            snapshot: None,
             labels: BTreeMap::from([("k".to_string(), "v".to_string())]),
             target: None,
             cpu: Some(2),
@@ -161,10 +213,10 @@ mod tests {
             network_allow_list: None,
             auto_stop_interval: 15,
             auto_delete_interval: 0,
-            build_info: BuildInfo {
+            build_info: Some(BuildInfo {
                 dockerfile_content: "FROM x\n",
                 context_hashes: &hashes,
-            },
+            }),
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(
@@ -185,6 +237,7 @@ mod tests {
     fn an_allow_list_is_one_comma_separated_string() {
         let hashes: Vec<String> = Vec::new();
         let body = CreateSandbox {
+            snapshot: None,
             labels: BTreeMap::new(),
             target: None,
             cpu: None,
@@ -194,10 +247,10 @@ mod tests {
             network_allow_list: Some("140.82.114.4/32,10.0.0.0/8".into()),
             auto_stop_interval: 15,
             auto_delete_interval: 0,
-            build_info: BuildInfo {
+            build_info: Some(BuildInfo {
                 dockerfile_content: "FROM x\n",
                 context_hashes: &hashes,
-            },
+            }),
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["networkAllowList"], "140.82.114.4/32,10.0.0.0/8");

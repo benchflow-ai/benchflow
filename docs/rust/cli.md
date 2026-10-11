@@ -176,7 +176,7 @@ bench run [OPTIONS] [TARGETS]...
 | `--print-config` | Print the resolved settings as a job file, and exit |
 | `--rerun` `<KINDS>` | On resume, also rerun trials that were: errored, unscored, failed (comma-separated) |
 | `--diff` `<JOB>` | An earlier job (folder, or name in the jobs folder) to reuse trials from: each planned trial is reused, regraded from its saved outputs, or rerun, and the plan is printed first (repeatable) |
-| `--dry-run` | Print the plan and run nothing; exits 0 and names what a run would stop on (a missing login) |
+| `--dry-run` | Print the plan and run nothing; exits 0, or 3 (not ready) after naming what a run would stop on (a missing login) |
 
 ```text
 Targets are task folders, folders of tasks, or GitHub repositories:
@@ -270,6 +270,8 @@ Pages:
   /compare    tasks by job, pass rates with 95% intervals, paired differences
   /outcomes   how trials ended, problems by code and owner, time per phase
   /pareto     pass rate against cost, time, and tokens per trial, with each frontier
+  /branches   each fork of a `bench branch` job: value, checkpoint, parent, and
+              each child's label, status, reward, and advantage
 Each keeps its jobs and filters in the URL; /api/<page> answers the same as JSON.
 
 Examples:
@@ -308,6 +310,78 @@ Examples:
   bench regrade jobs/2026-10-10__09-12-03
   bench regrade jobs/2026-10-10__09-12-03 -s daytona -j 16
 ```
+
+### bench branch
+
+Fork a rollout from a checkpoint into children, each graded.
+
+```text
+bench branch [OPTIONS] <TARGETS>...
+```
+
+| Argument | Meaning |
+|---|---|
+| `<TARGETS>` | Task folders, or folders of tasks |
+| `-a`, `--agent` `<AGENT>` | The agent: oracle, nop, script:<file>, or a model agent (default: oracle) |
+| `-m`, `--model` `<MODEL>` | The model, for model agents |
+| `--effort` `<EFFORT>` | Reasoning effort, for agents that take one |
+| `-e`, `--env` `<KEY=VALUE>` | Extra environment variables for the agent (KEY=VALUE, repeatable) |
+| `--at` `<POINT>` | Where to fork: start, prompt:N, or stage:<name> (default: `start`) |
+| `--children` `<K>` | K children (2 or more), each asked the task's own instruction (at stage:<name>, the next stage's prompt) |
+| `--child` `<SPEC>` | One child: label=<name>[,prompt=<text>\|prompt-file=<path>] (repeatable; `@instruction` in a prompt is the task's) |
+| `--parent` `<MODE>` | What becomes of the parent after its fork: discard, or continue (it goes on and is graded) (default: `discard`) |
+| `--retain-checkpoints` | Keep the checkpoint after the fork (`bench cache` lists it) |
+| `--resume-session` | At prompt:N or stage:<name>, children resume the parent's session (`session/load`) instead of starting fresh ones |
+| `--job` `<NAME>` | The job folder's name under the jobs folder |
+| `-s`, `--sandbox` `<BACKEND>` | Where trials run: docker, podman, or daytona (default: bench.toml, then the first one available) |
+| `-j`, `--concurrency` `<N>` | Trials at a time |
+| `--keep` `<KEEP>` | Keep sandboxes after their trials, for inspection (default: `never`); one of `never`, `on-failure`, `always` |
+| `--jobs-dir` `<DIR>` | Where job folders go (default: bench.toml's, then ./jobs) |
+| `--profile` `<NAME>` | Apply a [profile.<NAME>] from bench.toml |
+| `--runtime` `<RUNTIME>` | Start sandboxes under this container runtime, such as runsc (gVisor), on Docker daemons that have it |
+
+```text
+Runs the task to the fork point, stores the sandbox's files as a checkpoint
+(Docker: an image; Daytona: a snapshot), and runs each child in a sandbox of
+its own made from it. Each child is graded by the task's verifier; the
+fork's value is the mean of the children's rewards. The checkpoint is
+deleted afterwards unless --retain-checkpoints. The parent is discarded
+after its fork, or with --parent continue goes on in its own sandbox while
+the children run, and is graded too (its reward is not in the fork's
+value).
+
+Fork points: `start` (after setup, before the agent), `prompt:N` (after the
+parent's N-th prompt, for model agents), and `stage:<name>` (after a graded
+stage of a task with stages; children run the stages after it). A child
+sends its own prompt (at `stage:<name>`, in place of the next stage's), or
+without one the task's instruction again (the next stage's); it starts a
+fresh session in the parent's files, or with --resume-session continues the
+parent's conversation through `session/load` (ACP agents that offer it).
+
+Records (BenchFlow 0.8's): tree.json and checkpoints.json in the trial
+folder, each child under branches/<fork>/children/n<k>/, and a `branches`
+block in the trial's result.json.
+
+Examples:
+  bench branch tasks/x --children 3                    # the oracle, 3 children
+  bench branch tasks/x -a builtin -m mimo/mimo-v2.6-flash -s daytona \
+      --child label=base --child "label=hint,prompt=@instruction Start with the tests."
+  bench branch tasks/x -a opencode -m vercel/deepseek/deepseek-v4-flash-0731 \
+      --at prompt:1 --resume-session --child "label=check,prompt=Check your work."
+  bench branches jobs/2026-10-10__20-00-00             # each fork's value and children
+```
+
+### bench branches
+
+Show a branch job's forks: value, children, rewards.
+
+```text
+bench branches <JOB>
+```
+
+| Argument | Meaning |
+|---|---|
+| `<JOB>` | A job folder `bench branch` wrote |
 
 ### bench shell
 
@@ -398,8 +472,8 @@ bench cache [OPTIONS]
 
 | Argument | Meaning |
 |---|---|
-| `--only` `<KINDS>` | Only these kinds: images, sources, registries, logs (comma-separated) |
-| `-s`, `--sandbox` `<BACKEND>` | Image backends to look at: docker, podman (default: the ones installed) |
+| `--only` `<KINDS>` | Only these kinds: images, sources, registries, logs, checkpoints (comma-separated) |
+| `-s`, `--sandbox` `<BACKEND>` | Backends to look at: docker, podman, daytona (default: the ones installed, and daytona when DAYTONA_API_KEY is set) |
 | `--older-than` `<DURATION>` | Only what was last used longer ago than this (e.g. 30d, 12h) |
 
 ```text

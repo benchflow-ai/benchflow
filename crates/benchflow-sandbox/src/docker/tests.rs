@@ -1290,3 +1290,148 @@ async fn cached_images_says_when_the_daemon_is_down() {
     let err = fake.provider().cached_images().await.unwrap_err();
     assert!(err.to_string().to_lowercase().contains("daemon"), "{err}");
 }
+
+// --- checkpoints ------------------------------------------------------------
+
+fn ckpt(pid: u32, host: &str) -> String {
+    crate::checkpoint::name_for(&owner::scope(), host, pid)
+}
+
+#[tokio::test]
+async fn a_checkpoint_commits_with_the_kind_label_and_blanks_the_variables() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  inspect) printf '[]\tnull\n';;
+  commit) echo sha256:new;;
+  image) echo 4096;;
+esac"#,
+    );
+    let name = ckpt(std::process::id(), owner::machine_id());
+    let scrub = strings(&["API_KEY", "MULTI", "bad name"]);
+    let made = fake.sandbox().checkpoint(&name, &scrub).await.unwrap();
+    assert_eq!(made.provider, "docker");
+    assert_eq!(made.reference, name);
+    assert_eq!(made.stored_bytes, Some(4096));
+    let commit = &fake.calls_to("commit")[0];
+    let changes: Vec<&str> = commit
+        .args
+        .windows(2)
+        .filter(|w| w[0] == "--change")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert!(
+        changes.contains(&"LABEL ai.benchflow.kind=\"checkpoint\""),
+        "{changes:?}"
+    );
+    let owner_label = format!("LABEL {OWNER_LABEL}=\"{}\"", owner::scope());
+    assert!(changes.contains(&owner_label.as_str()), "{changes:?}");
+    assert!(changes.contains(&"ENV API_KEY=") && changes.contains(&"ENV MULTI="));
+    assert!(
+        !changes.iter().any(|c| c.contains("bad name")),
+        "{changes:?}"
+    );
+    assert_eq!(
+        commit.args[commit.args.len() - 2..],
+        [String::from("bf-test"), name]
+    );
+}
+
+#[tokio::test]
+async fn a_container_with_mounts_or_volumes_is_not_checkpointed() {
+    let fake = Fake::new(
+        r#"case "$1" in inspect) printf '%s\t%s\n' '[{"Type":"bind","Destination":"/src"}]' '{"/data":{}}';; esac"#,
+    );
+    let name = ckpt(std::process::id(), owner::machine_id());
+    let err = fake.sandbox().checkpoint(&name, &[]).await.unwrap_err();
+    let SandboxError::Unsupported(message) = err else {
+        panic!("wrong error: {err:?}")
+    };
+    assert!(
+        message.contains("/src") && message.contains("/data"),
+        "{message}"
+    );
+    assert!(fake.calls_to("commit").is_empty());
+}
+
+#[tokio::test]
+async fn deleting_a_checkpoint_refuses_other_images_and_tolerates_a_gone_one() {
+    let fake = Fake::new(r#"case "$1" in rmi) echo 'Error: No such image: x' >&2; exit 1;; esac"#);
+    let p = fake.provider();
+    let other = crate::checkpoint::Checkpoint {
+        provider: "docker".into(),
+        reference: "ubuntu:24.04".into(),
+        seconds: 0.0,
+        stored_bytes: None,
+        default_user: None,
+    };
+    assert!(matches!(
+        p.delete_checkpoint(&other).await,
+        Err(SandboxError::Unsupported(_))
+    ));
+    assert!(fake.calls().is_empty(), "nothing ran for a non-checkpoint");
+    let name = ckpt(std::process::id(), owner::machine_id());
+    let mine = crate::checkpoint::Checkpoint {
+        reference: name.clone(),
+        ..other
+    };
+    assert!(p.delete_checkpoint(&mine).await.unwrap());
+    assert_eq!(fake.calls_to("rmi")[0].args, strings(&["rmi", &name]));
+}
+
+#[tokio::test]
+async fn a_child_starts_from_the_local_checkpoint_image_without_pulling() {
+    let fake =
+        Fake::new(r#"case "$1" in run) echo 0123abcd;; inspect) printf 'running\t0\n';; esac"#);
+    let name = ckpt(std::process::id(), owner::machine_id());
+    let made = crate::checkpoint::Checkpoint {
+        provider: "docker".into(),
+        reference: name.clone(),
+        seconds: 1.0,
+        stored_bytes: None,
+        default_user: None,
+    };
+    fake.provider()
+        .create_from_checkpoint(&sandbox_spec(), &made)
+        .await
+        .unwrap();
+    let run = &fake.calls_to("run")[0];
+    assert_eq!(run.args[2..4], strings(&["--pull", "never"]));
+    assert!(run.args.contains(&name) && !run.args.iter().any(|a| a == "ubuntu:24.04"));
+}
+
+#[tokio::test]
+async fn the_sweep_removes_dead_runs_checkpoints_and_never_foreign_ones() {
+    let mut child = tokio::process::Command::new("true").spawn().unwrap();
+    let dead = child.id().unwrap();
+    child.wait().await.unwrap();
+    let gone = ckpt(dead, owner::machine_id());
+    let live = ckpt(std::process::id(), owner::machine_id());
+    let foreign = crate::checkpoint::name_for("someone-else", owner::machine_id(), dead);
+    let listing = format!(
+        "sha256:a\t10\t2026-10-01T00:00:00Z\t{gone}:latest,\nsha256:b\t20\t2026-10-01T00:00:00Z\tlocalhost/{live}:latest,\nsha256:c\t30\t2020-01-01T00:00:00Z\t{foreign}:latest,myapp:1,\n"
+    );
+    let fake = Fake::new(&format!(
+        r#"case "$1 $2" in
+"image ls") printf 'sha256:a\nsha256:b\nsha256:c\n';;
+"image inspect") printf '%s' '{listing}';;
+esac"#
+    ));
+    let p = fake.provider();
+    let listed = p.list_checkpoints().await.unwrap();
+    let names: Vec<&str> = listed
+        .iter()
+        .map(|l| l.checkpoint.reference.as_str())
+        .collect();
+    assert_eq!(names, [gone.as_str(), live.as_str()]);
+    assert_eq!(listed[1].checkpoint.stored_bytes, Some(20));
+    let ls = &fake.calls_to("image")[0];
+    assert!(
+        ls.args
+            .contains(&"label=ai.benchflow.kind=checkpoint".to_string())
+    );
+
+    assert_eq!(p.sweep().await.unwrap(), 1);
+    let rmi = fake.calls_to("rmi");
+    assert_eq!(rmi.len(), 1);
+    assert_eq!(rmi[0].args, strings(&["rmi", &gone]));
+}

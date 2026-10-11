@@ -145,10 +145,12 @@ impl Trial<'_> {
         let provider = self.rt.provider.clone();
         let attach = self.x.attach.clone();
         let spec = spec.clone();
+        let checkpoint = self.child_checkpoint();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let start = tokio::spawn(async move {
-            let made = match (&attach, provider.services()) {
-                (Some(network), Some(host)) => host.create_on_network(&spec, network).await,
+            let made = match (&attach, provider.services(), &checkpoint) {
+                (_, _, Some(cp)) => provider.create_from_checkpoint(&spec, cp).await,
+                (Some(network), Some(host), None) => host.create_on_network(&spec, network).await,
                 _ => provider.create(&spec).await,
             };
             // Nobody waits for it any more: the trial was stopped.
@@ -245,7 +247,10 @@ impl Trial<'_> {
         agent_alive: bool,
         stage: Option<&str>,
     ) -> Result<(), Problem> {
-        if mounts.is_empty() {
+        // A child's sandbox holds the parent's task-level mounts already; a
+        // later stage's mounts (after an agent's turn) a stage child places
+        // itself, since the parent never reached that stage before the fork.
+        if mounts.is_empty() || (self.is_child() && !after_agent) {
             return Ok(());
         }
         let task = self.spec.task.clone();

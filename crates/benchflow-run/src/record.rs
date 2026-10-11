@@ -287,6 +287,11 @@ pub struct TrialRecord {
     pub reward: Option<f64>,
     pub passed: Option<bool>,
     pub timed_out: bool,
+    /// The agent of this trial itself ran out of time. Differs from
+    /// `timed_out` only in a branch child of a stage fork, which carries
+    /// the parent's time-out (for `on_timeout = "fail"`) but may not have
+    /// timed out in its own stages. Not in result.json.
+    pub own_timed_out: bool,
     pub problem: Option<Problem>,
     pub usage: Usage,
     pub tool_calls: u64,
@@ -312,6 +317,10 @@ pub struct TrialRecord {
     pub step_results: Option<Value>,
     /// The agent's own session files, when the trial saved them.
     pub agent_session: Option<AgentSession>,
+    /// The session the agent resumed (ACP `session/load` succeeded), when
+    /// it was asked to resume one; kept even when its turn then failed.
+    /// Not in result.json.
+    pub resumed_session: Option<String>,
     /// What the agent's resource floor raised.
     pub resources_raised: Option<ResourcesRaised>,
     /// Signs that the task's environment failed (see [`crate::envcheck`]).

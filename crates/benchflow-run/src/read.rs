@@ -351,6 +351,9 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
         passed,
         timed_out: v.get("timed_out").and_then(Value::as_bool).unwrap_or(false)
             || v.get("agent_timeout_info").is_some_and(|x| !x.is_null()),
+        // result.json does not tell a carried time-out from the trial's own.
+        own_timed_out: v.get("timed_out").and_then(Value::as_bool).unwrap_or(false)
+            || v.get("agent_timeout_info").is_some_and(|x| !x.is_null()),
         problem,
         usage,
         tool_calls: v.get("n_tool_calls").and_then(Value::as_u64).unwrap_or(0),
@@ -380,6 +383,7 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
         agent_session: v
             .get("agent_session")
             .and_then(|s| serde_json::from_value(s.clone()).ok()),
+        resumed_session: None,
         resources_raised: v
             .get("resources_raised")
             .and_then(|s| serde_json::from_value(s.clone()).ok()),

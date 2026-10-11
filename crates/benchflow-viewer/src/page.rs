@@ -153,11 +153,12 @@ pub fn nav(current: &str) -> String {
     };
     format!(
         "<nav id=\"bf-views\" aria-label=\"views\" style=\"display:flex;flex-wrap:wrap;gap:2px;\
-         margin-left:6px;font-size:12px\">{}{}{}{}</nav>",
+         margin-left:6px;font-size:12px\">{}{}{}{}{}</nav>",
         link("/", "runs"),
         link("/compare", "compare"),
         link("/outcomes", "outcomes"),
-        link("/pareto", "pareto")
+        link("/pareto", "pareto"),
+        link("/branches", "branches")
     )
 }
 
@@ -216,6 +217,7 @@ pub fn write_view_page(writer: &mut Writer<'_>, view: &str, title: &str, boot: &
     let label = match view {
         "compare" => "compare runs",
         "pareto" => "pareto",
+        "branches" => "branches",
         _ => "outcomes",
     };
     for (marker, fill) in [

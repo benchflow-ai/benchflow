@@ -15,11 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::Run;
 use crate::classify::{classify_error, classify_verifier_error};
+use crate::lineage::load_lineage;
 use crate::metadata::normalize_metadata;
 use crate::py;
 use crate::pyjson::{Map, Value, get, object};
 use crate::stats::{mean_with_t_interval, quantile, wilson};
-use crate::values::{error_text, load_json, load_object, optional_bool, optional_text};
+use crate::values::{
+    error_text, finite_float, load_json, load_object, optional_bool, optional_text,
+};
 
 /// The phases whose times the outcomes view reports, in `timing.json`'s names.
 pub const PHASES: [&str; 3] = ["environment_setup", "agent_execution", "verifier"];
@@ -144,6 +147,14 @@ pub fn job_of(id: &str) -> &str {
 
 /// The file a running `bench run` holds locked in its job folder.
 const RUNNING_FILE: &str = ".bench-run.lock";
+
+/// A `bench branch` parent discarded at its checkpoint (`skipped`, R000):
+/// unscored by design, so the trial views leave it out, as `bench results`
+/// does; its children are the fork's measure.
+pub fn discarded_parent(run: &Run) -> bool {
+    crate::catalog::is_branch_parent(&run.dir)
+        && get(&load_object(&run.dir.join("result.json")), "status").as_str() == Some("skipped")
+}
 
 /// Whether a `bench run` is still running this trial: it has no
 /// `result.json` yet, and a live process holds its job folder's
@@ -791,6 +802,161 @@ pub fn compare(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuer
     Value::Object(map)
 }
 
+/// `/branches`: every fork in the selected jobs (`bench branch`): where it
+/// forked, its status and value, the checkpoint, what became of the parent,
+/// and each child with its label, status, reward, and advantage (reward
+/// minus the fork's value), with the ref that opens the child's trajectory
+/// from its parent's run page. Read through [`load_lineage`], so a
+/// malformed `tree.json` gives a fork with an error, never a broken page.
+/// The task and agent filters choose parents; the status filter is unused.
+pub fn branches(
+    trials: &[Trial],
+    runs: &[Run],
+    root_name: &str,
+    capped: bool,
+    query: &ViewQuery,
+) -> Value {
+    let selection = select(trials, query);
+    let mut forks: Vec<Value> = Vec::new();
+    let (mut children, mut scored) = (0usize, 0usize);
+    for trial in &selection.trials {
+        let Some(run) = runs.iter().find(|run| run.id == trial.id) else {
+            continue;
+        };
+        let Some(lineage) = load_lineage(&run.dir) else {
+            continue;
+        };
+        let tree = load_object(&run.dir.join("tree.json"));
+        let raw: Vec<Value> = get(&tree, "forks")
+            .as_array()
+            .map(<[Value]>::to_vec)
+            .unwrap_or_default();
+        if let Some(error) = &lineage.error {
+            forks.push(object([
+                ("run", trial.id.clone().into()),
+                ("job", job_name(&trial.job, root_name).into()),
+                ("task", trial.task.clone().into()),
+                ("error", error.clone().into()),
+            ]));
+            continue;
+        }
+        for fork in &lineage.forks {
+            let extra = raw
+                .iter()
+                .find(|f| f.get("id").as_str() == Some(fork.id.as_str()))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let snapshot = extra.get("snapshot");
+            let rows: Vec<Value> = fork
+                .children
+                .iter()
+                .map(|child| {
+                    children += 1;
+                    if child.status.as_deref() == Some("scored") {
+                        scored += 1;
+                    }
+                    let advantage = match (child.reward, fork.value) {
+                        (Some(r), Some(v)) => Value::from(((r - v) * 1e6).round() / 1e6),
+                        _ => Value::Null,
+                    };
+                    object([
+                        (
+                            "node_id",
+                            child
+                                .node_id
+                                .clone()
+                                .map(Value::from)
+                                .unwrap_or(Value::Null),
+                        ),
+                        (
+                            "label",
+                            child.label().map(Value::from).unwrap_or(Value::Null),
+                        ),
+                        // 0.8 records a request for every child; a child's
+                        // own prompt reads `own prompt (N characters, …)`.
+                        (
+                            "own_prompt",
+                            child.intervention[1]
+                                .1
+                                .as_deref()
+                                .is_some_and(|r| r.starts_with("own prompt"))
+                                .into(),
+                        ),
+                        (
+                            "status",
+                            child.status.clone().map(Value::from).unwrap_or(Value::Null),
+                        ),
+                        (
+                            "reward",
+                            child.reward.map(Value::from).unwrap_or(Value::Null),
+                        ),
+                        ("advantage", advantage),
+                        (
+                            "error",
+                            child.error.clone().map(Value::from).unwrap_or(Value::Null),
+                        ),
+                        (
+                            "ref",
+                            child
+                                .child_ref
+                                .clone()
+                                .map(Value::from)
+                                .unwrap_or(Value::Null),
+                        ),
+                    ])
+                })
+                .collect();
+            let text = |v: &Value| optional_text(v).map(Value::from).unwrap_or(Value::Null);
+            let number = |v: &Value| finite_float(v).map(Value::from).unwrap_or(Value::Null);
+            forks.push(object([
+                ("run", trial.id.clone().into()),
+                ("job", job_name(&trial.job, root_name).into()),
+                ("task", trial.task.clone().into()),
+                ("arm", trial.arm().into()),
+                ("fork_id", fork.id.clone().into()),
+                ("fork_point", text(extra.get("fork_point"))),
+                (
+                    "status",
+                    fork.status.clone().map(Value::from).unwrap_or(Value::Null),
+                ),
+                ("value", fork.value.map(Value::from).unwrap_or(Value::Null)),
+                ("value_stderr", number(extra.get("value_stderr"))),
+                (
+                    "parent_restore",
+                    fork.parent_restore
+                        .clone()
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                ),
+                ("parent_reward", number(extra.get("parent_reward"))),
+                ("agent_session", text(snapshot.get("agent_session"))),
+                ("provider", text(snapshot.get("sandbox").get("provider"))),
+                ("retention", text(snapshot.get("retention"))),
+                (
+                    "checkpoint_seconds",
+                    number(extra.get("timing_sec").get("checkpoint")),
+                ),
+                (
+                    "error",
+                    fork.error.clone().map(Value::from).unwrap_or(Value::Null),
+                ),
+                ("children", Value::Array(rows)),
+            ]));
+        }
+    }
+    let mut map = header("branches", root_name, capped, &selection, query);
+    map.insert(
+        "totals".into(),
+        object([
+            ("forks", forks.len().into()),
+            ("children", children.into()),
+            ("scored", scored.into()),
+        ]),
+    );
+    map.insert("forks".into(), Value::Array(forks));
+    Value::Object(map)
+}
+
 /// `/outcomes`: per job, how many trials passed, failed, went unscored, or
 /// errored; the problems behind them by code and owner; and the median and
 /// 90th percentile of each phase's time. Every filter chooses trials.
@@ -1130,6 +1296,94 @@ mod tests {
             ],
             "ties stay on the frontier; nothing beats the cheapest"
         );
+    }
+
+    /// `/branches` reads each trial's tree.json: a fork's point, value,
+    /// checkpoint, and parent, and each child with its advantage and the
+    /// ref that opens it; a trial without a tree has no fork, and an
+    /// unreadable tree is an error row, not a broken page.
+    #[test]
+    fn the_branches_view_lists_each_fork_and_its_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = tmp.path().join("job");
+        let trial = |name: &str, tree: Option<&str>| {
+            let dir = job.join(name);
+            std::fs::create_dir_all(dir.join("trajectory")).unwrap();
+            std::fs::write(dir.join("trajectory/acp_trajectory.jsonl"), "").unwrap();
+            std::fs::write(
+                dir.join("result.json"),
+                r#"{"task_name": "hello", "agent": "oracle", "status": "unscored"}"#,
+            )
+            .unwrap();
+            if let Some(tree) = tree {
+                std::fs::write(dir.join("tree.json"), tree).unwrap();
+            }
+            Run {
+                id: format!("job/{name}"),
+                dir,
+            }
+        };
+        let tree = r#"{"schema_version": 1, "kind": "benchflow-branch-tree",
+          "nodes": [{"id": "root", "parent": null, "step_id": null}],
+          "forks": [{"id": "f1", "parent_node": "root", "fork_point": "stage:first",
+            "status": "completed", "value": 0.5, "value_stderr": 0.5,
+            "parent_restore": "not_needed", "parent_reward": 1.0,
+            "snapshot": {"sandbox": {"provider": "docker"}, "retention": "deleted", "agent_session": "fresh"},
+            "timing_sec": {"checkpoint": 0.9},
+            "children": [
+              {"index": 0, "node_id": "n1", "status": "scored", "reward": 1.0,
+               "intervention": {"label": "keep", "requested": null},
+               "artifacts": {"status": "available", "path": "branches/f1/children/n1"}},
+              {"index": 1, "node_id": "n2", "status": "scored", "reward": 0.0,
+               "intervention": {"label": "bye", "requested": "own prompt (8 characters, sha256:0123456789ab)"},
+               "artifacts": {"status": "unavailable", "path": null}}]}]}"#;
+        let runs = vec![
+            trial("a", Some(tree)),
+            trial("b", None),
+            trial("c", Some("not json")),
+        ];
+        // A parent that forked at start has a tree and no trajectory: it is
+        // still a trial the run list shows.
+        std::fs::remove_file(job.join("a/trajectory/acp_trajectory.jsonl")).unwrap();
+        assert!(crate::catalog::is_rollout_dir(&job.join("a")));
+        assert_eq!(
+            crate::catalog::discover(tmp.path(), 10)
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["job/a", "job/b", "job/c"]
+        );
+        // A stray tree.json that is not a branch tree makes no trial.
+        let stray = job.join("d");
+        std::fs::create_dir_all(&stray).unwrap();
+        std::fs::write(stray.join("tree.json"), "{}").unwrap();
+        std::fs::write(stray.join("result.json"), "{}").unwrap();
+        assert!(!crate::catalog::is_rollout_dir(&stray));
+        // A discarded parent (skipped) is left out of the trial views.
+        std::fs::write(
+            job.join("a/result.json"),
+            r#"{"task_name": "hello", "agent": "oracle", "status": "skipped"}"#,
+        )
+        .unwrap();
+        assert!(discarded_parent(&runs[0]));
+        assert!(!discarded_parent(&runs[1]));
+        let trials: Vec<Trial> = runs.iter().map(read_trial).collect();
+        let out = branches(&trials, &runs, "root", false, &ViewQuery::default());
+        let forks = out.get("forks").as_array().unwrap();
+        assert_eq!(forks.len(), 2, "{}", dumps(&out));
+        let f = &forks[0];
+        assert_eq!(f.get("fork_point").as_str(), Some("stage:first"));
+        assert_eq!(f.get("parent_restore").as_str(), Some("not_needed"));
+        assert_eq!(finite_float(f.get("parent_reward")), Some(1.0));
+        assert_eq!(f.get("provider").as_str(), Some("docker"));
+        let kids = f.get("children").as_array().unwrap();
+        assert_eq!(finite_float(kids[0].get("advantage")), Some(0.5));
+        assert_eq!(finite_float(kids[1].get("advantage")), Some(-0.5));
+        assert_eq!(kids[1].get("label").as_str(), Some("bye"));
+        assert_eq!(kids[1].get("own_prompt"), &Value::Bool(true));
+        assert!(kids[1].get("ref").is_null());
+        assert!(forks[1].get("error").as_str().is_some(), "{}", dumps(&out));
+        assert_eq!(out.get("totals").get("children"), &Value::from(2usize));
     }
 
     /// A trial a live `bench run` has not finished is left out; once no

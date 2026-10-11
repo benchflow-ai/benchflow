@@ -1,11 +1,13 @@
 //! `bench cache`: what BenchFlow keeps between runs (images it built,
-//! fetched task sources and dataset checkouts, registry indexes, logs), with
+//! fetched task sources and dataset checkouts, registry indexes, logs, and
+//! the checkpoints `bench branch` kept), with
 //! sizes and last use, and `bench cache clean` to remove them. Cleaning
 //! prints what it would remove unless `--remove` is given.
 
 use std::time::{Duration, SystemTime};
 
 use benchflow_run::cache::{self, Kind};
+use benchflow_sandbox::checkpoint;
 use benchflow_sandbox::docker::{CachedImage, DockerProvider};
 use serde::Serialize;
 use serde_json::json;
@@ -16,7 +18,8 @@ use crate::error::{CliError, Exit, Result};
 use crate::ui::{self, bold, dim, fail_mark, plural, ui, warn_mark};
 use crate::{note, say};
 
-/// One removable thing: an image on a daemon, or a cache folder entry.
+/// One removable thing: an image on a daemon, a checkpoint, or a cache
+/// folder entry.
 #[derive(Debug, Clone, Serialize)]
 struct Item {
     kind: Kind,
@@ -37,6 +40,7 @@ struct Item {
 enum What {
     Image(CachedImage),
     Entry(cache::Entry),
+    Checkpoint(benchflow_sandbox::checkpoint::Checkpoint),
 }
 
 pub async fn run(args: CacheArgs) -> Result<Exit> {
@@ -48,7 +52,12 @@ pub async fn run(args: CacheArgs) -> Result<Exit> {
 }
 
 async fn list(f: &CacheFilter, cleaning: bool, remove: bool) -> Result<Exit> {
-    let kinds = kinds(&f.only)?;
+    let mut kinds = kinds(&f.only)?;
+    // Checkpoints are only cleaned when named: a kept one may be the start
+    // of a later fork.
+    if cleaning && f.only.is_empty() {
+        kinds.retain(|k| *k != Kind::Checkpoints);
+    }
     let older_than = f.older_than.as_deref().map(parse_age).transpose()?;
     let root = benchflow_run::config::default_cache_dir();
     let scan = cache::scan(&root);
@@ -97,6 +106,40 @@ async fn list(f: &CacheFilter, cleaning: bool, remove: bool) -> Result<Exit> {
             }
         }
     }
+    if kinds.contains(&Kind::Checkpoints) {
+        for backend in checkpoint_backends(&f.sandbox)? {
+            let provider = match benchflow_sandbox::provider(&backend) {
+                Ok(p) => p,
+                Err(e) => {
+                    notes.push(format!("{backend}: its checkpoints were not listed: {e}"));
+                    continue;
+                }
+            };
+            match provider.list_checkpoints().await {
+                Ok(listed) => {
+                    for l in listed {
+                        let busy = checkpoint::in_use(&l.checkpoint.reference).await;
+                        let spare = checkpoint::spare_reason(&l.checkpoint.reference)
+                            .filter(|_| older_than.is_none());
+                        items.push(Item {
+                            kind: Kind::Checkpoints,
+                            backend: backend.clone(),
+                            name: l.checkpoint.reference.clone(),
+                            bytes: l.checkpoint.stored_bytes.unwrap_or(0),
+                            last_used: l.created.map(|t| t.with_timezone(&chrono::Local)),
+                            kept: if busy {
+                                Some("the `bench branch` run that took it is still going".into())
+                            } else {
+                                spare.map(str::to_string)
+                            },
+                            what: What::Checkpoint(l.checkpoint),
+                        });
+                    }
+                }
+                Err(e) => notes.push(format!("{backend}: its checkpoints were not listed: {e}")),
+            }
+        }
+    }
     if let Some(age) = older_than {
         items.retain(|i| i.last_used.is_none_or(|t| older(t, age)));
     }
@@ -111,6 +154,17 @@ async fn list(f: &CacheFilter, cleaning: bool, remove: bool) -> Result<Exit> {
             let done = match &item.what {
                 What::Image(img) => DockerProvider::new(&item.backend).remove_image(img).await,
                 What::Entry(e) => cache::remove(e).map_err(|e| e.to_string()),
+                What::Checkpoint(cp) => match benchflow_sandbox::provider(&item.backend) {
+                    Ok(p) => match p.delete_checkpoint(cp).await {
+                        Ok(true) => Ok(()),
+                        Ok(false) => Err(
+                            "still in use (a sandbox runs from it) or still being deleted; the sweep takes it later"
+                                .to_string(),
+                        ),
+                        Err(e) => Err(e.to_string()),
+                    },
+                    Err(e) => Err(e.to_string()),
+                },
             };
             match done {
                 Ok(()) => removed.push(item),
@@ -250,7 +304,7 @@ fn kinds(only: &[String]) -> Result<Vec<Kind>> {
         .map(|s| {
             Kind::parse(s.trim()).ok_or_else(|| {
                 CliError::usage(format!(
-                    "--only takes images, sources, registries, or logs, not `{s}`"
+                    "--only takes images, sources, registries, logs, or checkpoints, not `{s}`"
                 ))
             })
         })
@@ -272,7 +326,7 @@ fn image_backends(named: &[String], notes: &mut Vec<String>) -> Result<Vec<Strin
         match b.as_str() {
             "docker" | "podman" => out.push(b.clone()),
             "daytona" => notes.push(
-                "daytona: images are built in Daytona for each sandbox and nothing is kept between runs".into(),
+                "daytona: images are built in Daytona for each sandbox and not kept between runs (checkpoints are listed below)".into(),
             ),
             other => {
                 return Err(CliError::usage(format!(
@@ -283,6 +337,29 @@ fn image_backends(named: &[String], notes: &mut Vec<String>) -> Result<Vec<Strin
         }
     }
     Ok(out)
+}
+
+/// The backends whose checkpoints to list: the ones named, else the Docker
+/// and Podman CLIs installed here, and Daytona when its key is set.
+fn checkpoint_backends(named: &[String]) -> Result<Vec<String>> {
+    if named.is_empty() {
+        let mut out: Vec<String> = ["docker", "podman"]
+            .into_iter()
+            .filter(|b| benchflow_run::source::which(b).is_some())
+            .map(str::to_string)
+            .collect();
+        if std::env::var_os("DAYTONA_API_KEY").is_some() {
+            out.push("daytona".into());
+        }
+        return Ok(out);
+    }
+    for b in named {
+        if !matches!(b.as_str(), "docker" | "podman" | "daytona") {
+            return Err(CliError::usage(format!("no sandbox backend `{b}`"))
+                .next("use docker, podman, or daytona"));
+        }
+    }
+    Ok(named.to_vec())
 }
 
 /// A duration that may also be given in days or weeks (`30d`, `2w`).

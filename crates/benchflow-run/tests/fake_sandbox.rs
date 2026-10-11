@@ -30,6 +30,11 @@ use benchflow_task::values::Network;
 /// Where the engine packs a trial's outputs in its sandbox.
 const OUTPUTS_TAR: &str = "/var/lib/benchflow/outputs.tar";
 
+/// Checkpoints the fake took: name to whether the task was solved then.
+static CHECKPOINTS: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+/// Sandboxes the fake started from a checkpoint.
+static FROM_CHECKPOINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 #[derive(Default)]
 struct World {
     solved: bool,
@@ -56,6 +61,9 @@ struct FakeSandbox {
     /// the verifier's command fails as if the container vanished (and makes
     /// the file), and saved outputs hold `app/first-attempt.txt`.
     flaky: Option<PathBuf>,
+    /// `FAKE_LEAK_TOKEN` in the sandbox's env: the secret scan before a
+    /// checkpoint finds a value in a file.
+    leak: bool,
 }
 
 #[async_trait]
@@ -84,6 +92,16 @@ impl Sandbox for FakeSandbox {
         let stdout = if self.id.contains("shadowed") {
             // The agent replaced `sh`: every program "succeeds" and says nothing.
             String::new()
+        } else if c.contains("BF scanned") {
+            if self.leak {
+                "BF hit /etc/leaked\nBF scanned 1\nBF done 1\n".to_string()
+            } else {
+                "BF scanned 1\nBF done 1\n".to_string()
+            }
+        } else if c.contains("BF state-checked") {
+            // The state folder check (a fork's parent and children): root's
+            // alone, with its baseline.
+            "BF state-baseline\nBF state-checked\n".to_string()
         } else if c.contains("bf_try()") {
             // The network self-test, answered as a closed network would.
             closed_network_canaries(&c)
@@ -246,6 +264,21 @@ impl Sandbox for FakeSandbox {
         self.world.lock().unwrap().destroyed = true;
         Ok(())
     }
+    async fn checkpoint(
+        &self,
+        name: &str,
+        _scrub_env: &[String],
+    ) -> Result<benchflow_sandbox::checkpoint::Checkpoint, SandboxError> {
+        let solved = self.world.lock().unwrap().solved;
+        CHECKPOINTS.lock().unwrap().insert(name.to_string(), solved);
+        Ok(benchflow_sandbox::checkpoint::Checkpoint {
+            provider: "fake".into(),
+            reference: name.to_string(),
+            seconds: 0.5,
+            stored_bytes: Some(1000),
+            default_user: None,
+        })
+    }
 }
 
 /// What a network self-test script prints in a sandbox with no network:
@@ -288,6 +321,7 @@ impl Provider for FakeProvider {
             network_none: true,
             pids_limit: true,
             build_from_dockerfile: true,
+            checkpoints: true,
             ..Capabilities::default()
         }
     }
@@ -322,7 +356,37 @@ impl Provider for FakeProvider {
             solve_marker: "/oracle/solve.sh".into(),
             writable_path: self.writable_path.clone(),
             flaky: spec.env.get("FAKE_FLAKY_MARKER").map(PathBuf::from),
+            leak: spec.env.contains_key("FAKE_LEAK_TOKEN"),
         }))
+    }
+    async fn create_from_checkpoint(
+        &self,
+        spec: &SandboxSpec,
+        checkpoint: &benchflow_sandbox::checkpoint::Checkpoint,
+    ) -> Result<Box<dyn Sandbox>, SandboxError> {
+        let solved = *CHECKPOINTS
+            .lock()
+            .unwrap()
+            .get(&checkpoint.reference)
+            .expect("a child starts from a checkpoint the fake took");
+        let sb = self.create(spec).await?;
+        FROM_CHECKPOINT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.worlds
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .solved = solved;
+        Ok(sb)
+    }
+    async fn delete_checkpoint(
+        &self,
+        checkpoint: &benchflow_sandbox::checkpoint::Checkpoint,
+    ) -> Result<bool, SandboxError> {
+        CHECKPOINTS.lock().unwrap().remove(&checkpoint.reference);
+        Ok(true)
     }
 }
 
@@ -2665,4 +2729,249 @@ async fn a_model_judged_rubric_scores_oracle_and_nop_on_the_host() {
         assert!(!config.contains("vck_fake_judge_key"));
     }
     assert_eq!(seen.lock().unwrap().len(), 4);
+}
+
+/// A task of two graded stages, each solved by the oracle.
+fn staged(root: &Path, name: &str) -> TaskPackage {
+    use benchflow_task::extras::{Combine, StepSpec, Steps, Unreached};
+    let mut t = task(root, name);
+    let stage = |n: &str| StepSpec {
+        name: n.into(),
+        prompt: format!("Do stage {n}."),
+        graded: true,
+        ..StepSpec::default()
+    };
+    t.extras.steps = Some(Steps {
+        stages: vec![stage("first"), stage("second")],
+        combine: Combine::Mean,
+        unreached: Unreached::default(),
+    });
+    t
+}
+
+fn read_json(p: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+}
+
+/// A fork after a graded stage: each child runs the stages after it,
+/// carrying the parent's rows and grades; a continuing parent is graded
+/// too, and the records say it was kept. Then a discarded parent at start
+/// with nop: its children score 0, and it is not graded.
+#[tokio::test]
+async fn stage_forks_and_a_continuing_parent_run_through_the_engine() {
+    use benchflow_run::trial::branch::{self, ForkPlan, ForkPoint};
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(staged(&tmp.path().join("two"), "two"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let plan = ForkPlan {
+        at: ForkPoint::Stage("first".into()),
+        children: ForkPlan::same_prompt(2),
+        retain: false,
+        resume: false,
+        concurrency: 2,
+        continue_parent: true,
+    };
+    let out = branch::run_job(
+        vec![t.clone()],
+        Attempt::Oracle,
+        plan,
+        jobs_dir(tmp.path()),
+        Some("stage-fork".into()),
+        runtime(provider.clone()),
+    )
+    .await
+    .unwrap();
+    let f = &out.forks[0];
+    assert_eq!(f.status, "completed");
+    assert_eq!(f.value, Some(1.0));
+    assert!(f.parent_continued);
+    // The parent went on to its second stage and was graded.
+    assert_eq!(f.parent.status, Status::Scored, "{:?}", f.parent.problem);
+    assert_eq!(f.parent.reward, Some(1.0));
+    let trial = out.dir.join(&f.parent.rollout_name);
+    let parent_steps = read_json(&trial.join("result.json"))["step_results"].clone();
+    assert_eq!(parent_steps.as_array().unwrap().len(), 2);
+    assert!(trial.join("steps/second").is_dir());
+    // Each child ran only the second stage; the first is the parent's.
+    for c in &f.children {
+        let r = read_json(&c.dir.join("result.json"));
+        let rows = r["step_results"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{r}");
+        assert_eq!(rows[0]["step_name"], "first");
+        assert_eq!(rows[0]["from_parent"], true);
+        assert_eq!(rows[1]["step_name"], "second");
+        assert!(rows[1].get("from_parent").is_none());
+        assert!(!c.dir.join("steps/first").exists());
+        assert!(c.dir.join("steps/second").is_dir());
+        assert_eq!(r["rewards"]["reward"], 1.0, "{r}");
+    }
+    let tree = read_json(&trial.join("tree.json"));
+    let fork = &tree["forks"][0];
+    assert_eq!(fork["fork_point"], "stage:first");
+    // After prompts the fork hangs off a node that points at the parent's
+    // last event before it (0.8's exporter cuts the shared prefix there),
+    // and the children hang off it too.
+    assert_eq!(fork["parent_node"], "p1", "{tree}");
+    let nodes = tree["nodes"].as_array().unwrap();
+    let p1 = nodes
+        .iter()
+        .find(|n| n["id"] == "p1")
+        .expect("the fork node");
+    assert_eq!(p1["parent"], "root");
+    assert_eq!(p1["step_id"], "step-0-oracle");
+    assert!(
+        nodes
+            .iter()
+            .filter(|n| n["id"].as_str().is_some_and(|i| i.starts_with('n')))
+            .all(|n| n["parent"] == "p1"),
+        "{tree}"
+    );
+    let parent_events = std::fs::read_to_string(trial.join("trajectory/acp_trajectory.jsonl"))
+        .unwrap()
+        .lines()
+        .count();
+    assert!(
+        parent_events >= 1,
+        "the parent's trajectory holds the prefix"
+    );
+    let obs = read_json(&f.children[0].dir.join("observation.json"));
+    assert_eq!(obs["lineage"]["parent_node"], "p1");
+    assert_eq!(fork["parent_restore"], "not_needed");
+    assert_eq!(fork["parent_reward"], 1.0);
+    let cps = read_json(&trial.join("checkpoints.json"));
+    assert_eq!(cps["checkpoints"][0]["after_prompt"], 1);
+    assert_eq!(cps["checkpoints"][0]["status"], "deleted");
+    let result = read_json(&trial.join("result.json"));
+    assert_eq!(result["branches"]["parent"], "kept");
+    let summary = read_json(&out.dir.join("summary.json"));
+    assert_eq!(summary["parent"], "continue");
+    assert_eq!(summary["trials"][0]["parent_reward"], 1.0);
+    assert!(CHECKPOINTS.lock().unwrap().is_empty());
+    // results.jsonl: the continuing parent, then each child.
+    let rows: Vec<serde_json::Value> = std::fs::read_to_string(out.dir.join("results.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["info"]["branch"]["role"], "parent");
+    assert_eq!(rows[1]["info"]["branch"]["role"], "child");
+    assert_eq!(rows[1]["info"]["branch"]["advantage"], 0.0);
+    assert_eq!(rows[2]["reward"], 1.0);
+    // 0.8's child archive carries the child's trajectory for the viewer.
+    let obs = read_json(&f.children[0].dir.join("observation.json"));
+    assert!(!obs["trajectory"].as_array().unwrap().is_empty(), "{obs}");
+    // Both children started from the parent's checkpoint.
+    assert_eq!(FROM_CHECKPOINT.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    // nop at start, parent discarded: children 0, parent not graded.
+    let plan = ForkPlan {
+        at: ForkPoint::Start,
+        children: ForkPlan::same_prompt(2),
+        retain: false,
+        resume: false,
+        concurrency: 1,
+        continue_parent: false,
+    };
+    let out = branch::run_job(
+        vec![t],
+        Attempt::Nop,
+        plan,
+        jobs_dir(tmp.path()),
+        Some("start-nop".into()),
+        runtime(provider),
+    )
+    .await
+    .unwrap();
+    let f = &out.forks[0];
+    assert_eq!(f.status, "completed");
+    assert_eq!(f.value, Some(0.0));
+    assert!(!f.parent_continued);
+    assert_eq!(f.parent.problem.as_ref().unwrap().code, "R000");
+    let trial = out.dir.join(&f.parent.rollout_name);
+    let tree = read_json(&trial.join("tree.json"));
+    assert_eq!(tree["forks"][0]["parent_restore"], "skipped");
+    // A fork at start hangs off the root, which has no step.
+    assert_eq!(tree["forks"][0]["parent_node"], "root");
+    assert!(tree["forks"][0]["parent_reward"].is_null());
+    // No row for the discarded parent.
+    let rows = std::fs::read_to_string(out.dir.join("results.jsonl")).unwrap();
+    assert_eq!(rows.lines().count(), 2, "{rows}");
+    // Each child ran both stages.
+    for c in &f.children {
+        let r = read_json(&c.dir.join("result.json"));
+        assert_eq!(r["step_results"].as_array().unwrap().len(), 2, "{r}");
+        assert!(c.dir.join("steps/first").is_dir());
+    }
+}
+
+/// A refusal at the fork point (here the secret scan finds a value): a
+/// discarded parent ends there, unscored, with no child; a continuing
+/// parent goes on and is graded as a plain trial, and the fork records the
+/// refusal (0.8's spelling fills in --parent continue).
+#[tokio::test]
+async fn a_refused_checkpoint_still_grades_a_continuing_parent() {
+    use benchflow_run::trial::branch::{self, ForkPlan, ForkPoint};
+    let tmp = tempfile::tempdir().unwrap();
+    let mut t = task(&tmp.path().join("leaky"), "leaky");
+    t.sandbox.env.insert(
+        "FAKE_LEAK_TOKEN".into(),
+        "leak-0123456789abcdef-0123456789".into(),
+    );
+    let t = Arc::new(t);
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    for continue_parent in [true, false] {
+        let plan = ForkPlan {
+            at: ForkPoint::Start,
+            children: ForkPlan::same_prompt(2),
+            retain: false,
+            resume: false,
+            concurrency: 2,
+            continue_parent,
+        };
+        let out = branch::run_job(
+            vec![t.clone()],
+            Attempt::Oracle,
+            plan,
+            jobs_dir(tmp.path()),
+            Some(format!("leak-{continue_parent}")),
+            runtime(provider.clone()),
+        )
+        .await
+        .unwrap();
+        let f = &out.forks[0];
+        assert_eq!(f.status, "failed");
+        assert!(f.checkpoint.is_none());
+        assert!(f.children.iter().all(|c| c.record.is_none()));
+        let tree = read_json(&out.dir.join(&f.parent.rollout_name).join("tree.json"));
+        let fork = &tree["forks"][0];
+        assert_eq!(fork["error"]["code"], "R401", "{fork}");
+        // tree.json keeps no message (0.8's display record); a continuing
+        // parent's refusal is written beside it.
+        assert!(fork["error"].get("message").is_none(), "{fork}");
+        if continue_parent {
+            let refusal = read_json(
+                &out.dir
+                    .join(&f.parent.rollout_name)
+                    .join("branch-refusal.json"),
+            );
+            assert!(
+                refusal["message"].as_str().unwrap().contains("/etc/leaked"),
+                "{refusal}"
+            );
+            assert_eq!(f.parent.status, Status::Scored, "{:?}", f.parent.problem);
+            assert_eq!(f.parent.reward, Some(1.0));
+            assert_eq!(fork["parent_restore"], "not_attempted");
+            assert_eq!(fork["parent_reward"], 1.0);
+        } else {
+            assert_eq!(f.parent.problem.as_ref().unwrap().code, "R401");
+            assert!(fork["parent_reward"].is_null());
+        }
+    }
 }

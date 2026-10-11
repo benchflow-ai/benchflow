@@ -623,6 +623,38 @@ exit 1"#,
     )
 }
 
+/// What in the state folder `$sd` is not root's alone: anything not
+/// root's, a link (the copy of a linked `/etc/ld.so.preload` excepted), or
+/// anything others, or a group other than root's, may write. One path per
+/// line; the scan crosses mounts.
+const STATE_NOT_ROOTS: &str = r#"find "$sd" \( ! -user 0 -o \( \( -type l -o -perm -0002 -o \( -perm -0020 ! -group 0 \) \) ! -path "$sd/preload" \) \) -print 2>/dev/null"#;
+
+/// The handoff's check of [`STATE_DIR`] on its own, for a sandbox that
+/// carries the folder over from a checkpoint (a branch's parent before the
+/// checkpoint, and each child before its agent): `BF state-owner <path>`
+/// for each path not root's alone (at most 5; the folder itself when it is
+/// missing or a link), `BF state-unchecked` when `find` failed (`no-find`
+/// when the image has none), `BF state-baseline` when the test-runner
+/// baseline is there, and `BF state-checked` last.
+pub fn state_check() -> String {
+    format!(
+        r#"sd={state}
+note() {{ printf 'BF state-owner %s\n' "$(printf %s "$1" | tr '\n' '?')"; }}
+if ! command -v find >/dev/null 2>&1; then echo "BF state-unchecked no-find"
+elif [ -L "$sd" ] || [ ! -d "$sd" ]; then note "$sd"
+else
+  hits=$({not_roots}); rc=$?
+  if [ -n "$hits" ]; then
+    printf '%s\n' "$hits" | head -n 5 | while IFS= read -r f; do note "$f"; done
+  elif [ "$rc" != 0 ]; then echo "BF state-unchecked"; fi
+  [ -f "$sd/baseline/list" ] && [ ! -L "$sd/baseline/list" ] && echo "BF state-baseline"
+fi
+echo "BF state-checked""#,
+        state = q(STATE_DIR),
+        not_roots = STATE_NOT_ROOTS,
+    )
+}
+
 /// Hand the sandbox from the agent to the verifier.
 ///
 /// - Clears `/logs/verifier` (anything the agent wrote there is discarded).
@@ -688,7 +720,7 @@ out_of_reach() {{
 if ! command -v find >/dev/null 2>&1; then echo "BF state-unchecked no-find"; stop
 elif [ -L "$sd" ] || [ ! -d "$sd" ]; then note "$sd"; stop
 else
-  hits=$(find "$sd" \( ! -user 0 -o \( \( -type l -o -perm -0002 -o \( -perm -0020 ! -group 0 \) \) ! -path "$sd/preload" \) \) -print 2>/dev/null); rc=$?
+  hits=$({not_roots}); rc=$?
   if [ -n "$hits" ]; then
     printf '%s\n' "$hits" | head -n 5 | while IFS= read -r f; do note "$f"; done
     stop
@@ -742,6 +774,7 @@ done
 echo "BF handoff done""#,
         workdir = q(workdir),
         state = q(STATE_DIR),
+        not_roots = STATE_NOT_ROOTS,
         umask = STATE_UMASK,
         state_mode = if strict_state {
             r#"note() { printf 'BF state-owner %s\n' "$1"; }
@@ -1527,6 +1560,50 @@ mod tests {
         );
         let mode = std::fs::metadata(&preload).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o644, "{out}");
+    }
+
+    /// The state check on its own: a folder of the test user's (standing in
+    /// for root's) with a baseline passes and says so; a link in place of
+    /// the folder, or a file others may write, is named.
+    #[cfg(unix)]
+    #[test]
+    fn the_state_check_names_what_is_not_roots_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let run = |root: &std::path::Path| {
+            let script = state_check()
+                .replace("! -user 0", &format!("! -user {}", id("-u")))
+                .replace("! -group 0", &format!("! -group {}", id("-g")))
+                .replace(STATE_DIR, root.join("state").to_str().unwrap());
+            assert!(!script.contains(STATE_DIR));
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("state/baseline")).unwrap();
+        std::fs::write(root.join("state/baseline/list"), "").unwrap();
+        let out = run(&root);
+        assert_eq!(out, "BF state-baseline\nBF state-checked\n");
+        let list = root.join("state/baseline/list");
+        std::fs::set_permissions(&list, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let out = run(&root);
+        assert!(
+            out.contains(&format!("BF state-owner {}\n", list.display())),
+            "{out}"
+        );
+        assert!(out.ends_with("BF state-checked\n"), "{out}");
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("elsewhere/baseline")).unwrap();
+        std::fs::write(root.join("elsewhere/baseline/list"), "").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("state")).unwrap();
+        let out = run(&root);
+        assert!(out.starts_with("BF state-owner "), "{out}");
+        assert!(!out.contains("BF state-baseline"), "{out}");
     }
 
     /// A path with a line break in it must not split into two paths for the

@@ -190,6 +190,8 @@ Pages:
   /compare    tasks by job, pass rates with 95% intervals, paired differences
   /outcomes   how trials ended, problems by code and owner, time per phase
   /pareto     pass rate against cost, time, and tokens per trial, with each frontier
+  /branches   each fork of a `bench branch` job: value, checkpoint, parent, and
+              each child's label, status, reward, and advantage
 Each keeps its jobs and filters in the URL; /api/<page> answers the same as JSON.
 
 Examples:
@@ -213,6 +215,41 @@ Examples:
   bench regrade jobs/2026-10-10__09-12-03
   bench regrade jobs/2026-10-10__09-12-03 -s daytona -j 16")]
     Regrade(RegradeArgs),
+
+    /// Fork a rollout from a checkpoint into children, each graded
+    #[command(after_help = "\
+Runs the task to the fork point, stores the sandbox's files as a checkpoint
+(Docker: an image; Daytona: a snapshot), and runs each child in a sandbox of
+its own made from it. Each child is graded by the task's verifier; the
+fork's value is the mean of the children's rewards. The checkpoint is
+deleted afterwards unless --retain-checkpoints. The parent is discarded
+after its fork, or with --parent continue goes on in its own sandbox while
+the children run, and is graded too (its reward is not in the fork's
+value).
+
+Fork points: `start` (after setup, before the agent), `prompt:N` (after the
+parent's N-th prompt, for model agents), and `stage:<name>` (after a graded
+stage of a task with stages; children run the stages after it). A child
+sends its own prompt (at `stage:<name>`, in place of the next stage's), or
+without one the task's instruction again (the next stage's); it starts a
+fresh session in the parent's files, or with --resume-session continues the
+parent's conversation through `session/load` (ACP agents that offer it).
+
+Records (BenchFlow 0.8's): tree.json and checkpoints.json in the trial
+folder, each child under branches/<fork>/children/n<k>/, and a `branches`
+block in the trial's result.json.
+
+Examples:
+  bench branch tasks/x --children 3                    # the oracle, 3 children
+  bench branch tasks/x -a builtin -m mimo/mimo-v2.6-flash -s daytona \\
+      --child label=base --child \"label=hint,prompt=@instruction Start with the tests.\"
+  bench branch tasks/x -a opencode -m vercel/deepseek/deepseek-v4-flash-0731 \\
+      --at prompt:1 --resume-session --child \"label=check,prompt=Check your work.\"
+  bench branches jobs/2026-10-10__20-00-00             # each fork's value and children")]
+    Branch(BranchArgs),
+
+    /// Show a branch job's forks: value, children, rewards
+    Branches(BranchesArgs),
 
     /// Open a shell in a task's sandbox, then grade what you left
     #[command(after_help = "\
@@ -584,9 +621,69 @@ pub struct RunArgs {
     #[arg(long, value_name = "JOB")]
     pub diff: Vec<PathBuf>,
 
-    /// Print the plan and run nothing; exits 0 and names what a run would stop on (a missing login)
+    /// Print the plan and run nothing; exits 0, or 3 (not ready) after naming what a run would stop on (a missing login)
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BranchArgs {
+    /// Task folders, or folders of tasks
+    #[arg(required = true)]
+    pub targets: Vec<String>,
+
+    /// The agent: oracle, nop, script:<file>, or a model agent (default: oracle)
+    #[arg(short, long)]
+    pub agent: Option<String>,
+
+    /// The model, for model agents
+    #[arg(short, long)]
+    pub model: Option<String>,
+
+    /// Reasoning effort, for agents that take one
+    #[arg(long)]
+    pub effort: Option<String>,
+
+    /// Extra environment variables for the agent (KEY=VALUE, repeatable)
+    #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+
+    /// Where to fork: start, prompt:N, or stage:<name>
+    #[arg(long, default_value = "start", value_name = "POINT")]
+    pub at: String,
+
+    /// K children (2 or more), each asked the task's own instruction (at stage:<name>, the next stage's prompt)
+    #[arg(long, value_name = "K", conflicts_with = "child")]
+    pub children: Option<usize>,
+
+    /// One child: label=<name>[,prompt=<text>|prompt-file=<path>] (repeatable; `@instruction` in a prompt is the task's)
+    #[arg(long, value_name = "SPEC")]
+    pub child: Vec<String>,
+
+    /// What becomes of the parent after its fork: discard, or continue (it goes on and is graded)
+    #[arg(long, default_value = "discard", value_name = "MODE")]
+    pub parent: String,
+
+    /// Keep the checkpoint after the fork (`bench cache` lists it)
+    #[arg(long)]
+    pub retain_checkpoints: bool,
+
+    /// At prompt:N or stage:<name>, children resume the parent's session (`session/load`) instead of starting fresh ones
+    #[arg(long)]
+    pub resume_session: bool,
+
+    /// The job folder's name under the jobs folder
+    #[arg(long, value_name = "NAME")]
+    pub job: Option<String>,
+
+    #[command(flatten)]
+    pub sandbox: SandboxArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct BranchesArgs {
+    /// A job folder `bench branch` wrote
+    pub job: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -802,11 +899,11 @@ pub enum CacheCommand {
 
 #[derive(Debug, Args, Clone)]
 pub struct CacheFilter {
-    /// Only these kinds: images, sources, registries, logs (comma-separated)
+    /// Only these kinds: images, sources, registries, logs, checkpoints (comma-separated)
     #[arg(long, value_name = "KINDS", value_delimiter = ',')]
     pub only: Vec<String>,
 
-    /// Image backends to look at: docker, podman (default: the ones installed)
+    /// Backends to look at: docker, podman, daytona (default: the ones installed, and daytona when DAYTONA_API_KEY is set)
     #[arg(short, long, value_name = "BACKEND")]
     pub sandbox: Vec<String>,
 

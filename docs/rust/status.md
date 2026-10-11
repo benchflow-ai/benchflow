@@ -11,7 +11,8 @@ What the Rust `bench` does today, what it does not do yet, and how each part was
 | `bench eval list`, `metrics`, `inspect`, `compare` | `bench results` | Ported: pass rates with 95% Wilson intervals, pass@k, failures by cause, paired comparison with a t interval |
 | `bench eval view` | `bench view` | Ported (0.8's viewer assets, served by Rust), plus compare, outcomes, and Pareto pages across jobs ([viewer.md](./viewer.md)) |
 | `bench eval regrade` | `bench regrade` | Ported for trials that saved outputs: a fresh sandbox per trial, the outputs restored, the current verifier; results go to `<job>-regrade-<n>`. A service command Docker Compose cannot split (`P014`) keeps a task from running but not from being regraded, since a regrade starts no service |
-| `bench eval branch`, `branches`, `score`, `continue`, `adopt`, `smoke` | — | Not yet |
+| `bench eval branch`, `branches` | `bench branch`, `bench branches` | Ported for forks at `start`, `prompt:N` (with `--resume-session` through ACP `session/load`), and `stage:<name>`, with children in sandboxes of their own and the parent discarded or continuing (`--parent continue`), on Docker, Podman, and Daytona; checked live at `start` and `stage:` on Docker and Daytona and at `prompt:1` on Daytona (OpenCode on MiMo, Codex on its ChatGPT login); 0.8's records plus `results.jsonl`, and `bench view`'s `/branches` page ([branching.md](./branching.md)). Children in place, nested forks, automatic checkpoints, and `--from-checkpoint`: not yet |
+| `bench eval score`, `continue`, `adopt`, `smoke` | — | Not yet |
 | `bench tasks init` | `bench new` | Ported, with templates that pass `bench test` as created |
 | `bench tasks check` | `bench check` | Ported for every format, with spans, did-you-mean, `--fix`, and `--watch` |
 | `bench tasks migrate` | `bench import` | Ported (split layout, 0.8 task.md, and Terminal-Bench v1 to task.md) |

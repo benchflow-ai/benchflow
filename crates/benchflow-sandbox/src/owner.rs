@@ -62,6 +62,67 @@ fn sanitize_scope(raw: &str) -> String {
         .collect()
 }
 
+/// Where this process's pids mean something, read once, for names that
+/// must tell apart runs whose pids could be confused (checkpoints): the
+/// machine id (`/etc/machine-id` or D-Bus's copy on Linux, the platform
+/// UUID on macOS), the host name, and on Linux the PID namespace. Two
+/// machines with one host name (laptops both called `macbook`) differ by
+/// machine id; two containers from one image that baked a machine id in
+/// differ by host name and PID namespace. An id that is not 32 hex digits
+/// (an image's empty or `uninitialized` file) is left out.
+pub fn machine_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        let mut parts = Vec::new();
+        if let Some(id) = read_machine_id() {
+            parts.push(format!("machine-id:{id}"));
+        }
+        parts.push(format!("host:{}", hostname()));
+        if let Ok(ns) = std::fs::read_link("/proc/self/ns/pid") {
+            parts.push(format!("pid-ns:{}", ns.to_string_lossy()));
+        }
+        parts.join(" ")
+    })
+}
+
+fn read_machine_id() -> Option<String> {
+    for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Some(id) = usable_machine_id(&text)
+        {
+            return Some(id);
+        }
+    }
+    if cfg!(target_os = "macos") {
+        let out = std::process::Command::new("/usr/sbin/ioreg")
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            if let Some(rest) = line.split("\"IOPlatformUUID\"").nth(1) {
+                let id = rest.trim().trim_start_matches('=').trim().trim_matches('"');
+                if let Some(id) = usable_machine_id(id) {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A machine id as 32 hex digits (dashes dropped, lowercased), or `None`.
+fn usable_machine_id(text: &str) -> Option<String> {
+    let id: String = text
+        .trim()
+        .chars()
+        .filter(|c| *c != '-')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) && id.bytes().any(|b| b != b'0'))
+        .then_some(id)
+}
+
 /// This machine's host name, read once.
 pub fn hostname() -> &'static str {
     static HOST: OnceLock<String> = OnceLock::new();
@@ -372,5 +433,34 @@ mod tests {
         let verdict = judge(|k| foreign.get(k).map(String::as_str)).await;
         assert_eq!(verdict, Verdict::Foreign);
         assert_eq!(get(&foreign, OWNER_LABEL).as_deref(), Some("someone-else"));
+    }
+}
+
+#[cfg(test)]
+mod machine_id_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_real_machine_id_is_used() {
+        assert_eq!(
+            usable_machine_id("0123456789abcdef0123456789ABCDEF\n").as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(
+            usable_machine_id("12345678-9ABC-DEF0-1234-56789ABCDEF0").as_deref(),
+            Some("123456789abcdef0123456789abcdef0")
+        );
+        for bad in [
+            "",
+            "uninitialized\n",
+            "0123",
+            &"0".repeat(32),
+            &"g".repeat(32),
+        ] {
+            assert_eq!(usable_machine_id(bad), None, "{bad:?}");
+        }
+        // Read once, the same each time, and never empty.
+        assert!(!machine_id().is_empty());
+        assert_eq!(machine_id(), machine_id());
     }
 }

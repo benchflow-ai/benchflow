@@ -13,7 +13,9 @@
 //! | [`Sandbox::spawn`] | a session command: stdin through the input API, output through the follow websocket |
 //! | files | one tar through the toolbox files API, unpacked by a root `tar` |
 //! | [`Sandbox::destroy`] | `DELETE /sandbox/{id}` |
-//! | [`Provider::sweep`] | deletes our sandboxes of dead processes on this host, and our stale ones |
+//! | [`Provider::sweep`] | deletes our sandboxes of dead processes on this host, and our stale ones; our leftover checkpoint snapshots |
+//! | [`Sandbox::checkpoint`] | `POST /sandbox/{id}/snapshot`, then `GET /snapshots/{name}` until `active` (see [`snapshots`]) |
+//! | [`Provider::create_from_checkpoint`] | `POST /sandbox` with `snapshot` and no build info; refused if it got less than asked |
 //!
 //! A crashed run never leaks sandboxes for long: each sandbox stops after
 //! 15 idle minutes and is deleted when it stops, and BenchFlow keeps the
@@ -27,6 +29,7 @@ mod files;
 mod lifecycle;
 mod process;
 mod s3;
+mod snapshots;
 mod toolbox;
 mod types;
 
@@ -317,6 +320,7 @@ impl DaytonaProvider {
             uuid::Uuid::new_v4().simple().to_string(),
         );
         let body = CreateSandbox {
+            snapshot: None,
             labels,
             target: self.api.target.as_deref(),
             cpu: Some(1),
@@ -326,10 +330,10 @@ impl DaytonaProvider {
             network_allow_list: None,
             auto_stop_interval: AUTO_STOP_MINUTES,
             auto_delete_interval: 0,
-            build_info: BuildInfo {
+            build_info: Some(BuildInfo {
                 dockerfile_content: &recipe.dockerfile,
                 context_hashes: &recipe.context_hashes,
-            },
+            }),
         };
         log("asking Daytona to build the image");
         // Removes the builder if this future is dropped before it does.
@@ -758,6 +762,7 @@ impl Provider for DaytonaProvider {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            checkpoints: true,
             network_none: true,
             gpus: false,
             pids_limit: false,
@@ -894,30 +899,7 @@ impl Provider for DaytonaProvider {
     }
 
     async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
-        if !self.api.has_key() {
-            return Err(ApiError::NoKey.into());
-        }
-        if spec.gpus > 0 {
-            return Err(SandboxError::Unsupported(format!(
-                "{} asks for {} GPU(s), and BenchFlow's Daytona backend has none; run it with \
-                 `--sandbox docker` on a host with GPUs",
-                spec.name, spec.gpus
-            )));
-        }
-        if let Some(runtime) = &spec.runtime {
-            return Err(SandboxError::Unsupported(format!(
-                "{} asks for the `{runtime}` container runtime, and Daytona chooses the runtime of \
-                 its sandboxes itself; run it with `--sandbox docker` on a Docker host that has \
-                 `{runtime}`, or drop --runtime",
-                spec.name
-            )));
-        }
-        if spec.pids_limit.is_some() {
-            tracing::debug!(
-                "Daytona has no process limit; pids_limit is not enforced for {}",
-                spec.name
-            );
-        }
+        refuse_unsupported(&self.api, spec)?;
         // A recipe found cancelled is rebuilt once, then the trial starts
         // from the rebuild.
         let reference = &spec.image.reference;
@@ -929,6 +911,65 @@ impl Provider for DaytonaProvider {
             }
             other => other,
         }
+    }
+
+    /// A branch child: a sandbox from a checkpoint (a snapshot). No recipe,
+    /// so no rebuild climb; [`DaytonaProvider::start`] gives it the same
+    /// handling of a start that may still be building, and of sandboxes
+    /// left behind.
+    async fn create_from_checkpoint(
+        &self,
+        spec: &SandboxSpec,
+        checkpoint: &crate::checkpoint::Checkpoint,
+    ) -> Result<Box<dyn Sandbox>, SandboxError> {
+        refuse_unsupported(&self.api, spec)?;
+        // The image's user, as the sandbox the checkpoint was taken from
+        // had it (a child's spec names the checkpoint, not the image); else
+        // the image's, when this process prepared it.
+        let default_user = checkpoint.default_user.clone().or_else(|| {
+            self.recipes
+                .lock()
+                .expect("lock")
+                .get(&spec.image.reference)
+                .and_then(|r| r.base.default_user.clone())
+        });
+        let mut labels = sandbox_labels(spec);
+        labels.insert(
+            "ai.benchflow.checkpoint".into(),
+            checkpoint.reference.clone(),
+        );
+        let body = from_snapshot_body(&self.api, spec, &checkpoint.reference, labels)?;
+        let (sandbox, dto) = self.start(spec, &body, default_user).await?;
+        if let Some(short) = smaller_than_asked(spec, &dto) {
+            if let Err(err) = sandbox.destroy().await {
+                tracing::warn!("{err}");
+                crate::note_left_behind("daytona", &dto.id);
+            }
+            return Err(SandboxError::Unsupported(format!(
+                "a sandbox started from checkpoint {} got less than {} asks for ({short}); \
+                 Daytona gives a snapshot's sandboxes the resources of the sandbox it was taken from",
+                checkpoint.reference, spec.name
+            )));
+        }
+        Ok(Box::new(sandbox))
+    }
+
+    async fn delete_checkpoint(
+        &self,
+        checkpoint: &crate::checkpoint::Checkpoint,
+    ) -> Result<bool, SandboxError> {
+        snapshots::delete(&self.api, &checkpoint.reference).await
+    }
+
+    async fn list_checkpoints(&self) -> Result<Vec<crate::checkpoint::Listed>, SandboxError> {
+        if !self.api.has_key() {
+            return Err(ApiError::NoKey.into());
+        }
+        Ok(snapshots::list(&self.api)
+            .await?
+            .into_iter()
+            .map(snapshots::listed)
+            .collect())
     }
 
     async fn sweep(&self) -> Result<usize, SandboxError> {
@@ -944,17 +985,9 @@ impl DaytonaProvider {
         recipe: &Recipe,
     ) -> Result<Box<dyn Sandbox>, SandboxError> {
         let (cpu, memory, disk) = resources(spec);
-        let mut labels = owner::labels();
-        labels.insert("ai.benchflow.name".into(), spec.name.clone());
-        labels.insert(
-            ATTEMPT_LABEL.into(),
-            uuid::Uuid::new_v4().simple().to_string(),
-        );
-        for (k, v) in &spec.labels {
-            labels.entry(k.clone()).or_insert_with(|| v.clone());
-        }
         let body = CreateSandbox {
-            labels,
+            snapshot: None,
+            labels: sandbox_labels(spec),
             target: self.api.target.as_deref(),
             cpu,
             memory,
@@ -963,54 +996,13 @@ impl DaytonaProvider {
             network_allow_list: allow_list(&spec.network)?,
             auto_stop_interval: AUTO_STOP_MINUTES,
             auto_delete_interval: 0,
-            build_info: BuildInfo {
+            build_info: Some(BuildInfo {
                 dockerfile_content: &recipe.dockerfile,
                 context_hashes: &recipe.context_hashes,
-            },
+            }),
         };
-        let dto = lifecycle::create(&self.api, &body).await?;
-        let name = spec.name.clone();
-        let started =
-            match lifecycle::wait_started(&self.api, &dto.id, START_TIMEOUT, &|line: &str| {
-                tracing::debug!("building {name}: {line}")
-            })
-            .await
-            {
-                Ok(started) => started,
-                // A sandbox whose image Daytona rebuilds (its cache dropped)
-                // may still be building: deleting it would cancel the build.
-                Err(failure) if may_be_building(&failure) => {
-                    retire_later(self.api.clone(), dto.id.clone(), deadline(START_TIMEOUT));
-                    return Err(start_failure(spec, *failure));
-                }
-                Err(failure) => {
-                    if let Err(err) = lifecycle::delete(&self.api, &dto.id).await {
-                        tracing::warn!("{err}");
-                        crate::note_left_behind("daytona", &dto.id);
-                    }
-                    return Err(start_failure(spec, *failure));
-                }
-            };
-        let proxy = started
-            .dto
-            .toolbox_proxy_url
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TOOLBOX_URL.to_string());
-        let toolbox = Toolbox::new(self.api.clone(), &proxy, &dto.id);
-        if let Err(err) = set_up(&toolbox, spec.workdir.as_deref()).await {
-            if let Err(cleanup) = lifecycle::delete(&self.api, &dto.id).await {
-                tracing::warn!("{cleanup}");
-                crate::note_left_behind("daytona", &dto.id);
-            }
-            return Err(err);
-        }
-        let core = Arc::new(SandboxCore {
-            toolbox,
-            default_env: spec.env.clone(),
-            default_cwd: spec.workdir.clone().filter(|w| !w.is_empty()),
-            default_user: recipe.default_user.clone(),
-        });
-        Ok(Box::new(DaytonaSandbox::new(core)))
+        let (sandbox, _) = self.start(spec, &body, recipe.default_user.clone()).await?;
+        Ok(Box::new(sandbox))
     }
 
     /// [`Provider::sweep`].
@@ -1072,7 +1064,153 @@ impl DaytonaProvider {
                 ),
             }
         }
-        Ok(removed)
+        Ok(removed + snapshots::sweep(&self.api).await)
+    }
+}
+
+/// Refuse what Daytona cannot give a sandbox (GPUs, a runtime), and a
+/// missing key.
+fn refuse_unsupported(api: &Api, spec: &SandboxSpec) -> Result<(), SandboxError> {
+    if !api.has_key() {
+        return Err(ApiError::NoKey.into());
+    }
+    if spec.gpus > 0 {
+        return Err(SandboxError::Unsupported(format!(
+            "{} asks for {} GPU(s), and BenchFlow's Daytona backend has none; run it with \
+             `--sandbox docker` on a host with GPUs",
+            spec.name, spec.gpus
+        )));
+    }
+    if let Some(runtime) = &spec.runtime {
+        return Err(SandboxError::Unsupported(format!(
+            "{} asks for the `{runtime}` container runtime, and Daytona chooses the runtime of \
+             its sandboxes itself; run it with `--sandbox docker` on a Docker host that has \
+             `{runtime}`, or drop --runtime",
+            spec.name
+        )));
+    }
+    if spec.pids_limit.is_some() {
+        tracing::debug!(
+            "Daytona has no process limit; pids_limit is not enforced for {}",
+            spec.name
+        );
+    }
+    Ok(())
+}
+
+/// A trial sandbox's labels: ours, its name, a fresh attempt id, then the
+/// spec's own.
+fn sandbox_labels(spec: &SandboxSpec) -> BTreeMap<String, String> {
+    let mut labels = owner::labels();
+    labels.insert("ai.benchflow.name".into(), spec.name.clone());
+    labels.insert(
+        ATTEMPT_LABEL.into(),
+        uuid::Uuid::new_v4().simple().to_string(),
+    );
+    for (k, v) in &spec.labels {
+        labels.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    labels
+}
+
+/// The create body for a sandbox from snapshot `snapshot`: no build info,
+/// and no resources (Daytona gives a snapshot's sandboxes the snapshot's;
+/// [`smaller_than_asked`] checks them after).
+fn from_snapshot_body<'a>(
+    api: &'a Api,
+    spec: &SandboxSpec,
+    snapshot: &'a str,
+    labels: BTreeMap<String, String>,
+) -> Result<CreateSandbox<'a>, SandboxError> {
+    Ok(CreateSandbox {
+        snapshot: Some(snapshot),
+        labels,
+        target: api.target.as_deref(),
+        cpu: None,
+        memory: None,
+        disk: None,
+        network_block_all: spec.network == NetworkPolicy::None,
+        network_allow_list: allow_list(&spec.network)?,
+        auto_stop_interval: AUTO_STOP_MINUTES,
+        auto_delete_interval: 0,
+        build_info: None,
+    })
+}
+
+/// What a started sandbox has less of than `spec` asks for (after
+/// Daytona's caps), as `cpu 1 < 2, …`; `None` when nothing is short, or
+/// Daytona did not say.
+fn smaller_than_asked(spec: &SandboxSpec, dto: &SandboxDto) -> Option<String> {
+    let (cpu, memory, disk) = resources(spec);
+    let short: Vec<String> = [
+        ("cpu", cpu, dto.cpu, ""),
+        ("memory", memory, dto.memory, " GiB"),
+        ("disk", disk, dto.disk, " GiB"),
+    ]
+    .into_iter()
+    .filter_map(|(what, asked, got, unit)| {
+        let (asked, got) = (asked?, got?);
+        (got + 1e-9 < f64::from(asked)).then(|| format!("{what} {got}{unit} < {asked}{unit}"))
+    })
+    .collect();
+    (!short.is_empty()).then(|| short.join(", "))
+}
+
+impl DaytonaProvider {
+    /// Create a sandbox from `body` (a recipe's build, or a checkpoint's
+    /// snapshot), wait until it runs, and set it up. A start that failed
+    /// while the sandbox may still be building is retired later rather
+    /// than deleted (deleting it would cancel the build); a sandbox that
+    /// could not be deleted is noted as left behind.
+    async fn start(
+        &self,
+        spec: &SandboxSpec,
+        body: &CreateSandbox<'_>,
+        default_user: Option<String>,
+    ) -> Result<(DaytonaSandbox, SandboxDto), SandboxError> {
+        let dto = lifecycle::create(&self.api, body).await?;
+        let name = spec.name.clone();
+        let started =
+            match lifecycle::wait_started(&self.api, &dto.id, START_TIMEOUT, &|line: &str| {
+                tracing::debug!("building {name}: {line}")
+            })
+            .await
+            {
+                Ok(started) => started,
+                // A sandbox whose image Daytona rebuilds (its cache dropped)
+                // may still be building: deleting it would cancel the build.
+                Err(failure) if may_be_building(&failure) => {
+                    retire_later(self.api.clone(), dto.id.clone(), deadline(START_TIMEOUT));
+                    return Err(start_failure(spec, *failure));
+                }
+                Err(failure) => {
+                    if let Err(err) = lifecycle::delete(&self.api, &dto.id).await {
+                        tracing::warn!("{err}");
+                        crate::note_left_behind("daytona", &dto.id);
+                    }
+                    return Err(start_failure(spec, *failure));
+                }
+            };
+        let proxy = started
+            .dto
+            .toolbox_proxy_url
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TOOLBOX_URL.to_string());
+        let toolbox = Toolbox::new(self.api.clone(), &proxy, &dto.id);
+        if let Err(err) = set_up(&toolbox, spec.workdir.as_deref()).await {
+            if let Err(cleanup) = lifecycle::delete(&self.api, &dto.id).await {
+                tracing::warn!("{cleanup}");
+                crate::note_left_behind("daytona", &dto.id);
+            }
+            return Err(err);
+        }
+        let core = Arc::new(SandboxCore {
+            toolbox,
+            default_env: spec.env.clone(),
+            default_cwd: spec.workdir.clone().filter(|w| !w.is_empty()),
+            default_user,
+        });
+        Ok((DaytonaSandbox::new(core), started.dto))
     }
 }
 
@@ -1331,6 +1469,32 @@ impl Sandbox for DaytonaSandbox {
     async fn destroy(&self) -> Result<(), SandboxError> {
         self.keepalive.abort();
         lifecycle::delete(&self.core.toolbox.api, &self.core.toolbox.sandbox_id).await
+    }
+
+    /// Daytona snapshots the filesystem. The sandbox's variables are not
+    /// in it to scrub: BenchFlow passes them with each command, never in
+    /// the sandbox's configuration.
+    async fn checkpoint(
+        &self,
+        name: &str,
+        _scrub_env: &[String],
+    ) -> Result<crate::checkpoint::Checkpoint, SandboxError> {
+        // The daemon's command sessions keep each command's output on the
+        // sandbox's disk; none may go into the snapshot.
+        self.core
+            .toolbox
+            .clear_sessions(Duration::from_secs(60))
+            .await?;
+        let mut cp = snapshots::take(
+            &self.core.toolbox.api,
+            &self.core.toolbox.sandbox_id,
+            name,
+            snapshots::TIMEOUT,
+            snapshots::POLL_EVERY,
+        )
+        .await?;
+        cp.default_user = self.core.default_user.clone();
+        Ok(cp)
     }
 
     async fn presence(&self) -> Result<crate::Presence, SandboxError> {
@@ -2355,6 +2519,9 @@ mod tests {
             toolbox_proxy_url: None,
             created_at: None,
             last_activity_at: None,
+            cpu: None,
+            memory: None,
+            disk: None,
         };
         let items = [
             sandbox("started", Some("bench"), "mac"),
@@ -2393,6 +2560,9 @@ mod tests {
                 toolbox_proxy_url: None,
                 created_at: Some(stamp(created)),
                 last_activity_at: Some(stamp(active)),
+                cpu: None,
+                memory: None,
+                disk: None,
             };
         let h = chrono::Duration::hours;
         let m = chrono::Duration::minutes;
@@ -2409,6 +2579,56 @@ mod tests {
             .labels
             .insert(OWNER_LABEL.into(), "someone-else".into());
         assert!(!is_stale(&foreign, now).await);
+    }
+
+    #[test]
+    fn a_child_is_created_from_the_snapshot_with_no_build_info_or_resources() {
+        let api = Api::new(DEFAULT_API_URL, None, Some("us".into())).unwrap();
+        let mut s = spec();
+        s.network = NetworkPolicy::None;
+        s.env.insert("TOKEN".into(), "sk-secret".into());
+        let labels = sandbox_labels(&s);
+        let body = from_snapshot_body(&api, &s, "bf-ckpt-x", labels).unwrap();
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["snapshot"], "bf-ckpt-x");
+        assert_eq!(json["target"], "us");
+        assert_eq!(json["networkBlockAll"], true);
+        assert_eq!(json["autoStopInterval"], AUTO_STOP_MINUTES);
+        assert_eq!(json["labels"][OWNER_LABEL], owner::scope());
+        for absent in ["buildInfo", "cpu", "memory", "disk", "env"] {
+            assert!(json.get(absent).is_none(), "{absent}: {json}");
+        }
+    }
+
+    #[test]
+    fn a_child_smaller_than_asked_is_named() {
+        let dto = |cpu: f64, memory: f64, disk: f64| SandboxDto {
+            id: "s".into(),
+            state: Some("started".into()),
+            error_reason: None,
+            labels: BTreeMap::new(),
+            toolbox_proxy_url: None,
+            created_at: None,
+            last_activity_at: None,
+            cpu: Some(cpu),
+            memory: Some(memory),
+            disk: Some(disk),
+        };
+        // spec() asks for 2 CPUs, 2 GiB, 10 GiB (capped).
+        assert_eq!(smaller_than_asked(&spec(), &dto(2.0, 2.0, 10.0)), None);
+        assert_eq!(smaller_than_asked(&spec(), &dto(4.0, 8.0, 10.0)), None);
+        assert_eq!(
+            smaller_than_asked(&spec(), &dto(1.0, 2.0, 3.0)).as_deref(),
+            Some("cpu 1 < 2, disk 3 GiB < 10 GiB")
+        );
+        let unknown = SandboxDto {
+            cpu: None,
+            ..dto(0.0, 0.0, 0.0)
+        };
+        assert_eq!(
+            smaller_than_asked(&spec(), &unknown).as_deref(),
+            Some("memory 0 GiB < 2 GiB, disk 0 GiB < 10 GiB")
+        );
     }
 
     #[test]

@@ -181,6 +181,50 @@ impl ModelAgent for AcpAgent {
             .filter(|_| self.manifest.resume.acp)
     }
 
+    fn resumes_over_acp(&self) -> bool {
+        self.manifest.resume.acp
+    }
+
+    fn knows_login_material(&self) -> bool {
+        true
+    }
+
+    fn login_material(&self, home: &str) -> (Vec<String>, Vec<String>) {
+        let (mut files, mut secrets) = (Vec::new(), Vec::new());
+        if let Ok(login) = &self.login {
+            files.extend(login.files.iter().map(|f| f.path_for(home)));
+            secrets.extend(login.secrets.iter().cloned());
+        }
+        // The family's own credential files, whatever login was chosen: a
+        // login from a variable has no file, but the agent may write or
+        // refresh one there during its turn (a rotated token, which the
+        // value scan would not know).
+        let home = home.trim_end_matches('/');
+        for (name, kind) in benchflow_agent::credentials::credential_kinds(&self.manifest) {
+            use benchflow_agent::credentials::SourceKind;
+            if matches!(kind, SourceKind::LoginFile | SourceKind::AuthJson)
+                && let Some(rest) = name.strip_prefix("~/")
+            {
+                files.push(format!("{home}/{rest}"));
+            }
+        }
+        // The settings files the launch writes: a child writes them again.
+        files.extend(
+            self.manifest
+                .launch
+                .files
+                .iter()
+                .map(|f| format!("{home}/{}", f.path.trim_start_matches('/'))),
+        );
+        if let Some(p) = &self.provider {
+            secrets.push(p.key.value().to_string());
+        }
+        secrets.retain(|s| s.len() >= benchflow_agent::credentials::MIN_SECRET_LEN);
+        let mut seen = std::collections::BTreeSet::new();
+        files.retain(|f| seen.insert(f.clone()));
+        (files, secrets)
+    }
+
     async fn run(&self, ctx: AgentContext<'_>) -> AgentOutput {
         let login = match &self.login {
             Ok(login) => crate::agent::with_env_secrets(login.clone(), &ctx.env),
@@ -446,7 +490,15 @@ impl AcpAgent {
         if loaded && !client.can_load_session() {
             return Err(AcpError::Unsupported {
                 message: format!(
-                    "{} does not offer session/load, so it cannot resume the session from --load-trajectory",
+                    "{} does not offer session/load, so it cannot resume the session from --load-trajectory (or a branch's parent)",
+                    self.manifest.name
+                ),
+            });
+        }
+        if ctx.needs_load && !client.can_load_session() {
+            return Err(AcpError::Unsupported {
+                message: format!(
+                    "{} does not offer session/load, so a branch's children could not resume this session",
                     self.manifest.name
                 ),
             });
@@ -949,6 +1001,54 @@ mod tests {
             "the account is named once: {}",
             p.next
         );
+    }
+
+    /// A login from an environment variable leaves no file of its own, but
+    /// the agent may write or refresh its family's credential file during
+    /// the run (a rotated token the value scan does not know): a checkpoint
+    /// removes those known paths whatever login was chosen.
+    #[test]
+    fn login_material_lists_the_familys_credential_files_for_an_env_login() {
+        let reg = benchflow_agent::Registry::builtin();
+        for (agent, var, file) in [
+            (
+                "claude",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "/home/agent/.claude/.credentials.json",
+            ),
+            (
+                "codex",
+                "CODEX_ACCESS_TOKEN",
+                "/home/agent/.codex/auth.json",
+            ),
+            (
+                "gemini",
+                "GEMINI_API_KEY",
+                "/home/agent/.gemini/oauth_creds.json",
+            ),
+        ] {
+            let manifest = reg.find(agent).unwrap().clone();
+            let host = HostEnv::new(
+                BTreeMap::from([(var.to_string(), "tok-0123456789abcdef-fake".to_string())]),
+                None,
+            );
+            let a = AcpAgent::new(manifest, None, None, &host);
+            assert!(a.login.is_ok(), "{agent}: the env login is found");
+            let (files, secrets) = a.login_material("/home/agent");
+            assert!(files.iter().any(|f| f == file), "{agent}: {files:?}");
+            assert!(
+                secrets.iter().any(|s| s == "tok-0123456789abcdef-fake"),
+                "{agent}: the env value is scanned for"
+            );
+            let mut dedup = files.clone();
+            dedup.sort();
+            dedup.dedup();
+            assert_eq!(
+                dedup.len(),
+                files.len(),
+                "{agent}: no path twice: {files:?}"
+            );
+        }
     }
 
     #[test]

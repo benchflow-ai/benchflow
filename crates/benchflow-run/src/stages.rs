@@ -66,8 +66,26 @@ impl Trial<'_> {
         let mut prompts: Vec<String> = Vec::new();
         let mut failure: Option<Problem> = None;
         let mut last_graded: Option<String> = None;
+        // A child of a `stage:<name>` fork goes on after the parent's
+        // stages, whose rows and grades it carries (marked `from_parent`).
+        let mut first = 0;
+        // A stage worked in this sandbox already: a stage-fork child's
+        // parent ran the stages it carries.
         let mut worked = false;
-        for (i, st) in steps.stages.iter().enumerate() {
+        if let Some(c) = self.child_stage_carry() {
+            first = c.index + 1;
+            worked = true;
+            rows = c.rows;
+            for r in &mut rows {
+                r["from_parent"] = json!(true);
+            }
+            graded = c.graded;
+            prompts = c.prompts;
+            last_graded = c.last_graded;
+            self.agent.timed_out = c.timed_out;
+        }
+        let mut fork_at = self.fork_stage();
+        for (i, st) in steps.stages.iter().enumerate().skip(first) {
             let mut row = json!({ "step_name": st.name, "reached": true, "graded": st.graded });
             let ended = self
                 .run_stage(i, st, &mut row, &mut events, &mut prompts)
@@ -84,6 +102,25 @@ impl Trial<'_> {
                     }
                 }
                 Err(p) => {
+                    failure = Some(p);
+                    break;
+                }
+            }
+            // The parent's fork point: right after this graded stage, whose
+            // handoff stopped the agent and checked the sandbox.
+            if fork_at.as_deref() == Some(st.name.as_str()) {
+                let carry = super::branch::StageCarry {
+                    index: i,
+                    rows: rows.clone(),
+                    graded: graded.clone(),
+                    prompts: prompts.clone(),
+                    last_graded: last_graded.clone(),
+                    timed_out: self.agent.timed_out,
+                };
+                // Once: a later stage of the same name (two `[[steps]]`
+                // may share one) forks nothing more.
+                fork_at = None;
+                if let Err(p) = self.at_fork_point(Some(carry)).await {
                     failure = Some(p);
                     break;
                 }
@@ -204,7 +241,7 @@ impl Trial<'_> {
         }
         let agent_secs = clock.elapsed().as_secs_f64();
         self.timing.agent_execution += agent_secs;
-        prompts.push(st.prompt.clone());
+        prompts.push(self.stage_prompt(st));
         archive_attempt(&self.spec.dir, &dir, &st.name, events);
         row["timed_out"] = json!(self.agent.timed_out);
         row["agent_execution_sec"] = json!(agent_secs);
@@ -425,6 +462,20 @@ impl Trial<'_> {
         let Attempt::Model(agent) = self.spec.attempt.clone() else {
             return Ok((None, None));
         };
+        // A child's first stage resumes the parent's session when asked
+        // (`--resume-session`, which fails rather than start fresh), and
+        // otherwise starts a fresh one.
+        if let Some(c) = self.child_stage_carry()
+            && index == c.index + 1
+        {
+            return Ok((
+                self.child_session().map(|id| Resume {
+                    session_id: Some(id),
+                    loaded: true,
+                }),
+                None,
+            ));
+        }
         // The first stage resumes only a session loaded from a file.
         if index == 0 {
             return Ok((self.place_session(agent.as_ref()).await?, None));
@@ -475,6 +526,25 @@ impl Trial<'_> {
         ))
     }
 
+    /// The prompt stage `st` sends: its own, or for a child of a
+    /// `stage:<name>` fork, in its first stage, the child's own prompt
+    /// (`@instruction` in it is the stage's prompt).
+    fn stage_prompt(&self, st: &StepSpec) -> String {
+        let first_of_child = self.child_stage_carry().is_some_and(|c| {
+            self.spec
+                .task
+                .extras
+                .steps
+                .as_ref()
+                .and_then(|s| s.stages.get(c.index + 1))
+                .is_some_and(|s| s.name == st.name)
+        });
+        first_of_child
+            .then(|| self.child_prompt(&st.prompt))
+            .flatten()
+            .unwrap_or_else(|| st.prompt.clone())
+    }
+
     /// Run the attempt for one stage, resuming `resume` when set.
     async fn stage_attempt(
         &mut self,
@@ -488,9 +558,10 @@ impl Trial<'_> {
             .timeout
             .map(|d| benchflow_task::values::scale_duration(d, opts.timeout_multiplier.max(0.01)))
             .or_else(|| agent_timeout(&task, opts));
+        let base = self.stage_prompt(st);
         let prompt = match &opts.extra_instruction {
-            Some(extra) => format!("{}\n\n{}", st.prompt.trim_end(), extra),
-            None => st.prompt.clone(),
+            Some(extra) => format!("{}\n\n{}", base.trim_end(), extra),
+            None => base,
         };
         let _ = std::fs::create_dir_all(self.spec.dir.join("trajectory"));
         let _ = std::fs::create_dir_all(self.spec.dir.join("agent"));
@@ -614,6 +685,7 @@ impl Trial<'_> {
                     events: &self.rt.events,
                     mcp: &task.sandbox.mcp,
                     resume,
+                    needs_load: self.parent_resumes(),
                     earlier_turns,
                 };
                 let out = agent.run(ctx).await;
@@ -635,6 +707,7 @@ impl Trial<'_> {
                 }
             }
         };
+        self.stage_own_timeout |= self.agent.timed_out;
         self.agent.timed_out |= earlier_timeout;
         result
     }
@@ -707,6 +780,36 @@ impl Trial<'_> {
 
 /// The trial's reward from its graded stages' rewards: each key's mean, or
 /// the last stage's; a stage never reached counts as 0 or is left out.
+/// The reward of a trial whose agent failed in a stage, by the task's
+/// rule over its `step_results` rows: each graded stage reached (carried
+/// from a fork's parent or its own) as graded, the failed stage 0 when it
+/// is graded, and each graded stage not reached per `unreached`. `None`
+/// without rows.
+pub(crate) fn reward_after_agent_failure(steps: &Steps, rows: &Value) -> Option<f64> {
+    let rows = rows.as_array().filter(|r| !r.is_empty())?;
+    let mut reached: Vec<BTreeMap<String, f64>> = Vec::new();
+    let mut unreached = 0;
+    for row in rows {
+        if row["graded"] != json!(true) {
+            continue;
+        }
+        if row["reached"] != json!(true) {
+            unreached += 1;
+            continue;
+        }
+        let values: BTreeMap<String, f64> = row["verifier_result"]["rewards"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_f64().map(|v| (k.clone(), v)))
+                    .collect()
+            })
+            .unwrap_or_else(|| BTreeMap::from([("reward".to_string(), 0.0)]));
+        reached.push(values);
+    }
+    Some(combine(steps, &reached, unreached).reward)
+}
+
 fn combine(steps: &Steps, reached: &[BTreeMap<String, f64>], unreached: usize) -> Score {
     let zero = steps.unreached == Unreached::Zero;
     let mut values: BTreeMap<String, f64> = BTreeMap::new();
@@ -902,6 +1005,41 @@ mod tests {
         );
     }
     use super::*;
+
+    /// A child whose agent failed in a stage scores by the task's rule: the
+    /// stages before it as graded (the parent's, carried, included), the
+    /// failed stage 0, and the stages it never reached per `unreached`.
+    #[test]
+    fn an_agent_failure_in_a_stage_scores_by_the_task_rule() {
+        let steps = |combine, unreached| Steps {
+            stages: Vec::new(),
+            combine,
+            unreached,
+        };
+        let rows = json!([
+            {"step_name": "a", "reached": true, "graded": true, "from_parent": true,
+             "verifier_result": {"rewards": {"reward": 1.0}}},
+            {"step_name": "b", "reached": true, "graded": true, "error": "R204 crashed"},
+            {"step_name": "c", "reached": false, "graded": true, "verifier_result": null},
+        ]);
+        let mean_zero = steps(Combine::Mean, Unreached::Zero);
+        assert_eq!(
+            reward_after_agent_failure(&mean_zero, &rows),
+            Some(1.0 / 3.0)
+        );
+        let mean_excl = steps(Combine::Mean, Unreached::Exclude);
+        assert_eq!(reward_after_agent_failure(&mean_excl, &rows), Some(0.5));
+        let last = steps(Combine::Final, Unreached::Exclude);
+        assert_eq!(reward_after_agent_failure(&last, &rows), Some(0.0));
+        // Failed in an ungraded stage: only the graded ones count.
+        let rows = json!([
+            {"step_name": "a", "reached": true, "graded": true,
+             "verifier_result": {"rewards": {"reward": 1.0}}},
+            {"step_name": "b", "reached": true, "graded": false, "error": "R205"},
+        ]);
+        assert_eq!(reward_after_agent_failure(&mean_zero, &rows), Some(1.0));
+        assert_eq!(reward_after_agent_failure(&mean_zero, &json!(null)), None);
+    }
     use benchflow_task::extras::StepSpec;
 
     fn steps(combine: Combine, unreached: Unreached) -> Steps {

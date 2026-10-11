@@ -1,4 +1,4 @@
-// Compare, outcomes, and Pareto views (new in the Rust viewer). The server computes
+// Compare, outcomes, Pareto, and branches views (new in the Rust viewer). The server computes
 // every number; this script draws the tables and keeps the job selection
 // and filters in the query string, so a link reproduces the view. A change
 // fetches /api/<view> with the new query and redraws.
@@ -72,7 +72,7 @@ BF.views = (() => {
   function queryFor(view) {
     const parts = [];
     if (state.runs.length) parts.push((view === "outcomes" ? "run" : "runs") + "=" + state.runs.map(encodeId).join(","));
-    if (state.status.size && view !== "pareto") parts.push("status=" + OUTCOMES.filter((status) => state.status.has(status)).join(","));
+    if (state.status.size && view !== "pareto" && view !== "branches") parts.push("status=" + OUTCOMES.filter((status) => state.status.has(status)).join(","));
     if (state.task) parts.push("task=" + encodeURIComponent(state.task));
     if (state.agent) parts.push("agent=" + encodeURIComponent(state.agent));
     return parts.length ? "?" + parts.join("&") : "";
@@ -85,6 +85,7 @@ BF.views = (() => {
       if (view === "/compare") link.setAttribute("href", "/compare" + queryFor("compare"));
       if (view === "/outcomes") link.setAttribute("href", "/outcomes" + queryFor("outcomes"));
       if (view === "/pareto") link.setAttribute("href", "/pareto" + queryFor("pareto"));
+      if (view === "/branches") link.setAttribute("href", "/branches" + queryFor("branches"));
     });
   }
 
@@ -147,8 +148,10 @@ BF.views = (() => {
       });
       statusField.appendChild(button);
     });
-    // A pass rate needs every outcome, so the Pareto view has no status filter.
-    if (mode !== "pareto") controls.appendChild(statusField);
+    // A pass rate needs every outcome, so the Pareto view has no status
+    // filter; the branches view chooses parents, whose status says nothing
+    // of their children.
+    if (mode !== "pareto" && mode !== "branches") controls.appendChild(statusField);
 
     const taskField = el("div", "vfield");
     const taskLabel = el("label", "vlabel", "task");
@@ -718,17 +721,91 @@ BF.views = (() => {
     body.appendChild(listing);
   }
 
+  // ── branches ─────────────────────────────────────────────
+  function renderBranches(body) {
+    const forks = Array.isArray(data.forks) ? data.forks : [];
+    const totals = isRecord(data.totals) ? data.totals : {};
+    const listing = section(
+      "Forks",
+      plural(forks.length, "fork") + ", " + plural(totals.children || 0, "child", "children") + " (" + (totals.scored || 0) + " scored). "
+        + "Each fork ran its parent to the fork point, stored a checkpoint, and graded each child from it. The value is the mean of the children's rewards, "
+        + "only when every child was scored; a child's advantage is its reward minus that value. A continuing parent's reward is its own, never in the value. "
+        + "A child's label opens its trajectory.",
+    );
+    if (!forks.length) {
+      listing.appendChild(el("p", "vnote", "No trial in the selected jobs has a tree.json (run `bench branch` to make one)."));
+      body.appendChild(listing);
+      return;
+    }
+    const list = table(["trial · fork", "child", "status", numTh("reward"), numTh("advantage"), "note"]);
+    forks.forEach((fork) => {
+      const head = el("tr", "vgroup");
+      const name = el("td");
+      name.colSpan = 6;
+      const link = el("a", "vtask", fork.task || fork.run);
+      link.href = "/?run=" + encodeURIComponent(fork.run);
+      name.appendChild(link);
+      if (fork.error && !fork.fork_id) {
+        name.appendChild(el("span", "vnote", "  tree.json unreadable: " + fork.error));
+        head.appendChild(name);
+        list.body.appendChild(head);
+        return;
+      }
+      const parts = [
+        fork.fork_point || "?",
+        fork.status || "?",
+        "value " + reward(fork.value) + (isNumber(fork.value_stderr) ? " ± " + reward(fork.value_stderr) : ""),
+        "checkpoint " + (fork.provider || "none") + (isNumber(fork.checkpoint_seconds) ? " " + seconds(fork.checkpoint_seconds) : "") + (fork.retention ? ", " + fork.retention : ""),
+        fork.agent_session ? "session " + fork.agent_session : null,
+        (fork.parent_restore === "skipped" ? "parent discarded"
+          : fork.parent_restore === "not_attempted" ? "parent never forked"
+          : fork.parent_restore === "not_needed" || fork.parent_restore === "restored" ? "parent kept"
+          : "parent " + (fork.parent_restore || "unknown"))
+          + (isNumber(fork.parent_reward) ? ", reward " + reward(fork.parent_reward) : ""),
+        fork.arm || null,
+      ].filter(Boolean);
+      name.appendChild(el("span", "vnote", "  " + parts.join(" · ")));
+      if (fork.error) name.appendChild(el("div", "vwarn", fork.error));
+      head.appendChild(name);
+      list.body.appendChild(head);
+      (Array.isArray(fork.children) ? fork.children : []).forEach((child) => {
+        const row = el("tr");
+        const label = (child.label || child.node_id || "?") + (child.own_prompt ? " (own prompt)" : "");
+        let who = cell(label);
+        if (child.ref) {
+          who = el("td");
+          const open = el("a", null, label);
+          open.href = "/?run=" + encodeURIComponent(fork.run) + "&branch=" + encodeURIComponent(child.ref);
+          who.appendChild(open);
+        }
+        const adv = isNumber(child.advantage) ? (child.advantage === 0 ? "0.000" : signed(child.advantage)) : "—";
+        row.append(
+          cell(child.node_id || "", "vmono"),
+          who,
+          cell(child.status || "—"),
+          cell(reward(child.reward), "num"),
+          cell(adv, "num"),
+          cell(child.error || ""),
+        );
+        list.body.appendChild(row);
+      });
+    });
+    listing.appendChild(list.wrap);
+    body.appendChild(listing);
+  }
+
   function renderBody() {
     const body = document.getElementById("vbody");
     body.textContent = "";
     warnings(body);
     if (mode === "compare") renderCompare(body);
     else if (mode === "pareto") renderPareto(body);
+    else if (mode === "branches") renderBranches(body);
     else renderOutcomes(body);
   }
 
   function start(boot) {
-    mode = ["outcomes", "pareto"].includes(boot.mode) ? boot.mode : "compare";
+    mode = ["outcomes", "pareto", "branches"].includes(boot.mode) ? boot.mode : "compare";
     data = boot;
     readURL();
     renderControls();

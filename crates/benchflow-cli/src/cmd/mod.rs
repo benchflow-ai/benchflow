@@ -1,6 +1,7 @@
 //! One module per command.
 
 pub(crate) mod agents;
+mod branch;
 mod cache;
 mod check;
 mod convert;
@@ -36,6 +37,8 @@ pub async fn dispatch(cli: Cli) -> Result<Exit> {
         Some(Command::Shell(a)) => shell::run(a).await,
         Some(Command::Handoff(a)) => handoff::run(a),
         Some(Command::Regrade(a)) => regrade::run(a).await,
+        Some(Command::Branch(a)) => branch::run(a).await,
+        Some(Command::Branches(a)) => branch::show(a),
         Some(Command::Schema(a)) => schema::run(a),
         Some(Command::Doctor(a)) => doctor::run(a).await,
         Some(Command::Cache(a)) => cache::run(a).await,

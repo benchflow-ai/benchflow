@@ -28,6 +28,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub mod archive;
 mod build_log;
 mod capture;
+pub mod checkpoint;
 pub mod daytona;
 pub mod docker;
 pub mod owner;
@@ -309,6 +310,24 @@ pub trait Sandbox: Send + Sync {
             self.backend()
         )))
     }
+
+    /// Store this sandbox's filesystem as a checkpoint named `name` (see
+    /// [`checkpoint::name`]) that [`Provider::create_from_checkpoint`] can
+    /// start new sandboxes from, where the backend can
+    /// ([`Capabilities::checkpoints`]). `scrub_env` names the variables the
+    /// sandbox was started with: the checkpoint must not keep their values
+    /// (a child sets them again). Processes and memory are not kept.
+    async fn checkpoint(
+        &self,
+        name: &str,
+        scrub_env: &[String],
+    ) -> Result<checkpoint::Checkpoint, SandboxError> {
+        let _ = (name, scrub_env);
+        Err(SandboxError::Unsupported(format!(
+            "the {} backend cannot take checkpoints",
+            self.backend()
+        )))
+    }
 }
 
 /// What a backend says about a sandbox it made.
@@ -440,6 +459,10 @@ pub struct Capabilities {
     /// that reaches it (Daytona's daemon), so the agent user is kept from
     /// root only if something blocks that service.
     pub root_service: bool,
+    /// [`Sandbox::checkpoint`] stores a sandbox's filesystem and
+    /// [`Provider::create_from_checkpoint`] starts sandboxes from it.
+    #[serde(default)]
+    pub checkpoints: bool,
     /// The backend's own `none` leaves IPv6 open (Daytona's block, seen
     /// 2026-10-10 reaching [2606:4700:4700::1111]:443), so a phase with no
     /// network also needs the uid firewall, which filters IPv6 too.
@@ -493,6 +516,36 @@ pub trait Provider: Send + Sync {
     /// Services beside a sandbox, when the backend can run them.
     fn services(&self) -> Option<&dyn services::ServiceHost> {
         None
+    }
+
+    /// Start a sandbox from a checkpoint: `spec` as for [`Provider::create`]
+    /// (its `image` is ignored), the filesystem the checkpoint's.
+    async fn create_from_checkpoint(
+        &self,
+        spec: &SandboxSpec,
+        checkpoint: &checkpoint::Checkpoint,
+    ) -> Result<Box<dyn Sandbox>, SandboxError> {
+        let _ = (spec, checkpoint);
+        Err(SandboxError::Unsupported(format!(
+            "the {} backend cannot start sandboxes from checkpoints",
+            self.name()
+        )))
+    }
+
+    /// Delete a checkpoint. `Ok(false)`: the backend accepted the delete but
+    /// has not finished it (0.8's `delete_deferred`).
+    async fn delete_checkpoint(
+        &self,
+        checkpoint: &checkpoint::Checkpoint,
+    ) -> Result<bool, SandboxError> {
+        let _ = checkpoint;
+        Ok(true)
+    }
+
+    /// The checkpoints of this owner scope (all hosts), for `bench cache`
+    /// and the sweep.
+    async fn list_checkpoints(&self) -> Result<Vec<checkpoint::Listed>, SandboxError> {
+        Ok(Vec::new())
     }
 }
 

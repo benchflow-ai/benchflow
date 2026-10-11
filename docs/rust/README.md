@@ -10,6 +10,7 @@ This branch rebuilds BenchFlow's command line and run engine in Rust. It is one 
 - [testing-e2e.md](./testing-e2e.md): the black-box end-to-end suite in `e2e/` that drives the `bench` binary on Docker and Daytona
 - [rubrics.md](./rubrics.md): rubric criteria a model judges on the host, one clean call per criterion, against the task's reference
 - [harnesses.md](./harnesses.md): agents and how they are driven: manifests, options, skills, sessions, providers
+- [branching.md](./branching.md): checkpoints and `bench branch`: forking a rollout into graded children
 - [status.md](./status.md): what is ported, what is not yet, and how each part was verified
 
 ## Build it

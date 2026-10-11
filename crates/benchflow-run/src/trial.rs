@@ -35,6 +35,8 @@ use crate::scoring;
 
 #[path = "agent_files.rs"]
 mod agent_files;
+#[path = "branch.rs"]
+pub mod branch;
 #[path = "collect.rs"]
 mod collect;
 #[path = "services.rs"]
@@ -188,7 +190,7 @@ pub fn refusal(task: &TaskPackage, attempt: &Attempt) -> Option<Problem> {
 /// Run one trial to completion. Never panics; failures come back in the
 /// record.
 pub async fn run(spec: &TrialSpec, rt: &Runtime) -> TrialRecord {
-    run_trial(spec, rt, None).await
+    run_trial(spec, rt, None, None).await
 }
 
 /// A finished trial to grade again: its saved outputs, and what its agent
@@ -211,10 +213,15 @@ pub struct Regrade {
 /// verifier does. The agent does not run.
 pub async fn regrade(spec: &TrialSpec, rt: &Runtime, regrade: Regrade) -> TrialRecord {
     crate::regrade::copy_agent_files(&regrade.agent_files, &spec.dir);
-    run_trial(spec, rt, Some(regrade)).await
+    run_trial(spec, rt, Some(regrade), None).await
 }
 
-async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> TrialRecord {
+async fn run_trial(
+    spec: &TrialSpec,
+    rt: &Runtime,
+    regrade: Option<Regrade>,
+    fork: Option<branch::Role>,
+) -> TrialRecord {
     let started = Local::now();
     let clock = Instant::now();
     let (label, model) = match &regrade {
@@ -243,9 +250,11 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
         image_loader: Vec::new(),
         verifier_exit: None,
         stage_worked: false,
+        stage_own_timeout: false,
         regrade: regrade.as_ref().map(|r| r.archive.clone()),
         agent: regrade.map(|r| r.output).unwrap_or_default(),
-        net: None,
+        // A child enforces the parent's resolved networks again.
+        net: branch::parent_net(fork.as_ref()),
         phase: Phase::Image,
         x: Default::default(),
         skills: None,
@@ -253,6 +262,7 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
         agent_session: None,
         resources_raised: None,
         killed_before_save: 0,
+        fork,
     };
     // A bug that panics ends this trial, not the run: it is recorded (R901)
     // and its sandbox is still removed below.
@@ -310,6 +320,11 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
         reward: None,
         passed: None,
         timed_out: t.agent.timed_out,
+        own_timed_out: if t.spec.task.extras.steps.is_some() {
+            t.stage_own_timeout
+        } else {
+            t.agent.timed_out
+        },
         problem: None,
         usage: t.agent.usage.clone(),
         tool_calls: t.agent.tool_calls,
@@ -329,6 +344,7 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
         rubric: None,
         step_results: None,
         agent_session: None,
+        resumed_session: None,
         resources_raised: None,
         environment_warnings: Vec::new(),
         dataset: rt
@@ -407,6 +423,11 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
     t.teardown_services(keep).await;
     rec.step_results = t.x.step_results.take();
     rec.agent_session = t.agent_session.take();
+    rec.resumed_session = t
+        .agent
+        .resumed
+        .then(|| t.agent.session_id.clone())
+        .flatten();
     rec.resources_raised = t.resources_raised.take();
     t.timing.total = clock.elapsed().as_secs_f64();
     rec.timing = t.timing.clone();
@@ -591,6 +612,9 @@ struct Trial<'a> {
     /// rerun that work. A prompt is recorded even for an attempt that failed,
     /// so the prompts alone cannot say this.
     stage_worked: bool,
+    /// An agent's turn ran out of time in a stage this trial ran itself (a
+    /// stage-fork child also carries its parent's time-out).
+    stage_own_timeout: bool,
     verifier_exit: Option<i32>,
     /// Grade these saved outputs instead of running an attempt.
     regrade: Option<PathBuf>,
@@ -611,6 +635,8 @@ struct Trial<'a> {
     killed_before_save: u64,
     /// What the agent's resource floor raised, for result.json.
     resources_raised: Option<crate::record::ResourcesRaised>,
+    /// The trial's part in a fork (`bench branch`).
+    fork: Option<branch::Role>,
 }
 
 impl<'a> Trial<'a> {
@@ -682,12 +708,19 @@ impl<'a> Trial<'a> {
         let mounts = self.task().extras.mounts.clone();
         self.place_mounts(&mounts, Phase::Setup, false, false, None)
             .await?;
-        self.place_skills().await?;
+        // A child's skills are in its checkpoint already; placing them
+        // again would write as root where the parent's agent had a turn.
+        if !self.is_child() {
+            self.place_skills().await?;
+        }
         self.check_gpu_types().await?;
         self.enforce_network(netpolicy::Stage::Agent, netpolicy::Host::Agent)
             .await?;
         self.timing.setup = clock.elapsed().as_secs_f64();
         self.timing.environment_setup = setup_clock.elapsed().as_secs_f64();
+        if self.is_parent() && self.fork_at_start() {
+            self.at_fork_point(None).await?;
+        }
         if self.task().extras.steps.is_some() {
             return self.run_steps().await;
         }
@@ -727,6 +760,11 @@ impl<'a> Trial<'a> {
         self.timing.agent_execution = agent_clock.elapsed().as_secs_f64();
         self.save_session(true).await;
         attempted?;
+        // A parent forking after its prompts: the checkpoint, then grading
+        // only when it goes on.
+        if self.is_parent() && self.fork_at_prompt() {
+            self.at_fork_point(None).await?;
+        }
         if self.agent.skip_grading {
             return Err(Problem::new(
                 "R000",
@@ -790,6 +828,9 @@ impl<'a> Trial<'a> {
     }
 
     async fn prepare_image(&mut self) -> Result<Image, Problem> {
+        if let Some(image) = self.checkpoint_image() {
+            return Ok(image);
+        }
         let started = Instant::now();
         let agent = match &self.spec.attempt {
             Attempt::Model(m) => Some(m.name().to_string()),
@@ -1042,6 +1083,9 @@ impl<'a> Trial<'a> {
     }
 
     async fn setup(&mut self) -> Result<(), Problem> {
+        if self.is_child() {
+            return self.child_setup().await;
+        }
         let task = self.spec.task.clone();
         let workdir = self.workdir.clone();
         let user = task
@@ -1348,6 +1392,7 @@ impl<'a> Trial<'a> {
             Some(extra) => format!("{}\n\n{}", task.instruction.trim_end(), extra),
             None => task.instruction.clone(),
         };
+        let instruction = self.child_task_prompt(&instruction).unwrap_or(instruction);
         match self.spec.attempt.clone() {
             Attempt::Nop => {
                 write_trajectory(&traj_dir, &[json!({"type": "nop"})]);
@@ -1457,7 +1502,15 @@ impl<'a> Trial<'a> {
                 .await
             }
             Attempt::Model(agent) => {
-                let resume = self.place_session(agent.as_ref()).await?;
+                // A branch child at `prompt:N` resumes the parent's session,
+                // and fails rather than start a fresh one.
+                let resume = match self.child_session() {
+                    Some(id) => Some(crate::agent::Resume {
+                        session_id: Some(id),
+                        loaded: true,
+                    }),
+                    None => self.place_session(agent.as_ref()).await?,
+                };
                 let agent_sb = crate::confine::AgentSandbox::new(self.sb());
                 let mut env = task.sandbox.env.clone();
                 env.extend(self.rt.options.agent_env.clone());
@@ -1480,7 +1533,8 @@ impl<'a> Trial<'a> {
                     events: &self.rt.events,
                     mcp: &task.sandbox.mcp,
                     resume,
-                    earlier_turns: false,
+                    needs_load: self.parent_resumes(),
+                    earlier_turns: self.child_after_agent(),
                 };
                 let out = agent.run(ctx).await;
                 if let Some(loaded) = self.loaded.as_mut() {

@@ -139,6 +139,10 @@ pub struct AgentContext<'a> {
     /// (`--resume-sessions`), for agents whose [`ModelAgent::session_dirs`]
     /// say they can.
     pub resume: Option<Resume>,
+    /// A later run will resume this session (a branch parent at
+    /// `prompt:N`): an agent that does not offer `session/load` is refused
+    /// right after `initialize`, before any prompt.
+    pub needs_load: bool,
     /// An agent already worked in this sandbox (an earlier stage), so what
     /// it did to its home is its own.
     pub earlier_turns: bool,
@@ -226,6 +230,24 @@ pub trait ModelAgent: Send + Sync {
     /// on this harness; `None` when it cannot load one.
     fn session_file(&self) -> Option<benchflow_agent::manifest::SessionFile> {
         None
+    }
+    /// Whether a later run can resume this agent's session over ACP
+    /// (`session/load`), as a branch child at `prompt:N` does.
+    fn resumes_over_acp(&self) -> bool {
+        false
+    }
+    /// What the agent's login leaves in a sandbox whose agent user's home is
+    /// `home`: the files it and the launch write, and the values that must not outlive
+    /// the run (the login's secrets and the forwarder's key). A checkpoint
+    /// deletes the files and refuses to keep any of the values.
+    fn login_material(&self, home: &str) -> (Vec<String>, Vec<String>) {
+        let _ = home;
+        (Vec::new(), Vec::new())
+    }
+    /// Whether [`ModelAgent::login_material`] names everything the login
+    /// left: only then can a checkpoint be taken after the agent ran.
+    fn knows_login_material(&self) -> bool {
+        false
     }
     /// Whether the agent needs the network to reach its model. A task with
     /// no network cannot run such an agent yet.

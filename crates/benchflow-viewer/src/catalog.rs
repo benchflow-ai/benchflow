@@ -26,9 +26,23 @@ pub struct Run {
     pub dir: PathBuf,
 }
 
-/// Whether a folder is a trial: it holds an ACP trajectory.
+/// Whether a folder is a trial: it holds an ACP trajectory, or it is the
+/// parent of a `bench branch` fork (`tree.json`), which has no trajectory
+/// of its own when it forked before its agent ran (`--at start`) and is
+/// where its children are opened from.
 pub fn is_rollout_dir(path: &Path) -> bool {
-    path.join(TRAJECTORY_FILE).exists()
+    path.join(TRAJECTORY_FILE).exists() || is_branch_parent(path)
+}
+
+/// A `bench branch` parent: a `result.json` beside a `tree.json` that is a
+/// branch tree (a stray file of that name is not enough).
+pub fn is_branch_parent(path: &Path) -> bool {
+    path.join("result.json").is_file()
+        && matches!(
+            crate::values::load_json(&path.join("tree.json")),
+            Some(crate::pyjson::Value::Object(tree))
+                if crate::pyjson::get(&tree, "kind").as_str() == Some("benchflow-branch-tree")
+        )
 }
 
 /// The run cap: `BENCHFLOW_VIEWER_MAX_RUNS` when it is an integer (at least

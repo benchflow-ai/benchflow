@@ -25,10 +25,19 @@ pub enum Kind {
     Registries,
     /// Crash logs and `bench agents check` logs.
     Logs,
+    /// Checkpoints `bench branch` stored (Docker and Podman images, Daytona
+    /// snapshots), of this owner scope.
+    Checkpoints,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Images, Kind::Sources, Kind::Registries, Kind::Logs];
+    pub const ALL: [Kind; 5] = [
+        Kind::Images,
+        Kind::Sources,
+        Kind::Registries,
+        Kind::Logs,
+        Kind::Checkpoints,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -36,6 +45,7 @@ impl Kind {
             Kind::Sources => "sources",
             Kind::Registries => "registries",
             Kind::Logs => "logs",
+            Kind::Checkpoints => "checkpoints",
         }
     }
 

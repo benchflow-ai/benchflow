@@ -7,7 +7,8 @@
 //! | `GET /compare?runs=<job>,<job>[&status=&task=&agent=]` | 404 | tasks by job with pass rates and paired differences |
 //! | `GET /outcomes?run=<job>[,<job>][&status=&task=&agent=]` | 404 | outcome counts, problems by code and owner, time per phase |
 //! | `GET /pareto?runs=<job>,<job>[&task=&agent=]` | 404 | pass rate against cost, time, and tokens per trial, with each axis's frontier |
-//! | `GET /api/compare?...`, `GET /api/outcomes?...`, `GET /api/pareto?...` | 404 | the same views' data as JSON |
+//! | `GET /branches?runs=<job>,<job>[&task=&agent=]` | 404 | every `bench branch` fork: point, status, value, checkpoint, parent, children with advantages |
+//! | `GET /api/compare?...`, `GET /api/outcomes?...`, `GET /api/pareto?...`, `GET /api/branches?...` | 404 | the same views' data as JSON |
 //! | `HEAD /` | 200, empty | 200, empty |
 //! | any other `GET` | 404 | 404 |
 //! | any other method | 405 | 405 |
@@ -203,7 +204,9 @@ pub fn app(target: Target, port: u16) -> Router {
             .route("/api/compare", get(compare_api).head(head_not_allowed))
             .route("/api/outcomes", get(outcomes_api).head(head_not_allowed))
             .route("/pareto", get(pareto_page).head(head_index))
-            .route("/api/pareto", get(pareto_api).head(head_not_allowed));
+            .route("/api/pareto", get(pareto_api).head(head_not_allowed))
+            .route("/branches", get(branches_page).head(head_index))
+            .route("/api/branches", get(branches_api).head(head_not_allowed));
     }
     router
         .fallback(fallback)
@@ -334,6 +337,7 @@ enum View {
     Compare,
     Outcomes,
     Pareto,
+    Branches,
 }
 
 impl View {
@@ -342,6 +346,7 @@ impl View {
             View::Compare => "compare",
             View::Outcomes => "outcomes",
             View::Pareto => "pareto",
+            View::Branches => "branches",
         }
     }
 }
@@ -360,6 +365,14 @@ async fn pareto_page(state: AppStateRef, RawQuery(query): RawQuery) -> Response 
 
 async fn pareto_api(state: AppStateRef, RawQuery(query): RawQuery) -> Response {
     view_response(state, query, View::Pareto, false)
+}
+
+async fn branches_page(state: AppStateRef, RawQuery(query): RawQuery) -> Response {
+    view_response(state, query, View::Branches, true)
+}
+
+async fn branches_api(state: AppStateRef, RawQuery(query): RawQuery) -> Response {
+    view_response(state, query, View::Branches, false)
 }
 
 async fn compare_api(state: AppStateRef, RawQuery(query): RawQuery) -> Response {
@@ -384,6 +397,9 @@ fn view_response(
         let trials: Vec<views::Trial> = runs
             .iter()
             .filter(|run| !views::in_progress(run))
+            // A discarded branch parent is unscored by design: only the
+            // branches view, which shows its children, counts it.
+            .filter(|run| matches!(view, View::Branches) || !views::discarded_parent(run))
             .map(views::read_trial)
             .collect();
         let title = state.title();
@@ -391,6 +407,7 @@ fn view_response(
             View::Compare => views::compare(&trials, &title, capped, &query),
             View::Outcomes => views::outcomes(&trials, &title, capped, &query),
             View::Pareto => views::pareto(&trials, &title, capped, &query),
+            View::Branches => views::branches(&trials, &runs, &title, capped, &query),
         };
         if matches!(view, View::Compare | View::Outcomes) {
             views::mark_never_ran(&mut data, &views::never_ran_by_job(&runs));

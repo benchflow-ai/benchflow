@@ -79,6 +79,53 @@ impl Toolbox {
         Ok(id)
     }
 
+    /// The ids of the command sessions the sandbox's daemon keeps; none
+    /// when the daemon has no such listing (404).
+    pub(crate) async fn list_sessions(&self) -> Result<Vec<String>, SandboxError> {
+        let listed: Result<Vec<serde_json::Value>, _> = self
+            .api
+            .json("listing command sessions", Retry::Safe, |http| {
+                Ok(http
+                    .get(self.url("/process/session"))
+                    .timeout(Duration::from_secs(30)))
+            })
+            .await;
+        match listed {
+            Ok(items) => Ok(items
+                .iter()
+                .filter_map(|s| s["sessionId"].as_str().map(str::to_string))
+                .collect()),
+            Err(e) if e.status() == Some(404) => Ok(Vec::new()),
+            Err(e) => Err(self.error(e)),
+        }
+    }
+
+    /// Delete every command session the daemon keeps, and wait until none
+    /// is left: each keeps its commands' output (the agent's included) on
+    /// the sandbox's disk, which a snapshot would copy. `Err` when some
+    /// are still there after `within`.
+    pub(crate) async fn clear_sessions(&self, within: Duration) -> Result<(), SandboxError> {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            let left = self.list_sessions().await?;
+            if left.is_empty() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(SandboxError::Transport(format!(
+                    "{} command sessions of Daytona sandbox {} were still open after {} s, so no snapshot was taken (their output is on the sandbox's disk)",
+                    left.len(),
+                    self.sandbox_id,
+                    within.as_secs()
+                )));
+            }
+            for s in &left {
+                self.delete_session(s).await;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
     /// Delete a session, killing what is left in its process group.
     pub(crate) async fn delete_session(&self, session: &str) {
         let result = self

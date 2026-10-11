@@ -7,8 +7,6 @@ const NOT_YET: &[(&str, &str)] = &[
         "eval resume",
         "rerun the same `bench run` command; it resumes the latest matching job",
     ),
-    ("eval branch", "branching is not in the Rust CLI yet"),
-    ("eval branches", "branching is not in the Rust CLI yet"),
     ("eval score", "rescoring is not in the Rust CLI yet"),
     (
         "eval smoke",
@@ -123,6 +121,8 @@ fn try_translate(args: &[String]) -> Result<Option<(Vec<String>, String)>, Strin
         ("eval", "compare") => ("results", rest),
         ("eval", "view") => ("view", rest),
         ("eval", "regrade") => ("regrade", rest),
+        ("eval", "branch") => ("branch", translate_branch_flags(&rest)?),
+        ("eval", "branches") => ("branches", rest),
         ("tasks", "init") => ("new", rest),
         ("tasks", "check") => ("check", translate_level(rest)),
         ("tasks", "migrate") => ("import", strip_flags(rest, &["--remove-legacy"])),
@@ -139,6 +139,113 @@ fn try_translate(args: &[String]) -> Result<Option<(Vec<String>, String)>, Strin
     new.append(&mut tail);
     let note = format!("`bench {old}` is now `bench {new_cmd}` (the old spelling keeps working)");
     Ok(Some((new, note)))
+}
+
+/// `bench eval branch`'s flags in `bench branch`'s spelling.
+///
+/// 0.8's defaults differ from `bench branch`'s, so where a flag is absent its
+/// 0.8 default is filled in, or named as an error when the Rust CLI does not
+/// have it: the agent (`claude-agent-acp`, named), the fork point (after
+/// prompt 1, prompt 0 for the oracle; filled in), the parent (`continue`;
+/// filled in), and children in place unless `--isolate-children` or
+/// `--concurrency` above 1 (named).
+fn translate_branch_flags(rest: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut it = rest.iter();
+    let (mut agent, mut at, mut parent, mut isolated) = (None::<String>, false, false, false);
+    let (mut has_j, mut has_sandbox) = (false, false);
+    while let Some(a) = it.next() {
+        let (flag, inline) = match a.split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
+            _ => (a.clone(), None),
+        };
+        let mut value = || {
+            inline
+                .clone()
+                .or_else(|| it.next().cloned())
+                .ok_or(format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--help" | "--json" | "--verbose" | "--quiet" => out.push(flag),
+            "--tasks-dir" => out.push(value()?),
+            "--agent" | "-a" => {
+                let a = value()?;
+                agent = Some(a.clone());
+                out.extend(["--agent".into(), a]);
+            }
+            "--model" | "-m" => out.extend(["--model".into(), value()?]),
+            "--reasoning-effort" => out.extend(["--effort".into(), value()?]),
+            "--sandbox" | "-s" => {
+                has_sandbox = true;
+                out.extend(["--sandbox".into(), value()?]);
+            }
+            "--agent-env" => out.extend(["--env".into(), value()?]),
+            "--child" => out.extend(["--child".into(), value()?]),
+            "--parent" => {
+                parent = true;
+                out.extend(["--parent".into(), value()?]);
+            }
+            "--concurrency" | "-j" => {
+                has_j = true;
+                let j = value()?;
+                isolated |= j.parse::<u32>().is_ok_and(|n| n > 1);
+                out.extend(["-j".into(), j]);
+            }
+            "--jobs-dir" => out.extend(["--jobs-dir".into(), value()?]),
+            "--job-name" => out.extend(["--job".into(), value()?]),
+            "--retain-snapshots" => out.push("--retain-checkpoints".into()),
+            "--resume-session" => out.push("--resume-session".into()),
+            "--checkpoint-after-prompt" => {
+                at = true;
+                let n = value()?;
+                out.extend(["--at".into(), format!("prompt:{n}")]);
+            }
+            // Children always have sandboxes of their own here.
+            "--isolate-children" => isolated = true,
+            "--snapshot-layers" => {
+                let v = value()?;
+                if v != "sandbox" {
+                    return Err(format!(
+                        "--snapshot-layers {v}: only the sandbox layer is in the Rust CLI yet. {PYTHON_HINT}"
+                    ));
+                }
+            }
+            f if f.starts_with('-') => {
+                return Err(format!(
+                    "`{f}` (a `bench eval branch` flag) is not in the Rust CLI yet. {PYTHON_HINT}"
+                ));
+            }
+            positional => out.push(positional.to_string()),
+        }
+    }
+    // Help prints whatever else the line says.
+    if out.iter().any(|a| a == "--help") {
+        return Ok(out);
+    }
+    let Some(agent) = agent else {
+        return Err(format!(
+            "`bench eval branch` runs claude-agent-acp when --agent is absent; name the agent with --agent. {PYTHON_HINT}"
+        ));
+    };
+    if !parent {
+        out.extend(["--parent".into(), "continue".into()]);
+    }
+    // 0.8's defaults: one child at a time, on Docker.
+    if !has_j {
+        out.extend(["-j".into(), "1".into()]);
+    }
+    if !has_sandbox {
+        out.extend(["--sandbox".into(), "docker".into()]);
+    }
+    if !isolated {
+        return Err(format!(
+            "`bench eval branch` runs children in place in the parent's sandbox unless --isolate-children (or --concurrency above 1); the Rust CLI runs each child in a sandbox of its own, so add --isolate-children. {PYTHON_HINT}"
+        ));
+    }
+    if !at && agent != "oracle" {
+        out.extend(["--at".into(), "prompt:1".into()]);
+    }
+    Ok(out)
 }
 
 fn translate_run_flags(rest: &[String]) -> Result<Vec<String>, String> {
@@ -317,8 +424,45 @@ mod tests {
     }
 
     #[test]
+    fn eval_branch_maps_onto_bench_branch() {
+        let args: Vec<String> = "bench eval branch --tasks-dir t -a oracle --checkpoint-after-prompt 0 --child label=a --child label=b --retain-snapshots --concurrency 2 --job-name x --parent discard"
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let (new, _) = try_translate(&args).unwrap().unwrap();
+        assert_eq!(
+            new[1..].join(" "),
+            "branch t --agent oracle --at prompt:0 --child label=a --child label=b --retain-checkpoints -j 2 --job x --parent discard --sandbox docker"
+        );
+        // 0.8's defaults: after prompt 1 for model agents, a continuing
+        // parent, one child at a time, and Docker, filled in; the agent and
+        // in-place children are named when absent.
+        let tr = |line: &str| {
+            let args: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+            try_translate(&args).map(|r| r.map(|(n, _)| n[1..].join(" ")))
+        };
+        assert_eq!(
+            tr("bench eval branch --tasks-dir t -a opencode --parent discard --isolate-children --resume-session").unwrap(),
+            Some("branch t --agent opencode --parent discard --resume-session -j 1 --sandbox docker --at prompt:1".into())
+        );
+        assert!(tr("bench eval branch --tasks-dir t --parent discard --isolate-children").is_err());
+        assert!(tr("bench eval branch --help").unwrap().is_some());
+        assert_eq!(
+            tr("bench eval branch --tasks-dir t -a oracle --isolate-children").unwrap(),
+            Some("branch t --agent oracle --parent continue -j 1 --sandbox docker".into())
+        );
+        assert!(tr("bench eval branch --tasks-dir t -a oracle --parent discard").is_err());
+        let args: Vec<String> = "bench eval branches jobs/x --json"
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let (new, _) = try_translate(&args).unwrap().unwrap();
+        assert_eq!(new[1..].join(" "), "branches jobs/x --json");
+    }
+
+    #[test]
     fn unsupported_are_errors() {
-        let args: Vec<String> = "bench eval branch j"
+        let args: Vec<String> = "bench eval branch --tasks-dir t --from-checkpoint x"
             .split_whitespace()
             .map(str::to_string)
             .collect();

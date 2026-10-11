@@ -129,6 +129,16 @@ pub(crate) fn run_args(cli: &Cli, spec: &SandboxSpec, name: &str, env: &EnvArgs)
 
 /// Start the container and wait until it runs. Returns its name.
 pub(super) async fn start(cli: &Cli, spec: &SandboxSpec) -> Result<String, SandboxError> {
+    start_from(cli, spec, false).await
+}
+
+/// [`start`]; `local_only`: the image is on the daemon (a checkpoint) and
+/// must never be pulled.
+pub(super) async fn start_from(
+    cli: &Cli,
+    spec: &SandboxSpec,
+    local_only: bool,
+) -> Result<String, SandboxError> {
     if spec.disk_mb.is_some() {
         tracing::debug!(
             "{} does not cap a container's disk; disk_mb is not enforced for {}",
@@ -138,7 +148,10 @@ pub(super) async fn start(cli: &Cli, spec: &SandboxSpec) -> Result<String, Sandb
     }
     let name = container_name(&spec.name);
     let env = EnvArgs::new(&spec.env)?;
-    let args = run_args(cli, spec, &name, &env);
+    let mut args = run_args(cli, spec, &name, &env);
+    if local_only {
+        args.splice(2..2, ["--pull".to_string(), "never".to_string()]);
+    }
     let mut cmd = cli.command(&args);
     for (k, v) in &env.process_env {
         cmd.env(k, v);

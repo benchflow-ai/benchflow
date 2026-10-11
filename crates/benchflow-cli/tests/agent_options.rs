@@ -206,7 +206,9 @@ fn a_plan_names_the_default_model_skips_with_the_error_and_needs_no_key() {
             .args(args)
             .output()
             .unwrap();
-        assert!(out.status.success(), "{out:?}");
+        // The plan prints without a key; the exit says a run would stop
+        // here (not ready, 3), as the run itself would.
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
         (
             String::from_utf8(out.stdout).unwrap(),
             String::from_utf8(out.stderr).unwrap(),

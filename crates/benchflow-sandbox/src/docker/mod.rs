@@ -14,12 +14,15 @@
 //! | [`Sandbox::upload`], [`Sandbox::write_file`] | a host-built tar into `docker exec -i -u 0 ... tar -xf -` |
 //! | [`Sandbox::download`] | `docker exec -u 0 ... tar -cf -`, unpacked defensively on the host |
 //! | [`Sandbox::destroy`] | `docker rm -f` |
-//! | [`Provider::sweep`] | `docker ps -a` by owner label, `docker rm -f` the dead process's containers |
+//! | [`Provider::sweep`] | `docker ps -a` by owner label, `docker rm -f` the dead process's containers; `docker rmi -f` stale checkpoint images |
+//! | [`Sandbox::checkpoint`] | `docker inspect` (no mounts), `docker commit --change 'LABEL …' --change 'ENV NAME='` |
+//! | [`Provider::create_from_checkpoint`] | `docker run --pull never` of the checkpoint image, as `create` |
 //!
 //! Environment variables never appear on a command line: they travel in a
 //! private `--env-file` that is deleted right after the CLI read it.
 
 mod cache;
+mod checkpoint;
 mod cli;
 mod exec;
 mod files;
@@ -89,6 +92,7 @@ impl Provider for DockerProvider {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            checkpoints: true,
             network_none: true,
             gpus: true,
             pids_limit: true,
@@ -129,7 +133,37 @@ impl Provider for DockerProvider {
 
     async fn sweep(&self) -> Result<usize, SandboxError> {
         let containers = sweep::sweep(&self.cli).await?;
-        Ok(containers + services::sweep_networks(&self.cli).await)
+        let networks = services::sweep_networks(&self.cli).await;
+        Ok(containers + networks + checkpoint::sweep(&self.cli).await)
+    }
+
+    async fn create_from_checkpoint(
+        &self,
+        spec: &SandboxSpec,
+        checkpoint: &crate::checkpoint::Checkpoint,
+    ) -> Result<Box<dyn Sandbox>, SandboxError> {
+        let mut spec = spec.clone();
+        spec.image.reference = checkpoint.reference.clone();
+        let name = run::start_from(&self.cli, &spec, true).await?;
+        Ok(Box::new(DockerSandbox {
+            cli: self.cli.clone(),
+            name,
+        }))
+    }
+
+    async fn delete_checkpoint(
+        &self,
+        checkpoint: &crate::checkpoint::Checkpoint,
+    ) -> Result<bool, SandboxError> {
+        checkpoint::delete(&self.cli, &checkpoint.reference).await
+    }
+
+    async fn list_checkpoints(&self) -> Result<Vec<crate::checkpoint::Listed>, SandboxError> {
+        Ok(checkpoint::list(&self.cli)
+            .await?
+            .into_iter()
+            .map(|s| checkpoint::listed(&self.cli, s))
+            .collect())
     }
 
     fn services(&self) -> Option<&dyn crate::services::ServiceHost> {
@@ -282,6 +316,14 @@ impl Sandbox for DockerSandbox {
         max_bytes: u64,
     ) -> Result<(), SandboxError> {
         files::download(&self.cli, &self.name, remote, local, Some(max_bytes)).await
+    }
+
+    async fn checkpoint(
+        &self,
+        name: &str,
+        scrub_env: &[String],
+    ) -> Result<crate::checkpoint::Checkpoint, SandboxError> {
+        checkpoint::take(&self.cli, &self.name, name, scrub_env).await
     }
 
     async fn destroy(&self) -> Result<(), SandboxError> {

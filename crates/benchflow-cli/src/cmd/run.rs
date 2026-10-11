@@ -392,7 +392,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         if !ui().json {
             say_not_ready(not_ready.as_ref());
         }
-        return Ok(Exit::Ok);
+        return Ok(dry_run_exit(not_ready.as_ref()));
     }
     if args.dry_run {
         let mut options =
@@ -419,7 +419,10 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             if !ui().json {
                 say_not_ready(not_ready.as_ref());
             }
-            return plan;
+            return match (plan?, not_ready.is_some()) {
+                (Exit::Ok, true) => Ok(Exit::NotReady),
+                (exit, _) => Ok(exit),
+            };
         }
         let plan = json!({
             "agent": attempt.label(),
@@ -472,7 +475,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             }
             say_not_ready(not_ready.as_ref());
         }
-        return Ok(Exit::Ok);
+        return Ok(dry_run_exit(not_ready.as_ref()));
     }
 
     let provider = context::provider(st.sandbox.as_deref()).await?;
@@ -1263,6 +1266,17 @@ fn refuse_untyped_base_urls(
         )));
     }
     Ok(())
+}
+
+/// A dry run's exit: not ready (3) when a run would stop before any sandbox
+/// starts, as the run itself would, so a readiness check in a script still
+/// fails; the plan is printed either way.
+fn dry_run_exit(problem: Option<&benchflow_run::outcome::Problem>) -> Exit {
+    if problem.is_some() {
+        Exit::NotReady
+    } else {
+        Exit::Ok
+    }
 }
 
 /// The plan's line for a login a run would stop on.
