@@ -49,6 +49,9 @@ async def test_setup_raises_when_the_user_could_not_be_created() -> None:
 @pytest.mark.asyncio
 async def test_setup_tolerates_a_later_step_failing_once_the_user_exists() -> None:
     env = MagicMock()
-    env.exec = AsyncMock(side_effect=[_result(1, "chown: read-only"), _result(0)])
+    # The third call installs the sandbox-daemon guard.
+    env.exec = AsyncMock(
+        side_effect=[_result(1, "chown: read-only"), _result(0), _result(0)]
+    )
 
     assert await setup_sandbox_user(env, "agent", "/app") == "/app"
