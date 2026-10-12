@@ -286,6 +286,43 @@ impl Formatter for PyPrettyFormatter<'_> {
     }
 }
 
+/// The longest string a derived copy of a trajectory keeps whole (1 MiB).
+/// No model gives one turn this much text (128k output tokens is about
+/// half of it); a fault (a 40 MB reply, a tool
+/// that printed a disk) did, and every derived file then held it again: the
+/// trainer files, the job's concatenations, the export, the model-call log.
+/// The raw `trajectory/acp_trajectory.jsonl` keeps the full text.
+pub const DERIVED_TEXT_CAP: usize = 1 << 20;
+
+/// Cut every string in `value` longer than `cap` bytes (at a character
+/// boundary) and end it with a marker giving the original size and where
+/// the full text is. Returns how many strings were cut.
+pub fn cap_long_strings(value: &mut Value, cap: usize, full_in: &str) -> usize {
+    match value {
+        Value::String(s) if s.len() > cap => {
+            let mut end = cap;
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            let total = s.len();
+            s.truncate(end);
+            s.push_str(&format!(
+                "\n[BenchFlow cut this text: {end} of {total} bytes kept; the full text is in {full_in}]"
+            ));
+            1
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .map(|v| cap_long_strings(v, cap, full_in))
+            .sum(),
+        Value::Object(map) => map
+            .values_mut()
+            .map(|v| cap_long_strings(v, cap, full_in))
+            .sum(),
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +368,18 @@ mod tests {
         );
         assert_eq!(content_blocks_to_text(Some(&json!("raw"))), "raw");
         assert_eq!(content_blocks_to_text(None), "");
+    }
+
+    #[test]
+    fn a_long_string_is_cut_at_a_character_with_a_marker() {
+        let mut v = serde_json::json!({"a": ["\u{e9}".repeat(10)], "b": "short", "n": 3});
+        // 10 two-byte characters; a cap of 5 bytes keeps 2 of them.
+        assert_eq!(cap_long_strings(&mut v, 5, "raw.jsonl"), 1);
+        assert_eq!(
+            v["a"][0],
+            "\u{e9}\u{e9}\n[BenchFlow cut this text: 4 of 20 bytes kept; the full text is in raw.jsonl]"
+        );
+        assert_eq!(v["b"], "short");
+        assert_eq!(cap_long_strings(&mut v, 1 << 20, "raw.jsonl"), 0);
     }
 }

@@ -125,12 +125,7 @@ async fn extract(
     if out.ok() {
         return Ok(());
     }
-    Err(transfer_failure(
-        cli,
-        container,
-        &out,
-        &format!("copying files into {dst}"),
-    ))
+    Err(transfer_failure(cli, container, &out, &format!("copying files into {dst}")).await)
 }
 
 /// Copy `remote` (a file or folder) out of the container to `local`.
@@ -154,12 +149,14 @@ pub(super) async fn download(
     let unpacker = Unpacker::start(name.clone(), local.to_path_buf(), max_bytes);
     let mut buf = vec![0u8; 256 * 1024];
     let mut read_error = None;
+    let mut refused = false;
     loop {
         match stdout.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
                 if !unpacker.feed(Bytes::copy_from_slice(&buf[..n])).await {
                     // The unpacker refused the archive; stop the transfer.
+                    refused = true;
                     let _ = child.kill().await;
                     break;
                 }
@@ -207,12 +204,20 @@ pub(super) async fn download(
                 ),
             ));
         }
-        return Err(transfer_failure(
-            cli,
-            container,
-            &out,
-            &format!("copying {remote} out"),
-        ));
+        return Err(transfer_failure(cli, container, &out, &format!("copying {remote} out")).await);
+    }
+    // The CLI failed mid-stream (a remote daemon's connection dropped)
+    // and the unpacker, which refused nothing, found the archive cut
+    // short: the transfer failed, not the folder. This machine's own
+    // failures (a full disk, a folder it cannot write, the cap) stay
+    // the unpacker's.
+    if !tar_ok && !refused && matches!(&unpacked, Err(e) if !host_side(e.kind())) {
+        let out = Output {
+            code,
+            stdout: String::new(),
+            stderr,
+        };
+        return Err(transfer_failure(cli, container, &out, &format!("copying {remote} out")).await);
     }
     if let Some(err) = read_error {
         return Err(SandboxError::io(
@@ -246,21 +251,31 @@ pub(super) async fn download(
                     stdout: String::new(),
                     stderr,
                 };
-                Err(transfer_failure(
-                    cli,
-                    container,
-                    &out,
-                    &format!("copying {remote} out"),
-                ))
+                Err(transfer_failure(cli, container, &out, &format!("copying {remote} out")).await)
             }
         }
         Err(err) => Err(unpack_error(&remote, local, err)),
     }
 }
 
-/// The error for a `tar` transfer that failed inside the container.
-fn transfer_failure(cli: &Cli, container: &str, out: &Output, what: &str) -> SandboxError {
-    if let Some(err) = cli.daemon_problem(out) {
+/// An unpack error that is this machine's, or the copy's cap: never the
+/// transfer's.
+fn host_side(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(
+        kind,
+        StorageFull | QuotaExceeded | ReadOnlyFilesystem | PermissionDenied | FileTooLarge
+    )
+}
+
+/// The error for a `tar` transfer that failed inside the container. Words
+/// about the daemon or the container in its stderr count only when the CLI
+/// confirms them itself: `tar` runs inside, where code can print anything.
+async fn transfer_failure(cli: &Cli, container: &str, out: &Output, what: &str) -> SandboxError {
+    if (cli.daemon_problem(out).is_some()
+        || super::exec::container_gone(cli, container, &out.stderr).is_some())
+        && let Some(err) = super::exec::cli_confirms_trouble(cli, container).await
+    {
         return err;
     }
     let message = out.message();
@@ -271,9 +286,6 @@ fn transfer_failure(cli: &Cli, container: &str, out: &Output, what: &str) -> San
             "{what} needs `tar` inside the sandbox, and the image has none ({message}). Add it to \
              the task's image (for example `apt-get install -y tar` or `apk add tar`)."
         ));
-    }
-    if let Some(err) = super::exec::container_gone(cli, container, &out.stderr) {
-        return err;
     }
     if lower.contains("no space left on device") {
         return SandboxError::Content(format!(

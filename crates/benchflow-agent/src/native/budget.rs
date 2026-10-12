@@ -50,6 +50,10 @@ pub enum Stop {
     /// The model ended its turn (no more tool calls, `submit`, or Terminus-2's
     /// confirmed `task_complete`).
     Finished,
+    /// The loop stopped because the model kept failing in the same way (tool
+    /// calls whose arguments are not JSON, turn after turn): the model's
+    /// failure, but the agent had its turn, so the trial is still graded.
+    ModelLoop { reason: String, turns: u32 },
     /// The model refused or a content filter ended the turn.
     Refused,
     /// A budget ran out.
@@ -77,6 +81,11 @@ impl Stop {
     pub fn record(&self, recorder: &Recorder) {
         match self {
             Stop::Finished => {}
+            Stop::ModelLoop { reason, .. } => recorder.notice(
+                "error",
+                &format!("stopped: {reason}"),
+                Some("the model's failure; the trial is graded on what the agent left"),
+            ),
             Stop::Refused => recorder.notice(
                 "warning",
                 "the model refused or a content filter ended its turn",

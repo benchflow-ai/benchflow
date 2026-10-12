@@ -1,0 +1,127 @@
+# The examples folder on a sandbox, no model: formats, scripted agents, reward shapes, timeouts, stages, mounts, outputs, separate verifiers (examples/README.md).
+tier = "full"
+needs = ["sandbox"]
+tasks = ["examples/hello", "examples/hello-split", "examples/hello-08", "examples/stages", "examples/mount-outputs", "examples/separate-verifier",
+         "examples/reward-fraction", "examples/reward-json", "examples/reward-json-bad-metric", "examples/reward-json-metrics", "examples/reward-out-of-range", "examples/reward-negative",
+         "examples/reward-nan", "examples/reward-empty", "examples/reward-word", "examples/agent-timeout", "examples/verifier-timeout",
+         "examples/build-timeout", "examples/broken-image", "examples/ready-never"]
+
+[[step]]
+name = "E20 the three formats pass with the oracle"
+run = ["run", "tasks/hello", "tasks/hello-split", "tasks/hello-08", "-s", "{backend}", "-j", "{j}", "--job", "formats"]
+exit = 0
+timeout = 900
+stdout_has = ['3/3 passed']
+trials = [{ job = "formats", task = "hello", status = "scored", reward = 1.0 }, { job = "formats", task = "hello-split", status = "scored", reward = 1.0 }, { job = "formats", task = "hello-08", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E21 a scripted agent (script:<file>) solves it; another answers wrong"
+run = ["run", "tasks/hello", "-a", "script:{examples}/agents/write-hello.sh", "-s", "{backend}", "--job", "script-ok"]
+exit = 0
+trials = [{ job = "script-ok", task = "hello", status = "scored", reward = 1.0 }]
+
+[[step]]
+run = ["run", "tasks/hello", "-a", "script:{examples}/agents/wrong-answer.sh", "-s", "{backend}", "--job", "script-wrong"]
+exit = 0
+trials = [{ job = "script-wrong", task = "hello", status = "scored", reward = 0.0 }]
+
+[[step]]
+name = "E22 reward files of every shape"
+run = ["run", "tasks", "-i", "reward-*", "-s", "{backend}", "-j", "{j}", "--job", "rewards"]
+exit = 1
+timeout = 900
+trials = [
+  { job = "rewards", task = "reward-fraction", status = "scored", reward = 0.75 },
+  { job = "rewards", task = "reward-json", status = "scored", reward = 0.5 },
+  { job = "rewards", task = "reward-json-bad-metric", status = "unscored", code = "R302", owner = "task" },
+  { job = "rewards", task = "reward-json-metrics", status = "unscored", code = "R302", owner = "task" },
+  { job = "rewards", task = "reward-out-of-range", status = "unscored", code = "R302", owner = "task" },
+  { job = "rewards", task = "reward-negative", status = "unscored", code = "R302", owner = "task" },
+  { job = "rewards", task = "reward-nan", status = "unscored", code = "R302", owner = "task" },
+  { job = "rewards", task = "reward-empty", status = "unscored", code = "R302", owner = "task" },
+  { job = "rewards", task = "reward-word", status = "unscored", code = "R302", owner = "task" },
+]
+
+[[step]]
+name = "E23 timeouts: the agent's is a scored 0, the verifier's is unscored (R303); a broken Dockerfile is errored (R101)"
+run = ["run", "tasks/agent-timeout", "tasks/verifier-timeout", "tasks/broken-image", "-s", "{backend}", "-j", "{j}", "--job", "timeouts"]
+exit = 1
+timeout = 900
+trials = [
+  { job = "timeouts", task = "agent-timeout", status = "scored", reward = 0.0 },
+  { job = "timeouts", task = "verifier-timeout", status = "unscored", code = "R303", owner = "task" },
+  { job = "timeouts", task = "broken-image", status = "errored", code = "R101", owner = "task" },
+]
+
+[[step]]
+name = "E23b a build past the task's build timeout is errored (R102); on Daytona see examples-build-timeout"
+only_backends = ["docker"]
+run = ["run", "tasks/build-timeout", "-s", "{backend}", "--job", "build-timeout"]
+exit = 1
+timeout = 900
+trials = [{ job = "build-timeout", task = "build-timeout", status = "errored", code = "R102" }]
+
+[[step]]
+name = "E65 a readiness check that never passes: errored before any agent, R105, the task's"
+run = ["run", "tasks/ready-never", "-s", "{backend}", "--job", "ready"]
+exit = 1
+timeout = 600
+output_has = ['readiness check `test -f /tmp/never` failed']
+trials = [{ job = "ready", task = "ready-never", status = "errored", code = "R105", owner = "task" }]
+
+[[step]]
+name = "E24 --timeout-multiplier gives the slow agent time to finish"
+run = ["run", "tasks/agent-timeout", "-s", "{backend}", "--job", "slower", "--agent-timeout-multiplier", "9"]
+exit = 0
+timeout = 600
+trials = [{ job = "slower", task = "agent-timeout", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E25 stages: the oracle passes both; failing the gated first stage ends the trial there"
+run = ["run", "tasks/stages", "-s", "{backend}", "--job", "stages"]
+exit = 0
+trials = [{ job = "stages", task = "stages", status = "scored", reward = 1.0, result = { "step_results" = { len = 2 } } }]
+
+[[step]]
+run = ["run", "tasks/stages", "-a", "script:{examples}/agents/stage-one-wrong.sh", "-s", "{backend}", "--job", "stages-gate"]
+exit = 0
+trials = [{ job = "stages-gate", task = "stages", status = "scored", reward = 0.0 }]
+
+[[step]]
+name = "E26 a read-only mount, a declared output saved as an artifact, and a hook before grading"
+run = ["run", "tasks/mount-outputs", "-s", "{backend}", "--job", "mounts"]
+exit = 0
+trials = [{ job = "mounts", task = "mount-outputs", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E27 a separate verifier grades the saved outputs in a sandbox of its own"
+run = ["run", "tasks/separate-verifier", "-s", "{backend}", "--job", "separate"]
+exit = 0
+trials = [{ job = "separate", task = "separate-verifier", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E22b each refusal says why"
+sh = "grep -h '\"message\"' jobs/rewards/reward-*/result.json"
+output_has = ['tests_passed is 3, outside \[0, 1\]', 'the reward is 1.5, outside \[0, 1\]', 'NaN is not a finite number', 'yes.. is not a number', 'reward.txt is empty', 'has no reward key']
+
+[[step]]
+name = "E28 results over the jobs, one job's trials, and the JSON form"
+run = ["results", "jobs/rewards", "-t"]
+exit = 0
+stdout_has = ['reward-fraction']
+
+[[step]]
+run = ["--json", "results", "jobs/formats"]
+exit = 0
+stdout_json = { "trials" = { "len" = 3 } }
+
+[[step]]
+name = "E29 export a job as a dataset and as OpenTelemetry"
+run = ["export", "jobs/formats", "formats-hf"]
+exit = 0
+files = ["formats-hf/data/train.jsonl", "formats-hf/README.md"]
+
+[[step]]
+run = ["export", "jobs/formats", "--format", "otel", "formats.otel.jsonl"]
+exit = 0
+files = ["formats.otel.jsonl"]

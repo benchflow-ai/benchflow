@@ -163,7 +163,13 @@ fn pins(net: &PhaseNet) -> String {
 /// IPv6 (a `none` on Daytona): both chains let loopback through, a task's
 /// own resolver on it included, and refuse the rest; the IPv4 chain only
 /// backs the backend's block up, the IPv6 one is all that closes IPv6.
-fn chain_rules(net: &PhaseNet, v6: bool, guard: bool, v6_only: bool) -> String {
+///
+/// With `spare_root`, the guard's rules leave root's connections alone: a
+/// chain that covers root (before the reference solution, which runs as
+/// root) still guards the daemon's ports from the agent user only, so root
+/// keeps the access BenchFlow's commands use and the guard's proof (root
+/// reaches the ports the agent user is refused) still holds.
+fn chain_rules(net: &PhaseNet, v6: bool, guard: bool, v6_only: bool, spare_root: bool) -> String {
     let ranges: Vec<&String> = net
         .ranges
         .iter()
@@ -173,9 +179,14 @@ fn chain_rules(net: &PhaseNet, v6: bool, guard: bool, v6_only: bool) -> String {
     // A root daemon's ports on every local address (local traffic leaves by
     // lo, whichever of the sandbox's addresses it is sent to).
     if guard {
-        s.push_str(
-            "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$RT\" $RTO || exit_rule; done\n",
-        );
+        let owner = if spare_root {
+            " -m owner ! --uid-owner 0"
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\"{owner} -j \"$RT\" $RTO || exit_rule; done\n",
+        ));
     }
     let mut add = |rule: &str| s.push_str(&format!("\"$t\" -w -A \"$CH\" {rule} || exit_rule\n"));
     // `match` refused: TCP with a reset first, then everything else.
@@ -245,6 +256,9 @@ pub(super) fn install(
         }
         Scope::Everyone => "jump_new 1 || exit_rule\n",
     };
+    // A chain over root's connections too guards the daemon from the
+    // agent user only (see `chain_rules`).
+    let spare_root = matches!(scope, Scope::Everyone);
     format!(
         r#"{prelude}
 echo "BF fw-v6 $v6"
@@ -287,8 +301,8 @@ echo "BF fw-sum $(fingerprint)"
 "#,
         prelude = prelude(),
         uid = uid,
-        rules4 = chain_rules(net, false, !guard.is_empty(), v6_only),
-        rules6 = chain_rules(net, true, !guard.is_empty(), v6_only),
+        rules4 = chain_rules(net, false, !guard.is_empty(), v6_only, spare_root),
+        rules6 = chain_rules(net, true, !guard.is_empty(), v6_only, spare_root),
         discover = if guard.is_empty() {
             String::new()
         } else {
@@ -421,6 +435,31 @@ pub(super) fn guard_error(error: &str) -> String {
 mod tests {
     use super::*;
 
+    /// CI-E2E-NETWORK review B1: the e2e fixture now blocks a name that
+    /// resolves nowhere, so the half of a name block that refuses the
+    /// addresses the name resolved to on this machine is tested here, on
+    /// `localhost`, which resolves the same everywhere: its loopback
+    /// addresses are refused in the chain, and the name is pinned nowhere.
+    #[tokio::test]
+    async fn a_blocked_names_resolved_addresses_are_refused_and_the_name_pinned() {
+        let n = super::super::PhaseNet::resolve(&Network::Block(vec!["localhost".into()]))
+            .await
+            .unwrap();
+        assert!(
+            n.ranges.iter().any(|r| r == "127.0.0.1/32"),
+            "{:?}",
+            n.ranges
+        );
+        let rules = chain_rules(&n, false, false, false, false);
+        assert!(
+            rules.contains("-d '127.0.0.1/32'") || rules.contains("-d 127.0.0.1/32"),
+            "{rules}"
+        );
+        let pinned = pins(&n);
+        assert!(pinned.contains("192.0.2.1 localhost\n"), "{pinned}");
+        assert!(pinned.contains("100::1 localhost\n"), "{pinned}");
+    }
+
     fn net(network: Network, names: &[(&str, &str)], ranges: &[&str]) -> PhaseNet {
         PhaseNet {
             network,
@@ -498,7 +537,7 @@ mod tests {
             &[("github.com", "140.82.114.4")],
             &["140.82.114.4/32", "2001:db8::/32"],
         );
-        let v4 = chain_rules(&allow, false, false, false);
+        let v4 = chain_rules(&allow, false, false, false, false);
         assert!(v4.contains("-d 127.0.0.11 -p tcp -j \"$RT\" $RTO"), "{v4}");
         assert!(v4.contains("-d 127.0.0.11 -j \"$REJ\""), "{v4}");
         assert!(v4.contains("-d 140.82.114.4/32 -j RETURN"), "{v4}");
@@ -508,7 +547,7 @@ mod tests {
             "{v4}"
         );
         assert!(v4.trim_end().ends_with("-j \"$REJ\" || exit_rule"), "{v4}");
-        let v6 = chain_rules(&allow, true, false, false);
+        let v6 = chain_rules(&allow, true, false, false, false);
         assert!(v6.contains("-d 2001:db8::/32 -j RETURN"), "{v6}");
         assert_eq!(pins(&allow), "140.82.114.4 github.com\n");
     }
@@ -520,7 +559,7 @@ mod tests {
             &[("www.debian.org", "128.31.0.62")],
             &["128.31.0.62/32"],
         );
-        let v4 = chain_rules(&block, false, false, false);
+        let v4 = chain_rules(&block, false, false, false, false);
         assert!(
             v4.contains("-d 128.31.0.62/32 -p tcp -j \"$RT\" $RTO"),
             "{v4}"
@@ -531,7 +570,7 @@ mod tests {
             pins(&block),
             "192.0.2.1 www.debian.org\n100::1 www.debian.org\n"
         );
-        assert!(chain_rules(&block, true, false, false).contains("-d 100::/64"));
+        assert!(chain_rules(&block, true, false, false, false).contains("-d 100::/64"));
     }
 
     /// An ICMP unreachable fails a TCP connect only after a SYN retry (about
@@ -563,7 +602,7 @@ mod tests {
             &["128.31.0.62/32"],
         );
         for v6 in [false, true] {
-            let rules = chain_rules(&block, v6, false, false);
+            let rules = chain_rules(&block, v6, false, false, false);
             let mut tcp_first = 0;
             for (i, line) in rules.lines().enumerate() {
                 if line.contains("-j \"$REJ\"") {
@@ -586,7 +625,7 @@ mod tests {
         let ports = [2280, 22220, 22222, 33333];
         for v6 in [false, true] {
             assert_eq!(
-                chain_rules(&open, v6, true, false),
+                chain_rules(&open, v6, true, false, false),
                 "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$RT\" $RTO || exit_rule; done\n"
             );
         }
@@ -709,7 +748,7 @@ mod tests {
         let none = net(Network::None, &[], &[]);
         // IPv4 backs the backend's block up: the guard, loopback (its
         // resolver included), then nothing.
-        let v4 = chain_rules(&none, false, true, true);
+        let v4 = chain_rules(&none, false, true, true, false);
         assert!(v4.starts_with("for port in $GUARD"), "{v4}");
         assert!(
             !v4.contains("--dport 53") && !v4.contains("127.0.0.11"),
@@ -721,12 +760,12 @@ mod tests {
             .expect("the rest refused");
         assert!(lo < rej, "{v4}");
         // IPv6: loopback, a task's own resolver on it included, then nothing.
-        let v6 = chain_rules(&none, true, false, true);
+        let v6 = chain_rules(&none, true, false, true, false);
         assert!(!v6.contains("--dport 53"), "{v6}");
         assert!(v6.contains("-o lo -j RETURN"), "{v6}");
         assert!(v6.trim_end().ends_with("-j \"$REJ\" || exit_rule"), "{v6}");
         // Without v6_only a none refuses loopback resolvers as before.
-        assert!(chain_rules(&none, false, false, false).contains("--dport 53"));
+        assert!(chain_rules(&none, false, false, false, false).contains("--dport 53"));
         let s = install(&Scope::Everyone, &none, &[], true, true);
         bash_ok(&s);
         assert!(s.contains("echo \"BF fw-v6 $v6\""), "{s}");

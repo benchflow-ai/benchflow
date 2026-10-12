@@ -193,25 +193,43 @@ fn claude_options_reach_the_headless_command_and_both_harnesses_env() {
     );
 }
 
+/// Codex's `-c` overrides reach Codex headless only: codex-acp does not
+/// take them (BenchFlow 0.8 documents this, and passes such settings
+/// through CODEX_CONFIG), and E7's live run over ACP with
+/// `-c web_search=disabled` still sent the web_search tool. Over ACP they
+/// are refused before anything runs; headless they are passed.
 #[test]
-fn codex_flags_reach_both_harnesses() {
+fn codex_flags_reach_the_headless_harness_only() {
     let codex = builtin("codex");
+    for option in [
+        ("reasoning_summary", "detailed"),
+        ("web_search", "disabled"),
+    ] {
+        assert!(
+            codex
+                .resolve_options(&given(&[option]), Harness::Acp)
+                .is_err(),
+            "{option:?} over ACP"
+        );
+    }
     let values = codex
-        .resolve_options(&given(&[("reasoning_summary", "detailed")]), Harness::Acp)
+        .resolve_options(
+            &given(&[("reasoning_summary", "detailed")]),
+            Harness::Headless,
+        )
         .unwrap();
     let m = codex.with_options(&values);
-    assert!(
-        m.launch_command()
-            .starts_with("set -- -c model_reasoning_summary=detailed\n"),
-        "{}",
-        m.launch_command()
-    );
     assert!(
         m.headless
             .as_ref()
             .unwrap()
             .command
             .starts_with("set -- -c model_reasoning_summary=detailed\n")
+    );
+    assert!(
+        !m.launch_command().contains("model_reasoning_summary"),
+        "{}",
+        m.launch_command()
     );
 }
 

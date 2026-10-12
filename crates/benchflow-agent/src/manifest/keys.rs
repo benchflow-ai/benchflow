@@ -89,6 +89,7 @@ const INSTALL: &[(&str, Kind)] = &[
     ("installer", Value),
     ("links", Value),
     ("timeout", Value),
+    ("tools", Value),
     // ACP registry distributions (`distribution.rs`).
     ("binary", Map),
     ("npx", Value),

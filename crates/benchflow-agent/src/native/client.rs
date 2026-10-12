@@ -24,6 +24,11 @@ pub struct ClientOptions {
     pub max_attempts: u32,
     pub backoff_base: Duration,
     pub backoff_cap: Duration,
+    /// How long an idle connection is kept for the next call. Below the
+    /// minute after which providers' load balancers drop idle connections
+    /// (MiMo's did, between Terminus-2's turns), so a call never goes out
+    /// on a connection the other end has abandoned.
+    pub pool_idle_timeout: Duration,
 }
 
 impl Default for ClientOptions {
@@ -33,6 +38,7 @@ impl Default for ClientOptions {
             max_attempts: 6,
             backoff_base: Duration::from_secs(1),
             backoff_cap: Duration::from_secs(30),
+            pool_idle_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -48,6 +54,9 @@ struct Totals {
     usage: TokenUsage,
     calls: u64,
     seq: u64,
+    /// When the call in progress started; left set when the call is
+    /// dropped unfinished (the agent's time ran out while it waited).
+    waiting_since: Option<Instant>,
 }
 
 /// Calls one model endpoint.
@@ -78,6 +87,7 @@ impl ModelClient {
     pub fn new(endpoint: Endpoint, options: ClientOptions) -> Result<Self, ModelError> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(20))
+            .pool_idle_timeout(options.pool_idle_timeout)
             .user_agent(format!("benchflow/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| {
@@ -124,9 +134,38 @@ impl ModelClient {
         self.totals.lock().map(|t| t.calls).unwrap_or(0)
     }
 
+    /// How long the model call in progress has waited: a call the agent's
+    /// time ran out on is never finished, so this says the model was still
+    /// being waited on when the loop stopped. `None` when no call is
+    /// waiting.
+    pub fn waiting(&self) -> Option<Duration> {
+        self.totals
+            .lock()
+            .ok()
+            .and_then(|t| t.waiting_since)
+            .map(|t| t.elapsed())
+    }
+
+    fn set_waiting(&self, since: Option<Instant>) {
+        if let Ok(mut t) = self.totals.lock() {
+            t.waiting_since = since;
+        }
+    }
+
     /// Send `req` and read the answer. `purpose` labels the call in the log
     /// (`turn`, `summary`).
     pub async fn chat(&self, req: &ChatRequest, purpose: &str) -> Result<ChatResponse, ModelError> {
+        self.set_waiting(Some(Instant::now()));
+        let result = self.chat_until_done(req, purpose).await;
+        self.set_waiting(None);
+        result
+    }
+
+    async fn chat_until_done(
+        &self,
+        req: &ChatRequest,
+        purpose: &str,
+    ) -> Result<ChatResponse, ModelError> {
         let mut body = match self.endpoint.api {
             Api::OpenAiChat => openai::request_body(&self.endpoint.model, req),
             Api::AnthropicMessages => anthropic::request_body(&self.endpoint.model, req),
@@ -342,6 +381,13 @@ impl ModelClient {
             "error": error,
         });
         log.redactor.redact_json(&mut line);
+        // Each request carries the conversation so far, so one huge reply
+        // would be logged again with every later call.
+        crate::trajectory::cap_long_strings(
+            &mut line,
+            crate::trajectory::DERIVED_TEXT_CAP,
+            "trajectory/acp_trajectory.jsonl",
+        );
         let _ = writeln!(log.file, "{}", to_python_json(&line));
         let _ = log.file.flush();
     }
@@ -429,6 +475,112 @@ mod retry_after_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chat server that answers the first request on each connection and
+    /// then abandons the connection without closing it, as a load balancer
+    /// that drops idle connections does. Returns its base URL.
+    fn abandoning_server() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = vec![0u8; 65536];
+                let mut got = Vec::new();
+                // Read the headers and the body (Content-Length).
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&got).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if got.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let body = r#"{"model": "m", "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: keep-alive\r\n\r\n{body}",
+                    body.len()
+                );
+                // Never read or answer this connection again.
+                kept.push(stream);
+            }
+        });
+        format!("http://{addr}/v1")
+    }
+
+    fn client(base: String, pool_idle_timeout: Duration) -> ModelClient {
+        let endpoint = Endpoint {
+            api: super::super::endpoint::Api::OpenAiChat,
+            base_url: base,
+            key: super::super::endpoint::ApiKey::new("k"),
+            model: "m".into(),
+            provider: "test".into(),
+            key_label: "test".into(),
+            upstreams: None,
+        };
+        ModelClient::new(
+            endpoint,
+            ClientOptions {
+                timeout: Duration::from_secs(2),
+                max_attempts: 1,
+                pool_idle_timeout,
+                ..ClientOptions::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn request() -> ChatRequest {
+        ChatRequest {
+            system: None,
+            messages: vec![super::super::chat::Message::user("hi".to_string())],
+            tools: Vec::new(),
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+            reasoning_effort: None,
+        }
+    }
+
+    /// E1 (Terminus-2 on MiMo): a call after a long command reused a
+    /// connection the provider had dropped while idle, and failed ("connection
+    /// closed before message completed") or hung. Idle connections are not
+    /// kept past `pool_idle_timeout`, so the next call opens a fresh one.
+    #[tokio::test]
+    async fn a_call_after_an_idle_spell_opens_a_fresh_connection() {
+        let base = abandoning_server();
+        let c = client(base.clone(), Duration::from_millis(100));
+        c.chat(&request(), "turn").await.expect("the first call");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        c.chat(&request(), "turn")
+            .await
+            .expect("the call after the idle spell, on a new connection");
+        // Kept past the server's patience, the old connection is reused and
+        // the call never gets an answer.
+        let stale = client(base, Duration::from_secs(60));
+        stale
+            .chat(&request(), "turn")
+            .await
+            .expect("the first call");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(stale.chat(&request(), "turn").await.is_err());
+    }
 
     #[test]
     fn image_bytes_are_not_logged() {

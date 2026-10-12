@@ -128,7 +128,9 @@ impl Images {
             match provider.prepare(spec, log).await {
                 Ok(image) => Ok(image),
                 Err(err @ SandboxError::Image { .. })
-                    if !spec.layers.is_empty() && !cancelled_unbuilt(&err) =>
+                    if !spec.layers.is_empty()
+                        && !cancelled_unbuilt(&err)
+                        && !ran_out_of_time(&err) =>
                 {
                     log(
                         "the image with the agent's install layers failed to build; checking whether the task's image builds on its own",
@@ -137,10 +139,10 @@ impl Images {
                     task_image.layers.clear();
                     match Box::pin(self.get(provider, &task_image, log, None)).await {
                         Err(task_problem) => Err(task_problem),
-                        Ok(_) => Err(layer_problem(agent.unwrap_or("the agent"), err)),
+                        Ok(_) => Err(redacted(layer_problem(agent.unwrap_or("the agent"), err))),
                     }
                 }
-                Err(err) => Err(image_problem(&spec.name, err)),
+                Err(err) => Err(redacted(image_problem(&spec.name, err))),
             }
         })
         .await
@@ -159,6 +161,48 @@ impl Images {
 fn cancelled_unbuilt(err: &SandboxError) -> bool {
     matches!(err, SandboxError::Image { message, task_fault: false, .. }
         if message.contains("context canceled"))
+}
+
+/// `p` with the credentials a build log can carry removed. A failed build's
+/// problem carries the builder's last lines (Daytona prints signed URLs with
+/// a SAS signature and a JWT) into result.json, the end-of-run report, and
+/// every trial sharing the image. The detail (the raw log tail) gets every
+/// redaction rule; the one-line message and next step get them on URLs and
+/// JWTs only, so a phrase such as "oauth token: dial tcp" stays readable.
+fn redacted(mut p: Problem) -> Problem {
+    static SECRETISH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:https?|wss?)://[^\s\x22'<>]+|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{10,}",
+        )
+        .expect("valid regex")
+    });
+    let r = benchflow_agent::trajectory::Redactor::default();
+    let in_place = |text: &str| -> String {
+        SECRETISH
+            .replace_all(text, |c: &regex::Captures| r.redact(&c[0]).into_owned())
+            .into_owned()
+    };
+    p.message = in_place(&p.message);
+    p.next = in_place(&p.next);
+    p.detail = p.detail.map(|d| r.redact(&d).into_owned());
+    p
+}
+
+/// A build of the task's own image stopped at its time limit: Daytona's
+/// (which may still be building it: building the task's image alone would
+/// start a second builder beside the first, decision 26), or Docker's
+/// timeout of the task's build or pull. Neither is the agent's, so neither
+/// is checked against the task's image alone; that check would build it
+/// again and could then blame the agent (review E7-C-A 2). Docker's timeout
+/// of the agent's install layers names itself and is still checked: the
+/// task's image is built and cached by then, and a hung install is the
+/// agent's (review E7-A 2).
+fn ran_out_of_time(err: &SandboxError) -> bool {
+    matches!(err, SandboxError::Image { message, task_fault: false, .. }
+        if message.contains("Daytona did not finish building the image within")
+            || (message.contains("did not finish within the")
+                && message.contains("build timeout")
+                && !message.contains("(the agent's install layers)")))
 }
 
 /// An image that failed to build or pull: the task's, the backend's, or
@@ -220,17 +264,51 @@ fn layer_problem(agent: &str, err: SandboxError) -> Problem {
         } => (message, log_tail),
         other => (other.to_string(), String::new()),
     };
-    let p = Problem::new(
-        "R201",
-        Owner::Agent,
-        Phase::Image,
-        format!("{agent} could not be installed on top of the task's image, which builds on its own"),
-        format!(
-            "image.log in the trial folder has the failing step; the install needs network access and curl, tar, and xz in the image (`bench agents {agent}` shows the install script)"
+    // An install that says why it stopped (an agent with no build for the
+    // image's C library, a tool no package manager can add): that line, not
+    // the generic advice, which then pointed at network access and curl.
+    let p = match install_reason(&log_tail).or_else(|| install_reason(&message)) {
+        Some(reason) => Problem::new(
+            "R201",
+            Owner::Agent,
+            Phase::Image,
+            format!("{agent} could not be installed on this image: {reason}"),
+            format!(
+                "image.log in the trial folder has the install's output (`bench agents {agent}` shows the install script)"
+            ),
         ),
-    )
+        None => Problem::new(
+            "R201",
+            Owner::Agent,
+            Phase::Image,
+            format!("{agent} could not be installed on top of the task's image, which builds on its own"),
+            format!(
+                "image.log in the trial folder has the failing step; the install needs network access and curl, tar, and xz in the image (`bench agents {agent}` shows the install script)"
+            ),
+        ),
+    }
     .detail(format!("{message}\n{log_tail}"));
     if transient { p.transient() } else { p }
+}
+
+/// The last line an install script printed to say why it stopped
+/// (`BenchFlow: ...`), without BuildKit's step and time prefix
+/// (`#7 24.94 `). The script's own text, echoed in the build's error, holds
+/// the same words inside an `echo`, and is not taken.
+fn install_reason(log: &str) -> Option<String> {
+    log.lines().rev().find_map(|line| {
+        let mut rest = line.trim_start();
+        if let Some(step) = rest.strip_prefix('#') {
+            rest = step
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .trim_start();
+        }
+        rest = rest
+            .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.')
+            .trim_start();
+        let reason = rest.strip_prefix("BenchFlow: ")?;
+        Some(reason.trim_end().to_string())
+    })
 }
 
 /// The layers a trial of `attempt` on `task` adds to the task's image:
@@ -458,6 +536,58 @@ mod tests {
     }
 
     #[test]
+    fn an_install_that_says_why_it_stopped_is_named_by_its_words() {
+        // cline on Alpine (2026-10-12): the summary said the install needs
+        // network access and curl, though the install had said why.
+        let script = "RUN [\"/bin/sh\",\"-c\",\"... echo 'BenchFlow: cline does not start on this image' ...\"]";
+        for (log, words) in [
+            (
+                format!(
+                    "#7 [4/5] {script}\nBenchFlow: cline does not start on this image, which uses musl\nERROR: process {script} did not complete successfully: exit code: 1"
+                ),
+                "cline does not start on this image, which uses musl",
+            ),
+            (
+                format!(
+                    "#5 {script}\n#5 24.94 BenchFlow: goose's build for linux-x86_64 needs glibc's loader /lib64/ld-linux-x86-64.so.2\n#5 ERROR: exit code: 1"
+                ),
+                "goose's build for linux-x86_64 needs glibc's loader /lib64/ld-linux-x86-64.so.2",
+            ),
+        ] {
+            let p = layer_problem(
+                "cline",
+                SandboxError::Image {
+                    name: "t".into(),
+                    message: "the build failed".into(),
+                    log_tail: log,
+                    task_fault: false,
+                },
+            );
+            assert_eq!(p.code, "R201");
+            assert_eq!(
+                p.message,
+                format!("cline could not be installed on this image: {words}")
+            );
+            assert!(!p.next.contains("curl"), "{}", p.next);
+        }
+        // An install that said nothing of its own keeps the advice.
+        let p = layer_problem(
+            "cline",
+            SandboxError::Image {
+                name: "t".into(),
+                message: "the build failed".into(),
+                log_tail: format!("#7 {script}\nnpm ERR! network"),
+                task_fault: false,
+            },
+        );
+        assert!(
+            p.message.contains("which builds on its own"),
+            "{}",
+            p.message
+        );
+    }
+
+    #[test]
     fn a_check_image_is_keyed_by_its_reference_and_layers() {
         let a = pull_spec("check goose", "ubuntu:24.04", vec!["x".into()]);
         let b = pull_spec("check-kimi", "ubuntu:24.04", vec!["y".into()]);
@@ -595,6 +725,71 @@ mod tests {
             assert_eq!((p.code.as_str(), p.owner), ("R101", Owner::Task));
         }
         assert_eq!(*provider.prepared.lock().unwrap(), 1);
+    }
+
+    /// A layered Daytona build that ran out of time is not built again
+    /// without its layers: that would start a second builder of the same
+    /// slow Dockerfile beside the first, still running (decision 26). A
+    /// Docker timeout is still checked against the task's image alone, so a
+    /// hung install is the agent's (review E7-A 2). Guards both fixes on
+    /// `rust/e7-examples`.
+    #[tokio::test]
+    async fn a_daytona_build_out_of_time_is_not_built_again_without_its_layers() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello");
+        let task = benchflow_task::load(&fixture).expect("the hello fixture loads");
+        let layered = spec_for(&task, vec!["apt-get install -y iptables".into()]);
+        let daytona = "Daytona did not finish building the image within 135s (the task's build timeout plus 120s for Daytona's builder to start; it was `building_snapshot`)";
+        let provider = Counting::default();
+        provider
+            .failures
+            .lock()
+            .unwrap()
+            .push(image_error(false, daytona));
+        let p = Images::new()
+            .get(&provider, &layered, &|_| {}, None)
+            .await
+            .unwrap_err();
+        assert_eq!((p.code.as_str(), p.transient), ("R102", true), "{p:?}");
+        assert_eq!(*provider.prepared.lock().unwrap(), 1);
+        // Docker stopped the agent's install layers, and the task's image is
+        // cached: the check runs, and a hung install is the agent's (review
+        // E7-A 2).
+        let docker = "`docker build ...` (the agent's install layers) did not finish within the 15s build timeout and was stopped.";
+        let provider = Counting::default();
+        provider
+            .failures
+            .lock()
+            .unwrap()
+            .push(image_error(false, docker));
+        let p = Images::new()
+            .get(&provider, &layered, &|_| {}, Some("acme"))
+            .await
+            .unwrap_err();
+        assert_eq!((p.code.as_str(), p.owner), ("R201", Owner::Agent), "{p:?}");
+        assert_eq!(*provider.prepared.lock().unwrap(), 2);
+        // Docker's timeout of the task's own build or pull is never the
+        // agent's: no second build, R102 (review E7-C-A 2).
+        for step in [
+            "`docker build -f tasks/x/Dockerfile ...` (the task's image) did not finish within the 15s build timeout and was stopped.",
+            "`docker pull ghcr.io/acme/big:1` (the task's image) did not finish within the 15s build timeout and was stopped.",
+        ] {
+            let provider = Counting::default();
+            provider
+                .failures
+                .lock()
+                .unwrap()
+                .push(image_error(false, step));
+            let p = Images::new()
+                .get(&provider, &layered, &|_| {}, Some("acme"))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                (p.code.as_str(), p.owner),
+                ("R102", Owner::Sandbox),
+                "{p:?}"
+            );
+            assert_eq!(*provider.prepared.lock().unwrap(), 1, "{step}");
+        }
     }
 
     /// With an agent's install layers on top, a failed build is checked

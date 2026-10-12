@@ -1,0 +1,3 @@
+# A misspelled key is an error, not a silent default.
+targets = ["../tasks/hello"]
+agnet = "nop"

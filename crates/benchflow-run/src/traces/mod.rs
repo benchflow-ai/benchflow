@@ -21,7 +21,9 @@ pub mod pyjson;
 
 use std::path::{Path, PathBuf};
 
-use benchflow_agent::trajectory::{Redactor, python_float_repr, to_atif};
+use benchflow_agent::trajectory::{
+    DERIVED_TEXT_CAP, Redactor, cap_long_strings, python_float_repr, to_atif,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -171,7 +173,7 @@ fn refused(dir: &Path, rel: &str) -> bool {
 /// reads one trial's record and trajectory at a time (the rows it writes
 /// are still all held until the end).
 fn trials(job: &Path) -> impl Iterator<Item = Trial> {
-    let dirs: Vec<PathBuf> = if job.join("result.json").is_file() {
+    let dirs: Vec<PathBuf> = if crate::read::is_trial(job) {
         vec![job.to_path_buf()]
     } else {
         crate::read::trial_dirs(job).collect()
@@ -195,6 +197,20 @@ fn trials(job: &Path) -> impl Iterator<Item = Trial> {
         })
 }
 
+/// The HF columns that do not come from the (already redacted) ATIF
+/// document, redacted when a row is written.
+const NOT_FROM_THE_DOCUMENT: &[&str] = &[
+    "verifier_output",
+    "agent",
+    "model",
+    "model_provider",
+    "date",
+    "task",
+    "episode",
+    "run_id",
+    "trial_name",
+];
+
 /// A trial's ATIF document, and where it came from.
 pub fn trial_atif(dir: &Path, rec: &TrialRecord) -> Result<(Value, AtifSource), String> {
     for (rel, from) in [
@@ -211,8 +227,20 @@ pub fn trial_atif(dir: &Path, rec: &TrialRecord) -> Result<(Value, AtifSource), 
         };
         {
             let text = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
-            let doc: Value =
+            let mut doc: Value =
                 serde_json::from_str(&text).map_err(|e| format!("{rel} is not JSON: {e}"))?;
+            // Another harness's document never passed BenchFlow's redactor,
+            // and an export is meant to be shared.
+            Redactor::default().redact_json(&mut doc);
+            // Documents from 0.8 and earlier builds start with the prompt
+            // twice, and may hold a huge string again; the export holds each
+            // prompt once and caps what the raw log keeps whole.
+            drop_doubled_prompt(&mut doc);
+            cap_long_strings(
+                &mut doc,
+                DERIVED_TEXT_CAP,
+                "trajectory/acp_trajectory.jsonl",
+            );
             return Ok((doc, from));
         }
     }
@@ -224,10 +252,45 @@ pub fn trial_atif(dir: &Path, rec: &TrialRecord) -> Result<(Value, AtifSource), 
     }
     let events =
         trainer::read_events(dir).map_err(|e| format!("trajectory/acp_trajectory.jsonl: {e}"))?;
-    let mut doc = to_atif(&events, &trainer::atif_meta(&RolloutInfo::from_record(rec)))
-        .ok_or_else(|| no_steps_reason(rec))?;
+    let mut doc = to_atif(
+        &events,
+        &trainer::atif_meta(&RolloutInfo::from_record(rec).without_recorded_prompts(&events)),
+    )
+    .ok_or_else(|| no_steps_reason(rec))?;
     Redactor::default().redact_json(&mut doc);
+    cap_long_strings(
+        &mut doc,
+        DERIVED_TEXT_CAP,
+        "trajectory/acp_trajectory.jsonl",
+    );
     Ok((doc, AtifSource::Rebuilt))
+}
+
+/// Drop the first of two leading `user` steps with the same message (the
+/// prompt written twice by 0.8 and earlier builds), renumbering the steps.
+fn drop_doubled_prompt(doc: &mut Value) {
+    let Some(steps) = doc.get_mut("steps").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let doubled = steps.len() >= 2
+        && steps[0]["source"] == "user"
+        && steps[1]["source"] == "user"
+        && steps[0]["message"] == steps[1]["message"];
+    if !doubled {
+        return;
+    }
+    steps.remove(0);
+    for (i, step) in steps.iter_mut().enumerate() {
+        if let Some(step) = step.as_object_mut() {
+            step.insert("step_id".into(), json!(i + 1));
+        }
+    }
+    let total = steps.len();
+    if let Some(m) = doc.get_mut("final_metrics").and_then(Value::as_object_mut)
+        && m.contains_key("total_steps")
+    {
+        m.insert("total_steps".into(), json!(total));
+    }
 }
 
 /// Why a trial has no trajectory: it stopped before its agent ran, or its
@@ -291,15 +354,26 @@ fn run_meta(t: &Trial, run_id: &str) -> hf::RunMeta {
     }
 }
 
-/// The first non-blank message, as Harbor's `instruction` column.
+/// The `instruction` column: the first non-blank user message, else the
+/// first non-blank message. A native loop's trajectory starts with its system
+/// prompt, which is the same for every task and not the instruction.
 fn instruction(doc: &Value) -> Value {
-    doc.get("steps")
+    let steps: Vec<&Value> = doc
+        .get("steps")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|s| s.get("message").and_then(Value::as_str))
-        .map(str::trim)
-        .find(|m| !m.is_empty())
+        .collect();
+    let first = |user_only: bool| {
+        steps
+            .iter()
+            .filter(|s| !user_only || s.get("source").and_then(Value::as_str) == Some("user"))
+            .filter_map(|s| s.get("message").and_then(Value::as_str))
+            .map(str::trim)
+            .find(|m| !m.is_empty())
+    };
+    first(true)
+        .or_else(|| first(false))
         .map_or(Value::Null, |m| json!(m))
 }
 
@@ -412,6 +486,20 @@ pub fn export_hf(
                                     Value::Array(hf::sharegpt(&conv)),
                                 );
                             }
+                            // The columns built from the trajectory come from the
+                            // document `trial_atif` redacted; the rest (the
+                            // verifier's output, the trial's metadata) are
+                            // redacted here, each value once. Redacting a whole
+                            // conversation again would see the message and every
+                            // tool call as one string, and a key's BEGIN marker in
+                            // one call and END marker in the next would swallow
+                            // what lies between.
+                            let redactor = Redactor::default();
+                            for key in NOT_FROM_THE_DOCUMENT {
+                                if let Some(value) = row.get_mut(*key) {
+                                    redactor.redact_json(value);
+                                }
+                            }
                             lines.push(serde_json::to_string(&Value::Object(row)).expect("JSON"));
                             entry.written += 1;
                         }
@@ -439,7 +527,8 @@ pub fn export_hf(
         written: lines.len(),
         trials: report,
     };
-    std::fs::write(&card, dataset_card(&run_id, &seen, &rep, opts)).map_err(io(&card))?;
+    let text = dataset_card(&run_id, &seen, &rep, opts);
+    std::fs::write(&card, Redactor::default().redact(&text).as_ref()).map_err(io(&card))?;
     Ok(rep)
 }
 
@@ -472,6 +561,10 @@ pub fn export_otel(
                 Err(why) => entry.skipped = Some(why),
                 Ok((doc, from)) => {
                     entry.atif = Some(from);
+                    // The document was redacted value by value in `trial_atif`;
+                    // the rest of the line is names, ids and numbers. Redacting
+                    // the serialized line could break an escape or join two
+                    // values (a key's BEGIN and END markers in two spans).
                     let line = otel::trace_line(&doc, &name, "benchflow");
                     entry.written = line.matches("\"spanId\": ").count();
                     lines.push(line);
@@ -627,6 +720,344 @@ mod tests {
         assert_eq!(m.date, "2026-10-10 05:37:38.402901");
     }
 
+    /// E1: another harness's job folder has a result.json of its own next
+    /// to its trial folders; the export read the folder as one trial with
+    /// no trajectory and refused the job.
+    #[test]
+    fn a_job_with_its_own_result_json_exports_its_trials() {
+        let job = tempfile::tempdir().unwrap();
+        std::fs::write(job.path().join("result.json"), r#"{"n_total_trials": 1}"#).unwrap();
+        let trial = job.path().join("fix-git__SFjiUpt");
+        std::fs::create_dir_all(trial.join("agent")).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            json!({"task_name": "fix-git", "verifier_result": {"rewards": {"reward": 1.0}},
+                   "agent_info": {"name": "opencode", "model_info": {"name": "m", "provider": "p"}},
+                   "started_at": "2026-10-12T02:27:36.383539Z"})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            trial.join("agent/trajectory.json"),
+            json!({"schema_version": "ATIF-v1.7", "agent": {"name": "opencode", "version": "1.18.11"},
+                   "steps": [{"step_id": 1, "source": "user", "message": "Fix it."},
+                             {"step_id": 2, "source": "agent", "message": "Done."}]})
+            .to_string(),
+        )
+        .unwrap();
+        let found: Vec<Trial> = trials(job.path()).collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].dir, trial);
+        assert_eq!(run_meta(&found[0], "job").result.as_deref(), Some("1.0"));
+        let (doc, _) = trial_atif(&trial, &found[0].rec).unwrap();
+        assert_eq!(doc["steps"][1]["message"], "Done.");
+    }
+
+    /// Review E1-A 1: a native loop's ATIF starts with its system prompt;
+    /// the instruction column is the task's prompt, not that.
+    #[test]
+    fn the_instruction_is_the_first_user_message() {
+        let doc = json!({"steps": [
+            {"step_id": 1, "source": "system", "message": "You are an autonomous agent."},
+            {"step_id": 2, "source": "user", "message": "  Fix the repo.  "},
+            {"step_id": 3, "source": "agent", "message": "Done."}]});
+        assert_eq!(instruction(&doc), json!("Fix the repo."));
+        // With no user step, the first message stands in, as before.
+        let doc = json!({"steps": [{"step_id": 1, "source": "agent", "message": "hi"}]});
+        assert_eq!(instruction(&doc), json!("hi"));
+    }
+
+    /// Review E1-B 2: another harness's `agent/trajectory.json` is exported
+    /// redacted, as BenchFlow's own documents are.
+    #[test]
+    fn another_harness_trajectory_is_redacted_before_export() {
+        let trial = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(trial.path().join("agent")).unwrap();
+        std::fs::write(
+            trial.path().join("result.json"),
+            json!({"task_name": "t", "verifier_result": {"rewards": {"reward": 1.0}}}).to_string(),
+        )
+        .unwrap();
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+        std::fs::write(
+            trial.path().join("agent/trajectory.json"),
+            json!({"schema_version": "ATIF-v1.7", "agent": {"name": "a", "version": "1"},
+                   "steps": [{"step_id": 1, "source": "agent", "message": format!("the key is {key}")}]})
+            .to_string(),
+        )
+        .unwrap();
+        let rec = crate::read::read_trial(trial.path()).unwrap();
+        let (doc, _) = trial_atif(trial.path(), &rec).unwrap();
+        let text = doc.to_string();
+        assert!(!text.contains(key), "{text}");
+    }
+
+    /// Review E1-C-B 1: `--verifier-output` copied the verifier's stdout
+    /// into the dataset unredacted, while every other column came from the
+    /// redacted trajectory.
+    #[test]
+    fn the_verifier_output_column_is_redacted() {
+        let job = tempfile::tempdir().unwrap();
+        let trial = job.path().join("t__1");
+        std::fs::create_dir_all(trial.join("agent")).unwrap();
+        std::fs::create_dir_all(trial.join("verifier")).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            json!({"task_name": "t", "rollout_name": "t__1", "rewards": {"reward": 0.0}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            trial.join("agent/trajectory.json"),
+            json!({"schema_version": "ATIF-v1.8", "agent": {"name": "a", "version": "1"},
+                   "steps": [{"step_id": 1, "source": "user", "message": "Do it."},
+                             {"step_id": 2, "source": "agent", "message": "Done."}]})
+            .to_string(),
+        )
+        .unwrap();
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+        std::fs::write(
+            trial.join("verifier/test-stdout.txt"),
+            format!("FAILED: env ANTHROPIC_API_KEY={key}\n"),
+        )
+        .unwrap();
+        let out = job.path().join("out");
+        let opts = ExportOptions {
+            verifier_output: true,
+            ..ExportOptions::default()
+        };
+        export_hf(job.path(), &out, &opts).unwrap();
+        let rows = std::fs::read_to_string(out.join("data/train.jsonl")).unwrap();
+        assert!(rows.contains("FAILED: env ANTHROPIC_API_KEY="), "{rows}");
+        assert!(!rows.contains(key), "{rows}");
+        let otel = job.path().join("otel.jsonl");
+        export_otel(job.path(), &otel, &ExportOptions::default()).unwrap();
+        assert!(!std::fs::read_to_string(&otel).unwrap().contains(key));
+    }
+
+    /// Review E1-D-A 1: redacting the serialized OpenTelemetry line matched
+    /// `?api_key=` up to the backslash of an escaped quote and left the line
+    /// unreadable. The trace's values are redacted before it is serialized.
+    #[test]
+    fn a_redacted_trace_line_is_still_json() {
+        let job = tempfile::tempdir().unwrap();
+        let trial = job.path().join("t__1");
+        std::fs::create_dir_all(trial.join("agent")).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            json!({"task_name": "t", "rollout_name": "t__1", "rewards": {"reward": 1.0}})
+                .to_string(),
+        )
+        .unwrap();
+        let code = r#"url = "https://api.example.com/v1/data?api_key=" + key"#;
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+        std::fs::write(
+            trial.join("agent/trajectory.json"),
+            json!({"schema_version": "ATIF-v1.8", "agent": {"name": "a", "version": "1"},
+                   "steps": [{"step_id": 1, "source": "user", "message": "Write the client."},
+                             {"step_id": 2, "source": "agent", "message": code,
+                              "tool_calls": [{"tool_call_id": "c1", "function_name": "write",
+                                              "arguments": {"content": code}}],
+                              "observation": {"results": [{"source_call_id": "c1",
+                                  "content": format!("{code}\nexport KEY={key}")}]}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let out = job.path().join("otel.jsonl");
+        export_otel(job.path(), &out, &ExportOptions::default()).unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(!text.contains(key), "{text}");
+        for line in text.lines() {
+            let trace: Value = serde_json::from_str(line).expect("each trace line is JSON");
+            assert!(trace.to_string().contains("?api_key="), "{trace}");
+        }
+    }
+
+    /// Review E1-D-B 2: redacting a whole row again saw an assistant turn's
+    /// message and tool calls as one string, and a key's BEGIN marker in one
+    /// call and END marker in the next merged the two calls. Rows and traces
+    /// keep both calls.
+    #[test]
+    fn key_markers_in_two_tool_calls_stay_two_tool_calls() {
+        let job = tempfile::tempdir().unwrap();
+        let trial = job.path().join("t__1");
+        std::fs::create_dir_all(trial.join("agent")).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            json!({"task_name": "t", "rollout_name": "t__1", "rewards": {"reward": 1.0}})
+                .to_string(),
+        )
+        .unwrap();
+        let begin = "head -1 /app/ssl/server.key | grep -qx -- '-----BEGIN PRIVATE KEY-----'";
+        let end = "tail -1 /app/ssl/server.key | grep -qx -- '-----END PRIVATE KEY-----'";
+        std::fs::write(
+            trial.join("agent/trajectory.json"),
+            json!({"schema_version": "ATIF-v1.8", "agent": {"name": "a", "version": "1"},
+                   "steps": [{"step_id": 1, "source": "user", "message": "Check the key."},
+                             {"step_id": 2, "source": "agent", "message": "Checking both ends.",
+                              "tool_calls": [
+                                  {"tool_call_id": "c1", "function_name": "bash", "arguments": {"command": begin}},
+                                  {"tool_call_id": "c2", "function_name": "bash", "arguments": {"command": end}}],
+                              "observation": {"results": [
+                                  {"source_call_id": "c1", "content": "ok"},
+                                  {"source_call_id": "c2", "content": "ok"}]}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let out = job.path().join("hf");
+        let opts = ExportOptions {
+            sharegpt: true,
+            ..ExportOptions::default()
+        };
+        export_hf(job.path(), &out, &opts).unwrap();
+        let rows = std::fs::read_to_string(out.join("data/train.jsonl")).unwrap();
+        let row: Value = serde_json::from_str(rows.lines().next().unwrap()).unwrap();
+        let assistant = row["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(assistant.matches("<tool_call>").count(), 2, "{assistant}");
+        assert!(assistant.contains("BEGIN PRIVATE KEY") && assistant.contains("END PRIVATE KEY"));
+        let otel = job.path().join("otel.jsonl");
+        export_otel(job.path(), &otel, &ExportOptions::default()).unwrap();
+        let line = std::fs::read_to_string(&otel).unwrap();
+        let trace: Value = serde_json::from_str(line.trim()).unwrap();
+        let text = trace.to_string();
+        assert!(
+            text.contains("BEGIN PRIVATE KEY") && text.contains("END PRIVATE KEY"),
+            "{text}"
+        );
+    }
+
+    /// Review E1-E-B 1: a private key read in two tool calls left half in
+    /// each result; neither value held both markers, so neither was redacted,
+    /// and the row's tool message joined the halves into the whole key.
+    #[test]
+    fn a_key_split_over_two_tool_results_is_not_exported() {
+        let job = tempfile::tempdir().unwrap();
+        let trial = job.path().join("t__1");
+        std::fs::create_dir_all(trial.join("agent")).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            json!({"task_name": "t", "rollout_name": "t__1", "rewards": {"reward": 1.0}})
+                .to_string(),
+        )
+        .unwrap();
+        let line = |c: char| std::iter::repeat_n(c, 64).collect::<String>();
+        let (b1, b2, b3, b4) = (line('A'), line('B'), line('C'), line('D'));
+        let first = format!("-----BEGIN PRIVATE KEY-----\n{b1}\n{b2}");
+        let second = format!("{b3}\n{b4}\n-----END PRIVATE KEY-----");
+        std::fs::write(
+            trial.join("agent/trajectory.json"),
+            json!({"schema_version": "ATIF-v1.8", "agent": {"name": "a", "version": "1"},
+                   "steps": [{"step_id": 1, "source": "user", "message": "Read the key."},
+                             {"step_id": 2, "source": "agent", "message": "",
+                              "tool_calls": [
+                                  {"tool_call_id": "c1", "function_name": "bash", "arguments": {"command": "head -n 3 server.key"}},
+                                  {"tool_call_id": "c2", "function_name": "bash", "arguments": {"command": "tail -n +4 server.key"}}],
+                              "observation": {"results": [
+                                  {"source_call_id": "c1", "content": first},
+                                  {"source_call_id": "c2", "content": second}]}},
+                             {"step_id": 3, "source": "agent", "message": "Done."}]})
+            .to_string(),
+        )
+        .unwrap();
+        let out = job.path().join("hf");
+        export_hf(job.path(), &out, &ExportOptions::default()).unwrap();
+        let rows = std::fs::read_to_string(out.join("data/train.jsonl")).unwrap();
+        let otel = job.path().join("otel.jsonl");
+        export_otel(job.path(), &otel, &ExportOptions::default()).unwrap();
+        let trace = std::fs::read_to_string(&otel).unwrap();
+        for text in [&rows, &trace] {
+            for body in [&b1, &b2, &b3, &b4] {
+                assert!(!text.contains(body.as_str()), "{text}");
+            }
+            assert!(text.contains("BEGIN PRIVATE KEY") && text.contains("END PRIVATE KEY"));
+        }
+        for line in rows.lines().chain(trace.lines()) {
+            serde_json::from_str::<Value>(line).expect("JSON");
+        }
+        // Still two tool calls.
+        let row: Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+        let calls: usize = row["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "assistant")
+            .map(|m| {
+                m["content"]
+                    .as_str()
+                    .unwrap()
+                    .matches("<tool_call>")
+                    .count()
+            })
+            .sum();
+        assert_eq!(calls, 2, "{row}");
+    }
+
+    /// Review E1-F-B: an OpenSSH RSA key (made up here) read in two tool
+    /// calls. Its last body line is short (`AQIDBA==`), and the END half,
+    /// which holds the key's last prime, was exported whole.
+    #[test]
+    fn an_openssh_rsa_key_split_over_two_tool_results_is_not_exported() {
+        let job = tempfile::tempdir().unwrap();
+        let trial = job.path().join("t__1");
+        std::fs::create_dir_all(trial.join("agent")).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            json!({"task_name": "t", "rollout_name": "t__1", "rewards": {"reward": 1.0}})
+                .to_string(),
+        )
+        .unwrap();
+        let line = |c: char| std::iter::repeat_n(c, 70).collect::<String>();
+        let head_body = format!(
+            "b3BlbnNzaC1rZXktdjEAAAAABG5vbmU{}\n{}",
+            "x".repeat(39),
+            line('h')
+        );
+        let tail_body = [line('p'), line('q'), line('Q'), "AQIDBA==".to_string()];
+        let first = format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{head_body}");
+        let second = format!(
+            "{}\n-----END OPENSSH PRIVATE KEY-----\n",
+            tail_body.join("\n")
+        );
+        std::fs::write(
+            trial.join("agent/trajectory.json"),
+            json!({"schema_version": "ATIF-v1.8", "agent": {"name": "a", "version": "1"},
+                   "steps": [{"step_id": 1, "source": "user", "message": "Read the key."},
+                             {"step_id": 2, "source": "agent", "message": "",
+                              "tool_calls": [
+                                  {"tool_call_id": "c1", "function_name": "bash", "arguments": {"command": "head -n 3 id_rsa"}},
+                                  {"tool_call_id": "c2", "function_name": "bash", "arguments": {"command": "tail -n +4 id_rsa"}}],
+                              "observation": {"results": [
+                                  {"source_call_id": "c1", "content": first},
+                                  {"source_call_id": "c2", "content": second}]}},
+                             {"step_id": 3, "source": "agent", "message": "Done."}]})
+            .to_string(),
+        )
+        .unwrap();
+        let out = job.path().join("hf");
+        export_hf(job.path(), &out, &ExportOptions::default()).unwrap();
+        let rows = std::fs::read_to_string(out.join("data/train.jsonl")).unwrap();
+        let otel = job.path().join("otel.jsonl");
+        export_otel(job.path(), &otel, &ExportOptions::default()).unwrap();
+        let trace = std::fs::read_to_string(&otel).unwrap();
+        for text in [&rows, &trace] {
+            for body in tail_body.iter().chain([&line('h')]) {
+                assert!(!text.contains(body.as_str()), "{body} in {text}");
+            }
+            assert!(text.contains("END OPENSSH PRIVATE KEY"));
+        }
+        for l in rows.lines().chain(trace.lines()) {
+            serde_json::from_str::<Value>(l).expect("JSON");
+        }
+    }
+
     #[test]
     fn a_trial_stopped_before_its_agent_says_so() {
         let rec = |problem: Value| {
@@ -648,5 +1079,27 @@ mod tests {
             no_steps_reason(&agent),
             "no trajectory: the agent recorded no steps"
         );
+    }
+
+    #[test]
+    fn a_document_with_the_prompt_twice_exports_it_once() {
+        let mut doc = json!({"steps": [
+            {"step_id": 1, "source": "user", "message": "fix it"},
+            {"step_id": 2, "source": "user", "message": "fix it", "timestamp": "2026-10-10T00:00:00+00:00"},
+            {"step_id": 3, "source": "agent", "message": "done"},
+        ], "final_metrics": {"total_steps": 3}});
+        drop_doubled_prompt(&mut doc);
+        let steps = doc["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0]["timestamp"], "2026-10-10T00:00:00+00:00");
+        assert_eq!(steps[1]["step_id"], 2);
+        assert_eq!(doc["final_metrics"]["total_steps"], 2);
+        // Two different user turns stay.
+        let mut two = json!({"steps": [
+            {"step_id": 1, "source": "user", "message": "a"},
+            {"step_id": 2, "source": "user", "message": "b"},
+        ]});
+        drop_doubled_prompt(&mut two);
+        assert_eq!(two["steps"].as_array().unwrap().len(), 2);
     }
 }

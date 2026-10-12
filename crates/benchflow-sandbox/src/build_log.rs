@@ -37,6 +37,20 @@ const TRANSIENT: &[&str] = &[
     "tls: handshake failure",
 ];
 
+/// The build lost its daemon (E5: the Docker daemon killed mid-build was the
+/// task's R101, by BuildKit's generic "failed to solve"). Read only in the
+/// build's own last error line ([`key_line`]): a `RUN docker version` in a
+/// Dockerfile prints "Cannot connect to the Docker daemon" too, and a later
+/// failing step is still the task's (E5 review A3).
+const DAEMON_LOST: &[&str] = &[
+    "error reading from server: eof",
+    "failed to solve: unavailable",
+    "code = unavailable",
+    "transport is closing",
+    "cannot connect to the docker daemon",
+    "error during connect",
+];
+
 /// Output that means the Dockerfile (or the image it names) is at fault.
 const TASK_FAULT: &[&str] = &[
     "did not complete successfully",
@@ -72,12 +86,18 @@ pub(crate) struct Reading {
 /// Read a failed build's output.
 pub(crate) fn read(text: &str) -> Reading {
     let lower = text.to_lowercase();
-    let transient = TRANSIENT.iter().copied().find(|p| lower.contains(p));
+    let key = key_line(text);
+    let key_lower = key.to_lowercase();
+    let transient = TRANSIENT
+        .iter()
+        .copied()
+        .find(|p| lower.contains(p))
+        .or_else(|| DAEMON_LOST.iter().copied().find(|p| key_lower.contains(p)));
     let task_fault = transient.is_none() && TASK_FAULT.iter().any(|p| lower.contains(p));
     Reading {
         transient,
         task_fault,
-        key_line: key_line(text),
+        key_line: key,
     }
 }
 
@@ -115,6 +135,34 @@ mod tests {
         assert!(r.task_fault);
         assert!(r.transient.is_none());
         assert!(r.key_line.starts_with("ERROR: failed to solve"));
+    }
+
+    /// E5 (the Docker daemon killed mid-build on the VM): the build's
+    /// lost connection was read as the Dockerfile's failure (R101).
+    #[test]
+    fn a_build_that_lost_its_daemon_is_not_the_tasks_fault() {
+        for text in [
+            "ERROR: failed to build: failed to solve: Unavailable: error reading from server: EOF",
+            "ERROR: failed to solve: rpc error: code = Unavailable desc = transport is closing",
+            "Cannot connect to the Docker daemon at tcp://127.0.0.1:23751. Is the docker daemon running?",
+            "error during connect: Post \"http://127.0.0.1:23751/v1.52/build\": EOF",
+        ] {
+            let r = read(text);
+            assert!(r.transient.is_some(), "{text}");
+            assert!(!r.task_fault, "{text}");
+        }
+    }
+
+    /// E5 review (A3): a step that prints the daemon's words (`RUN docker
+    /// version || true` with no daemon) before a later step fails is the
+    /// task's failure, not a lost daemon.
+    #[test]
+    fn a_step_that_prints_the_daemons_words_is_still_the_tasks() {
+        let r = read(
+            "#6 [2/3] RUN docker version || true\n#6 0.21 Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n#6 0.22 rpc error: code = Unavailable desc = transport is closing\n#6 DONE 0.3s\n#7 [3/3] RUN exit 3\nERROR: failed to solve: process \"/bin/sh -c exit 3\" did not complete successfully: exit code: 3\n",
+        );
+        assert!(r.transient.is_none(), "{r:?}");
+        assert!(r.task_fault);
     }
 
     #[test]

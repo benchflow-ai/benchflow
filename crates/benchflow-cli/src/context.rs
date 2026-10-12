@@ -270,28 +270,78 @@ fn crashed(path: &std::path::Path, message: String) -> CheckReport {
     report
 }
 
+/// The error for task roots that hold no task. Terminal-Bench v1 tasks
+/// (`task.yaml`) are found but not run as they are, so when the roots hold
+/// some, the error says so and gives the `bench import` that converts them.
+pub fn no_tasks(roots: &[PathBuf]) -> CliError {
+    let shown: Vec<String> = roots.iter().map(|r| crate::ui::path(r)).collect();
+    let err = CliError::usage(format!("no tasks found in {}", shown.join(", ")));
+    let tbench: Vec<&PathBuf> = roots
+        .iter()
+        .filter(|r| !benchflow_task::convert::discover_tbench(r).is_empty())
+        .collect();
+    match tbench.first() {
+        Some(root) => {
+            let n: usize = tbench
+                .iter()
+                .map(|r| benchflow_task::convert::discover_tbench(r).len())
+                .sum();
+            let what = if n == 1 {
+                "it holds a Terminal-Bench v1 task (task.yaml)".to_string()
+            } else {
+                format!("it holds {n} Terminal-Bench v1 tasks (task.yaml)")
+            };
+            err.next(format!(
+                "{what}, which runs once converted to task.md: `bench import {}`",
+                crate::ui::path(root),
+            ))
+        }
+        None => err
+            .next("a task is a folder with task.md (or task.toml); `bench new <name>` creates one"),
+    }
+}
+
 /// Load tasks for running: discover, check, and keep the ones that load.
 /// Prints the problems of the ones that do not, and fails when none load.
 pub fn load_tasks(roots: &[PathBuf]) -> Result<(Vec<Arc<TaskPackage>>, Vec<CheckReport>)> {
+    load_tasks_noting(roots).map(|(tasks, bad, _)| (tasks, bad))
+}
+
+/// A warning the check of a loadable task found, with the task's name: a
+/// setting the reader ignored or dropped, which a run should show.
+pub type TaskWarning = (String, benchflow_task::Diagnostic);
+
+/// The tasks that load, the reports of those that do not, and the loaded
+/// tasks' warnings.
+pub type Loaded = (Vec<Arc<TaskPackage>>, Vec<CheckReport>, Vec<TaskWarning>);
+
+/// As [`load_tasks`], and also the warnings of the tasks that load, so a
+/// run can say what it will not apply (`allow_internet` in the wrong
+/// table, a Compose value taken from the host) as `bench check` does.
+pub fn load_tasks_noting(roots: &[PathBuf]) -> Result<Loaded> {
     let paths = discover(roots)?;
     if paths.is_empty() {
-        let shown: Vec<String> = roots.iter().map(|r| crate::ui::path(r)).collect();
-        return Err(
-            CliError::usage(format!("no tasks found in {}", shown.join(", "))).next(
-                "a task is a folder with task.md (or task.toml); `bench new <name>` creates one",
-            ),
-        );
+        return Err(no_tasks(roots));
     }
     let reports = check_all(&paths, &CheckOptions::default());
     let mut tasks = Vec::new();
     let mut bad = Vec::new();
+    let mut warnings = Vec::new();
     for r in reports {
         match (&r.package, r.ok()) {
-            (Some(p), true) => tasks.push(Arc::new(p.clone())),
+            (Some(p), true) => {
+                warnings.extend(
+                    r.diagnostics
+                        .iter()
+                        .filter(|d| d.severity == benchflow_task::Severity::Warning)
+                        .map(|d| (p.name.clone(), d.clone())),
+                );
+                tasks.push(Arc::new(p.clone()));
+            }
             _ => bad.push(r),
         }
     }
-    Ok((tasks, bad))
+    Ok((tasks, bad, warnings))
 }
 
 /// Filter tasks by name globs and a count limit.

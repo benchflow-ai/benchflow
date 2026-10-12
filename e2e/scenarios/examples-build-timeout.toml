@@ -1,0 +1,13 @@
+# examples/tasks/build-timeout on Daytona: a build that outlives the task's build timeout (plus Daytona's 120 s for its builder) is errored (R102). A known limit: R102 there is transient, so the trial is retried, and the builder is left running to finish (one per image: a retry waits for it), so sandboxes are left behind (E7 finding 11).
+tier = "full"
+needs = ["sandbox"]
+backends = ["daytona"]
+tasks = ["examples/build-timeout"]
+limit = "a build past the task's build timeout is left running on Daytona, so its builder sandbox outlives the run (one per image; E7 finding 11, decision 26)"
+limit_matches = "left"
+
+[[step]]
+run = ["run", "tasks/build-timeout", "-s", "{backend}", "--job", "build-timeout"]
+exit = 1
+timeout = 1200
+trials = [{ job = "build-timeout", task = "build-timeout", status = "errored", code = "R102" }]

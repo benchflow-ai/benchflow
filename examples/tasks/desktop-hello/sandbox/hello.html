@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hello, desktop</title>
+<style>
+  body { font-family: "Liberation Sans", sans-serif; margin: 60px; font-size: 22px; }
+  input { font-size: 30px; padding: 24px 12px; width: 360px; }
+  button { font-size: 30px; padding: 24px 36px; margin-left: 16px; }
+  #code { margin-top: 40px; font-size: 48px; font-weight: bold; color: #0a6; }
+</style>
+</head>
+<body>
+<h1>Hello, desktop</h1>
+<p>Type a name, then press Show code.</p>
+<label for="name">Name</label><br>
+<input id="name" autocomplete="off" autofocus>
+<button id="show">Show code</button>
+<div id="code"></div>
+<script>
+  document.getElementById("show").addEventListener("click", function () {
+    var name = document.getElementById("name").value.trim();
+    var out = document.getElementById("code");
+    if (!name) { out.textContent = "Type a name first."; return; }
+    var h = 7;
+    for (var i = 0; i < name.length; i++) { h = (h * 31 + name.charCodeAt(i)) % 9973; }
+    out.textContent = "HELLO-" + String(h).padStart(4, "0");
+  });
+</script>
+</body>
+</html>

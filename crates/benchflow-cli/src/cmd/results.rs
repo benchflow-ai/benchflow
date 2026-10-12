@@ -367,13 +367,37 @@ fn one(v: &JobView, list_trials: bool) -> Result<Exit> {
     for line in engine::stopped_lines(&v.records) {
         say!("{line}");
     }
-    let never = v.never_ran();
+    for line in engine::score_warnings(&v.records) {
+        say!("{line}");
+    }
+    let unreadable = v.unreadable();
+    let never = v.never_ran().saturating_sub(unreadable.len());
     if never > 0 {
         say!(
             "  {} {} planned never ran (the run was drained or stopped first, or a login ran out); \
              running the job's command again runs them",
             warn_mark(),
             plural(never, "trial")
+        );
+    }
+    if !unreadable.is_empty() {
+        say!(
+            "  {} {} ran, but {} result.json could not be read (cut, empty, or not JSON), so {} left out; \
+             running the job's command again runs {} again: {}",
+            warn_mark(),
+            plural(unreadable.len(), "trial"),
+            if unreadable.len() == 1 {
+                "its"
+            } else {
+                "their"
+            },
+            if unreadable.len() == 1 {
+                "it is"
+            } else {
+                "they are"
+            },
+            if unreadable.len() == 1 { "it" } else { "them" },
+            unreadable.join(", ")
         );
     }
     Ok(Exit::Ok)
@@ -529,7 +553,14 @@ fn job_json(v: &JobView) -> serde_json::Value {
         "pass_rate": rate,
         "scored": tally.scored,
         "stopped": tally.stopped,
+        // Scored although locked_system_dirs failed (the score stands).
+        "graded_unlocked_system_dirs": tally.graded_unlocked,
+        // Rewards outside [0, 1], counted as written.
+        "rewards_out_of_range": v.records.iter().filter(|r| !r.stopped()).filter_map(|r| {
+            r.reward_out_of_range().map(|x| json!({"trial": r.rollout_name, "reward": x}))
+        }).collect::<Vec<_>>(),
         "never_ran": v.never_ran(),
+        "unreadable": v.unreadable(),
         // Stopped or never-run trials: the pass rate is not the whole job's.
         "partial": tally.stopped + v.never_ran() > 0,
         // What the trials that recorded a cost cost, and how many did:

@@ -170,7 +170,7 @@ pub struct TrialDir {
 /// The job's trials that did not pass, in folder order. A trial folder given
 /// as the job is a job of one.
 pub fn failed_trials(job: &Path) -> Vec<TrialDir> {
-    let dirs: Vec<PathBuf> = if job.join("result.json").is_file() {
+    let dirs: Vec<PathBuf> = if crate::read::is_trial(job) {
         vec![job.to_path_buf()]
     } else {
         read::trial_dirs(job).collect()

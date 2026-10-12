@@ -39,6 +39,8 @@ enum Behavior {
     Solve,
     Silent,
     CrashAtStart,
+    /// One finished tool call, then the turn never ends.
+    CallThenWait,
 }
 
 #[derive(Default)]
@@ -164,6 +166,16 @@ impl Sandbox for FakeSandbox {
                                 json!({"stopReason": "end_turn", "usage":
                                        {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}}),
                             )));
+                        }
+                        Behavior::CallThenWait => {
+                            out.push_str(&send(update(json!({"sessionUpdate": "tool_call",
+                                "toolCallId": "t1", "title": "bash look.sh", "kind": "execute",
+                                "status": "completed"}))));
+                            out.push_str(&send(update(
+                                json!({"sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": "Still working."}}),
+                            )));
+                            pending_prompt = id.clone();
                         }
                         _ => pending_prompt = id.clone(),
                     },
@@ -368,6 +380,7 @@ fn task(root: &Path, agent_timeout: Duration) -> TaskPackage {
             network: None,
             isolation: Isolation::Shared,
             rubric: None,
+            reward_range: None,
         },
         oracle: None,
         controls: Vec::new(),
@@ -415,6 +428,16 @@ async fn run_manifest(
 }
 
 async fn run_agent(behavior: Behavior, agent_timeout: Duration, agent: AcpAgent) -> RunOne {
+    run_agent_stopping(behavior, agent_timeout, agent, None).await
+}
+
+/// `run_agent`, with the run stopped (Ctrl-C) after `stop_after`.
+async fn run_agent_stopping(
+    behavior: Behavior,
+    agent_timeout: Duration,
+    agent: AcpAgent,
+    stop_after: Option<Duration>,
+) -> RunOne {
     let tmp = tempfile::tempdir().unwrap();
     let t = Arc::new(task(&tmp.path().join("acp"), agent_timeout));
     let provider = Arc::new(FakeProvider {
@@ -422,8 +445,16 @@ async fn run_agent(behavior: Behavior, agent_timeout: Duration, agent: AcpAgent)
         worlds: Mutex::new(Vec::new()),
         prepared: Mutex::new(Vec::new()),
     });
-    let (_tx, rx) = stop_switch();
-    std::mem::forget(_tx);
+    let (tx, rx) = stop_switch();
+    match stop_after {
+        Some(after) => {
+            tokio::spawn(async move {
+                tokio::time::sleep(after).await;
+                let _ = tx.send(true);
+            });
+        }
+        None => std::mem::forget(tx),
+    }
     let rt = Arc::new(Runtime {
         provider: provider.clone(),
         images: Images::new(),
@@ -449,6 +480,32 @@ async fn run_agent(behavior: Behavior, agent_timeout: Duration, agent: AcpAgent)
     let rec = out.records[0].clone();
     let dir = out.dir.join(&rec.rollout_name);
     (rec, dir, provider, tmp)
+}
+
+#[tokio::test]
+async fn a_trial_stopped_mid_turn_keeps_the_counts_its_log_shows() {
+    // Stopped while the agent worked: the record's tool calls and summary
+    // come from the raw log, not zero.
+    let manifest = AgentManifest::parse(MANIFEST, ManifestSource::Builtin("fake.toml")).unwrap();
+    let agent = AcpAgent::new(manifest, None, None, &HostEnv::new(BTreeMap::new(), None));
+    let (rec, dir, _p, _tmp) = run_agent_stopping(
+        Behavior::CallThenWait,
+        Duration::from_secs(60),
+        agent,
+        Some(Duration::from_secs(3)),
+    )
+    .await;
+    assert_eq!(
+        rec.problem.as_ref().unwrap().code,
+        "R001",
+        "{:?}",
+        rec.problem
+    );
+    let log = std::fs::read_to_string(dir.join("trajectory/acp_trajectory.jsonl")).unwrap();
+    assert!(log.contains("bash look.sh"), "{log}");
+    assert_eq!(rec.tool_calls, 1);
+    assert_eq!(rec.trajectory_summary["tool_call_steps"], 1);
+    assert_eq!(rec.trajectory_summary["partial_trajectory"], true);
 }
 
 #[tokio::test]
@@ -718,13 +775,18 @@ async fn a_scored_trial_and_its_job_get_trainer_files() {
     let (rec, dir, _p, _tmp) = run_one(Behavior::Solve, Duration::from_secs(60)).await;
     assert_eq!(rec.status, Status::Scored, "{:?}", rec.problem);
     let read = |path: &Path| std::fs::read_to_string(path).unwrap();
-    // 0.8 hands the trainer writer the prompts and the trajectory, which
-    // records the prompt too, so the prompt appears twice, as in 0.8.
+    // The agent's version, from its ACP `agentInfo`, is in result.json.
+    assert_eq!(rec.agent_version.as_deref(), Some("1.0"));
+    let result: Value = serde_json::from_str(&read(&dir.join("result.json"))).unwrap();
+    assert_eq!(result["agent_version"], "1.0");
+    // 0.8 handed the trainer writer the prompts and the trajectory, which
+    // records the prompt too, so 0.8 wrote the prompt twice. The prompt is
+    // one user turn here.
     let verifiers = read(&dir.join("trainer/verifiers.jsonl"));
     assert_eq!(
         verifiers,
         concat!(
-            r#"{"example_id": 0, "prompt": [{"role": "user", "content": "Make the test pass."}, {"role": "user", "content": "Make the test pass."}], "#,
+            r#"{"example_id": 0, "prompt": [{"role": "user", "content": "Make the test pass."}], "#,
             r#""completion": [{"role": "assistant", "content": "[tool_call: bash solve.sh]"}, {"role": "assistant", "content": "Solved it."}], "#,
             r#""reward": 1.0, "metrics": {}, "is_completed": true, "is_truncated": false, "#,
             r#""info": {"task_id": "acp", "environment": "acp", "model": "fake-model", "reward_valid": true, "#,
@@ -739,7 +801,7 @@ async fn a_scored_trial_and_its_job_get_trainer_files() {
             "{}{}{}{}\n",
             r#"{"schema_version": "1.3.1", "id": ""#,
             rec.rollout_name,
-            r#"", "content": [{"class_": "text_observation", "content": "Make the test pass.", "source": "user"}, {"class_": "text_observation", "content": "Make the test pass.", "source": "user"}, "#,
+            r#"", "content": [{"class_": "text_observation", "content": "Make the test pass.", "source": "user"}, "#,
             r#"{"class_": "api_action", "tool_call_id": "t1", "function": "execute", "kwargs": {}, "description": "bash solve.sh"}, {"class_": "text_observation", "tool_call_id": "t1", "content": "", "source": "environment"}, {"class_": "message_action", "content": "Solved it.", "reward": 1.0}], "details": {"task_id": "acp", "environment": "acp", "model": "fake-model"}}"#,
         )
     );
@@ -748,19 +810,21 @@ async fn a_scored_trial_and_its_job_get_trainer_files() {
     assert_eq!(atif["session_id"], json!(rec.rollout_name));
     assert_eq!(
         atif["agent"],
-        json!({"name": "fake", "version": "unknown", "model_name": "fake-model"})
+        // The version the agent reported at initialize.
+        json!({"name": "fake", "version": "1.0", "model_name": "fake-model"})
     );
     let steps = atif["steps"].as_array().unwrap();
     let sources: Vec<&str> = steps
         .iter()
         .map(|s| s["source"].as_str().unwrap())
         .collect();
-    assert_eq!(sources, ["user", "user", "agent", "agent"]);
-    assert_eq!(steps[2]["tool_calls"][0]["tool_call_id"], "t1");
-    assert_eq!(steps[3]["message"], "Solved it.");
+    assert_eq!(sources, ["user", "agent", "agent"]);
+    assert_eq!(steps[0]["message"], "Make the test pass.");
+    assert_eq!(steps[1]["tool_calls"][0]["tool_call_id"], "t1");
+    assert_eq!(steps[2]["message"], "Solved it.");
     assert_eq!(
         atif["final_metrics"],
-        json!({"total_steps": 4, "total_prompt_tokens": 10, "total_completion_tokens": 5, "total_cached_tokens": 0})
+        json!({"total_steps": 3, "total_prompt_tokens": 10, "total_completion_tokens": 5, "total_cached_tokens": 0})
     );
     assert!(!dir.join("trainer/atif.coverage.json").exists());
     // The job's files hold its one trial's records.

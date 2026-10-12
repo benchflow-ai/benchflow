@@ -281,6 +281,8 @@ async fn step_loop(
         // last tool result before any of them is sent, as Karotte does.
         let mut events: Vec<Value> = Vec::new();
         let mut submitted = false;
+        // The last recorded result, so the time note can be recorded with it.
+        let mut last_result: Option<(String, ToolOutcome)> = None;
         for call in &message.tool_calls {
             if submitted {
                 let text = "Not run: the turn ended with submit.";
@@ -304,15 +306,28 @@ async fn step_loop(
             events.push(completed(&call.id, &outcome.text, outcome.is_error));
             events.push(tool_message(&call.id, &outcome.text));
             submitted = outcome.ends_turn;
+            last_result = Some((call.id.clone(), outcome));
         }
         if !submitted
             && let Some(remaining) = meter.remaining()
             && let Some(last) = events.last_mut()
         {
-            append_text(
-                last,
-                &format!("Time remaining: {} seconds", remaining.as_secs()),
-            );
+            let note = format!("Time remaining: {} seconds", remaining.as_secs());
+            append_text(last, &note);
+            // Record the result as the backend's model reads it, note included.
+            if let Some((id, outcome)) = &last_result {
+                let status = if outcome.is_error {
+                    ToolCallStatus::Failed
+                } else {
+                    ToolCallStatus::Completed
+                };
+                recorder.tool_finish(
+                    id,
+                    status,
+                    outcome.result.clone(),
+                    Some(&format!("{}\n{note}", outcome.text)),
+                );
+            }
         }
         flush(session, events).await?;
         if submitted {

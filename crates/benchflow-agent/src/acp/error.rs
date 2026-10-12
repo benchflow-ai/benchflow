@@ -317,6 +317,12 @@ fn opens_like_an_error(reply: &str) -> bool {
             }
     };
     let lower = reply.to_ascii_lowercase();
+    // A provider's error body passed on as it came: an event of a stream
+    // (codex-acp's reply when MiMo refused a request) or the JSON itself.
+    let body = lower.strip_prefix("data:").unwrap_or(&lower).trim_start();
+    if body.starts_with("{\"error\"") {
+        return true;
+    }
     lower.starts_with("api error")
         || lower.starts_with("error:")
         || (lower.starts_with("http ") && status(&reply[5..]))
@@ -811,6 +817,23 @@ mod tests {
         // An error that says why itself is read from its own words.
         let err = agent_error("API Error: 429 rate limit exceeded", None);
         assert_eq!(err.provider_failure_in_log(log), None);
+    }
+
+    #[test]
+    fn a_providers_error_event_as_the_only_reply_is_the_providers() {
+        // codex-acp on MiMo's Responses API (2026-10-12): the trial was
+        // scored 0 as if the agent had answered.
+        let reply = "data:{\"error\":{\"code\":\"responses_feature_not_supported\",\"message\":\"tool type 'web_search' is not supported by this gateway phase.\",\"param\":\"\",\"type\":\"unsupported_feature\"}}\n\n\n\n";
+        let (owner, line) = provider_failure_in_reply(reply).unwrap();
+        assert_eq!(owner, Owner::ModelProvider);
+        assert!(line.contains("web_search"), "{line}");
+        let body = "{\"error\":{\"message\":\"HTTP 400: bad request\"}}";
+        assert!(provider_failure_in_reply(body).is_some());
+        // An answer that quotes JSON is graded as the answer it is.
+        assert_eq!(
+            provider_failure_in_reply("I wrote {\"error\": null} to /app/out.json."),
+            None
+        );
     }
 
     #[test]

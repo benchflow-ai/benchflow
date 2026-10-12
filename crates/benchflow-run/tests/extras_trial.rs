@@ -104,6 +104,9 @@ struct World {
     uploads: Vec<(PathBuf, String)>,
     /// (remote, contents) of every file written.
     writes: Vec<(String, Vec<u8>)>,
+    /// When set, each handoff reports removing a link of its own.
+    link_per_handoff: bool,
+    handoffs: usize,
 }
 
 struct Fake {
@@ -146,7 +149,15 @@ impl Sandbox for Fake {
         } else if c.contains("BF path") {
             "BF path /usr/bin:/bin\n".to_string()
         } else if c.contains("BF handoff done") {
-            "BF handoff done\n".to_string()
+            w.handoffs += 1;
+            if w.link_per_handoff {
+                format!(
+                    "BF symlink /app/link{} -> /etc/shadow\nBF handoff done\n",
+                    w.handoffs
+                )
+            } else {
+                "BF handoff done\n".to_string()
+            }
         } else if c.contains("BF owned") {
             let owner = c
                 .split("; o=")
@@ -362,8 +373,19 @@ async fn run_failing(
     with_services: bool,
     failing_image: Option<&'static str>,
 ) -> Ran {
-    let tmp = tempfile::tempdir().unwrap();
     let world = Arc::new(Mutex::new(World::default()));
+    run_in(task, attempts, with_services, failing_image, world).await
+}
+
+/// [`run_failing`] in a world the test set up.
+async fn run_in(
+    task: Arc<TaskPackage>,
+    attempts: Vec<Attempt>,
+    with_services: bool,
+    failing_image: Option<&'static str>,
+    world: Arc<Mutex<World>>,
+) -> Ran {
+    let tmp = tempfile::tempdir().unwrap();
     let (_tx, rx) = stop_switch();
     std::mem::forget(_tx);
     let rt = Arc::new(Runtime {
@@ -572,6 +594,41 @@ async fn a_remount_over_a_folder_the_agent_cannot_write_is_the_tasks() {
 /// the workdir goes back to the agent user and the baseline is taken again;
 /// the stage's files still come in through the agent user's copy, and the
 /// mount the root way (no agent process can swap its path).
+/// A task with graded stages hands off before each one; custody.json keeps
+/// what every handoff removed, not only the last one's.
+#[tokio::test]
+async fn custody_keeps_what_each_stages_handoff_removed() {
+    let pkg = tempfile::tempdir().unwrap();
+    let task = shipping_stages(pkg.path(), true);
+    let world = Arc::new(Mutex::new(World {
+        link_per_handoff: true,
+        ..World::default()
+    }));
+    let (records, dir, world, _tmp) = run_in(task, vec![Attempt::Oracle], true, None, world).await;
+    assert!(records[0].problem.is_none(), "{:?}", records[0].problem);
+    let handoffs = world.lock().unwrap().handoffs;
+    assert!(handoffs >= 2, "{handoffs}");
+    let custody: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join(&records[0].rollout_name).join("custody.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        custody["killed_processes"].as_u64(),
+        Some(handoffs as u64),
+        "one process killed at each handoff: {custody}"
+    );
+    let links: Vec<&str> = custody["escaping_symlinks"]
+        .as_array()
+        .expect("escaping_symlinks")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for n in 1..=handoffs {
+        let want = format!("/app/link{n} -> /etc/shadow");
+        assert!(links.contains(&want.as_str()), "{want} missing: {links:?}");
+    }
+}
+
 #[tokio::test]
 async fn after_a_graded_stage_the_workdir_returns_and_the_baseline_is_retaken() {
     let pkg = tempfile::tempdir().unwrap();

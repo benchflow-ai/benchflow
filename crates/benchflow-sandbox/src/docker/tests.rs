@@ -758,7 +758,8 @@ async fn exec_reports_a_vanished_container_as_an_error() {
 /// CLI's "No such container". The CLI's `inspect` says it.
 #[tokio::test]
 async fn the_cli_says_whether_a_container_runs() {
-    let running = Fake::new(r#"case "$1" in inspect) echo true;; *) exit 9;; esac"#);
+    let running =
+        Fake::new(r#"case "$1" in inspect) echo true 2026-10-11T10:00:00.5Z;; *) exit 9;; esac"#);
     assert_eq!(
         running.sandbox().presence().await.unwrap(),
         crate::Presence::Running
@@ -766,15 +767,122 @@ async fn the_cli_says_whether_a_container_runs() {
     let inspect = &running.calls_to("inspect")[0];
     assert_eq!(
         inspect.args,
-        strings(&["inspect", "--format", "{{.State.Running}}", "bf-test"])
+        strings(&[
+            "inspect",
+            "--format",
+            "{{.State.Running}} {{.State.StartedAt}}",
+            "bf-test"
+        ])
     );
+    assert!(running.calls_to("events").is_empty());
     // Review of rust/d4-chaos (Outcomes 3): a container that exists but
-    // stopped (root code inside can stop it) is not lost.
-    let exited = Fake::new(r#"case "$1" in inspect) echo false;; esac"#);
+    // stopped because code inside stopped it (`kill -TERM 1` logs only
+    // `die`) is not lost.
+    let exited = Fake::new(
+        r#"case "$1" in
+  inspect) echo false 2026-10-11T10:00:00.5Z;;
+  events) printf 'start\nexec_create: tar -cf -\nexec_die\ndie\n';;
+esac"#,
+    );
     assert_eq!(
         exited.sandbox().presence().await.unwrap(),
         crate::Presence::Stopped
     );
+    let events = &exited.calls_to("events")[0].args;
+    assert_eq!(
+        &events[..3],
+        strings(&["events", "--since", "2026-10-11T10:00:00.5Z"])
+    );
+    assert!(
+        events.contains(&"container=bf-test".to_string()),
+        "{events:?}"
+    );
+    assert!(events.contains(&"--until".to_string()), "{events:?}");
+    // Final review of rust/d4-chaos (finding 1): a container the daemon
+    // stopped (`docker stop`, `docker kill` and a daemon shutting down log
+    // `kill`) is lost, not stopped from inside.
+    let outside = Fake::new(
+        r#"case "$1" in
+  inspect) echo false 2026-10-11T10:00:00.5Z;;
+  events) printf 'kill\ndie\nstop\n';;
+esac"#,
+    );
+    let presence = outside.sandbox().presence().await;
+    assert!(
+        matches!(&presence, Err(SandboxError::Transport(m)) if m.contains("stopped it")),
+        "{presence:?}"
+    );
+    // A busy daemon's short history drops the container's `start` long
+    // before its `die`: a `die` with no `kill` or `stop` is still a stop
+    // from inside (convergence reviews E9-C-B 1, E9-C-A N1: it was a
+    // confirmed loss, rerun forever).
+    // Convergence review E9-E-B 1: exec events carry the command's text in
+    // their action, newlines included, and BenchFlow's own handoff script
+    // has a line that is just `stop`. Only the daemon's die, kill and stop
+    // events are asked for: a fake daemon that honors the filter answers
+    // `die` alone, and one asked without it would show the forged line.
+    let forged = Fake::new(
+        r#"case "$1" in
+  inspect) echo false 2026-10-11T10:00:00.5Z;;
+  events)
+    case "$*" in
+      *event=die*event=kill*event=stop*) printf 'die\n';;
+      *) printf 'exec_create: /bin/sh -c set -e\n    stop\n    kill\nexec_start: /bin/sh\nexec_die\ndie\n';;
+    esac;;
+esac"#,
+    );
+    assert_eq!(
+        forged.sandbox().presence().await.unwrap(),
+        crate::Presence::Stopped
+    );
+    let busy = Fake::new(
+        r#"case "$1" in
+  inspect) echo false 2026-10-11T10:00:00.5Z;;
+  events) printf 'exec_create\nexec_start\nexec_die\ndie\n';;
+esac"#,
+    );
+    assert_eq!(
+        busy.sandbox().presence().await.unwrap(),
+        crate::Presence::Stopped
+    );
+    // No `die` at all (dropped too, or a restart emptied the history):
+    // unexplained, `Halted`, never a confirmed loss.
+    let evicted = Fake::new(
+        r#"case "$1" in
+  inspect) echo false 2026-10-11T10:00:00.5Z;;
+  events) printf 'exec_die\n';;
+esac"#,
+    );
+    assert_eq!(
+        evicted.sandbox().presence().await.unwrap(),
+        crate::Presence::Halted
+    );
+    // A whole history with no `die` cannot be explained: `Halted`, lost
+    // but capped by the trial, since code inside may have stopped it.
+    let unexplained = Fake::new(
+        r#"case "$1" in
+  inspect) echo false 2026-10-11T10:00:00.5Z;;
+  events) printf 'start\nexec_create\nexec_start\nexec_die\n';;
+esac"#,
+    );
+    assert_eq!(
+        unexplained.sandbox().presence().await.unwrap(),
+        crate::Presence::Halted
+    );
+    // No start time to read events from (as for Podman, whose events are
+    // not read): `Halted` too.
+    let no_start = Fake::new(r#"case "$1" in inspect) echo false;; esac"#);
+    assert_eq!(
+        no_start.sandbox().presence().await.unwrap(),
+        crate::Presence::Halted
+    );
+    let no_events = Fake::new(
+        r#"case "$1" in
+  inspect) echo false 2026-10-11T10:00:00.5Z;;
+  events) echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1;;
+esac"#,
+    );
+    assert!(no_events.sandbox().presence().await.is_err());
     let removed = Fake::new(r#"echo 'Error: No such object: bf-test' >&2; exit 1"#);
     assert_eq!(
         removed.sandbox().presence().await.unwrap(),
@@ -793,6 +901,50 @@ async fn exec_reports_a_stopped_daemon_as_unavailable() {
     );
     let err = fake.sandbox().exec(Exec::new("true")).await.unwrap_err();
     assert!(matches!(err, SandboxError::Unavailable { .. }), "{err:?}");
+}
+
+/// Convergence review E9-C-B 2: a command inside the container (a
+/// verifier, or the agent's code it runs) printed the CLI's words about
+/// its daemon or the container, and the run read them as the backend's,
+/// a confirmed loss rerun forever. They count only when the CLI, asked
+/// itself, agrees: here `inspect` says the container runs, so the command
+/// simply failed with its own exit code.
+#[tokio::test]
+async fn words_from_inside_about_the_daemon_are_the_commands_own() {
+    for text in [
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        "Error response from daemon: No such container: bf-test",
+    ] {
+        let fake = Fake::new(&format!(
+            r#"case "$1" in
+  inspect) echo true;;
+  *) echo '{text}' >&2; exit 1;;
+esac"#
+        ));
+        let out = fake.sandbox().exec(Exec::new("make test")).await.unwrap();
+        assert_eq!(out.exit_code, 1, "{text}");
+        assert!(out.stderr.contains(&text[..20]), "{text}: {}", out.stderr);
+    }
+}
+
+/// The same for a copy: `tar` runs inside the container, so its stderr
+/// saying the daemon cannot be reached is not the CLI's word while the
+/// CLI's own `inspect` says the container runs.
+#[tokio::test]
+async fn a_copy_whose_tar_speaks_for_the_daemon_is_not_an_outage() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  inspect) echo true;;
+  *) echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 2;;
+esac"#,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let err = fake
+        .sandbox()
+        .download("/logs/verifier", &dir.path().join("v"))
+        .await
+        .unwrap_err();
+    assert!(!matches!(err, SandboxError::Unavailable { .. }), "{err:?}");
 }
 
 #[tokio::test]
@@ -1088,6 +1240,36 @@ async fn a_capped_download_stops_at_its_cap() {
         .download_capped("/logs/verifier", &dst.path().join("w"), 1 << 20)
         .await
         .unwrap();
+}
+
+/// Final review of rust/d4-chaos (finding 3): a CLI that failed mid-stream
+/// (a remote daemon's connection dropped) left the unpacker with an archive
+/// cut short, and its "unexpected EOF" was the folder's fault (R301), never
+/// rerun. It is the transfer's failure.
+#[tokio::test]
+async fn a_copy_cut_off_mid_stream_is_a_transfer_failure() {
+    let fake = Fake::new(
+        r#"case "$1" in exec)
+  COPYFILE_DISABLE=1 tar -cf - -C "$dir/root/logs" verifier | head -c 2000
+  echo 'error during connect: Get "http://docker.example/v1.47/exec/1/json": unexpected EOF' >&2
+  exit 1;;
+esac"#,
+    );
+    std::fs::create_dir_all(fake.path("root/logs/verifier")).unwrap();
+    std::fs::write(fake.path("root/logs/verifier/big.bin"), vec![7u8; 10_000]).unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let err = fake
+        .sandbox()
+        .download_capped("/logs/verifier", &dst.path().join("v"), 1 << 20)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SandboxError::Transport(_) | SandboxError::Unavailable { .. }
+        ),
+        "{err:?}"
+    );
 }
 
 /// Review of rust/d4-chaos (Outcomes 8): a copy that streamed nothing read

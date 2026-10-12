@@ -39,6 +39,12 @@ async fn root(sb: &dyn Sandbox, script: String) -> Result<ExecOutput, SandboxErr
     .await
 }
 
+/// How a `locked_system_dirs` note starts when the image left system folders
+/// writable and the lock removed that before the agent ran: recorded as
+/// `failed` (the image needed the repair) though the folders were locked.
+/// Every other `failed` note means they were not.
+pub const SYSTEM_DIRS_REPAIRED: &str = "the image lets group or others write";
+
 /// Remove group and other write permission from the system folders, leaving
 /// the workdir and the agent's home alone. Records `locked_system_dirs`.
 pub async fn lock_system_dirs(
@@ -125,7 +131,7 @@ fn judge_system_write(out: &ExecOutput) -> Defense {
                 "locked_system_dirs",
                 DefenseState::Failed,
                 format!(
-                    "the image lets group or others write {changed} paths in system folders; removed that permission before the agent ran: {}{}",
+                    "{SYSTEM_DIRS_REPAIRED} {changed} paths in system folders; removed that permission before the agent ran: {}{}",
                     named.join(", "),
                     if more > 0 {
                         format!(", and {more} more")

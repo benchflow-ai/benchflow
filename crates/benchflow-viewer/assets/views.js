@@ -311,7 +311,7 @@ BF.views = (() => {
 
     const jobs = section(
       "Pass rate by job",
-      "Pass rate counts every trial in the rows shown (errored and unscored trials count as not passed; trials you stopped are left out), with its 95% Wilson interval. "
+      "Pass rate counts every trial in the rows shown (errored and unscored trials count as not passed; trials you stopped are left out), with its 95% Wilson interval; a rate with trials stopped or never run is partial and has none. "
         + "A job that ran several agents or models gets one column for each.",
     );
     const summary = table(["", "job", "agent · model", numTh("tasks"), numTh("trials"), numTh("passed"), numTh("failed"),
@@ -319,7 +319,11 @@ BF.views = (() => {
     columns.forEach((column, index) => {
       const row = el("tr");
       const counts = isRecord(column.counts) ? column.counts : {};
-      const interval = Array.isArray(column.pass_interval) ? " (" + pct(column.pass_interval[0]) + "–" + pct(column.pass_interval[1]) + ")" : "";
+      // With trials stopped or never run, the rate is partial: no interval,
+      // as in the job list of `bench results`.
+      const interval = column.partial
+        ? " partial"
+        : Array.isArray(column.pass_interval) ? " (" + pct(column.pass_interval[0]) + "–" + pct(column.pass_interval[1]) + ")" : "";
       row.append(
         cell(letter(index), "vmono"),
         cell(column.job_name + (column.never_ran ? " (" + column.never_ran + " never ran)" : ""), "vtask"),
@@ -456,7 +460,8 @@ BF.views = (() => {
       });
       const barCell = el("td");
       barCell.appendChild(bar);
-      row.append(cell(job.name, "vtask"), cell(job.trials, "num"), barCell,
+      const name = job.name + (job.never_ran ? " (" + job.never_ran + " never ran)" : "");
+      row.append(cell(name, "vtask"), cell(job.trials, "num"), barCell,
         ...OUTCOMES.map((status) => cell(countText(jobCounts[status] || 0, job.trials), "num")));
       counts.body.appendChild(row);
     });
@@ -642,7 +647,7 @@ BF.views = (() => {
       const cy = y(point.pass_rate);
       const on = !!(point.frontier && point.frontier[key]);
       const group = svg("g", { class: "vpoint" + (on ? " on" : "") });
-      if (Array.isArray(point.pass_interval)) {
+      if (Array.isArray(point.pass_interval) && !point.partial) {
         group.appendChild(svg("line", { x1: cx, x2: cx, y1: y(point.pass_interval[1]), y2: y(point.pass_interval[0]), class: "vci" }));
       }
       group.appendChild(svg("circle", { cx, cy, r: 5, class: "vdot" }));
@@ -653,7 +658,7 @@ BF.views = (() => {
       const title = svg("title");
       title.textContent = letter(index) + " · " + point.job_name + (point.arm ? " · " + point.arm : "")
         + "\npass rate " + pct(point.pass_rate)
-        + (Array.isArray(point.pass_interval) ? " (" + pct(point.pass_interval[0]) + "–" + pct(point.pass_interval[1]) + ")" : "")
+        + (point.partial ? " partial" : Array.isArray(point.pass_interval) ? " (" + pct(point.pass_interval[0]) + "–" + pct(point.pass_interval[1]) + ")" : "")
         + ", " + point.passed + " of " + plural(point.trials, "trial")
         + "\n" + xLabel.split(" (")[0] + ": " + format(point[key]) + " over " + plural(point[key + "_n"], "trial")
         + (on ? "\non the frontier" : "");
@@ -701,12 +706,14 @@ BF.views = (() => {
     const withN = (text, n) => text + (n ? " (" + n + ")" : "");
     points.forEach((point, index) => {
       const row = el("tr");
-      const ci = Array.isArray(point.pass_interval) ? " (" + pct(point.pass_interval[0]) + "–" + pct(point.pass_interval[1]) + ")" : "";
+      const ci = point.partial
+        ? " partial"
+        : Array.isArray(point.pass_interval) ? " (" + pct(point.pass_interval[0]) + "–" + pct(point.pass_interval[1]) + ")" : "";
       const on = AXES.filter(([key]) => point.frontier && point.frontier[key]).map(([key]) => ({
         cost_per_trial: "cost", median_seconds: "time", tokens_per_trial: "tokens" })[key]);
       row.append(
         cell(letter(index), "vmono"),
-        cell(point.job_name, "vtask"),
+        cell(point.job_name + (point.never_ran ? " (" + point.never_ran + " never ran)" : ""), "vtask"),
         cell(point.arm || "—"),
         cell(point.trials, "num"),
         cell(pct(point.pass_rate) + ci, "num"),

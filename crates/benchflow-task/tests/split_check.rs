@@ -187,7 +187,10 @@ fn fields_the_runner_cannot_honor_are_refused_by_name() {
     assert!(report.ok(), "{:#?}", report.diagnostics);
     let p = report.package.unwrap();
     let fields: Vec<&str> = p.unsupported.iter().map(|u| u.field.as_str()).collect();
-    assert_eq!(fields, ["[environment] os", "[verifier] reward_range"]);
+    assert_eq!(fields, ["[environment] os"]);
+    // `[verifier] reward_range` is honored since 2026-10-11 (break campaign
+    // E9), as in BenchFlow 0.8: the trial is graded against it.
+    assert_eq!(p.verifier.reward_range, Some((-1.0, 1.0)));
     assert_eq!(
         p.sandbox.skills_dir.as_deref(),
         Some("/skills"),
@@ -233,4 +236,170 @@ fn every_code_is_explained() {
             "bench explain {code}"
         );
     }
+}
+
+#[test]
+fn a_task_given_as_a_path_without_a_file_name_is_named_after_its_folder() {
+    // `bench run .` passes `.`; a path ending in `..` has no file name
+    // either. The task is named after the folder, not `.` (whose trial
+    // folders, `.__<id>`, would be hidden).
+    let dir = fixture("full").join("environment").join("..");
+    assert!(dir.file_name().is_none());
+    let report = benchflow_task::check(&dir, &CheckOptions { deep: true });
+    assert_eq!(report.package.unwrap().name, "full");
+}
+
+#[test]
+fn a_task_reached_through_a_symlink_keeps_the_name_given() {
+    // A symlinked task folder keeps the link's name: resolving it renamed
+    // the task (and so every trial folder) after the link's target.
+    let tmp = tempfile::tempdir().unwrap();
+    let link = tmp.path().join("fix-auth");
+    std::os::unix::fs::symlink(fixture("full"), &link).unwrap();
+    let report = benchflow_task::check(&link, &CheckOptions { deep: true });
+    assert_eq!(report.package.unwrap().name, "fix-auth");
+}
+
+/// 0.8 fills an env value written `${VAR}` from the host's environment;
+/// this runner passes no host value into a task, so such a value is refused
+/// by name before any sandbox starts, rather than reaching the script as the
+/// text `${OPENAI_API_KEY}` (an LLM judge then fails every trial, blamed on
+/// the task). A value with other text around it is literal, as in 0.8.
+#[test]
+fn env_values_taken_from_the_host_are_refused_by_name() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("judged");
+    copy(&fixture("full"), &root);
+    let toml = fs::read_to_string(root.join("task.toml")).unwrap();
+    let toml = toml
+        .replace(
+            r#"env = { API_URL = "http://localhost:8000" }"#,
+            r#"env = { OPENAI_API_KEY = "${OPENAI_API_KEY}", API_URL = "http://localhost:8000", NOTE = "cost ${USD}" }"#,
+        )
+        .replace(r#"env = { LANG = "C.UTF-8" }"#, r#"env = { LANG = "C.UTF-8", MODE = "${MODE:-fast}" }"#)
+        .replace(r#"env = { HINT = "1" }"#, r#"env = { HINT = "1", TOKEN = "${HF_TOKEN}" }"#);
+    fs::write(root.join("task.toml"), toml).unwrap();
+    let report = benchflow_task::check(&root, &CheckOptions { deep: true });
+    let p = report.package.as_ref().expect("a package");
+    let fields: Vec<&str> = p.unsupported.iter().map(|u| u.field.as_str()).collect();
+    assert_eq!(
+        fields,
+        [
+            r#"[environment] env MODE = "${MODE:-fast}""#,
+            r#"[verifier] env OPENAI_API_KEY = "${OPENAI_API_KEY}""#,
+            r#"[solution] env TOKEN = "${HF_TOKEN}""#,
+        ],
+        "{:#?}",
+        p.unsupported
+    );
+    assert!(p.unsupported.iter().all(|u| !u.agents_only));
+    assert_eq!(p.verifier.env["NOTE"], "cost ${USD}");
+}
+
+fn copy(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let dest = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy(&e.path(), &dest);
+        } else {
+            fs::copy(e.path(), dest).unwrap();
+        }
+    }
+}
+
+/// A task given as `.` (`bench run .`) or through `..` is named after its
+/// folder, as task.md's are: `.` made trial folders named `.__<id>`, hidden.
+#[test]
+fn a_task_reached_through_dot_dot_is_named_after_its_folder() {
+    let report = benchflow_task::check(
+        &fixture("full").join("environment").join(".."),
+        &CheckOptions { deep: true },
+    );
+    let p = report.package.as_ref().expect("a package");
+    assert_eq!(p.name, "full");
+}
+
+/// A link to a task is named after the link, as 0.8 names a task after its
+/// folder's name: a folder holding `full` and `full-latest -> full` holds two
+/// tasks with two names and two trial names, not two tasks named `full`
+/// (review E4-A, 4). The same for task.md packages.
+#[test]
+fn a_task_reached_through_a_link_is_named_after_the_link() {
+    let d = tempfile::tempdir().unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/taskmd/examples");
+    for (target, link) in [
+        (fixture("full"), "full-latest"),
+        (examples.join("hello-world"), "hello-latest"),
+    ] {
+        let at = d.path().join(link);
+        std::os::unix::fs::symlink(&target, &at).unwrap();
+        let report = benchflow_task::check(&at, &CheckOptions { deep: true });
+        let p = report
+            .package
+            .as_ref()
+            .unwrap_or_else(|| panic!("{link}: {:#?}", report.diagnostics));
+        assert_eq!(p.name, link);
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let dest = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_tree(&e.path(), &dest);
+        } else {
+            fs::copy(e.path(), &dest).unwrap();
+        }
+    }
+}
+
+/// `[verifier] reward_range` may only widen [0, 1], as in BenchFlow 0.8: a
+/// range that narrows or shifts it is an error at the key, and a task that
+/// declares none keeps [0, 1].
+#[test]
+fn a_reward_range_may_only_widen_zero_to_one() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("task");
+    copy_tree(&fixture("refused"), &root);
+    let toml = fs::read_to_string(root.join("task.toml")).unwrap();
+    for (range, ok) in [
+        ("[-1.0, 1.0]", true),
+        ("[0, 10]", true),
+        ("[0.2, 1.0]", false),
+        ("[0.0, 0.5]", false),
+        ("[1.0, -1.0]", false),
+        ("\"wide\"", false),
+    ] {
+        fs::write(
+            root.join("task.toml"),
+            toml.replace(
+                "reward_range = [-1.0, 1.0]",
+                &format!("reward_range = {range}"),
+            ),
+        )
+        .unwrap();
+        let report = benchflow_task::check(&root, &CheckOptions { deep: true });
+        assert_eq!(report.ok(), ok, "{range}: {:#?}", report.diagnostics);
+        if !ok {
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error && d.message.contains("reward_range")),
+                "{range}: {:#?}",
+                report.diagnostics
+            );
+        }
+    }
+    fs::write(
+        root.join("task.toml"),
+        toml.replace("reward_range = [-1.0, 1.0]\n", ""),
+    )
+    .unwrap();
+    let report = benchflow_task::check(&root, &CheckOptions { deep: true });
+    assert_eq!(report.package.unwrap().verifier.reward_range, None);
 }

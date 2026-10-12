@@ -77,6 +77,9 @@ pub enum RouteError {
         via: String,
         router: String,
     },
+    /// The test hook's variable (only in test builds) is set to something
+    /// the provider key may not go to.
+    TestUpstream { message: String, next: String },
 }
 
 impl RouteError {
@@ -113,6 +116,7 @@ impl RouteError {
             Self::Unpinnable { router, via, .. } => format!(
                 "run the model as `{router}/<model>` on an agent that can take a base URL (`bench agents` shows which), or drop {via}"
             ),
+            Self::TestUpstream { next, .. } => next.clone(),
         }
     }
 }
@@ -149,6 +153,7 @@ impl fmt::Display for RouteError {
                 "agent `{agent}` would send its requests to {router} itself ({via}), where BenchFlow cannot keep them off the upstreams it never uses ({})",
                 ALWAYS_DENIED.join(", ")
             ),
+            Self::TestUpstream { message, .. } => write!(f, "{message}"),
         }
     }
 }
@@ -287,10 +292,10 @@ pub(crate) fn template_placeholders(template: &str) -> Result<Vec<&'static str>,
     Ok(found)
 }
 
-const PLACEHOLDERS: [&str; 4] = ["base_url", "key", "model", "effort"];
+const PLACEHOLDERS: [&str; 5] = ["base_url", "key", "model", "effort", "disabled"];
 /// Placeholders that can stand for nothing: a line using one then is left
 /// out, so a config file never names an empty model.
-const OPTIONAL: [&str; 2] = ["model", "effort"];
+const OPTIONAL: [&str; 3] = ["model", "effort", "disabled"];
 
 /// Every `{name}` with a lowercase identifier inside.
 fn placeholder_names(template: &str) -> impl Iterator<Item = &str> {
@@ -372,6 +377,10 @@ impl ProviderRoute {
             ("key", KEY_PLACEHOLDER),
             ("model", self.template_model()),
             ("effort", effort),
+            // A setting turned off on a provider's route and left to the
+            // agent on its own key (Codex's hosted web search, which
+            // providers' Responses APIs refuse).
+            ("disabled", if self.own_key { "" } else { "disabled" }),
         ];
         let mut env = BTreeMap::new();
         for var in &self.spec.clear {
@@ -507,6 +516,90 @@ impl fmt::Display for AccessError {
 
 impl std::error::Error for AccessError {}
 
+/// For testing BenchFlow against a failing provider: the provider forwarder
+/// in the sandbox sends its requests to this base URL instead of the
+/// provider's (a fault-injecting endpoint). It exists only in this crate's
+/// tests and in builds with the off-by-default `test-hooks` feature: in any
+/// other build (every release's) no code reads the variable, and its name
+/// is not in the binary (E5 reviews B4, C-B 1, D-B). Read only from this
+/// shell's environment, never from `--env`, a job file, bench.toml or a
+/// project `.env`. The forwarder dials it inside the sandbox, so a loopback
+/// address is the sandbox's own, where the agent can listen: over plain
+/// http (to a loopback IP literal only) the forwarder holds a placeholder,
+/// never the real key; over https it holds the real key, for a fault proxy
+/// that passes calls on to the provider.
+#[cfg(any(test, feature = "test-hooks"))]
+pub const TEST_UPSTREAM_ENV: &str = "BENCHFLOW_TEST_FORWARDER_UPSTREAM";
+
+/// [`TEST_UPSTREAM_ENV`], checked: `None` when it is not set.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn test_upstream(host: &HostEnv) -> Result<Option<String>, RouteError> {
+    let refuse = |message: String| RouteError::TestUpstream {
+        message,
+        next: format!(
+            "unset {TEST_UPSTREAM_ENV}, or set it in this shell to an https URL, or an http URL on a loopback IP address"
+        ),
+    };
+    if let Some((_, Origin::AgentEnv)) = host.get(TEST_UPSTREAM_ENV) {
+        return Err(refuse(format!(
+            "{TEST_UPSTREAM_ENV} was set for the run (--env, a job file, or bench.toml); it moves where the provider key is sent, so it is read only from this shell's environment"
+        )));
+    }
+    let Some(value) = host.environment(TEST_UPSTREAM_ENV) else {
+        return Ok(None);
+    };
+    let value = value.trim().trim_end_matches('/').to_string();
+    let url = reqwest::Url::parse(&value)
+        .map_err(|e| refuse(format!("{TEST_UPSTREAM_ENV} is not a URL ({e})")))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(refuse(format!(
+            "{TEST_UPSTREAM_ENV} carries a login in its URL"
+        )));
+    }
+    let name = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    // An IP literal: a name would be resolved inside the sandbox, where the
+    // task's image controls the resolver.
+    let loopback = name
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback());
+    // The URL as the parser normalizes it (`HTTP://` is `http://`).
+    let normal = url.to_string().trim_end_matches('/').to_string();
+    match url.scheme() {
+        "https" => Ok(Some(normal)),
+        "http" if loopback => Ok(Some(normal)),
+        scheme => Err(refuse(format!(
+            "{TEST_UPSTREAM_ENV} is {scheme}://{name}: it must be https, or http to a loopback IP address (which gets a placeholder key, never the real one)"
+        ))),
+    }
+}
+
+/// In a build without the test hook, there is none.
+#[cfg(not(any(test, feature = "test-hooks")))]
+pub fn test_upstream(_host: &HostEnv) -> Result<Option<String>, RouteError> {
+    Ok(None)
+}
+
+/// Where the test hook sends the forwarder's calls, for the run's notes:
+/// `<url> (<variable>)`; `None` without the hook or when it is unset.
+pub fn test_upstream_note(host: &HostEnv) -> Option<String> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    {
+        test_upstream(host)
+            .ok()
+            .flatten()
+            .map(|url| format!("{url} ({TEST_UPSTREAM_ENV})"))
+    }
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    {
+        let _ = host;
+        None
+    }
+}
+
 /// The route and login for `manifest`'s agent on `model` (already defaulted)
 /// on this machine: [`route`], then the provider's key, or the agent's own
 /// login ([`crate::credentials::find_login`]). When that login is a plain
@@ -521,13 +614,30 @@ pub fn resolve(
     host: &HostEnv,
     providers: &ProviderRegistry,
 ) -> Result<Access, AccessError> {
+    let upstream = test_upstream(host).map_err(AccessError::Route)?;
+    let redirect = |mut route: Box<ProviderRoute>| {
+        if let Some(url) = &upstream {
+            route.endpoint.base_url = url.clone();
+        }
+        route
+    };
+    // Over plain http the forwarder holds a placeholder, never the key: the
+    // scheme as the URL parser reads it (E5 review D-B: `HTTP://` and
+    // `http:127.0.0.1` passed a prefix check).
+    let plain = upstream
+        .as_deref()
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .is_none_or(|u| u.scheme() != "https")
+        && upstream.is_some();
+    let held = |key: ProviderKey| if plain { key.withheld() } else { key };
     match route(manifest, model, providers).map_err(AccessError::Route)? {
         Route::Provider(route) => {
+            let route = redirect(route);
             let key = find_provider_key(&route.provider, host).map_err(AccessError::Login)?;
             Ok(Access {
                 login: key.login(&route.describe()),
                 route: Route::Provider(route),
-                key: Some(key),
+                key: Some(held(key)),
             })
         }
         Route::Agent => {
@@ -536,11 +646,12 @@ pub fn resolve(
                 && let Some(route) = own_key_route(manifest, model, &plain.var, host, providers)
                     .map_err(AccessError::Route)?
             {
+                let route = redirect(route);
                 let key = ProviderKey::from_login(&route.provider.name, plain);
                 return Ok(Access {
                     login: key.login(&route.describe()),
                     route: Route::Provider(route),
-                    key: Some(key),
+                    key: Some(held(key)),
                 });
             }
             if let Some((var, router)) = env_router(host) {

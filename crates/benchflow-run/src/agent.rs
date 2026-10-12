@@ -109,6 +109,8 @@ pub struct AgentOutput {
     pub resumed: bool,
     /// Asked to resume and started a fresh session instead: why.
     pub resume_note: Option<String>,
+    /// The agent's version, as it reported it (ACP `agentInfo.version`).
+    pub agent_version: Option<String>,
 }
 
 /// Everything a model agent needs to run in a prepared sandbox.

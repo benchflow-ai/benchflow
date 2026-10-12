@@ -1,0 +1,2 @@
+[facts]
+cause = "The TLS certificate of api.internal expired at 09:14:00 UTC, so nginx's upstream TLS handshake failed."

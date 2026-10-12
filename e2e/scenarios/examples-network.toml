@@ -1,0 +1,39 @@
+# The examples folder's network policies and a sidecar service (examples/README.md): what the oracle can reach under none, an allowlist, and open.
+tier = "full"
+needs = ["sandbox"]
+tasks = ["examples/net-allowlist", "examples/net-blocklist", "examples/net-ip-allowlist", "examples/net-ip-blocklist", "examples/net-ip-none", "examples/sidecar"]
+
+[[step]]
+name = "E54 an allowlist and a blocklist, probed with no outside host, each let through exactly what they say, the root oracle included (net-open and net-none are manual: see examples/README.md)"
+run = ["run", "tasks/net-allowlist", "tasks/net-blocklist", "-s", "{backend}", "-j", "{j}", "--job", "net"]
+exit = 0
+timeout = 900
+trials = [
+  { job = "net", task = "net-allowlist", status = "scored", reward = 1.0 },
+  { job = "net", task = "net-blocklist", status = "scored", reward = 1.0 },
+]
+
+[[step]]
+name = "E68 by address, with no outside host: under an allowlist, a blocklist, and a none for the agent's phase only, the root oracle's connection to a reserved address is refused at once while its own listener answers"
+run = ["run", "tasks/net-ip-allowlist", "tasks/net-ip-blocklist", "tasks/net-ip-none", "-s", "{backend}", "-j", "{j}", "--job", "net-ip"]
+exit = 0
+timeout = 900
+trials = [
+  { job = "net-ip", task = "net-ip-allowlist", status = "scored", reward = 1.0 },
+  { job = "net-ip", task = "net-ip-blocklist", status = "scored", reward = 1.0 },
+  { job = "net-ip", task = "net-ip-none", status = "scored", reward = 1.0 },
+]
+
+[[step]]
+name = "E55 a sidecar service: Docker runs it; Daytona refuses it by name (R401, you)"
+run = ["run", "tasks/sidecar", "-s", "{backend}", "--job", "sidecar"]
+only_backends = ["docker"]
+exit = 0
+timeout = 900
+trials = [{ job = "sidecar", task = "sidecar", status = "scored", reward = 1.0 }]
+
+[[step]]
+run = ["run", "tasks/sidecar", "-s", "{backend}", "--job", "sidecar"]
+only_backends = ["daytona"]
+exit = 1
+trials = [{ job = "sidecar", task = "sidecar", status = "errored", code = "R401", owner = "you" }]

@@ -38,7 +38,7 @@ impl Receipt {
         }
     }
 
-    fn to_json(self) -> Value {
+    pub(crate) fn to_json(self) -> Value {
         json!({
             "source": "benchflow_host",
             "clock": "unix",
@@ -47,7 +47,7 @@ impl Receipt {
         })
     }
 
-    fn from_json(value: &Value) -> Option<Self> {
+    pub(crate) fn from_json(value: &Value) -> Option<Self> {
         let map = value.as_object()?;
         if map.len() != 4 || map.get("source")? != "benchflow_host" || map.get("clock")? != "unix" {
             return None;
@@ -259,6 +259,14 @@ pub enum Event {
     /// An event this build does not model, kept as written.
     Other(Map<String, Value>),
 }
+
+/// A native loop's model call: one turn's usage and finish reason
+/// (`{"type": "model_call", "usage": {...}, "calls", "finish_reason"}`),
+/// recorded before the events the turn produced. Not a step.
+pub const MODEL_CALL: &str = "model_call";
+/// The system prompt a native loop gave the model (`{"type":
+/// "system_prompt", "text"}`). Not a step.
+pub const SYSTEM_PROMPT: &str = "system_prompt";
 
 /// The note 0.8 writes for the `nop` agent.
 pub const NOP_NOTE: &str = "nop agent: nothing ran; the verifier scores the untouched workspace";

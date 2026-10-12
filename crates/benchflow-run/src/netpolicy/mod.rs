@@ -515,7 +515,13 @@ fn list(ports: &[u16]) -> String {
 /// that stage's commands run as. Called after the agent user exists and
 /// before the agent starts, and again before the verifier runs. On a
 /// backend with a root service, the agent's stage also guards the daemon's
-/// ports, open network included.
+/// ports, open network included. `root_attempt` says the agent's stage runs
+/// a root attempt (the reference solution, which runs as root as in 0.8):
+/// its chain then covers every new connection, root's included, as the
+/// verifier's does, so the oracle meets the policy an agent would. On
+/// Daytona an allowlist and `none` were already held by Daytona's own
+/// lists, but a blocklist, which Daytona does not have, was not: the root
+/// oracle reached blocked addresses by connecting to them directly.
 /// The environment the stage's own self-test runs with. After the agent's
 /// turn (the verifier stage) a folder on the image's `PATH` may be the
 /// agent's, so the self-test — which runs as the stage's user and looks up
@@ -529,6 +535,7 @@ pub struct SelfTest<'a> {
     pub unset: &'a [String],
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn enforce(
     sb: &dyn Sandbox,
     caps: &Capabilities,
@@ -537,8 +544,9 @@ pub async fn enforce(
     host: Host,
     user: &str,
     self_test: SelfTest<'_>,
+    root_attempt: bool,
 ) -> Outcome {
-    let mut out = enforce_stage(sb, caps, plan, stage, host, user, self_test).await;
+    let mut out = enforce_stage(sb, caps, plan, stage, host, user, self_test, root_attempt).await;
     // With an open network only the daemon guard ran: a failure is its own.
     if plan.phase(stage).network == Network::Open
         && let Some(failed) = out.defense.take()
@@ -548,6 +556,7 @@ pub async fn enforce(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn enforce_stage(
     sb: &dyn Sandbox,
     caps: &Capabilities,
@@ -556,6 +565,7 @@ async fn enforce_stage(
     host: Host,
     user: &str,
     self_test: SelfTest<'_>,
+    root_attempt: bool,
 ) -> Outcome {
     let net = plan.phase(stage);
     let phase = match stage {
@@ -629,6 +639,7 @@ async fn enforce_stage(
         _ => {}
     }
     let scope = match stage {
+        Stage::Agent if root_attempt => Scope::Everyone,
         Stage::Agent => Scope::AgentUser(user.to_string()),
         Stage::Verifier => Scope::Everyone,
     };
@@ -893,8 +904,44 @@ async fn enforce_stage(
             }
         }
     }
+    // Before the reference solution, which runs as root, root tries what
+    // the policy forbids too: the chain covers it (`root_attempt`), and a
+    // gap would let the oracle pass under a policy it never met.
+    if root_attempt && stage == Stage::Agent && installed.is_some() {
+        let targets = test.blocked_targets();
+        if !targets.is_empty() {
+            match sb.exec(as_root(selftest::reach_script(&targets))).await {
+                Ok(o) => {
+                    let reached: Vec<String> = Report::parse(&o.stdout)
+                        .all("reached")
+                        .into_iter()
+                        .map(str::to_string)
+                        .filter(|t| targets.contains(t))
+                        .collect();
+                    if reached.is_empty() {
+                        verdict.held.push(
+                            "root (the reference solution) could not reach them either".into(),
+                        );
+                    } else {
+                        verdict.leaks.push(format!(
+                            "root, which runs the reference solution, reached the blocked {}",
+                            reached.join(", ")
+                        ));
+                    }
+                }
+                Err(e) => {
+                    return Outcome::failed(
+                        format!("{}: the root canary did not run: {e}", stage.label()),
+                        crate::trial::sandbox_problem(phase, e),
+                    );
+                }
+            }
+        }
+    }
     // An allowed canary that failed: blocked by the firewall, or down?
-    if !verdict.unreachable.is_empty() && stage == Stage::Agent && !root_user {
+    // (Before a root attempt root is behind the chain too, so its answer
+    // would tell nothing.)
+    if !verdict.unreachable.is_empty() && stage == Stage::Agent && !root_user && !root_attempt {
         let probe = selftest::reach_script(&verdict.unreachable);
         if let Ok(o) = sb.exec(as_root(probe)).await {
             let root_reached = !Report::parse(&o.stdout).all("reached").is_empty();
@@ -1063,6 +1110,10 @@ fn guard_proof(
     (DefenseState::Enforced, note)
 }
 
+/// What a `root_service` note says when the guard was tried and does not
+/// hold, so the agent ran with the daemon's ports open to it.
+pub const UNGUARDED: &str = "so the agent can reach the sandbox daemon's ports";
+
 /// The `root_service` record when the guard does not hold: `off` when the
 /// task turned it off (an agent running as root).
 fn unguarded(why: &str, off: bool) -> (DefenseState, String) {
@@ -1074,7 +1125,7 @@ fn unguarded(why: &str, off: bool) -> (DefenseState, String) {
             DefenseState::NotSupported
         },
         format!(
-            "{why}, so the agent can reach the sandbox daemon's ports ({}), and the daemon runs commands as root for any user who reaches it",
+            "{why}, {UNGUARDED} ({}), and the daemon runs commands as root for any user who reaches it",
             ports.join(", ")
         ),
     )
@@ -1083,6 +1134,72 @@ fn unguarded(why: &str, off: bool) -> (DefenseState, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A loopback, private or documentation address: one no outside party
+    /// controls.
+    fn ours(ip: IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_unspecified()
+                    || v4.octets()[..3] == [192, 0, 2]
+            }
+            IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        }
+    }
+
+    /// E5 (the public CI's e2e full tier, 2026-10-12): the blocklist fixture
+    /// blocked www.debian.org by name and its verifier probed one address
+    /// of it, 128.31.0.62; on the CI runner the name resolved to two other
+    /// addresses, the probe got through, and the oracle scored 0. The
+    /// fixture must need no outside host: every blocked entry is ours (a
+    /// loopback or private range, or a reserved `.invalid` name), and no
+    /// file of it names an outside address or fetches over https.
+    #[test]
+    fn the_network_block_fixture_needs_no_outside_host() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/tasks/network-block");
+        let task = benchflow_task::load(&dir).expect("the fixture loads");
+        let Network::Block(entries) = task.agent_network() else {
+            panic!("the fixture blocks: {:?}", task.agent_network())
+        };
+        for e in entries {
+            let local = match range_of(e) {
+                Some(r) => r
+                    .split_once('/')
+                    .and_then(|(a, _)| a.parse::<IpAddr>().ok())
+                    .is_some_and(ours),
+                None => e.ends_with(".invalid"),
+            };
+            assert!(local, "`{e}` depends on an outside host");
+        }
+        for f in walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if !f.file_type().is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(f.path()).unwrap_or_default();
+            assert!(!text.contains("https://"), "{}", f.path().display());
+            // Every http URL goes to a loopback address or a reserved name.
+            for url in text.split("http://").skip(1) {
+                let host = url
+                    .split(|c: char| c == ':' || c == '/' || c.is_whitespace() || c == '"')
+                    .next()
+                    .unwrap_or_default();
+                let local = host.ends_with(".invalid")
+                    || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
+                assert!(local, "{} fetches http://{host}", f.path().display());
+            }
+            for word in text.split(|c: char| !(c.is_ascii_digit() || c == '.')) {
+                if let Ok(ip) = word.parse::<std::net::Ipv4Addr>() {
+                    assert!(ours(IpAddr::V4(ip)), "{} names {ip}", f.path().display());
+                }
+            }
+        }
+    }
 
     fn docker() -> Capabilities {
         Capabilities {
@@ -1228,6 +1345,8 @@ mod tests {
         root_svc: &'static str,
         /// The sandbox is gone by the time the rules are checked again.
         lost: bool,
+        /// What root's reach probe gets (`BF reached ...` lines).
+        reach: &'static str,
         ran: std::sync::Mutex<Vec<(Option<String>, String)>>,
         /// (command, PATH, unset) of every exec, for the self-test checks.
         env: std::sync::Mutex<Vec<ExecEnv>>,
@@ -1243,6 +1362,7 @@ mod tests {
                 svc,
                 root_svc: "reached",
                 lost: false,
+                reach: "BF reached 127.0.0.1:2280\n",
                 ran: Default::default(),
                 env: Default::default(),
             }
@@ -1327,11 +1447,25 @@ mod tests {
                 o.push_str("BF tamper tried\n");
                 o
             } else if c.contains("BF canary svc") {
-                Self::svc_lines(&c, self.root_svc)
+                // As iptables would: a chain over root's connections whose
+                // guard does not spare root refuses root's probe too.
+                let refused_for_root = self.ran.lock().unwrap().iter().any(|(_, cmd)| {
+                    cmd.contains("jump_new 1")
+                        && cmd.contains("for port in $GUARD")
+                        && !cmd.contains("--dport \"$port\" -m owner ! --uid-owner 0")
+                });
+                Self::svc_lines(
+                    &c,
+                    if refused_for_root {
+                        "refused"
+                    } else {
+                        self.root_svc
+                    },
+                )
             } else if c.contains("BF canary") {
                 Self::canary_lines(&c)
             } else if c.contains("BF reached") {
-                "BF reached 127.0.0.1:2280\n".into()
+                self.reach.into()
             } else if c.contains("hosts.tmp") {
                 String::new()
             } else {
@@ -1382,6 +1516,7 @@ mod tests {
             Host::Agent,
             user,
             SelfTest::default(),
+            false,
         )
         .await
     }
@@ -1591,6 +1726,7 @@ mod tests {
             Host::Agent,
             user,
             SelfTest::default(),
+            false,
         )
         .await
     }
@@ -1641,6 +1777,7 @@ mod tests {
             Host::Agent,
             "root",
             SelfTest::default(),
+            false,
         )
         .await;
         assert_eq!(
@@ -1684,6 +1821,206 @@ mod tests {
         assert!(note.contains("none needed"), "{note}");
     }
 
+    /// The reference solution runs as root, and on Docker the agent's chain
+    /// covered only the agent user and other non-root users: under a
+    /// github.com-only allowlist the oracle resolved and reached example.com
+    /// and 1.1.1.1, so `bench test` passed oracles that need hosts the
+    /// policy forbids (Daytona's own allow list blocked them). Before a root
+    /// attempt the agent's chain now covers every new connection, root's
+    /// included; before any other attempt it stays the agent user's. Guards
+    /// the E7 examples fix on `rust/e7-examples` (`examples/tasks/net-allowlist`).
+    #[tokio::test]
+    async fn before_the_root_oracle_the_agent_chain_covers_root_too() {
+        let p = plan(
+            Network::Allow(vec!["github.com".into()]),
+            Network::Open,
+            &["140.82.112.3/32"],
+        );
+        for (root_attempt, everyone) in [(true, true), (false, false)] {
+            let fake = Fake::new(
+                "BF fw /usr/sbin/iptables v6=none reject=REJECT\nBF fw-sum 42\n",
+                "refused",
+            );
+            let out = enforce(
+                &fake,
+                &docker(),
+                &p,
+                Stage::Agent,
+                Host::Agent,
+                "agent",
+                SelfTest::default(),
+                root_attempt,
+            )
+            .await;
+            assert!(out.problem.is_none(), "{:?}", out.problem);
+            let install = &fake.ran()[0].1;
+            // The jump covers every new connection (the guard, if any, still
+            // spares root on its own lines).
+            assert_eq!(
+                install.contains("jump_new 1"),
+                everyone,
+                "root attempt {root_attempt}: {install}"
+            );
+            let (_, note) = out.defense.unwrap();
+            assert_eq!(note.contains("root's included"), everyone, "{note}");
+        }
+    }
+
+    /// Both diff reviews of `rust/e7-examples` (E7-A 1, E7-B 1): before a
+    /// root oracle on Daytona the chain covered root, and its guard on the
+    /// daemon's ports refused root too, so the guard's proof (root reaches
+    /// the ports the agent user is refused) failed and every oracle trial
+    /// recorded `root_service` as not supported. The guard now spares root
+    /// under that scope, and the proof holds.
+    #[tokio::test]
+    async fn before_the_root_oracle_the_daemon_guard_still_spares_root() {
+        for network in [
+            Network::Open,
+            Network::Block(vec!["198.51.100.7/32".into()]),
+        ] {
+            let ranges: &[&str] = if network == Network::Open {
+                &[]
+            } else {
+                &["198.51.100.7/32"]
+            };
+            let p = plan(network.clone(), Network::Open, ranges);
+            let fake = Fake::new(INSTALLED, "refused");
+            let out = enforce(
+                &fake,
+                &daytona_root_service(),
+                &p,
+                Stage::Agent,
+                Host::Agent,
+                "agent",
+                SelfTest::default(),
+                true,
+            )
+            .await;
+            assert!(out.problem.is_none(), "{network:?}: {:?}", out.problem);
+            let (state, note) = out.root_service.expect("the guard's record");
+            assert_eq!(state, DefenseState::Enforced, "{network:?}: {note}");
+            let install = &fake.ran()[0].1;
+            assert!(install.contains("jump_new 1"), "{install}");
+            assert!(install.contains("-m owner ! --uid-owner 0 -j"), "{install}");
+        }
+    }
+
+    /// Before a root oracle, root itself tries the destinations the policy
+    /// forbids, so a chain that did not cover root fails the phase (R109)
+    /// rather than letting the oracle pass under a policy it never met.
+    /// Review of `ea4659db`: the self-test ran as the agent user only.
+    #[tokio::test]
+    async fn before_the_root_oracle_root_tries_the_blocked_canaries() {
+        let p = plan(
+            Network::Block(vec!["1.1.1.1/32".into()]),
+            Network::Open,
+            &["1.1.1.1/32"],
+        );
+        let run = |reach: &'static str| {
+            let mut fake = Fake::new(INSTALLED, "refused");
+            fake.reach = reach;
+            fake
+        };
+        let fake = run("BF reached 1.1.1.1:443\n");
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+            true,
+        )
+        .await;
+        let problem = out.problem.expect("a leak");
+        assert_eq!(problem.code, "R109");
+        assert!(
+            problem.message.contains(
+                "root, which runs the reference solution, reached the blocked 1.1.1.1:443"
+            ),
+            "{}",
+            problem.message
+        );
+        // Root's probe asked for the blocked canary, as root.
+        assert!(fake.ran().iter().any(|(u, c)| u.as_deref() == Some("root")
+            && c.contains("BF reached")
+            && c.contains("1.1.1.1")));
+        // Refused for root too: the phase runs, and the note says so.
+        let fake = run("");
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+            true,
+        )
+        .await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        assert!(
+            out.defense
+                .unwrap()
+                .1
+                .contains("root (the reference solution) could not reach them either")
+        );
+        // Not a root attempt: no root probe of the blocked canaries.
+        let fake = run("BF reached 1.1.1.1:443\n");
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+            false,
+        )
+        .await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+    }
+
+    /// Round 2 of the same fix: on Daytona, which has no block list of its
+    /// own, a blocklist was held by the uid firewall alone, and the root
+    /// oracle reached both blocked addresses by connecting to them
+    /// directly (`examples/tasks/net-ip-blocklist`, live). Before a root
+    /// attempt the chain covers root there too.
+    #[tokio::test]
+    async fn on_daytona_a_blocklist_holds_for_the_root_oracle() {
+        let p = plan(
+            Network::Block(vec!["1.1.1.1/32".into()]),
+            Network::Open,
+            &["1.1.1.1/32"],
+        );
+        for (root_attempt, everyone) in [(true, true), (false, false)] {
+            let fake = Fake::new(INSTALLED, "refused");
+            let out = enforce(
+                &fake,
+                &daytona_root_service(),
+                &p,
+                Stage::Agent,
+                Host::Agent,
+                "agent",
+                SelfTest::default(),
+                root_attempt,
+            )
+            .await;
+            assert!(out.problem.is_none(), "{:?}", out.problem);
+            let install = &fake.ran()[0].1;
+            // The jump covers every new connection (the guard, if any, still
+            // spares root on its own lines).
+            assert_eq!(
+                install.contains("jump_new 1"),
+                everyone,
+                "root attempt {root_attempt}: {install}"
+            );
+            let (_, note) = out.defense.unwrap();
+            assert_eq!(note.contains("root's included"), everyone, "{note}");
+        }
+    }
+
     #[tokio::test]
     async fn a_separate_verifier_with_no_network_on_daytona_closes_ipv6_for_everyone() {
         let fake = Fake::new(
@@ -1700,6 +2037,7 @@ mod tests {
             Host::SeparateVerifier,
             "root",
             SelfTest::default(),
+            false,
         )
         .await;
         assert!(out.problem.is_none(), "{:?}", out.problem);
@@ -1759,6 +2097,7 @@ mod tests {
                 path: Some("/trusted/bin"),
                 unset: &unset,
             },
+            false,
         )
         .await;
         // `bf_try()` is defined only in the self-test script.
@@ -1781,6 +2120,7 @@ mod tests {
             Host::Agent,
             "root",
             SelfTest::default(),
+            false,
         )
         .await;
         assert!(out.problem.is_none() && out.root_service.is_none());
@@ -1796,6 +2136,7 @@ mod tests {
             Host::Agent,
             "agent",
             SelfTest::default(),
+            false,
         )
         .await;
         assert!(out.root_service.is_none() && out.defense.is_none());
@@ -1845,6 +2186,7 @@ mod tests {
             Host::Agent,
             "root",
             SelfTest::default(),
+            false,
         )
         .await;
         let pr = out.problem.expect("refused");
@@ -1864,6 +2206,7 @@ mod tests {
             Host::Agent,
             "root",
             SelfTest::default(),
+            false,
         )
         .await;
         let pr = out.problem.expect("refused");
@@ -1887,6 +2230,7 @@ mod tests {
             Host::Agent,
             "agent",
             SelfTest::default(),
+            false,
         )
         .await;
         let install = &fake.ran()[0].1;
@@ -1905,6 +2249,7 @@ mod tests {
             Host::Agent,
             "agent",
             SelfTest::default(),
+            false,
         )
         .await;
         let install = &fake.ran()[0].1;
@@ -1930,6 +2275,7 @@ mod tests {
                 Host::Agent,
                 "agent",
                 SelfTest::default(),
+                false,
             )
             .await;
             let pr = out.problem.expect("refused");

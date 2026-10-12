@@ -138,7 +138,7 @@ impl ModelAgent for AcpAgent {
     }
 
     fn install_layers(&self) -> Vec<String> {
-        let mut layers = vec![self.manifest.install_script()];
+        let mut layers = vec![self.manifest.install_layer()];
         // The forwarder runs on BenchFlow's Node.js, which npm agents bring.
         if self.provider.is_some() && !matches!(self.manifest.install.method, InstallMethod::Npm(_))
         {
@@ -477,6 +477,10 @@ impl AcpAgent {
         out: &mut AgentOutput,
     ) -> Result<(), AcpError> {
         client.initialize().await?;
+        out.agent_version = client
+            .agent_info()
+            .and_then(|info| info.version.clone())
+            .filter(|v| !v.trim().is_empty());
         let mcp: Vec<McpServer> = ctx
             .mcp
             .iter()

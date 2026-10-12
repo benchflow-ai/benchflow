@@ -311,6 +311,10 @@ pub(crate) fn id_and_user(stdout: &str) -> (String, String) {
     (id.to_string(), user)
 }
 
+/// How a timed-out build of the agent's install layers names itself, so
+/// that a timeout of the task's own build or pull is told apart from it.
+const LAYERS_TIMED_OUT: &str = "the agent's install layers";
+
 /// What a CLI call in [`run_with_retries`] is doing, for its errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -331,12 +335,20 @@ async fn run_with_retries(
         let run = run_streaming(cli, args, spec.build_timeout, log).await?;
         let Some(run) = run else {
             let limit = spec.build_timeout.unwrap_or_default().as_secs();
+            // Which step stopped decides whose it may be: the agent's install
+            // layers are checked against the task's image (built and cached by
+            // then); the task's own build or pull is never the agent's.
+            let what = if step == Step::Layers {
+                LAYERS_TIMED_OUT
+            } else {
+                "the task's image"
+            };
             return Err(SandboxError::Image {
                 name: spec.name.clone(),
                 message: format!(
-                    "`{}` did not finish within the {limit}s build timeout and was stopped. If the \
-                     build is just slow, raise the task's build timeout; if a download stalled, \
-                     check the network and run again.",
+                    "`{}` ({what}) did not finish within the {limit}s build timeout and was \
+                     stopped. If the build is just slow, raise the task's build timeout; if a \
+                     download stalled, check the network and run again.",
                     cli.show(args)
                 ),
                 log_tail: String::new(),

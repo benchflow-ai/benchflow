@@ -12,7 +12,7 @@ use std::path::Path;
 
 use benchflow_task::TaskPackage;
 use benchflow_task::ctrf::Ctrf;
-use benchflow_task::reward::{RewardError, read_rewards};
+use benchflow_task::reward::{RewardError, lenient_from_env, read_rewards_in};
 use serde_json::Value;
 
 use crate::judge::Judged;
@@ -97,7 +97,7 @@ pub fn score(
             rubric: Some(review),
         });
     }
-    match read_rewards(verifier_dir) {
+    match read_rewards_in(verifier_dir, lenient_from_env(), task.verifier.reward_range) {
         Ok(r) => Ok(Score {
             reward: r.reward,
             passed: r.reward == 1.0,
@@ -130,6 +130,7 @@ fn reward_problem(e: &RewardError, verifier_dir: &Path) -> Problem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use benchflow_task::reward::read_rewards;
 
     fn dir_with(files: &[(&str, &str)]) -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
@@ -161,6 +162,65 @@ mod tests {
             written.as_object().unwrap().values().all(Value::is_number),
             "{written}"
         );
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            let dest = to.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                copy_tree(&e.path(), &dest);
+            } else {
+                std::fs::copy(e.path(), &dest).unwrap();
+            }
+        }
+    }
+
+    /// A split-layout task that declares `[verifier] reward_range = [-1.0,
+    /// 1.0]` (BenchFlow 0.8's safety-floor shape) loads with nothing
+    /// refused, a reward inside the range is scored (passed only at 1, as in
+    /// 0.8), and one outside it is the task's R302. Before 2026-10-11 (break
+    /// campaign E9; DECISIONS.md row 13) bench refused such a task.
+    #[test]
+    fn a_declared_reward_range_is_honored() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("hello-split");
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello-split"),
+            &root,
+        );
+        let toml = std::fs::read_to_string(root.join("task.toml")).unwrap();
+        std::fs::write(
+            root.join("task.toml"),
+            toml.replace("[verifier]\n", "[verifier]\nreward_range = [-1.0, 1.0]\n"),
+        )
+        .unwrap();
+        let task = benchflow_task::load(&root).unwrap();
+        assert!(task.unsupported.is_empty(), "{:?}", task.unsupported);
+        assert_eq!(task.verifier.reward_range, Some((-1.0, 1.0)));
+        for (text, reward, passed) in [("-1", -1.0, false), ("-0.5", -0.5, false), ("1", 1.0, true)]
+        {
+            let v = dir_with(&[("reward.txt", text)]);
+            let s = score(&task, v.path(), None).unwrap();
+            assert_eq!((s.reward, s.passed), (reward, passed), "{text}");
+        }
+        let v = dir_with(&[("reward.txt", "-1.5")]);
+        let p = score(&task, v.path(), None).unwrap_err();
+        assert_eq!((p.code.as_str(), p.owner), ("R302", Owner::Task), "{p:?}");
+        assert!(
+            p.message
+                .contains("outside [-1, 1] (the task's reward_range)"),
+            "{}",
+            p.message
+        );
+        // The same task without the range keeps [0, 1].
+        let plain = benchflow_task::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello-split"),
+        )
+        .unwrap();
+        let v = dir_with(&[("reward.txt", "-0.5")]);
+        assert_eq!(score(&plain, v.path(), None).unwrap_err().code, "R302");
     }
 
     #[test]

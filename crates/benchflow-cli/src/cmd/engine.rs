@@ -152,11 +152,20 @@ pub async fn attempt(
     env: &BTreeMap<String, String>,
     options: &[(String, String)],
 ) -> Result<Attempt> {
-    if backend.is_some() && !benchflow_run::external_agent::is_external(name) {
-        return Err(
-            CliError::usage(format!("--backend is for the external agent, not `{name}`"))
-                .next("drop --backend, or pass -a external"),
-        );
+    if let Some(b) = backend
+        && !benchflow_run::external_agent::is_external(name)
+    {
+        let err = CliError::usage(format!("--backend is for the external agent, not `{name}`"));
+        // `--backend docker`: a sandbox backend, which -s picks.
+        return Err(if ["docker", "podman", "daytona"].contains(&b.trim()) {
+            err.next(format!(
+                "to run in {}, pass -s {} (--sandbox); --backend is the address of the service that decides an external agent's steps",
+                b.trim(),
+                b.trim()
+            ))
+        } else {
+            err.next("drop --backend, or pass -a external")
+        });
     }
     if harness.is_some()
         && (name == "oracle"
@@ -258,11 +267,26 @@ pub fn job_folder_error(e: std::io::Error) -> CliError {
     use std::io::ErrorKind::*;
     match e.kind() {
         WouldBlock => CliError::not_ready(e.to_string()),
-        StorageFull | PermissionDenied | ReadOnlyFilesystem | QuotaExceeded => CliError::failed(
+        // A regrade reads the job it grades through here too (E5: a saved
+        // output this machine may not read was "could not be written").
+        PermissionDenied => CliError::failed(format!(
+            "the job folder could not be read or written: {e}"
+        ))
+        .owner(Owner::You)
+        .next("fix the job folder's permissions (every file in it must be readable), then rerun the same command"),
+        StorageFull | ReadOnlyFilesystem | QuotaExceeded => CliError::failed(
             format!("the job folder could not be written: {e}"),
         )
         .owner(Owner::You)
         .next("free disk space or fix the folder's permissions, then rerun the same command to resume the job"),
+        // A folder where bench writes a file, or the reverse: the job
+        // folder was changed by hand or by another tool (E5: a run lock
+        // replaced by a folder was "a BenchFlow bug").
+        IsADirectory | NotADirectory => CliError::failed(format!(
+            "the job folder could not be written: {e}; something in it is not what bench wrote there (a folder where a file belongs, or the reverse)"
+        ))
+        .owner(Owner::You)
+        .next("move the job folder aside and rerun with --fresh, or remove the odd entry, then rerun the same command to resume the job"),
         _ => CliError::bug("writing the job folder", e),
     }
 }
@@ -464,6 +488,24 @@ async fn stop_signal() -> Option<Signal> {
         .map(|_| Signal::Interrupt)
 }
 
+/// The reasons a failure group's trials give, each once in the order first
+/// seen: up to three to print, and how many more there are. Trials refused
+/// under one code for different reasons (a clock, a time zone, a world, all
+/// R401) are not all shown under the first one's reason.
+fn group_reasons<'a>(rs: &[&'a TrialRecord]) -> (Vec<&'a str>, usize) {
+    let mut seen: Vec<&'a str> = Vec::new();
+    for r in rs {
+        if let Some(p) = &r.problem
+            && !seen.contains(&p.message.as_str())
+        {
+            seen.push(p.message.as_str());
+        }
+    }
+    let unshown = seen.len().saturating_sub(3);
+    seen.truncate(3);
+    (seen, unshown)
+}
+
 /// A failure group's heading: "2 trials errored [R201] · the agent's
 /// problem". Trials Ctrl-C stopped say so, without blaming a setup.
 fn cause_heading(status: Status, code: &str, owner: Owner, n: usize) -> String {
@@ -551,6 +593,15 @@ pub fn score_line(recs: &[TrialRecord]) -> String {
     if scored < total {
         score.push_str(&dim(format!(" · {} of {} scored", scored, total)).to_string());
     }
+    if tally.graded_unlocked > 0 {
+        score.push_str(
+            &dim(format!(
+                " · {} graded with system folders unlocked",
+                tally.graded_unlocked
+            ))
+            .to_string(),
+        );
+    }
     let stopped = tally.stopped;
     if stopped > 0 {
         score.push_str(
@@ -597,6 +648,95 @@ pub fn stopped_lines(recs: &[TrialRecord]) -> Vec<String> {
     ]
 }
 
+/// Warnings about scores that stand but should not be read as they look:
+/// rewards outside [0, 1], counted as written, trials graded although
+/// `locked_system_dirs` failed, and model agents that ran with the sandbox
+/// daemon's ports open to them. The run's summary and `bench results` share
+/// them; none when there is nothing to say.
+pub fn score_warnings(recs: &[TrialRecord]) -> Vec<String> {
+    let mut out = Vec::new();
+    let counted: Vec<&TrialRecord> = recs.iter().filter(|r| !r.stopped()).collect();
+    let names = |rs: &[(&TrialRecord, String)]| {
+        let shown: Vec<&str> = rs.iter().take(3).map(|(_, s)| s.as_str()).collect();
+        let more = if rs.len() > 3 {
+            format!(" and {} more", rs.len() - 3)
+        } else {
+            String::new()
+        };
+        format!("      {} {}{}", dim("trials:"), shown.join(", "), more)
+    };
+    let wide: Vec<(&TrialRecord, String)> = counted
+        .iter()
+        .filter_map(|r| {
+            let v = r.reward_out_of_range()?;
+            Some((*r, format!("{} ({})", r.rollout_name, fmt_reward(v))))
+        })
+        .collect();
+    if !wide.is_empty() {
+        out.push(format!(
+            "  {} {} scored a reward outside its task's range {}",
+            warn_mark(),
+            plural(wide.len(), "trial"),
+            dim("· counted as written, so the mean reward is skewed")
+        ));
+        out.push(names(&wide));
+        out.push(ui::wrap(
+            &format!("      {} ", dim("next:")),
+            "read these trials' rewards before comparing means: the range is 0 to 1 unless the task declares a wider [verifier] reward_range, and bench refuses a reward outside it when it grades, so these come from a job it did not grade",
+            12,
+            ui::width(),
+        ));
+    }
+    let unlocked: Vec<(&TrialRecord, String)> = counted
+        .iter()
+        .filter(|r| r.graded_unlocked())
+        .map(|r| (*r, r.rollout_name.clone()))
+        .collect();
+    if let Some((first, _)) = unlocked.first() {
+        out.push(format!(
+            "  {} {} graded although locked_system_dirs failed {}",
+            warn_mark(),
+            plural(unlocked.len(), "trial"),
+            dim("· the agent could change system folders the verifier runs from")
+        ));
+        if let Some(note) = first
+            .defenses
+            .get("locked_system_dirs")
+            .and_then(|d| d.note.as_deref())
+        {
+            out.push(ui::wrap("      ", &ui::truncate(note, 300), 6, ui::width()));
+        }
+        out.push(names(&unlocked));
+        out.push(ui::wrap(
+            &format!("      {} ", dim("next:")),
+            "the scores stand; `bench test` on the task shows what its image leaves to the agent user, and the image's owner can fix it",
+            12,
+            ui::width(),
+        ));
+    }
+    // One line per job, however many trials (decision 8): a model agent
+    // that ran with the daemon's ports open could act as root.
+    let open: Vec<&&TrialRecord> = counted.iter().filter(|r| r.model_ran_unguarded()).collect();
+    if let Some(first) = open.first() {
+        let why = first
+            .defenses
+            .get("root_service")
+            .and_then(|d| d.note.as_deref())
+            .and_then(|n| n.split(", so the agent").next())
+            .unwrap_or("the guard did not hold");
+        out.push(ui::wrap(
+            &format!("  {} ", warn_mark()),
+            &format!(
+                "{} ran a model agent without the guard on the sandbox daemon's ports ({why}), so the agent could run commands as root; the record's root_service says why per trial",
+                plural(open.len(), "trial")
+            ),
+            4,
+            ui::width(),
+        ));
+    }
+    out
+}
+
 /// The end-of-run report: the score, failures grouped by cause with whose
 /// problem each is, usage, and where to look next.
 pub fn report(outcome: &JobOutcome) {
@@ -623,7 +763,19 @@ pub fn report(outcome: &JobOutcome) {
             warn_mark(),
             cause_heading(rs[0].status, code, *owner, rs.len())
         );
-        say!("{}", ui::wrap("      ", &p.message, 6, ui::width()));
+        let (reasons, unshown) = group_reasons(rs);
+        for m in reasons {
+            say!("{}", ui::wrap("      ", m, 6, ui::width()));
+        }
+        if unshown > 0 {
+            say!(
+                "      {}",
+                dim(format!(
+                    "and {} more: `bench results <job> -t` lists each trial's",
+                    plural(unshown, "other reason")
+                ))
+            );
+        }
         let names: Vec<&str> = rs.iter().take(3).map(|r| r.rollout_name.as_str()).collect();
         let more = if rs.len() > 3 {
             format!(" and {} more", rs.len() - 3)
@@ -642,6 +794,9 @@ pub fn report(outcome: &JobOutcome) {
         );
     }
     for line in stopped_lines(recs) {
+        say!("{line}");
+    }
+    for line in score_warnings(recs) {
         say!("{line}");
     }
     // Zeros that may measure a broken task rather than the agent.
@@ -983,6 +1138,37 @@ mod report_tests {
 
 #[cfg(test)]
 mod job_folder_tests {
+
+    /// E7 round 2: three trials refused under R401 for three different
+    /// fields (a clock, a time zone, a world) were reported under the first
+    /// one's reason alone. Each reason is shown once, up to three.
+    #[test]
+    fn a_failure_group_shows_each_distinct_reason() {
+        let refused = |name: &str, why: &str| {
+            let v = serde_json::json!({"status": "errored", "problem": {
+                "code": "R401", "owner": "you", "phase": "setup",
+                "message": why, "next": "remove the field", "transient": false}});
+            benchflow_run::read::record_from_json(&v, std::path::Path::new(name)).unwrap()
+        };
+        let recs = [
+            refused("a", "a asks for [sandbox] clock"),
+            refused("b", "b asks for [sandbox] timezone"),
+            refused("c", "c asks for [world]"),
+            refused("d", "a asks for [sandbox] clock"),
+            refused("e", "e asks for [sandbox] gpus"),
+        ];
+        let rs: Vec<&TrialRecord> = recs.iter().collect();
+        let (shown, unshown) = group_reasons(&rs);
+        assert_eq!(
+            shown,
+            [
+                "a asks for [sandbox] clock",
+                "b asks for [sandbox] timezone",
+                "c asks for [world]"
+            ]
+        );
+        assert_eq!(unshown, 1);
+    }
     use super::*;
 
     #[test]
@@ -995,5 +1181,16 @@ mod job_folder_tests {
         let full = job_folder_error(std::io::Error::from(std::io::ErrorKind::StorageFull));
         assert_eq!(full.owner, Some(Owner::You));
         assert!(full.next.is_some());
+    }
+
+    /// E5: a job folder whose run lock had become a folder stopped the
+    /// resume as "a BenchFlow bug", with a crash log.
+    #[test]
+    fn a_job_folder_changed_by_hand_is_not_a_bug() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".bench-run.lock")).unwrap();
+        let e = benchflow_run::job::hold(dir.path()).unwrap_err();
+        let err = job_folder_error(e);
+        assert_eq!(err.owner, Some(Owner::You), "{err:?}");
     }
 }

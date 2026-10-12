@@ -54,11 +54,381 @@ fn builtins_are_the_four_0_8_agents_with_their_aliases() {
     }
 }
 
+/// On a musl image (Alpine) 0.8's bootstrap fetched Node's glibc build,
+/// which cannot run there ("node: cannot execute: required file not found"),
+/// so no npm agent could be installed. The bootstrap now takes the x64 musl
+/// build and the C++ runtime it links on a musl image, refuses arm64 musl by
+/// name, and is otherwise 0.8's.
+#[test]
+fn npm_agents_install_on_musl_images() {
+    for name in ["claude", "codex", "gemini", "opencode"] {
+        let script = builtin(name).install_script();
+        let musl = script
+            .find(&format!("if {}", super::install::IS_MUSL))
+            .unwrap_or_else(|| panic!("{name}: no musl check"));
+        let download = script.find("curl -fsSLo").unwrap();
+        assert!(
+            musl < download,
+            "{name}: the build is chosen before the download"
+        );
+        assert!(
+            script.contains("apk add --no-cache libstdc++ libgcc"),
+            "{name}"
+        );
+        assert!(script.contains("node_arch=x64-musl"), "{name}");
+        assert!(
+            script.contains("https://unofficial-builds.nodejs.org/download/release"),
+            "{name}"
+        );
+        assert!(script.contains(r#""${bf_node_dist}/v${BF_NODE_VERSION}/node-v${BF_NODE_VERSION}-linux-${node_arch}.tar.xz""#), "{name}");
+        assert!(
+            script.contains("Node.js has no musl (Alpine) build"),
+            "{name}"
+        );
+        // A glibc image still downloads 0.8's file from 0.8's address.
+        assert!(
+            script.contains("bf_node_dist=https://nodejs.org/dist; "),
+            "{name}"
+        );
+    }
+}
+
+/// OpenHands' terminal tool runs bash; on Alpine the install succeeded and
+/// the agent then failed ("Could not find bash in PATH"). `tools` installs
+/// the programs an agent needs with the image's package manager first.
+#[cfg(unix)]
+#[test]
+fn install_tools_are_installed_first_when_missing() {
+    for name in ["openhands", "openhands-sdk"] {
+        let m = builtin(name);
+        assert_eq!(m.install.tools, ["bash"], "{name}");
+        assert!(m.install_script().starts_with("bf_tools=bash\n"), "{name}");
+    }
+    // The prelude on an image with apk and no bash: apk is asked for it.
+    let script = builtin("openhands").install_script();
+    let prelude = &script[..script.find("set -e").expect("uvx script follows")];
+    let run = |apk_body: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let asked = dir.path().join("asked");
+        let apk = apk_body
+            .replace("{asked}", &asked.display().to_string())
+            .replace("{bin}", &bin.display().to_string());
+        std::fs::write(bin.join("apk"), format!("#!/bin/sh\n{apk}\n")).unwrap();
+        std::process::Command::new("chmod")
+            .arg("+x")
+            .arg(bin.join("apk"))
+            .status()
+            .unwrap();
+        std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
+        for tool in ["printf", "sed", "ln"] {
+            for d in ["/usr/bin", "/bin"] {
+                let p = std::path::Path::new(d).join(tool);
+                if p.exists() {
+                    let _ = std::os::unix::fs::symlink(&p, bin.join(tool));
+                    break;
+                }
+            }
+        }
+        // The method script follows the prelude; it must not run when bash
+        // is still missing.
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{prelude}echo the method script ran"))
+            .env_clear()
+            .env("PATH", &bin)
+            .output()
+            .unwrap();
+        (out, std::fs::read_to_string(&asked).unwrap_or_default())
+    };
+    // `apk info -e bash`: not installed yet.
+    let (out, asked) =
+        run("[ \"$1\" = info ] && exit 1; echo \"$@\" > {asked}; ln -s /bin/sh {bin}/bash");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(asked, "add --no-cache ca-certificates bash\n");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("the method script ran"));
+    // apk fails (a mirror down): the install stops, naming the program,
+    // rather than caching a layer without bash.
+    let (out, _) = run("echo 'ERROR: temporary error (try again later)' >&2; exit 1");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        err.contains("BenchFlow: installing openhands needs bash, which the image's package manager did not install"),
+        "{err}"
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("the method script ran"));
+    // A name that is not a package is refused.
+    let err = parse(
+        "name = \"t\"\n[install]\nnpm = \"t@1\"\nbin = \"t\"\ntools = [\"bash; rm -rf /\"]\n",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("install.tools[0]"), "{err}");
+}
+
+/// `[install] tools` takes package names. `procps` installs `ps`, not a
+/// `procps` command, so the check after the install refused every install
+/// that named it ("needs procps, which the image's package manager did not
+/// install") although apt-get had installed it. An installed package of
+/// that name counts: on Fedora, RHEL and Amazon Linux one that provides it
+/// (dnf installs `procps-ng`, which provides `procps`, and `rpm -q procps`
+/// says it is not installed), and on Debian only one dpkg reads as
+/// installed (a removed package's config files are not).
+#[cfg(unix)]
+#[test]
+fn a_tools_entry_named_by_its_package_passes_once_installed() {
+    let m = parse("name = \"t\"\n[install]\nnpm = \"t@1\"\nbin = \"t\"\ntools = [\"procps\"]\n")
+        .unwrap();
+    let script = m.install_script();
+    let prelude = &script[..script
+        .find("export DEBIAN_FRONTEND=noninteractive; BF_NODE")
+        .expect("the npm script follows")];
+    // Stand-in programs; `{done}` is a file that exists once the package
+    // manager has installed the package, `{asked}` records that it ran.
+    let run = |fakes: &[(&str, &str)], installed_before: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let done = dir.path().join("installed");
+        let asked = dir.path().join("asked");
+        if installed_before {
+            std::fs::write(&done, "").unwrap();
+        }
+        for (name, body) in fakes {
+            let body = body
+                .replace("{done}", &done.display().to_string())
+                .replace("{asked}", &asked.display().to_string());
+            std::fs::write(bin.join(name), format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::process::Command::new("chmod")
+                .arg("+x")
+                .arg(bin.join(name))
+                .status()
+                .unwrap();
+        }
+        for tool in ["sh", "printf", "sed", "touch", "true", "grep"] {
+            for d in ["/bin", "/usr/bin"] {
+                let p = std::path::Path::new(d).join(tool);
+                if p.exists() {
+                    let _ = std::os::unix::fs::symlink(&p, bin.join(tool));
+                    break;
+                }
+            }
+        }
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{prelude}echo the method script ran"))
+            .env_clear()
+            .env("PATH", &bin)
+            .output()
+            .unwrap();
+        (out, asked.exists())
+    };
+    let ran = |out: &std::process::Output| {
+        String::from_utf8_lossy(&out.stdout).contains("the method script ran")
+    };
+    let refused = |out: &std::process::Output| {
+        out.status.code() == Some(1)
+            && String::from_utf8_lossy(&out.stderr)
+                .contains("needs procps, which the image's package manager did not install")
+    };
+    // Debian: dpkg-query's status for procps once apt-get installed it.
+    let apt = ("apt-get", "touch {asked}; touch {done}");
+    let dpkg = (
+        "dpkg-query",
+        "[ \"$*\" = '-W -f=${Status} procps' ] && [ -e {done} ] && { printf 'install ok installed'; exit 0; }; echo 'dpkg-query: no packages found matching procps' >&2; exit 1",
+    );
+    let (out, asked) = run(&[apt, dpkg], false);
+    assert!(ran(&out) && asked, "{out:?}");
+    // Removed without purge: dpkg still knows it, by its config files, so
+    // it is installed again.
+    let leftover = (
+        "dpkg-query",
+        "[ \"$*\" = '-W -f=${Status} procps' ] || exit 1; if [ -e {done} ]; then printf 'install ok installed'; else printf 'deinstall ok config-files'; fi",
+    );
+    let (out, asked) = run(&[apt, leftover], false);
+    assert!(ran(&out) && asked, "config-files is not installed: {out:?}");
+    // apt-get ran but installed nothing: refused by name.
+    let (out, _) = run(&[("apt-get", "true"), dpkg], false);
+    assert!(refused(&out), "{out:?}");
+    // Fedora, RHEL, Amazon Linux: dnf installs procps-ng, which provides
+    // procps; rpm finds it only by what it provides.
+    let dnf = ("dnf", "touch {asked}; touch {done}");
+    let rpm = (
+        "rpm",
+        "[ \"$*\" = \"-q --whatprovides procps\" ] && [ -e {done} ] && { echo procps-ng-4.0.4-1; exit 0; }; echo 'package procps is not installed'; exit 1",
+    );
+    let (out, asked) = run(&[dnf, rpm], false);
+    assert!(ran(&out) && asked, "{out:?}");
+    // procps-ng already on the image: nothing to install.
+    let (out, asked) = run(&[dnf, rpm], true);
+    assert!(ran(&out) && !asked, "{out:?}");
+    let (out, _) = run(&[("dnf", "true"), rpm], false);
+    assert!(refused(&out), "{out:?}");
+}
+
+const MUSL_LOADER: &str = "/lib/ld-musl-x86_64.so.1";
+const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
+
+/// The start of a dynamic ELF executable that names `loader`.
+fn fake_elf(loader: &str) -> Vec<u8> {
+    let mut elf = b"\x7fELF\x02\x01\x01\0\0\0".to_vec();
+    elf.extend([0u8; 300]);
+    elf.extend(loader.as_bytes());
+    elf.extend([0u8; 300]);
+    elf
+}
+
+/// A glibc image with the `musl` package (Rust images that build static
+/// binaries; checked on debian:bookworm-slim on 2026-10-12) has
+/// `/lib/ld-musl-x86_64.so.1`. Deciding "musl" from that file gave such an
+/// image Node's musl build, whose C++ runtime it lacks, for every npm agent
+/// and OpenClaw. Musl is read from the image's own `/bin/sh` instead.
+#[cfg(unix)]
+#[test]
+fn musl_is_read_from_the_images_shell_not_from_a_musl_package() {
+    let dir = tempfile::tempdir().unwrap();
+    let is_musl = |loader: &str| {
+        let shell = dir.path().join("sh");
+        std::fs::write(&shell, fake_elf(loader)).unwrap();
+        let check = super::install::IS_MUSL.replace("/bin/sh", &shell.display().to_string());
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(check)
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(is_musl(MUSL_LOADER));
+    assert!(!is_musl(GLIBC_LOADER));
+    // busybox's tr has no character classes.
+    assert!(!super::install::IS_MUSL.contains("[:"));
+    for m in AgentManifest::builtins() {
+        let script = m.install_script();
+        assert!(
+            !script.contains("ls /lib/ld-musl-"),
+            "{}: decides musl from /lib/ld-musl-*",
+            m.name
+        );
+    }
+}
+
+/// cline and MiMo Code install cleanly on Alpine, but their native
+/// executable has no musl build, so they failed as the trial started
+/// ("spawnSync …/bin/.cline ENOENT"). On a musl image the install starts
+/// the agent once and fails, saying why.
+#[cfg(unix)]
+#[test]
+fn an_npm_agent_that_cannot_start_on_musl_fails_its_install_by_name() {
+    let script = builtin("cline").install_script();
+    let start = script
+        .find(" && { ! head -c 4096 /bin/sh")
+        .expect("the install checks the agent starts on musl");
+    let check = &script[start..];
+    let dir = tempfile::tempdir().unwrap();
+    let wrapper = dir.path().join("cline");
+    // The image's shell, which says whether the image is musl.
+    let shell = dir.path().join("sh");
+    let run = |body: &str, on_musl: bool| {
+        std::fs::write(&wrapper, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::process::Command::new("chmod")
+            .arg("+x")
+            .arg(&wrapper)
+            .status()
+            .unwrap();
+        std::fs::write(
+            &shell,
+            fake_elf(if on_musl { MUSL_LOADER } else { GLIBC_LOADER }),
+        )
+        .unwrap();
+        let check = check
+            .replace(
+                "head -c 4096 /bin/sh",
+                &format!("head -c 4096 {}", shell.display()),
+            )
+            .replace("/opt/benchflow/bin/cline", &wrapper.display().to_string());
+        // Binary installs run under `set -e`.
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("set -e\ntrue{check}"))
+            .output()
+            .unwrap()
+    };
+    let enoent = "echo 'Error: spawnSync /opt/benchflow/js-agents/lib/node_modules/cline/bin/.cline ENOENT' >&2; exit 1";
+    let out = run(enoent, true);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("BenchFlow: cline does not start on this image, which uses musl")
+            && err.contains(".cline ENOENT"),
+        "{err}"
+    );
+    assert_eq!(run("exit 127", true).status.code(), Some(1));
+    // It starts: the install goes on; a glibc image is not checked.
+    assert!(run("echo 3.0.70", true).status.success());
+    // A long Node stack after the error: the reason is still the last line.
+    let long = "echo 'node:internal/child_process:1123' >&2; echo 'Error: spawnSync /opt/benchflow/js-agents/lib/node_modules/cline/bin/.cline ENOENT' >&2; i=0; while [ $i -lt 60 ]; do echo \"    at Object.spawnSync (node:internal/child_process:1124:20) frame $i\" >&2; i=$((i+1)); done; exit 1";
+    let out = run(long, true);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    let last = err
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .unwrap_or_default();
+    assert!(
+        last.starts_with("BenchFlow: cline does not start on this image")
+            && last.ends_with(
+                "Error: spawnSync /opt/benchflow/js-agents/lib/node_modules/cline/bin/.cline ENOENT"
+            ),
+        "{last}"
+    );
+    assert!(
+        err.len() < 2600,
+        "the agent's output is cut to its last 2,000 bytes"
+    );
+    // It starts, warning about a settings file the fresh HOME lacks.
+    let warns = "echo \"Warning: ENOENT: no such file or directory, open '$HOME/.cline/settings.json'\" >&2; echo 3.0.70";
+    let out = run(warns, true);
+    assert!(out.status.success(), "{out:?}");
+    assert!(run(enoent, false).status.success());
+    // 0.8's script had no such check.
+    assert!(!super::install::as_0_8(&script).contains("--version 2>&1 < /dev/null"));
+}
+
+/// The install runs as root; what it left in `/tmp` stayed root's in the
+/// image, where the agent user could not write it (OpenCode's
+/// `/tmp/opencode`, npm's `/tmp/node-compile-cache`). The layer gives the
+/// install a `TMPDIR` of its own and removes it, keeping the script's exit
+/// status.
+#[test]
+fn the_install_layer_leaves_nothing_in_tmp() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let seen = out_dir.path().join("seen");
+    for (body, code) in [("exit 0", 0), ("exit 7", 7)] {
+        let m = parse(&format!(
+            "name = \"tmp-agent\"\n[install]\nscript = \"\"\"\nmkdir \"$TMPDIR/opencode\" && echo \"$TMPDIR\" > {}\n{body}\n\"\"\"\n[launch]\ncommand = \"true\"\n",
+            seen.display()
+        ))
+        .unwrap();
+        let layer = m.install_layer();
+        assert!(layer.contains(&m.install_script()));
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&layer)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(code), "{layer}");
+        let tmp = std::fs::read_to_string(&seen).unwrap();
+        let tmp = tmp.trim();
+        assert!(tmp.starts_with("/tmp/benchflow-install."), "{tmp}");
+        assert!(!std::path::Path::new(tmp).exists(), "{tmp} was left behind");
+    }
+}
+
 #[test]
 fn claude_install_matches_0_8_byte_for_byte() {
     let claude = builtin("claude");
     assert_eq!(
-        claude.install_script(),
+        install::as_0_8(&claude.install_script()),
         golden_str(&["claude-agent-acp", "install"])
     );
     assert_eq!(
@@ -80,7 +450,7 @@ fn claude_install_matches_0_8_byte_for_byte() {
 fn codex_install_and_launch_match_0_8() {
     let codex = builtin("codex");
     assert_eq!(
-        codex.install_script(),
+        install::as_0_8(&codex.install_script()),
         golden_str(&["codex-acp", "install"])
     );
     // Agent options' flags go where `"$@"` stands; with none set it expands
@@ -100,7 +470,10 @@ fn codex_install_and_launch_match_0_8() {
 #[test]
 fn gemini_install_and_launch_match_0_8() {
     let gemini = builtin("gemini");
-    assert_eq!(gemini.install_script(), golden_str(&["gemini", "install"]));
+    assert_eq!(
+        install::as_0_8(&gemini.install_script()),
+        golden_str(&["gemini", "install"])
+    );
     assert_eq!(gemini.launch_command(), golden_str(&["gemini", "launch"]));
     assert_eq!(
         gemini.launch_command(),
@@ -129,7 +502,7 @@ fn opencode_keeps_0_8_install_but_launches_without_the_gateway_wrapper() {
          fi\n"
     );
     // Everything but the launcher is 0.8's install.
-    let ours = opencode.install_script();
+    let ours = install::as_0_8(&opencode.install_script());
     let theirs = golden_str(&["opencode_js_install"]);
     let cut = |s: &str| {
         let start = s.find("printf '%s\\n'").unwrap();
@@ -150,7 +523,10 @@ bin = "some-agent"
 "#,
     )
     .unwrap();
-    assert_eq!(manifest.install_script(), golden_str(&["unpinned_example"]));
+    assert_eq!(
+        install::as_0_8(&manifest.install_script()),
+        golden_str(&["unpinned_example"])
+    );
 }
 
 #[test]
@@ -306,7 +682,7 @@ fn unknown_keys_name_the_line_and_the_likely_key() {
         err.to_string(),
         "agents/test.toml:7:1: unknown key `install.timout`; did you mean `timeout`? \
          ([install] takes npm, bin, companions, launcher, launcher_env, verify, script, uv-tool, \
-         uv-venv, python, installer, links, timeout, binary, npx, uvx)"
+         uv-venv, python, installer, links, timeout, tools, binary, npx, uvx)"
     );
 
     let err = parse(&MINIMAL.replace("name = ", "nmae = ")).unwrap_err();
@@ -1315,6 +1691,58 @@ fn resources_set_the_least_the_sandbox_gets() {
     }
     assert!(parse(&format!("{MINIMAL}\n[resources]\nmin_cpus = 0\n")).is_err());
     assert!(parse(&format!("{MINIMAL}\n[resources]\nmemory = \"4 GB\"\n")).is_err());
+}
+
+/// A vendor archive or installer can carry glibc programs the loader check
+/// cannot see: Cursor's launcher is a bash script that starts its own glibc
+/// Node, Antigravity's installer leaves glibc binaries (on Alpine its check
+/// failed "agy: not found"). On a musl image every such install starts the
+/// agent once, as the npm installs do, before any `verify`.
+#[test]
+fn binary_and_vendor_installs_start_the_agent_once_on_musl() {
+    for (name, wrapper) in [
+        ("cursor", "/opt/benchflow/bin/cursor"),
+        ("goose", "/opt/benchflow/bin/goose"),
+        ("antigravity", "/opt/benchflow/bin/agy"),
+        ("antigravity", "/opt/benchflow/bin/antigravity"),
+    ] {
+        let script = builtin(name).install_script();
+        let check = script
+            .find(&format!("$bf_to {wrapper} --version"))
+            .unwrap_or_else(|| panic!("{name}: {wrapper} is not started on musl"));
+        assert!(
+            script[..check].contains(&format!(" && {{ ! {}", super::install::IS_MUSL)),
+            "{name}: only on musl images"
+        );
+    }
+    let agy = builtin("antigravity").install_script();
+    assert!(
+        agy.find("$bf_to /opt/benchflow/bin/agy --version").unwrap()
+            < agy.rfind("&& /opt/benchflow/bin/agy --version").unwrap(),
+        "the start check comes before the manifest's verify"
+    );
+    assert_eq!(builtin("cursor").install.tools, ["bash"]);
+}
+
+/// OpenClaw's installer fetched Node's glibc build, which cannot start on
+/// Alpine ("node/bin/node: not found"), so its install failed there.
+#[test]
+fn openclaw_takes_nodes_musl_build_on_a_musl_image() {
+    let script = builtin("openclaw").install_script();
+    let musl = script
+        .find(&format!("if {}", super::install::IS_MUSL))
+        .expect("the installer checks for musl");
+    assert!(
+        musl < script.find("curl -fsSL").unwrap(),
+        "before the download"
+    );
+    assert!(script.contains("a=x64-musl; d=https://unofficial-builds.nodejs.org/download/release"));
+    assert!(script.contains("apk add --no-cache libstdc++ libgcc"));
+    assert!(script.contains(r#"curl -fsSL "$d/v24.21.0/node-v24.21.0-linux-$a.tar.gz""#));
+    assert!(
+        script.contains("d=https://nodejs.org/dist\n"),
+        "glibc images keep Node's own build"
+    );
 }
 
 #[test]

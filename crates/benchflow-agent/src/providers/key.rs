@@ -27,6 +27,10 @@ impl fmt::Debug for ProviderKey {
     }
 }
 
+/// What the forwarder sends in place of the key to a plain-http test
+/// endpoint ([`ProviderKey::withheld`]).
+pub const WITHHELD_KEY: &str = "benchflow-test-endpoint-placeholder";
+
 impl ProviderKey {
     /// The key itself, for the forwarder's key file. Never put it in an
     /// environment variable, a command line, or a log.
@@ -50,6 +54,21 @@ impl ProviderKey {
             provider: provider.to_string(),
             source: key.source.clone(),
             value: key.value.trim().to_string(),
+        }
+    }
+
+    /// A stand-in for this key, for an upstream reached over plain http
+    /// (the test hook's): the real key never travels unencrypted, and a
+    /// listener there, which inside a sandbox the agent may own, never sees
+    /// it.
+    pub(crate) fn withheld(&self) -> Self {
+        Self {
+            provider: self.provider.clone(),
+            source: format!(
+                "{} (withheld: a placeholder goes to the plain-http test endpoint)",
+                self.source
+            ),
+            value: WITHHELD_KEY.to_string(),
         }
     }
 

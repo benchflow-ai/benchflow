@@ -383,10 +383,23 @@ pub(super) fn uvx(
 
 /// Install the commands in `$bf_tools` that the image lacks, with apt-get,
 /// dnf, or apk.
-fn ensure_tools(agent: &str) -> String {
+/// Shell source that installs the entries of `$bf_tools` that are missing,
+/// with the image's package manager, and fails naming any still missing
+/// afterwards. An entry is present when a command or an installed package
+/// has its name (`bash`; `procps`, which installs `ps`), so a package named
+/// as `[install] tools` documents passes once installed: dpkg's status must
+/// read installed (a removed package's leftover config files are not), and
+/// rpm matches what a package provides (`procps` is `procps-ng` on Fedora,
+/// RHEL and Amazon Linux). It checks again
+/// because a failed `apt-get update` or `apk add` is not stopped by the
+/// callers' `set -e` (it is not the last command of its list, or there is
+/// no `set -e`, as before an `[install] tools` method script), and the layer
+/// would be cached without the program.
+pub(super) fn ensure_tools(agent: &str) -> String {
     format!(
-        r#"bf_missing=""
-for bf_t in $bf_tools; do command -v "$bf_t" >/dev/null 2>&1 || bf_missing="$bf_missing $bf_t"; done
+        r#"bf_have() {{ command -v "$1" >/dev/null 2>&1 || dpkg-query -W -f='${{Status}}' "$1" 2>/dev/null | grep -q ' installed$' || apk info -e "$1" >/dev/null 2>&1 || rpm -q --whatprovides "$1" >/dev/null 2>&1; }}
+bf_missing=""
+for bf_t in $bf_tools; do bf_have "$bf_t" || bf_missing="$bf_missing $bf_t"; done
 if [ -n "$bf_missing" ]; then
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq ca-certificates $(printf '%s\n' $bf_missing | sed 's/^xz$/xz-utils/')
@@ -398,6 +411,9 @@ if [ -n "$bf_missing" ]; then
     echo "BenchFlow: installing {agent} needs$bf_missing, and the image has no apt-get, dnf, or apk to install them" >&2
     exit 127
   fi
+  for bf_t in $bf_missing; do
+    bf_have "$bf_t" || {{ echo "BenchFlow: installing {agent} needs $bf_t, which the image's package manager did not install" >&2; exit 1; }}
+  done
 fi
 "#
     )
@@ -424,6 +440,7 @@ fn finish(target_check: &str, verify: Option<&str>) -> String {
 
 /// The install script for a per-platform archive.
 pub(super) fn binary_script(b: &BinaryInstall) -> String {
+    use super::install::IS_MUSL;
     let dir = format!("{AGENTS_PREFIX}/{}", b.dir);
     let name = &b.dir;
     let mut s = String::from("set -e\nexport DEBIAN_FRONTEND=noninteractive\n");
@@ -480,11 +497,21 @@ pub(super) fn binary_script(b: &BinaryInstall) -> String {
   chmod +x "$bf_dir/dist/$bf_cmd"
 fi
 bf_target="$bf_dir/dist/$bf_cmd"
+# The loader's path, among the printable runs of the ELF header (busybox's
+# tr has no character classes, so the range is spelled out).
+bf_interp="$(head -c 4096 "$bf_target" | tr -c '\040-\176' '\n' | grep -m 1 '^/lib[a-z0-9]*/ld-linux' || true)"
+if [ -n "$bf_interp" ] && [ ! -e "$bf_interp" ]; then
+  echo "BenchFlow: {name}'s build for linux-$(uname -m) needs glibc's loader $bf_interp, which this image lacks$({IS_MUSL} && echo ' (it uses musl, as Alpine does)'); {name} publishes no build for it, so run {name} on an image with glibc (Debian, Ubuntu)" >&2
+  exit 1
+fi
 "#
     ));
     s.push_str(&write_launcher(name));
     s.push_str(&finish(
-        &format!("[ -x \"$bf_target\" ] && [ -x {BIN_PREFIX}/{name} ]"),
+        &format!(
+            "[ -x \"$bf_target\" ] && [ -x {BIN_PREFIX}/{name} ]{}",
+            super::install::musl_start_check(name, &format!("{BIN_PREFIX}/{name}"))
+        ),
         b.verify.as_deref(),
     ));
     s
@@ -755,6 +782,55 @@ args = ["acp"]
         );
         assert!(script.contains("bf_target=\"$bf_dir/bin/\"minion-code\n"));
         assert_eq!(m.launch_command(), "/opt/benchflow/bin/minion-code acp");
+    }
+
+    /// Goose and Kimi CLI ship glibc builds only: on Alpine their launcher
+    /// exited 127 ("not found") once the trial had started.
+    #[cfg(unix)]
+    #[test]
+    fn a_glibc_build_is_refused_by_name_on_an_image_without_glibc() {
+        let m = parse(
+            "name = \"gl\"\n[install.binary.linux-x86_64]\narchive = \"https://e/gl.tar.gz\"\ncmd = \"gl\"\n",
+        )
+        .unwrap();
+        let script = m.install_script();
+        assert_parses(&script);
+        let start = script
+            .find("bf_interp=")
+            .expect("the install checks the loader");
+        let end = start + script[start..].find("\nfi\n").unwrap() + 4;
+        let check = &script[start..end];
+        // Alpine's busybox tr has no character classes: `[:print:]` found
+        // nothing there, and goose still failed at its start on Alpine.
+        assert!(!check.contains("[:"), "{check}");
+        let dir = tempfile::tempdir().unwrap();
+        let run = |content: &[u8]| {
+            let target = dir.path().join("gl");
+            std::fs::write(&target, content).unwrap();
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("bf_target={}\n{check}", target.display()))
+                .output()
+                .unwrap()
+        };
+        let mut elf = b"\x7fELF\x02\x01\x01\0\0\0".to_vec();
+        elf.extend([0u8; 300]);
+        elf.extend(b"/lib99/ld-linux-e8.so.2\0");
+        elf.extend([0u8; 300]);
+        let out = run(&elf);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        assert!(
+            err.contains("gl's build for linux-")
+                && err.contains("needs glibc's loader /lib99/ld-linux-e8.so.2"),
+            "{err}"
+        );
+        assert!(err.contains("run gl on an image with glibc"), "{err}");
+        // A static build, or a script, runs on.
+        let mut stat = b"\x7fELF\x02\x01\x01\0\0\0".to_vec();
+        stat.extend([0u8; 600]);
+        assert!(run(&stat).status.success());
+        assert!(run(b"#!/bin/sh\nexec true\n").status.success());
     }
 
     #[test]

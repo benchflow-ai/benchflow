@@ -237,6 +237,15 @@ pub fn login_free_shell(command: &str) -> String {
     format!("if command -v bash >/dev/null 2>&1; then exec bash -c {q}; else exec sh -c {q}; fi")
 }
 
+/// The command that runs a script file a task or user supplies (a reference
+/// solution, a stage's `setup.sh`, a control, a `script:` agent): with bash,
+/// as BenchFlow 0.8 runs it, or with sh on an image that has no bash (Alpine,
+/// busybox), where `bash <file>` would exit 127 before the script ran.
+pub fn script_file(path: &str) -> String {
+    let q = quote(path);
+    format!("if command -v bash >/dev/null 2>&1; then bash {q}; else sh {q}; fi")
+}
+
 /// Shell source that starts a script of BenchFlow's own plumbing: keep the
 /// `PATH` the shell was given in `bf_path` (an unset one becomes
 /// [`SYSTEM_PATH`], the shells' own default), and from here on look
@@ -615,6 +624,41 @@ pub(crate) mod recorders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shell whose PATH has `sh` and nothing else, as on an image without bash.
+    #[cfg(unix)]
+    fn run_without_bash(command: &str) -> std::process::Output {
+        let bin = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/bin/sh", bin.path().join("sh")).unwrap();
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(command)
+            .env_clear()
+            .env("PATH", bin.path())
+            .output()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_script_file_runs_on_an_image_without_bash() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("solve it.sh");
+        std::fs::write(&script, "#!/bin/sh\necho ran \"$0\"\nexit 3\n").unwrap();
+        let path = script.to_str().unwrap();
+        let old = run_without_bash(&format!("bash {}", quote(path)));
+        assert_eq!(old.status.code(), Some(127));
+        let out = run_without_bash(&script_file(path));
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("ran {path}\n")
+        );
+        assert_eq!(
+            script_file("/oracle/solve.sh"),
+            "if command -v bash >/dev/null 2>&1; then bash /oracle/solve.sh; else sh /oracle/solve.sh; fi"
+        );
+    }
 
     #[test]
     fn quotes_only_when_needed() {

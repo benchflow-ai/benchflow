@@ -94,12 +94,7 @@ fn once(args: &CheckArgs) -> Result<Exit> {
     let roots = context::task_roots(&project, &args.paths);
     let paths = context::discover(&roots)?;
     if paths.is_empty() {
-        let shown: Vec<String> = roots.iter().map(|r| ui::path(r)).collect();
-        return Err(crate::error::CliError::usage(format!(
-            "no tasks found in {}",
-            shown.join(", ")
-        ))
-        .next("a task is a folder with task.md (or task.toml); `bench new <name>` creates one"));
+        return Err(context::no_tasks(&roots));
     }
     let opts = CheckOptions { deep: true };
     let mut reports = check_paths(&paths, &opts, args.schema);

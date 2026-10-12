@@ -137,6 +137,18 @@ impl FinishReason {
             other => Self::Other(other.to_string()),
         }
     }
+    /// The reason as OpenAI names it (`stop`, `tool_calls`, `length`,
+    /// `content_filter`), or the provider's own word.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stop => "stop",
+            Self::ToolCalls => "tool_calls",
+            Self::Length => "length",
+            Self::ContentFilter => "content_filter",
+            Self::Other(s) => s,
+        }
+    }
+
     pub fn from_anthropic(s: &str) -> Self {
         match s {
             "end_turn" | "stop_sequence" => Self::Stop,

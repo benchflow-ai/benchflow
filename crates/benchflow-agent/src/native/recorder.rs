@@ -10,12 +10,16 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::chat::TokenUsage;
-use crate::trajectory::{Event, Receipt, ToolCallStatus, Trajectory, Usage};
+use crate::trajectory::{
+    Event, MODEL_CALL, Receipt, SYSTEM_PROMPT, ToolCallStatus, Trajectory, Usage,
+};
 
 /// A shared, cloneable trajectory a loop writes and a writer task reads.
 #[derive(Clone, Default)]
 pub struct Recorder {
     inner: Arc<Mutex<Trajectory>>,
+    /// The client's totals at the last [`Recorder::model_call`].
+    counted: Arc<Mutex<(TokenUsage, u64)>>,
 }
 
 impl std::fmt::Debug for Recorder {
@@ -105,6 +109,73 @@ impl Recorder {
         self.apply(update);
     }
 
+    /// The system prompt the loop gives the model.
+    pub fn system_prompt(&self, text: &str) {
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".into(), text.into());
+        self.lock()
+            .record_marker(SYSTEM_PROMPT, fields, Receipt::now());
+    }
+
+    /// A turn's model call came back: what the calls since the last turn
+    /// used (the client's `totals` less what was already counted, so
+    /// retries and summaries count with the turn they served), how many
+    /// calls that was, and why the last one stopped. Record it before the
+    /// events the turn produces.
+    pub fn model_call(
+        &self,
+        totals: &TokenUsage,
+        calls: u64,
+        finish: Option<&str>,
+        model: Option<&str>,
+    ) {
+        let (usage, n) = {
+            let mut counted = self.counted.lock().unwrap_or_else(|p| p.into_inner());
+            let before = counted.0;
+            let usage = TokenUsage {
+                input_tokens: totals.input_tokens.saturating_sub(before.input_tokens),
+                output_tokens: totals.output_tokens.saturating_sub(before.output_tokens),
+                cache_read_tokens: totals
+                    .cache_read_tokens
+                    .saturating_sub(before.cache_read_tokens),
+                cache_write_tokens: totals
+                    .cache_write_tokens
+                    .saturating_sub(before.cache_write_tokens),
+                reasoning_tokens: totals
+                    .reasoning_tokens
+                    .saturating_sub(before.reasoning_tokens),
+                cost_usd: match (totals.cost_usd, before.cost_usd) {
+                    (Some(now), Some(then)) => Some(now - then),
+                    (now, _) => now,
+                },
+            };
+            let n = calls.saturating_sub(counted.1);
+            *counted = (*totals, calls);
+            (usage, n)
+        };
+        let mut fields = serde_json::Map::new();
+        let mut u = json!({
+            "prompt_tokens": usage.input_tokens,
+            "completion_tokens": usage.output_tokens,
+            "cached_tokens": usage.cache_read_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+        });
+        if let Some(cost) = usage.cost_usd {
+            u["cost_usd"] = json!(cost);
+        }
+        fields.insert("usage".into(), u);
+        fields.insert("calls".into(), n.into());
+        if let Some(finish) = finish {
+            fields.insert("finish_reason".into(), finish.into());
+        }
+        if let Some(model) = model.filter(|m| !m.is_empty()) {
+            fields.insert("model".into(), model.into());
+        }
+        self.lock()
+            .record_marker(MODEL_CALL, fields, Receipt::now());
+    }
+
     /// The wall-clock budget ran out (0.8's `agent_timeout` event).
     pub fn timeout(&self, budget: Duration) {
         self.lock().record_timeout(budget, Receipt::now());
@@ -139,6 +210,47 @@ impl Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E1 round 2: a turn's record holds what the calls since the last turn
+    /// used, so a retry or a summary counts with the turn it served, and
+    /// neither it nor the system prompt is a step in the summary.
+    #[test]
+    fn a_model_call_records_the_turns_share_of_the_totals() {
+        let r = Recorder::new();
+        r.system_prompt("Be brief.");
+        let mut totals = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_read_tokens: 60,
+            ..TokenUsage::default()
+        };
+        r.model_call(&totals, 1, Some("tool_calls"), Some("m"));
+        totals.input_tokens += 250;
+        totals.output_tokens += 30;
+        totals.reasoning_tokens += 7;
+        r.model_call(&totals, 3, Some("stop"), None);
+        let events = r.snapshot();
+        let calls: Vec<&serde_json::Map<String, Value>> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Other(map) if e.kind() == MODEL_CALL => Some(map),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["usage"]["prompt_tokens"], 100);
+        assert_eq!(calls[0]["usage"]["cached_tokens"], 60);
+        assert_eq!(calls[0]["calls"], 1);
+        assert_eq!(calls[0]["model"], "m");
+        assert_eq!(calls[1]["usage"]["prompt_tokens"], 250);
+        assert_eq!(calls[1]["usage"]["completion_tokens"], 30);
+        assert_eq!(calls[1]["usage"]["reasoning_tokens"], 7);
+        assert_eq!(calls[1]["calls"], 2);
+        assert_eq!(calls[1]["finish_reason"], "stop");
+        assert!(events.iter().any(|e| e.kind() == SYSTEM_PROMPT));
+        let summary = crate::trajectory::summarize(events.iter(), false, Some("native"));
+        assert_eq!(summary.steps, 0);
+    }
 
     #[test]
     fn a_tool_call_merges_into_one_event_with_its_name() {

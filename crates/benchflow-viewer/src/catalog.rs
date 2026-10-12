@@ -26,12 +26,29 @@ pub struct Run {
     pub dir: PathBuf,
 }
 
-/// Whether a folder is a trial: it holds an ACP trajectory, or it is the
+/// Whether a folder is a trial: it holds an ACP trajectory (or, from
+/// another harness, only an ATIF document and a result), it is the
 /// parent of a `bench branch` fork (`tree.json`), which has no trajectory
 /// of its own when it forked before its agent ran (`--at start`) and is
-/// where its children are opened from.
+/// where its children are opened from, or it holds a trial's record.
 pub fn is_rollout_dir(path: &Path) -> bool {
-    path.join(TRAJECTORY_FILE).exists() || is_branch_parent(path)
+    path.join(TRAJECTORY_FILE).exists()
+        || is_branch_parent(path)
+        || is_trial_record(path)
+        || crate::atif_events::is_atif_trial(path)
+}
+
+/// A trial that ended before its agent ran (an image that did not build, a
+/// sandbox that did not start) has no trajectory but is still a trial: its
+/// `result.json` beside its `config.json`. 0.8 listed only folders with a
+/// trajectory, so such trials were missing from the run list.
+fn is_trial_record(path: &Path) -> bool {
+    path.join("config.json").is_file()
+        && matches!(
+            crate::values::load_json(&path.join("result.json")),
+            Some(crate::pyjson::Value::Object(r))
+                if crate::pyjson::get(&r, "task_name").as_str().is_some()
+        )
 }
 
 /// A `bench branch` parent: a `result.json` beside a `tree.json` that is a
@@ -231,6 +248,41 @@ mod tests {
 
     fn ids(runs: Vec<Run>) -> Vec<String> {
         runs.into_iter().map(|run| run.id).collect()
+    }
+
+    #[test]
+    fn a_trial_that_ended_before_its_agent_is_listed_and_served() {
+        // An image that did not build leaves a result.json and a config.json
+        // but no trajectory; the run list must still show the trial.
+        let tmp = tempfile::tempdir().unwrap();
+        trial(tmp.path(), "job/ran__1");
+        let failed = tmp.path().join("job/broken__2");
+        std::fs::create_dir_all(&failed).unwrap();
+        std::fs::write(
+            failed.join("result.json"),
+            r#"{"task_name": "broken", "rollout_name": "broken__2", "agent": "oracle", "status": "errored",
+                "problem": {"code": "R101", "owner": "task", "phase": "image", "message": "the build failed",
+                            "next": "fix it", "transient": false}}"#,
+        )
+        .unwrap();
+        std::fs::write(failed.join("config.json"), "{}").unwrap();
+        // Another tool's job folder has a config.json and a result.json of
+        // its own, but no task: it is not a trial.
+        let other = tmp.path().join("job/other-tool-job");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("config.json"), "{}").unwrap();
+        std::fs::write(
+            other.join("result.json"),
+            r#"{"id": "j", "n_total_trials": 3}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ids(discover(tmp.path(), 10)),
+            ["job/broken__2", "job/ran__1"]
+        );
+        let payload = crate::payload::build_payload(&failed);
+        assert_eq!(payload.rollout_name, "broken__2");
+        assert!(payload.steps.is_empty());
     }
 
     #[test]

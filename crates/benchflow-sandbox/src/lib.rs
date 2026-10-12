@@ -66,6 +66,16 @@ pub(crate) fn note_left_behind(backend: &str, id: &str) {
         .push(format!("{backend} {id}"));
 }
 
+/// Take one entry [`note_left_behind`] recorded back off the list: the
+/// sandbox turned out to be removed after all.
+pub(crate) fn forget_left_behind(backend: &str, id: &str) {
+    let entry = format!("{backend} {id}");
+    let mut left = LEFT_BEHIND.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = left.iter().position(|e| *e == entry) {
+        left.remove(i);
+    }
+}
+
 /// The sandboxes [`note_left_behind`] recorded so far.
 pub fn left_behind() -> Vec<String> {
     LEFT_BEHIND
@@ -282,10 +292,13 @@ pub trait Sandbox: Send + Sync {
     /// Stop the sandbox and delete it.
     async fn destroy(&self) -> Result<(), SandboxError>;
 
-    /// What the backend itself says about this sandbox (`docker inspect`,
-    /// Daytona's API), never a program inside the sandbox, which the agent
-    /// may have replaced. A backend that cannot tell answers
-    /// [`SandboxError::Unsupported`].
+    /// What the backend itself says about this sandbox (`docker inspect`
+    /// and `docker events`, Daytona's API), never a program inside the
+    /// sandbox, which the agent may have replaced. A sandbox the backend
+    /// stopped or lost itself (an error state, a daemon restart, an idle
+    /// stop) is an error, usually [`SandboxError::Transport`], as is a
+    /// question the backend fails to answer. A backend that cannot tell
+    /// answers [`SandboxError::Unsupported`].
     async fn presence(&self) -> Result<Presence, SandboxError> {
         Err(SandboxError::Unsupported(format!(
             "the {} backend cannot say whether a sandbox still runs",
@@ -340,12 +353,19 @@ pub trait Sandbox: Send + Sync {
 pub enum Presence {
     /// It runs.
     Running,
-    /// The backend still has it, but it does not run: it stopped, or code
-    /// inside stopped it.
+    /// The backend still has it, but it does not run, and as far as the
+    /// backend can tell, code inside stopped it (`kill -TERM 1`).
     Stopped,
     /// The backend no longer has it: something outside the run removed it
     /// (code inside cannot).
     Gone,
+    /// The backend still has it, it does not run, and the backend cannot
+    /// say what stopped it: Podman (whose events BenchFlow does not read),
+    /// Docker with no record of it dying (a daemon restart), or Daytona's
+    /// `error` and `stopping` states. Lost, and rerun once; but code inside
+    /// may have stopped it, so a repeat in the same phase is not rerun
+    /// again (a stop the backend confirms from outside is an error instead).
+    Halted,
 }
 
 /// How an image is obtained.
@@ -584,6 +604,11 @@ pub enum SandboxError {
     /// A command or transfer failed at the transport level.
     #[error("{0}")]
     Transport(String),
+    /// The backend's own API refused the request for its rate limit (HTTP
+    /// 429), after the client's retries: an answer from the backend that no
+    /// code inside a sandbox can produce. Retried like a transport failure.
+    #[error("{0}")]
+    Throttled(String),
     /// A copy failed on what it copies: `tar` in the sandbox ran and
     /// refused some of it (a file it cannot read, a full disk), not the
     /// connection to the sandbox.
@@ -617,7 +642,7 @@ impl SandboxError {
     /// True when retrying the same operation may succeed.
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Transport(_) | Self::Start(_) | Self::Content(_) => true,
+            Self::Transport(_) | Self::Throttled(_) | Self::Start(_) | Self::Content(_) => true,
             Self::Image { task_fault, .. } => !task_fault,
             _ => false,
         }

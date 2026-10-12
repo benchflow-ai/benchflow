@@ -107,6 +107,18 @@ pub struct Problem {
     pub detail: Option<String>,
     /// Retrying the same trial may succeed.
     pub transient: bool,
+    /// For a sandbox lost (R103) while the agent works, handing off or
+    /// verifying: whether the backend confirmed the loss (deleted, stopped
+    /// from outside, or its API unavailable). An unconfirmed loss may be
+    /// code inside breaking the connection, so a second one in a row is
+    /// not run again (`rerun_capped`); written only on such losses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loss_confirmed: Option<bool>,
+    /// The same unexplained loss came back in the attempt after it, so the
+    /// trial is not run again: a resumed job keeps it as it is (an errored
+    /// trial, counted as not passed) unless `--rerun errored` asks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rerun_capped: bool,
 }
 
 impl Problem {
@@ -125,6 +137,8 @@ impl Problem {
             next: next.into(),
             detail: None,
             transient: false,
+            loss_confirmed: None,
+            rerun_capped: false,
         }
     }
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
@@ -235,7 +249,7 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R103",
         title: "the sandbox failed",
         owner: Owner::Sandbox,
-        body: "The sandbox did not start, or the backend lost it (or the connection to it) while the trial ran. Starting fails on resources (memory, disk) or a bad entrypoint on Docker, and on quota or capacity on Daytona; later failures are a container that vanished or an API that stopped answering.\n\nRetry, or lower `--concurrency`. `bench doctor` checks the backend.",
+        body: "The sandbox did not start, or the backend lost it (or the connection to it) while the trial ran. Starting fails on resources (memory, disk) or a bad entrypoint on Docker, and on quota or capacity on Daytona; later failures are a container that vanished or an API that stopped answering. A sandbox the backend stopped itself is lost too: an archived Daytona sandbox, or one stopped after Daytona saw no activity from it (or BenchFlow's keepalive could not reach it) for 10 minutes; a request Daytona's control-plane API refused (its rate limit, HTTP 429, or this account), not its toolbox, whose answers come from inside the sandbox; a container `docker stop` or `docker kill` ended, as the daemon's own events say. Words a command inside prints never count. A server error (5xx) or a broken connection is not confirmed either: it looks the same as code inside breaking the connection. One that code inside stopped (`kill -TERM 1`) is not: it is the task's while grading and the agent's while the agent works. One stopped for a reason the backend cannot name (a Podman container, a Docker container with no record of dying, a Daytona sandbox in `error`) is lost once.\n\nRetry, or lower `--concurrency`. `bench doctor` checks the backend. Any other loss (the backend cannot name the cause, or the sandbox still runs and the connection to it broke) is rerun once per trial, two minutes later within a run so that a short outage does not catch the retry too: once an earlier attempt of the trial lost its sandbox that way, in any phase, the next such loss is not run again, since code inside the sandbox can break it every time and an outage only the sandbox's own channel shows looks the same. It stays this code and counts as not passed. A sandbox code inside stopped while the agent (or the oracle, or a script) worked is the agent's own failure (R204), not run again either. A resumed job keeps such trials; `bench run --rerun errored` runs them again.",
     },
     Explanation {
         code: "R104",

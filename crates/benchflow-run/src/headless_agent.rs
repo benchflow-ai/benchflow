@@ -214,7 +214,7 @@ impl ModelAgent for HeadlessAgent {
     }
 
     fn install_layers(&self) -> Vec<String> {
-        let mut layers = vec![self.manifest.install_script()];
+        let mut layers = vec![self.manifest.install_layer()];
         // The forwarder runs on BenchFlow's Node.js, which npm agents bring.
         if self.provider.is_some() && !matches!(self.manifest.install.method, InstallMethod::Npm(_))
         {

@@ -415,8 +415,11 @@ where
             has_inline_prompts = false;
             break;
         };
-        if get_str(&event, "type") == Some("user_message") {
-            has_inline_prompts = true;
+        match get_str(&event, "type") {
+            Some("user_message") => has_inline_prompts = true,
+            // A native loop's per-call usage record is not a step.
+            Some("model_call") => continue,
+            _ => {}
         }
         let (body, t, source) = normalize_event(event, &mut prompt_count);
         steps.push(Step::Event(Event {
@@ -476,6 +479,15 @@ fn normalize_event(event: Map, prompt_count: &mut usize) -> (Body, Option<f64>, 
                 event_time,
             )
         }
+        // The system prompt a native loop gave the model.
+        "system_prompt" => (
+            Body::Notice {
+                severity: "info".to_string(),
+                title: "System prompt".to_string(),
+                description: Some(text()),
+            },
+            event_time,
+        ),
         "agent_message" => (Body::Message { text: text() }, event_time),
         "agent_thought" => (Body::Thought { text: text() }, event_time),
         "tool_call" => {
@@ -838,6 +850,29 @@ mod tests {
         assert_eq!(
             wire(steps),
             [r#"{"i": 1, "kind": "prompt", "label": "PROMPT 1", "text": "inline"}"#]
+        );
+    }
+
+    /// E1 round 2: a native loop's system prompt shows; its per-call usage
+    /// records are not steps.
+    #[test]
+    fn a_system_prompt_shows_and_model_calls_do_not() {
+        let steps = normalize_steps(
+            events(&[
+                r#"{"type": "system_prompt", "text": "Be brief."}"#,
+                r#"{"type": "user_message", "text": "do it"}"#,
+                r#"{"type": "model_call", "usage": {"prompt_tokens": 10}, "calls": 1}"#,
+                r#"{"type": "agent_message", "text": "done"}"#,
+            ]),
+            None,
+        );
+        assert_eq!(
+            wire(steps),
+            [
+                r#"{"i": 1, "kind": "notice", "severity": "info", "title": "System prompt", "text": "System prompt\n\nBe brief."}"#,
+                r#"{"i": 2, "kind": "prompt", "label": "PROMPT 1", "text": "do it"}"#,
+                r#"{"i": 3, "kind": "message", "text": "done"}"#,
+            ]
         );
     }
 

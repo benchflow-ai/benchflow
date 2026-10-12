@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use benchflow_agent::AgentManifest;
 use benchflow_agent::acp::{AcpClient, ClientOptions};
+use benchflow_agent::manifest::Harness;
 use benchflow_sandbox::{Exec, NetworkPolicy, Provider, Sandbox, SandboxError, SandboxSpec};
 use serde::{Deserialize, Serialize};
 
@@ -137,6 +138,28 @@ pub async fn check(
     record
 }
 
+/// A check starts the agent over ACP; an agent without an ACP mode has
+/// nothing to start. Its launch command named only BenchFlow's bin folder
+/// (`/opt/benchflow/bin/: Is a directory`), and the check blamed the agent
+/// (R202) after a full install.
+fn without_acp(manifest: &AgentManifest) -> Option<Problem> {
+    (!manifest.declares(Harness::Acp)).then(|| {
+        Problem::new(
+            "R215",
+            Owner::You,
+            Phase::Setup,
+            format!(
+                "{} has no ACP mode (it runs headless only), and a check starts the agent over ACP",
+                manifest.name
+            ),
+            format!(
+                "check it on a task instead: `bench run <task> -a {}`",
+                manifest.name
+            ),
+        )
+    })
+}
+
 async fn run(
     provider: &dyn Provider,
     manifest: &AgentManifest,
@@ -144,8 +167,11 @@ async fn run(
     log: &(dyn Fn(&str) + Send + Sync),
     record: &mut CheckRecord,
 ) -> Result<(), Problem> {
+    if let Some(p) = without_acp(manifest) {
+        return Err(p);
+    }
     let name = format!("check-{}", manifest.name.replace([':', '@'], "-"));
-    let mut image_spec = images::pull_spec(&name, &spec.image, vec![manifest.install_script()]);
+    let mut image_spec = images::pull_spec(&name, &spec.image, vec![manifest.install_layer()]);
     image_spec.build_timeout = Some(manifest.install.timeout);
     let started = Instant::now();
     let image = images::Images::new()
@@ -182,7 +208,7 @@ async fn run(
             format!("the sandbox did not start: {why}"),
             "retry; `bench doctor` checks the backend",
         ),
-        SandboxError::Transport(_) => Problem::new(
+        SandboxError::Transport(_) | SandboxError::Throttled(_) => Problem::new(
             "R103",
             Owner::Sandbox,
             Phase::Start,
@@ -323,6 +349,20 @@ mod tests {
             protocol_version: None,
             auth_methods: Vec::new(),
             evidence: None,
+        }
+    }
+
+    #[test]
+    fn a_headless_only_agent_is_refused_before_its_install() {
+        let all = AgentManifest::builtins();
+        let get = |n: &str| all.iter().find(|m| m.name == n).unwrap().clone();
+        for name in ["muse-code", "rovodev-cli", "aider", "openhands-sdk"] {
+            let p = without_acp(&get(name)).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!((p.code.as_str(), p.owner), ("R215", Owner::You), "{name}");
+            assert!(p.message.contains("has no ACP mode"), "{}", p.message);
+        }
+        for name in ["claude", "goose", "hermes"] {
+            assert!(without_acp(&get(name)).is_none(), "{name}");
         }
     }
 

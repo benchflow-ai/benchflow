@@ -124,7 +124,9 @@ static PATTERNS: LazyLock<Vec<(Regex, Signal)>> = LazyLock::new(|| {
             Signal::Overflow,
         ),
         (
-            re(r"(?i)provider rejected request|\bHTTP 400\b"),
+            // A Responses API without a tool the agent sent (MiMo's answer
+            // to Codex's hosted `web_search`).
+            re(r"(?i)provider rejected request|\bHTTP 400\b|\bresponses_feature_not_supported\b"),
             Signal::Rejected,
         ),
     ]
@@ -152,6 +154,11 @@ fn classify_line(
     if let Some(info) = parse_limit_text(line, now) {
         return Some(Signal::UsageLimit(info));
     }
+    // Codex's warning for a model outside its catalog, which every provider
+    // model is; the run goes on with default settings.
+    if line.contains("Defaulting to fallback metadata") {
+        return None;
+    }
     PATTERNS.iter().find_map(|(re, signal)| {
         let m = re.find(line)?;
         Some(match signal {
@@ -173,10 +180,13 @@ fn classify_line(
 /// What a block of text says (a log, stderr), the last line that says
 /// something winning. A line's error runs from it to the next blank line:
 /// a retry notice earlier in the block does not relabel a later spent
-/// balance.
+/// balance. Within one such paragraph a spent-quota sentence wins over a
+/// rate-limit word on a later line, as in [`classify_error`]: Google's
+/// daily 429 printed as indented JSON ends with its help link
+/// (`…/docs/rate-limits`) below the quota sentence.
 pub(crate) fn classify(text: &str, now: DateTime<Utc>) -> Option<(Signal, String)> {
     let lines: Vec<&str> = text.lines().collect();
-    (0..lines.len()).rev().find_map(|i| {
+    let at = |i: usize| {
         let line = lines[i].trim();
         if line.is_empty() {
             return None;
@@ -189,7 +199,22 @@ pub(crate) fn classify(text: &str, now: DateTime<Utc>) -> Option<(Signal, String
                 .any(|l| re.is_match(l))
         };
         classify_line(line, &around, now).map(|s| (s, line.to_string()))
-    })
+    };
+    let (i, found) = (0..lines.len()).rev().find_map(|i| at(i).map(|f| (i, f)))?;
+    if found.0 != Signal::RateLimit {
+        return Some(found);
+    }
+    // At most 40 lines back: stderr logs often have no blank lines, and a
+    // usage-limit sentence long before must not relabel a later rate limit.
+    let floor = i.saturating_sub(40);
+    let start = (floor..i)
+        .rev()
+        .find(|&j| lines[j].trim().is_empty())
+        .map_or(floor, |j| j + 1);
+    let quota = (start..i)
+        .rev()
+        .find_map(|j| at(j).filter(|(s, _)| matches!(s, Signal::UsageLimit(_))));
+    Some(quota.unwrap_or(found))
 }
 
 /// What one error says (an ACP error's message and `data.details`, one
@@ -288,6 +313,28 @@ mod tests {
         assert_eq!(kind(&daily), Some("usage"), "{daily}");
         let apart = "Please retry in 5s.\n\nYou exceeded your current quota";
         assert_eq!(kind(apart), Some("usage"), "{apart}");
+        // Google's daily 429 printed to stderr as indented JSON: the help
+        // link below the quota sentence no longer makes it a rate limit
+        // (D13's low, fixed 2026-10-11); its per-minute twin stays one.
+        let pretty = |quota_id: &str| {
+            format!(
+                "{{\n  \"error\": {{\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details.\",\n    \"status\": \"RESOURCE_EXHAUSTED\",\n    \"details\": [\n      {{\"quotaId\": \"{quota_id}\"}},\n      {{\"retryDelay\": \"20s\"}},\n      {{\"links\": [{{\"url\": \"https://ai.google.dev/gemini-api/docs/rate-limits\"}}]}}\n    ]\n  }}\n}}"
+            )
+        };
+        let daily = pretty("GenerateRequestsPerDayPerProjectPerModel-FreeTier");
+        assert_eq!(kind(&daily), Some("usage"), "{daily}");
+        let minute = pretty("GenerateRequestsPerMinutePerProjectPerModel-FreeTier");
+        assert_eq!(kind(&minute), Some("rate"), "{minute}");
+        // A spent-quota sentence more than 40 lines before a rate limit, in
+        // a log with no blank lines, does not relabel it (diff review L9).
+        let long = format!(
+            "You exceeded your current quota, please check your plan and billing details.\n{}API Error: 429 rate limit exceeded",
+            "working on it\n".repeat(60)
+        );
+        assert_eq!(kind(&long), Some("rate"), "{long}");
+        // A rate limit after a blank line is its own error.
+        let later = format!("{daily}\n\nAPI Error: 429 rate limit exceeded");
+        assert_eq!(kind(&later), Some("rate"), "{later}");
         let one = |text: &str| classify_error(text, now()).map(|(s, _)| s);
         for (text, want) in [
             (
@@ -432,6 +479,24 @@ mod tests {
         assert_eq!(kind(text), Some("login"));
         let text = "Invalid API key\nlater: rate limit exceeded";
         assert_eq!(kind(text), Some("rate"));
+    }
+
+    #[test]
+    fn codexs_fallback_metadata_warning_is_not_a_model_error() {
+        // Codex headless on MiMo's Responses API (2026-10-12): a warning,
+        // then the provider's refusal of the web search tool.
+        let text = "[benchflow] the agent reported an error (not fatal): Model metadata for `mimo-v2.6-flash` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\
+             [benchflow] the agent reported an error: data:{\"error\":{\"code\":\"responses_feature_not_supported\",\"message\":\"tool type 'web_search' is not supported by this gateway phase.\",\"param\":\"\",\"type\":\"unsupported_feature\"}}\n\n\n";
+        let (signal, line) = classify(text, now()).unwrap();
+        assert!(matches!(signal, Signal::Rejected), "{line}");
+        assert!(line.contains("web_search"), "{line}");
+        assert_eq!(
+            kind(
+                "Model metadata for `glm-5.3` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+            ),
+            None
+        );
+        assert_eq!(kind("Error: model `x` not found"), Some("model"));
     }
 
     #[test]

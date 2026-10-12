@@ -129,7 +129,7 @@ Public release:
 1. Update `pyproject.toml` from the next `.dev0` version to the final public
    version.
 2. Merge the release PR to `main`.
-3. Push a matching release tag.
+3. Push a matching release tag, `v<version>`. The Rust `bench` binary has its own tags, `bench-v<version>`, which start `.github/workflows/rust.yml` and never this workflow (see `docs/rust/install.md`).
 4. `.github/workflows/public-release.yml` validates the tag, publishes to PyPI,
    and creates a GitHub Release. The workflow refuses tags whose commits are
    not contained in `origin/main`.

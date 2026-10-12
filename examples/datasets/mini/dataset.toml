@@ -1,0 +1,11 @@
+[dataset]
+name = "examples-mini"
+version = "1.0"
+
+[[tasks]]
+name = "hello"
+path = "../../tasks/hello"
+
+[[tasks]]
+name = "hello-split"
+path = "../../tasks/hello-split"

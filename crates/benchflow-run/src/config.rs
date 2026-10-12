@@ -69,6 +69,12 @@ pub struct RunOptions {
     /// Retry a trial whose failure is transient (infrastructure) this many
     /// times.
     pub retries: u32,
+    /// Seconds to wait before retrying a trial whose sandbox was lost for a
+    /// reason the backend did not confirm: long enough that a short outage
+    /// of the sandbox's own channel does not catch the retry too, which
+    /// would leave the trial capped (convergence review E9-D-A 3).
+    #[serde(default = "unexplained_loss_retry_secs")]
+    pub unexplained_loss_retry_secs: u64,
     /// Where image build logs and other caches live.
     pub cache_dir: PathBuf,
     /// On resume, run these finished trials again instead of reusing them.
@@ -150,7 +156,9 @@ impl RunOptions {
 /// again; scored and unscored ones are reused unless named here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rerun {
-    /// Trials that ran into an error (always rerun; accepted for clarity).
+    /// Trials that ran into an error. They are rerun anyway, but for one
+    /// whose unexplained loss repeated (`rerun_capped`), which is kept
+    /// unless this asks.
     pub errored: bool,
     /// Trials whose verifier could not score them.
     pub unscored: bool,
@@ -248,6 +256,7 @@ impl Default for RunOptions {
             keep: Keep::Never,
             save_outputs: false,
             retries: 1,
+            unexplained_loss_retry_secs: unexplained_loss_retry_secs(),
             cache_dir: default_cache_dir(),
             rerun: Rerun::default(),
             dataset: None,
@@ -264,6 +273,10 @@ impl Default for RunOptions {
 
 /// `~/.cache/benchflow`, as BenchFlow 0.8 uses on every platform;
 /// `BENCHFLOW_CACHE_DIR` or `XDG_CACHE_HOME` move it.
+fn unexplained_loss_retry_secs() -> u64 {
+    120
+}
+
 pub fn default_cache_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("BENCHFLOW_CACHE_DIR") {
         return PathBuf::from(dir);

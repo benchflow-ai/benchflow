@@ -360,3 +360,66 @@ fn login_secrets_are_redacted_in_the_file() {
     assert!(!text.contains("login-value-123456789"), "{text}");
     assert!(text.contains("MYAGENT=***REDACTED***"), "{text}");
 }
+
+#[test]
+fn an_update_replaces_the_tool_calls_content() {
+    // OpenCode resends the whole output so far with each update; ACP says an
+    // update's content replaces the call's. Appending repeated the output.
+    let mut trajectory = Trajectory::new();
+    let text = |t: &str| json!([{"type": "content", "content": {"type": "text", "text": t}}]);
+    trajectory.apply_update(
+        &json!({"sessionUpdate": "tool_call", "toolCallId": "c", "kind": "execute", "title": "ls", "status": "pending"}),
+        Receipt::at(1),
+    );
+    for (i, (status, out)) in [
+        ("in_progress", "a\n"),
+        ("in_progress", "a\nb\n"),
+        ("completed", "a\nb\nc\n"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        trajectory.apply_update(
+            &json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": status, "content": text(out)}),
+            Receipt::at(2 + i as u64),
+        );
+    }
+    // An update with an empty list keeps the output.
+    trajectory.apply_update(
+        &json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "completed", "content": []}),
+        Receipt::at(9),
+    );
+    let call = trajectory.tool_call(0).unwrap();
+    assert_eq!(call.content, text("a\nb\nc\n").as_array().unwrap().clone());
+}
+
+/// E1: OpenCode sends a command's whole output again in each update (first
+/// while it runs, then when it completes). ACP says an update's content
+/// replaces the call's; appending, as 0.8 did, recorded the output two or
+/// three times, and every export repeated it.
+#[test]
+fn an_updates_content_replaces_the_calls() {
+    let block =
+        |text: &str| json!([{"type": "content", "content": {"type": "text", "text": text}}]);
+    let mut trajectory = Trajectory::new();
+    trajectory.apply_update(
+        &json!({"sessionUpdate": "tool_call", "toolCallId": "c", "title": "ls", "kind": "execute", "status": "pending"}),
+        Receipt::at(1),
+    );
+    trajectory.apply_update(
+        &json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "in_progress", "content": block("a\n")}),
+        Receipt::at(2),
+    );
+    trajectory.apply_update(
+        &json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "completed", "content": block("a\nb\n")}),
+        Receipt::at(3),
+    );
+    // An update without content leaves it alone.
+    trajectory.apply_update(
+        &json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "title": "ls -a"}),
+        Receipt::at(4),
+    );
+    let call = trajectory.tool_call(0).unwrap();
+    assert_eq!(Value::Array(call.content.clone()), block("a\nb\n"));
+    assert_eq!(call.title, "ls -a");
+}

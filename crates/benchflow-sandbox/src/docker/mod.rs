@@ -13,6 +13,7 @@
 //! | [`Sandbox::exec`], [`Sandbox::spawn`] | `docker exec -i ... sh -c '<command>'` |
 //! | [`Sandbox::upload`], [`Sandbox::write_file`] | a host-built tar into `docker exec -i -u 0 ... tar -xf -` |
 //! | [`Sandbox::download`] | `docker exec -u 0 ... tar -cf -`, unpacked defensively on the host |
+//! | [`Sandbox::presence`] | `docker inspect`; for a container that stopped, `docker events` since it started (stopped from inside only when it died and was not killed) |
 //! | [`Sandbox::destroy`] | `docker rm -f` |
 //! | [`Provider::sweep`] | `docker ps -a` by owner label, `docker rm -f` the dead process's containers; `docker rmi -f` stale checkpoint images |
 //! | [`Sandbox::checkpoint`] | `docker inspect` (no mounts), `docker commit --change 'LABEL …' --change 'ENV NAME='` |
@@ -47,6 +48,90 @@ use crate::{
     SandboxError, SandboxSpec,
 };
 use cli::{Cli, Flavor};
+
+impl DockerSandbox {
+    /// For a container that exists but does not run: `Stopped` when the
+    /// daemon's events since it `started` show that it died (`die`) and
+    /// nobody killed or stopped it, which is what code inside stopping it
+    /// (`kill -TERM 1`) logs. `docker stop`, `docker kill` and a daemon
+    /// shutting down log `kill` first, and a daemon that restarted has no
+    /// events from before: those are lost (an error). So is a Podman
+    /// container, whose events BenchFlow does not read.
+    async fn who_stopped(&self, started: &str) -> Result<crate::Presence, SandboxError> {
+        let lost = |why: String| {
+            Err(SandboxError::Transport(format!(
+                "container {} stopped, {why}",
+                self.name
+            )))
+        };
+        // Podman's events are not read: it cannot say who stopped it.
+        if self.cli.flavor != Flavor::Docker || started.is_empty() {
+            return Ok(crate::Presence::Halted);
+        }
+        // A little past now, so a daemon whose clock runs ahead still
+        // shows the container's last events; the CLI returns then.
+        let until = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() + 2)
+            .unwrap_or_default();
+        let args: Vec<String> = [
+            "events",
+            "--since",
+            started,
+            "--until",
+            &until.to_string(),
+            "--filter",
+            "type=container",
+            "--filter",
+            &format!("container={}", self.name),
+            // Only the daemon's own stop events (filters with one key are
+            // ORed). Exec events carry the command's text in their action,
+            // which code inside (or BenchFlow's own scripts) can make read
+            // `kill` or `stop` on a line of its own (convergence review
+            // E9-E-B 1).
+            "--filter",
+            "event=die",
+            "--filter",
+            "event=kill",
+            "--filter",
+            "event=stop",
+            "--format",
+            "{{.Action}}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let out = self.cli.run(&args, Some(Duration::from_secs(30))).await?;
+        if !out.ok() {
+            return Err(self.cli.daemon_problem(&out).unwrap_or_else(|| {
+                SandboxError::Transport(format!(
+                    "container {} stopped, and `{} events` failed: {}",
+                    self.name,
+                    self.cli.name,
+                    out.message()
+                ))
+            }));
+        }
+        let actions: Vec<&str> = out.stdout.lines().map(str::trim).collect();
+        let killed = actions.iter().any(|a| matches!(*a, "kill" | "stop"));
+        // A `kill` is logged just before its `die`, and `stop` after it, so
+        // when `die` is still in the daemon's short history, so is any
+        // `kill` or `stop`: a `die` alone is a stop from inside, whether or
+        // not the container's `start` is still there (convergence review
+        // E9-C-B 1).
+        if actions.contains(&"die") && !killed {
+            return Ok(crate::Presence::Stopped);
+        }
+        if killed {
+            return lost(format!("and the {} daemon stopped it", self.cli.name));
+        }
+        // No `die` in the history: it dropped out of the daemon's short
+        // history (a busy daemon; code inside can make one busy), or a
+        // restart emptied it. Nothing says who stopped it, so it is lost
+        // once and capped, never a confirmed loss.
+        Ok(crate::Presence::Halted)
+    }
+}
 
 /// Sandboxes as containers of a local (or remote) Docker or Podman daemon.
 pub struct DockerProvider {
@@ -277,16 +362,16 @@ impl Sandbox for DockerSandbox {
         let args = [
             "inspect".to_string(),
             "--format".to_string(),
-            "{{.State.Running}}".to_string(),
+            "{{.State.Running}} {{.State.StartedAt}}".to_string(),
             self.name.clone(),
         ];
         let out = self.cli.run(&args, Some(Duration::from_secs(30))).await?;
         if out.ok() {
-            return Ok(if out.stdout.trim() == "true" {
-                crate::Presence::Running
-            } else {
-                crate::Presence::Stopped
-            });
+            let mut words = out.stdout.split_whitespace();
+            if words.next() == Some("true") {
+                return Ok(crate::Presence::Running);
+            }
+            return self.who_stopped(words.next().unwrap_or_default()).await;
         }
         let lower = out.message().to_lowercase();
         if [

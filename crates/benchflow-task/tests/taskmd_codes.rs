@@ -1167,3 +1167,27 @@ fn the_import_record_is_read_under_either_name_and_both_are_warned_about() {
         .unwrap();
     assert!(t222.body.contains("two such records"), "{}", t222.body);
 }
+
+/// An unknown key in a `[[sandbox.services]]` entry (a Compose habit such as
+/// `ports`) names the keys a service takes in its help, as an unknown key in
+/// any other table does; the message stays the reference checker's. Guards
+/// the E7 examples fix on `rust/e7-examples`: before it, the error named no
+/// valid key.
+#[test]
+fn unknown_service_key_lists_the_keys_a_service_takes() {
+    let dir = package(
+        "[[sandbox.services]]\nname = \"api\"\nimage = \"redis:7\"\nports = [8000]\n",
+        &[],
+    );
+    let report = check(dir.path());
+    let d = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == code::UNKNOWN_KEY)
+        .expect("T201 for ports");
+    assert_eq!(d.message, "unknown key ports in service api");
+    assert_eq!(
+        d.help.as_deref(),
+        Some("a service holds build, command, env, image, name, ready, or x- extensions")
+    );
+}

@@ -313,6 +313,7 @@ impl ModelAgent for ExternalAgent {
 
         let specs = tools::specs(self.bash_timeout);
         let system = external::system(ctx.workdir);
+        recorder.system_prompt(&system);
         let start = session.start(&config, rctx.prompts.len(), &specs, &system);
         let result = match rctx.limits.idle {
             Some(idle) => match tokio::time::timeout(idle, start).await {
@@ -346,7 +347,7 @@ impl ModelAgent for ExternalAgent {
             Ok(()) => None,
             Err(ExternalStop::Backend(e)) => Some(backend_problem(&e)),
             Err(ExternalStop::Loop(stop)) => match stop {
-                Stop::Finished | Stop::Refused | Stop::Budget(_) => None,
+                Stop::Finished | Stop::Refused | Stop::Budget(_) | Stop::ModelLoop { .. } => None,
                 Stop::Timeout(_) => {
                     out.timed_out = true;
                     (activity.tool_calls == 0 && activity.message_chunks == 0).then(|| {

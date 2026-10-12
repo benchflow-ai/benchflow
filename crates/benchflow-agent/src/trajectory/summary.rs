@@ -38,6 +38,13 @@ where
     let mut event_type_counts: IndexMap<String, usize> = IndexMap::new();
     let mut tool_call_status_counts: IndexMap<String, usize> = IndexMap::new();
     for event in events {
+        // A native loop's model calls and system prompt are not steps.
+        if matches!(
+            event.kind(),
+            super::event::MODEL_CALL | super::event::SYSTEM_PROMPT
+        ) {
+            continue;
+        }
         *event_type_counts
             .entry(event.kind().to_string())
             .or_default() += 1;

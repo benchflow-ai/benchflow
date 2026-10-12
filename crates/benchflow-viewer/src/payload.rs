@@ -150,10 +150,16 @@ impl BranchOrigin {
 /// Every artifact is optional and untrusted: a missing or malformed file
 /// leaves its part of the page empty instead of failing the page.
 pub fn build_payload(rollout_dir: &Path) -> ViewerPayload {
-    let steps = trajectory_steps(
-        &rollout_dir.join(TRAJECTORY_FILE),
-        load_prompts(rollout_dir),
-    );
+    let steps = match crate::atif_events::is_atif_trial(rollout_dir)
+        .then(|| crate::atif_events::atif_trial_events(rollout_dir))
+        .flatten()
+    {
+        Some(events) => crate::steps::normalize_steps(events.into_iter().map(Ok), None),
+        None => trajectory_steps(
+            &rollout_dir.join(TRAJECTORY_FILE),
+            load_prompts(rollout_dir),
+        ),
+    };
     let recovery = load_recovery(rollout_dir);
     let banners = recovery
         .as_ref()

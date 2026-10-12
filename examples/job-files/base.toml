@@ -1,0 +1,8 @@
+# The base of a layered job: the tasks and how many trials.
+# bench run -c job-files/base.toml -c job-files/nop.yaml
+targets = ["../tasks/hello", "../tasks/hello-split"]
+trials = 1
+concurrency = 2
+
+[env]
+EXAMPLE_FLAG = "1"

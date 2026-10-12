@@ -256,8 +256,10 @@ pub(super) fn listed(dto: SnapshotDto) -> Listed {
 }
 
 /// Delete the checkpoint snapshots [`checkpoint::verdict`] condemns. Best
-/// effort: a failure is logged, not returned.
-pub(super) async fn sweep(api: &Api) -> usize {
+/// effort: a failure is logged, not returned. `now` is the sandbox sweep's
+/// clock (`None` when it does not trust one with ages, which keeps every
+/// checkpoint an age would condemn).
+pub(super) async fn sweep(api: &Api, now: Option<DateTime<Utc>>) -> usize {
     let snapshots = match list(api).await {
         Ok(snapshots) => snapshots,
         Err(err) => {
@@ -268,10 +270,11 @@ pub(super) async fn sweep(api: &Api) -> usize {
             return 0;
         }
     };
-    let now = Utc::now();
     let mut removed = 0;
     for snapshot in snapshots {
-        let age = created(&snapshot).and_then(|c| now.signed_duration_since(c).to_std().ok());
+        let age = now
+            .zip(created(&snapshot))
+            .and_then(|(now, c)| now.signed_duration_since(c).to_std().ok());
         if checkpoint::verdict(&snapshot.name, age).await != Sweep::Delete {
             continue;
         }
@@ -416,47 +419,54 @@ mod tests {
         assert_eq!(polls.load(Ordering::SeqCst), 3);
     }
 
-    /// Before a snapshot, every command session the daemon keeps is
-    /// deleted, and the listing is read again until it is empty.
+    /// Before a snapshot, every command session BenchFlow opened (`bf-…`)
+    /// is deleted, and the listing is read again until none of them is
+    /// left. A session named `entrypoint` (an id the daemon reserves) or
+    /// anything else BenchFlow did not open is never
+    /// deleted, and does not hold the snapshot back.
     #[tokio::test]
-    async fn the_daemons_sessions_are_cleared_before_a_snapshot() {
+    async fn only_benchflows_sessions_are_cleared_before_a_snapshot() {
         let deleted = Arc::new(AtomicUsize::new(0));
         let d = deleted.clone();
         let (api, seen) = serve(move |method, path| match (method, path) {
             ("GET", "/s1/process/session") => {
-                if d.load(Ordering::SeqCst) >= 2 {
-                    (200, "[]".into())
+                let ours = if d.load(Ordering::SeqCst) >= 1 {
+                    ""
                 } else {
-                    (
-                        200,
-                        r#"[{"sessionId":"bf-a","commands":[]},{"sessionId":"agent-x","commands":[]}]"#
-                            .into(),
-                    )
-                }
+                    r#"{"sessionId":"bf-a","commands":[]},"#
+                };
+                (
+                    200,
+                    format!(
+                        r#"[{ours}{{"sessionId":"entrypoint","commands":[]}},{{"sessionId":"agent-x","commands":[]}}]"#
+                    ),
+                )
             }
-            ("DELETE", _) => {
+            ("DELETE", "/s1/process/session/bf-a") => {
                 d.fetch_add(1, Ordering::SeqCst);
                 (204, String::new())
             }
+            // Deleting the entrypoint's session would kill the image's
+            // own process; this daemon refuses.
+            ("DELETE", _) => (400, "{}".into()),
             _ => (500, "{}".into()),
         })
         .await;
         let base = api.base().to_string();
         let toolbox = super::super::toolbox::Toolbox::new(Arc::new(api), &base, "s1");
         toolbox
-            .clear_sessions(Duration::from_secs(10))
+            .clear_sessions(Duration::from_secs(3))
             .await
             .unwrap();
         let seen = seen.lock().unwrap().clone();
-        assert!(
-            seen.contains(&"DELETE /s1/process/session/bf-a".to_string()),
-            "{seen:?}"
+        assert_eq!(
+            seen,
+            [
+                "GET /s1/process/session",
+                "DELETE /s1/process/session/bf-a",
+                "GET /s1/process/session",
+            ],
         );
-        assert!(
-            seen.contains(&"DELETE /s1/process/session/agent-x".to_string()),
-            "{seen:?}"
-        );
-        assert_eq!(seen.last().unwrap(), "GET /s1/process/session");
     }
 
     #[tokio::test]
@@ -549,7 +559,7 @@ mod tests {
         .await;
         let listed = list(&api).await.unwrap();
         assert_eq!(listed.len(), 2, "only ours: {listed:?}");
-        assert_eq!(sweep(&api).await, 1);
+        assert_eq!(sweep(&api, Some(Utc::now())).await, 1);
         let deletes: Vec<String> = seen
             .lock()
             .unwrap()

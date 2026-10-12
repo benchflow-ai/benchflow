@@ -366,6 +366,7 @@ fn task(root: &Path, agent_timeout: Duration) -> TaskPackage {
             network: None,
             isolation: Isolation::Shared,
             rubric: None,
+            reward_range: None,
         },
         oracle: None,
         controls: Vec::new(),

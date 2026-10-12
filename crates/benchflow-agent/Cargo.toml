@@ -30,6 +30,11 @@ toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[features]
+# Test-only hooks (the provider forwarder's fault endpoint); off by
+# default, never in release or CI builds.
+test-hooks = []
+
 [dev-dependencies]
 proptest.workspace = true
 # A fake model server for the native harnesses' tests.

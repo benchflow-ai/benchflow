@@ -17,7 +17,7 @@ use super::super::pyval::{
 use super::super::report::At;
 use super::super::scan::BlockKind;
 use super::super::vocab::{
-    COUNT_FORM, OUTPUT_KEYS, SERVICE_KEYS, WORLD_KINDS, quoted_list, sorted_repr,
+    COUNT_FORM, OUTPUT_KEYS, SERVICE_KEYS, WORLD_KINDS, quoted_list, sorted_list, sorted_repr,
 };
 use super::Checker;
 use super::keys::{
@@ -312,8 +312,13 @@ pub(super) fn services(c: &mut Checker<'_>) {
         for k in s.keys() {
             if !SERVICE_KEYS.contains(&k.as_str()) && !k.starts_with("x-") {
                 let kp = join(&path, k);
+                // The message is the reference checker's, word for word; the
+                // keys a service takes go in the help, as other tables list theirs.
                 let message = format!("unknown key {k} in service {name}");
-                c.err(code::UNKNOWN_KEY, At::Key(&kp), message.clone());
+                c.err(code::UNKNOWN_KEY, At::Key(&kp), message.clone()).help = Some(format!(
+                    "a service holds {}, or x- extensions",
+                    sorted_list(SERVICE_KEYS)
+                ));
                 rename_fix(c, k, &kp, &path, SERVICE_KEYS, &message);
             }
         }

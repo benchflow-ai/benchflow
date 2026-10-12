@@ -283,6 +283,84 @@ async fn compare_and_outcomes_say_how_many_planned_trials_never_ran() {
     assert_eq!(outcomes["never_ran"]["drained"], 2, "{outcomes}");
 }
 
+/// Final review D2D-1: a drained job with two agents. Its lock.json planned
+/// two trials of each, and only `codex`'s second never ran, so on /compare
+/// and /pareto only codex's column and point count it and are partial (the
+/// rate then has no interval on the page); claude's are whole. On /outcomes the job's
+/// row carries the never-ran count and `partial`, which the page shows by
+/// the job's name.
+#[tokio::test]
+async fn never_ran_trials_count_toward_their_own_arm_and_mark_outcomes_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = dir.path().join("jobs/drained");
+    let ran = |name: &str, agent: &str| {
+        let trial = job.join(name);
+        std::fs::create_dir_all(trial.join("trajectory")).unwrap();
+        std::fs::write(trial.join("trajectory/acp_trajectory.jsonl"), "").unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            format!(
+                r#"{{"task_name": "{}", "agent": "{agent}", "model": "m1", "status": "scored", "passed": true, "rewards": {{"reward": 1.0}}}}"#,
+                &name[..1]
+            ),
+        )
+        .unwrap();
+    };
+    ran("a__1", "claude");
+    ran("b__1", "claude");
+    ran("a__2", "codex");
+    std::fs::write(
+        job.join("lock.json"),
+        r#"{"trials": [
+            {"trial": "a__1", "attempt": {"agent": "claude", "model": "m1"}},
+            {"trial": "b__1", "attempt": {"agent": "claude", "model": "m1"}},
+            {"trial": "a__2", "attempt": {"agent": "codex", "model": "m1"}},
+            {"trial": "b__2", "attempt": {"agent": "codex", "model": "m1"}}]}"#,
+    )
+    .unwrap();
+    let router = router(dir.path());
+    let view = api(&router, "/api/compare").await;
+    let columns = view["columns"].as_array().unwrap();
+    let column = |arm: &str| {
+        columns
+            .iter()
+            .find(|c| c["arm"] == arm)
+            .unwrap_or_else(|| panic!("no column {arm}: {view}"))
+    };
+    assert_eq!(column("claude \u{b7} m1")["never_ran"], 0, "{view}");
+    assert_eq!(column("claude \u{b7} m1")["partial"], false, "{view}");
+    assert_eq!(column("codex \u{b7} m1")["never_ran"], 1, "{view}");
+    assert_eq!(column("codex \u{b7} m1")["partial"], true, "{view}");
+    assert_eq!(view["never_ran"]["drained"], 1);
+
+    let pareto = api(&router, "/api/pareto").await;
+    let point = |arm: &str| {
+        pareto["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["arm"] == arm)
+            .unwrap_or_else(|| panic!("no point {arm}: {pareto}"))
+            .clone()
+    };
+    assert_eq!(point("claude \u{b7} m1")["partial"], false, "{pareto}");
+    assert_eq!(point("codex \u{b7} m1")["never_ran"], 1, "{pareto}");
+    assert_eq!(point("codex \u{b7} m1")["partial"], true, "{pareto}");
+
+    let outcomes = api(&router, "/api/outcomes").await;
+    let row = &outcomes["summary"][0];
+    assert_eq!(row["job"], "drained", "{outcomes}");
+    assert_eq!(row["never_ran"], 1, "{outcomes}");
+    assert_eq!(row["partial"], true, "{outcomes}");
+
+    // The pages carry the same data, and their script reads it.
+    let (_, _, page) = send(&router, Method::GET, "/outcomes", "localhost:8765").await;
+    assert_eq!(boot(&page)["summary"][0]["never_ran"], 1);
+    assert!(page.contains("job.never_ran"));
+    let (_, _, page) = send(&router, Method::GET, "/compare", "localhost:8765").await;
+    assert!(page.contains("column.partial"));
+}
+
 #[tokio::test]
 async fn filters_in_the_query_choose_jobs_trials_and_rows() {
     let dir = corpus();

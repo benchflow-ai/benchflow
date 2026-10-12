@@ -12,6 +12,10 @@ homepage.workspace = true
 name = "bench"
 path = "src/main.rs"
 
+[features]
+# See benchflow-agent's `test-hooks`; never in release or CI builds.
+test-hooks = ["benchflow-agent/test-hooks"]
+
 [dependencies]
 benchflow-task.workspace = true
 benchflow-sandbox.workspace = true

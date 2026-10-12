@@ -23,6 +23,7 @@
 //! hostile file leaves its part of the page empty and never breaks the
 //! page, and trajectory text is always shown as text.
 
+mod atif_events;
 mod catalog;
 mod classify;
 mod lineage;

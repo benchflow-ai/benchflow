@@ -36,6 +36,11 @@ pub fn unpack_mapped(
     let mut ar = tar::Archive::new(file);
     let mut out = Unpacked::default();
     std::fs::create_dir_all(dest)?;
+    // The size each file was written at: an archive can hold one path twice
+    // (outputs that overlap, `/app` and `/app/report.md`), and the second
+    // entry replaces the first, so the counts are of distinct files, as on
+    // disk (E5 review: regrade took the doubled count for damage).
+    let mut written: std::collections::BTreeMap<PathBuf, u64> = std::collections::BTreeMap::new();
     for entry in ar.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
@@ -64,8 +69,13 @@ pub fn unpack_mapped(
             }
             let mut f = std::fs::File::create(&target)?;
             let n = io::copy(&mut entry, &mut f)?;
-            out.files += 1;
-            out.bytes += n;
+            match written.insert(rel.clone(), n) {
+                Some(before) => out.bytes = out.bytes - before + n,
+                None => {
+                    out.files += 1;
+                    out.bytes += n;
+                }
+            }
             if let Ok(t) = entry.header().mtime() {
                 let _ = f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t));
             }
@@ -172,6 +182,28 @@ mod tests {
         }
         b.finish().unwrap();
         f
+    }
+
+    /// E5 review (A4, B2): outputs that overlap put one file in the archive
+    /// twice; the counts are of the files on disk, so a regrade does not
+    /// take them for damage.
+    #[test]
+    fn a_file_archived_twice_counts_once() {
+        let a = archive(
+            &[
+                ("app/report.md", b"first draft"),
+                ("app/other.txt", b"x"),
+                ("app/report.md", b"final"),
+            ],
+            None,
+        );
+        let d = tempfile::tempdir().unwrap();
+        let u = unpack(a.path(), d.path()).unwrap();
+        assert_eq!((u.files, u.bytes), (2, 6));
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("app/report.md")).unwrap(),
+            "final"
+        );
     }
 
     #[test]

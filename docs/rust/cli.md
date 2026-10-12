@@ -174,7 +174,7 @@ bench run [OPTIONS] [TARGETS]...
 | `--registry` `<URL-OR-FILE>` | The registry for --dataset: a URL or a file (default: BenchFlow's, then the public dataset registry) |
 | `-c`, `--config` `<FILE-OR-URL>` | A job file (TOML, or YAML or JSON by extension), or an https:// URL of one; repeatable, later files win |
 | `--print-config` | Print the resolved settings as a job file, and exit |
-| `--rerun` `<KINDS>` | On resume, also rerun trials that were: errored, unscored, failed (comma-separated) |
+| `--rerun` `<KINDS>` | On resume, also rerun trials that were: errored (a trial whose unexplained sandbox loss repeated is kept otherwise), unscored, failed (comma-separated) |
 | `--diff` `<JOB>` | An earlier job (folder, or name in the jobs folder) to reuse trials from: each planned trial is reused, regraded from its saved outputs, or rerun, and the plan is printed first (repeatable) |
 | `--dry-run` | Print the plan and run nothing; exits 0, or 3 (not ready) after naming what a run would stop on (a missing login) |
 
@@ -248,6 +248,14 @@ trajectory tail, verifier output, and agent logs (capped, secrets redacted) to
 a model, by default vercel/deepseek/deepseek-v4-flash-0731, and saves what it
 says to analysis.json in the job folder. What it says is its opinion; the
 problem BenchFlow recorded is shown next to it.
+
+Scores that stand but need a second look are named under the score, and in
+--json: rewards outside their task's range, counted as written (0 to 1 unless
+a task declares [verifier] reward_range; rewards_out_of_range),
+and trials graded although locked_system_dirs failed, so the agent could
+change system folders the verifier runs from (graded_unlocked_system_dirs).
+One more line says when model agents ran on Daytona without the guard on the
+sandbox daemon's ports (their root_service record says why).
 ```
 
 ### bench view
@@ -568,7 +576,7 @@ bench export [OPTIONS] <TASK> [OUT]
 | `--sharegpt` | Add a conversations_sharegpt column (ShareGPT's from/value form) |
 | `--episodes` `<EPISODES>` | One row per agent step (all), or only each trial's last (last) (default: `all`); one of `all`, `last` |
 | `--filter` `<FILTER>` | Which trials: all, success (reward above 0), or failure (default: `all`); one of `all`, `success`, `failure` |
-| `--instruction` | Add an instruction column: each trial's first message |
+| `--instruction` | Add an instruction column: each trial's first user message |
 | `--verifier-output` | Add a verifier_output column: the verifier's stdout and stderr |
 
 ```text
@@ -726,9 +734,9 @@ Without `--dry-run` the plan is printed and the job runs: reused trials are copi
 
 ## Trace export
 
-`bench export <job>` writes a job's trajectories in two forms. `--format hf` (the default for a job) writes a Hugging Face dataset folder: `data/train.jsonl` with one row per agent step and the conversation up to it (`--episodes last` keeps one row per trial), and a `README.md` dataset card that `datasets.load_dataset("<folder>")` reads, naming the job, its agents and models, the columns, and the trials left out with the reason. `--sharegpt` adds a `conversations_sharegpt` column in ShareGPT's `{from, value}` form, `--instruction` the trial's first message, `--verifier-output` the verifier's stdout and stderr, and `--filter success|failure` keeps trials whose reward is above 0, or the rest. `--format otel` writes OpenTelemetry: one OTLP JSON trace per trial, one per line, with an `AGENT` span for the trial, a span per turn, an `LLM` span per agent step, a `TOOL` span per tool call, and subagents under the tool call that started them; attribute names are OpenInference's, and trace and span ids are derived from the trial's name, so exporting twice gives the same ids.
+`bench export <job>` writes a job's trajectories in two forms. `--format hf` (the default for a job) writes a Hugging Face dataset folder: `data/train.jsonl` with one row per agent step and the conversation up to it (`--episodes last` keeps one row per trial), and a `README.md` dataset card that `datasets.load_dataset("<folder>")` reads, naming the job, its agents and models, the columns, and the trials left out with the reason. `--sharegpt` adds a `conversations_sharegpt` column in ShareGPT's `{from, value}` form, `--instruction` the trial's first user message (its first message when it has none), `--verifier-output` the verifier's stdout and stderr, and `--filter success|failure` keeps trials whose reward is above 0, or the rest. `--format otel` writes OpenTelemetry: one OTLP JSON trace per trial, one per line, with an `AGENT` span for the trial, a span per turn, an `LLM` span per agent step, a `TOOL` span per tool call, and subagents under the tool call that started them; attribute names are OpenInference's, and trace and span ids are derived from the trial's name, so exporting twice gives the same ids.
 
-Each trial's trajectory is its ATIF document: `trainer/atif.json` when the trial has one (this engine writes it for every trial; BenchFlow 0.8 did in train mode), else `agent/trajectory.json`, else one rebuilt from `trajectory/acp_trajectory.jsonl`. Jobs from either engine export the same way. On 61 jobs from both engines, every row and trace was checked against a reference exporter's output from the same trajectories (the resource names BenchFlow as the producer). A trial with images or audio is left out of the dataset, which is text only; a job with no trajectory at all is refused. Nothing is uploaded: publish the folder with Hugging Face's tools after reading its card, since the rows hold the tasks' instructions and files.
+Each trial's trajectory is its ATIF document: `trainer/atif.json` when the trial has one (this engine writes it for every trial; BenchFlow 0.8 did in train mode), else `agent/trajectory.json`, else one rebuilt from `trajectory/acp_trajectory.jsonl`. Jobs from either engine export the same way. A job folder that has a `result.json` of its own next to its trial folders, as other harnesses write, is read as a job (by `bench results` and `bench export` alike), with each trial's rewards read from `verifier_result.rewards`, its agent and model from `agent_info`, and its error from `exception_info` when `result.json` has no `rewards`, `agent`, or `error`; `bench view` opens such trials too, reading their steps from `agent/trajectory.json`. A folder whose own `result.json` names a task is a trial, whatever its subfolders hold. Everything an export writes is redacted, each value once: every trajectory before rows or traces are built from it (another harness's `agent/trajectory.json` included), the verifier's output with `--verifier-output`, the trial's metadata columns, and the dataset card; and the `instruction` column is the first user message. On 61 jobs from both engines, every row and trace was checked against a reference exporter's output from the same trajectories (the resource names BenchFlow as the producer). A trial with images or audio is left out of the dataset, which is text only; a job with no trajectory at all is refused. Nothing is uploaded: publish the folder with Hugging Face's tools after reading its card, since the rows hold the tasks' instructions and files.
 
 ## Environment variables
 
@@ -741,6 +749,7 @@ Each trial's trajectory is its ATIF document: `trainer/atif.json` when the trial
 | `OPENAI_API_KEY`, `CODEX_API_KEY` | Codex's logins; `codex login` also works |
 | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Gemini CLI's logins |
 | `BENCHFLOW_CACHE_DIR` | Where sources, logs, and caches go (default `~/.cache/benchflow`) |
+| `BENCHFLOW_REWARD_LENIENT` | `1` takes a reward from a `reward.json`'s `score`, else `rewards`, when it has no `reward` and there is no `reward.txt`, as BenchFlow 0.8's lenient mode does; unset, such a file leaves the trial unscored (`R302`), as 0.8's default does. Each job's `evaluation.json` records the mode as `config.reward_lenient` |
 | `NO_COLOR`, `CLICOLOR_FORCE` | Color off or forced |
 
 Credentials are passed to the agent inside its sandbox and never written to job folders: `config.json` records the names of the variables an agent got, never their values.

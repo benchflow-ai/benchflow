@@ -9,6 +9,10 @@ acp_registry = "cursor"
 skill_paths = ["$HOME/.cursor/skills"]
 home_dirs = [".cursor"]
 
+[install]
+# cursor-agent is a bash script; Alpine has no bash.
+tools = ["bash"]
+
 [install.binary.linux-x86_64]
 archive = "https://downloads.cursor.com/lab/2026.10.01-14929f9/linux/x64/agent-cli-package.tar.gz"
 cmd = "./dist-package/cursor-agent"

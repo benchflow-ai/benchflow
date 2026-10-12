@@ -305,7 +305,10 @@ async fn run_trial(
         ))
     });
     let result = match result {
-        Err(p) => Err(t.sandbox_lost_instead(p).await),
+        Err(p) => {
+            let p = t.sandbox_lost_instead(p).await;
+            Err(t.lost_again(p).await)
+        }
         ok => ok,
     };
     let mut passed_for_keep = false;
@@ -339,6 +342,7 @@ async fn run_trial(
         defenses: Defenses::new(),
         custody: Custody::default(),
         login: t.agent.login.clone(),
+        agent_version: t.agent.agent_version.clone(),
         env_keys: t.agent.env_keys.clone(),
         verifier_exit: t.verifier_exit,
         rubric: None,
@@ -347,6 +351,7 @@ async fn run_trial(
         resumed_session: None,
         resources_raised: None,
         environment_warnings: Vec::new(),
+        reward_range: spec.task.verifier.reward_range,
         dataset: rt
             .options
             .dataset
@@ -371,6 +376,9 @@ async fn run_trial(
             passed_for_keep = passed;
         }
         Err(p) if p.code == "R000" || p.code == "R001" => {
+            if p.code == "R001" && rec.tool_calls == 0 {
+                stopped_counts(&spec.dir, &mut rec);
+            }
             rec.status = Status::Skipped;
             rec.problem = Some(p);
         }
@@ -466,6 +474,24 @@ async fn run_trial(
         dir: spec.dir.clone(),
     }));
     rec
+}
+
+/// A trial stopped while its agent worked (R001) never got the agent's
+/// counts, which are filled when the agent's run returns: take the tool calls
+/// and the trajectory summary from the raw log the run left, marked partial.
+/// (Its token usage stays unknown.)
+fn stopped_counts(dir: &Path, rec: &mut TrialRecord) {
+    let Ok(events) = crate::trainer::read_events(dir) else {
+        return;
+    };
+    if events.is_empty() {
+        return;
+    }
+    rec.tool_calls = benchflow_agent::trajectory::count_tool_calls(&events) as u64;
+    let summary = benchflow_agent::trajectory::summarize(&events, true, None);
+    if let Ok(v) = serde_json::to_value(summary) {
+        rec.trajectory_summary = v;
+    }
 }
 
 /// A stopped trial's result (R001), or the failure it already had.
@@ -733,7 +759,11 @@ impl<'a> Trial<'a> {
         if let Err(p) = &attempted
             && p.owner == Owner::Agent
         {
-            if let Some(e) = self.unreachable().await {
+            // A sandbox lost under the agent (gone, stopped from outside,
+            // or stopped for a reason the backend cannot name): the
+            // sandbox's R103. Whether it is rerun, capped, or the agent's
+            // own stop is decided with every other loss (`lost_again`).
+            if let Some(e) = self.not_running(false).await {
                 let what = format!("the agent stopped ({})", p.message);
                 attempted =
                     Err(lost(Phase::Agent, &what, e).detail(p.detail.clone().unwrap_or_default()));
@@ -748,6 +778,26 @@ impl<'a> Trial<'a> {
                 );
                 p.next = "give the trial more memory: the task's `[sandbox] memory`, or the agent's memory floor, then rerun the same command".into();
             }
+        }
+        // An agent that did nothing or went silent while its model call
+        // never got an answer, or while the provider refused its calls, or
+        // that failed on an answer the provider garbled, stopped on the
+        // provider (E5: each of these was the agent's R206 or R205).
+        if let Err(p) = &attempted
+            && p.owner == Owner::Agent
+            && let Some(provider) =
+                provider_instead(&p.code, &self.spec.dir.join("agent"), agent_clock.elapsed())
+        {
+            attempted = Err(provider.detail(p.message.clone()));
+        }
+        // An agent whose every model request the provider rejected never
+        // worked on the task: not a scored 0 (E7: MiMo answered Codex's
+        // `web_search` tool with HTTP 400, and the error text became the
+        // agent's answer).
+        if attempted.is_ok()
+            && let Some(p) = provider_rejected_all(&self.spec.dir.join("agent"))
+        {
+            attempted = Err(p);
         }
         // An agent that ran out of time while the provider refused its
         // requests was not measured: the provider spent its budget.
@@ -846,14 +896,19 @@ impl<'a> Trial<'a> {
         let events = self.rt.events.clone();
         let trial = self.spec.name.clone();
         let file = std::sync::Mutex::new(std::fs::File::create(&log_path).ok());
+        // A builder's log can carry credentials (Daytona's prints signed
+        // URLs with a SAS signature and a JWT): redact each line as the
+        // trajectory is.
+        let redactor = benchflow_agent::trajectory::Redactor::default();
         let log = move |line: &str| {
+            let line = redactor.redact(line);
             if let Ok(mut f) = file.lock()
                 && let Some(f) = f.as_mut()
             {
                 use std::io::Write;
                 let _ = writeln!(f, "{line}");
             }
-            events.log(&trial, line.to_string());
+            events.log(&trial, line.into_owned());
         };
         let image = self
             .rt
@@ -1024,7 +1079,22 @@ impl<'a> Trial<'a> {
             path: trusted.as_deref(),
             unset: &unset,
         };
-        let out = netpolicy::enforce(self.sb(), &caps, &plan, stage, host, &user, self_test).await;
+        // The reference solution runs as root (see `run_script`); before it,
+        // the agent's chain must cover root too, or the oracle would pass
+        // under a policy it never met.
+        let root_attempt =
+            matches!(self.spec.attempt, Attempt::Oracle) && self.task().agent.user.is_none();
+        let out = netpolicy::enforce(
+            self.sb(),
+            &caps,
+            &plan,
+            stage,
+            host,
+            &user,
+            self_test,
+            root_attempt,
+        )
+        .await;
         if let Some((state, note)) = out.defense {
             defense(&mut self.defenses, stage.defense(), state, Some(note));
         }
@@ -1158,7 +1228,12 @@ impl<'a> Trial<'a> {
                 .unwrap_or(format!("/home/{user}"));
             self.user = user.clone();
             let who = format!("{user}, uid {}", fields.get(1).unwrap_or(&"?"));
-            let (state, note) = self.root_paths(&user, who).await?;
+            let (state, mut note) = self.root_paths(&user, who).await?;
+            if let Some(n) = report.first("workdir-unowned") {
+                note.push_str(&format!(
+                    "; {n} paths in {workdir} kept their owner (root could not chown them), so the agent may be unable to change them"
+                ));
+            }
             defense(&mut self.defenses, "agent_user", state, Some(note));
             if is_root_home(&workdir) {
                 defense(
@@ -1419,10 +1494,16 @@ impl<'a> Trial<'a> {
                 };
                 let mut env = oracle.env.clone();
                 env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
+                // Verifiers written for 0.8 grade an answer the oracle
+                // printed, reading it where 0.8 writes it (MMMLU's
+                // `cat /logs/agent/oracle.txt`). The oracle writes it there
+                // itself, stdout and stderr in the order they were printed,
+                // as 0.8's `> /logs/agent/oracle.txt 2>&1` does; the trial
+                // folder's copy is the same stream (review E4-B, 2).
                 self.run_script(
                     "oracle",
                     label,
-                    &format!("bash {}", shell::quote(&script)),
+                    &oracle_command(&script),
                     env,
                     timeout,
                     &instruction,
@@ -1463,7 +1544,7 @@ impl<'a> Trial<'a> {
                 self.run_script(
                     "control",
                     &label,
-                    "bash /tmp/.benchflow-control.sh",
+                    &shell::script_file("/tmp/.benchflow-control.sh"),
                     BTreeMap::new(),
                     timeout,
                     &instruction,
@@ -1478,7 +1559,7 @@ impl<'a> Trial<'a> {
                 self.run_script(
                     "script",
                     &format!("script:{}", script.name),
-                    "bash /tmp/.benchflow-script.sh",
+                    &shell::script_file("/tmp/.benchflow-script.sh"),
                     BTreeMap::new(),
                     timeout,
                     &instruction,
@@ -1494,7 +1575,7 @@ impl<'a> Trial<'a> {
                 self.run_script(
                     "probe",
                     &format!("probe:{}", probe.id),
-                    "bash /tmp/.benchflow-probe.sh",
+                    &shell::script_file("/tmp/.benchflow-probe.sh"),
                     BTreeMap::new(),
                     t,
                     &instruction,
@@ -1640,8 +1721,9 @@ impl<'a> Trial<'a> {
                 );
                 return Err(unreported("the kill before grading", &out));
             };
-            self.custody.killed_processes =
-                killed.parse().unwrap_or(0) + std::mem::take(&mut self.killed_before_save);
+            // Each graded stage's handoff kills too: add to the earlier ones'.
+            self.custody.killed_processes +=
+                killed.parse::<u64>().unwrap_or(0) + std::mem::take(&mut self.killed_before_save);
             defense(
                 &mut self.defenses,
                 "kill_before_grading",
@@ -1770,13 +1852,22 @@ impl<'a> Trial<'a> {
             }
             return Err(unreported("the handoff", &out));
         }
-        let own = |v: Vec<&str>| v.into_iter().map(str::to_string).collect::<Vec<_>>();
-        self.custody.special_files = own(r.all("special"));
-        self.custody.escaping_symlinks = own(r.all("symlink"));
-        self.custody.planted = own(r.all("planted"));
-        self.custody.restored = own(r.all("restored"));
-        self.custody.tmp_modules = own(r.all("tmp-module"));
-        self.custody.large_files = own(r.all("large"));
+        // A task with stages hands off before each graded stage: add each
+        // handoff's findings to the earlier ones', so custody.json keeps
+        // what the first stage's handoff removed.
+        let add = |list: &mut Vec<String>, v: Vec<&str>| {
+            for f in v {
+                if !list.iter().any(|x| x == f) {
+                    list.push(f.to_string());
+                }
+            }
+        };
+        add(&mut self.custody.special_files, r.all("special"));
+        add(&mut self.custody.escaping_symlinks, r.all("symlink"));
+        add(&mut self.custody.planted, r.all("planted"));
+        add(&mut self.custody.restored, r.all("restored"));
+        add(&mut self.custody.tmp_modules, r.all("tmp-module"));
+        add(&mut self.custody.large_files, r.all("large"));
         defense(
             &mut self.defenses,
             "clean_verifier_logs",
@@ -2146,12 +2237,15 @@ impl<'a> Trial<'a> {
         let channel = matches!(
             e,
             SandboxError::Transport(_)
+                | SandboxError::Throttled(_)
                 | SandboxError::Unavailable { .. }
                 | SandboxError::Start(_)
                 | SandboxError::Image { .. }
         );
+        // A sandbox stopped from outside, or by something the backend
+        // cannot name (`Halted`), is lost; one code inside stopped is not.
         let runs = match self.sb().presence().await {
-            Ok(Presence::Running) | Err(SandboxError::Unsupported(_)) => true,
+            Ok(Presence::Running | Presence::Halted) | Err(SandboxError::Unsupported(_)) => true,
             Ok(_) => false,
             Err(_) => true,
         };
@@ -2185,15 +2279,34 @@ impl<'a> Trial<'a> {
     /// asked about. The backend decides (`docker inspect`, Daytona's API),
     /// not a command in the sandbox: an agent that replaced the shell could
     /// answer one with "No such container" and have its trial rerun. A
-    /// sandbox that exists but stopped is not lost: root code inside can
-    /// stop it (`kill -TERM 1`), and a failure it causes stays its own. A
-    /// backend that cannot tell (the test fakes) is asked to run `true`.
+    /// sandbox the backend says code inside stopped is not lost: root code
+    /// inside can stop it (`kill -TERM 1`), and a failure it causes stays
+    /// its own. A sandbox the backend stopped or lost itself is (the
+    /// backend answers with an error). A backend that cannot tell (the test
+    /// fakes) is asked to run `true`.
     async fn unreachable(&self) -> Option<SandboxError> {
+        self.not_running(false).await
+    }
+
+    /// [`Self::unreachable`]; with `stopped_is_lost`, a sandbox stopped from
+    /// inside is lost too.
+    async fn not_running(&self, stopped_is_lost: bool) -> Option<SandboxError> {
         let sb = self.sandbox.as_ref()?;
         match sb.presence().await {
-            Ok(Presence::Running | Presence::Stopped) => None,
+            Ok(Presence::Running) => None,
+            Ok(Presence::Stopped) if !stopped_is_lost => None,
+            Ok(Presence::Stopped) => Some(SandboxError::Transport(format!(
+                "the {} backend reports sandbox {} stopped",
+                sb.backend(),
+                sb.id()
+            ))),
             Ok(Presence::Gone) => Some(SandboxError::Transport(format!(
                 "the {} backend no longer has sandbox {}: something outside the run removed it",
+                sb.backend(),
+                sb.id()
+            ))),
+            Ok(Presence::Halted) => Some(SandboxError::Transport(format!(
+                "the {} backend reports sandbox {} stopped, and cannot say what stopped it",
                 sb.backend(),
                 sb.id()
             ))),
@@ -2205,14 +2318,96 @@ impl<'a> Trial<'a> {
         }
     }
 
-    /// A hardening program that did not report back (R307), or a network
-    /// self-test that failed (R109), because the sandbox went away (deleted,
+    /// One rule for every loss of a trial's sandbox, whatever the phase
+    /// (setup, the agent, the handoff, the verifier, saving) or the owner
+    /// of the failure (the sandbox's R103, or a sandbox error behind an
+    /// agent's or a script's failure), with one counter per trial (convergence
+    /// reviews E9-D-A 1, E9-D-B 1):
+    /// - a loss the backend confirms in its own answer (the sandbox gone,
+    ///   stopped from outside, the control plane's refusal or outage) is
+    ///   rerun every time: nothing inside can cause it;
+    /// - a sandbox code inside stopped while the agent worked is the
+    ///   agent's own failure, not run again (a rerun would reward it);
+    /// - any other loss (the backend cannot name the cause, or the sandbox
+    ///   still runs and the connection to it broke) is rerun once per
+    ///   trial; after one such loss in any earlier attempt, it is capped:
+    ///   not run again, and counted as not passed. Code inside the sandbox
+    ///   can break the connection every time, and an outage only the
+    ///   sandbox's own channel shows looks the same.
+    async fn lost_again(&self, p: Problem) -> Problem {
+        if matches!(p.phase, Phase::Image | Phase::Start)
+            || matches!(p.code.as_str(), "R000" | "R001")
+            || p.loss_confirmed == Some(true)
+        {
+            return p;
+        }
+        let Some(sb) = self.sandbox.as_ref() else {
+            return p;
+        };
+        let presence = sb.presence().await;
+        if p.phase == Phase::Agent && matches!(presence, Ok(Presence::Stopped)) {
+            let mut own = Problem::new(
+                "R204",
+                Owner::Agent,
+                Phase::Agent,
+                format!(
+                    "the agent's sandbox stopped under it, and the backend says code inside stopped it, so it is not run again: {}",
+                    p.message
+                ),
+                "look at what the agent does to its sandbox (a root agent can stop it); `--rerun errored` runs the trial again",
+            )
+            .detail(p.detail.clone().unwrap_or_default());
+            own.loss_confirmed = Some(false);
+            own.rerun_capped = true;
+            return own;
+        }
+        let loss = p.code == "R103" || (p.phase == Phase::Agent && p.owner == Owner::Sandbox);
+        if !loss {
+            return p;
+        }
+        let confirmed = match presence {
+            Ok(Presence::Running | Presence::Stopped | Presence::Halted) => false,
+            Ok(Presence::Gone) => true,
+            Err(SandboxError::Unsupported(_)) => self
+                .root("true".into(), Duration::from_secs(30))
+                .await
+                .is_err(),
+            Err(_) => true,
+        };
+        let mut p = p;
+        p.loss_confirmed = Some(confirmed);
+        let label = self.spec.attempt.label();
+        let model = self.spec.attempt.model();
+        let same = Same {
+            digest: &self.spec.task.digest,
+            agent: &label,
+            model: model.as_deref(),
+        };
+        if confirmed || !lost_before(&self.spec.dir, &same) {
+            return p;
+        }
+        p.message = format!(
+            "{} (an earlier attempt of this trial lost its sandbox the same way, and the backend still has this one, so it is not run again: code inside the sandbox can break it)",
+            p.message
+        );
+        p.next = "check the backend first (`bench doctor`); if it is healthy, look at what the agent's code and the verifier do to the sandbox; `--rerun errored` runs the trial again".into();
+        p.transient = false;
+        p.rerun_capped = true;
+        p
+    }
+
+    /// A hardening program that did not report back (R307), a network
+    /// self-test that failed (R109), or a setup step that failed (R104),
+    /// because the sandbox went away (deleted,
     /// or the backend lost it) says nothing about the image or BenchFlow:
     /// the sandbox failed (R103), and the trial is retried. Any other
     /// problem, or one whose sandbox still runs, is returned as it is.
     pub(crate) async fn sandbox_lost_instead(&self, p: Problem) -> Problem {
         let what = match p.code.as_str() {
             "R307" => "the sandbox was lost while one of BenchFlow's checks ran",
+            // E5: the Docker daemon killed during setup made `useradd` fail,
+            // and the trial was the task's ("the image needs useradd").
+            "R104" => "the sandbox was lost while BenchFlow prepared it",
             "R109" if p.owner != Owner::Sandbox => {
                 "the sandbox was lost during the network self-test"
             }
@@ -2514,6 +2709,20 @@ pub(crate) fn output_paths(task: &TaskPackage, workdir: &str) -> Vec<(String, St
     }
 }
 
+/// Where 0.8 writes the oracle's output in the sandbox, for verifiers that
+/// grade what it printed.
+const ORACLE_OUTPUT: &str = "/logs/agent/oracle.txt";
+
+/// The oracle's command: `script` with stdout and stderr in one file at
+/// [`ORACLE_OUTPUT`], as 0.8 runs it, then that file printed (for the trial
+/// folder's copy) and the script's exit status kept.
+fn oracle_command(script: &str) -> String {
+    format!(
+        "mkdir -p /logs/agent 2>/dev/null; {{ {}; }} > {ORACLE_OUTPUT} 2>&1; bf_rc=$?; cat {ORACLE_OUTPUT}; exit $bf_rc",
+        // bash where the image has it, else sh (images without bash).
+        shell::script_file(script)
+    )
+}
 /// Where verifiers from older benchmarks expect their files.
 const LEGACY_VERIFIER_MOUNT: &str = "/tests";
 
@@ -2666,8 +2875,28 @@ pub(crate) fn unreported_in(phase: Phase, what: &str, out: &ExecOutput) -> Probl
 pub(crate) fn sandbox_problem(phase: Phase, e: SandboxError) -> Problem {
     let transient = e.is_transient();
     let p = match e {
+        // The backend's own answer (Daytona's API refusing the key or the
+        // account; the container CLI, asked itself, unable to reach its
+        // daemon): nothing code inside the sandbox can cause. An outage seen
+        // as 5xx or 429 is a `Transport` error instead, which looks the same
+        // as code inside breaking the connection, so it counts toward the
+        // repeat cap (`--rerun errored` runs such a trial again).
         SandboxError::Unavailable { message, fix } => {
-            Problem::new("R103", Owner::Sandbox, phase, message, fix)
+            let mut p = Problem::new("R103", Owner::Sandbox, phase, message, fix);
+            p.loss_confirmed = Some(true);
+            p
+        }
+        // The backend's rate limit, in its own answer: confirmed too.
+        SandboxError::Throttled(message) => {
+            let mut p = Problem::new(
+                "R103",
+                Owner::Sandbox,
+                phase,
+                format!("the sandbox failed while {}: {message}", phase.label()),
+                "retry; with lower `--concurrency` if it keeps happening",
+            );
+            p.loss_confirmed = Some(true);
+            p
         }
         SandboxError::Io { context, source } => Problem::new(
             "R107",
@@ -2774,6 +3003,88 @@ pub fn throttled(agent_dir: &Path, elapsed: Option<Duration>) -> Option<Problem>
     )
 }
 
+/// The model provider rejected every request the agent sent (a 4xx other
+/// than 429, which is throttling) and answered none: the agent never got a
+/// reply to work from, so the trial is the provider's (R214), never a
+/// scored 0. Read from the same logs as [`throttled`]; the forwarder's own
+/// refusals (lines with a `note`, such as a model the run may not use) are
+/// not the provider's answers and are left out. A rejected request is not
+/// retried (decision 17).
+pub fn provider_rejected_all(agent_dir: &Path) -> Option<Problem> {
+    let mut statuses: BTreeMap<u64, u64> = BTreeMap::new();
+    let (mut answered, mut rejected) = (0u64, 0u64);
+    for name in ["model_calls.jsonl", "forwarder.log"] {
+        let text = std::fs::read_to_string(agent_dir.join(name)).unwrap_or_default();
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let Some(s) = v.get("status").and_then(Value::as_u64) else {
+                continue;
+            };
+            let method = v.get("method").and_then(Value::as_str);
+            if method.is_some_and(|m| m != "POST") || v.get("note").is_some() {
+                continue;
+            }
+            if (200..300).contains(&s) {
+                answered += 1;
+            } else if (400..500).contains(&s) && s != 429 {
+                rejected += 1;
+                *statuses.entry(s).or_insert(0) += 1;
+            }
+        }
+    }
+    if answered > 0 || rejected == 0 {
+        return None;
+    }
+    let seen: Vec<String> = statuses
+        .iter()
+        .map(|(s, n)| format!("{n} × HTTP {s}"))
+        .collect();
+    let what = format!(
+        "the model provider rejected every request the agent sent ({}) and answered none, so the agent never worked on the task",
+        seen.join(", ")
+    );
+    let only = |codes: &[u64]| statuses.keys().all(|s| codes.contains(s));
+    // As the harnesses file them: a key the provider refused (401, 403) is
+    // R212, a spent plan (402) the usage limit R213, which stops the job
+    // (review E7-C-A 1), and a model it does not serve (404) R215; anything
+    // else it rejected is R214 (review E7-B).
+    Some(if only(&[402]) {
+        Problem::new(
+            "R213",
+            Owner::Model,
+            Phase::Agent,
+            what,
+            "the provider says the plan's credit or quota is spent (HTTP 402); add credit or wait for the quota to reset, then rerun the same command to resume the job",
+        )
+    } else if only(&[401, 403]) {
+        Problem::new(
+            "R212",
+            Owner::Model,
+            Phase::Agent,
+            what,
+            "the model provider rejected the login; check the key, then rerun the same command",
+        )
+    } else if only(&[404]) {
+        Problem::new(
+            "R215",
+            Owner::You,
+            Phase::Agent,
+            what,
+            "check the model's name with the provider (`bench agents <name>` lists the providers an agent takes), then rerun",
+        )
+    } else {
+        Problem::new(
+            "R214",
+            Owner::Model,
+            Phase::Agent,
+            what,
+            "check that the model takes what this agent sends (an agent option may turn a feature off, such as a tool the provider lacks), or pick another model; agent/forwarder.log or agent/model_calls.jsonl in the trial folder has each answer",
+        )
+    })
+}
+
 /// A request's start and end in milliseconds: a native call's `started_at`
 /// and `duration_ms`, or a forwarder line's `time` (its end) and `ms`.
 fn call_span(v: &Value) -> Option<(i64, i64)> {
@@ -2791,6 +3102,155 @@ fn call_span(v: &Value) -> Option<(i64, i64)> {
         return Some((end.saturating_sub(d), end));
     }
     None
+}
+
+/// The model provider's problem in place of an agent's `code` when the
+/// agent's logs show the provider caused it: an agent that did nothing or
+/// went silent (R206, R203) while a call [`never_answered`] or the provider
+/// held it back ([`throttled`]); an agent that failed its turn or exited
+/// (R205, R204) right after an answer it could not read
+/// ([`unreadable_answer`]).
+pub fn provider_instead(code: &str, agent_dir: &Path, elapsed: Duration) -> Option<Problem> {
+    match code {
+        "R203" | "R206" => {
+            never_answered(agent_dir).or_else(|| throttled(agent_dir, Some(elapsed)))
+        }
+        "R204" | "R205" => unreadable_answer(agent_dir),
+        _ => None,
+    }
+}
+
+/// The forwarder's last answered model call, when the provider's answer
+/// could not be read (`unreadable` in `agent/forwarder.log`: JSON that does
+/// not parse, or a stream with garbled events).
+pub fn unreadable_answer(agent_dir: &Path) -> Option<Problem> {
+    let text = std::fs::read_to_string(agent_dir.join("forwarder.log")).ok()?;
+    let last = text
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| {
+            v.get("method").and_then(Value::as_str) == Some("POST")
+                && v.get("note").is_none()
+                && v.get("status").is_some()
+        })?;
+    if last.get("unreadable").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let path = last.get("path").and_then(Value::as_str).unwrap_or_default();
+    Some(
+        Problem::new(
+            "R214",
+            Owner::Model,
+            Phase::Agent,
+            format!(
+                "the model provider's last answer (to {path}) could not be read: its body or stream was garbled, and the agent stopped on it"
+            ),
+            "check the provider's status, then rerun the same command to resume the job; agent/forwarder.log in the trial folder marks the answer `unreadable`",
+        )
+        .transient(),
+    )
+}
+
+/// The provider never answered the call the agent was waiting on, from
+/// `agent/forwarder.log`: the agent's latest call with tools (its own turn,
+/// not a title or a summary; the latest call of any kind in a log that does
+/// not mark tools) never got its answer started, neither an `answering`
+/// note nor a line with a status for it. A `dropped` note does not answer
+/// it: BenchFlow's own kill of a stalled agent closes the call too (E5
+/// review C-A 1), and a call dropped earlier is not the latest. Earlier
+/// calls, answered or not, say nothing about the stall (E5 review A1: a
+/// call dropped long before blamed a later hang on the provider). A
+/// `retrying` note starts the call again. Lines are matched to calls by
+/// body hash only (by path for a call without a body), never one call's
+/// line to another's (E5 review C-A 2). Only the log's own order is used,
+/// so the sandbox's clock does not matter. `None` when the provider is not
+/// shown at fault.
+pub fn never_answered(agent_dir: &Path) -> Option<Problem> {
+    struct Call {
+        key: String,
+        path: String,
+        time: String,
+        tools: bool,
+        /// An answer (a status) or a `retrying` note ended it.
+        open: bool,
+        answering: bool,
+        /// The agent hung up on it (or BenchFlow's kill did): it takes no
+        /// later line, so a resend of the same body gets its own answer
+        /// (E5 review D-A), but unanswered it still counts as unanswered.
+        dropped: bool,
+    }
+    let text = std::fs::read_to_string(agent_dir.join("forwarder.log")).ok()?;
+    let mut calls: Vec<Call> = Vec::new();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("method").and_then(Value::as_str) != Some("POST") {
+            continue;
+        }
+        let path = v
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let key = v
+            .get("body_hash")
+            .and_then(Value::as_str)
+            .map_or_else(|| path.clone(), str::to_string);
+        let note = v.get("note").and_then(Value::as_str).unwrap_or_default();
+        // The earliest open call this line is about: the same body.
+        let find = |calls: &[Call]| {
+            calls
+                .iter()
+                .position(|c| c.open && !c.dropped && c.key == key)
+        };
+        if note == "waiting" {
+            calls.push(Call {
+                key: key.clone(),
+                path,
+                time: v
+                    .get("time")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                tools: v.get("tools").and_then(Value::as_bool) == Some(true),
+                open: true,
+                answering: false,
+                dropped: false,
+            });
+        } else if note == "answering" {
+            if let Some(i) = find(&calls) {
+                calls[i].answering = true;
+            }
+        } else if note == "dropped" {
+            if let Some(i) = find(&calls) {
+                calls[i].dropped = true;
+            }
+        } else if (note.starts_with("retrying") || v.get("status").is_some())
+            && let Some(i) = find(&calls)
+        {
+            calls[i].open = false;
+        }
+    }
+    let marked = calls.iter().any(|c| c.tools);
+    let last = calls.iter().rev().find(|c| c.tools || !marked)?;
+    if !last.open || last.answering {
+        return None;
+    }
+    Some(
+        Problem::new(
+            "R214",
+            Owner::Model,
+            Phase::Agent,
+            format!(
+                "the model provider never answered: the agent's last model call (to {}, sent at {} by the sandbox's clock) had no answer, not even its start, when the agent stopped",
+                last.path, last.time
+            ),
+            "check the provider's status, then rerun the same command to resume the job; agent/forwarder.log in the trial folder has each call",
+        )
+        .transient(),
+    )
 }
 
 /// One model request in an agent's log, as [`throttled`] reads it.
@@ -2962,6 +3422,58 @@ const VERIFIER_COPY_CAP: u64 = 1 << 30;
 /// The pause before the verifier's folder is copied a second time.
 const VERIFIER_COPY_PAUSE: Duration = Duration::from_secs(3);
 
+/// The attempt whose earlier losses [`lost_before`] counts: its task
+/// (by digest), its agent, and its model when it names one.
+struct Same<'s> {
+    digest: &'s str,
+    agent: &'s str,
+    model: Option<&'s str>,
+}
+
+/// Whether an earlier attempt of the trial (set aside under
+/// `<job>/.rerun/<trial>-<n>/` by a retry or a resume) lost its sandbox in
+/// a way the backend did not confirm, in any phase: the one counter of
+/// `Trial::lost_again`. Only attempts of the same task, agent and model
+/// count, and only those after the newest attempt a plain resume would
+/// have kept: a capped one, run again only by `--rerun errored`, and a
+/// scored or unscored one, run again only by `--rerun failed` or
+/// `--rerun unscored`. An explicit rerun starts the count anew (convergence
+/// reviews E9-E-A 2, E9-F-A). A record without the field (an older bench)
+/// does not count.
+fn lost_before(trial_dir: &Path, same: &Same<'_>) -> bool {
+    let (Some(job), Some(name)) = (trial_dir.parent(), trial_dir.file_name()) else {
+        return false;
+    };
+    let store = job.join(".rerun");
+    let name = name.to_string_lossy();
+    let mut lost = false;
+    for dir in (1..)
+        .map(|n| store.join(format!("{name}-{n}")))
+        .take_while(|dir| dir.is_dir())
+    {
+        let Some(v) = std::fs::read_to_string(dir.join("result.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        else {
+            continue;
+        };
+        let problem = &v["problem"];
+        let kept = problem["rerun_capped"].as_bool() == Some(true)
+            || matches!(v["status"].as_str(), Some("scored" | "unscored"));
+        if kept {
+            lost = false;
+            continue;
+        }
+        let of_this = v["task_digest"].as_str() == Some(same.digest)
+            && v["agent"].as_str() == Some(same.agent)
+            && same.model.is_none_or(|m| v["model"].as_str() == Some(m));
+        if of_this && problem["loss_confirmed"].as_bool() == Some(false) {
+            lost = true;
+        }
+    }
+    lost
+}
+
 /// Empty `dir` of what a copy left in it.
 fn clear_folder(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
@@ -3070,8 +3582,139 @@ pub fn no_usage() -> Usage {
 
 #[cfg(test)]
 mod tests {
+    /// Diff review of rust/e9-decisions (M2): the repeat rule counts the
+    /// previous attempt only when its loss was one the backend did not
+    /// confirm. A sandbox deleted or stopped from outside, then a
+    /// connection blip in the retry, is no sign of code inside; nor is a
+    /// record an older bench wrote without the field.
+    /// Round-2 review E9-A M3: the backend's own refusal (its API refusing
+    /// the key or account, a daemon the CLI itself cannot reach) is a loss
+    /// the backend confirmed, which code inside cannot cause. An outage seen
+    /// as 5xx or 429 is a transport error, decided later from the backend
+    /// (convergence review E9-C-B 3: the old comment and test claimed 503).
+    #[test]
+    fn an_unavailable_backend_is_a_confirmed_loss() {
+        let p = sandbox_problem(
+            Phase::Verify,
+            SandboxError::Unavailable {
+                message: "Daytona refused checking the sandbox (HTTP 403: forbidden)".into(),
+                fix: "check the key".into(),
+            },
+        );
+        assert_eq!((p.code.as_str(), p.loss_confirmed), ("R103", Some(true)));
+        let p = sandbox_problem(Phase::Verify, SandboxError::Transport("reset".into()));
+        assert_eq!(p.loss_confirmed, None, "decided later, from the backend");
+        // Daytona's rate limit, in its own answer (convergence review E9-C-A
+        // N2): confirmed, and retried like any transport failure.
+        let p = sandbox_problem(
+            Phase::Verify,
+            SandboxError::Throttled("Daytona refused it (HTTP 429)".into()),
+        );
+        assert_eq!(
+            (p.code.as_str(), p.loss_confirmed, p.transient),
+            ("R103", Some(true), true)
+        );
+    }
+
+    #[test]
+    fn only_an_unconfirmed_previous_loss_counts_as_a_repeat() {
+        let d = tempfile::tempdir().unwrap();
+        let trial = d.path().join("job/hello__abc");
+        std::fs::create_dir_all(&trial).unwrap();
+        let same = Same {
+            digest: "sha256:t1",
+            agent: "claude",
+            model: Some("m1"),
+        };
+        let write = |n: u32, problem: serde_json::Value, digest: &str, model: &str| {
+            let dir = d.path().join(format!("job/.rerun/hello__abc-{n}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("result.json"),
+                serde_json::json!({"task_digest": digest, "agent": "claude", "model": model,
+                    "problem": problem})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let loss = |confirmed: Option<bool>, phase: &str| {
+            let mut problem = serde_json::json!({"code": "R103", "owner": "sandbox", "phase": phase,
+                "message": "lost", "next": "retry", "transient": true});
+            if let Some(c) = confirmed {
+                problem["loss_confirmed"] = serde_json::json!(c);
+            }
+            problem
+        };
+        // One counter per trial (convergence reviews E9-D-A 1, E9-D-B 1): an
+        // unconfirmed loss in any phase of any earlier attempt counts.
+        write(1, loss(Some(false), "verify"), "sha256:t1", "m1");
+        assert!(lost_before(&trial, &same));
+        write(1, loss(Some(false), "setup"), "sha256:t1", "m1");
+        assert!(lost_before(&trial, &same));
+        write(1, loss(Some(true), "verify"), "sha256:t1", "m1");
+        assert!(!lost_before(&trial, &same));
+        write(1, loss(None, "verify"), "sha256:t1", "m1");
+        assert!(!lost_before(&trial, &same));
+        // Convergence review E9-E-A 2: only attempts of the same task and
+        // model count...
+        write(1, loss(Some(false), "agent"), "sha256:t0", "m1");
+        assert!(!lost_before(&trial, &same), "another task digest");
+        write(1, loss(Some(false), "agent"), "sha256:t1", "m0");
+        assert!(!lost_before(&trial, &same), "another model");
+        // ...and a later attempt that ended otherwise does not hide one...
+        write(1, loss(Some(false), "agent"), "sha256:t1", "m1");
+        write(2, serde_json::json!(null), "sha256:t1", "m1");
+        assert!(lost_before(&trial, &same));
+        // ...but a capped attempt, run again only by `--rerun errored`,
+        // starts the count anew.
+        let mut capped = loss(Some(false), "verify");
+        capped["rerun_capped"] = serde_json::json!(true);
+        write(2, capped, "sha256:t1", "m1");
+        assert!(!lost_before(&trial, &same));
+        write(3, loss(Some(false), "verify"), "sha256:t1", "m1");
+        assert!(lost_before(&trial, &same));
+        // Convergence review E9-F-A: an attempt that got past the loss and
+        // finished, scored or unscored, is run again only by `--rerun
+        // failed` or `--rerun unscored`, which start the count anew too.
+        for status in ["scored", "unscored"] {
+            let dir = d.path().join("job/.rerun/hello__abc-4");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("result.json"),
+                serde_json::json!({"task_digest": "sha256:t1", "agent": "claude", "model": "m1",
+                    "status": status})
+                .to_string(),
+            )
+            .unwrap();
+            assert!(!lost_before(&trial, &same), "{status}");
+        }
+    }
 
     use super::*;
+
+    /// The oracle's command keeps stdout and stderr in the order printed in
+    /// its file (a warning on stderr before the answer on stdout leaves the
+    /// answer last, as `tail -n1` graders expect), prints that file, and
+    /// exits with the script's status (review E4-B, 2). Run in `sh` with the
+    /// file's folder moved to a temp folder.
+    #[test]
+    fn the_oracle_command_keeps_the_printed_order_and_the_status() {
+        let d = tempfile::tempdir().unwrap();
+        let script = d.path().join("solve.sh");
+        std::fs::write(&script, "echo warning >&2\necho 'Answer: D'\nexit 3\n").unwrap();
+        let logs = d.path().join("logs/agent");
+        let cmd = oracle_command(&script.display().to_string())
+            .replace("/logs/agent", &logs.display().to_string());
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        let file = std::fs::read_to_string(logs.join("oracle.txt")).unwrap();
+        assert_eq!(file, "warning\nAnswer: D\n");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), file);
+    }
 
     /// Behavior review 7: a stop that lands after the agent failed, or after
     /// it timed out on a task whose timeout fails it, records that failure,
@@ -3381,10 +4024,197 @@ mod tests {
         assert_eq!(image_workdir("motd\n/srv/work\n"), "/srv/work");
     }
 
+    /// E7 round 2: Codex on MiMo sent a tool MiMo does not take; the one
+    /// request was answered HTTP 400 (the forwarder then refused Codex's
+    /// fallback model, lines with a `note`), and the trial was scored 0 with
+    /// no problem. Every request rejected and none answered is the
+    /// provider's R214; one answered request, or throttling, is not.
+    #[test]
+    fn a_provider_that_rejected_every_request_owns_the_trial() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = [
+            r#"{"time":"2026-10-12T04:45:41.877Z","method":"POST","path":"/openai/responses","status":400,"bytes":174,"ms":1062}"#,
+            r#"{"time":"2026-10-12T04:45:41.944Z","method":"POST","path":"/openai/responses","status":403,"bytes":126,"ms":1,"note":"this run may use only mimo-v2.6-flash; the request asked for gpt-5.6-luna"}"#,
+        ]
+        .join("\n");
+        std::fs::write(dir.path().join("forwarder.log"), &codex).unwrap();
+        let p = provider_rejected_all(dir.path()).expect("every request rejected");
+        assert_eq!(
+            (p.code.as_str(), p.owner, p.transient),
+            ("R214", Owner::Model, false)
+        );
+        assert!(p.message.contains("(1 × HTTP 400)"), "{}", p.message);
+        // One answered request: the agent had something to work from.
+        std::fs::write(
+            dir.path().join("forwarder.log"),
+            format!("{codex}\n{}", r#"{"method":"POST","status":200}"#),
+        )
+        .unwrap();
+        assert!(provider_rejected_all(dir.path()).is_none());
+        // A refused key is R212, a spent plan R213 (which stops the job),
+        // an unknown model R215, as the harnesses file them.
+        for (status, code, owner) in [
+            (401, "R212", Owner::Model),
+            (403, "R212", Owner::Model),
+            (402, "R213", Owner::Model),
+            (404, "R215", Owner::You),
+        ] {
+            std::fs::write(
+                dir.path().join("forwarder.log"),
+                format!(r#"{{"method":"POST","status":{status}}}"#),
+            )
+            .unwrap();
+            let p = provider_rejected_all(dir.path()).expect("rejected");
+            assert_eq!((p.code.as_str(), p.owner), (code, owner), "{status}");
+        }
+        // Throttling is `throttled`'s, and no requests is nothing to say.
+        std::fs::write(
+            dir.path().join("forwarder.log"),
+            r#"{"method":"POST","status":429}"#,
+        )
+        .unwrap();
+        assert!(provider_rejected_all(dir.path()).is_none());
+        std::fs::write(dir.path().join("forwarder.log"), "").unwrap();
+        assert!(provider_rejected_all(dir.path()).is_none());
+    }
+
     /// The agent user owns its workdir, and the owner of a folder can move
     /// a root-owned folder inside it aside. BenchFlow's root-only state must
     /// never be inside a workdir the runner hands out: the image's
     /// WORKDIR, its `/root` fallback, or a declared one.
+    #[test]
+    fn a_call_the_provider_never_answered_is_read_from_the_forwarders_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = |v: serde_json::Value| v.to_string();
+        let p = "/v1/chat/completions";
+        let wait = |t: &str, h: &str, tools: bool| {
+            if tools {
+                line(
+                    json!({"time": t, "method": "POST", "path": p, "note": "waiting", "attempt": 1, "body_hash": h, "tools": true}),
+                )
+            } else {
+                line(
+                    json!({"time": t, "method": "POST", "path": p, "note": "waiting", "attempt": 1, "body_hash": h}),
+                )
+            }
+        };
+        let note = |n: &str, h: &str| {
+            line(json!({"method": "POST", "path": p, "note": n, "body_hash": h}))
+        };
+        let done = |h: &str| {
+            line(json!({"method": "POST", "path": p, "status": 200, "ms": 900, "body_hash": h}))
+        };
+        let judge = |log: Vec<String>| {
+            std::fs::write(dir.path().join("forwarder.log"), log.join("\n")).unwrap();
+            never_answered(dir.path())
+        };
+        // The agent's last call with tools never started its answer, though
+        // a title call beside it was answered: the provider's.
+        let p1 = judge(vec![
+            wait("t0", "a", true),
+            done("a"),
+            wait("t2", "b", true),
+            wait("t3", "title", false),
+            done("title"),
+        ])
+        .expect("call b had no answer");
+        assert_eq!((p1.code.as_str(), p1.owner), ("R214", Owner::Model));
+        assert!(p1.message.contains("sent at t2"), "{}", p1.message);
+        // E5 review (A1, B1): a call the agent dropped early, then answered
+        // calls, then a stall of the agent's own: not the provider's.
+        assert!(
+            judge(vec![
+                wait("t0", "a", true),
+                note("dropped", "a"),
+                wait("t1", "b", true),
+                done("b")
+            ])
+            .is_none()
+        );
+        // E5 review (C-A 1): BenchFlow's kill of the stalled agent drops the
+        // call that was never answered; it is still the provider's.
+        assert!(
+            judge(vec![
+                wait("t0", "a", true),
+                done("a"),
+                wait("t1", "b", true),
+                note("dropped", "b")
+            ])
+            .is_some()
+        );
+        // E5 review (D-A): the agent drops a call and sends the same body
+        // again, which is answered: the answer is the resend's, and the
+        // agent's later stall is its own.
+        assert!(
+            judge(vec![
+                wait("t0", "a", true),
+                note("dropped", "a"),
+                wait("t1", "a", true),
+                note("answering", "a"),
+                done("a")
+            ])
+            .is_none()
+        );
+        // E5 review (C-A 2): a refusal line without a body hash (a title
+        // call's, on the same path) ends no other call.
+        let unhashed = line(
+            json!({"method": "POST", "path": p, "status": 502, "note": "the provider could not be reached (ECONNRESET)"}),
+        );
+        assert!(
+            judge(vec![
+                wait("t0", "a", true),
+                wait("t1", "title", false),
+                unhashed
+            ])
+            .is_some()
+        );
+        // An earlier call left open (a log without `dropped`) with a later
+        // call answered: the stall is not that call's.
+        assert!(
+            judge(vec![
+                wait("t0", "a", true),
+                wait("t1", "b", true),
+                done("b")
+            ])
+            .is_none()
+        );
+        // The provider had started answering (a slow stream): not silent.
+        assert!(judge(vec![wait("t0", "c", true), note("answering", "c")]).is_none());
+        // Retried and answered.
+        assert!(
+            judge(vec![
+                wait("t0", "d", true),
+                note("retrying after ECONNRESET", "d"),
+                wait("t1", "d", true),
+                done("d")
+            ])
+            .is_none()
+        );
+        // The same agent errors with an unreadable last answer, and a
+        // storm of refusals until the time ran out (E5's 429 storm).
+        let garbled = [
+            line(json!({"time": "t0", "method": "POST", "path": "/v1/chat/completions", "status": 200, "unreadable": true})),
+        ]
+        .join("\n");
+        std::fs::write(dir.path().join("forwarder.log"), &garbled).unwrap();
+        let p = provider_instead("R205", dir.path(), Duration::from_secs(120)).expect("garbled");
+        assert_eq!((p.code.as_str(), p.owner), ("R214", Owner::Model));
+        assert!(provider_instead("R201", dir.path(), Duration::from_secs(120)).is_none());
+        let storm: Vec<String> = (0..6)
+            .map(|i| line(json!({"time": format!("2026-10-12T00:00:{:02}Z", i * 20), "method": "POST", "path": "/v1/chat/completions", "status": 429, "ms": 50, "body_hash": "a"})))
+            .collect();
+        std::fs::write(dir.path().join("forwarder.log"), storm.join("\n")).unwrap();
+        let p = provider_instead("R206", dir.path(), Duration::from_secs(120)).expect("throttled");
+        assert_eq!((p.code.as_str(), p.owner), ("R214", Owner::Model));
+        // A log from before these lines (or none): nothing to say.
+        std::fs::write(
+            dir.path().join("forwarder.log"),
+            line(json!({"method": "POST", "path": "/v1/x", "status": 200})),
+        )
+        .unwrap();
+        assert!(never_answered(dir.path()).is_none());
+    }
+
     #[test]
     fn throttling_is_read_from_native_calls_and_the_forwarders_log() {
         let dir = tempfile::tempdir().unwrap();

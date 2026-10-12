@@ -152,7 +152,7 @@ jobs/<job>/
 
 ## Interop
 
-BenchFlow reads split-layout tasks, computes the layout's standard content digest, and accepts its reward files (`reward.json` as a flat map of finite numbers, else `reward.txt`). `bench export` writes the split layout for harnesses that read it.
+BenchFlow reads split-layout tasks, computes the layout's standard content digest, and accepts its reward files (`reward.json` as a flat map of finite numbers, else `reward.txt`). Rewards must be from 0 to 1, or inside the task's `[verifier] reward_range = [lo, hi]`, which, as in BenchFlow 0.8, may only widen that (lo <= 0, hi >= 1; a range that narrows or shifts it is an error when the task is read); a reward outside is the task's `R302`, unscored. The range also bounds the other numbers 0.8 checks (top-level numbers and `metrics`), but not a rubric item's `score`, which stays from 0 to 1, and a trial passes only at 1. Each trial's `result.json` records a declared range as `reward_range`; `bench results` names rewards outside their task's range (from jobs bench did not grade), since they are counted as written. `bench export` writes the split layout for harnesses that read it.
 
 ## Decisions
 

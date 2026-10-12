@@ -349,6 +349,7 @@ fn verifier(
             Isolation::Shared
         },
         rubric,
+        reward_range: None,
     };
     for (key, value) in v {
         let where_ = format!("[verifier] {key}");
@@ -914,11 +915,16 @@ pub(crate) fn package(
         verifier_network,
         &mut refusals,
     );
+    // The folder's name as given (a link is named after the link, as 0.8
+    // names it); a path with no last name (`.`, `x/..`) is resolved first.
     let name = root
-        .canonicalize()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .or_else(|| {
+            root.canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        })
         .unwrap_or_else(|| "task".into());
     let id = cfg
         .get("name")

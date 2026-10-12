@@ -1,0 +1,152 @@
+# The examples folder's model agents on MiMo v2.6 Flash: ACP, headless, native loops, an SDK runner, skills, sessions across stages, the rubric judge, a prompt fork (examples/README.md). Model runs are not deterministic: each step checks the run's shape, and rewards only where the task is trivial.
+tier = "full"
+needs = ["sandbox", "mimo"]
+tasks = ["examples/hello", "examples/stages", "examples/skills", "examples/rubric-judged", "examples/desktop-hello"]
+
+[[step]]
+name = "E43 OpenCode over ACP solves hello"
+run = ["run", "tasks/hello", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "acp"]
+exit = 0
+timeout = 900
+files = ["jobs/acp/hello__*/trajectory/acp_trajectory.jsonl", "jobs/acp/hello__*/trainer/atif.json"]
+trials = [{ job = "acp", task = "hello", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E44 the same agent headless (opencode run)"
+run = ["run", "tasks/hello", "-a", "opencode", "--harness", "headless", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "headless"]
+exit = 0
+timeout = 900
+trials = [{ job = "headless", task = "hello", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E45 the builtin native loop, capped at 10 tool calls"
+run = ["run", "tasks/hello", "-a", "builtin", "-m", "mimo/mimo-v2.6-flash", "--max-tool-calls", "10", "-s", "{backend}", "--job", "builtin"]
+exit = 0
+timeout = 900
+trials = [{ job = "builtin", task = "hello", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E46 terminus-2 (keystrokes to tmux)"
+run = ["run", "tasks/hello", "-a", "terminus-2", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "terminus"]
+exit = [0, 1]
+timeout = 900
+trials = [{ job = "terminus", task = "hello", status = "scored" }]
+
+[[step]]
+name = "E47 an SDK runner (openhands-sdk)"
+run = ["run", "tasks/hello", "-a", "openhands-sdk", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "sdk"]
+exit = [0, 1]
+timeout = 1200
+trials = [{ job = "sdk", task = "hello", status = "scored" }]
+
+[[step]]
+name = "E48 task skills reach the agent; --no-task-skills leaves them out"
+run = ["run", "tasks/skills", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "skills"]
+exit = 0
+timeout = 900
+trials = [{ job = "skills", task = "skills", status = "scored", reward = 1.0 }]
+
+[[step]]
+run = ["run", "tasks/skills", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "--no-task-skills", "-s", "{backend}", "--job", "no-skills"]
+exit = 0
+timeout = 900
+trials = [{ job = "no-skills", task = "skills", status = "scored", reward = 0.0 }]
+
+[[step]]
+name = "E49 --skill adds a skill of your own"
+run = ["run", "tasks/hello", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "--skill", "{examples}/skills/house-style", "-s", "{backend}", "--job", "extra-skill"]
+exit = [0, 1]
+timeout = 900
+trials = [{ job = "extra-skill", task = "hello", status = "scored" }]
+
+[[step]]
+name = "E50 two stages with --resume-sessions: the second stage resumes the first's session"
+run = ["run", "tasks/stages", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "--resume-sessions", "-s", "{backend}", "--job", "resume"]
+exit = 0
+timeout = 1200
+trials = [{ job = "resume", task = "stages", status = "scored", reward = 1.0, result = { "step_results" = { len = 2 }, "step_results.0.session.resumed" = false, "step_results.1.session.resumed" = true } }]
+
+[[step]]
+name = "E51 the rubric judge on MiMo: the oracle's summary scores 1, the wrong one 0"
+run = ["run", "tasks/rubric-judged", "-s", "{backend}", "--job", "judged"]
+exit = 0
+timeout = 900
+files = ["jobs/judged/rubric-judged__*/verifier/judgments.jsonl"]
+trials = [{ job = "judged", task = "rubric-judged", status = "scored", reward = 1.0 }]
+
+[[step]]
+run = ["run", "tasks/rubric-judged", "-a", "script:{work}/tasks/rubric-judged/controls/wrong-cause.sh", "-s", "{backend}", "--job", "judged-wrong"]
+exit = 0
+timeout = 900
+trials = [{ job = "judged-wrong", task = "rubric-judged", status = "scored", reward = 0.0 }]
+
+[[step]]
+name = "E52 a fork after the first prompt; children resume the parent's session"
+run = ["branch", "tasks/hello", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "--at", "prompt:1", "--resume-session", "-s", "{backend}", "-j", "2",
+       "--child", "label=keep,prompt=Check that /app/hello.txt still holds exactly Hello, world! and fix it if not.",
+       "--child", "label=bye,prompt=Now append a second line containing bye to /app/hello.txt.", "--job", "fork-prompt"]
+exit = [0, 1]
+timeout = 1500
+stdout_has = ['prompt:1']
+
+[[step]]
+name = "E53 check --review and results --analyze on MiMo"
+run = ["check", "tasks/hello", "--review", "--model", "mimo/mimo-v2.6-flash"]
+exit = 0
+timeout = 300
+
+[[step]]
+run = ["results", "jobs/no-skills", "--analyze", "--model", "mimo/mimo-v2.6-flash"]
+exit = 0
+timeout = 300
+files = ["jobs/no-skills/analysis.json"]
+
+[[step]]
+name = "E66 Codex on MiMo (headless; MiMo refuses Codex's web_search tool, so it is off), with an empty HOME: no Codex login is used"
+sh = "mkdir -p home"
+
+[[step]]
+run = ["run", "tasks/hello", "-a", "codex", "--harness", "headless", "--ak", "web_search=disabled", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "codex-a"]
+env = { HOME = "{work}/home" }
+exit = [0, 1]
+timeout = 900
+files = ["jobs/codex-a/hello__*/agent/sessions/.codex/sessions/*/*/*/rollout-*.jsonl"]
+trials = [{ job = "codex-a", task = "hello", status = "scored" }]
+
+[[step]]
+name = "E66b --load-trajectory starts a new trial from that rollout; the new trial saves the same session, extended"
+sh = "r=$(find jobs/codex-a -name 'rollout-*.jsonl' | head -1) && cp \"$r\" . && n=$(basename \"$r\") && HOME={work}/home {bench} run tasks/hello -a codex --harness headless --ak web_search=disabled -m mimo/mimo-v2.6-flash -s {backend} --job codex-b --load-trajectory \"$n\" && ls jobs/codex-b/hello__*/agent/sessions/.codex/sessions/*/*/*/\"$n\" && test $(cat jobs/codex-b/hello__*/agent/sessions/.codex/sessions/*/*/*/\"$n\" | wc -l) -gt $(cat \"$n\" | wc -l)"
+timeout = 900
+trials = [{ job = "codex-b", task = "hello", status = "scored" }]
+
+[[step]]
+name = "E69 computer-1 (screenshots and xdotool on a virtual desktop) on MiMo, which reads images"
+run = ["run", "tasks/desktop-hello", "-a", "computer-1", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "computer-1"]
+exit = [0, 1]
+timeout = 1800
+files = ["jobs/computer-1/desktop-hello__*/agent/screenshots/001.png"]
+trials = [{ job = "computer-1", task = "desktop-hello", status = "scored" }]
+
+[[step]]
+name = "E70 dspy-rlm (DSPy's recursive language model, a Python REPL in the sandbox) on MiMo"
+run = ["run", "tasks/hello", "-a", "dspy-rlm", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "dspy-rlm"]
+exit = [0, 1]
+timeout = 1200
+trials = [{ job = "dspy-rlm", task = "hello", status = "scored" }]
+
+[[step]]
+name = "E71 a provider that rejects every request: Codex over ACP sends a web_search tool MiMo does not take; the trial is the provider's (R214), not a scored 0"
+run = ["run", "tasks/hello", "-a", "codex", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "codex-rejected"]
+env = { HOME = "{work}/home" }
+exit = 1
+timeout = 900
+output_has = ['the model provider rejected every request the agent sent \(1 × HTTP 400\)']
+trials = [{ job = "codex-rejected", task = "hello", status = "errored", code = "R214", owner = "model" }]
+
+[[step]]
+name = "E72 over ACP, Codex takes its settings from CODEX_CONFIG: with web search off, MiMo takes its requests"
+run = ["run", "tasks/hello", "-a", "codex", "-m", "mimo/mimo-v2.6-flash", "--env", "CODEX_CONFIG={\"web_search\":\"disabled\"}", "-s", "{backend}", "--job", "codex-acp-config"]
+env = { HOME = "{work}/home" }
+exit = [0, 1]
+timeout = 900
+trials = [{ job = "codex-acp-config", task = "hello", status = "scored" }]

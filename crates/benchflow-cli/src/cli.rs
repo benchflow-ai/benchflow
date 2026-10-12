@@ -180,7 +180,15 @@ Examples:
 trajectory tail, verifier output, and agent logs (capped, secrets redacted) to
 a model, by default vercel/deepseek/deepseek-v4-flash-0731, and saves what it
 says to analysis.json in the job folder. What it says is its opinion; the
-problem BenchFlow recorded is shown next to it.")]
+problem BenchFlow recorded is shown next to it.
+
+Scores that stand but need a second look are named under the score, and in
+--json: rewards outside their task's range, counted as written (0 to 1 unless
+a task declares [verifier] reward_range; rewards_out_of_range),
+and trials graded although locked_system_dirs failed, so the agent could
+change system folders the verifier runs from (graded_unlocked_system_dirs).
+One more line says when model agents ran on Daytona without the guard on the
+sandbox daemon's ports (their root_service record says why).")]
     Results(ResultsArgs),
 
     /// Open a job in your browser
@@ -613,7 +621,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub print_config: bool,
 
-    /// On resume, also rerun trials that were: errored, unscored, failed (comma-separated)
+    /// On resume, also rerun trials that were: errored (a trial whose unexplained sandbox loss repeated is kept otherwise), unscored, failed (comma-separated)
     #[arg(long, value_name = "KINDS")]
     pub rerun: Option<String>,
 
@@ -983,7 +991,7 @@ pub struct ExportArgs {
     #[arg(long, value_enum, default_value = "all", help_heading = "Jobs")]
     pub filter: FilterArg,
 
-    /// Add an instruction column: each trial's first message
+    /// Add an instruction column: each trial's first user message
     #[arg(long, help_heading = "Jobs")]
     pub instruction: bool,
 

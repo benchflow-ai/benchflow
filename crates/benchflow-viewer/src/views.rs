@@ -18,7 +18,7 @@ use crate::classify::{classify_error, classify_verifier_error};
 use crate::lineage::load_lineage;
 use crate::metadata::normalize_metadata;
 use crate::py;
-use crate::pyjson::{Map, Value, get, object};
+use crate::pyjson::{Int, Map, Value, get, object};
 use crate::stats::{mean_with_t_interval, quantile, wilson};
 use crate::values::{
     error_text, finite_float, load_json, load_object, optional_bool, optional_text,
@@ -181,11 +181,19 @@ pub fn in_progress(run: &Run) -> bool {
     }
 }
 
-/// Per job (by id), how many trials its `lock.json` planned that have no
-/// folder with a result: never started (a drained or stopped run, or a
-/// login that ran out). A job a live run holds is left out: its trials may
-/// still start. Only jobs with a listed trial are counted.
-pub fn never_ran_by_job(runs: &[Run]) -> BTreeMap<String, usize> {
+/// A planned trial that never ran: its agent and model as `lock.json`
+/// names them (`None` when the lock does not say).
+#[derive(Debug, Clone)]
+pub struct Planned {
+    pub agent: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Per job (by id), the trials its `lock.json` planned that have no folder
+/// with a result: never started (a drained or stopped run, or a login that
+/// ran out). A job a live run holds is left out: its trials may still
+/// start. Only jobs with a listed trial are counted.
+pub fn never_ran_by_job(runs: &[Run]) -> BTreeMap<String, Vec<Planned>> {
     let mut jobs: BTreeMap<String, std::path::PathBuf> = BTreeMap::new();
     for run in runs {
         if let Some(dir) = run.dir.parent() {
@@ -204,41 +212,115 @@ pub fn never_ran_by_job(runs: &[Run]) -> BTreeMap<String, usize> {
         let Some(lock) = load_json(&dir.join("lock.json")) else {
             continue;
         };
-        let n = lock
+        let planned: Vec<Planned> = lock
             .get("trials")
             .as_array()
             .map(|trials| {
                 trials
                     .iter()
-                    .filter_map(|t| t.get("trial").as_str())
-                    .filter(|name| !dir.join(name).join("result.json").exists())
-                    .filter(|name| !dir.join(name).is_dir())
-                    .count()
+                    .filter(|t| {
+                        t.get("trial").as_str().is_some_and(|name| {
+                            !dir.join(name).join("result.json").exists() && !dir.join(name).is_dir()
+                        })
+                    })
+                    .map(|t| {
+                        let text = |key: &str| {
+                            t.get("attempt")
+                                .get(key)
+                                .as_str()
+                                .filter(|v| !v.is_empty())
+                                .map(str::to_string)
+                        };
+                        Planned {
+                            agent: text("agent"),
+                            model: text("model"),
+                        }
+                    })
+                    .collect()
             })
-            .unwrap_or(0);
-        if n > 0 {
-            out.insert(job, n);
+            .unwrap_or_default();
+        if !planned.is_empty() {
+            out.insert(job, planned);
         }
     }
     out
 }
 
-/// Add the never-ran counts to a view: each `/compare` column gets
-/// `never_ran` and `partial` (stopped or never-ran trials, so its rate is
-/// not the whole job's), and the view gets `never_ran` by job.
-pub fn mark_never_ran(view: &mut Value, never_ran: &BTreeMap<String, usize>) {
+/// Whether a planned trial belongs to a `/compare` column of its job: the
+/// same agent and model (the column's `arm`); else, when the lock names no
+/// model or another spelling of it, the same agent; a lock that names no
+/// agent, or an agent with no column in its job (none of its trials
+/// started), counts toward every column of its job, so the job's columns
+/// are not shown whole.
+fn planned_in_column(planned: &Planned, arm: &str, arms: &[String]) -> bool {
+    let Some(agent) = &planned.agent else {
+        return true;
+    };
+    let exact = [Some(agent.as_str()), planned.model.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ");
+    let agent_of = |arm: &str| arm.split(" \u{b7} ").next().unwrap_or_default().to_string();
+    if arms.contains(&exact) {
+        arm == exact
+    } else if arms.iter().any(|a| agent_of(a) == *agent) {
+        agent_of(arm) == *agent
+    } else {
+        true
+    }
+}
+
+/// Add the never-ran counts to a view: each `/compare` column and
+/// `/pareto` point gets `never_ran` (the planned trials of its own agent
+/// and model) and `partial` (stopped or never-ran trials, so its rate is
+/// not the whole job's); each `/outcomes` job row gets the job's
+/// `never_ran` and `partial`; and the view gets `never_ran` by job.
+pub fn mark_never_ran(view: &mut Value, never_ran: &BTreeMap<String, Vec<Planned>>) {
     let Value::Object(map) = view else {
         return;
     };
-    if let Some(Value::Array(columns)) = map.get_mut("columns") {
-        for column in columns.iter_mut() {
+    for key in ["columns", "points"] {
+        let Some(Value::Array(columns)) = map.get_mut(key) else {
+            continue;
+        };
+        let arms_of = |job: &str, columns: &[Value]| -> Vec<String> {
+            columns
+                .iter()
+                .filter(|c| c.get("job").as_str() == Some(job))
+                .filter_map(|c| c.get("arm").as_str().map(str::to_string))
+                .collect()
+        };
+        let arms: Vec<Vec<String>> = columns
+            .iter()
+            .map(|c| arms_of(c.get("job").as_str().unwrap_or_default(), columns))
+            .collect();
+        for (column, arms) in columns.iter_mut().zip(arms) {
             let Value::Object(c) = column else { continue };
             let job = get(c, "job").as_str().unwrap_or_default().to_string();
-            let n = never_ran.get(&job).copied().unwrap_or(0);
-            // `counts` carries `stopped` only when some trial was.
-            let stopped = !matches!(get(c, "counts").get("stopped"), Value::Null);
+            let arm = get(c, "arm").as_str().unwrap_or_default().to_string();
+            let n = never_ran.get(&job).map_or(0, |planned| {
+                planned
+                    .iter()
+                    .filter(|p| planned_in_column(p, &arm, &arms))
+                    .count()
+            });
+            // `counts` (a column's) carries `stopped` only when some trial
+            // was; a point counts them in `stopped`.
+            let stopped = !matches!(get(c, "counts").get("stopped"), Value::Null)
+                || !matches!(get(c, "stopped"), Value::Null | Value::Int(Int::Small(0)));
             c.insert("never_ran".into(), n.into());
             c.insert("partial".into(), (n > 0 || stopped).into());
+        }
+    }
+    if let Some(Value::Array(summary)) = map.get_mut("summary") {
+        for row in summary.iter_mut() {
+            let Value::Object(r) = row else { continue };
+            let job = get(r, "job").as_str().unwrap_or_default().to_string();
+            let n = never_ran.get(&job).map_or(0, Vec::len);
+            let stopped = !matches!(get(r, "counts").get("stopped"), Value::Null);
+            r.insert("never_ran".into(), n.into());
+            r.insert("partial".into(), (n > 0 || stopped).into());
         }
     }
     map.insert(
@@ -246,7 +328,7 @@ pub fn mark_never_ran(view: &mut Value, never_ran: &BTreeMap<String, usize>) {
         Value::Object(
             never_ran
                 .iter()
-                .map(|(job, n)| (job.clone(), (*n).into()))
+                .map(|(job, planned)| (job.clone(), planned.len().into()))
                 .collect(),
         ),
     );
@@ -1226,6 +1308,14 @@ pub fn pareto(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuery
             map.insert("tasks".into(), tasks.len().into());
             map.insert("trials".into(), members.len().into());
             map.insert("passed".into(), passed.into());
+            map.insert(
+                "stopped".into(),
+                members
+                    .iter()
+                    .filter(|trial| trial.outcome == Outcome::Stopped)
+                    .count()
+                    .into(),
+            );
             map.insert("pass_rate".into(), point.rate.into());
             map.insert(
                 "pass_interval".into(),
@@ -1262,6 +1352,41 @@ pub fn pareto(trials: &[Trial], root_name: &str, capped: bool, query: &ViewQuery
 
 #[cfg(test)]
 mod tests {
+    /// Round-2 review of rust/e9-decisions (L5): a job drained before one
+    /// of its agents started any trial has no column for that agent; its
+    /// planned trials count toward every column of the job, which is then
+    /// partial, instead of matching none and leaving the job shown whole.
+    #[test]
+    fn an_agent_with_no_trial_marks_every_column_of_its_job() {
+        let arms = vec![
+            "claude \u{b7} opus".to_string(),
+            "codex \u{b7} gpt".to_string(),
+        ];
+        let planned = |agent: &str, model: &str| super::Planned {
+            agent: Some(agent.into()),
+            model: Some(model.into()),
+        };
+        // Its own arm only, when it has one.
+        assert!(super::planned_in_column(
+            &planned("claude", "opus"),
+            &arms[0],
+            &arms
+        ));
+        assert!(!super::planned_in_column(
+            &planned("claude", "opus"),
+            &arms[1],
+            &arms
+        ));
+        // An agent with no column: every column.
+        for arm in &arms {
+            assert!(super::planned_in_column(
+                &planned("gemini", "flash"),
+                arm,
+                &arms
+            ));
+        }
+    }
+
     use super::*;
     use crate::pyjson::{dumps, parse};
 

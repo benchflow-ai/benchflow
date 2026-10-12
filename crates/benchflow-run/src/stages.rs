@@ -133,7 +133,30 @@ impl Trial<'_> {
                 "verifier_result": null,
             }));
         }
+        // Every stage's stop, in order, with its stage: `stops` lists them
+        // and `stop` is the first, so no stage's stop is lost to a later
+        // stage's summary (a fork child's carried rows count too).
+        let stops: Vec<Value> = rows
+            .iter()
+            .filter_map(|r| {
+                let mut stop = r.get("stop")?.clone();
+                if let Some(m) = stop.as_object_mut() {
+                    m.insert("stage".into(), r["step_name"].clone());
+                }
+                Some(stop)
+            })
+            .collect();
+        if let Some(first) = stops.first() {
+            if !self.agent.trajectory_summary.is_object() {
+                self.agent.trajectory_summary = json!({});
+            }
+            if let Some(m) = self.agent.trajectory_summary.as_object_mut() {
+                m.insert("stop".into(), first.clone());
+                m.insert("stops".into(), Value::Array(stops.clone()));
+            }
+        }
         write_lines(&self.spec.dir.join("trajectory"), &events);
+        self.agent.trajectory_summary = staged_summary(&events, &self.agent.trajectory_summary);
         self.agent.prompts = prompts;
         self.stage_worked = worked;
         self.x.step_results = Some(Value::Array(rows));
@@ -245,6 +268,11 @@ impl Trial<'_> {
         archive_attempt(&self.spec.dir, &dir, &st.name, events);
         row["timed_out"] = json!(self.agent.timed_out);
         row["agent_execution_sec"] = json!(agent_secs);
+        // A loop the model kept failing (DECISIONS row 27) is this stage's:
+        // the next stage's summary replaces the agent's, so the row keeps it.
+        if let Some(stop) = self.agent.trajectory_summary.get("stop") {
+            row["stop"] = stop.clone();
+        }
         if let Err(p) = attempted {
             row["error"] = json!(p.to_string());
             return Err(p);
@@ -354,11 +382,10 @@ impl Trial<'_> {
             }
             if local.join("setup.sh").is_file() {
                 let script = format!("{}/setup.sh", workdir.trim_end_matches('/'));
-                let mut exec =
-                    benchflow_sandbox::Exec::new(format!("bash {}", shell::quote(&script)))
-                        .user(self.user.clone())
-                        .cwd(workdir.clone())
-                        .timeout(SETUP_TIMEOUT);
+                let mut exec = benchflow_sandbox::Exec::new(shell::script_file(&script))
+                    .user(self.user.clone())
+                    .cwd(workdir.clone())
+                    .timeout(SETUP_TIMEOUT);
                 exec.env.insert("HOME".into(), self.home.clone());
                 let out = self
                     .sb()
@@ -596,7 +623,7 @@ impl Trial<'_> {
                     .run_script(
                         "oracle",
                         &label,
-                        &format!("bash {}", shell::quote(&script)),
+                        &shell::script_file(&script),
                         env,
                         timeout,
                         &prompt,
@@ -624,7 +651,7 @@ impl Trial<'_> {
                 self.run_script(
                     "control",
                     &label,
-                    "bash /tmp/.benchflow-control.sh",
+                    &shell::script_file("/tmp/.benchflow-control.sh"),
                     stage_env,
                     timeout,
                     &prompt,
@@ -639,7 +666,7 @@ impl Trial<'_> {
                 self.run_script(
                     "script",
                     &format!("script:{}", script.name),
-                    "bash /tmp/.benchflow-script.sh",
+                    &shell::script_file("/tmp/.benchflow-script.sh"),
                     stage_env,
                     timeout,
                     &prompt,
@@ -655,7 +682,7 @@ impl Trial<'_> {
                 self.run_script(
                     "probe",
                     &format!("probe:{}", probe.id),
-                    "bash /tmp/.benchflow-probe.sh",
+                    &shell::script_file("/tmp/.benchflow-probe.sh"),
                     stage_env,
                     t,
                     &prompt,
@@ -693,7 +720,11 @@ impl Trial<'_> {
                 let a = &mut self.agent;
                 a.tool_calls += out.tool_calls;
                 a.usage.add(&out.usage);
+                let partial_before = a.trajectory_summary["partial_trajectory"] == true;
                 a.trajectory_summary = out.trajectory_summary.clone();
+                if partial_before && a.trajectory_summary.is_object() {
+                    a.trajectory_summary["partial_trajectory"] = json!(true);
+                }
                 a.timed_out = out.timed_out;
                 a.env_keys = out.env_keys.clone();
                 a.login = out.login.clone().or(a.login.take());
@@ -701,6 +732,7 @@ impl Trial<'_> {
                 a.resumed = out.resumed;
                 a.resume_note = out.resume_note.clone();
                 a.model = out.model.clone().or(a.model.take());
+                a.agent_version = out.agent_version.clone().or(a.agent_version.take());
                 match problem {
                     Some(p) => Err(p),
                     None => Ok(()),
@@ -927,6 +959,34 @@ fn steering_in(local: &Path, at: &str) -> Vec<(String, Vec<u8>, u32)> {
     out
 }
 
+/// The trial's trajectory summary over every stage's events. Each stage's
+/// agent summarizes only its own stage; the trial's record counts them all,
+/// keeping the last summary's source and whether any stage ended early.
+fn staged_summary(events: &[Value], last: &Value) -> Value {
+    if events.is_empty() || !last.is_object() {
+        return last.clone();
+    }
+    let parsed: Vec<benchflow_agent::trajectory::Event> = events
+        .iter()
+        .filter_map(|e| e.as_object().cloned())
+        .map(|m| crate::trainer::without_stage(benchflow_agent::trajectory::Event::from_json(m)))
+        .collect();
+    let summary = benchflow_agent::trajectory::summarize(
+        &parsed,
+        last["partial_trajectory"] == true,
+        last["trajectory_source"].as_str(),
+    );
+    let mut out = serde_json::to_value(summary).unwrap_or_else(|_| last.clone());
+    // Counts come from every stage's events; what the summary does not
+    // count (each stage's `stop` and `stops`, a cost note) is kept.
+    if let (Some(out), Some(last)) = (out.as_object_mut(), last.as_object()) {
+        for (k, v) in last {
+            out.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    out
+}
+
 fn write_lines(dir: &Path, events: &[Value]) {
     let _ = std::fs::create_dir_all(dir);
     let text: String = events
@@ -959,6 +1019,41 @@ fn copy_dir(from: &Path, to: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_staged_summary_counts_every_stage() {
+        let events = vec![
+            serde_json::json!({"type": "user_message", "text": "a", "stage": "first"}),
+            serde_json::json!({"type": "tool_call", "tool_call_id": "c1", "kind": "execute", "title": "t", "status": "completed", "content": [], "stage": "first"}),
+            serde_json::json!({"type": "user_message", "text": "b", "stage": "second"}),
+            serde_json::json!({"type": "tool_call", "tool_call_id": "c2", "kind": "execute", "title": "t", "status": "completed", "content": [], "stage": "second"}),
+            serde_json::json!({"type": "agent_message", "text": "done", "stage": "second"}),
+        ];
+        // The last stage's own summary: one prompt, one call, one message.
+        let last = serde_json::json!({
+            "steps": 3, "tool_call_steps": 1, "user_message_steps": 1,
+            "agent_message_steps": 1, "agent_thought_steps": 0, "other_steps": 0,
+            "event_type_counts": {"user_message": 1, "tool_call": 1, "agent_message": 1},
+            "tool_call_status_counts": {"completed": 1},
+            "partial_trajectory": true, "trajectory_source": "acp",
+        });
+        let s = super::staged_summary(&events, &last);
+        assert_eq!(s["steps"], 5);
+        assert_eq!(s["tool_call_steps"], 2);
+        assert_eq!(s["user_message_steps"], 2);
+        assert_eq!(s["other_steps"], 0);
+        assert_eq!(
+            s["event_type_counts"],
+            serde_json::json!({"user_message": 2, "tool_call": 2, "agent_message": 1})
+        );
+        assert_eq!(
+            s["tool_call_status_counts"],
+            serde_json::json!({"completed": 2})
+        );
+        assert_eq!(s["partial_trajectory"], true);
+        assert_eq!(s["trajectory_source"], "acp");
+        // No events (a nop run): the summary stands.
+        assert_eq!(super::staged_summary(&[], &last), last);
+    }
 
     /// The test-runner files a stage ships are found by the name they have
     /// in the sandbox: a file mounted under another name counts as that

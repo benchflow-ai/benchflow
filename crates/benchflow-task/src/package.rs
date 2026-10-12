@@ -159,6 +159,11 @@ pub struct VerifierPolicy {
     /// task.md's rubric: when present, the reward is computed from it and the
     /// script's CTRF report, not read from a reward file.
     pub rubric: Option<Rubric>,
+    /// The rewards a reward file may hold, `[lo, hi]`, when the task
+    /// widens [0, 1] (`[verifier] reward_range`, BenchFlow 0.8's: lo <= 0,
+    /// hi >= 1). Left out of records when not declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_range: Option<(f64, f64)>,
 }
 
 /// The reference solution.

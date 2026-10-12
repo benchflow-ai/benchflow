@@ -91,6 +91,11 @@ pub fn to_adp_record(events: &[Value], meta: &AdpMeta<'_>) -> Option<Value> {
 pub fn adp_line(record: &Value, redactor: &Redactor) -> String {
     let mut clean = record.clone();
     redactor.redact_json(&mut clean);
+    super::export_common::cap_long_strings(
+        &mut clean,
+        super::export_common::DERIVED_TEXT_CAP,
+        "trajectory/acp_trajectory.jsonl",
+    );
     let mut line = to_python_json(&clean);
     line.push('\n');
     line

@@ -129,6 +129,7 @@ async fn reviewer(base: &str) -> Reviewer {
             max_attempts: 2,
             backoff_base: Duration::from_millis(5),
             backoff_cap: Duration::from_millis(5),
+            ..ClientOptions::default()
         },
     )
     .await

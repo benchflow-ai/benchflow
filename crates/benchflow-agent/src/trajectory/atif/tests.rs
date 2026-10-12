@@ -202,3 +202,130 @@ fn an_oracle_event_with_extra_keys_is_still_a_step() {
         json!([{"step_id": 1, "source": "agent", "message": "[oracle: oracle/solve.sh]"}])
     );
 }
+
+#[test]
+fn a_call_that_printed_nothing_still_has_its_result() {
+    // Every tool call is paired with a result naming it, even an empty one;
+    // without it a chat-format trainer sees a call with no reply.
+    let mut trajectory = crate::trajectory::Trajectory::new();
+    trajectory.apply_update(
+        &json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "kind": "execute", "title": "touch x", "status": "completed"}),
+        Receipt::at(1),
+    );
+    let doc = to_atif(&trajectory.snapshot(), &meta()).unwrap();
+    let step = &doc["steps"][0];
+    assert_eq!(step["tool_calls"][0]["tool_call_id"], "c1");
+    assert_eq!(
+        step["observation"],
+        json!({"results": [{"source_call_id": "c1"}]})
+    );
+}
+
+/// E1: a prompt BenchFlow recorded as a `user_message` event is one step,
+/// not two (0.8 wrote the trial's prompts and then the recorded event); the
+/// prompts stand in only when nothing recorded them.
+#[test]
+fn a_recorded_prompt_is_one_user_step() {
+    let prompt = "Fix the repository.";
+    let user = Event::UserMessage(Text {
+        text: prompt.into(),
+        parent_tool_call_id: None,
+        receipt: Some(Receipt::at(1_000)),
+    });
+    let answer = Event::AgentMessage(Text {
+        text: "Done.".into(),
+        parent_tool_call_id: None,
+        receipt: Some(Receipt::at(2_000)),
+    });
+    let with_prompts = AtifMeta {
+        prompts: vec![prompt.into()],
+        ..meta()
+    };
+    let doc = to_atif(&[user, answer.clone()], &with_prompts).unwrap();
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(steps[0]["source"], "user");
+    assert_eq!(steps[0]["message"], prompt);
+    assert!(steps[0]["timestamp"].is_string());
+    assert_eq!(doc["final_metrics"]["total_steps"], 2);
+    // Without a recorded prompt, the prompts are the user steps.
+    let doc = to_atif(&[answer], &with_prompts).unwrap();
+    assert_eq!(
+        doc["steps"][0],
+        json!({"step_id": 1, "source": "user", "message": prompt})
+    );
+    assert_eq!(doc["steps"][1]["source"], "agent");
+}
+
+/// E1: OpenCode's ACP content for a read is the file's text without the line
+/// numbers and the "(Showing lines …)" note the model was given; its raw
+/// output's `output` is what the model saw. The observation is that text, so
+/// a cut read keeps its marker.
+#[test]
+fn an_observation_is_what_the_model_was_given() {
+    let line = r#"{"type": "tool_call", "tool_call_id": "c1", "kind": "read", "title": "app.py", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "x = 1\n"}}], "raw_input": {"filePath": "/app/app.py", "limit": 1}, "raw_output": {"output": "<path>/app/app.py</path>\n<content>\n1: x = 1\n\n(Showing lines 1-1 of 9. Use offset=2 to continue.)\n</content>", "metadata": {"truncated": true}}}"#;
+    let events = crate::trajectory::parse_jsonl(line).unwrap();
+    let doc = to_atif(&events, &meta()).unwrap();
+    let content = doc["steps"][0]["observation"]["results"][0]["content"]
+        .as_str()
+        .unwrap();
+    assert!(content.contains("1: x = 1"), "{content}");
+    assert!(content.contains("(Showing lines 1-1 of 9."), "{content}");
+    // The agent cut it, and the result says so.
+    assert_eq!(
+        doc["steps"][0]["observation"]["results"][0]["extra"],
+        json!({"truncated": true})
+    );
+    // Without a raw `output`, the content's text is the observation.
+    let line = r#"{"type": "tool_call", "tool_call_id": "c2", "kind": "execute", "title": "ls", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "a\n"}}], "raw_output": {"exit_code": 0}}"#;
+    let doc = to_atif(&crate::trajectory::parse_jsonl(line).unwrap(), &meta()).unwrap();
+    assert_eq!(
+        doc["steps"][0]["observation"]["results"][0]["content"],
+        "a\n"
+    );
+}
+
+/// E1: a command's exit code is in the observation result's `extra`
+/// (OpenCode's `metadata.exit`, Codex's `exit_code`); ATIF had none.
+#[test]
+fn an_observation_carries_the_commands_exit_code() {
+    let opencode = r#"{"type": "tool_call", "tool_call_id": "c1", "kind": "execute", "title": "false", "status": "completed", "content": [], "raw_input": {"command": "false"}, "raw_output": {"output": "", "metadata": {"output": "", "exit": 1, "truncated": false}}}"#;
+    let codex = r#"{"type": "tool_call", "tool_call_id": "c2", "kind": "execute", "title": "true", "status": "completed", "content": [], "raw_output": {"formatted_output": "ok\n", "exit_code": 0}}"#;
+    let claude = r#"{"type": "tool_call", "tool_call_id": "c3", "kind": "execute", "title": "ls", "status": "completed", "content": [], "raw_output": "a\n"}"#;
+    let events = crate::trajectory::parse_jsonl(&[opencode, codex, claude].join("\n")).unwrap();
+    let doc = to_atif(&events, &meta()).unwrap();
+    let result = |i: usize| doc["steps"][i]["observation"]["results"][0].clone();
+    assert_eq!(result(0)["extra"], json!({"exit_code": 1}));
+    assert_eq!(result(1)["extra"], json!({"exit_code": 0}));
+    assert_eq!(result(1)["content"], "ok\n");
+    assert!(result(2).get("extra").is_none());
+}
+
+/// Review E1-B 3: a notice recorded while a native turn is open (after its
+/// model call, before its tool calls) no longer splits the turn into two
+/// agent steps; it follows the turn's step.
+#[test]
+fn a_notice_inside_a_native_turn_does_not_split_it() {
+    let lines = [
+        r#"{"type": "user_message", "text": "Solve it."}"#,
+        r#"{"type": "model_call", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "cached_tokens": 0}, "calls": 1, "finish_reason": "tool_calls"}"#,
+        r#"{"type": "agent_message", "text": "Plan: ls"}"#,
+        r#"{"type": "notice", "severity": "warning", "title": "budget low"}"#,
+        r#"{"type": "tool_call", "tool_call_id": "c1", "kind": "execute", "title": "ls", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "a"}}]}"#,
+        r#"{"type": "model_call", "usage": {"prompt_tokens": 20, "completion_tokens": 5, "cached_tokens": 0}, "calls": 1, "finish_reason": "stop"}"#,
+        r#"{"type": "agent_message", "text": "Done."}"#,
+    ];
+    let events = crate::trajectory::parse_jsonl(&lines.join("\n")).unwrap();
+    let doc = to_atif(&events, &meta()).unwrap();
+    let steps = doc["steps"].as_array().unwrap();
+    let sources: Vec<&str> = steps
+        .iter()
+        .map(|s| s["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["user", "agent", "system", "agent"], "{doc}");
+    assert_eq!(steps[1]["message"], "Plan: ls");
+    assert_eq!(steps[1]["tool_calls"][0]["tool_call_id"], "c1");
+    assert_eq!(steps[1]["metrics"]["prompt_tokens"], 10);
+    assert_eq!(steps[2]["message"], "budget low");
+    assert_eq!(steps[3]["llm_call_count"], 1);
+}

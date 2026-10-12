@@ -34,12 +34,17 @@ import urllib.parse
 import urllib.request
 import uuid
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import trial_audit  # noqa: E402  (beside this file)
 REPO = HERE.parent
 FIXTURES = REPO / "crates/benchflow-run/tests/fixtures/tasks"
 E2E_TASKS = HERE / "tasks"
+# Tasks named `examples/<name>` come from the repository's examples folder.
+EXAMPLES = REPO / "examples"
 TIERS = {"smoke": 0, "full": 1}
 # Where bench's `vercel` provider reads its key, besides its key file.
 GATEWAY_KEYS = ("AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN")
@@ -51,9 +56,17 @@ class Failed(Exception):
 
 # Every key a scenario, step, and trial check may use: a typo such as
 # `stdout_have` would otherwise turn a check off without a word.
-SCENARIO_KEYS = {"tier", "needs", "backends", "tasks", "limit", "limit_matches", "sandboxes", "host_cache", "env", "step"}
+SCENARIO_KEYS = {"tier", "needs", "backends", "tasks", "limit", "limit_matches", "sandboxes", "host_cache", "env", "step",
+                 "audit"}
 STEP_KEYS = {"name", "run", "sh", "exit", "stdout_has", "stderr_has", "output_has", "output_lacks", "stdout_json",
              "files", "absent", "json", "file_has", "trials", "env", "cwd", "stdin", "timeout", "only_backends"}
+# The shape of each step key that is not a string; `file_has` is a table of
+# file to patterns, `json` and `trials` are lists of tables.
+STEP_SHAPES = {"run": list, "exit": (int, list), "stdout_has": list, "stderr_has": list, "output_has": list,
+               "output_lacks": list, "stdout_json": dict, "files": list, "absent": list, "json": list,
+               "file_has": dict, "trials": list, "env": dict, "timeout": (int, float), "only_backends": list}
+STEP_SHAPE_NAMES = {list: "list", dict: "table", (int, list): "number or a list of numbers",
+                    (int, float): "number"}
 TRIAL_KEYS = {"job", "task", "agent", "count", "status", "reward", "passed", "code", "owner", "result", "files",
               "absent", "file_has"}
 # Inherited variables that would change what bench does under test: the
@@ -116,6 +129,135 @@ def load_json_lines(text):
                 except json.JSONDecodeError:
                     pass
         return out
+
+
+ATIF_SCHEMA = HERE / "atif-v1.8.schema.json"
+ATIF_VERSION = "ATIF-v1.8"
+_JSON_TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
+
+
+def schema_errors(doc, schema, root, path="$"):
+    """The ways `doc` breaks `schema`: the JSON Schema keywords the ATIF schema
+    uses (type, enum, const, pattern, properties, required,
+    additionalProperties, items, minItems, minimum, anyOf, $ref)."""
+    if "$ref" in schema:
+        node = root
+        for part in schema["$ref"].removeprefix("#/").split("/"):
+            node = node[part]
+        return schema_errors(doc, node, root, path)
+    if "anyOf" in schema:
+        options = [schema_errors(doc, s, root, path) for s in schema["anyOf"]]
+        if all(options):
+            return min(options, key=len)
+        return []
+    errors = []
+    t = schema.get("type")
+    if t is not None:
+        if t == "integer":
+            ok = isinstance(doc, int) and not isinstance(doc, bool)
+        elif t == "number":
+            ok = isinstance(doc, (int, float)) and not isinstance(doc, bool)
+        else:
+            ok = isinstance(doc, _JSON_TYPES[t])
+        if not ok:
+            return [f"{path}: expected {t}, got {type(doc).__name__}"]
+    if "const" in schema and doc != schema["const"]:
+        errors.append(f"{path}: expected {schema['const']!r}, got {doc!r}")
+    if "enum" in schema and doc not in schema["enum"]:
+        errors.append(f"{path}: {doc!r} is not one of {schema['enum']}")
+    if "pattern" in schema and isinstance(doc, str) and not re.search(schema["pattern"], doc):
+        errors.append(f"{path}: {doc!r} does not match {schema['pattern']}")
+    if "minimum" in schema and isinstance(doc, (int, float)) and doc < schema["minimum"]:
+        errors.append(f"{path}: {doc} is below {schema['minimum']}")
+    if isinstance(doc, dict):
+        props = schema.get("properties", {})
+        for key in schema.get("required", []):
+            if key not in doc:
+                errors.append(f"{path}: missing {key}")
+        for key, value in doc.items():
+            if key in props:
+                errors += schema_errors(value, props[key], root, f"{path}.{key}")
+            elif schema.get("additionalProperties") is False:
+                errors.append(f"{path}: unexpected field {key}")
+    if isinstance(doc, list):
+        if "minItems" in schema and len(doc) < schema["minItems"]:
+            errors.append(f"{path}: fewer than {schema['minItems']} items")
+        if "items" in schema:
+            for i, item in enumerate(doc):
+                errors += schema_errors(item, schema["items"], root, f"{path}[{i}]")
+    return errors
+
+
+def atif_rule_errors(doc, path="$"):
+    """The ATIF rules a JSON Schema cannot state."""
+    errors = []
+    steps = doc.get("steps") or []
+    for i, step in enumerate(steps):
+        where = f"{path}.steps[{i}]"
+        if step.get("step_id") != i + 1:
+            errors.append(f"{where}: step_id {step.get('step_id')}, expected {i + 1}")
+        if step.get("source") != "agent":
+            for field in ("model_name", "reasoning_effort", "reasoning_content", "tool_calls", "metrics"):
+                if step.get(field) is not None:
+                    errors.append(f"{where}: {field} on a {step.get('source')} step")
+        elif step.get("llm_call_count") == 0:
+            for field in ("metrics", "reasoning_content"):
+                if step.get(field) is not None:
+                    errors.append(f"{where}: {field} with llm_call_count 0")
+        ids = {c.get("tool_call_id") for c in step.get("tool_calls") or []}
+        for r in (step.get("observation") or {}).get("results") or []:
+            if r.get("source_call_id") is not None and r["source_call_id"] not in ids:
+                errors.append(f"{where}: observation refers to {r['source_call_id']}, not a tool call of this step")
+        m = step.get("metrics") or {}
+        if m.get("cached_tokens") is not None and m.get("prompt_tokens") is not None and m["cached_tokens"] > m["prompt_tokens"]:
+            errors.append(f"{where}: cached_tokens {m['cached_tokens']} > prompt_tokens {m['prompt_tokens']}")
+        if step.get("timestamp") is not None:
+            try:
+                datetime.fromisoformat(step["timestamp"].replace("Z", "+00:00"))
+            except ValueError:
+                errors.append(f"{where}: timestamp {step['timestamp']!r} is not ISO 8601")
+    fm = doc.get("final_metrics") or {}
+    if fm.get("total_steps") is not None and fm["total_steps"] != len(steps) and not doc.get("notes"):
+        errors.append(f"{path}.final_metrics.total_steps {fm['total_steps']}, but {len(steps)} steps")
+    cached, prompt = fm.get("total_cached_tokens"), fm.get("total_prompt_tokens")
+    if cached is not None and prompt is not None and cached > prompt:
+        errors.append(f"{path}.final_metrics: total_cached_tokens {cached} > total_prompt_tokens {prompt}"
+                      " (cached tokens are part of the prompt tokens)")
+    seen = set()
+    for i, sub in enumerate(doc.get("subagent_trajectories") or []):
+        tid = sub.get("trajectory_id")
+        if tid is None or tid in seen:
+            errors.append(f"{path}.subagent_trajectories[{i}]: trajectory_id missing or repeated")
+        seen.add(tid)
+        errors += atif_rule_errors(sub, f"{path}.subagent_trajectories[{i}]")
+    return errors
+
+
+def check_atif_documents(work):
+    """Every trainer/atif.json this engine wrote under `work` must be an ATIF
+    v1.8 document: valid against e2e/atif-v1.8.schema.json and its rules.
+    Documents another engine wrote (copied job folders) are left alone."""
+    schema = json.loads(ATIF_SCHEMA.read_text())
+    checked = 0
+    for f in sorted(work.rglob("trainer/atif.json")):
+        trial = f.parent.parent
+        try:
+            config = json.loads((trial / "config.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            config = {}
+        engine = config.get("engine") if isinstance(config, dict) else None
+        if not (isinstance(engine, dict) and engine.get("name") == "benchflow-rs"):
+            continue
+        rel = f.relative_to(work)
+        try:
+            doc = json.loads(f.read_text())
+        except json.JSONDecodeError as e:
+            raise Failed(f"{rel}: not JSON: {e}")
+        errors = schema_errors(doc, schema, schema) + atif_rule_errors(doc)
+        if errors:
+            raise Failed(f"{rel}: not a valid {ATIF_VERSION} document:\n  " + "\n  ".join(errors[:12]))
+        checked += 1
+    return checked
 
 
 def check_value(label, got, want):
@@ -364,24 +506,92 @@ def pid_alive(pid):
     return True
 
 
-def sweep_dead(backend, prefix):
-    """Remove this machine's sandboxes and networks of earlier suite runs
-    (owner starting with `prefix`) whose bench process is gone: what a run
-    stopped by force could not clean. A live run's are kept."""
-    found = []
-    if backend == "docker":
-        for kind in ("container", "network"):
-            for ident, owner, host, pid in docker_labeled(kind, [f"ai.benchflow.host={HOST}"]):
-                if owner.startswith(prefix) and host == HOST and not pid_alive(pid):
-                    found.append((kind, ident))
-    elif backend == "daytona":
-        for i in daytona_labeled({"ai.benchflow.host": HOST}):
-            labels = i.get("labels") or {}
-            if (labels.get("ai.benchflow.owner", "").startswith(prefix)
-                    and not pid_alive(labels.get("ai.benchflow.pid", ""))):
-                found.append(("sandbox", i["id"]))
+def ledger_dir():
+    """Where this machine's suite runs note their owners: the runs whose
+    leftovers a later run may sweep. Per user (under the caller's cache
+    folder), so one user's run never sweeps another's."""
+    base = os.environ.get("BENCHFLOW_CACHE_DIR") or str(Path.home() / ".cache" / "benchflow")
+    return Path(base) / "e2e-runs"
+
+
+def ledger_add(folder, owner, backend):
+    """Note this run's base owner, backend, host and pid before it starts a
+    sandbox."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{owner}.json").write_text(json.dumps({"owner": owner, "backend": backend, "host": HOST,
+                                                       "pid": os.getpid(), "started": time.time()}))
+
+
+def ledger_drop(folder, owner):
+    try:
+        (folder / f"{owner}.json").unlink()
+    except OSError:
+        pass
+
+
+def ledger_read(folder):
+    entries = []
+    for f in sorted(folder.glob("e2e-*.json")) if folder.is_dir() else []:
+        try:
+            e = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(e, dict) and isinstance(e.get("owner"), str) and f.name == f"{e['owner']}.json":
+            entries.append(e)
+    return entries
+
+
+def sweep_targets(rows, entries, host, alive, own):
+    """What a run's startup sweep removes, from `rows` (kind, id, owner label,
+    host label, bench pid): only what carries a step owner (`<base>-<n>`, in
+    full) of a run in this machine's ledger (`entries`) whose runner is gone
+    here, with this machine's host label and a bench process that is gone
+    too. Never this run's own (`own`). Returns (targets, bases swept)."""
+    dead = {e["owner"] for e in entries
+            if e.get("host") == host and e["owner"] != own and not alive(e.get("pid", ""))}
+    targets = []
+    for kind, ident, owner, row_host, pid in rows:
+        base, _, n = owner.rpartition("-")
+        if base in dead and n.isdigit() and row_host == host and not alive(pid):
+            targets.append((kind, ident))
+    return targets, dead
+
+
+def sweep_dead(backend, folder, own):
+    """Remove the sandboxes and networks that earlier runs of this suite on
+    this machine left when stopped by force (their runner is gone), and
+    forget each such run once nothing of it is left. A live run's, another
+    user's, and another machine's are never touched; nor is anything whose
+    owner merely starts like one of ours."""
+    # Only this backend's runs: another backend's leftovers are not listed
+    # here, so its entries must be neither swept nor forgotten.
+    entries = [e for e in ledger_read(folder) if e.get("backend", backend) == backend]
+    if not entries:
+        return 0
+
+    def rows():
+        out = []
+        if backend == "docker":
+            for kind in ("container", "network"):
+                for ident, owner, host, pid in docker_labeled(kind, [f"ai.benchflow.host={HOST}"]):
+                    out.append((kind, ident, owner, host, pid))
+        elif backend == "daytona":
+            for i in daytona_labeled({"ai.benchflow.host": HOST}):
+                labels = i.get("labels") or {}
+                out.append(("sandbox", i["id"], labels.get("ai.benchflow.owner", ""),
+                            labels.get("ai.benchflow.host", ""), labels.get("ai.benchflow.pid", "")))
+        return out
+
+    found, dead = sweep_targets(rows(), entries, HOST, pid_alive, own)
     for what in found:
         remove_one(backend, what)
+    # Forget a dead run once nothing of it is listed (Daytona deletes a few
+    # seconds later; what is still listed is retried by the next run).
+    # Listed again whether or not anything was removed: a dead run whose
+    # bench still runs (its rows were skipped) is kept for a later sweep.
+    remaining = {owner.rpartition("-")[0] for _, _, owner, _, _ in rows()}
+    for base in dead - remaining:
+        ledger_drop(folder, base)
     return len(found)
 
 
@@ -413,6 +623,10 @@ class Scenario:
             bad |= {f"step {i}: {k}" for k in set(step) - STEP_KEYS}
             for t in step.get("trials", []):
                 bad |= {f"step {i} trials: {k}" for k in set(t) - TRIAL_KEYS}
+            # A key of the wrong shape would crash the runner mid-scenario.
+            for k, shape in STEP_SHAPES.items():
+                if k in step and not isinstance(step[k], shape):
+                    raise SystemExit(f"{path.name}: step {i}: {k} must be a {STEP_SHAPE_NAMES[shape]}")
         if bad:
             raise SystemExit(f"{path.name}: unknown keys {sorted(bad)}")
 
@@ -429,9 +643,12 @@ class Runner:
         tasks = work / "tasks"
         tasks.mkdir()
         for src in sc.doc.get("tasks", []):
-            base = E2E_TASKS / src if (E2E_TASKS / src).exists() else FIXTURES / src
+            if src.startswith("examples/"):
+                base = EXAMPLES / "tasks" / src.removeprefix("examples/")
+            else:
+                base = E2E_TASKS / src if (E2E_TASKS / src).exists() else FIXTURES / src
             if not base.exists():
-                raise Failed(f"no task `{src}` in e2e/tasks or the fixtures")
+                raise Failed(f"no task `{src}` in e2e/tasks, examples/tasks, or the fixtures")
             shutil.copytree(base, tasks / Path(src).name, symlinks=True)
         ctx = {
             "bench": self.bench,
@@ -443,6 +660,7 @@ class Runner:
             "e2e": str(HERE),
             "repo": str(REPO),
             "fixtures": str(FIXTURES),
+            "examples": str(EXAMPLES),
             "judge": self.args.judge_model,
         }
         env = {k: v for k, v in os.environ.items()
@@ -458,6 +676,14 @@ class Runner:
         try:
             for i, step in enumerate(sc.doc.get("step", []), 1):
                 self.run_step(sc, i, subst(step, ctx), work, env, transcript)
+            # Every trial folder the scenario left must be sound
+            # (e2e/trial_audit.py), and every ATIF document this engine wrote
+            # valid ATIF v1.8, unless the scenario corrupts its jobs on purpose.
+            if sc.doc.get("audit", True):
+                problems = trial_audit.audit_job_tree(work)
+                if problems:
+                    raise Failed("trial audit:\n  " + "\n  ".join(problems[:20]))
+                check_atif_documents(work)
         except Failed as e:
             return False, str(e), work, transcript
         return True, "", work, transcript
@@ -619,7 +845,9 @@ def select(args, all_scenarios):
                 elif need == "gateway" and not (any(os.environ.get(v) for v in GATEWAY_KEYS) or args.gateway
                                                  or Path.home().joinpath(".config/benchflow/vercel-ai-gateway.env").exists()):
                     why = "needs the Vercel AI Gateway key"
-                elif need not in ("sandbox", "gateway") and need not in args.allow:
+                elif need == "mimo" and not os.environ.get("MIMO_API_KEY"):
+                    why = "needs MIMO_API_KEY (MiMo's token plan)"
+                elif need not in ("sandbox", "gateway", "mimo") and need not in args.allow:
                     why = f"needs {need} (pass --allow {need})"
         (skipped if why else chosen).append((sc, why))
     return chosen, skipped
@@ -678,14 +906,22 @@ def main():
     if not chosen:
         print("  no scenario selected")
         sys.exit(1)
-    if args.backend != "none" and any(sc.sandboxes for sc, _ in chosen):
+    ledger = ledger_dir()
+    uses_sandboxes = args.backend != "none" and any(sc.sandboxes for sc, _ in chosen)
+    if uses_sandboxes:
         try:
-            swept = sweep_dead(args.backend, f"e2e-{user}-")
+            swept = sweep_dead(args.backend, ledger, args.owner)
         except (Failed, OSError, ValueError) as e:
             swept = 0
             print(f"  could not sweep earlier runs' leftovers: {e}")
         if swept:
             print(f"  removed {swept} sandbox(es) or network(s) earlier runs of this suite left on this machine")
+        # Noted before any sandbox starts, so a run stopped by force is swept
+        # by the next one; dropped when this run ends by itself.
+        try:
+            ledger_add(ledger, args.owner, args.backend)
+        except OSError as e:
+            print(f"  could not note this run in {ledger}: {e} (a run stopped by force will not be swept)")
 
     results = []
 
@@ -740,6 +976,8 @@ def main():
                 left = f"could not list: {e}"
             if left:
                 print(f"  after the interrupt, {owner}: {left} (removed)", flush=True)
+        if uses_sandboxes:
+            ledger_drop(ledger, args.owner)
         sys.exit(130)
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs)
@@ -758,6 +996,8 @@ def main():
         if why != "not selected":
             results.append({"scenario": sc.name, "status": "skipped", "why": why})
 
+    if uses_sandboxes:
+        ledger_drop(ledger, args.owner)
     counts = {}
     for r in results:
         counts[r["status"]] = counts.get(r["status"], 0) + 1

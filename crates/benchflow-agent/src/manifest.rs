@@ -79,6 +79,7 @@
 //! | `installer` | string | POSIX `sh` source for a vendor installer that writes to `$HOME` (`curl -fsSL https://fx.sh/setup.sh \| bash`). It runs as root with `HOME=/opt/benchflow/agents/<name>`; requires `links`. |
 //! | `links` | strings | With `installer`: the executables it leaves, relative to that home (`.local/bin/fx`). Each is linked into `/opt/benchflow/bin`, which is on the agent user's `PATH`. |
 //! | `timeout` | integer | Seconds the install may take. Default 900. |
+//! | `tools` | strings | Programs the agent needs on the image when it runs, by package name, which is usually the command's (`["bash"]` for OpenHands, whose terminal tool runs bash; `["procps"]` for `ps`). An entry counts as present when a command or an installed package (`dpkg`, `apk`, `rpm`) has its name; any that is missing is installed first with the image's `apt-get`, `dnf` or `apk`, and the install fails, naming it, when it is still missing afterwards or the image has no package manager. Any install method. |
 //!
 //! `verify` applies to `npm`, `uv-tool`, `uv-venv` and `installer` installs;
 //! `bin` to `npm` and `uv-tool`.
@@ -361,6 +362,9 @@ pub struct Install {
     pub method: InstallMethod,
     /// How long the install may take.
     pub timeout: Duration,
+    /// Programs the agent needs on the image when it runs (`bash`),
+    /// installed with the image's package manager when missing.
+    pub tools: Vec<String>,
 }
 
 /// The ways to install an agent.
@@ -798,6 +802,18 @@ impl AgentManifest {
     /// as a cached image layer. Idempotent and non-interactive; it needs no
     /// secrets.
     pub fn install_script(&self) -> String {
+        let script = self.method_script();
+        if self.install.tools.is_empty() {
+            return script;
+        }
+        format!(
+            "bf_tools={}\n{}{script}",
+            crate::shell::quote(&self.install.tools.join(" ")),
+            distribution::ensure_tools(&self.name)
+        )
+    }
+
+    fn method_script(&self) -> String {
         match &self.install.method {
             InstallMethod::Npm(npm) => install::npm_install_script(npm),
             InstallMethod::Script(script) => script.clone(),
@@ -808,6 +824,16 @@ impl AgentManifest {
             InstallMethod::Uvx(u) => distribution::uvx_script(u),
             InstallMethod::UvVenv(venv) => install::uv_venv_install_script(&self.name, venv),
         }
+    }
+
+    /// [`install_script`](Self::install_script) as the image layer runs it:
+    /// with a `TMPDIR` of its own, removed afterwards. The install runs as
+    /// root, and what it left in `/tmp` stayed root's in the image: npm's
+    /// `/tmp/node-compile-cache` and OpenCode's `/tmp/opencode`, which the
+    /// agent user then could not write (OpenCode's file tool failed with
+    /// "PermissionDenied: FileSystem.writeFile (/tmp/opencode/...)").
+    pub fn install_layer(&self) -> String {
+        install::with_private_tmp(&self.install_script())
     }
 
     /// True when the manifest declares `harness`.
@@ -949,6 +975,8 @@ struct RawInstall {
     #[serde(default)]
     links: Vec<String>,
     timeout: Option<u64>,
+    #[serde(default)]
+    tools: Vec<String>,
     binary: Option<IndexMap<String, distribution::RawBinaryTarget>>,
     npx: Option<String>,
     uvx: Option<String>,
@@ -1203,8 +1231,25 @@ impl RawInstall {
             Some(secs) => Duration::from_secs(secs),
             None => DEFAULT_INSTALL_TIMEOUT,
         };
+        let tools = std::mem::take(&mut self.tools);
+        for (i, tool) in tools.iter().enumerate() {
+            let ok = tool.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && tool
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+._-".contains(c));
+            if !ok {
+                return Err(check.fail(
+                    &format!("install.tools[{i}]"),
+                    format!("`{tool}` is not a program and package name such as bash"),
+                ));
+            }
+        }
         if let Some(method) = self.distribution(check, name)? {
-            return Ok(Install { method, timeout });
+            return Ok(Install {
+                method,
+                timeout,
+                tools,
+            });
         }
         let methods: Vec<&str> = [
             ("npm", self.npm.is_some()),
@@ -1321,7 +1366,11 @@ impl RawInstall {
                 python: self.python,
                 verify: self.verify,
             });
-            return Ok(Install { method, timeout });
+            return Ok(Install {
+                method,
+                timeout,
+                tools,
+            });
         }
         let method = match (self.npm, self.script, self.uv_tool, self.installer) {
             (None, Some(script), None, None) => {
@@ -1403,7 +1452,11 @@ impl RawInstall {
             }
             _ => unreachable!("exactly one install method was checked above"),
         };
-        Ok(Install { method, timeout })
+        Ok(Install {
+            method,
+            timeout,
+            tools,
+        })
     }
 }
 

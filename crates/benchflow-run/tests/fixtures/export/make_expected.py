@@ -45,6 +45,25 @@ def atif_path(trial: Path) -> Path | None:
     return None
 
 
+def drop_doubled_prompt(doc: dict) -> dict:
+    """Drop the first of two leading user steps with the same message, as
+    `bench export` does: documents from 0.8 and earlier builds wrote each
+    prompt twice, and the export records it once (decision 23)."""
+    steps = doc.get("steps") or []
+    if (
+        len(steps) >= 2
+        and steps[0].get("source") == steps[1].get("source") == "user"
+        and steps[0].get("message") == steps[1].get("message")
+    ):
+        steps = steps[1:]
+        for i, step in enumerate(steps, 1):
+            step["step_id"] = i
+        doc["steps"] = steps
+        if "total_steps" in (doc.get("final_metrics") or {}):
+            doc["final_metrics"]["total_steps"] = len(steps)
+    return doc
+
+
 def run_meta(result: dict, job: str) -> dict:
     model = result.get("model") or None
     reward = (result.get("rewards") or {}).get("reward")
@@ -79,10 +98,21 @@ def main() -> None:
                 continue
             result = json.loads((trial / "result.json").read_text())
             meta = run_meta(result, job)
+            original = json.loads(path.read_text())
+            traj = drop_doubled_prompt(json.loads(path.read_text()))
+            read_from = path
+            if traj != original:
+                # Harbor reads a path; give it the deduplicated document
+                # beside the original, so relative references still resolve.
+                read_from = path.with_name(f".{path.stem}.deduped.json")
+                read_from.write_text(json.dumps(traj))
             try:
-                rows = extract_conversations_from_trajectory(path, meta)
+                rows = extract_conversations_from_trajectory(read_from, meta)
             except MultimodalExportError:
                 rows = []
+            finally:
+                if read_from != path:
+                    read_from.unlink()
             if episodes == "last":
                 rows = rows[-1:]
             for row in rows:
@@ -91,7 +121,6 @@ def main() -> None:
                 row["result"] = meta["result"]
                 row["conversations_sharegpt"] = openai_to_sharegpt(row["conversations"])
                 hf_lines.append(json.dumps(row, ensure_ascii=False))
-            traj = json.loads(path.read_text())
             rs = convert_trajectory(traj, trace_seed=trial.name, service_name="benchflow")
             for kv in rs.resource.attributes:
                 if kv.key == "telemetry.sdk.language":

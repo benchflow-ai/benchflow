@@ -33,6 +33,14 @@ use crate::{EXEC_ID_ENV, SandboxError};
 /// Root-only folder for env files and transfer archives.
 pub(crate) const STAGING: &str = "/run/benchflow";
 
+/// The start of the id of every command session BenchFlow opens.
+const SESSION_PREFIX: &str = "bf-";
+
+/// Whether BenchFlow opened the session `id`.
+fn is_ours(id: &str) -> bool {
+    id.starts_with(SESSION_PREFIX)
+}
+
 /// One sandbox's toolbox.
 #[derive(Clone)]
 pub(crate) struct Toolbox {
@@ -65,7 +73,10 @@ impl Toolbox {
 
     /// Make a fresh session.
     pub(crate) async fn create_session(&self) -> Result<String, SandboxError> {
-        let id = format!("bf-{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
+        let id = format!(
+            "{SESSION_PREFIX}{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..16]
+        );
         let body = serde_json::json!({ "sessionId": id });
         self.api
             .send("opening a command session", Retry::Unsent, |http| {
@@ -100,15 +111,37 @@ impl Toolbox {
         }
     }
 
-    /// Delete every command session the daemon keeps, and wait until none
-    /// is left: each keeps its commands' output (the agent's included) on
-    /// the sandbox's disk, which a snapshot would copy. `Err` when some
-    /// are still there after `within`.
+    /// Delete every command session BenchFlow opened (`bf-…`), and wait
+    /// until none is left: each keeps its commands' output (the agent's
+    /// included) on the sandbox's disk, which a snapshot would copy. `Err`
+    /// when some are still there after `within`.
+    ///
+    /// Sessions BenchFlow did not open are left alone and do not hold the
+    /// snapshot back. The agent user cannot open sessions (the trial's guard
+    /// keeps it off the daemon's port), so such a session is the daemon's
+    /// or was opened by root inside the sandbox (the task's own code), and
+    /// deleting it would kill what it runs. The daemon reserves the session
+    /// id `entrypoint` (creating it is refused) and, as observed on
+    /// 2026-10-11, never lists it; under BenchFlow the image's own
+    /// ENTRYPOINT and CMD do not run, since the sandbox's first process is
+    /// the daemon.
     pub(crate) async fn clear_sessions(&self, within: Duration) -> Result<(), SandboxError> {
         let deadline = std::time::Instant::now() + within;
         loop {
-            let left = self.list_sessions().await?;
+            let listed = self.list_sessions().await?;
+            tracing::debug!(
+                "command sessions in Daytona sandbox {}: {listed:?}",
+                self.sandbox_id
+            );
+            let (left, foreign): (Vec<String>, Vec<String>) =
+                listed.into_iter().partition(|s| is_ours(s));
             if left.is_empty() {
+                if !foreign.is_empty() {
+                    tracing::debug!(
+                        "left alone in Daytona sandbox {} (not BenchFlow's): {foreign:?}",
+                        self.sandbox_id
+                    );
+                }
                 return Ok(());
             }
             if std::time::Instant::now() >= deadline {
@@ -360,8 +393,23 @@ impl Toolbox {
     }
 
     /// The error for a failed toolbox call, naming the sandbox when the
-    /// toolbox says it is not running.
+    /// toolbox says it is not running. A toolbox answer comes through
+    /// Daytona's proxy from the daemon inside the sandbox, which root code
+    /// there can replace, so none of it is the backend's own word: a 429,
+    /// 401 or 403 from it is a transport failure, never the confirmed loss
+    /// the control plane's own answer would be (convergence review E9-D-B 2).
     pub(crate) fn error(&self, err: ApiError) -> SandboxError {
+        match self.error_as_answered(err) {
+            SandboxError::Throttled(m) => SandboxError::Transport(m),
+            SandboxError::Unavailable { message, .. } => SandboxError::Transport(format!(
+                "{message} (the sandbox's toolbox answered; it is inside the sandbox, so this is not \
+                 taken as Daytona's own word)"
+            )),
+            other => other,
+        }
+    }
+
+    fn error_as_answered(&self, err: ApiError) -> SandboxError {
         let message = err.message();
         if message.contains("SANDBOX_NOT_RUNNING")
             || message.contains("Is the Sandbox started")
@@ -583,6 +631,32 @@ pub(crate) fn is_root(user: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Convergence review E9-D-B 2: root code inside a sandbox can replace
+    /// the toolbox daemon and answer 429, 401 or 403, which read as
+    /// Daytona's own word (a confirmed loss, rerun on every resume). A
+    /// toolbox answer is only ever a transport failure.
+    #[test]
+    fn a_toolbox_answer_is_never_the_backends_own_word() {
+        let api = Arc::new(Api::new("https://app.daytona.io/api", Some("k".into()), None).unwrap());
+        let tb = Toolbox::new(api, "https://proxy.app.daytona.io/toolbox", "sb1");
+        for (status, message) in [
+            (429, "slow down"),
+            (401, "Unauthorized"),
+            (403, "forbidden"),
+        ] {
+            let err = tb.error(ApiError::Status {
+                status,
+                message: message.into(),
+                what: "running a command".into(),
+                attempts: 3,
+            });
+            assert!(
+                matches!(&err, SandboxError::Transport(_)),
+                "{status}: {err:?}"
+            );
+        }
+    }
 
     /// A folder that is not there: a sandbox whose image BenchFlow did not
     /// build, with no env recorded.

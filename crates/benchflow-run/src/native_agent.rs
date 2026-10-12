@@ -238,6 +238,8 @@ impl ModelAgent for NativeAgent {
         };
         let mut out = AgentOutput {
             login: Some(endpoint.key_label.clone()),
+            // BenchFlow runs the loop itself, so its version is the agent's.
+            agent_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             usage: Usage {
                 source: "unavailable".into(),
                 ..Usage::default()
@@ -350,17 +352,44 @@ impl ModelAgent for NativeAgent {
             out.usage = engine_usage(&usage);
         }
         let activity = recorder.with(|t| t.activity());
+        // A loop the model kept failing: graded (DECISIONS row 27), and the
+        // trial's summary says why it stopped and whose failure it was.
+        let model_loop = match &stop {
+            Stop::ModelLoop { reason, turns } => Some(serde_json::json!({
+                "reason": reason, "owner": "model", "turns": turns,
+            })),
+            _ => None,
+        };
         match stop {
-            Stop::Finished | Stop::Refused | Stop::Budget(_) => {}
+            Stop::Finished | Stop::Refused | Stop::Budget(_) | Stop::ModelLoop { .. } => {}
             Stop::Timeout(_) => {
                 out.timed_out = true;
                 // As for ACP agents (0.8's 3842ed22): nothing done before the
                 // time ran out is not a 0 but a failed integration.
-                if activity.tool_calls == 0
+                let idle = activity.tool_calls == 0
                     && activity.message_chunks == 0
                     && activity.thought_chunks == 0
-                    && usage.output_tokens == 0
-                {
+                    && usage.output_tokens == 0;
+                // The model never answered: the loop's first call was still
+                // waiting when the time ran out. That is the provider's
+                // (E5: an endpoint that accepted the request and stayed
+                // silent was blamed on the agent).
+                if let Some(waited) = client.waiting().filter(|_| idle && client.calls() == 0) {
+                    out.problem = Some(
+                        Problem::new(
+                            "R214",
+                            Owner::Model,
+                            Phase::Agent,
+                            format!(
+                                "{provider} never answered: {}'s first model call was still waiting after {}s, when the agent's time ran out",
+                                self.name,
+                                waited.as_secs()
+                            ),
+                            "check the provider's status, then rerun the same command to resume the job; agent/model_calls.jsonl in the trial folder has every call that got an answer",
+                        )
+                        .transient(),
+                    );
+                } else if idle {
                     out.problem = Some(Problem::new(
                         "R206",
                         Owner::Agent,
@@ -433,6 +462,9 @@ impl ModelAgent for NativeAgent {
         out.trajectory_summary =
             serde_json::to_value(summarize(events.iter(), partial, Some("native")))
                 .unwrap_or_default();
+        if let (Some(stop), Some(map)) = (model_loop, out.trajectory_summary.as_object_mut()) {
+            map.insert("stop".into(), stop);
+        }
         out
     }
 }
@@ -450,7 +482,11 @@ fn engine_usage(u: &TokenUsage) -> Usage {
         source: "native".into(),
         // The loop reads the cost from the provider's own answers.
         cost_source: u.cost_usd.map(|_| COST_BY_PROVIDER.into()),
-        cost_note: None,
+        // As through the forwarder: say why a run that used tokens has no
+        // cost, rather than leave it blank.
+        cost_note: (u.cost_usd.is_none() && u.input_tokens + u.output_tokens > 0).then(|| {
+            "the provider's answers did not say what they cost, so the cost is unknown".into()
+        }),
     }
 }
 
@@ -524,5 +560,25 @@ mod tests {
             (40, 60, 110)
         );
         assert_eq!(u.cost_usd, Some(0.01));
+        assert_eq!(u.cost_note, None);
+    }
+
+    #[test]
+    fn a_run_with_no_price_says_why() {
+        let mut usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cost_usd: None,
+        };
+        let u = engine_usage(&usage);
+        assert_eq!(u.cost_usd, None);
+        assert!(u.cost_note.unwrap().contains("did not say what they cost"));
+        // No tokens, nothing to explain.
+        usage.input_tokens = 0;
+        usage.output_tokens = 0;
+        assert_eq!(engine_usage(&usage).cost_note, None);
     }
 }

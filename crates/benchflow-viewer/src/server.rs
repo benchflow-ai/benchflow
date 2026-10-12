@@ -409,7 +409,7 @@ fn view_response(
             View::Pareto => views::pareto(&trials, &title, capped, &query),
             View::Branches => views::branches(&trials, &runs, &title, capped, &query),
         };
-        if matches!(view, View::Compare | View::Outcomes) {
+        if matches!(view, View::Compare | View::Outcomes | View::Pareto) {
             views::mark_never_ran(&mut data, &views::never_ran_by_job(&runs));
         }
         if page {

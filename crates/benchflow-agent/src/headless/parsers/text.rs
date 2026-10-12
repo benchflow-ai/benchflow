@@ -27,23 +27,48 @@ use crate::headless::parser::{Failure, Out, Parser, ToolDone, ToolStart, message
 use crate::trajectory::Usage;
 
 /// Every line is the agent's message. A line that reads like a provider
-/// error (a rejected key, a usage limit) is also kept as a notice, so a run
-/// that fails is explained by it even though the line was the message.
+/// error (a rejected key, a usage limit) also starts a notice, so a run
+/// that fails is explained by it even though the line was the message. The
+/// notice runs to the next blank line, as an error does on stderr: Google's
+/// 429 gives its retry delay on a line of its own, which tells a rate limit
+/// from a spent quota.
 #[derive(Default)]
-pub struct PlainText;
+pub struct PlainText {
+    /// The error being read, until a blank line or the end.
+    error: Option<String>,
+}
+
+/// At most this many lines of one error go into its notice.
+const ERROR_LINES: usize = 40;
 
 impl Parser for PlainText {
     fn line(&mut self, line: &str, out: &mut Vec<Out>) -> bool {
         out.push(message(&format!("{line}\n")));
-        explain(line, out);
+        let trimmed = line.trim();
+        if let Some(error) = &mut self.error {
+            if !trimmed.is_empty() && error.lines().count() < ERROR_LINES {
+                error.push('\n');
+                error.push_str(trimmed);
+                return true;
+            }
+            self.flush(out);
+        }
+        if classify(line, chrono::Utc::now()).is_some() {
+            self.error = Some(trimmed.to_string());
+        }
         true
+    }
+
+    fn finish(&mut self, out: &mut Vec<Out>) {
+        self.flush(out);
     }
 }
 
-/// A notice for `line` when it reads like a provider error.
-fn explain(line: &str, out: &mut Vec<Out>) {
-    if classify(line, chrono::Utc::now()).is_some() {
-        out.push(Out::Failure(Failure::notice(line.trim())));
+impl PlainText {
+    fn flush(&mut self, out: &mut Vec<Out>) {
+        if let Some(error) = self.error.take() {
+            out.push(Out::Failure(Failure::notice(error)));
+        }
     }
 }
 
@@ -56,9 +81,15 @@ fn explain(line: &str, out: &mut Vec<Out>) {
 /// error, without writing the file, so the command exits 1 when the file is
 /// missing (Harbor's guard), and the console's error lines explain it.
 #[derive(Default)]
-pub struct CodePuppyText;
+pub struct CodePuppyText {
+    text: PlainText,
+}
 
 impl Parser for CodePuppyText {
+    fn finish(&mut self, out: &mut Vec<Out>) {
+        self.text.finish(out);
+    }
+
     fn line(&mut self, line: &str, out: &mut Vec<Out>) -> bool {
         if let Some((name, item)) = super::follow::followed(line) {
             if name == "usage" {
@@ -79,7 +110,7 @@ impl Parser for CodePuppyText {
             }
             return true;
         }
-        PlainText.line(line, out)
+        self.text.line(line, out)
     }
 }
 
@@ -261,7 +292,7 @@ fn parse_count(number: &str, unit: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::headless::tests::{events_of, run_lines};
+    use crate::headless::tests::{events_of, run_lines, run_lines_exit};
     use crate::trajectory::Event;
 
     fn lines(text: &str) -> Vec<String> {
@@ -331,6 +362,39 @@ mod tests {
             .filter(|e| matches!(e, Event::AgentMessage(_)))
             .count();
         assert_eq!(messages, 0, "{:?}", events_of(&run));
+    }
+
+    /// A text-format agent that prints Google's 429 on stdout, with the
+    /// retry delay on the next line: a rate limit the provider set (R214,
+    /// retried), not a spent quota that stops the job (R213). The same
+    /// error without a delay is still a spent quota. D13's low, fixed
+    /// 2026-10-11: each line was read as an error of its own.
+    #[tokio::test]
+    async fn a_text_agents_quota_error_is_read_to_the_blank_line() {
+        let minute = run_lines_exit(
+            "text",
+            &lines(
+                "Working on it.\n\
+                 You exceeded your current quota, please check your plan and billing details.\n\
+                 * Quota exceeded for metric: generate_content_free_tier_requests\n\
+                 Please retry in 20.6s.\n\nGiving up.",
+            ),
+            1,
+        )
+        .await;
+        let err = minute.result.as_ref().unwrap_err();
+        assert_eq!(err.category(), "provider_rate_limit", "{err}");
+        let spent = run_lines_exit(
+            "text",
+            &lines(
+                "You exceeded your current quota, please check your plan and billing details.\n\
+                 * Quota exceeded for metric: generate_content_free_tier_requests",
+            ),
+            1,
+        )
+        .await;
+        let err = spent.result.as_ref().unwrap_err();
+        assert_eq!(err.category(), "usage_limit", "{err}");
     }
 
     #[tokio::test]

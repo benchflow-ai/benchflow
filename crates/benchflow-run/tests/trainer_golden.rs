@@ -47,6 +47,8 @@ fn info_of(dir: &Path) -> RolloutInfo {
         agent_name: s(&result["agent_name"])
             .or_else(|| s(&result["agent"]))
             .unwrap_or_default(),
+        // 0.8 wrote "unknown"; what it recorded is not read back.
+        agent_version: None,
         prompts: serde_json::from_value(read_json(&dir.join("prompts.json"))).unwrap(),
         rewards: result["rewards"].as_object().cloned(),
         model: result["model"].as_str().map(str::to_string),
@@ -105,6 +107,41 @@ fn odd(event: &Event) -> bool {
         map.get("type").and_then(Value::as_str),
         Some("user_message" | "agent_message" | "agent_thought" | "tool_call" | "notice")
     ))
+}
+
+/// 0.8 gave each prompt two user steps when the events recorded it too:
+/// the trial's prompts first, then the recorded `user_message`. This build
+/// writes it once, so 0.8's leading copies are dropped before comparing.
+fn without_repeated_prompts(
+    theirs: Option<String>,
+    events: &[Event],
+    prompts: &[String],
+) -> Option<String> {
+    let text = theirs?;
+    let recorded = events.iter().any(|e| {
+        matches!(e, Event::UserMessage(t)
+            if !t.text.is_empty() && t.parent_tool_call_id.as_deref().is_none_or(str::is_empty))
+    });
+    let n = prompts.iter().filter(|p| !p.is_empty()).count();
+    if !recorded || n == 0 {
+        return Some(text);
+    }
+    let mut doc: Value = serde_json::from_str(&text).unwrap();
+    let steps = doc["steps"].as_array_mut().unwrap();
+    assert!(
+        steps
+            .iter()
+            .take(n)
+            .all(|s| s["source"] == "user" && s.get("timestamp").is_none()),
+        "0.8's first {n} steps are not its prompts"
+    );
+    steps.drain(..n);
+    for (i, step) in steps.iter_mut().enumerate() {
+        step["step_id"] = serde_json::json!(i + 1);
+    }
+    let total = steps.len();
+    doc["final_metrics"]["total_steps"] = serde_json::json!(total);
+    Some(benchflow_agent::trajectory::to_python_json_pretty(&doc) + "\n")
 }
 
 fn as_v1_7(text: &str) -> String {
@@ -198,7 +235,9 @@ fn read_opt(path: &Path) -> Option<String> {
 }
 
 /// Rebuild one rollout's trainer files into `out` and compare them with
-/// the ones 0.8 wrote in `dir`.
+/// the ones 0.8 wrote in `dir`. This pins the writers on 0.8's inputs, prompt
+/// list included; a run's own caller drops recorded prompts first, so its
+/// files hold each prompt once (decision 23).
 fn check_rollout(dir: &Path, out: &Path, tally: &mut Tally) {
     tally.rollouts += 1;
     let info = info_of(dir);
@@ -213,7 +252,7 @@ fn check_rollout(dir: &Path, out: &Path, tally: &mut Tally) {
     for rel in [VERIFIERS, ADP] {
         tally.check(rel, dir, read_opt(&out.join(rel)), read_opt(&dir.join(rel)));
     }
-    let theirs = read_opt(&dir.join(ATIF));
+    let theirs = without_repeated_prompts(read_opt(&dir.join(ATIF)), &events, &info.prompts);
     let ours = read_opt(&out.join(ATIF));
     // `to_atif` reads the events this build models; one it keeps as
     // written (an odd shape) is not a step, where 0.8 read any dict.

@@ -34,10 +34,12 @@ mod verifiers;
 pub use adp::{ADP_SCHEMA_VERSION, AdpMeta, adp_line, to_adp_record};
 pub use atif::{ATIF_SCHEMA_VERSION, AtifMeta, MAX_SUBAGENT_DEPTH, to_atif};
 pub use event::{
-    AgentTimeout, Event, NOP_NOTE, Notice, Oracle, Receipt, Text, ToolCall, ToolCallStatus,
-    iso_from_ns,
+    AgentTimeout, Event, MODEL_CALL, NOP_NOTE, Notice, Oracle, Receipt, SYSTEM_PROMPT, Text,
+    ToolCall, ToolCallStatus, iso_from_ns,
 };
-pub use export_common::{acp_projection_coverage, to_python_json_pretty};
+pub use export_common::{
+    DERIVED_TEXT_CAP, acp_projection_coverage, cap_long_strings, to_python_json_pretty,
+};
 pub use jsonl::{
     JsonlError, PyFormatter, TrajectoryWriter, parse_jsonl, python_float_repr, to_jsonl,
     to_python_json,

@@ -229,6 +229,11 @@ async fn read_chunked(reader: &mut BufReader<TcpStream>) -> Option<Vec<u8>> {
 /// cut), and, written from the providers' documented shapes, Anthropic's API
 /// with prompt caching, OpenRouter's, and the AI SDK's own protocol (fx's).
 const RECORDED: &[(&str, &str)] = &[
+    // E5: a stream whose events are cut-off JSON (a provider fault).
+    (
+        "garbled-chat.sse",
+        include_str!("recorded/garbled-chat.sse"),
+    ),
     (
         "gateway-chat.json",
         include_str!("recorded/gateway-chat.json"),
@@ -497,7 +502,14 @@ async fn the_forwarder_adds_the_key_streams_and_serves_nothing_else() {
     // Each line is written once its answer is sent, which may be after the
     // client has read it.
     for _ in 0..50 {
-        if fwd.stderr.lock().unwrap().matches("body_hash").count() >= 4 {
+        let answered = fwd
+            .stderr
+            .lock()
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains("body_hash") && l.contains("\"status\""))
+            .count();
+        if answered >= 4 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -513,10 +525,24 @@ async fn the_forwarder_adds_the_key_streams_and_serves_nothing_else() {
     let hashes: Vec<String> = log
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(|v| v["path"] == "/anthropic/v1/messages")
+        .filter(|v| v["path"] == "/anthropic/v1/messages" && v["note"].is_null())
         .filter_map(|v| v["body_hash"].as_str().map(str::to_string))
         .collect();
     assert_eq!(hashes.len(), 4, "{log}");
+    // Each model call also has its `waiting` line, sent before the answer.
+    let waiting = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["path"] == "/anthropic/v1/messages" && v["note"] == "waiting")
+        .count();
+    assert_eq!(waiting, 4, "{log}");
+    // And its `answering` line, once the provider's answer started.
+    let answering = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["path"] == "/anthropic/v1/messages" && v["note"] == "answering")
+        .count();
+    assert_eq!(answering, 4, "{log}");
     assert_ne!(hashes[0], hashes[1]);
     assert_eq!(hashes[1], hashes[2]);
     assert_ne!(hashes[2], hashes[3]);
@@ -1183,33 +1209,78 @@ async fn each_answer_logs_the_usage_and_cost_the_provider_reported() {
     let log = fwd.stop().await;
     assert!(!log.contains(KEY));
 
-    // name: input (not cached), cache read, cache write, output, cost.
-    let expect: &[(&str, [u64; 4], Option<f64>)] = &[
-        ("gateway-chat.json", [84, 0, 0, 5], Some(0.00004356)),
-        ("gateway-chat.sse", [84, 0, 0, 5], Some(0.00004356)),
-        ("gateway-messages.json", [84, 0, 0, 5], Some(0.00004356)),
-        ("gateway-messages.sse", [84, 0, 0, 5], Some(0.00004356)),
-        ("gateway-responses.sse", [84, 0, 0, 16], Some(0.00005808)),
-        ("anthropic-cached.sse", [12, 4000, 300, 42], None),
-        ("openrouter-chat.json", [20, 100, 0, 8], Some(0.0000452)),
+    // name: input (not cached), cache read, cache write, output, cost, and
+    // why the answer stopped (E1: the forwarder logged no finish reason).
+    let expect: &[(&str, [u64; 4], Option<f64>, &str)] = &[
+        (
+            "gateway-chat.json",
+            [84, 0, 0, 5],
+            Some(0.00004356),
+            "length",
+        ),
+        (
+            "gateway-chat.sse",
+            [84, 0, 0, 5],
+            Some(0.00004356),
+            "length",
+        ),
+        (
+            "gateway-messages.json",
+            [84, 0, 0, 5],
+            Some(0.00004356),
+            "max_tokens",
+        ),
+        (
+            "gateway-messages.sse",
+            [84, 0, 0, 5],
+            Some(0.00004356),
+            "max_tokens",
+        ),
+        (
+            "gateway-responses.sse",
+            [84, 0, 0, 16],
+            Some(0.00005808),
+            "max_output_tokens",
+        ),
+        (
+            "anthropic-cached.sse",
+            [12, 4000, 300, 42],
+            None,
+            "end_turn",
+        ),
+        (
+            "openrouter-chat.json",
+            [20, 100, 0, 8],
+            Some(0.0000452),
+            "stop",
+        ),
         (
             "ai-sdk-language-model.sse",
             [50, 200, 0, 30],
             Some(0.000021),
+            "stop",
         ),
     ];
     let lines: Vec<Value> = log
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    for (name, counts, cost) in expect {
+    // Only the garbled answer is marked unreadable.
+    let unreadable: Vec<&str> = lines
+        .iter()
+        .filter(|l| l["unreadable"] == true)
+        .filter_map(|l| l["path"].as_str())
+        .collect();
+    assert_eq!(unreadable, ["/openai/recorded/garbled-chat.sse"], "{log}");
+    for (name, counts, cost, finish) in expect {
         let line = lines
             .iter()
-            .find(|l| l["path"].as_str().is_some_and(|p| p.ends_with(name)))
+            .find(|l| l["note"].is_null() && l["path"].as_str().is_some_and(|p| p.ends_with(name)))
             .unwrap_or_else(|| panic!("no log line for {name}: {log}"));
         let u = &line["usage"];
         let got = ["input", "cache_read", "cache_write", "output"].map(|k| u[k].as_u64().unwrap());
         assert_eq!(&got, counts, "{name}: {line}");
+        assert_eq!(line["finish_reason"], *finish, "{name}: {line}");
         match cost {
             Some(c) => assert!(
                 (line["cost"].as_f64().unwrap() - c).abs() < 1e-12,
@@ -1235,11 +1306,12 @@ async fn each_answer_logs_the_usage_and_cost_the_provider_reported() {
         ..Default::default()
     };
     let spend = report.spend();
-    assert_eq!((spend.calls, spend.with_usage, spend.priced), (8, 8, 7));
+    // The garbled answer is a call without usage.
+    assert_eq!((spend.calls, spend.with_usage, spend.priced), (9, 8, 7));
     assert_eq!(spend.input_tokens, 84 * 4 + 84 + 12 + 20 + 50);
     assert_eq!(spend.cost_usd(), None);
     let note = spend.unknown_cost().unwrap();
-    assert!(note.contains("7 of 8"), "{note}");
+    assert!(note.contains("7 of 9"), "{note}");
 }
 
 /// A body over the cap gets 413 and a reason, not a reset connection, and

@@ -1,0 +1,16 @@
+# The project file for this folder: `bench` finds it from here and below.
+# Flags win over a profile, which wins over [run].
+
+[run]
+concurrency = 4
+trials = 1
+
+[tasks]
+paths = ["tasks"]              # where check, test, and run look when given no path
+
+[profile.daytona.run]          # bench run --profile daytona
+sandbox = "daytona"
+concurrency = 16
+
+[profile.repeat.run]           # bench run --profile repeat: three trials of each task
+trials = 3

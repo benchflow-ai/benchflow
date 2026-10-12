@@ -597,7 +597,7 @@ impl Trial<'_> {
     pub(super) async fn at_fork_point(&mut self, stage: Option<StageCarry>) -> Result<(), Problem> {
         match self.take_checkpoint(stage).await {
             Ok(()) if self.parent_continues() => Ok(()),
-            Ok(()) => Err(discarded()),
+            Ok(()) => Err(discarded(self.phase)),
             Err(p) if self.parent_continues() && !matches!(p.code.as_str(), "R314" | "R305") => {
                 self.rt.events.log(
                     self.name(),
@@ -1030,11 +1030,13 @@ fn compose_child_prompt(own: &str, instruction: &str, prefix: Option<&str>) -> S
 }
 
 /// A discarded parent's end after its fork (R000): not graded, by design.
-pub(super) fn discarded() -> Problem {
+/// `phase` is where the parent stopped: setup for a fork at the start, the
+/// agent's turn for one after a prompt or a stage.
+pub(super) fn discarded(phase: Phase) -> Problem {
     Problem::new(
         "R000",
         Owner::You,
-        Phase::Setup,
+        phase,
         "not graded: the parent was discarded after its fork (its children are graded)",
         "see the children in branches/ (`bench branches <job>`)",
     )
@@ -1214,7 +1216,8 @@ fn state_problem(report: &Report, agent_ran: bool, when: &str) -> Option<Problem
             Problem::new(
                 "R314",
                 Owner::Agent,
-                Phase::Setup,
+                // Found at the fork point, after the agent's turn.
+                Phase::Agent,
                 format!(
                     "BenchFlow's root-only state folder was changed {when} ({list}), so a checkpoint would carry a baseline the agent could have chosen; the fork was not taken"
                 ),
@@ -1438,6 +1441,9 @@ pub struct ForkOutcome {
     /// `not_attempted` (it never took its checkpoint, so it ended as a
     /// plain trial).
     pub parent_restore: &'static str,
+    /// The parent has not ended yet (only in the records written while
+    /// the fork runs): `parent` is a placeholder, with no grade.
+    pub parent_running: bool,
 }
 
 /// Run the parent, then the children from its checkpoint, then delete the
@@ -1505,6 +1511,9 @@ pub async fn run(spec: &TrialSpec, rt: &super::Runtime, plan: &ForkPlan) -> Fork
             .and_then(|s| s.session_id.clone());
         *lock(&progress.state) = Some(state.clone());
         *lock(&progress.children) = planned.clone();
+        // The fork exists from here: a run killed before any child ends
+        // still leaves its records (every child `not_started`).
+        progress.write(spec, plan, &fork_id, clock);
         let shared = Arc::new(state.clone());
         let sem = Arc::new(tokio::sync::Semaphore::new(plan.concurrency.max(1)));
         let progress = &progress;
@@ -1577,6 +1586,7 @@ pub async fn run(spec: &TrialSpec, rt: &super::Runtime, plan: &ForkPlan) -> Fork
             (Some(_), true) => "not_needed",
             (Some(_), false) => "skipped",
         },
+        parent_running: false,
     };
     if let Err(e) = write_records(spec, plan, &outcome, state.as_ref()) {
         rt.events.log(
@@ -1659,16 +1669,18 @@ struct Progress {
 
 impl Progress {
     /// Write the fork's records as they stand (status `running`, no value),
-    /// once the parent's record and the checkpoint are both there. The
-    /// records written when the fork ends replace them.
+    /// once the checkpoint is there. A parent that has not ended yet (a
+    /// continuing parent beside its children) is written as running, with
+    /// no grade. The records written when the fork ends replace them.
     fn write(&self, spec: &TrialSpec, plan: &ForkPlan, fork_id: &str, clock: Instant) {
-        let (Some(parent), Some(state)) = (lock(&self.parent).clone(), lock(&self.state).clone())
-        else {
+        let Some(state) = lock(&self.state).clone() else {
             return;
         };
+        let parent = lock(&self.parent).clone();
+        let parent_running = parent.is_none();
         let o = ForkOutcome {
             id: fork_id.to_string(),
-            parent,
+            parent: parent.unwrap_or_else(|| running_parent(spec)),
             refusal: None,
             checkpoint: Some(state.checkpoint.clone()),
             retention: None,
@@ -1686,8 +1698,53 @@ impl Progress {
             } else {
                 "skipped"
             },
+            parent_running,
         };
         let _ = write_records(spec, plan, &o, Some(&state));
+    }
+}
+
+/// The placeholder for a parent that has not ended yet: no grade, no
+/// problem, no time. Only the records written while the fork runs hold it.
+fn running_parent(spec: &TrialSpec) -> TrialRecord {
+    let now = chrono::Local::now();
+    TrialRecord {
+        task_name: spec.task.name.clone(),
+        task_id: spec.task.id.clone(),
+        rollout_name: spec.name.clone(),
+        agent: spec.attempt.label(),
+        model: None,
+        status: Status::Unscored,
+        rewards: None,
+        reward: None,
+        passed: None,
+        timed_out: false,
+        own_timed_out: false,
+        problem: None,
+        usage: Default::default(),
+        tool_calls: 0,
+        prompts: Vec::new(),
+        trajectory_summary: Value::Null,
+        timing: Default::default(),
+        started_at: now,
+        finished_at: now,
+        task_digest: spec.task.digest.clone(),
+        sandbox_id: None,
+        sandbox_backend: String::new(),
+        defenses: Defenses::new(),
+        custody: Default::default(),
+        login: None,
+        agent_version: None,
+        env_keys: Vec::new(),
+        verifier_exit: None,
+        rubric: None,
+        dataset: None,
+        step_results: None,
+        agent_session: None,
+        resumed_session: None,
+        resources_raised: None,
+        environment_warnings: Vec::new(),
+        reward_range: None,
     }
 }
 
@@ -1799,15 +1856,16 @@ fn fork_cost(o: &ForkOutcome) -> Value {
     let known =
         !usds.is_empty() && usds.len() == o.children.len() && usds.iter().all(Option::is_some);
     let children_seconds: f64 = records.iter().map(|r| r.timing.total).sum();
-    let parent = o.parent.timing.total;
+    // A parent still running has no time yet.
+    let parent = (!o.parent_running).then_some(o.parent.timing.total);
     json!({
         "tokens": records.iter().map(|r| usage_json(r)["total_tokens"].as_u64().unwrap_or(0)).sum::<u64>(),
         "usd": known.then(|| (usds.iter().flatten().sum::<f64>() * 1e6).round() / 1e6),
         "usd_known": known,
         "wall_seconds": round3(o.seconds),
-        "parent_sandbox_seconds": round3(parent),
+        "parent_sandbox_seconds": parent.map(round3),
         "children_sandbox_seconds": round3(children_seconds),
-        "sandbox_seconds": round3(parent + children_seconds),
+        "sandbox_seconds": parent.map(|p| round3(p + children_seconds)),
     })
 }
 
@@ -2073,9 +2131,11 @@ fn write_records(
             "checkpoints": [row],
         }),
     )?;
-    // The trial's result.json gets 0.8's `branches` block.
+    // The trial's result.json gets 0.8's `branches` block (once the parent
+    // has ended: the file is the parent's own until then).
     let result_path = dir.join("result.json");
-    if let Ok(text) = std::fs::read_to_string(&result_path)
+    if !o.parent_running
+        && let Ok(text) = std::fs::read_to_string(&result_path)
         && let Ok(mut result) = serde_json::from_str::<Value>(&text)
     {
         result["branches"] = json!({
@@ -2192,6 +2252,14 @@ pub async fn run_job(
             "engine": { "name": "benchflow-rs", "version": env!("CARGO_PKG_VERSION"), "fingerprint": fingerprint },
         }),
     )?;
+    // The live view's total: each parent and each of its children is one
+    // trial line (a branch job never resumes, so none is reused).
+    rt.events.send(crate::events::Event::JobStarted {
+        dir: dir.clone(),
+        total: parents.len() * (1 + plan.children.len()),
+        reused: 0,
+        resumed: false,
+    });
     let mut forks = Vec::new();
     for parent in &parents {
         if rt.stopping() {
@@ -2869,6 +2937,7 @@ mod tests {
             Report::parse("BF state-owner /var/lib/benchflow/baseline/list\nBF state-checked\n");
         let p = state_problem(&r, true, "before the checkpoint").unwrap();
         assert_eq!((p.code.as_str(), p.owner), ("R314", Owner::Agent));
+        assert_eq!(p.phase, Phase::Agent);
         let p = state_problem(&r, false, "before the checkpoint").unwrap();
         assert_eq!((p.code.as_str(), p.owner), ("R104", Owner::Task));
         let r = Report::parse("BF state-unchecked no-find\nBF state-checked\n");

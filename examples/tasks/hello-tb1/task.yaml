@@ -1,0 +1,8 @@
+instruction: |-
+  Create /app/hello.txt containing exactly "Hello, world!".
+author_name: BenchFlow examples
+difficulty: easy
+category: examples
+tags: [examples]
+max_agent_timeout_sec: 120
+max_test_timeout_sec: 60

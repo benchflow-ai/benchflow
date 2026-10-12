@@ -12,6 +12,7 @@ This branch rebuilds BenchFlow's command line and run engine in Rust. It is one 
 - [harnesses.md](./harnesses.md): agents and how they are driven: manifests, options, skills, sessions, providers
 - [branching.md](./branching.md): checkpoints and `bench branch`: forking a rollout into graded children
 - [status.md](./status.md): what is ported, what is not yet, and how each part was verified
+- [examples/](../../examples/README.md): small tasks, scripted agents, job files, and a dataset, one per feature, each with the outcome it should have
 
 ## Build it
 
@@ -230,7 +231,7 @@ name = "fix-the-parser"        # the folder ./fix-the-parser (or ./tasks/fix-the
 digest = "sha256:…"            # optional; `path = "…"` names another folder
 ```
 
-`--include`, `--exclude`, and `--limit` narrow the dataset before anything is fetched, and `--dry-run` lists its tasks and says whether the run would resume an earlier job (`would resume jobs/<job> (3 of 3 trials kept)`) or start a new one; it fetches nothing unless the jobs folder holds a job of the same dataset and version, or one that ran a task of the same name (a run resumes by its tasks' digests, so the same tasks under another version or from a local folder count), since telling whether that job matches needs the tasks' digests (and then it also checks the agent's login, as a run would). Every trial's `result.json` records `dataset_name`, `dataset_version`, and the digest the registry pins (`registry_digest`), and the job's `lock.json` records the commit each task was fetched at. This build records registry digests but cannot check them yet, and says so when it runs.
+`--include`, `--exclude`, and `--limit` narrow the dataset before anything is fetched, and `--dry-run` lists its tasks and says whether the run would resume an earlier job (`would resume jobs/<job> (3 of 3 trials kept)`) or start a new one; it fetches nothing unless the jobs folder holds a job of the same dataset and version, or one that ran a task of the same name (a run resumes by its tasks' digests, so the same tasks under another version or from a local folder count), since telling whether that job matches needs the tasks' digests (and then it also checks the agent's login, as a run would). Every trial's `result.json` records `dataset_name`, `dataset_version`, and the digest the registry pins (`registry_digest`), and the job's `lock.json` records the commit each task was fetched at. Where the registry pins a digest, each fetched task folder is checked against it before anything runs: a task that does not match stops the run (exit 1, the task's problem) and is named, and a run prints how many pinned tasks matched (`digests 3 of 3 pinned tasks match the registry`).
 
 ## Regrading
 
@@ -299,7 +300,11 @@ The [CLI reference](./cli.md#trace-export) describes the rows, the spans, and th
 
 On Docker and Podman, BenchFlow keeps the images it builds. A task's image is tagged by a hash of its build folder, and each agent's install is a cached image on top of it, so the second run of a task starts without building anything. BenchFlow 0.8 removed every image after each task instead.
 
+On Daytona, the image is built in your Daytona account from a recipe: the task's Dockerfile, a hash of its build folder, and the layers bench adds to every image (iptables for the network guard, and a record of the image's own environment). Daytona keeps each image it built under the recipe's key, so later runs of the task, from any machine on the account, start from it. A newer bench that changes those layers changes every recipe, so each task's image is built once more on its first run after the update, which can take minutes for a large image. Each trial's `image.log` says which happened: `image ready, built now: ...` or `image ready: ... (built earlier; Daytona kept it)`. Checked on 2026-10-11 with a one-line image: 22 s to build, 2 s the second time.
+
 After each fresh build, BenchFlow removes its least recently used images while the daemon's disk has less than `BENCHFLOW_IMAGE_CACHE_MIN_FREE_GB` free (default 10; measured when the daemon runs on the same machine) or while its images take more than `BENCHFLOW_IMAGE_CACHE_MAX_GB` (no limit unless set). It never removes an image a trial of the current run still needs (a run releases each image after the last trial that uses it, so a long run over many tasks keeps only what is left to run), one a container still uses, or one used in the last 30 minutes, and the image log says what it removed. On a remote daemon, where free space cannot be measured, set `BENCHFLOW_IMAGE_CACHE_MAX_GB` to bound the cache. Set `BENCHFLOW_IMAGE_CACHE_MIN_FREE_GB=0` to turn the free-space rule off.
+
+On Daytona, each image is built by a builder sandbox in Daytona's cloud, and a build gets the task's build timeout plus 120 seconds, the time the builder takes to start; the run's image log says so. A build still running at that limit is left to finish rather than cancelled (deleting its builder would cancel the build, and Daytona would keep the cancelled build), and the trial errors with R102. A retry, in this run or a later one, waits for that builder instead of starting another. (Two runs that start the same image at the same moment can still each start one: the check and the start are not one step.)
 
 ## Cleaning the cache
 
@@ -318,11 +323,20 @@ BenchFlow keeps 4 items · 133 MB
 
 That ran as a new user on the Linux machine, right after `bench new my-task`, `bench test`, and `bench run -a oracle` on a Docker daemon that kept images from earlier runs. `my-task`'s build folder hashes the same as the `always-passes` fixture's, so its trials used that image, and it shows as used just now. `bench cache clean` marks an image used in the last 30 minutes as kept, with the reason, and leaves it out of what it would remove; it removes the rest only with `--remove`.
 
-Only what BenchFlow made is touched. Images must carry its owner label (`ai.benchflow.owner`, for this `BENCHFLOW_OWNER` scope); they are removed by tag and never forced, so an image a container still uses stays, and images used in the last 30 minutes are kept in case a run still needs them. Pulled base images carry no label and are never listed. In the cache folder, only the folders this `bench` writes are listed; anything else (BenchFlow 0.8's `task-formats/`, another tool's files) is named and left alone. Daytona builds each sandbox's image in the cloud and keeps nothing between runs. This is a separate command rather than a `bench doctor` flag because `doctor` only reads the machine's state and never changes it.
+Only what BenchFlow made is touched. Images must carry its owner label (`ai.benchflow.owner`, for this `BENCHFLOW_OWNER` scope); they are removed by tag and never forced, so an image a container still uses stays, and images used in the last 30 minutes are kept in case a run still needs them. Pulled base images carry no label and are never listed. In the cache folder, only the folders this `bench` writes are listed; anything else (BenchFlow 0.8's `task-formats/`, another tool's files) is named and left alone. Daytona builds each sandbox's image in the cloud and keeps it there (see [Images between runs](#images-between-runs)); nothing of it is on this machine. This is a separate command rather than a `bench doctor` flag because `doctor` only reads the machine's state and never changes it.
 
 ## Importing and exporting tasks
 
 `bench import` converts a task to task.md: the split layout (`task.toml`), BenchFlow 0.8's task.md, or a Terminal-Bench v1 task (`task.yaml`, `run-tests.sh`, `docker-compose.yaml`). It takes one task or a folder of them (`bench import terminal-bench/original-tasks tb`). `bench export <task>` writes a task.md task in the split layout, with a report of anything the split layout cannot hold. `bench run`, `check`, and `test` read the split layout and 0.8's task.md as they are; a Terminal-Bench v1 task needs `bench import` first.
+
+## Trust
+
+A task is code you run. Its image decides what runs in the agent's sandbox: the shell, the system's programs, the libraries the agent's own CLI loads, and the variables in the task's `[environment] env`. BenchFlow keeps the agent away from the grade and from API keys, but it cannot keep a task's image away from the agent's runtime.
+
+- An API key never enters the sandbox. The key forwarder holds it outside the agent's reach and passes only the run's model ([Keys and the forwarder](./harnesses.md#keys-and-the-forwarder)), so a hostile task can at most spend it on that model while the trial runs.
+- A subscription login (Claude Code's OAuth token or `.credentials.json`, Codex's ChatGPT login in `auth.json`) is a file or variable the agent's own CLI needs, so it is copied into the sandbox, where the task's image, its setup, its `env`, and the agent can all read it. Its value is redacted from logs and trajectories and never saved with a session, but a task that wants it can send it anywhere its network allows.
+
+So running a task with a subscription login trusts that task as much as a program you run under that login. For tasks you did not write or review (a dataset from a registry, a repository someone sent you), use an API key, which goes through the forwarder. `bench agents <name>` says, for each credential an agent reads, whether the forwarder holds it or the agent gets it.
 
 ## Coming from 0.8
 

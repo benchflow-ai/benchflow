@@ -9,18 +9,25 @@
 # folder. No sudo, no Docker, and it never edits your shell profile.
 #
 # Environment:
-#   BENCH_VERSION       release tag to install, like v0.8.1 (default: latest)
+#   BENCH_VERSION       version to install, like 0.8.1 or its release tag
+#                       bench-v0.8.1 (default: latest)
 #   BENCH_INSTALL_DIR   folder to install into (default: ~/.local/bin)
 #   BENCH_TARGET        target to download instead of this machine's, like
 #                       x86_64-unknown-linux-gnu
 #   BENCH_RELEASES_URL  releases address, for a mirror
 #                       (default: https://github.com/benchflow-ai/benchflow/releases)
+#   BENCH_RELEASES_API  the releases list as JSON, where the latest bench
+#                       release is found (default: GitHub's API; a mirror
+#                       without it uses <releases>/latest)
 #   NO_COLOR            set to turn off color
 
 # Everything is in functions and runs from the last line, so a download cut
 # short by the network runs nothing.
 
 REPO=https://github.com/benchflow-ai/benchflow
+# The repository's releases as JSON, newest first: the latest bench release
+# is found here, since <releases>/latest is often the Python package's.
+RELEASES_API=https://api.github.com/repos/benchflow-ai/benchflow/releases?per_page=100
 SCRIPT_URL=https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/install.sh
 FROM_SOURCE="cargo install --locked --git $REPO --branch bench-rs benchflow-cli"
 
@@ -37,10 +44,11 @@ Options:
   -h, --help        Print this help
 
 Environment:
-  BENCH_VERSION       release tag to install, like v0.8.1 (default: latest)
+  BENCH_VERSION       version to install, like 0.8.1 or bench-v0.8.1 (default: latest)
   BENCH_INSTALL_DIR   folder to install into (default: ~/.local/bin)
   BENCH_TARGET        target to download instead of this machine's
   BENCH_RELEASES_URL  releases address, for a mirror (default: $REPO/releases)
+  BENCH_RELEASES_API  the releases list as JSON, to find the latest bench release
 EOF
 }
 
@@ -163,7 +171,83 @@ fetch() {
     fi
 }
 
-# The tag that <releases>/latest redirects to, like v0.8.1.
+# The newest bench release that is not a prerelease, like bench-v0.8.1, from
+# the releases list (BENCH_RELEASES_API, for a mirror that has one). The
+# repository's own latest release is often the Python package's (v<version>).
+# Whether <url> is https on GitHub's API host: api.github.com, or the host
+# of GITHUB_API_URL when that is https.
+token_host() {
+    # A token for a GitHub Enterprise server (GITHUB_API_URL elsewhere) is
+    # not github.com's, so it goes only to its own server.
+    case "$1" in
+        https://api.github.com/*)
+            case "${GITHUB_API_URL:-https://api.github.com}" in
+                https://api.github.com | https://api.github.com/) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+    esac
+    case "${GITHUB_API_URL:-}" in
+        https://?*)
+            ghe=${GITHUB_API_URL#https://}
+            ghe=${ghe%%/*}
+            case "$1" in
+                "https://$ghe"/*) return 0 ;;
+            esac
+            ;;
+    esac
+    return 1
+}
+
+# Sets found, or returns 1 with fetch_error saying why.
+latest_bench_tag() {
+    list=$tmp/releases.json
+    api=${BENCH_RELEASES_API:-$RELEASES_API}
+    # GitHub allows 60 unauthenticated API calls an hour per address (shared
+    # CI runners run out); a GITHUB_TOKEN raises that. It is sent only over
+    # https to GitHub's API (api.github.com, or GITHUB_API_URL's host, as
+    # GitHub Actions sets it for an Enterprise server), never to a mirror.
+    # The header goes to curl as a config on stdin, never in its arguments,
+    # which other users of this machine can read; a token with other
+    # characters than a token's is not sent at all.
+    case "${GITHUB_TOKEN:-}" in
+        '' | *[!A-Za-z0-9_.-]*) send_token=0 ;;
+        *) send_token=1 ;;
+    esac
+    if [ "$send_token" = 1 ] && have curl && token_host "$api"; then
+        code=$(printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" |
+            curl -K - --proto '=https' --proto-redir '=https' -sSL --retry 3 --connect-timeout 20 \
+                -o "$list" -w '%{http_code}' "$api") || {
+            fetch_error="network error (curl exit $?)"
+            return 1
+        }
+        case "$code" in
+            200) ;;
+            # A stale or foreign token is refused even on public data:
+            # ask again without it.
+            401 | 403) fetch "$api" "$list" || return 1 ;;
+            *)
+                fetch_error="HTTP $code"
+                return 1
+                ;;
+        esac
+    else
+        fetch "$api" "$list" || return 1
+    fi
+    # One field per line in GitHub's JSON; "tag_name" comes before
+    # "prerelease" in each release.
+    found=$(tr ',' '\n' <"$list" | awk '
+        /"tag_name"[ ]*:/ { t = $0; sub(/.*"tag_name"[ ]*:[ ]*"/, "", t); sub(/".*/, "", t); next }
+        /"prerelease"[ ]*:[ ]*false/ { if (t ~ /^bench-v[A-Za-z0-9_.+-]+$/) { print t; exit } }
+        /"prerelease"[ ]*:/ { t = "" }
+    ')
+    [ -n "$found" ] || {
+        fetch_error='it lists no bench-v<version> release that is not a prerelease'
+        return 1
+    }
+}
+
+# The tag that <releases>/latest redirects to, like bench-v0.8.1.
 latest_tag() {
     if have curl; then
         final=$(curl --proto '=https,http' --proto-redir '=https' -fsSLI --retry 3 --connect-timeout 20 \
@@ -313,24 +397,53 @@ main() {
             *[!A-Za-z0-9_.+-]*) usage_error "BENCH_VERSION is not a release tag: $tag" ;;
         esac
         which=''
+        if [ "$tag" = latest ] && { [ -z "${BENCH_RELEASES_URL:-}" ] || [ -n "${BENCH_RELEASES_API:-}" ]; }; then
+            # From the releases list; a mirror without one uses <releases>/latest.
+            # When the list cannot be read (GitHub's API limit), the
+            # repository's latest release, if it is bench's.
+            if ! latest_bench_tag; then
+                listed_error=$fetch_error
+                found=$(latest_tag) || found=''
+                case "$found" in
+                    bench-v*) ;;
+                    *) found='' ;;
+                esac
+            fi
+            [ -n "$found" ] ||
+                die "found no bench release in ${BENCH_RELEASES_API:-$RELEASES_API} ($listed_error)" \
+                    "pick a release from $releases and run: $(rerun 'BENCH_VERSION=<version>')" \
+                    "or build from source: $FROM_SOURCE"
+            tag=$found
+            which=' (the latest)'
+        fi
         if [ "$tag" = latest ]; then
             tag=$(latest_tag) || die "could not find the latest release at $releases/latest" \
-                "pick a release from $releases and run: $(rerun 'BENCH_VERSION=<tag>')"
+                "pick a release from $releases and run: $(rerun 'BENCH_VERSION=<version>')"
+            # bench's releases are tagged bench-v<version>; v<version> tags
+            # are the Python package's, and have no bench in them.
+            case "$tag" in
+                bench-v*) ;;
+                *) die "the latest release at $releases/latest is $tag, the Python package's, not bench's" \
+                    "bench's releases are tagged bench-v<version>: pick one from $releases" \
+                    "and run: $(rerun 'BENCH_VERSION=<version>')" \
+                    "or build from source: $FROM_SOURCE" ;;
+            esac
             which=' (the latest)'
         fi
         case "$tag" in
-            v*) ;;
-            *) tag=v$tag ;;
+            bench-v*) ;;
+            v*) tag=bench-$tag ;;
+            *) tag=bench-v$tag ;;
         esac
-        version=${tag#v}
+        version=${tag#bench-v}
         asset=bench-$version-$target.tar.gz
         say "Installing bench from release $tag$which for $target"
         tarball=$tmp/$asset
         if ! fetch "$releases/download/$tag/$asset" "$tarball"; then
             die "could not download $asset from release $tag ($fetch_error)" \
                 "check the release has it: $releases/tag/$tag" \
-                "releases before 0.9 ship only the Python package (pip install benchflow);" \
-                "pick one that has bench: $(rerun 'BENCH_VERSION=<tag>')" \
+                "bench's releases are tagged bench-v<version>; v<version> releases ship only the Python package (pip install benchflow);" \
+                "pick one that has bench: $(rerun 'BENCH_VERSION=<version>')" \
                 "or build from source: $FROM_SOURCE"
         fi
         fetch "$releases/download/$tag/$asset.sha256" "$tmp/$asset.sha256" ||

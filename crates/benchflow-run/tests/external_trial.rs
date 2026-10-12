@@ -275,6 +275,40 @@ async fn a_scripted_backend_solves_hello_and_hears_the_reward() {
             .unwrap()
             .contains("Hello, world!")
     );
+    // E1 round 2: the trajectory records the system prompt and each tool
+    // result as the backend's model read it, time note included.
+    let atif: Value =
+        serde_json::from_str(&std::fs::read_to_string(r.dir.join("trainer/atif.json")).unwrap())
+            .unwrap();
+    assert_eq!(atif["steps"][0]["source"], "system");
+    assert_eq!(
+        atif["steps"][0]["message"],
+        b.events[&2]["message"]["content"]
+    );
+    let mut noted = 0;
+    for e in b
+        .events
+        .values()
+        .filter(|e| e["type"] == "message_added" && e["message"]["role"] == "tool")
+    {
+        let parts = e["message"]["content"].as_array().unwrap();
+        if parts.len() < 2 {
+            continue;
+        }
+        let id = e["message"]["tool_call_id"].as_str().unwrap();
+        let step = atif["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["tool_calls"][0]["tool_call_id"] == id)
+            .unwrap();
+        let seen = step["observation"]["results"][0]["content"]
+            .as_str()
+            .unwrap();
+        assert!(seen.ends_with(parts[1]["text"].as_str().unwrap()), "{seen}");
+        noted += 1;
+    }
+    assert!(noted > 0, "no result carried a time note");
     let scoring = b.events.values().find(|e| e["type"] == "scoring").unwrap();
     assert_eq!(scoring["scoring"]["score"], 1.0);
     assert_eq!(scoring["scoring"]["continue_task"], false);

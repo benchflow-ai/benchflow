@@ -256,6 +256,9 @@ fn count_tokens(messages: &[Message]) -> u64 {
 struct Reply {
     content: String,
     reasoning: Option<String>,
+    /// Why the answering call stopped; `None` when no call answered.
+    finish: Option<String>,
+    model: Option<String>,
 }
 
 struct Terminus<'a, 'c> {
@@ -441,6 +444,12 @@ impl Terminus<'_, '_> {
                 );
                 self.recorder.user(&handoff);
             }
+            self.recorder.model_call(
+                &self.client.usage(),
+                self.client.calls(),
+                reply.finish.as_deref(),
+                reply.model.as_deref(),
+            );
             let result = parser.parse(&reply.content);
             let mut feedback = String::new();
             if !result.error.is_empty() {
@@ -664,6 +673,8 @@ impl Terminus<'_, '_> {
                         return Ok(Reply {
                             content: salvaged,
                             reasoning: response.message.reasoning,
+                            finish: Some(response.finish.as_str().to_string()),
+                            model: response.model,
                         });
                     }
                     let parsed = self.config.parser.parse(&truncated);
@@ -695,6 +706,8 @@ impl Terminus<'_, '_> {
                     return Ok(Reply {
                         content: response.message.text,
                         reasoning: response.message.reasoning,
+                        finish: Some(response.finish.as_str().to_string()),
+                        model: response.model,
                     });
                 }
                 Err(e) if e.kind == ModelErrorKind::ContextLength => {
@@ -766,6 +779,8 @@ impl Terminus<'_, '_> {
                 Ok(Reply {
                     content: r.message.text,
                     reasoning: r.message.reasoning,
+                    finish: Some(r.finish.as_str().to_string()),
+                    model: r.model,
                 })
             }
             Err(e) => {
@@ -773,6 +788,8 @@ impl Terminus<'_, '_> {
                 Ok(Reply {
                     content: "Technical difficulties. Please continue with the task.".into(),
                     reasoning: None,
+                    finish: None,
+                    model: None,
                 })
             }
         }

@@ -204,6 +204,10 @@ fn own_dirs(owner: &str, dirs: &[&str]) -> String {
 /// `/logs/verifier` root-only during the agent's run.
 ///
 /// Prints `BF user <name> <uid>`; exits 3 when the image can create no user.
+/// Giving the workdir is best effort, as in 0.8: a file root cannot chown (a
+/// Daytona sandbox refuses owners outside its id map, as in SWE-bench's
+/// matplotlib build tree) keeps its owner, and `BF workdir-unowned <n>`
+/// counts them.
 pub fn setup_user(user: &str, workdir: &str) -> String {
     format!(
         r#"set -e
@@ -222,7 +226,9 @@ home=$(sh -c "echo ~$u")
 [ -d "$home" ] || mkdir -p "$home"
 chown "$u:$g" "$home"
 mkdir -p "$w" /logs/agent /logs/artifacts /logs/verifier
-chown -R "$u:$g" "$w" /logs/agent /logs/artifacts
+chown -R "$u:$g" /logs/agent /logs/artifacts
+bf_unowned=$(chown -R "$u:$g" "$w" 2>&1 >/dev/null | wc -l | tr -d ' ')
+if [ "$bf_unowned" != 0 ]; then echo "BF workdir-unowned $bf_unowned"; fi
 {outputs}
 chown root:root /logs/verifier
 chmod 755 /logs
@@ -1214,6 +1220,58 @@ mod tests {
         assert_eq!(r.first("killed"), Some("3"));
         assert_eq!(r.all("special"), vec!["/app/x"]);
         assert!(r.all("nothing").is_empty());
+    }
+
+    /// A Daytona sandbox refuses root a chown to an owner outside its id
+    /// map (SWE-bench's matplotlib image, files under /testbed/build), so
+    /// `chown -R` of the workdir fails part way. 0.8 went on with a warning;
+    /// the agent user is still made, the logs and state folders still set,
+    /// and the paths left with their owner are counted. Run with stand-ins
+    /// for every program it changes the system with, so nothing real is
+    /// touched.
+    #[test]
+    fn a_workdir_chown_root_is_refused_still_sets_up_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path();
+        let stub = |name: &str, body: &str| {
+            let p = bin.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        for name in ["mkdir", "chmod", "rm", "useradd", "adduser"] {
+            stub(name, "exit 0");
+        }
+        stub(
+            "id",
+            r#"case "$1" in -u) echo 1000 ;; -gn) echo agent ;; esac"#,
+        );
+        // Refused for the workdir only, one line per path, as chown does.
+        stub(
+            "chown",
+            r#"for a; do if [ "$a" = /testbed ]; then
+  for f in a b c; do echo "chown: changing ownership of '/testbed/build/$f': Operation not permitted" >&2; done
+  exit 1
+fi; done; exit 0"#,
+        );
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(setup_user("agent", "/testbed"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let r = Report::parse(&stdout);
+        assert_eq!(r.first("workdir-unowned"), Some("3"), "{stdout}");
+        assert!(
+            r.first("user").is_some_and(|u| u.starts_with("agent 1000")),
+            "{stdout}"
+        );
     }
 
     #[test]

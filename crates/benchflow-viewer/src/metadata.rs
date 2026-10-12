@@ -277,8 +277,10 @@ fn run_status(result: &Map, reward: Option<f64>) -> RunStatus {
 
 /// Normalize a result document and the preferred timing (`_normalize_metadata`).
 pub fn normalize_metadata(result: &Map, timing: Option<&Value>) -> RolloutMetadata {
+    // Other harnesses keep the rewards in `verifier_result.rewards`.
     let mut reward = get(result, "rewards")
         .as_object()
+        .or_else(|| get(result, "verifier_result").get("rewards").as_object())
         .and_then(|rewards| finite_float(get(rewards, "reward")));
     if assessment_withholds_score(result) {
         // A pending or unassessable assessment has no reward yet.

@@ -3,7 +3,9 @@
 //! `tests/fixtures/export/expected/` was written by `make_expected.py` beside
 //! it, which runs Harbor's `extract_conversations_from_trajectory`,
 //! `openai_to_sharegpt`, and `harbor-atif2otel`'s `convert_trajectory` on the
-//! same trials. Rows must hold the same values, and trace lines must match
+//! same trials, after dropping a prompt the document holds twice (0.8 and
+//! early builds wrote it twice; the export records it once, decision 23).
+//! Rows must hold the same values, and trace lines must match
 //! byte for byte. The jobs: a synthetic one (two turns, a subagent,
 //! reasoning, tool definitions, context management, an image, a trial with
 //! no ATIF file), a job this engine wrote, and two jobs BenchFlow 0.8 wrote.
@@ -147,7 +149,11 @@ fn synthetic_job_reports_every_trial() {
         .iter()
         .find(|r| r["trial_name"] == "turns__00000001")
         .unwrap();
-    assert_eq!(first["instruction"], "You are a careful agent.");
+    // The first user message, not the system prompt before it.
+    assert_eq!(
+        first["instruction"],
+        "List the files, then summarize them — in English."
+    );
     assert_eq!(first["verifier_output"], "2 passed\n");
     assert_eq!(first["result"], "1.0");
     assert_eq!(first["model_provider"], "anthropic");

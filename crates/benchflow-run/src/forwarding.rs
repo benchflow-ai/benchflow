@@ -100,6 +100,11 @@ pub(crate) async fn start(
             providers::ALWAYS_DENIED.join(", ")
         ));
     }
+    // A test build's fault endpoint in place of the provider: each trial
+    // says so, not only `bench run`'s banner (E5 review B4).
+    if let Some(to) = providers::test_upstream_note(&HostEnv::from_process()) {
+        line.push_str(&format!("; sent to {to}, not the provider"));
+    }
     ctx.events.log(ctx.trial, line);
     Ok(forwarder)
 }

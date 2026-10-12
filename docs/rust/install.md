@@ -12,22 +12,24 @@ The script picks the build for your machine, downloads `bench-<version>-<target>
 
 | Setting or flag | What it does |
 |---|---|
-| `BENCH_VERSION=v0.8.1` | Install that release instead of the latest (`0.8.1` works too) |
+| `BENCH_VERSION=0.8.1` | Install that version instead of the latest (its release tag, `bench-v0.8.1`, works too) |
 | `BENCH_INSTALL_DIR=~/bin` | Install into another folder |
 | `BENCH_TARGET=x86_64-unknown-linux-gnu` | Download another build than the one picked for this machine |
 | `BENCH_RELEASES_URL=<url>` | Download from a mirror laid out like `https://github.com/benchflow-ai/benchflow/releases` |
+| `BENCH_RELEASES_API=<url>` | Where the latest bench release is looked up: a JSON list of releases, newest first, as GitHub's API gives it (the default). A mirror without one uses `<releases>/latest` |
+| `GITHUB_TOKEN=<token>` | Sent with that lookup, only over https to GitHub's API: `api.github.com` when `GITHUB_API_URL` is unset or names it, else the https host `GITHUB_API_URL` names (a GitHub Enterprise server, as GitHub Actions sets it); never to a mirror. GitHub allows 60 calls an hour per address without it, which shared CI runners run out of. A token GitHub refuses (stale, or another server's) is dropped and the lookup made again without it. When the list cannot be read, the repository's latest release is used if it is bench's |
 | `--from <tarball>` | Install a local `bench-<version>-<target>.tar.gz` instead of downloading; a `.sha256` next to it is checked |
 | `--force` | Replace a `bench` that the installer did not put there |
 
 Settings go before `sh`, and flags after `sh -s --`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/install.sh | BENCH_VERSION=v0.8.1 sh
+curl -fsSL https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/install.sh | BENCH_VERSION=0.8.1 sh
 curl -fsSL https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/install.sh | sh -s -- --force
 sh install.sh --from bench-0.8.1-x86_64-unknown-linux-musl.tar.gz   # from a clone
 ```
 
-**No release has bench binaries yet.** The latest release, v0.7.8, ships only the Python package, so the script stops at the download, says so, and suggests the alternatives. Until a release has them, build from source (below) or install a build from the `rust` workflow: run it by hand (Actions, then rust, then Run workflow), download the artifact with `gh run download <run-id> -n bench-<version>-<target>`, and run `sh install.sh --from bench-<version>-<target>.tar.gz`.
+**No release has bench binaries yet.** bench's releases will be tagged `bench-v<version>`. Without `BENCH_VERSION`, the script installs the newest `bench-v*` release that is not a prerelease, read from GitHub's list of releases, since the repository's own latest release is often the Python package's (`v0.7.8` today); with none, it stops, says so, and suggests the alternatives. Until a release has them, build from source (below) or install a build from the `rust` workflow: run it by hand (Actions, then rust, then Run workflow), download the artifact with `gh run download <run-id> -n bench-<version>-<target>`, and run `sh install.sh --from bench-<version>-<target>.tar.gz`.
 
 **If you have BenchFlow 0.8.** `uv tool install benchflow` (and pipx, and pip) put the Python CLI's `bench` in `~/.local/bin` too. The script does not replace it unless you pass `--force`; it says what it found and how to install next to it instead, with `BENCH_INSTALL_DIR=~/.bench/bin`. `uv tool install --force benchflow` brings 0.8's `bench` back.
 
@@ -56,7 +58,15 @@ The release binaries use the `dist` profile, which is the release profile plus w
 
 Sizes are for the build of 2026-10-10 at `9a19876f`, built with the `dist` profile; the download is the `.tar.gz`, packed as the `rust` workflow packs it (MB is a million bytes). Intel Macs, Linux on ARM, and Windows have no prebuilt binary yet; build from source there (on Windows, inside WSL).
 
-The `rust` workflow (`.github/workflows/rust.yml`) builds all three on every `v*` tag, after formatting, clippy, and the tests pass. It checks that each binary runs and names its commit, installs it with `install.sh`, and uploads `bench-<version>-<target>.tar.gz` and its `.sha256` as workflow artifacts. It does not publish a GitHub release yet, and it fails when the tag is not `v` plus the version in `Cargo.toml`.
+The `rust` workflow (`.github/workflows/rust.yml`) builds all three on every `bench-v*` tag, such as `bench-v0.8.1`, after formatting, clippy, and the tests pass. It checks that each binary runs and names its commit, installs it with `install.sh`, and uploads `bench-<version>-<target>.tar.gz` and its `.sha256` as workflow artifacts. It does not publish a GitHub release yet, and it fails when the tag is not `bench-v` plus the version in `Cargo.toml`. Tags of the form `v<version>` belong to the Python package's release (`public-release.yml`, which publishes to PyPI) and do not start this workflow; `install.sh` reads `BENCH_VERSION=0.8.1` as the tag `bench-v0.8.1`.
+
+## Upgrading
+
+Install the new version over the old one; job folders from either read the same. What a newer bench may change on its first runs:
+
+- **Daytona builds each image once more** when the new version changes the layers bench adds to every image (see [Images between runs](./README.md#images-between-runs)); each trial's `image.log` says whether its image was built now or kept.
+- **Reward files are read as BenchFlow 0.8 reads them.** A `reward.json` with no `reward` key (and no `reward.txt`) is unscored (`R302`) unless `BENCHFLOW_REWARD_LENIENT=1` is set, and a task's `[verifier] reward_range` is honored.
+- **A lost sandbox is rerun once when the backend cannot say what stopped it.** If the same unexplained loss comes back in the next attempt, the trial is kept as it is (`rerun_capped` in its problem) and counted as not passed; `bench run --rerun errored` runs it again.
 
 ## Uninstall
 

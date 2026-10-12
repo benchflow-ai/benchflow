@@ -14,6 +14,9 @@ home_dirs = [".openhands"]
 [install]
 uvx = "openhands==1.16.0"
 python = "3.12"
+# Its terminal tool runs bash, which Alpine lacks ("Could not find bash in
+# PATH" on 2026-10-12).
+tools = ["bash"]
 
 [launch]
 command = '''mkdir -p "$HOME/.openhands" && { printf '{"llm":{"model":"%s","api_key":"%s"' "${LLM_MODEL:-${BENCHFLOW_MODEL:-placeholder}}" "${LLM_API_KEY:-placeholder}"; if [ -n "$LLM_BASE_URL" ]; then printf ',"base_url":"%s"' "$LLM_BASE_URL"; fi; printf '}}'; } > "$HOME/.openhands/agent_settings.json" && exec /opt/benchflow/bin/openhands acp --always-approve --override-with-envs'''

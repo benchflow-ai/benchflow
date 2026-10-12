@@ -183,6 +183,21 @@ impl Test {
         }
     }
 
+    /// The destinations this phase must not reach (`addr:port`, IPv6 in
+    /// brackets), for a probe as another user.
+    pub(super) fn blocked_targets(&self) -> Vec<String> {
+        self.canaries
+            .iter()
+            .filter_map(|c| match c {
+                Canary::Blocked(addr, port) if addr.contains(':') => {
+                    Some(format!("[{addr}]:{port}"))
+                }
+                Canary::Blocked(addr, port) => Some(format!("{addr}:{port}")),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The script, run as the phase's user.
     pub(super) fn script(&self) -> String {
         let mut s = String::from(HELPERS);

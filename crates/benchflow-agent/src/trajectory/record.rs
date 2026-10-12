@@ -6,8 +6,11 @@
 //!   prompt, or the prompt's end. A subagent's chunks (Claude's
 //!   `_meta.claudeCode.parentToolUseId`) form their own stream.
 //! - A `tool_call_update` merges into its `tool_call` by id: the status,
-//!   title, content (appended), raw input and output, and the agent's tool
-//!   name. An update for an unknown id opens a call.
+//!   title, content, raw input and output, and the agent's tool name. Its
+//!   content replaces the call's, as ACP specifies (OpenCode resends the
+//!   whole output so far on every update; 0.8 appended it, repeating the
+//!   output); an empty list leaves the content as it was. An update for an
+//!   unknown id opens a call.
 //! - A `notice` (what the adapter composed, not what the agent said) is its
 //!   own event and never joins the agent's text.
 //! - Plans, usage updates and every other update kind are kept as they
@@ -193,6 +196,27 @@ impl Trajectory {
             pending_tool_call_ids: pending,
             receipt: Some(receipt),
         }));
+    }
+
+    /// Record an event of a kind 0.8 never wrote (a native loop's
+    /// [`MODEL_CALL`](super::event::MODEL_CALL) or
+    /// [`SYSTEM_PROMPT`](super::event::SYSTEM_PROMPT)), with its receipt.
+    pub fn record_marker(
+        &mut self,
+        kind: &str,
+        mut fields: serde_json::Map<String, Value>,
+        receipt: Receipt,
+    ) {
+        self.flush_text();
+        let mut map = serde_json::Map::new();
+        map.insert("type".into(), kind.into());
+        map.append(&mut fields);
+        map.insert("receipt".into(), receipt.to_json());
+        map.insert(
+            "ts".into(),
+            super::event::iso_from_ns(receipt.first_observed_ns).into(),
+        );
+        self.events.push(Event::Other(map));
     }
 
     /// Record a prompt's reported usage (cumulative for the session).
@@ -409,8 +433,10 @@ impl Trajectory {
                     ToolCallStatus::InProgress
                 }),
         };
-        if let Some(content) = update.get("content").and_then(Value::as_array) {
-            call.content.extend(content.iter().cloned());
+        if let Some(content) = update.get("content").and_then(Value::as_array)
+            && !content.is_empty()
+        {
+            call.content = content.clone();
         }
         set_status(call, status, receipt);
         absorb_raw_io(call, update);

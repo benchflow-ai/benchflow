@@ -1,0 +1,16 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": { "method": "points" },
+  "x-judge": { "model": "mimo/mimo-v2.6-flash" },
+  "x-reference": "verifier/reference.md",
+  "criteria": [
+    { "id": "written", "gate": true, "text": "/app/summary.md exists and is not empty.", "stated": "Write a short incident summary to `/app/summary.md`", "judge": "test", "check": "test_written" },
+    { "id": "cause", "points": 2, "text": "The summary gives the root cause as the expired TLS certificate of api.internal, and no other cause.",
+      "stated": "the root cause", "judge": "llm", "evidence": ["/app/summary.md"], "reference": "verifier/answers.toml#facts.cause" },
+    { "id": "fix", "points": 1, "text": "The summary says the fix was renewing the certificate and reloading nginx.",
+      "stated": "and the fix", "judge": "llm", "evidence": ["/app/summary.md"] },
+    { "id": "blame", "points": 1, "outcome": "bad", "text": "The summary names or blames an individual person.",
+      "stated": "Do not blame any person.", "judge": "llm", "evidence": ["/app/summary.md"] }
+  ]
+}

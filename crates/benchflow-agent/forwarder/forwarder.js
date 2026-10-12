@@ -44,7 +44,8 @@
 // input not read from a cache, cache reads, cache writes, output) and the cost
 // the provider charged for it (`cost`, US dollars), when the answer said so
 // (the Vercel AI Gateway and OpenRouter do), so a trial's cost is what the
-// provider billed, not an agent's estimate at another model's prices.
+// provider billed, not an agent's estimate at another model's prices, and
+// why the answer stopped (`finish_reason`, in the provider's own words).
 
 'use strict';
 
@@ -392,6 +393,30 @@ function readCost(event) {
 // it used and cost. A streamed answer repeats or grows its counts from event
 // to event (Anthropic's input in message_start, output in message_delta), so
 // each count is the largest seen. Null when it says neither.
+// Why an answer event says the answer stopped: OpenAI's `finish_reason`,
+// Anthropic's `stop_reason`, the Responses API's final status (or why it is
+// incomplete), the AI SDK's `finishReason`; null when it says nothing.
+function finishOf(e) {
+  let found = null;
+  if (Array.isArray(e.choices)) {
+    for (const c of e.choices) {
+      if (isPlainObject(c) && typeof c.finish_reason === 'string') found = c.finish_reason;
+    }
+  }
+  if (typeof e.stop_reason === 'string') found = e.stop_reason;
+  for (const m of [e.message, e.delta]) {
+    if (isPlainObject(m) && typeof m.stop_reason === 'string') found = m.stop_reason;
+  }
+  const r = e.response;
+  if (isPlainObject(r) && ['completed', 'incomplete', 'failed', 'cancelled'].includes(r.status)) {
+    const why = isPlainObject(r.incomplete_details) ? r.incomplete_details.reason : null;
+    found = typeof why === 'string' ? why : r.status;
+  }
+  if (typeof e.finishReason === 'string') found = e.finishReason;
+  else if (isPlainObject(e.finishReason) && typeof e.finishReason.unified === 'string') found = e.finishReason.unified;
+  return found;
+}
+
 function tally(text) {
   const events = [];
   const whole = text.trimStart();
@@ -416,8 +441,10 @@ function tally(text) {
   }
   let usage = null;
   let cost = null;
+  let finish = null;
   for (const e of events) {
     if (!isPlainObject(e)) continue;
+    finish = finishOf(e) ?? finish;
     for (const u of [e.usage, e.message && e.message.usage, e.response && e.response.usage]) {
       const counts = readUsage(u);
       if (counts === null) continue;
@@ -427,15 +454,54 @@ function tally(text) {
     const c = readCost(e);
     if (c !== null) cost = Math.max(cost ?? 0, c);
   }
-  if (usage === null && cost === null) return null;
-  return { ...(usage ? { usage } : {}), ...(cost !== null ? { cost } : {}) };
+  if (usage === null && cost === null && finish === null) return null;
+  return {
+    ...(usage ? { usage } : {}),
+    ...(cost !== null ? { cost } : {}),
+    ...(finish !== null ? { finish_reason: finish } : {}),
+  };
 }
 
-function deny(res, status, message, started, req, path) {
+// Whether a whole answer the provider sent cannot be read: a JSON body
+// that does not parse, or a stream with an event whose data is cut-off or
+// garbled JSON. An agent that stops on such an answer stopped on the
+// provider's fault, not its own (E5).
+function unreadable(text, contentType) {
+  if (/event-stream/.test(contentType || '')) {
+    for (const event of text.split(/\r?\n\r?\n/)) {
+      const data = event
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).replace(/^ /, ''))
+        .join('\n')
+        .trim();
+      if (data === '' || data === '[DONE]') continue;
+      if (!data.startsWith('{') && !data.startsWith('[')) continue;
+      try {
+        JSON.parse(data);
+      } catch {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (/json/.test(contentType || '')) {
+    try {
+      JSON.parse(text);
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+function deny(res, status, message, started, req, path, sent) {
   const body = JSON.stringify({ error: { type: 'benchflow_forwarder', message } });
   res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
   res.end(body);
-  log({ method: req.method, path, status, bytes: body.length, ms: Date.now() - started, note: message });
+  // The call's body hash when it was sent upstream, so this line ends that
+  // call and no other (E5 review C-A 2).
+  log({ method: req.method, path, status, bytes: body.length, ms: Date.now() - started, note: message, ...(sent ? { body_hash: sent } : {}) });
 }
 
 function handle(req, res, routes, key) {
@@ -485,6 +551,10 @@ function handle(req, res, routes, key) {
   // has the same one, so BenchFlow can tell a client's backoff (waiting for
   // that answer) from the agent going on without it.
   let sent;
+  // Whether the call offers tools (the agent's own turn, not a title or a
+  // summary), and whether its `waiting` line was written.
+  let tools = false;
+  let waiting = false;
   req.on('data', (chunk) => {
     size += chunk.length;
     if (size > MAX_BODY) {
@@ -499,7 +569,11 @@ function handle(req, res, routes, key) {
     if (current) current.destroy();
   });
   res.on('close', () => {
-    if (!res.writableFinished && current) current.destroy();
+    if (res.writableFinished) return;
+    if (current) current.destroy();
+    // The agent hung up (its own timeout, a cancel) or the stream broke:
+    // this call is over, answered or not.
+    if (waiting) log({ method: req.method, path, note: 'dropped', ...(sent ? { body_hash: sent } : {}) });
   });
   req.on('end', () => {
     if (size > MAX_BODY) {
@@ -525,6 +599,7 @@ function handle(req, res, routes, key) {
       return;
     }
     const parsed = body.length > 0 ? jsonObject(body) : null;
+    tools = parsed !== null && Array.isArray(parsed.tools) && parsed.tools.length > 0;
     if (enforced && body.length > 0 && parsed === null) {
       deny(
         res,
@@ -596,17 +671,36 @@ function handle(req, res, routes, key) {
         const unsent =
           CONNECT_ERRORS.has(e.code) || (e.code === 'ECONNRESET' && upstream.reusedSocket);
         if (attempt < 3 && (unsent || (IDEMPOTENT.has(req.method) && RETRYABLE.has(e.code)))) {
-          log({ method: req.method, path, note: `retrying after ${e.code}`, attempt });
+          log({ method: req.method, path, note: `retrying after ${e.code}`, attempt, ...(sent ? { body_hash: sent } : {}) });
           setTimeout(() => send(attempt + 1), 200 * attempt);
           return;
         }
-        deny(res, 502, `the provider could not be reached (${e.code || 'error'})`, started, req, path);
+        deny(res, 502, `the provider could not be reached (${e.code || 'error'})`, started, req, path, sent);
       });
+      // A model call on its way: the agent's last call with tools, with
+      // this line and nothing after it (no `answering`, no answer, not
+      // `dropped`), was still waiting on the provider when the forwarder
+      // stopped, which tells a provider that never answered from an agent
+      // that stalled.
+      if (req.method === 'POST') {
+        waiting = true;
+        log({
+          method: req.method,
+          path,
+          note: 'waiting',
+          attempt,
+          ...(sent ? { body_hash: sent } : {}),
+          ...(tools ? { tools: true } : {}),
+        });
+      }
       upstream.end(body);
     }
   });
 
   function respond(answer) {
+    // The provider started its answer: from here a slow call is the
+    // provider streaming, not a provider that never answered.
+    if (waiting) log({ method: req.method, path, note: 'answering', ...(sent ? { body_hash: sent } : {}) });
     const skip = new Set(connectionTokens(answer.headers));
     const out = {};
     // A provider that echoes the request's headers would show the key.
@@ -639,12 +733,16 @@ function handle(req, res, routes, key) {
     answer.pipe(masker).pipe(res);
     res.on('finish', () => {
       let spent = null;
+      let bad = false;
       if (counted && keptBytes > 0 && keptBytes <= USAGE_KEEP) {
+        const text = Buffer.concat(kept).toString('utf8');
         try {
-          spent = tally(Buffer.concat(kept).toString('utf8'));
+          spent = tally(text);
         } catch {
           spent = null;
         }
+        const ok = (answer.statusCode || 0) >= 200 && (answer.statusCode || 0) < 300;
+        bad = ok && unreadable(text, answer.headers['content-type']);
       }
       log({
         method: req.method,
@@ -655,6 +753,7 @@ function handle(req, res, routes, key) {
         ...(sent ? { body_hash: sent } : {}),
         ...(pinned ? { pinned } : {}),
         ...(spent || {}),
+        ...(bad ? { unreadable: true } : {}),
       });
     });
   }

@@ -9,6 +9,9 @@ skill_paths = ["$HOME/.openhands-sdk/skills"]
 [install]
 uv-venv = ["openhands-sdk==1.54.0", "openhands-tools==1.54.0"]
 python = "3.12"
+# Its terminal tool runs bash, which Alpine lacks ("Could not find bash in
+# PATH" on 2026-10-12).
+tools = ["bash"]
 verify = "/opt/benchflow/agents/openhands-sdk/venv/bin/python -c \"import importlib.metadata as m, openhands.tools.terminal; print('openhands-sdk', m.version('openhands-sdk'))\""
 timeout = 1200
 

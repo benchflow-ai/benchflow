@@ -89,9 +89,11 @@ pub use forwarder::{
     node_layer,
 };
 pub use key::{KeyStatus, ProviderKey, find_provider_key, key_status};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use route::TEST_UPSTREAM_ENV;
 pub use route::{
     Access, AccessError, KEY_PLACEHOLDER, KeyHandling, ProviderRoute, Route, RouteError,
-    key_handling, pin_route, resolve, route,
+    key_handling, pin_route, resolve, route, test_upstream, test_upstream_note,
 };
 pub(crate) use route::{is_effort, template_placeholders};
 pub use routing::{ALWAYS_DENIED, DENY_ENV, Pin, PinError, Routing, Style, Upstreams};

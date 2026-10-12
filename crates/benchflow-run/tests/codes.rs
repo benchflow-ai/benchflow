@@ -133,6 +133,9 @@ enum Fault {
     /// The verifier's code stops the sandbox (`kill -TERM 1`): the backend
     /// still has it, stopped, and nothing more can be run or copied.
     VerifierStopsSandbox,
+    /// The verifier's code stops the sandbox, and the backend cannot say
+    /// what stopped it (Podman; Daytona's `error`).
+    VerifierHaltsSandbox,
     /// The verifier runs past its timeout, and its folder cannot be copied.
     TimeoutDownloadFails,
     /// The backend does not answer when the sandbox is removed.
@@ -148,6 +151,20 @@ enum Fault {
     /// The sandbox goes away while the agent works (the agent's process
     /// ends with it).
     AgentGone,
+    /// The sandbox stops while the agent works (the backend still has it,
+    /// stopped), and the agent's process ends with it.
+    AgentStopped,
+    /// The sandbox halts while the agent works (the backend cannot say
+    /// what stopped it), and the agent's process ends with it.
+    AgentHalted,
+    /// The oracle's solve.sh (a scripted attempt, whose failure is the
+    /// sandbox's) stops its sandbox from inside.
+    OracleStops,
+    /// The oracle's sandbox halts for a reason the backend cannot name.
+    OracleHalts,
+    /// The verifier's channel fails (a toolbox 502) while the backend's
+    /// own API is down too: an outage the control plane confirms.
+    Outage,
 }
 
 /// What the scripted ACP agent does.
@@ -184,6 +201,8 @@ struct World {
     solved: bool,
     /// The sandbox exists but was stopped from inside.
     stopped: bool,
+    halted: bool,
+    api_down: bool,
     /// Copies of the verifier's folder so far.
     downloads: usize,
     /// The sandbox is gone: every later command fails.
@@ -231,6 +250,23 @@ impl Sandbox for FakeSandbox {
             ));
         }
         match self.fault {
+            Fault::OracleStops | Fault::OracleHalts if c.contains("solve.sh") => {
+                let mut w = self.world.lock().unwrap();
+                if self.fault == Fault::OracleStops {
+                    w.stopped = true;
+                } else {
+                    w.halted = true;
+                }
+                return Err(SandboxError::Transport(
+                    "the sandbox container fake-codes is no longer running".into(),
+                ));
+            }
+            Fault::Outage if verifier => {
+                self.world.lock().unwrap().api_down = true;
+                return Err(SandboxError::Transport(
+                    "the toolbox answered HTTP 502 while running the verifier".into(),
+                ));
+            }
             Fault::SetupGone if c.contains("useradd") => return Err(gone()),
             Fault::SetupHangs if c.contains("useradd") => {
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -254,7 +290,11 @@ impl Sandbox for FakeSandbox {
                 self.world.lock().unwrap().stopped = true;
                 return Ok(output(143, "", "Terminated\n"));
             }
-            _ if self.world.lock().unwrap().stopped => {
+            Fault::VerifierHaltsSandbox if verifier => {
+                self.world.lock().unwrap().halted = true;
+                return Ok(output(143, "", "Terminated\n"));
+            }
+            _ if self.world.lock().unwrap().stopped || self.world.lock().unwrap().halted => {
                 return Err(SandboxError::Transport(
                     "the sandbox container fake-codes is no longer running (Error response from daemon: container is not running)".into(),
                 ));
@@ -423,6 +463,14 @@ impl Sandbox for FakeSandbox {
                 self.world.lock().unwrap().gone = true;
                 return Ok(fake_acp_agent(Act::Crash, self.world.clone()));
             }
+            Fault::AgentStopped => {
+                self.world.lock().unwrap().stopped = true;
+                return Ok(fake_acp_agent(Act::Crash, self.world.clone()));
+            }
+            Fault::AgentHalted => {
+                self.world.lock().unwrap().halted = true;
+                return Ok(fake_acp_agent(Act::Crash, self.world.clone()));
+            }
             _ => {}
         }
         Ok(fake_acp_agent(self.act, self.world.clone()))
@@ -468,7 +516,7 @@ impl Sandbox for FakeSandbox {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory"),
                 ));
             }
-            if self.world.lock().unwrap().stopped {
+            if self.world.lock().unwrap().stopped || self.world.lock().unwrap().halted {
                 return Err(SandboxError::Transport(
                     "the sandbox container fake-codes is no longer running".into(),
                 ));
@@ -536,10 +584,17 @@ impl Sandbox for FakeSandbox {
     }
     async fn presence(&self) -> Result<benchflow_sandbox::Presence, SandboxError> {
         let w = self.world.lock().unwrap();
+        if w.api_down {
+            return Err(SandboxError::Transport(
+                "the backend's API answered HTTP 503".into(),
+            ));
+        }
         Ok(if w.gone || self.fault == Fault::LeakyGone {
             benchflow_sandbox::Presence::Gone
         } else if w.stopped {
             benchflow_sandbox::Presence::Stopped
+        } else if w.halted {
+            benchflow_sandbox::Presence::Halted
         } else {
             benchflow_sandbox::Presence::Running
         })
@@ -995,6 +1050,7 @@ fn task(root: &Path) -> TaskPackage {
             network: None,
             isolation: Isolation::Shared,
             rubric: None,
+            reward_range: None,
         },
         oracle: Some(OraclePolicy {
             dir: root.join("oracle"),
@@ -1360,6 +1416,7 @@ async fn run(case: &Case) -> Option<TrialRecord> {
     };
     let mut options = RunOptions {
         retries: 0,
+        unexplained_loss_retry_secs: 0,
         idle_timeout: Duration::from_secs(30),
         cache_dir: tmp.path().join("cache"),
         ..RunOptions::default()
@@ -1539,6 +1596,20 @@ async fn failures_record_the_right_status_owner_and_phase() {
             Status::Errored,
             Phase::Setup,
         ),
+        // Convergence round: every rerun path is capped. The task's setup
+        // runs code inside the sandbox too; an unexplained loss there,
+        // again right after one, is not run again.
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the connection breaks during setup, in two attempts in a row",
+            )
+            .fault(Fault::SetupGone)
+            .options(|o| o.retries = 1),
+            Status::Errored,
+            Phase::Setup,
+        ),
         (
             Case::new("R103", Sandbox, "the sandbox cannot start the agent")
                 .act(Act::Solve)
@@ -1556,6 +1627,81 @@ async fn failures_record_the_right_status_owner_and_phase() {
             .fault(Fault::AgentGone),
             Status::Errored,
             Phase::Agent,
+        ),
+        // Round-2 reviews of rust/e9-decisions (E9-B high, E9-A M1): a
+        // sandbox the backend says code inside stopped while the agent
+        // worked is the agent's failure (a root agent can stop it; a rerun
+        // would reward that), not a lost sandbox rerun on every resume.
+        (
+            Case::new("R204", Agent, "the agent's code stops its sandbox while it works")
+                .act(Act::Solve)
+                .fault(Fault::AgentStopped),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        // A stop the backend cannot explain is lost once (rerun)...
+        (
+            Case::new("R103", Sandbox, "the sandbox halts while the agent works, for no reason the backend can name")
+                .act(Act::Solve)
+                .fault(Fault::AgentHalted),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        // ...and right after a lost attempt it is the agent's failure,
+        // capped: a resumed job keeps it.
+        (
+            Case::new("R103", Sandbox, "the sandbox halts while the agent works, in two attempts in a row")
+                .act(Act::Solve)
+                .fault(Fault::AgentHalted)
+                .options(|o| o.retries = 1),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        // Convergence reviews E9-D-A 1, E9-D-B 1: a scripted attempt (the
+        // oracle, a script, a native loop's tool call) fails as the
+        // sandbox's, not the agent's; the same one counter applies.
+        (
+            Case::new("R204", Agent, "the oracle's solve.sh stops its own sandbox")
+                .who(Who::Oracle)
+                .fault(Fault::OracleStops),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new("R103", Sandbox, "the oracle's sandbox halts for no reason the backend can name")
+                .who(Who::Oracle)
+                .fault(Fault::OracleHalts),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the oracle's sandbox halts for no reason the backend can name, in two attempts in a row",
+            )
+            .who(Who::Oracle)
+            .fault(Fault::OracleHalts)
+            .options(|o| o.retries = 1),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        // E9-D-A 3: only the backend's own API can exempt an outage. The
+        // toolbox fails while the control plane fails too: a confirmed
+        // loss, rerun every time, never capped. (The same toolbox failure
+        // while the control plane answers is capped after one rerun: the
+        // "connection breaks ... in two attempts in a row" cases.)
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the toolbox and the backend's API both fail while verifying, in two attempts in a row",
+            )
+            .act(Act::Solve)
+            .fault(Fault::Outage)
+            .options(|o| o.retries = 1),
+            Status::Errored,
+            Phase::Verify,
         ),
         (
             Case::new("R001", You, "Ctrl-C while the verifier runs").fault(Fault::VerifierHangs),
@@ -1637,6 +1783,51 @@ async fn failures_record_the_right_status_owner_and_phase() {
             Status::Errored,
             Phase::Verify,
         ),
+        // Final review of rust/d4-chaos (finding 2): code inside (root)
+        // can break the connection the same way in every attempt, buying a
+        // rerun each time. Lost in the same phase again right after the
+        // retry (or a resume), while the backend still has the sandbox, the
+        // trial is not run again (capped), and counts as not passed. It
+        // stays the sandbox's (round-2 review E9-B M2: an outage looks the
+        // same, so the task is not blamed).
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the connection breaks off during both copies, in two attempts in a row",
+            )
+            .act(Act::Solve)
+            .fault(Fault::DownloadChannel)
+            .options(|o| o.retries = 1),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the connection drops before grading, in two attempts in a row",
+            )
+            .act(Act::Solve)
+            .fault(Fault::Transport)
+            .options(|o| o.retries = 1),
+            Status::Errored,
+            Phase::Handoff,
+        ),
+        // A loss the backend confirms (the sandbox deleted) is rerun every
+        // time.
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the sandbox is deleted during the kill before grading, in two attempts in a row",
+            )
+            .act(Act::Solve)
+            .fault(Fault::KillGone)
+            .options(|o| o.retries = 1),
+            Status::Errored,
+            Phase::Handoff,
+        ),
         // Review of rust/d4-chaos (Outcomes 3): code the verifier runs
         // stops the sandbox; it still exists, so the failure stays the
         // task's instead of buying a rerun.
@@ -1645,6 +1836,30 @@ async fn failures_record_the_right_status_owner_and_phase() {
                 .act(Act::Solve)
                 .fault(Fault::VerifierStopsSandbox),
             Status::Unscored,
+            Phase::Verify,
+        ),
+        // Diff review of rust/e9-decisions (H1): on Podman (or Daytona's
+        // `error`) the backend cannot say who stopped a sandbox. The first
+        // such stop is lost and retried, but code inside that stops it in
+        // every attempt must not buy a rerun each time: the repeat is the
+        // task's.
+        (
+            Case::new("R103", Sandbox, "the verifier's code halts a sandbox the backend cannot explain")
+                .act(Act::Solve)
+                .fault(Fault::VerifierHaltsSandbox),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R103",
+                Sandbox,
+                "the verifier's code halts a sandbox the backend cannot explain, in two attempts in a row",
+            )
+            .act(Act::Solve)
+            .fault(Fault::VerifierHaltsSandbox)
+            .options(|o| o.retries = 1),
+            Status::Errored,
             Phase::Verify,
         ),
         (
@@ -1809,6 +2024,17 @@ async fn failures_record_the_right_status_owner_and_phase() {
             failures.push(format!(
                 "{}: the message is not the sandbox's: {p:?}",
                 case.what
+            ));
+        }
+        // A repeat is capped (kept by a resume) and says so; a single loss
+        // is neither.
+        let repeat = (case.what.contains("in two attempts in a row")
+            && !matches!(case.fault, Fault::KillGone | Fault::Outage))
+            || case.what.contains("stops its");
+        if repeat != p.rerun_capped || (repeat && !p.message.contains("not run again")) {
+            failures.push(format!(
+                "{}: capped {} (want {repeat}), or the repeat is not named: {p:?}",
+                case.what, p.rerun_capped
             ));
         }
         if case.fault == Fault::DiskFull && !p.message.contains("disk was full") {

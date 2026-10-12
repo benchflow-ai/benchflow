@@ -1,14 +1,16 @@
 name: rust
 
 # The Rust workspace (crates/, one binary: bench). Pull requests and pushes
-# that touch it run fmt, clippy, and the tests on Linux and macOS. A v* tag
-# (or a manual run) also builds the release binaries and uploads them, with
-# checksums, as workflow artifacts; nothing is published.
+# that touch it run fmt, clippy, and the tests on Linux and macOS. A bench-v*
+# tag (or a manual run) also builds the release binaries and uploads them,
+# with checksums, as workflow artifacts; nothing is published. v* tags are the
+# Python package's (public-release.yml), so a bench tag never starts that
+# workflow, and a Python tag never starts this one.
 on:
   push:
     branches: [main, bench-rs]
-    # Path filters are not applied to tag pushes, so every v* tag runs.
-    tags: ["v*"]
+    # Path filters are not applied to tag pushes, so every bench-v* tag runs.
+    tags: ["bench-v*"]
     paths:
       - "crates/**"
       - "Cargo.*"
@@ -24,11 +26,9 @@ on:
       - "install.sh"
       - "e2e/**"
       - ".github/workflows/rust.yml"
+  # No schedule: GitHub runs scheduled workflows only from the default
+  # branch, which has no copy of this file, so a cron here never fires.
   workflow_dispatch:
-  # Nightly: the e2e suite's full tier on Docker (the job below runs only
-  # here, on pushes to main and bench-rs, and on manual runs).
-  schedule:
-    - cron: "17 9 * * *"
 
 # Cancel superseded runs on a PR branch; never cancel pushes or tags.
 concurrency:
@@ -155,13 +155,13 @@ jobs:
   # The full tier on Docker: the network policies, every exploit probe, the
   # image-hole defenses, services, and the shell, which the smoke tier does
   # not reach. About 12 minutes on a warm machine, longer on a fresh runner;
-  # so on pushes to main and bench-rs, nightly, and on manual runs, not on
-  # every pull request. Still no secret: the model and Daytona scenarios
-  # skip themselves without their keys.
+  # so on pushes to main and bench-rs and on manual runs, not on every pull
+  # request. Still no secret: the model and Daytona scenarios skip
+  # themselves without their keys.
   e2e-docker-full:
     name: e2e full (docker)
     if: >-
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref_type == 'branch')
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -255,8 +255,8 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version 1 |
             jq -r '.packages[] | select(.name == "benchflow-cli") | .version')
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match the Cargo workspace version v$version. Set [workspace.package] version in Cargo.toml to ${GITHUB_REF_NAME#v} and tag again."
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "bench-v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the Cargo workspace version: tag bench-v$version, or set [workspace.package] version in Cargo.toml to ${GITHUB_REF_NAME#bench-v} and tag again."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"

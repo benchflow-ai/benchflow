@@ -66,11 +66,17 @@ effort = "medium"
 # session/set_model for a model it does not list, even the current one. So
 # the model and effort go into config.toml too, and the session starts on
 # them: codex-acp reports `<model>[<effort>]` as current, which BenchFlow
-# then finds already selected and does not send again.
+# then finds already selected and does not send again. Web search is off:
+# Codex sends OpenAI's hosted `web_search` tool by default, on both
+# harnesses, and providers' Responses APIs refuse it (MiMo answered 400
+# `responses_feature_not_supported` on 2026-10-12), so Codex failed on its
+# first request. On Codex's own key the line is left out, so Codex keeps its
+# default; `--ak web_search=<mode>` still sets it.
 BENCHFLOW_CODEX_HOME_CONFIG = '''# benchflow-codex-home-config
 model = "{model}"
 model_reasoning_effort = "{effort}"
 model_provider = "benchflow"
+web_search = "{disabled}"
 
 [model_providers.benchflow]
 name = "BenchFlow forwarder"
@@ -90,8 +96,10 @@ session_dirs = [".codex/sessions"]
 # bench run --load-trajectory places a session file of this format.
 load = "codex-rollout"
 
-# Harbor's codex options. The `-c` overrides reach both harnesses: codex-acp
-# takes them as the CLI does.
+# Codex's options. The `-c` overrides reach Codex only headless:
+# codex-acp's CLI does not consume them (BenchFlow 0.8 passes such settings
+# through CODEX_CONFIG instead). E7, live: with -c web_search=disabled over
+# ACP the requests still carried the web_search tool; headless they did not.
 [options.version]
 type = "string"
 description = "codex-acp version to install; it carries the Codex CLI both harnesses run."
@@ -103,9 +111,11 @@ type = "enum"
 description = "How model reasoning is summarized."
 choices = ["auto", "concise", "detailed", "none"]
 flag = "-c model_reasoning_summary={value}"
+harnesses = ["headless"]
 
 [options.web_search]
 type = "enum"
 description = "Web search mode."
 choices = ["disabled", "cached", "live"]
 flag = "-c web_search={value}"
+harnesses = ["headless"]

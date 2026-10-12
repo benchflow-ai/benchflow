@@ -120,6 +120,13 @@ pub fn plan_with(
             ));
             continue;
         };
+        if let Some(changed) = outputs_changed(&outputs, &record.custody) {
+            not_regradable.push(refuse(
+                changed,
+                "restore the trial's outputs/ folder from a copy, or run the trial again",
+            ));
+            continue;
+        }
         let Some(task_path) = task_path(&dir, job, lock.as_ref(), &record) else {
             not_regradable.push(refuse(
                 "its task folder is not recorded, or no longer exists".into(),
@@ -260,6 +267,49 @@ fn unsafe_restore_dir(task: &TaskPackage, workdir: &str) -> Option<&'static str>
         return Some("holds or sits in BenchFlow's or the verifier's files");
     }
     None
+}
+
+/// Why a trial's saved `outputs/` folder is not what the run saved, by the
+/// files and bytes custody.json recorded; `None` when they match, or when
+/// the run recorded none (older jobs), as long as every file can be read.
+/// Grading a folder with a file cut or deleted since measured the damage,
+/// not the agent (E5: a regrade scored such a trial 0, with nothing saying
+/// why).
+fn outputs_changed(outputs: &Outputs, custody: &crate::record::Custody) -> Option<String> {
+    let Outputs::Folder(folder) = outputs else {
+        return None;
+    };
+    let (mut files, mut bytes) = (0u64, 0u64);
+    for entry in walkdir::WalkDir::new(folder).min_depth(1) {
+        // One unreadable file stopped the whole regrade as "the job folder
+        // could not be written" (E5); it is this trial's alone.
+        let unreadable = |what: &Path| {
+            format!(
+                "its saved outputs cannot all be read ({})",
+                what.strip_prefix(folder).unwrap_or(what).display()
+            )
+        };
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => return Some(unreadable(e.path().unwrap_or(folder))),
+        };
+        if entry.file_type().is_file() {
+            if std::fs::File::open(entry.path()).is_err() {
+                return Some(unreadable(entry.path()));
+            }
+            files += 1;
+            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    if custody.saved_files == 0 && custody.saved_bytes == 0 {
+        return None;
+    }
+    (files != custody.saved_files || bytes != custody.saved_bytes).then(|| {
+        format!(
+            "its saved outputs changed since the run: {files} files and {bytes} bytes in outputs/, where the run saved {} files and {} bytes",
+            custody.saved_files, custody.saved_bytes
+        )
+    })
 }
 
 /// A trial folder's saved outputs, when it has any.

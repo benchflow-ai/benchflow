@@ -1,0 +1,182 @@
+# The examples folder's commands that start no sandbox: formats, import and export, check, job files, and refusals (examples/README.md, rows marked "offline").
+tier = "smoke"
+tasks = ["examples/hello", "examples/hello-split", "examples/hello-08", "examples/hello-tb1", "examples/check-errors", "examples/rubric-judged", "examples/clock-start", "examples/timezone", "examples/world-sim"]
+
+[[step]]
+name = "E01 every example task but the broken one checks clean"
+sh = "cp -R {examples}/tasks all && rm -rf all/check-errors all/hello-tb1 && {bench} check all"
+exit = 0
+stdout_has = ['tasks: \d+ ok']
+
+[[step]]
+name = "E02 check finds a misspelled key and a split-layout spelling, with positions"
+run = ["check", "tasks/check-errors"]
+exit = 1
+output_has = ['error\[T201\]: unknown key \[agent\] timout', 'did you mean `timeout`', 'error\[T202\]', 'task.md:9:1', '2 errors can be fixed automatically']
+
+[[step]]
+name = "E03 check --fix repairs both"
+run = ["check", "tasks/check-errors", "--fix"]
+exit = 0
+file_has = { "tasks/check-errors/task.md" = ['timeout = "2m"', 'timeout = "1m"'] }
+
+[[step]]
+name = "E04 a Terminal-Bench v1 task is not run as it is: the message names bench import"
+run = ["run", "tasks/hello-tb1", "--dry-run"]
+exit = 2
+output_has = ['bench import']
+
+[[step]]
+name = "E05 bench import converts it to task.md, which checks clean"
+run = ["import", "tasks/hello-tb1", "tb1-taskmd"]
+exit = 0
+files = ["tb1-taskmd/task.md"]
+
+[[step]]
+run = ["check", "tb1-taskmd"]
+exit = 0
+
+[[step]]
+name = "E06 the split layout imports to task.md and exports back"
+run = ["import", "tasks/hello-split", "split-taskmd"]
+exit = 0
+files = ["split-taskmd/task.md"]
+
+[[step]]
+run = ["export", "split-taskmd", "split-again"]
+exit = 0
+files = ["split-again/task.toml", "split-again/instruction.md", "split-again/tests/test.sh"]
+
+[[step]]
+name = "E07 a 0.8 task.md imports to task.md"
+run = ["import", "tasks/hello-08", "v08-taskmd"]
+exit = 0
+files = ["v08-taskmd/task.md"]
+
+[[step]]
+name = "E08 a task with a rubric refuses a lossy export, and exports with --allow-degraded"
+run = ["export", "tasks/rubric-judged", "rubric-split"]
+exit = [1, 2]
+output_has = ['rubric']
+
+[[step]]
+run = ["export", "tasks/rubric-judged", "rubric-split", "--allow-degraded"]
+exit = 0
+files = ["rubric-split/task.toml"]
+
+[[step]]
+name = "E09 job files layer: TOML then YAML, later wins, tables merge"
+run = ["run", "-c", "{examples}/job-files/base.toml", "-c", "{examples}/job-files/nop.yaml", "--print-config"]
+exit = 0
+stdout_has = ['^agent = "nop"', '^trials = 2', '^EXAMPLE_FLAG = "1"']
+
+[[step]]
+name = "E10 a JSON job file with include and exclude patterns; flags win over files"
+run = ["run", "-c", "{examples}/job-files/include.json", "-a", "nop", "--dry-run", "-s", "docker"]
+exit = [0, 3]
+output_has = ['reward-json', 'agent +nop']
+output_lacks = ['reward-nan', '· hello$']
+
+[[step]]
+name = "E11 an empty list in a later file clears an earlier include"
+run = ["run", "-c", "{examples}/job-files/include.json", "-c", "{examples}/job-files/clear-include.toml", "--print-config"]
+exit = 0
+output_lacks = ['^include']
+
+[[step]]
+name = "E12 a misspelled job-file key is refused before anything runs"
+run = ["run", "-c", "{examples}/job-files/bad-key.toml", "--dry-run"]
+exit = 2
+output_has = ['unknown field `agnet`']
+
+[[step]]
+name = "E13 a local dataset.toml lists its tasks"
+run = ["run", "-d", "{examples}/datasets/mini/dataset.toml", "--dry-run", "-s", "docker"]
+exit = [0, 3]
+output_has = ['examples-mini@1.0', '2 tasks', 'digests +none pinned']
+
+[[step]]
+name = "E14 a misspelled agent gets a suggestion"
+run = ["run", "tasks/hello", "-a", "claud", "--dry-run"]
+exit = 2
+output_has = ['did you mean `claude`']
+
+[[step]]
+name = "E15 an agent with no login: the dry run names what is missing and exits 3"
+run = ["run", "tasks/hello", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "--dry-run", "-s", "docker"]
+env = { MIMO_API_KEY = "" }
+exit = 3
+output_has = ['R211', 'MIMO_API_KEY']
+
+[[step]]
+name = "E16 an option the agent does not have is refused"
+run = ["run", "tasks/hello", "-a", "opencode", "-m", "mimo/mimo-v2.6-flash", "--ak", "nope=1", "--dry-run"]
+exit = 2
+output_has = ['has no option `nope`']
+
+[[step]]
+name = "E17 --load-trajectory with an agent that cannot load sessions is refused"
+sh = "touch session.jsonl && {bench} run tasks/hello -a opencode -m mimo/mimo-v2.6-flash --load-trajectory session.jsonl --dry-run"
+exit = 2
+output_has = ['cannot load a session from a file']
+
+[[step]]
+name = "E18 bench branch refuses what it cannot fork, before any sandbox"
+run = ["branch", "tasks/hello", "--children", "1"]
+exit = 2
+output_has = ['two or more|2 or more']
+
+[[step]]
+name = "E56 bench.toml: a profile layered over [run], and a flag over both"
+sh = "cp {examples}/bench.toml . && {bench} run tasks/hello --profile repeat -j 2 --print-config"
+stdout_has = ['^trials = 3', '^concurrency = 2']
+
+[[step]]
+name = "E57 -x and -n narrow the tasks"
+run = ["run", "tasks", "-x", "hello*", "-n", "1", "--dry-run", "-s", "docker"]
+exit = [0, 3]
+output_has = ['1 task']
+output_lacks = ['· hello']
+
+[[step]]
+name = "E58 bench agents says what an agent can do"
+run = ["agents", "opencode"]
+stdout_has = ['resume +on acp and headless', 'loads +no', 'skills +copied into']
+
+[[step]]
+name = "E59 flags that reach only model agents are named when a script runs"
+sh = "{bench} run tasks/hello -a script:{examples}/agents/slow.sh --idle-timeout 10s --dry-run -s docker"
+exit = [0, 3]
+output_has = ['--idle-timeout has no effect: it reaches only model agents']
+
+[[step]]
+name = "E67 a clock, a time zone, and a world check clean, and a run refuses each by name before any sandbox (this runner does not provide them yet)"
+run = ["check", "tasks/clock-start", "tasks/timezone", "tasks/world-sim"]
+exit = 0
+
+[[step]]
+run = ["run", "tasks/clock-start", "tasks/timezone", "tasks/world-sim", "--dry-run", "-s", "docker"]
+exit = [0, 3]
+output_has = ['clock-start would be refused: .*\[sandbox\] clock', 'timezone would be refused: .*\[sandbox\] timezone', 'world-sim would be refused: .*\[world\]']
+
+[[step]]
+name = "E73 following the README writes nothing among the tracked examples: fixes and conversions work on copies in scratch/ (review E7-B 4)"
+sh = "python3 {e2e}/checks/readme_writes.py {examples}/README.md"
+
+[[step]]
+name = "E68c the network examples name no outside host, and the by-address ones each have a positive control (review E7-B 2)"
+sh = "! grep -rnE '1\\.1\\.1\\.1|172\\.66\\.|8\\.8\\.8\\.8|github\\.com|example\\.com' {examples}/tasks/net-ip-allowlist {examples}/tasks/net-ip-blocklist {examples}/tasks/net-ip-none {examples}/tasks/net-open {examples}/tasks/net-none {examples}/tasks/net-allowlist {examples}/tasks/net-blocklist && grep -q 'local=answered' {examples}/tasks/net-ip-allowlist/verifier/test.sh && grep -q 'local=answered' {examples}/tasks/net-ip-blocklist/verifier/test.sh && grep -q 'local=answered' {examples}/tasks/net-ip-none/verifier/test.sh"
+
+[[step]]
+name = "E54b net-open's and net-none's verifiers each score 1 only for their own policy, a host with no outside route included (reviews E7-C-B 1, E7-D-B 1)"
+sh = "sh {e2e}/checks/net_open_verifier.sh {examples}"
+
+[[step]]
+name = "E19 explain and schema"
+run = ["explain", "R303"]
+exit = 0
+
+[[step]]
+run = ["schema", "job"]
+exit = 0
+stdout_has = ['"targets"']

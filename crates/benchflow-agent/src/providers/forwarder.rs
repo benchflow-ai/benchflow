@@ -40,10 +40,12 @@ pub const NODE: &str = "/opt/benchflow/node/bin/node";
 /// The image layer that installs BenchFlow's Node.js for the forwarder, for
 /// an agent not installed with npm (npm agents bring it). Safe to repeat.
 pub fn node_layer() -> String {
-    format!(
+    // Its `npm --version` leaves `/tmp/node-compile-cache` behind, which
+    // would stay root's in the image (review E4-B, low).
+    crate::manifest::install::with_private_tmp(&format!(
         "{} && chmod -R a+rX /opt/benchflow/node",
         crate::manifest::install::NODE_BOOTSTRAP
-    )
+    ))
 }
 
 /// How long the forwarder may take to say it is listening.
@@ -501,6 +503,20 @@ async fn watch_exit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The forwarder's Node.js layer runs with a `TMPDIR` of its own, as agent
+    /// installs do, so its `npm --version` leaves no root-owned
+    /// `/tmp/node-compile-cache` in the image (review E4-B, low).
+    #[test]
+    fn the_node_layer_leaves_nothing_in_tmp() {
+        let layer = node_layer();
+        assert!(
+            layer.starts_with("bf_install_tmp=$(mktemp -d /tmp/benchflow-install."),
+            "{layer}"
+        );
+        assert!(layer.contains(crate::manifest::install::NODE_BOOTSTRAP));
+        assert!(layer.ends_with("rm -rf \"$bf_install_tmp\"; exit $bf_rc"));
+    }
 
     fn report(lines: &[&str]) -> ForwarderReport {
         ForwarderReport {

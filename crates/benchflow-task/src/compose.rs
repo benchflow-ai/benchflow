@@ -652,9 +652,16 @@ fn declared_networks(v: &Value, field: &str, r: &mut Reading<'_>) -> Vec<String>
     for (name, opts) in m {
         let plain = match opts {
             Value::Null => true,
-            Value::Object(o) => o
-                .iter()
-                .all(|(k, v)| k == "driver" && v.as_str() == Some("bridge") || k.starts_with("x-")),
+            // `internal: false` is a plain bridge's default (KUMO writes it).
+            // `internal: true` is still refused: it would cut `main` off the
+            // internet, while the agent's network comes from the task's own
+            // setting, so the agent would get the internet the task denied
+            // (review E4-A, 1).
+            Value::Object(o) => o.iter().all(|(k, v)| {
+                k == "driver" && v.as_str() == Some("bridge")
+                    || k == "internal" && v == &Value::Bool(false)
+                    || k.starts_with("x-")
+            }),
             _ => false,
         };
         if plain {
@@ -665,7 +672,7 @@ fn declared_networks(v: &Value, field: &str, r: &mut Reading<'_>) -> Vec<String>
         } else {
             r.refuse(
                 format!("{field}.{name}"),
-                "only a plain bridge network (`driver: bridge`) is read",
+                "only a plain bridge network (`driver: bridge`, `internal: false`) is read",
             );
         }
     }
@@ -976,6 +983,14 @@ fn sidecar(
                     return None;
                 }
             };
+            // The split layout's template names the Compose file's own
+            // folder `${CONTEXT_DIR}`, as main's build does (KUMO's verifier
+            // service).
+            let context = if variable_name(&context) == Some("CONTEXT_DIR") {
+                ".".to_string()
+            } else {
+                context
+            };
             let rel = Path::new(context.trim_start_matches("./"));
             let outside = |p: &Path| {
                 p.is_absolute() || p.components().any(|c| c == std::path::Component::ParentDir)
@@ -1278,6 +1293,45 @@ mod tests {
         assert!(warned[1].contains("`PGUSER`"), "{}", warned[1]);
         // Passed on as written.
         assert_eq!(c.services[0].command[2], "port=${PGPORT}");
+    }
+
+    /// KUMO's Compose file (kumo@1.0, 10,800 tasks across its registry
+    /// entries): a verifier service built from `${CONTEXT_DIR}` with its own
+    /// Dockerfile, on a declared network with `internal: false`. Both were
+    /// refused, so no KUMO task ran.
+    #[test]
+    fn a_service_built_from_the_template_folder_on_an_internal_network_runs() {
+        let dir = package(
+            "services:\n  verifier:\n    build:\n      context: ${CONTEXT_DIR}\n      dockerfile: Dockerfile_verifier\n    image: ${MAIN_IMAGE_NAME}_verifier\n    command: [\"python\", \"/app/kumo_verifier.py\", \"server\", \"--port\", \"8080\"]\n    volumes:\n      - ${HOST_VERIFIER_LOGS_PATH}:${ENV_VERIFIER_LOGS_PATH}\n    networks:\n      - internal\n  main:\n    build:\n      context: ${CONTEXT_DIR}\n      dockerfile: Dockerfile\n    image: ${MAIN_IMAGE_NAME}\n    command: [ \"sh\", \"-c\", \"sleep infinity\" ]\n    networks:\n      - internal\nnetworks:\n  internal:\n    internal: false\n",
+            &["Dockerfile", "Dockerfile_verifier"],
+        );
+        let (c, refused) = read_package(&dir);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(c.services.len(), 1);
+        let v = &c.services[0];
+        assert_eq!(v.name, "verifier");
+        assert!(
+            matches!(&v.image, ImageRef::Build { dockerfile, .. }
+            if dockerfile == Path::new("environment/Dockerfile_verifier")),
+            "{:?}",
+            v.image
+        );
+        // `internal: true` is refused: the agent's network is the task's
+        // setting, so `main` would keep the internet it asks to lose (review
+        // E4-A, 1); other keys still are not read.
+        for (opts, ok) in [
+            ("internal: false", true),
+            ("internal: true", false),
+            ("driver: overlay", false),
+            ("internal: maybe", false),
+        ] {
+            let dir = package(
+                &format!("services:\n  main:\n    networks: [n]\nnetworks:\n  n:\n    {opts}\n"),
+                &["Dockerfile"],
+            );
+            let (_, refused) = read_package(&dir);
+            assert_eq!(refused.is_empty(), ok, "{opts}: {refused:?}");
+        }
     }
 
     #[test]

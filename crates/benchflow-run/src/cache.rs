@@ -132,8 +132,9 @@ pub fn scan(root: &Path) -> Scan {
                     .push(entry(Kind::Logs, "`bench agents check` logs".into(), &path))
             }
             // Records `bench` reads back, not caches: `bench agents` shows
-            // the last checks, and the image cache's last uses.
-            "agent-checks.jsonl" | "docker-image-use.json" => {}
+            // the last checks, the image cache's last uses, and the id that
+            // labels this install's sandboxes for the start-of-run sweep.
+            "agent-checks.jsonl" | "docker-image-use.json" | "install-id" => {}
             _ => out.foreign.push(entry(Kind::Sources, name.clone(), &path)),
         }
     }
@@ -268,6 +269,9 @@ mod tests {
         write(r, "logs/crash-1.log", "boom");
         write(r, "agent-check-logs/acp_x.log", "log");
         write(r, "agent-checks.jsonl", "{}\n");
+        // bench's own install id is neither a cache nor someone else's
+        // file (E7: `bench cache` called it "not written by this bench").
+        write(r, "install-id", "0123456789abcdef0123456789abcdef");
         write(r, "task-formats/robouse/runtime-1/x", "0.8's");
         let s = scan(r);
         let names: Vec<(Kind, &str)> = s

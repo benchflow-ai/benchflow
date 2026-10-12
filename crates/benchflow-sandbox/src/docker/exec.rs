@@ -148,7 +148,13 @@ pub(crate) async fn kill_tagged(
         let args = kill_args(container, &as_user, exec_id);
         let out = cli.run(&args, Some(Duration::from_secs(30))).await?;
         if !out.ok() {
-            result = Err(cli.daemon_problem(&out).unwrap_or_else(|| {
+            // `kill` ran inside the container; its words are not the CLI's.
+            let confirmed = if cli.daemon_problem(&out).is_some() {
+                cli_confirms_trouble(cli, container).await
+            } else {
+                None
+            };
+            result = Err(confirmed.unwrap_or_else(|| {
                 SandboxError::Transport(format!(
                     "could not kill the processes of a command in {container} ({}); they may \
                      still run until the sandbox is destroyed",
@@ -256,6 +262,40 @@ pub(super) fn container_gone(cli: &Cli, container: &str, stderr: &str) -> Option
     })
 }
 
+/// Whether the CLI itself, asked about `container`, says its daemon cannot
+/// be reached or the container no longer runs: the error then, else `None`
+/// (the container runs, so words to the contrary came from inside it).
+pub(super) async fn cli_confirms_trouble(cli: &Cli, container: &str) -> Option<SandboxError> {
+    let args: Vec<String> = ["inspect", "--format", "{{.State.Running}}", container]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let out = match cli.run(&args, Some(Duration::from_secs(30))).await {
+        Ok(out) => out,
+        Err(e) => return Some(e),
+    };
+    if out.ok() {
+        if out.stdout.trim() == "true" {
+            return None;
+        }
+        return Some(SandboxError::Transport(format!(
+            "the sandbox container {container} is no longer running; check `{} ps -a --filter name={container}` and `{} logs {container}`",
+            cli.name, cli.name
+        )));
+    }
+    Some(
+        cli.daemon_problem(&out)
+            .or_else(|| container_gone(cli, container, &out.message()))
+            .unwrap_or_else(|| {
+                SandboxError::Transport(format!(
+                    "`{} inspect {container}` failed: {}",
+                    cli.name,
+                    out.message()
+                ))
+            }),
+    )
+}
+
 /// Run `exec` to completion in `container`.
 pub(super) async fn exec(
     cli: &Cli,
@@ -321,10 +361,14 @@ pub(super) async fn exec(
             stdout: String::new(),
             stderr: stderr.clone(),
         };
-        if let Some(err) = cli.daemon_problem(&output) {
-            return Err(err);
-        }
-        if let Some(err) = container_gone(cli, container, &stderr) {
+        // The CLI's words about its daemon or the container share stderr
+        // with the command's own output, which code inside the container
+        // writes: they count only when the CLI confirms them itself
+        // (convergence review E9-C-B 2).
+        if (cli.daemon_problem(&output).is_some()
+            || container_gone(cli, container, &stderr).is_some())
+            && let Some(err) = cli_confirms_trouble(cli, container).await
+        {
             return Err(err);
         }
     }

@@ -1,0 +1,4 @@
+# What running the examples writes here: jobs, and the copies and
+# conversions the README's commands put in scratch/.
+jobs/
+scratch/

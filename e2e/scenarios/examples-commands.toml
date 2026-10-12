@@ -1,0 +1,164 @@
+# The examples folder's commands on a sandbox: test, regrade, --diff, compare, branch, dataset.toml, interrupt and resume, shell, view (examples/README.md).
+tier = "full"
+needs = ["sandbox"]
+tasks = ["examples/hello", "examples/hello-split", "examples/stages", "examples/always-passes"]
+
+[[step]]
+name = "E30 bench test proves a good task"
+run = ["test", "tasks/hello", "-s", "{backend}", "-j", "{j}"]
+exit = 0
+timeout = 1200
+stdout_has = ['proved itself']
+
+[[step]]
+name = "E31 bench test catches a verifier that passes doing nothing"
+run = ["test", "tasks/always-passes", "--probes", "none", "-s", "{backend}", "-j", "{j}"]
+exit = 1
+timeout = 900
+output_has = ['nop']
+
+[[step]]
+name = "E32 regrade: run with --save-outputs, change the verifier, regrade"
+run = ["run", "tasks/hello-split", "-s", "{backend}", "--save-outputs", "--job", "base"]
+exit = 0
+trials = [{ job = "base", task = "hello-split", reward = 1.0 }]
+
+[[step]]
+sh = "sed -i.bak 's/\"42\"/\"41\"/' tasks/hello-split/tests/test.sh && rm tasks/hello-split/tests/test.sh.bak"
+
+[[step]]
+run = ["regrade", "jobs/base", "-s", "{backend}"]
+exit = 0
+stdout_has = ['Changed 1 of 1']
+files = ["jobs/base-regrade-1/summary.json"]
+
+[[step]]
+name = "E33 --diff plans a regrade, not a rerun, after a verifier change"
+run = ["run", "tasks/hello-split", "-s", "{backend}", "--save-outputs", "--diff", "base", "--dry-run"]
+exit = 0
+stdout_has = ['regrade +hello-split']
+
+[[step]]
+name = "E34 compare two jobs"
+run = ["run", "tasks/hello", "tasks/hello-split", "-a", "nop", "-s", "{backend}", "-j", "{j}", "--job", "nop"]
+exit = 0
+
+[[step]]
+run = ["run", "tasks/hello", "tasks/hello-split", "-s", "{backend}", "-j", "{j}", "--job", "oracle"]
+exit = 0
+
+[[step]]
+run = ["results", "jobs/nop", "jobs/oracle"]
+exit = 0
+stdout_has = ['hello']
+
+[[step]]
+name = "E35 a fork at start: 3 oracle children, value 1"
+run = ["branch", "tasks/hello", "--children", "3", "-s", "{backend}", "-j", "{j}", "--job", "fork-start"]
+exit = 0
+timeout = 900
+stdout_has = ['value 1.000']
+
+[[step]]
+run = ["branches", "jobs/fork-start"]
+exit = 0
+stdout_has = ['c3']
+
+[[step]]
+name = "E36 a fork after a graded stage, the parent continuing"
+run = ["branch", "tasks/stages", "--at", "stage:first", "--children", "2", "--parent", "continue", "-s", "{backend}", "-j", "{j}", "--job", "fork-stage"]
+exit = 0
+timeout = 900
+stdout_has = ['value 1.000']
+
+[[step]]
+name = "E37 a nop fork at start: value 0"
+run = ["branch", "tasks/hello", "-a", "nop", "--children", "2", "-s", "{backend}", "-j", "{j}", "--job", "fork-nop"]
+exit = 0
+timeout = 900
+stdout_has = ['value 0.000']
+
+[[step]]
+name = "E38 a local dataset.toml runs its tasks"
+run = ["run", "-d", "{examples}/datasets/mini/dataset.toml", "-s", "{backend}", "-j", "{j}", "--job", "dataset"]
+exit = 0
+timeout = 900
+stdout_has = ['2/2 passed']
+
+[[step]]
+name = "E39 Ctrl-C twice stops a run; the same command resumes it"
+sh = "set -m; {bench} run tasks/hello -a script:{examples}/agents/slow.sh -s {backend} --job slow > slow1.out 2>&1 & pid=$!; sleep 45; kill -INT $pid; sleep 3; kill -INT $pid; wait $pid; code=$?; cat slow1.out; echo exit=$code; test $code = 1"
+timeout = 400
+
+[[step]]
+run = ["run", "tasks/hello", "-a", "script:{examples}/agents/slow.sh", "-s", "{backend}", "--job", "slow"]
+exit = 0
+timeout = 600
+trials = [{ job = "slow", task = "hello", status = "scored", reward = 1.0 }]
+
+[[step]]
+name = "E40 bench shell with piped commands, graded on exit"
+only_backends = ["docker"]
+run = ["shell", "tasks/hello"]
+stdin = "printf 'Hello, world!' > /app/hello.txt\nexit\n"
+exit = 0
+output_has = ['reward 1|1\.0|passed']
+
+[[step]]
+name = "E41 bench view serves the jobs on the first free port; its API answers"
+sh = "{bench} view jobs --no-open > view.out 2>&1 & pid=$!; for i in 1 2 3 4 5 6 7 8 9 10; do url=$(grep -o 'http://localhost:[0-9]*' view.out); [ -n \"$url\" ] && break; sleep 1; done; curl -fsS \"$url/api/compare?runs=nop,oracle\" > compare.json; curl -fsS \"$url/api/branches\" > branches.json; kill $pid; grep -q oracle compare.json && grep -q fork-start branches.json"
+
+[[step]]
+name = "E18b forks that cannot run are refused by name before any sandbox starts"
+run = ["branch", "tasks/hello", "--at", "prompt:1", "--children", "2", "-s", "{backend}"]
+exit = 2
+output_has = ['prompt']
+
+[[step]]
+run = ["branch", "tasks/stages", "--at", "stage:nope", "--children", "2", "-s", "{backend}"]
+exit = 2
+output_has = ['nope']
+
+[[step]]
+name = "E60 an outside service decides every step (-a external): it writes the file and submits"
+sh = "python3 {examples}/agents/backend.py port.txt > backend.log 2>&1 & pid=$!; for i in 1 2 3 4 5; do [ -s port.txt ] && break; sleep 1; done; {bench} run tasks/hello -a external --backend http://127.0.0.1:$(cat port.txt) -m scripted -s {backend} --job external; code=$?; kill $pid; cat backend.log; exit $code"
+timeout = 600
+output_has = ['hello__\w+: reward 1\.0']
+trials = [{ job = "external", task = "hello", status = "scored", reward = 1.0 }]
+files = ["jobs/external/hello__*/agent/backend_transcript.json"]
+
+[[step]]
+name = "E61 three trials of each task, and pass@k in results"
+run = ["run", "tasks/hello", "-a", "script:{examples}/agents/wrong-answer.sh", "-k", "3", "-s", "{backend}", "-j", "{j}", "--job", "three"]
+exit = 0
+timeout = 600
+trials = [{ job = "three", task = "hello", count = 3, reward = 0.0 }]
+
+[[step]]
+run = ["results", "jobs/three"]
+stdout_has = ['0/3 passed', 'pass@1 0\.0% · pass@2 0\.0% · pass@3 0\.0%']
+
+[[step]]
+name = "E62 --rerun failed runs the scored failures of a job again"
+run = ["run", "tasks/hello", "-a", "script:{examples}/agents/wrong-answer.sh", "-k", "3", "-s", "{backend}", "-j", "{j}", "--job", "three", "--rerun", "failed"]
+exit = 0
+timeout = 600
+output_has = ['0 of 3 trials kept, 3 to run', '0 reused, 3 ran now']
+trials = [{ job = "three", task = "hello", count = 3 }]
+
+[[step]]
+name = "E63 bench cache lists the images this owner built (a new image, built in this step, so under this step's owner label), and no file of its own as foreign"
+only_backends = ["docker"]
+sh = "cp -R tasks/hello tasks/cached && echo '# a build of its own' >> tasks/cached/sandbox/Dockerfile && {bench} run tasks/cached -s {backend} --job cached > /dev/null 2>&1 && {bench} cache --only images"
+stdout_has = ['benchflow/cached']
+output_lacks = ['not written by this bench.*install-id']
+
+[[step]]
+name = "E64 bench agents check installs an agent and checks it answers ACP's initialize"
+run = ["agents", "check", "opencode", "-s", "{backend}"]
+timeout = 900
+
+[[step]]
+name = "E42 doctor reports the backend"
+run = ["--json", "doctor", "-s", "{backend}"]
+exit = 0

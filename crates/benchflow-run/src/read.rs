@@ -81,6 +81,39 @@ impl JobView {
             .unwrap_or(0)
     }
 
+    /// The trials lock.json planned that have a `result.json` this could
+    /// not read (cut, empty, not JSON, a folder, or a folder this machine
+    /// may not read): they ran, so [`never_ran`](Self::never_ran) counts
+    /// them only because their record is gone. A rerun of the job runs
+    /// them again.
+    pub fn unreadable(&self) -> Vec<String> {
+        let Ok(text) = std::fs::read_to_string(self.dir.join(crate::lock::FILE_NAME)) else {
+            return Vec::new();
+        };
+        let Ok(lock) = serde_json::from_str::<Value>(&text) else {
+            return Vec::new();
+        };
+        let recorded: std::collections::BTreeSet<&str> = self
+            .records
+            .iter()
+            .map(|r| r.rollout_name.as_str())
+            .collect();
+        lock.get("trials")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.get("trial").and_then(Value::as_str))
+            .filter(|name| !recorded.contains(name))
+            .filter(|name| {
+                match std::fs::symlink_metadata(self.dir.join(name).join("result.json")) {
+                    Ok(_) => true,
+                    Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+                }
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
     /// Whether a live `bench run` (or `bench regrade`) holds the job.
     pub fn running(&self) -> bool {
         crate::job::is_running(&self.dir)
@@ -95,6 +128,33 @@ pub fn is_job(dir: &Path) -> bool {
     dir.join("evaluation.json").is_file()
         || dir.join("summary.json").is_file()
         || trial_dirs(dir).next().is_some()
+}
+
+/// True when `dir` is one trial's folder: it has a result.json, and that
+/// file is a trial's. Other harnesses write a job-level result.json, which
+/// names no task, next to their trial folders; such a folder is a job. A
+/// trial's own result.json decides, whatever its subfolders hold: a
+/// verifier's or a task output's `result.json` (`verifier/`, `artifacts/`)
+/// does not make a trial a job.
+pub fn is_trial(dir: &Path) -> bool {
+    if !dir.join("result.json").is_file() {
+        return false;
+    }
+    let names_a_task = || {
+        std::fs::read_to_string(dir.join("result.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|v| {
+                v.as_object().map(|m| {
+                    ["task_name", "trial_name", "rollout_name"]
+                        .iter()
+                        .any(|k| m.contains_key(*k))
+                })
+            })
+            // Unreadable: a trial's, as before.
+            .unwrap_or(true)
+    };
+    names_a_task() || trial_dirs(dir).next().is_none()
 }
 
 /// The trial folders directly under a job folder.
@@ -147,7 +207,7 @@ pub fn read_job(dir: &Path) -> JobView {
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
     };
-    let records: Vec<TrialRecord> = if dir.join("result.json").is_file() {
+    let records: Vec<TrialRecord> = if is_trial(dir) {
         read_trial(dir).into_iter().collect()
     } else {
         trial_dirs(dir).filter_map(|d| read_trial(&d)).collect()
@@ -242,17 +302,38 @@ fn local(t: NaiveDateTime) -> Option<DateTime<Local>> {
         .single()
 }
 
-/// Build a record from a result.json, written by either engine.
+/// Build a record from a result.json, written by either engine, or by a
+/// harness that keeps the rewards in `verifier_result.rewards`, the agent in
+/// `agent_info`, an error in `exception_info`, and counts cache reads in
+/// `n_input_tokens` (`n_cache_tokens`).
 pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
     let str_of = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
-    let rewards: Option<BTreeMap<String, f64>> =
-        v.get("rewards").and_then(Value::as_object).map(|m| {
+    let ptr_str = |p: &str| {
+        v.pointer(p)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let rewards: Option<BTreeMap<String, f64>> = v
+        .get("rewards")
+        .and_then(Value::as_object)
+        .or_else(|| {
+            v.pointer("/verifier_result/rewards")
+                .and_then(Value::as_object)
+        })
+        .map(|m| {
             m.iter()
                 .filter_map(|(k, x)| x.as_f64().map(|n| (k.clone(), n)))
                 .collect()
         });
     let reward = rewards.as_ref().and_then(|r| r.get("reward").copied());
-    let error = str_of("error");
+    let error = str_of("error").or_else(|| {
+        let kind = ptr_str("/exception_info/exception_type")?;
+        Some(match ptr_str("/exception_info/exception_message") {
+            Some(message) => format!("{kind}: {message}"),
+            None => kind,
+        })
+    });
     let verifier_error = str_of("verifier_error");
     let status: Status = v
         .get("status")
@@ -290,10 +371,16 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
         .or_else(|| reward.map(|r| r == 1.0));
     let ar = v.get("agent_result").cloned().unwrap_or(Value::Null);
     let u = |k: &str| ar.get(k).and_then(Value::as_u64).unwrap_or(0);
+    // `n_cache_tokens` (with no `n_cache_read_tokens`) are cache reads
+    // counted in `n_input_tokens` too.
+    let folded_cache = match ar.get("n_cache_read_tokens") {
+        None => u("n_cache_tokens"),
+        Some(_) => 0,
+    };
     let usage = Usage {
-        input_tokens: u("n_input_tokens"),
+        input_tokens: u("n_input_tokens").saturating_sub(folded_cache),
         output_tokens: u("n_output_tokens"),
-        cache_read_tokens: u("n_cache_read_tokens"),
+        cache_read_tokens: u("n_cache_read_tokens") + folded_cache,
         cache_write_tokens: u("n_cache_creation_tokens"),
         cost_usd: ar.get("cost_usd").and_then(Value::as_f64),
         cost_source: ar
@@ -343,8 +430,15 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
         }),
         agent: str_of("agent")
             .or_else(|| str_of("agent_name"))
+            .or_else(|| ptr_str("/agent_info/name"))
             .unwrap_or_default(),
-        model: str_of("model"),
+        model: str_of("model").or_else(|| {
+            let name = ptr_str("/agent_info/model_info/name")?;
+            Some(match ptr_str("/agent_info/model_info/provider") {
+                Some(provider) => format!("{provider}/{name}"),
+                None => name,
+            })
+        }),
         status,
         rewards,
         reward,
@@ -368,6 +462,7 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
         defenses,
         custody,
         login: str_of("login"),
+        agent_version: str_of("agent_version").or_else(|| ptr_str("/agent_info/version")),
         env_keys: Vec::new(),
         verifier_exit: v
             .get("verifier_exit_code")
@@ -391,12 +486,122 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
             .get("environment_warnings")
             .and_then(|s| serde_json::from_value(s.clone()).ok())
             .unwrap_or_default(),
+        reward_range: v
+            .get("reward_range")
+            .and_then(|s| serde_json::from_value(s.clone()).ok()),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E5: a trial whose result.json was cut was reported as "planned never
+    /// ran (the run was drained or stopped first ...)".
+    #[test]
+    fn a_cut_record_is_unreadable_not_never_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let job = dir.path();
+        std::fs::write(
+            job.join(crate::lock::FILE_NAME),
+            r#"{"trials": [{"trial": "a__1"}, {"trial": "b__2"}, {"trial": "c__3"}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir(job.join("a__1")).unwrap();
+        std::fs::write(job.join("a__1/result.json"), "{\"status\": \"sco").unwrap();
+        std::fs::create_dir(job.join("c__3")).unwrap();
+        let view = read_job(job);
+        assert!(view.records.is_empty());
+        assert_eq!(view.never_ran(), 3);
+        assert_eq!(view.unreadable(), ["a__1"]);
+    }
+
+    /// E1: a job of another harness has a job-level result.json next to its
+    /// trial folders, and each trial keeps its rewards in
+    /// `verifier_result.rewards`. It was read as one unscored trial named
+    /// after the job ("0 of 1 scored") although its trial passed.
+    #[test]
+    fn a_job_with_its_own_result_json_reads_its_trials() {
+        let job = tempfile::tempdir().unwrap();
+        std::fs::write(
+            job.path().join("result.json"),
+            r#"{"id": "j", "n_total_trials": 1, "stats": {}}"#,
+        )
+        .unwrap();
+        let trial = job.path().join("fix-git__SFjiUpt");
+        std::fs::create_dir_all(&trial).unwrap();
+        std::fs::write(
+            trial.join("result.json"),
+            serde_json::json!({
+                "task_name": "fix-git", "trial_name": "fix-git__SFjiUpt",
+                "agent_info": {"name": "opencode", "version": "1.18.11",
+                               "model_info": {"name": "mimo-v2.6-flash", "provider": "mimo"}},
+                "agent_result": {"n_input_tokens": 100654, "n_cache_tokens": 96128, "n_output_tokens": 815},
+                "verifier_result": {"rewards": {"reward": 1.0}},
+                "exception_info": null,
+                "started_at": "2026-10-12T02:27:36.383539Z", "finished_at": "2026-10-12T02:29:22.099525Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let view = read_job(job.path());
+        assert_eq!(view.records.len(), 1);
+        let rec = &view.records[0];
+        assert_eq!(rec.rollout_name, "fix-git__SFjiUpt");
+        assert_eq!(rec.reward, Some(1.0));
+        assert_eq!(rec.status, Status::Scored);
+        assert_eq!(rec.agent, "opencode");
+        assert_eq!(rec.model.as_deref(), Some("mimo/mimo-v2.6-flash"));
+        assert_eq!(rec.agent_version.as_deref(), Some("1.18.11"));
+        assert_eq!(rec.usage.input_tokens, 100654 - 96128);
+        assert_eq!(rec.usage.cache_read_tokens, 96128);
+        // A trial folder alone is still a job of one.
+        assert_eq!(read_job(&trial).records.len(), 1);
+    }
+
+    /// Review E1-B 1 (high): a trial whose verifier (or a task output)
+    /// left its own `result.json` in a subfolder was read as a job whose one
+    /// trial was that subfolder, and its real grade was lost.
+    #[test]
+    fn a_trial_with_a_result_json_in_a_subfolder_is_still_a_trial() {
+        let trial = tempfile::tempdir().unwrap();
+        std::fs::write(
+            trial.path().join("result.json"),
+            r#"{"task_name": "arvo", "rollout_name": "arvo__4cbc71f2", "status": "scored", "rewards": {"reward": 1.0}}"#,
+        )
+        .unwrap();
+        for sub in ["verifier", "artifacts"] {
+            std::fs::create_dir_all(trial.path().join(sub)).unwrap();
+            std::fs::write(
+                trial.path().join(sub).join("result.json"),
+                r#"{"rewards": {"reward": 0.0}, "crash": "x"}"#,
+            )
+            .unwrap();
+        }
+        assert!(is_trial(trial.path()));
+        let view = read_job(trial.path());
+        assert_eq!(view.records.len(), 1);
+        assert_eq!(view.records[0].rollout_name, "arvo__4cbc71f2");
+        assert_eq!(view.records[0].reward, Some(1.0));
+    }
+
+    #[test]
+    fn an_exception_is_the_trials_error() {
+        let rec = record_from_json(
+            &serde_json::json!({"task_name": "t", "verifier_result": null,
+                "exception_info": {"exception_type": "AgentTimeoutError", "exception_message": "agent ran 900 s"}}),
+            Path::new("t__1"),
+        )
+        .unwrap();
+        assert_eq!(rec.status, Status::Errored);
+        assert_eq!(rec.reward, None);
+        assert!(
+            rec.problem
+                .unwrap()
+                .message
+                .contains("AgentTimeoutError: agent ran 900 s")
+        );
+    }
 
     const CHILD: &str = "BENCHFLOW_TEST_NAIVE_TIME_ZONE";
 

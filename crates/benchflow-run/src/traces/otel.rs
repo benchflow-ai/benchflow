@@ -579,8 +579,12 @@ fn tool_spans(
 /// `export_trials` writes it with `trace_seed` set to the trial's name,
 /// except that the resource and scope name BenchFlow as the producer.
 pub fn trace_line(traj: &Value, trace_seed: &str, service: &str) -> String {
+    dumps(&trace_value(traj, trace_seed, service), Dumps::ASCII)
+}
+
+fn trace_value(traj: &Value, trace_seed: &str, service: &str) -> Value {
     let spans = spans(traj, trace_seed, service, MAX_ATTRIBUTE_BYTES);
-    let data = json!({
+    json!({
         "resourceSpans": [{
             "resource": {"attributes": attrs(vec![
                 ("service.name", s(service)),
@@ -593,8 +597,7 @@ pub fn trace_line(traj: &Value, trace_seed: &str, service: &str) -> String {
                 "spans": spans,
             }],
         }]
-    });
-    dumps(&data, Dumps::ASCII)
+    })
 }
 
 #[cfg(test)]

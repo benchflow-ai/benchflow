@@ -433,6 +433,7 @@ fn codex_gets_the_model_and_effort_in_its_config_file() {
          model = \"alibaba/qwen3.7-flash\"\n\
          model_reasoning_effort = \"medium\"\n\
          model_provider = \"benchflow\"\n\
+         web_search = \"disabled\"\n\
          \n\
          [model_providers.benchflow]\n\
          name = \"BenchFlow forwarder\"\n\
@@ -447,6 +448,9 @@ fn codex_gets_the_model_and_effort_in_its_config_file() {
         config["model_providers"]["benchflow"]["wire_api"].as_str(),
         Some("responses")
     );
+    // Providers refuse OpenAI's hosted web search tool, which Codex sends
+    // unless it is off.
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
     let high = route
         .agent_env("http://127.0.0.1:41234/openai", Some("high"))
         .unwrap();
@@ -1589,5 +1593,114 @@ fn a_misspelled_model_is_answered_with_the_closest_listed_one() {
     assert_eq!(
         e.next_step(),
         "check the model id; https://ai-gateway.vercel.sh/v1/models lists every model vercel serves"
+    );
+}
+
+/// E5 round 2: the test hook that sends the in-sandbox forwarder's requests
+/// to a fault-injecting endpoint, and the checks on where the key may go.
+#[test]
+fn the_test_upstream_moves_the_forwarders_requests_and_is_checked() {
+    use super::{TEST_UPSTREAM_ENV, test_upstream};
+    let model = Some("mimo/mimo-v2.6-flash");
+    let upstream = |access: &Access| match &access.route {
+        Route::Provider(r) => r.forwarder_config("/k")["routes"][0]["upstream"].clone(),
+        Route::Agent => panic!("the provider route"),
+    };
+    let plain = host(&[("MIMO_API_KEY", "k")], None);
+    let access = resolve(&agent("opencode"), model, &plain, &providers()).unwrap();
+    assert!(
+        upstream(&access)
+            .as_str()
+            .unwrap()
+            .starts_with("https://token-plan-sgp")
+    );
+    let moved = host(
+        &[
+            ("MIMO_API_KEY", "k"),
+            (TEST_UPSTREAM_ENV, "http://127.0.0.1:18895/v1/"),
+        ],
+        None,
+    );
+    let access = resolve(&agent("opencode"), model, &moved, &providers()).unwrap();
+    assert_eq!(upstream(&access), "http://127.0.0.1:18895/v1");
+    // E5 review (C-B 1): that loopback is the sandbox's, where the agent can
+    // listen, so over plain http the forwarder never holds the real key.
+    assert_eq!(
+        access.key.as_ref().unwrap().value(),
+        super::key::WITHHELD_KEY
+    );
+    let tls = host(
+        &[
+            ("MIMO_API_KEY", "k"),
+            (TEST_UPSTREAM_ENV, "https://fault.example/v1"),
+        ],
+        None,
+    );
+    let access = resolve(&agent("opencode"), model, &tls, &providers()).unwrap();
+    assert_eq!(access.key.as_ref().unwrap().value(), "k");
+    // E5 review (D-B): the scheme as the URL parser reads it, so an
+    // upper-case `HTTP://` is plain http too, and gets the placeholder.
+    let upper = host(
+        &[
+            ("MIMO_API_KEY", "k"),
+            (TEST_UPSTREAM_ENV, "HTTP://127.0.0.1:18895/v1"),
+        ],
+        None,
+    );
+    let access = resolve(&agent("opencode"), model, &upper, &providers()).unwrap();
+    assert_eq!(
+        access.key.as_ref().unwrap().value(),
+        super::key::WITHHELD_KEY
+    );
+    // A name is resolved inside the sandbox: refused for plain http.
+    assert!(
+        test_upstream(&host(
+            &[(TEST_UPSTREAM_ENV, "http://localhost:18895/v1")],
+            None
+        ))
+        .is_err()
+    );
+    // E5 review (B4): plain http only to loopback, never across a network,
+    // a private one included.
+    for bad in [
+        "http://10.128.0.3:18895/v1",
+        "http://192.168.1.50/v1",
+        "http://[fd00::1]/v1",
+        "http://8.8.8.8/v1",
+        "http://u:p@10.0.0.1/v1",
+        "ftp://10.0.0.1/v1",
+        "not a url",
+    ] {
+        assert!(
+            test_upstream(&host(&[(TEST_UPSTREAM_ENV, bad)], None)).is_err(),
+            "{bad}"
+        );
+    }
+    let error = resolve(
+        &agent("opencode"),
+        model,
+        &host(
+            &[
+                ("MIMO_API_KEY", "k"),
+                (TEST_UPSTREAM_ENV, "http://8.8.8.8/v1"),
+            ],
+            None,
+        ),
+        &providers(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains(TEST_UPSTREAM_ENV), "{error}");
+    let via_env = HostEnv::new(BTreeMap::new(), None).with_overrides(BTreeMap::from([(
+        TEST_UPSTREAM_ENV.to_string(),
+        "https://fault.example/v1".to_string(),
+    )]));
+    assert!(test_upstream(&via_env).is_err());
+    assert_eq!(
+        test_upstream(&host(
+            &[(TEST_UPSTREAM_ENV, "https://fault.example/v1")],
+            None
+        ))
+        .unwrap(),
+        Some("https://fault.example/v1".to_string())
     );
 }

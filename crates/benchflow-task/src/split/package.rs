@@ -143,6 +143,32 @@ fn unsupported(
     }
 }
 
+/// A whole value `${VAR}` or `${VAR:-default}`: what 0.8 resolves from the
+/// host's environment in `[environment] env`, `[verifier.env]` and
+/// `[solution.env]` (a value with other text around it is literal there).
+static HOST_TEMPLATE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^\$\{[^}:]+(?::-.*)?\}$").unwrap());
+
+/// Refuse each env value 0.8 would take from the host: this runner passes
+/// no host value into a task, so the script would see the text `${VAR}`
+/// itself (an LLM judge's key `${OPENAI_API_KEY}`, failing every trial as
+/// the task's problem).
+fn refuse_host_templates(
+    refused: &mut Vec<Unsupported>,
+    table: &str,
+    env: &std::collections::BTreeMap<String, String>,
+) {
+    for (key, value) in env {
+        if HOST_TEMPLATE.is_match(value) {
+            refused.push(unsupported(
+                format!("{table} {key} = \"{value}\""),
+                "a value taken from your machine's environment; this runner passes no host value into a task, so the script would see the text itself",
+                false,
+            ));
+        }
+    }
+}
+
 /// Build the normalized package. The digest is left empty; [`crate::load`]
 /// computes it, since it reads every file.
 pub(crate) fn build(cfg: &Config, parts: Parts<'_>) -> TaskPackage {
@@ -155,9 +181,18 @@ pub(crate) fn build(cfg: &Config, parts: Parts<'_>) -> TaskPackage {
         names,
         unsupported: mut refused,
     } = parts;
+    // The folder's name as given, as 0.8 names it: a link to a task is named
+    // after the link, so two links to one folder stay two tasks (review E4-A,
+    // 4). Only a path with no last name (`.`, `x/..`) is resolved first;
+    // `bench run .` had named the task `.`, hiding its trial folders.
     let name = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
+        .or_else(|| {
+            root.canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        })
         .unwrap_or_else(|| root.to_string_lossy().into_owned());
     let id = cfg.package.name.clone().unwrap_or_else(|| name.clone());
     let instruction = match &cfg.agent.prompt_prefix {
@@ -297,7 +332,14 @@ pub(crate) fn build(cfg: &Config, parts: Parts<'_>) -> TaskPackage {
         mcp: s.mcp_servers.clone(),
     };
 
+    refuse_host_templates(&mut refused, &names.field("sandbox", "env"), &s.env);
     let v = &cfg.verifier;
+    refuse_host_templates(&mut refused, &names.field("verifier", "env"), &v.env);
+    refuse_host_templates(
+        &mut refused,
+        &names.field("solution", "env"),
+        &cfg.oracle.env,
+    );
     let separate = v.mode.as_deref() == Some("separate")
         || (v.mode.is_none() && v.separate_environment.is_some());
     if v.kind == "llm-judge" {
@@ -311,13 +353,6 @@ pub(crate) fn build(cfg: &Config, parts: Parts<'_>) -> TaskPackage {
         refused.push(unsupported(
             names.field("verifier", "service"),
             "running the verifier in a Compose service other than main is not supported yet",
-            false,
-        ));
-    }
-    if v.reward_range.is_some() {
-        refused.push(unsupported(
-            names.field("verifier", "reward_range"),
-            "rewards outside [0, 1] are not supported yet",
             false,
         ));
     }
@@ -350,6 +385,7 @@ pub(crate) fn build(cfg: &Config, parts: Parts<'_>) -> TaskPackage {
             Isolation::Shared
         },
         rubric: None,
+        reward_range: v.reward_range,
     };
     let mut extras = super::extras::read(
         &super::extras::Context {

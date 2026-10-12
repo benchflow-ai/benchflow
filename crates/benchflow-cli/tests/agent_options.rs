@@ -416,3 +416,85 @@ fn a_base_url_from_bench_toml_is_refused_and_from_the_command_line_taken() {
         );
     }
 }
+
+/// E5 reviews (C-B 1, D-B): the provider forwarder's test hook exists only
+/// in builds with the `test-hooks` feature, never in this build's default
+/// features (every release's). A build with the hook refuses this value by
+/// name before any sandbox starts (R215: plain http to a public address);
+/// this one must not know the variable at all.
+#[test]
+fn the_forwarder_test_hook_is_not_in_a_default_build() {
+    let d = tempfile::tempdir().unwrap();
+    let out = bench(d.path())
+        .args([
+            "run",
+            "-a",
+            "opencode",
+            "-m",
+            "mimo/mimo-v2.6-flash",
+            "-s",
+            "daytona",
+            "--dry-run",
+        ])
+        .arg(hello())
+        .env("MIMO_API_KEY", "k")
+        .env("BENCHFLOW_TEST_FORWARDER_UPSTREAM", "http://203.0.113.9/v1")
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("Plan"), "{text}");
+    assert!(
+        !text.contains("BENCHFLOW_TEST_FORWARDER_UPSTREAM"),
+        "{text}"
+    );
+    assert!(!text.contains("R215"), "{text}");
+}
+
+/// E5 review (D-B): in a default build no code reads the test hook's
+/// variable; its name is not even in the binary.
+#[test]
+fn a_default_build_holds_no_test_hook() {
+    let bin = assert_cmd::cargo::cargo_bin("bench");
+    let bytes = std::fs::read(&bin).unwrap();
+    let name = b"BENCHFLOW_TEST_FORWARDER_UPSTREAM";
+    assert!(
+        !bytes.windows(name.len()).any(|w| w == name),
+        "{} holds the test hook's variable",
+        bin.display()
+    );
+}
+
+/// Codex's `web_search` option reaches Codex only headless: over ACP,
+/// codex-acp sets web search for its own sessions, and a live run with
+/// `-c web_search=disabled` still sent the tool (E7 round 2, MiMo then
+/// rejected every request). Over ACP it is refused before anything runs,
+/// with the harness that takes it; headless it is taken.
+#[test]
+fn codex_web_search_is_taken_headless_and_refused_over_acp() {
+    let d = tempfile::tempdir().unwrap();
+    bench(d.path())
+        .args(["run", "-a", "codex", "-m", "mimo/mimo-v2.6-flash"])
+        .args(["--ak", "web_search=disabled", "--dry-run"])
+        .arg(hello())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("add --harness headless"));
+    bench(d.path())
+        .args([
+            "run",
+            "-a",
+            "codex",
+            "-m",
+            "mimo/mimo-v2.6-flash",
+            "--harness",
+            "headless",
+        ])
+        .args(["--ak", "web_search=disabled", "--dry-run"])
+        .arg(hello())
+        .assert()
+        .stderr(predicate::str::contains("web_search").not());
+}

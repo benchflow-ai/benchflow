@@ -1,0 +1,8 @@
+data: {"id":"g","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+
+data: {"choices": [{"delta": {"content": "oops"
+
+data: {"choices": [{"delta": {"content": "oops"
+
+data: [DONE]
+

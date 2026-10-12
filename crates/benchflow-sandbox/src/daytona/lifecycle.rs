@@ -24,10 +24,21 @@ const LOG_TAIL_LINES: usize = 40;
 
 /// Create a sandbox. `body.labels` must include [`ATTEMPT_LABEL`].
 pub(crate) async fn create(
-    api: &Api,
+    api: &std::sync::Arc<Api>,
     body: &CreateSandbox<'_>,
 ) -> Result<SandboxDto, SandboxError> {
     let attempt = body.labels.get(ATTEMPT_LABEL).cloned().unwrap_or_default();
+    // Creates that landed unseen are sandboxes running with no trial to
+    // stop them: while Daytona keeps losing the answers, make no more (E5:
+    // 120 s of cut answers left 48 sandboxes for an 8-trial job).
+    let unanswered = api.unanswered.load(std::sync::atomic::Ordering::SeqCst);
+    if unanswered >= super::UNANSWERED_LIMIT {
+        // Transient: the stop lasts only while those creates are looked
+        // for, so the trial is tried again (and rerun on resume).
+        return Err(SandboxError::Transport(format!(
+            "Daytona gave no answer to {unanswered} of this run's sandbox creates, which are still being looked for, so no more are made until they are found or the search ends (each may be running); a later `bench run` on this machine removes any of them once idle"
+        )));
+    }
     let result: Result<SandboxDto, ApiError> = api
         .json("creating a sandbox", Retry::Unsent, |http| {
             Ok(http
@@ -46,7 +57,12 @@ pub(crate) async fn create(
             );
             match find_by_label(api, ATTEMPT_LABEL, &attempt).await {
                 Ok(Some(dto)) => Ok(dto),
-                _ => Err(err.into()),
+                // Not listed yet, or the lookup failed too: it may still
+                // have landed, and nothing else would ever remove it.
+                _ => {
+                    super::remove_if_it_lands(api.clone(), attempt);
+                    Err(err.into())
+                }
             }
         }
         Err(err) => Err(err.into()),

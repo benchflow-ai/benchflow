@@ -30,12 +30,13 @@
 //! ([`benchflow_agent::trajectory::to_atif`]): 0.8's v1.7 document plus
 //! step timestamps and the agent's own tool names, arguments, and output.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use benchflow_agent::trajectory::{
     AdpMeta, AtifMeta, Event, Redactor, VerifiersMeta, acp_projection_coverage, adp_line,
-    parse_jsonl, to_adp_record, to_atif, to_python_json_pretty, to_verifiers_record,
-    verifiers_line,
+    parse_jsonl, to_adp_record, to_atif, to_python_json, to_python_json_pretty,
+    to_verifiers_record, verifiers_line,
 };
 use serde_json::{Map, Value, json};
 
@@ -57,6 +58,8 @@ pub struct RolloutInfo {
     pub rollout_name: String,
     /// The agent's name, for ATIF.
     pub agent_name: String,
+    /// The agent's version, for ATIF.
+    pub agent_version: Option<String>,
     /// The prompts the agent was given.
     pub prompts: Vec<String>,
     /// The verifier's reward map, or `None` when the trial was not scored.
@@ -77,6 +80,7 @@ impl RolloutInfo {
             task_name: rec.task_name.clone(),
             rollout_name: rec.rollout_name.clone(),
             agent_name: rec.agent.clone(),
+            agent_version: rec.agent_version.clone(),
             prompts: rec.prompts.clone(),
             rewards: rec
                 .rewards
@@ -84,11 +88,31 @@ impl RolloutInfo {
                 .map(|r| r.iter().map(|(k, v)| (k.clone(), json!(v))).collect()),
             model: rec.model.clone(),
             verifier_error: rec.result_file().verifier_error,
-            total_prompt_tokens: Some(rec.usage.input_tokens),
+            // ATIF's prompt tokens include the cached ones; BenchFlow's
+            // `input_tokens` leaves out cache reads and writes.
+            total_prompt_tokens: Some(
+                rec.usage.input_tokens + rec.usage.cache_read_tokens + rec.usage.cache_write_tokens,
+            ),
             total_completion_tokens: Some(rec.usage.output_tokens),
             total_cached_tokens: Some(rec.usage.cache_read_tokens),
             total_cost_usd: rec.usage.cost_usd,
         }
+    }
+
+    /// Without the prompts when the trajectory records them. BenchFlow
+    /// records each prompt it sends as a `user_message` event (a native loop
+    /// records the prompt as the model got it, wrapped in its own template),
+    /// and the trainer files turn both prompts and those events into user
+    /// turns, so passing both wrote every prompt twice. The prompts stay only
+    /// when the root agent has no recorded prompt (an oracle or scripted run).
+    pub fn without_recorded_prompts(mut self, events: &[Event]) -> Self {
+        let recorded = events.iter().any(|e| {
+            matches!(e, Event::UserMessage(t) if t.parent_tool_call_id.is_none() && !t.text.is_empty())
+        });
+        if recorded {
+            self.prompts.clear();
+        }
+        self
     }
 
     /// The id the ATIF and ADP files give the trajectory.
@@ -119,7 +143,7 @@ pub struct TrainerError {
 /// Write a finished trial's trainer files from its folder's trajectory.
 /// Returns what failed; an empty list means everything was written.
 pub fn write_trial(dir: &Path, rec: &TrialRecord) -> Vec<TrainerError> {
-    let events = match read_events(dir) {
+    let tagged = match read_tagged_events(dir) {
         Ok(events) => events,
         Err(source) => {
             return vec![TrainerError {
@@ -128,20 +152,102 @@ pub fn write_trial(dir: &Path, rec: &TrialRecord) -> Vec<TrainerError> {
             }];
         }
     };
-    write_rollout(
-        dir,
-        &events,
-        &RolloutInfo::from_record(rec),
-        &Redactor::default(),
-    )
+    let info = RolloutInfo::from_record(rec);
+    let (events, info) = with_stage_prompts(tagged, info);
+    let info = info.without_recorded_prompts(&events);
+    write_rollout(dir, &events, &info, &Redactor::default())
+}
+
+/// A trial folder's events, each with the stage it ran in when the task is
+/// staged (`None` otherwise), the tag removed from the event.
+fn read_tagged_events(dir: &Path) -> std::io::Result<Vec<(Option<String>, Event)>> {
+    match std::fs::read_to_string(dir.join("trajectory/acp_trajectory.jsonl")) {
+        Ok(text) => Ok(parse_jsonl(&text)
+            .map_err(std::io::Error::other)?
+            .into_iter()
+            .map(|e| {
+                let stage = match &e {
+                    Event::Other(map) => {
+                        map.get("stage").and_then(Value::as_str).map(str::to_string)
+                    }
+                    _ => None,
+                };
+                (stage, without_stage(e))
+            })
+            .collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// The events with each stage's prompt placed before that stage's first
+/// event, when the trajectory records no prompt of its own (an oracle or
+/// scripted run) and there is one prompt per stage. Without this the prompts
+/// all led the document, then every stage's work followed.
+fn with_stage_prompts(
+    tagged: Vec<(Option<String>, Event)>,
+    mut info: RolloutInfo,
+) -> (Vec<Event>, RolloutInfo) {
+    let mut stages: Vec<&str> = Vec::new();
+    for (stage, _) in &tagged {
+        if let Some(stage) = stage.as_deref()
+            && !stages.contains(&stage)
+        {
+            stages.push(stage);
+        }
+    }
+    let recorded = tagged
+        .iter()
+        .any(|(_, e)| matches!(e, Event::UserMessage(_)));
+    if stages.len() < 2 || recorded || stages.len() != info.prompts.len() {
+        return (tagged.into_iter().map(|(_, e)| e).collect(), info);
+    }
+    let prompts = std::mem::take(&mut info.prompts);
+    let mut out = Vec::with_capacity(tagged.len() + prompts.len());
+    let mut next = 0;
+    let mut current: Option<String> = None;
+    for (stage, event) in tagged {
+        if stage.is_some() && stage != current {
+            if let Some(prompt) = prompts.get(next) {
+                out.push(Event::UserMessage(benchflow_agent::trajectory::Text {
+                    text: prompt.clone(),
+                    parent_tool_call_id: None,
+                    receipt: None,
+                }));
+            }
+            next += 1;
+            current = stage;
+        }
+        out.push(event);
+    }
+    (out, info)
 }
 
 /// A trial folder's events: none when it has no trajectory.
+///
+/// A staged task's events carry the stage they ran in (`"stage"`, added
+/// when each stage is archived). The trainer files describe the trial as one
+/// rollout, so the tag is dropped here; kept, it would make every event read
+/// as an unknown one, which no trainer file projects.
 pub fn read_events(dir: &Path) -> std::io::Result<Vec<Event>> {
     match std::fs::read_to_string(dir.join("trajectory/acp_trajectory.jsonl")) {
-        Ok(text) => parse_jsonl(&text).map_err(std::io::Error::other),
+        Ok(text) => Ok(parse_jsonl(&text)
+            .map_err(std::io::Error::other)?
+            .into_iter()
+            .map(without_stage)
+            .collect()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e),
+    }
+}
+
+/// `event` without the stage tag a staged task's events carry.
+pub fn without_stage(event: Event) -> Event {
+    match event {
+        Event::Other(map) if map.get("stage").is_some_and(Value::is_string) => {
+            Event::from_json(map.into_iter().filter(|(k, _)| k != "stage").collect())
+        }
+        other => other,
     }
 }
 
@@ -230,7 +336,7 @@ pub fn atif_meta(info: &RolloutInfo) -> AtifMeta {
     AtifMeta {
         session_id: Some(info.trajectory_id()),
         agent_name: info.agent_name.clone(),
-        agent_version: None,
+        agent_version: info.agent_version.clone(),
         model: info.model.clone().filter(|m| !m.is_empty()),
         prompts: info.prompts.clone(),
         total_prompt_tokens: info.total_prompt_tokens,
@@ -249,6 +355,11 @@ fn write_atif(
 ) -> std::io::Result<()> {
     let pretty = |mut value: Value| {
         redactor.redact_json(&mut value);
+        benchflow_agent::trajectory::cap_long_strings(
+            &mut value,
+            benchflow_agent::trajectory::DERIVED_TEXT_CAP,
+            "trajectory/acp_trajectory.jsonl",
+        );
         to_python_json_pretty(&value) + "\n"
     };
     let coverage = acp_projection_coverage(json);
@@ -320,11 +431,34 @@ fn aggregate(
     let mut text = String::new();
     for (_, path) in &sources {
         match std::fs::read_to_string(path) {
-            Ok(mut lines) => {
-                if !lines.ends_with('\n') {
-                    lines.push('\n');
+            Ok(lines) => {
+                // Each line is redacted as a value first: a text pass alone
+                // could match inside a JSON escape, or pair a key's BEGIN and
+                // END markers from values at different depths and cut the
+                // JSON between them. The text pass then runs on the result,
+                // as 0.8 ran it on every line, so a BEGIN in one message and
+                // an END in a later one still take the chunks between them
+                // (a key read with `head`, `sed -n` and `tail`); its output
+                // is kept only if it is still JSON. A line that is not JSON
+                // gets the text pass alone.
+                for line in lines.lines() {
+                    match serde_json::from_str::<Value>(line) {
+                        Ok(mut value) => {
+                            redactor.redact_json(&mut value);
+                            let line = to_python_json(&value);
+                            match redactor.redact(&line) {
+                                Cow::Owned(redone)
+                                    if serde_json::from_str::<Value>(&redone).is_ok() =>
+                                {
+                                    text.push_str(&redone)
+                                }
+                                _ => text.push_str(&line),
+                            }
+                        }
+                        Err(_) => text.push_str(&redactor.redact(line)),
+                    }
+                    text.push('\n');
                 }
-                text.push_str(&redactor.redact(&lines));
             }
             Err(e) => {
                 tracing::warn!("skipping unreadable trainer file {}: {e}", path.display());
@@ -354,6 +488,24 @@ mod tests {
             agent_name: "claude".into(),
             ..RolloutInfo::default()
         }
+    }
+
+    /// E1: ATIF's `total_prompt_tokens` includes cached tokens
+    /// (`total_cached_tokens` is a subset of it); a MiMo trial had 11,278
+    /// prompt and 58,688 cached tokens.
+    #[test]
+    fn atif_prompt_tokens_include_the_cached_ones() {
+        let rec = crate::read::record_from_json(
+            &json!({"status": "scored", "rewards": {"reward": 1.0}, "agent_result": {
+                "n_input_tokens": 11278, "n_output_tokens": 2068,
+                "n_cache_read_tokens": 58688, "n_cache_creation_tokens": 34}}),
+            Path::new("t__1"),
+        )
+        .unwrap();
+        let info = RolloutInfo::from_record(&rec);
+        assert_eq!(info.total_prompt_tokens, Some(11278 + 58688 + 34));
+        assert_eq!(info.total_cached_tokens, Some(58688));
+        assert_eq!(info.total_completion_tokens, Some(2068));
     }
 
     #[test]
@@ -402,6 +554,250 @@ mod tests {
         write_rollout(dir.path(), &events, &info, &Redactor::default());
         assert!(dir.path().join(ATIF).is_file());
         assert!(!dir.path().join(ATIF_COVERAGE).exists());
+    }
+
+    #[test]
+    fn a_staged_trials_events_reach_the_trainer_files() {
+        // Each stage's events are archived with the stage's name; they must
+        // still project as messages and tool calls, not unknown events.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("trajectory")).unwrap();
+        std::fs::write(
+            dir.path().join("trajectory/acp_trajectory.jsonl"),
+            concat!(
+                r#"{"type": "user_message", "text": "write alpha", "stage": "first"}"#,
+                "\n",
+                r#"{"type": "tool_call", "tool_call_id": "c1", "kind": "execute", "title": "printf alpha", "status": "completed", "content": [], "stage": "first"}"#,
+                "\n",
+                r#"{"type": "agent_message", "text": "done", "stage": "first"}"#,
+                "\n",
+                r#"{"type": "user_message", "text": "write beta", "stage": "second"}"#,
+                "\n",
+                r#"{"type": "agent_message", "text": "done too", "stage": "second"}"#,
+            ),
+        )
+        .unwrap();
+        let events = read_events(dir.path()).unwrap();
+        let kinds: Vec<&str> = events.iter().map(Event::kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                "user_message",
+                "tool_call",
+                "agent_message",
+                "user_message",
+                "agent_message"
+            ]
+        );
+        assert!(events.iter().all(|e| !matches!(e, Event::Other(_))));
+        let failures = write_rollout(dir.path(), &events, &info(), &Redactor::default());
+        assert!(failures.is_empty(), "{failures:?}");
+        let atif: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(ATIF)).unwrap()).unwrap();
+        let steps = atif["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 5, "{atif}");
+        assert_eq!(steps[1]["tool_calls"][0]["tool_call_id"], "c1");
+        assert_eq!(steps[4]["message"], "done too");
+        // An event that is unknown for another reason stays unknown.
+        let other = parse_jsonl(r#"{"type": "plan", "entries": [], "stage": "first"}"#).unwrap();
+        assert!(matches!(without_stage(other[0].clone()), Event::Other(_)));
+    }
+
+    #[test]
+    fn a_recorded_prompt_is_one_user_turn_in_every_trainer_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = parse_jsonl(concat!(
+            r#"{"type": "user_message", "text": "fix the bug"}"#,
+            "\n",
+            r#"{"type": "agent_message", "text": "fixed"}"#,
+        ))
+        .unwrap();
+        let mut info = info();
+        info.prompts = vec!["fix the bug".into()];
+        info.rewards = Some(json!({"reward": 1.0}).as_object().unwrap().clone());
+        let info = info.without_recorded_prompts(&events);
+        assert!(info.prompts.is_empty());
+        assert!(write_rollout(dir.path(), &events, &info, &Redactor::default()).is_empty());
+        let read = |rel: &str| std::fs::read_to_string(dir.path().join(rel)).unwrap();
+        let atif: Value = serde_json::from_str(&read(ATIF)).unwrap();
+        let users = atif["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["source"] == "user")
+            .count();
+        assert_eq!(users, 1, "{atif}");
+        assert_eq!(read(VERIFIERS).matches("fix the bug").count(), 1);
+        assert_eq!(read(ADP).matches("fix the bug").count(), 1);
+
+        // A native loop records the prompt wrapped in its template: the
+        // template is the user turn, not the bare prompt as well.
+        let wrapped = parse_jsonl(
+            r#"{"type": "user_message", "text": "You are an assistant. Task: fix the bug. Reply in JSON."}"#,
+        )
+        .unwrap();
+        let mut info = self::info();
+        info.prompts = vec!["fix the bug".into()];
+        assert!(info.without_recorded_prompts(&wrapped).prompts.is_empty());
+
+        // An oracle run records no user message: its prompt stays.
+        let oracle = parse_jsonl(r#"{"type": "oracle", "command": "solve.sh"}"#).unwrap();
+        let mut info = self::info();
+        info.prompts = vec!["fix the bug".into()];
+        assert_eq!(
+            info.without_recorded_prompts(&oracle).prompts,
+            ["fix the bug"]
+        );
+    }
+
+    #[test]
+    fn a_staged_oracles_prompts_sit_before_their_stages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("trajectory")).unwrap();
+        std::fs::write(
+            dir.path().join("trajectory/acp_trajectory.jsonl"),
+            concat!(
+                r#"{"type": "oracle", "command": "stages/first/oracle/solve.sh", "return_code": 0, "stdout": "", "timed_out": false, "stage": "first"}"#,
+                "\n",
+                r#"{"type": "oracle", "command": "stages/second/oracle/solve.sh", "return_code": 0, "stdout": "", "timed_out": false, "stage": "second"}"#,
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("prompts.json"),
+            r#"["write alpha", "write beta"]"#,
+        )
+        .unwrap();
+        let rec = crate::read::record_from_json(
+            &json!({"task_name": "t", "rollout_name": "t__1", "agent": "oracle", "status": "scored", "rewards": {"reward": 1.0}}),
+            dir.path(),
+        )
+        .unwrap();
+        assert!(write_trial(dir.path(), &rec).is_empty());
+        let atif: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(ATIF)).unwrap()).unwrap();
+        let steps: Vec<(&str, &str)> = atif["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["source"].as_str().unwrap(),
+                    s["message"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("user", "write alpha"),
+                ("agent", "[oracle: stages/first/oracle/solve.sh]"),
+                ("user", "write beta"),
+                ("agent", "[oracle: stages/second/oracle/solve.sh]"),
+            ]
+        );
+    }
+
+    /// Review FIX7-B 1: the job files are redacted as serialized text. A
+    /// value with a line ending in a non-base64 character just before an END
+    /// marker had the half-key rule match from the `n` of the `\n` escape and
+    /// write `\***REDACTED***`, an invalid escape, so the line was lost.
+    #[test]
+    fn job_files_stay_json_around_a_key_marker() {
+        let job = tempfile::tempdir().unwrap();
+        let prompt = "The key's last line is:\n-----END OPENSSH PRIVATE KEY-----\nFind the key.";
+        let read =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\n";
+        let line = serde_json::to_string(&json!({"prompt": prompt, "tool": read})).unwrap();
+        for rel in [VERIFIERS, ADP] {
+            std::fs::create_dir_all(job.path().join("t__1/trainer")).unwrap();
+            std::fs::write(job.path().join("t__1").join(rel), format!("{line}\n")).unwrap();
+        }
+        assert!(write_job(job.path()).is_empty());
+        for out in [JOB_VERIFIERS, JOB_ADP] {
+            let text = std::fs::read_to_string(job.path().join(out)).unwrap();
+            for l in text.lines() {
+                let v: Value =
+                    serde_json::from_str(l).unwrap_or_else(|e| panic!("{out}: {e}: {l}"));
+                assert!(
+                    !v["tool"]
+                        .as_str()
+                        .unwrap()
+                        .contains("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ")
+                );
+            }
+        }
+    }
+
+    /// Review FIX8-A 1, FIX8-B 1: non-ASCII text is written as `\\uXXXX`, so
+    /// a half-key match could start on the hex digits before an END marker
+    /// (`：` is `\\uff1a`) and break the escape. FIX8-A 2: the text pass
+    /// paired a BEGIN in one message with an END in a tool call's arguments,
+    /// a level deeper, and cut the JSON between them. Every job line parses,
+    /// and no key body survives.
+    #[test]
+    fn job_files_stay_json_with_non_ascii_and_nested_markers() {
+        let job = tempfile::tempdir().unwrap();
+        let body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ";
+        let records = [
+            json!({"prompt": "私钥最后一行是：\n-----END RSA PRIVATE KEY-----\n",
+                   "tool": format!("-----BEGIN RSA PRIVATE KEY-----\n{body}\n")}),
+            json!({"prompt": "The key ends…\n-----END RSA PRIVATE KEY-----"}),
+            json!({"prompt": [
+                {"role": "tool", "content": format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n")},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "bash",
+                    "arguments": "{\"cmd\": \"grep -n -- '-----END OPENSSH PRIVATE KEY-----' id\"}"}}]}]}),
+        ];
+        let lines: String = records
+            .iter()
+            .map(|r| benchflow_agent::trajectory::to_python_json(r) + "\n")
+            .collect();
+        for rel in [VERIFIERS, ADP] {
+            std::fs::create_dir_all(job.path().join("t__1/trainer")).unwrap();
+            std::fs::write(job.path().join("t__1").join(rel), &lines).unwrap();
+        }
+        assert!(write_job(job.path()).is_empty());
+        for out in [JOB_VERIFIERS, JOB_ADP] {
+            let text = std::fs::read_to_string(job.path().join(out)).unwrap();
+            assert_eq!(text.lines().count(), 3, "{text}");
+            for l in text.lines() {
+                serde_json::from_str::<Value>(l).unwrap_or_else(|e| panic!("{out}: {e}: {l}"));
+            }
+            assert!(!text.contains(body), "{text}");
+            // The message between the markers is still there.
+            assert!(text.contains("grep -n --"), "{text}");
+        }
+    }
+
+    /// Review FIX9-A 1: a key read in three chunks (`head`, `sed -n`,
+    /// `tail`) has a middle chunk with no marker. The job pass pairs the BEGIN
+    /// in one message with the END in a later one and takes it, as 0.8 did.
+    /// The key here is made up.
+    #[test]
+    fn job_files_drop_a_key_chunk_between_messages() {
+        let job = tempfile::tempdir().unwrap();
+        let body: Vec<String> = (0..7).map(|i| format!("{}{i}", "Zq".repeat(32))).collect();
+        let record = json!({"prompt": [
+            {"role": "tool", "content": format!("-----BEGIN RSA PRIVATE KEY-----\n{}\n{}\n", body[0], body[1])},
+            {"role": "assistant", "content": "Reading the rest of the key."},
+            {"role": "tool", "content": format!("{}\n{}\n{}\n", body[2], body[3], body[4])},
+            {"role": "tool", "content": format!("{}\n{}\n-----END RSA PRIVATE KEY-----\n", body[5], body[6])},
+        ]});
+        let line = benchflow_agent::trajectory::to_python_json(&record) + "\n";
+        for rel in [VERIFIERS, ADP] {
+            std::fs::create_dir_all(job.path().join("t__1/trainer")).unwrap();
+            std::fs::write(job.path().join("t__1").join(rel), &line).unwrap();
+        }
+        assert!(write_job(job.path()).is_empty());
+        for out in [JOB_VERIFIERS, JOB_ADP] {
+            let text = std::fs::read_to_string(job.path().join(out)).unwrap();
+            assert_eq!(text.lines().count(), 1, "{text}");
+            serde_json::from_str::<Value>(text.trim_end())
+                .unwrap_or_else(|e| panic!("{out}: {e}: {text}"));
+            for chunk in &body {
+                assert!(!text.contains(chunk.as_str()), "{text}");
+            }
+        }
     }
 
     #[test]

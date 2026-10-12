@@ -1,0 +1,3 @@
+# Layered over base.toml: swap the agent and add a trial.
+agent: nop
+trials: 2

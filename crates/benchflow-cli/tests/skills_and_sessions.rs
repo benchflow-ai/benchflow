@@ -212,3 +212,69 @@ fn bench_agents_says_where_skills_go_and_what_sessions_load() {
             .stdout(predicate::str::contains(says));
     }
 }
+
+/// A scripted attempt runs to its task's timeout, so `--idle-timeout`,
+/// `--resume-sessions`, `--max-tool-calls`, and `--max-tokens` reach only
+/// model agents. Given with the oracle or a `script:`, they are named in a
+/// note instead of being ignored without a word. Guards the E7 examples fix
+/// on `rust/e7-examples`: a silent 60-second script under `--idle-timeout
+/// 10s` ran to the end and passed, with nothing said.
+#[test]
+fn flags_for_model_agents_are_named_when_a_script_runs() {
+    let d = tempfile::tempdir().unwrap();
+    bench(d.path())
+        .args(["run", "-s", "docker", "--dry-run", "--idle-timeout", "10s"])
+        .arg(hello())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "oracle runs as a script, so --idle-timeout has no effect: it reaches only model agents",
+        ));
+    std::fs::write(d.path().join("s.sh"), "#!/bin/bash\ntrue\n").unwrap();
+    bench(d.path())
+        .args(["run", "-a", "script:s.sh", "-s", "docker", "--dry-run"])
+        .args(["--resume-sessions", "--max-tool-calls", "5", "--max-tokens", "100"])
+        .arg(hello())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "script:s.sh runs as a script, so --resume-sessions, --max-tool-calls, --max-tokens have no effect: they reach only model agents",
+        ));
+    // Without those flags, nothing is said.
+    bench(d.path())
+        .args(["run", "-s", "docker", "--dry-run"])
+        .arg(hello())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("runs as a script").not());
+}
+
+/// `bench run --backend docker` (the word the docs use for a sandbox
+/// backend) is refused, as before, and now says the sandbox goes in `-s`.
+/// Guards the E7 examples fix on `rust/e7-examples`: the refusal only said
+/// "drop --backend, or pass -a external".
+#[test]
+fn backend_naming_a_sandbox_points_at_dash_s() {
+    let d = tempfile::tempdir().unwrap();
+    for sandbox in ["docker", "daytona"] {
+        bench(d.path())
+            .args(["run", "--dry-run", "--backend", sandbox])
+            .arg(hello())
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(
+                "--backend is for the external agent, not `oracle`",
+            ))
+            .stderr(predicate::str::contains(format!(
+                "to run in {sandbox}, pass -s {sandbox} (--sandbox)"
+            )));
+    }
+    bench(d.path())
+        .args(["run", "--dry-run", "--backend", "http://127.0.0.1:9"])
+        .arg(hello())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "drop --backend, or pass -a external",
+        ));
+}

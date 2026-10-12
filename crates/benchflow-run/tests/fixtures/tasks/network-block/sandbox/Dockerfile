@@ -1,3 +1,4 @@
-FROM debian:bookworm-slim
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+# Python serves and fetches the pages. Nothing outside the sandbox is reached
+# at run time (BenchFlow's firewall layer still installs iptables at build time).
+FROM python:3.12-slim
 WORKDIR /app

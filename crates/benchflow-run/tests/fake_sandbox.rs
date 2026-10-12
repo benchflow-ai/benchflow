@@ -49,6 +49,10 @@ struct World {
     /// order of `execs`.
     unsets: Vec<Vec<String>>,
     destroyed: bool,
+    /// A `daemon-gone` task's backend went away at `useradd`.
+    daemon_gone: bool,
+    /// Every file the engine wrote, by path, with its contents.
+    written: Vec<(String, Vec<u8>)>,
 }
 
 struct FakeSandbox {
@@ -76,6 +80,24 @@ impl Sandbox for FakeSandbox {
     }
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
         let c = exec.command.clone();
+        if self.id.contains("daemon-gone") {
+            let mut w = self.world.lock().unwrap();
+            if w.daemon_gone {
+                return Err(SandboxError::Transport(
+                    "the docker CLI cannot reach its daemon".into(),
+                ));
+            }
+            if c.contains("useradd") {
+                w.daemon_gone = true;
+                return Ok(ExecOutput {
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: "Cannot connect to the Docker daemon at tcp://127.0.0.1:23751. Is the docker daemon running?\n".into(),
+                    timed_out: false,
+                    duration: Duration::ZERO,
+                });
+            }
+        }
         if let Some(marker) = &self.flaky
             && c.contains("/verifier/test.sh")
             && !marker.exists()
@@ -216,6 +238,11 @@ impl Sandbox for FakeSandbox {
         contents: &[u8],
         _mode: u32,
     ) -> Result<(), SandboxError> {
+        self.world
+            .lock()
+            .unwrap()
+            .written
+            .push((remote.to_string(), contents.to_vec()));
         // Restored outputs carry the solved work into a verifier's sandbox.
         if remote == OUTPUTS_TAR && contents.windows(6).any(|w| w == b"SOLVED") {
             self.world.lock().unwrap().solved = true;
@@ -306,6 +333,9 @@ fn closed_network_canaries(script: &str) -> String {
     out
 }
 
+/// A build-log line with a signed URL: a SAS signature and a JWT.
+const SIGNED_URL_LINE: &str = "GET https://store.example.net/ctx/build.tar?sv=2018-11-09&sig=fHQ0v5V%2FO0Tk%2FNl%2BCjLnneax9lf%2FUOd6MVE2lNtukYo%3D&jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJidWlsZC1jdHgifQ.c2lnbmF0dXJlLXZhbHVlLWhlcmU 200";
+
 struct FakeProvider {
     worlds: Mutex<Vec<Arc<Mutex<World>>>>,
     writable_path: Option<String>,
@@ -338,6 +368,8 @@ impl Provider for FakeProvider {
         log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<Image, SandboxError> {
         log("built");
+        // A builder that prints a signed URL, as Daytona's build log does.
+        log(SIGNED_URL_LINE);
         Ok(Image {
             reference: format!("fake/{}:{}", spec.name, &spec.digest[..12]),
             fresh: true,
@@ -437,6 +469,7 @@ fn task(root: &Path, name: &str) -> TaskPackage {
             network: None,
             isolation: Isolation::Shared,
             rubric: None,
+            reward_range: None,
         },
         oracle: Some(OraclePolicy {
             dir: root.join("oracle"),
@@ -614,6 +647,205 @@ async fn oracle_and_nop_run_score_and_resume() {
         provider.worlds.lock().unwrap().len(),
         4,
         "no new sandboxes on resume"
+    );
+}
+
+/// A backend whose build fails after printing a signed URL, as a Daytona
+/// build that cannot fetch its context does.
+struct FailingBuild;
+
+#[async_trait]
+impl Provider for FailingBuild {
+    fn name(&self) -> &str {
+        "fake"
+    }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            build_from_dockerfile: true,
+            ..Capabilities::default()
+        }
+    }
+    async fn status(&self) -> ProviderStatus {
+        ProviderStatus {
+            ok: true,
+            summary: "fake".into(),
+            fix: None,
+        }
+    }
+    async fn prepare(
+        &self,
+        spec: &ImageSpec,
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+    ) -> Result<Image, SandboxError> {
+        log(SIGNED_URL_LINE);
+        Err(SandboxError::Image {
+            name: spec.name.clone(),
+            message: format!("the build failed: {SIGNED_URL_LINE}"),
+            log_tail: format!("step 1/3\n{SIGNED_URL_LINE}\nerror: context fetch failed"),
+            task_fault: true,
+        })
+    }
+    async fn create(&self, _spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
+        unreachable!("the build failed")
+    }
+}
+
+#[tokio::test]
+async fn a_failed_builds_problem_carries_no_signed_url() {
+    // The builder's last lines go into the problem's message and detail,
+    // and so into result.json: they are redacted too.
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("alpha"), "alpha"));
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t, vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: jobs_dir(tmp.path()),
+        job_name: Some("failed-build".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({"path": tmp.path()}),
+    };
+    let (_tx, rx) = stop_switch();
+    std::mem::forget(_tx);
+    let rt = Arc::new(Runtime {
+        provider: Arc::new(FailingBuild),
+        images: Images::new(),
+        options: RunOptions::default(),
+        events: Events::none(),
+        stop: rx,
+    });
+    let out = job::run(spec, rt).await.unwrap();
+    let r = &out.records[0];
+    let p = r.problem.as_ref().unwrap();
+    assert_eq!(p.code, "R101", "{p:?}");
+    let result = std::fs::read_to_string(
+        jobs_dir(tmp.path())
+            .join("failed-build")
+            .join(&r.rollout_name)
+            .join("result.json"),
+    )
+    .unwrap();
+    assert!(
+        result.contains("store.example.net/ctx/build.tar"),
+        "{result}"
+    );
+    assert!(!result.contains("fHQ0v5V"), "{result}");
+    assert!(!result.contains("eyJzdWIiOiJidWlsZC1jdHgifQ"), "{result}");
+}
+
+#[tokio::test]
+async fn image_log_lines_are_redacted() {
+    // A builder's log can carry signed URLs (a SAS signature, a JWT); the
+    // trial's image.log keeps the line but not the credentials.
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("alpha"), "alpha"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t, vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: jobs_dir(tmp.path()),
+        job_name: Some("signed-urls".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({"path": tmp.path()}),
+    };
+    let out = job::run(spec, runtime(provider)).await.unwrap();
+    let r = &out.records[0];
+    let log = std::fs::read_to_string(
+        jobs_dir(tmp.path())
+            .join("signed-urls")
+            .join(&r.rollout_name)
+            .join("image.log"),
+    )
+    .unwrap();
+    assert!(log.contains("built"), "{log}");
+    assert!(log.contains("store.example.net/ctx/build.tar"), "{log}");
+    assert!(!log.contains("fHQ0v5V"), "{log}");
+    assert!(!log.contains("eyJzdWIiOiJidWlsZC1jdHgifQ"), "{log}");
+}
+
+/// Verifiers written for 0.8 grade what the oracle printed, reading it at
+/// `/logs/agent/oracle.txt` in the sandbox (MMMLU's test.sh). The oracle
+/// writes it there itself, stdout and stderr in the order printed, as 0.8's
+/// `> /logs/agent/oracle.txt 2>&1` does, and no copy assembled on this
+/// machine (stdout, then stderr) is written over it (review E4-B, 2). A nop
+/// runs no such command.
+#[tokio::test]
+async fn the_oracles_output_is_where_verifiers_read_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("printed"), "printed"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t, vec![Attempt::Oracle, Attempt::Nop])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    job::run(spec, runtime(provider.clone())).await.unwrap();
+    let worlds = provider.worlds.lock().unwrap();
+    let mut redirected = 0;
+    for w in worlds.iter() {
+        let w = w.lock().unwrap();
+        redirected += w
+            .commands
+            .iter()
+            .filter(|c| {
+                c.contains("solve.sh")
+                    && c.contains("> /logs/agent/oracle.txt 2>&1")
+                    && c.contains("cat /logs/agent/oracle.txt")
+            })
+            .count();
+        assert!(
+            !w.written.iter().any(|(p, _)| p == "/logs/agent/oracle.txt"),
+            "nothing is written over the oracle's own file"
+        );
+    }
+    assert_eq!(redirected, 1, "only the oracle's sandbox runs it");
+}
+
+#[tokio::test]
+async fn the_oracle_runs_with_sh_on_an_image_without_bash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("nobash"), "nobash"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t, vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    job::run(spec, runtime(provider.clone())).await.unwrap();
+    let worlds = provider.worlds.lock().unwrap();
+    let w = worlds[0].lock().unwrap();
+    let solve = w
+        .commands
+        .iter()
+        .find(|c| c.contains("solve.sh") && !c.contains("chmod") && !c.contains("rm -rf"))
+        .expect("the oracle ran");
+    // Alpine and busybox images have no bash; `bash solve.sh` exited 127
+    // there and the trial was scored 0 as if the solution had failed.
+    assert!(
+        solve.contains("else sh ") && solve.contains("command -v bash"),
+        "the oracle needs bash: {solve}"
     );
 }
 
@@ -871,6 +1103,107 @@ async fn regrade_rescores_saved_outputs_in_a_new_job_folder() {
         .await
         .unwrap();
     assert_eq!(re2.name, "graded-regrade-2");
+}
+
+/// E5 (the VM's Docker daemon killed mid-run): `useradd` failed because
+/// the daemon was gone, and the trial was R104, the task's ("the image
+/// needs a shell and useradd"). The backend cannot be asked any more, so
+/// it is the sandbox's, and rerun.
+#[tokio::test]
+async fn a_daemon_lost_during_setup_is_the_sandboxs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("daemon-gone"), "daemon-gone"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t, vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("lost".into()),
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({"targets": ["daemon-gone"]}),
+    };
+    let out = job::run(spec, runtime(provider)).await.unwrap();
+    let p = out.records[0].problem.clone().expect("a problem");
+    assert_eq!(
+        (p.code.as_str(), p.owner),
+        ("R103", benchflow_run::outcome::Owner::Sandbox),
+        "{p:?}"
+    );
+}
+
+/// E5 (corrupted job folders, live on Docker): a saved output cut or
+/// deleted after the run was regraded as it was, and the trial scored 0
+/// with nothing saying why. custody.json's counts now catch it.
+#[tokio::test]
+async fn regrade_refuses_outputs_changed_since_the_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("alpha"), "alpha"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("graded".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({"targets": ["alpha"]}),
+    };
+    let out = job::run(spec, runtime(provider.clone())).await.unwrap();
+    let trial = out.dir.join(&out.records[0].rollout_name);
+    std::fs::create_dir_all(trial.join("outputs/app")).unwrap();
+    std::fs::write(trial.join("outputs/app/answer.txt"), "42").unwrap();
+    // What the run saved, as collect_outputs records it.
+    let custody_path = trial.join("custody.json");
+    let mut custody: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&custody_path).unwrap()).unwrap();
+    custody["saved_files"] = 1.into();
+    custody["saved_bytes"] = 2.into();
+    std::fs::write(&custody_path, custody.to_string()).unwrap();
+    let load = |_: &Path| Ok(t.clone());
+    let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+    assert_eq!(plan.regradable.len(), 1, "as saved: regradable");
+
+    std::fs::write(trial.join("outputs/app/answer.txt"), "4").unwrap();
+    let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+    assert!(plan.regradable.is_empty());
+    assert!(
+        plan.not_regradable[0]
+            .reason
+            .contains("changed since the run"),
+        "{:?}",
+        plan.not_regradable[0]
+    );
+    std::fs::remove_file(trial.join("outputs/app/answer.txt")).unwrap();
+    std::fs::write(trial.join("outputs/app/other.txt"), "x").unwrap();
+    let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+    assert!(plan.regradable.is_empty());
+
+    // A file this machine may not read is this trial's refusal, not the
+    // whole regrade's error (unless the tests run as root, who reads it).
+    std::fs::remove_file(trial.join("outputs/app/other.txt")).unwrap();
+    let answer = trial.join("outputs/app/answer.txt");
+    std::fs::write(&answer, "42").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&answer, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&answer).is_err() {
+        let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+        assert!(plan.regradable.is_empty());
+        assert!(
+            plan.not_regradable[0].reason.contains("cannot all be read"),
+            "{:?}",
+            plan.not_regradable[0]
+        );
+    }
+    std::fs::set_permissions(&answer, std::fs::Permissions::from_mode(0o644)).unwrap();
 }
 
 /// A control's script is a path in the package (`controls/near-miss.sh`), so
@@ -1655,6 +1988,8 @@ async fn a_retried_trial_does_not_keep_the_failed_attempts_files() {
     });
     let options = RunOptions {
         save_outputs: true,
+        // No two-minute wait before the retry of an unexplained loss.
+        unexplained_loss_retry_secs: 0,
         ..RunOptions::default()
     };
     let spec = JobSpec {
@@ -2439,6 +2774,75 @@ async fn resume_moves_a_folder_without_a_result_aside() {
     );
 }
 
+/// A trial whose unexplained sandbox loss came back in the attempt after
+/// it is capped (`rerun_capped`): a resumed job keeps it as it is, so code
+/// inside a sandbox cannot buy a rerun on every resume, and `--rerun
+/// errored` runs it again (round-2 reviews of rust/e9-decisions).
+#[tokio::test]
+async fn resume_keeps_a_capped_trial_unless_errored_trials_are_asked_for() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("delta"), "delta"));
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t, vec![Attempt::Nop])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("capped".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let fake = |options: RunOptions| {
+        runtime_with(
+            Arc::new(FakeProvider {
+                worlds: Mutex::new(Vec::new()),
+                writable_path: None,
+            }),
+            options,
+        )
+    };
+    let out = job::run(spec.clone(), fake(RunOptions::default()))
+        .await
+        .unwrap();
+    let dir = out.dir.join(&out.records[0].rollout_name);
+    // Make the record a capped loss, as a repeat writes it.
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("result.json")).unwrap()).unwrap();
+    v["status"] = serde_json::json!("errored");
+    v["rewards"] = serde_json::Value::Null;
+    v["passed"] = serde_json::Value::Null;
+    v["problem"] = serde_json::json!({"code": "R103", "owner": "sandbox", "phase": "verify",
+        "message": "capped-marker", "next": "x", "transient": false,
+        "loss_confirmed": false, "rerun_capped": true});
+    std::fs::write(dir.join("result.json"), v.to_string()).unwrap();
+    // The job records how reward files were read (round-2 list, L6).
+    let evaluation: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.dir.join("evaluation.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        evaluation["config"]["reward_lenient"],
+        serde_json::json!(benchflow_task::reward::lenient_from_env()),
+        "{evaluation}"
+    );
+    let kept = job::run(spec.clone(), fake(RunOptions::default()))
+        .await
+        .unwrap();
+    assert_eq!(kept.records[0].status, Status::Errored);
+    assert_eq!(
+        kept.records[0].problem.as_ref().map(|p| p.message.as_str()),
+        Some("capped-marker"),
+        "a resume keeps the capped trial"
+    );
+    let mut options = RunOptions::default();
+    options.rerun.errored = true;
+    let rerun = job::run(spec, fake(options)).await.unwrap();
+    assert_eq!(
+        rerun.records[0].status,
+        Status::Scored,
+        "--rerun errored runs it"
+    );
+}
+
 #[tokio::test]
 async fn a_sandbox_being_made_when_the_run_stops_is_removed() {
     let tmp = tempfile::tempdir().unwrap();
@@ -2891,6 +3295,11 @@ async fn stage_forks_and_a_continuing_parent_run_through_the_engine() {
     assert_eq!(f.value, Some(0.0));
     assert!(!f.parent_continued);
     assert_eq!(f.parent.problem.as_ref().unwrap().code, "R000");
+    // A fork at the start stops the parent before its agent runs.
+    assert_eq!(
+        f.parent.problem.as_ref().unwrap().phase,
+        benchflow_run::outcome::Phase::Setup
+    );
     let trial = out.dir.join(&f.parent.rollout_name);
     let tree = read_json(&trial.join("tree.json"));
     assert_eq!(tree["forks"][0]["parent_restore"], "skipped");

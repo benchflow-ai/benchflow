@@ -272,7 +272,22 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             sources.push(s);
         }
     }
-    let (tasks, bad) = context::load_tasks(&roots)?;
+    let (tasks, bad, warnings) = context::load_tasks_noting(&roots)?;
+    // A task that does not load is named only when --include and
+    // --exclude would have run it: a broken task the patterns leave out
+    // is not this run's business. With no name to read, its folder's
+    // name stands in.
+    let bad: Vec<_> = bad
+        .into_iter()
+        .filter(|r| {
+            let names = r
+                .package
+                .as_ref()
+                .map(|p| vec![p.name.clone(), p.id.clone()])
+                .unwrap_or_default();
+            selected_folder(&r.root, &names, &resolved.include, &resolved.exclude)
+        })
+        .collect();
     for r in &bad {
         let errs: Vec<(&str, &str)> = r
             .diagnostics
@@ -296,21 +311,26 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         .owner(Owner::Task)
         .next("run `bench check` on a task above to see its errors"));
     }
-    let tasks = context::select(tasks, &resolved.include, &resolved.exclude, args.limit)?;
+    // A dataset's tasks were chosen by the registry's names before the fetch
+    // (`filter_dataset`); a folder may be named otherwise (`cpp_001` for
+    // `autocodebench-cpp-001`), so --include does not filter them again.
+    // --exclude does: the folder's name is the one records and trial folders
+    // show, and excluding by either name only narrows the run.
+    let tasks = if dataset.is_some() {
+        context::select(tasks, &[], &resolved.exclude, args.limit)?
+    } else {
+        context::select(tasks, &resolved.include, &resolved.exclude, args.limit)?
+    };
     if tasks.is_empty() {
         return Err(CliError::usage(
             "no tasks left to run after --include, --exclude, and --limit",
         ));
     }
-    // What the reader dropped from a task (host values in its Compose file).
-    for t in &tasks {
-        for d in t
-            .extras
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == benchflow_task::Severity::Warning)
-        {
-            note!("  {} {}: {} [{}]", warn_mark(), t.name, d.message, d.code);
+    // What the reader ignored or dropped from a task (a setting in the
+    // wrong table, host values in its Compose file), as `bench check` says.
+    for (name, d) in &warnings {
+        if tasks.iter().any(|t| &t.name == name) {
+            note!("  {} {}: {} [{}]", warn_mark(), name, d.message, d.code);
         }
     }
 
@@ -341,6 +361,7 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
             attempt.label()
         );
     }
+    script_ignores(&args, &attempt);
     let skills = run_skills(&resolved.run, &attempt)?;
     if let benchflow_run::Attempt::Model(m) = &attempt
         && m.skill_paths().is_empty()
@@ -372,6 +393,15 @@ pub async fn run(args: RunArgs) -> Result<Exit> {
         )
     {
         note!("  {} {line}", warn_mark());
+    }
+    // A test build's fault endpoint in place of the provider.
+    if let Some(to) = benchflow_agent::providers::test_upstream_note(
+        &benchflow_agent::credentials::HostEnv::from_process(),
+    ) {
+        note!(
+            "  {} the provider forwarder sends model calls to {to}, not the provider",
+            warn_mark()
+        );
     }
     if let Some(p) = not_ready.as_ref().filter(|_| !args.dry_run) {
         return Err(CliError::not_ready(p.message.clone())
@@ -589,6 +619,61 @@ fn run_exit(statuses: &[Status], not_started: usize) -> Exit {
     } else {
         Exit::Ok
     }
+}
+
+/// Whether `--include` and `--exclude` keep a task that did not load, by
+/// the names it may go by: its folder's, and its own name and id when its
+/// config parsed far enough to give them (as a loaded task is matched by
+/// name or id). Kept when any name is included and none is excluded.
+fn selected_folder(root: &Path, names: &[String], include: &[String], exclude: &[String]) -> bool {
+    let mut all: Vec<String> = names.to_vec();
+    all.extend(root.file_name().map(|n| n.to_string_lossy().to_string()));
+    let hit = |pats: &[String]| {
+        all.iter().any(|n| {
+            pats.iter()
+                .any(|p| benchflow_task::fnmatch::name_matches(n, p))
+        })
+    };
+    (include.is_empty() || hit(include)) && !hit(exclude)
+}
+
+/// The flags given on the command line that reach only model agents. A
+/// scripted attempt (the oracle, nop, `script:`) runs to its task's timeout
+/// whatever they say, so each is named once rather than ignored without a
+/// word.
+fn script_ignores(args: &RunArgs, attempt: &benchflow_run::Attempt) {
+    if let Some(line) = script_ignores_line(args, attempt) {
+        note!("  {} {line}", dim("note:"));
+    }
+}
+
+fn script_ignores_line(args: &RunArgs, attempt: &benchflow_run::Attempt) -> Option<String> {
+    if matches!(attempt, benchflow_run::Attempt::Model(_)) {
+        return None;
+    }
+    let given: Vec<&str> = [
+        ("--idle-timeout", args.idle_timeout.is_some()),
+        ("--resume-sessions", args.resume_sessions),
+        ("--max-tool-calls", args.max_tool_calls.is_some()),
+        ("--max-tokens", args.max_tokens.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(flag, set)| set.then_some(flag))
+    .collect();
+    if given.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} runs as a script, so {} {} no effect: {} only model agents",
+        attempt.label(),
+        given.join(", "),
+        if given.len() == 1 { "has" } else { "have" },
+        if given.len() == 1 {
+            "it reaches"
+        } else {
+            "they reach"
+        },
+    ))
 }
 
 /// The `--skill` folders' skills, checked before anything starts: each
@@ -1053,7 +1138,14 @@ fn plan_task_lines(d: &registry::Dataset, listed: usize) -> Vec<String> {
         ));
     }
     let pinned = d.tasks.iter().filter(|t| t.digest.is_some()).count();
-    lines.push(if pinned == 0 {
+    let local = d
+        .tasks
+        .iter()
+        .all(|t| matches!(t.location, registry::Location::Local(_)));
+    lines.push(if pinned == 0 && local {
+        "  digests  none pinned; lock.json records each task's digest when the run starts"
+            .to_string()
+    } else if pinned == 0 {
         "  digests  none in the registry; lock.json records each task's digest after fetching"
             .to_string()
     } else {
@@ -1168,10 +1260,18 @@ fn dataset_plan(
         return Ok(exit);
     }
     // With a preview, the tasks were fetched to tell whether it resumes.
+    // An `acp:` agent's check may refresh the ACP registry's index.
+    let acp = resolved
+        .run
+        .agent
+        .as_deref()
+        .is_some_and(|a| a.starts_with("acp:"));
     say!(
         "{}",
         bold(if preview.is_some() {
             "Plan (nothing runs with --dry-run)"
+        } else if acp {
+            "Plan (nothing runs and no task is fetched with --dry-run)"
         } else {
             "Plan (nothing runs or is fetched with --dry-run)"
         })
@@ -1346,6 +1446,52 @@ mod exit_tests {
         let public = dataset_line(&d, 100);
         assert!(public.contains("the public dataset registry"), "{public}");
         assert!(!public.contains("https://"), "{public}");
+    }
+
+    /// A broken task that --include or --exclude leaves out is not named
+    /// as skipped; one they keep still is. Guards the E7 examples fix on
+    /// `rust/e7-examples`: `bench run tasks -i 'reward-*'` warned about
+    /// skipping `check-errors`.
+    #[test]
+    fn a_broken_task_the_patterns_leave_out_is_not_named() {
+        let root = Path::new("tasks/check-errors");
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!selected_folder(root, &[], &p(&["reward-*"]), &[]));
+        assert!(!selected_folder(root, &[], &[], &p(&["check-*"])));
+        assert!(selected_folder(root, &[], &p(&["check-*"]), &[]));
+        assert!(selected_folder(root, &[], &[], &[]));
+        // A task whose config gave its id is matched by it too, as a loaded
+        // task is: `-i 'examples/*'` still names the broken one it includes
+        // (review of 6b20b2d4).
+        let ids = p(&["check-errors", "examples/check-errors"]);
+        assert!(selected_folder(root, &ids, &p(&["examples/*"]), &[]));
+        assert!(!selected_folder(root, &ids, &[], &p(&["examples/*"])));
+    }
+
+    /// A local `dataset.toml` fetches nothing, so its plan does not say a
+    /// digest is recorded "after fetching". Guards the E7 examples fix on
+    /// `rust/e7-examples`.
+    #[test]
+    fn a_local_dataset_plan_does_not_speak_of_fetching() {
+        let d = registry::Dataset {
+            name: "mini".into(),
+            version: "1.0".into(),
+            description: None,
+            registry: "dataset.toml".into(),
+            bench_version: None,
+            tasks: vec![registry::DatasetTask {
+                name: "hello".into(),
+                location: registry::Location::Local("tasks/hello".into()),
+                digest: None,
+            }],
+        };
+        let lines = plan_task_lines(&d, 1);
+        let digests = lines.iter().find(|l| l.contains("digests")).unwrap();
+        assert_eq!(
+            digests,
+            "  digests  none pinned; lock.json records each task's digest when the run starts"
+        );
+        assert!(!lines.iter().any(|l| l.contains("fetching")), "{lines:#?}");
     }
 
     #[test]

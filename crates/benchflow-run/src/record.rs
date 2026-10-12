@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::agent::Usage;
 use crate::config::TrialDataset;
-use crate::outcome::{Defenses, Problem, Status};
+use crate::outcome::{DefenseState, Defenses, Problem, Status};
 
 /// Seconds spent in each phase. The first four keys are 0.8's.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -156,6 +156,9 @@ pub struct ResultFile {
     /// Each defense and whether it held, by name.
     pub defenses: Defenses,
     pub login: Option<String>,
+    /// The agent's version, as the agent reported it (ACP's `agentInfo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
     pub verifier_exit_code: Option<i32>,
     pub rubric: Option<Value>,
     pub engine: Engine,
@@ -186,6 +189,10 @@ pub struct ResultFile {
     /// stands; these say it may measure the task rather than the agent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment_warnings: Vec<String>,
+    /// The task's declared `[verifier] reward_range`, `[lo, hi]`, which
+    /// widens [0, 1]; absent when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_range: Option<(f64, f64)>,
 }
 
 /// What an agent's resource floor changed: for each resource it raised,
@@ -306,6 +313,8 @@ pub struct TrialRecord {
     pub defenses: Defenses,
     pub custody: Custody,
     pub login: Option<String>,
+    /// The agent's version, when it reported one.
+    pub agent_version: Option<String>,
     pub env_keys: Vec<String>,
     /// The verifier's exit code, when it ran.
     pub verifier_exit: Option<i32>,
@@ -325,6 +334,8 @@ pub struct TrialRecord {
     pub resources_raised: Option<ResourcesRaised>,
     /// Signs that the task's environment failed (see [`crate::envcheck`]).
     pub environment_warnings: Vec<String>,
+    /// The task's declared `[verifier] reward_range`, if any.
+    pub reward_range: Option<(f64, f64)>,
 }
 
 fn ts(t: &DateTime<Local>) -> String {
@@ -347,6 +358,9 @@ pub struct Tally {
     pub passed: usize,
     pub scored: usize,
     pub stopped: usize,
+    /// Scored trials graded although `locked_system_dirs` failed: see
+    /// [`TrialRecord::graded_unlocked`].
+    pub graded_unlocked: usize,
 }
 
 impl Tally {
@@ -360,6 +374,7 @@ impl Tally {
             t.counted += 1;
             t.passed += usize::from(r.passed == Some(true));
             t.scored += usize::from(r.status == Status::Scored);
+            t.graded_unlocked += usize::from(r.graded_unlocked());
         }
         t
     }
@@ -370,6 +385,54 @@ impl Tally {
 }
 
 impl TrialRecord {
+    /// Whether this trial was graded although `locked_system_dirs` failed,
+    /// so the system folders the verifier runs from may have been the
+    /// agent's to change. A repair before the agent ran (the image left
+    /// them writable, and the lock removed that) does not count: the folders
+    /// were locked.
+    pub fn graded_unlocked(&self) -> bool {
+        self.status == Status::Scored
+            && self.defenses.get("locked_system_dirs").is_some_and(|d| {
+                d.state == DefenseState::Failed
+                    && !d
+                        .note
+                        .as_deref()
+                        .is_some_and(|n| n.starts_with(crate::confine::SYSTEM_DIRS_REPAIRED))
+            })
+    }
+
+    /// Whether a model agent ran in this trial with the sandbox daemon's
+    /// ports open to it: on Daytona, the guard (`root_service`) could not be
+    /// installed or proven, and the run went ahead as decided, the record
+    /// saying why. Not when the agent runs as root (`off`, the task's
+    /// choice) or never started (the guard was not tried).
+    pub fn model_ran_unguarded(&self) -> bool {
+        // By the agent's kind, not its recorded model: an ACP agent on its
+        // default model may report none.
+        let scripted = matches!(self.agent.as_str(), "oracle" | "nop")
+            || ["script:", "probe:", "control:"]
+                .iter()
+                .any(|p| self.agent.starts_with(p));
+        !scripted
+            && self.defenses.get("root_service").is_some_and(|d| {
+                d.state == DefenseState::NotSupported
+                    && d.note
+                        .as_deref()
+                        .is_some_and(|n| n.contains(crate::netpolicy::UNGUARDED))
+            })
+    }
+
+    /// The reward when it is outside the range its task allows: the
+    /// declared `[verifier] reward_range` when the record names one, else
+    /// [0, 1]. bench refuses such a reward when it grades, so this finds
+    /// rewards in job folders it did not grade (BenchFlow 0.8's for a task
+    /// whose range the record does not carry, an older bench's). They are
+    /// counted as written and named, so they do not skew a mean silently.
+    pub fn reward_out_of_range(&self) -> Option<f64> {
+        let (lo, hi) = self.reward_range.unwrap_or((0.0, 1.0));
+        self.reward.filter(|r| !(lo..=hi).contains(r))
+    }
+
     /// Whether the user stopped this trial before it finished (R001): it
     /// says nothing about the agent, so pass rates leave it out.
     pub fn stopped(&self) -> bool {
@@ -436,6 +499,7 @@ impl TrialRecord {
             problem: self.problem.clone(),
             defenses: self.defenses.clone(),
             login: self.login.clone(),
+            agent_version: self.agent_version.clone(),
             verifier_exit_code: self.verifier_exit,
             rubric: self.rubric.clone(),
             engine: Engine::current(),
@@ -449,6 +513,7 @@ impl TrialRecord {
             agent_session: self.agent_session.clone(),
             resources_raised: self.resources_raised.clone(),
             environment_warnings: self.environment_warnings.clone(),
+            reward_range: self.reward_range,
         }
     }
 

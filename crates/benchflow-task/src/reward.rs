@@ -312,14 +312,16 @@ fn parse_json(file: &Path, text: &str) -> Result<JsonRewards, RewardError> {
 /// Read the rewards in a downloaded `/logs/verifier` folder.
 ///
 /// `reward.json` is preferred; its scalar reward is `reward`, else
-/// `reward.txt`'s number, else its `score` or `rewards` (the keys 0.8 takes
-/// a reward from in place of `reward`). When both files exist, the
+/// `reward.txt`'s number. Without either, the file is refused, as BenchFlow
+/// 0.8's default (strict) mode refuses it; [`read_rewards_with`] can take
+/// `score` or `rewards` in its place, as 0.8's lenient mode does. When both files exist, the
 /// JSON's `reward` must equal the text's. The reward must be in [0, 1], and
 /// so must the other numbers 0.8's `validate_reward_map` range-checks: a
 /// top-level number under any key but its structured ones
 /// ([`UNCHECKED_KEYS`]), each number in `metrics`, and each `rubric` item's
-/// `score`. A task's wider `reward_range` is refused at load, so [0, 1] is
-/// the only range a run meets.
+/// `score`. A task that declares a wider `[verifier] reward_range` is read
+/// with [`read_rewards_in`], which checks those numbers against its range
+/// instead (a rubric item's `score` stays in [0, 1], as in 0.8).
 ///
 /// Only that numeric rule is 0.8's. Its default (strict) mode also refuses
 /// non-numbers that bench accepts beside a numeric reward (`"done": true`, a
@@ -329,35 +331,87 @@ fn parse_json(file: &Path, text: &str) -> Result<JsonRewards, RewardError> {
 /// 0.8's `json.loads` reads, are refused where 0.8 range-checks a number and
 /// read as `null` where it passes values through.
 pub fn read_rewards(dir: &Path) -> Result<Rewards, RewardError> {
-    let r = read_any_rewards(dir)?;
+    read_rewards_with(dir, false)
+}
+
+/// [`read_rewards`], taking a reward from `score`, else `rewards`, when
+/// `reward.json` has no `reward` and there is no `reward.txt`, if
+/// `aliases` is set: BenchFlow 0.8's lenient mode
+/// (`BENCHFLOW_REWARD_LENIENT=1`, read by [`lenient_from_env`]).
+pub fn read_rewards_with(dir: &Path, aliases: bool) -> Result<Rewards, RewardError> {
+    read_rewards_in(dir, aliases, None)
+}
+
+/// [`read_rewards_with`], checking the reward and the numbers 0.8 checks
+/// against the task's declared `reward_range` (`[lo, hi]`, which only
+/// widens [0, 1]; `None` is [0, 1]). A rubric item's `score` stays in
+/// [0, 1], as in 0.8.
+pub fn read_rewards_in(
+    dir: &Path,
+    aliases: bool,
+    range: Option<(f64, f64)>,
+) -> Result<Rewards, RewardError> {
+    let (lo, hi) = range.unwrap_or((0.0, 1.0));
+    let whose = if range.is_some() {
+        " (the task's reward_range)"
+    } else {
+        ""
+    };
+    let r = read_any_rewards(dir, aliases)?;
     let file = || {
         dir.join(match r.source {
             RewardSource::Text => "reward.txt",
             RewardSource::Json | RewardSource::Both => "reward.json",
         })
     };
-    if !(0.0..=1.0).contains(&r.reward) {
+    if !(lo..=hi).contains(&r.reward) {
         return Err(RewardError::Parse {
             file: file(),
-            detail: format!("the reward is {}, outside [0, 1]", r.reward),
+            detail: format!("the reward is {}, outside [{lo}, {hi}]{whose}", r.reward),
         });
     }
-    if let Some((key, value)) = scored_numbers(&r).find(|(_, v)| !(0.0..=1.0).contains(v)) {
+    let outside = |key: &str, v: f64| {
+        if key.starts_with("rubric[") {
+            !(0.0..=1.0).contains(&v)
+        } else {
+            !(lo..=hi).contains(&v)
+        }
+    };
+    if let Some((key, value)) = scored_numbers(&r).find(|(k, v)| outside(k, *v)) {
+        let (klo, khi, kwhose) = if key.starts_with("rubric[") {
+            (0.0, 1.0, "")
+        } else {
+            (lo, hi, whose)
+        };
         return Err(RewardError::Parse {
             file: dir.join("reward.json"),
             detail: format!(
-                "{key} is {value}, outside [0, 1] (BenchFlow 0.8 refuses this number too; numbers under its reserved keys such as raw, errors or details are not checked)"
+                "{key} is {value}, outside [{klo}, {khi}]{kwhose} (BenchFlow 0.8 refuses this number too; numbers under its reserved keys such as raw, errors or details are not checked)"
             ),
         });
     }
     Ok(r)
 }
 
-/// Keys a reward.json without `reward` takes its reward from, in this
-/// order: 0.8's `_LENIENT_REWARD_ALIASES`. 0.8 takes a reward from no other
-/// key (but for an aggregate policy over `metrics`, which bench does not
-/// apply), so a lone `{"errors": 1}` is not a reward of 1.
+/// Keys a reward.json without `reward` takes its reward from in lenient
+/// mode, in this order: 0.8's `_LENIENT_REWARD_ALIASES`. 0.8 takes a reward
+/// from no other key (but for an aggregate policy over `metrics`, which
+/// bench does not apply), so a lone `{"errors": 1}` is not a reward of 1.
 const REWARD_ALIASES: [&str; 2] = ["score", "rewards"];
+
+/// The variable that turns on lenient reward files, as in BenchFlow 0.8.
+pub const LENIENT_ENV: &str = "BENCHFLOW_REWARD_LENIENT";
+
+/// Whether [`LENIENT_ENV`] is set to a true value (`1`, `true`, `yes`,
+/// `on`, in any case), as 0.8 reads it.
+pub fn lenient_from_env() -> bool {
+    std::env::var(LENIENT_ENV).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
 
 /// Top-level keys whose numbers 0.8's `validate_reward_map` does not
 /// range-check: its structured keys (`_STRUCTURED_REWARD_KEYS`), passed
@@ -414,8 +468,8 @@ pub fn scored_numbers(r: &Rewards) -> impl Iterator<Item = (String, f64)> + '_ {
     top.chain(metrics).chain(rubric)
 }
 
-/// [`read_rewards`] without the range check.
-fn read_any_rewards(dir: &Path) -> Result<Rewards, RewardError> {
+/// [`read_rewards_with`] without the range check.
+fn read_any_rewards(dir: &Path, aliases: bool) -> Result<Rewards, RewardError> {
     let json_file = dir.join("reward.json");
     let text_file = dir.join("reward.txt");
     let json = read_nonempty(&json_file)?;
@@ -451,7 +505,16 @@ fn read_any_rewards(dir: &Path) -> Result<Rewards, RewardError> {
                     (b, RewardSource::Both)
                 }
                 (None, None) => match REWARD_ALIASES.iter().find_map(|k| values.get(*k)) {
-                    Some(&r) => (r, RewardSource::Json),
+                    Some(&r) if aliases => (r, RewardSource::Json),
+                    Some(_) => {
+                        return Err(RewardError::Parse {
+                            file: json_file,
+                            detail: format!(
+                                "it has no reward key; BenchFlow 0.8 takes score or rewards in its place only in lenient mode, \
+which {LENIENT_ENV}=1 turns on for bench too"
+                            ),
+                        });
+                    }
                     None => {
                         return Err(RewardError::Parse {
                             file: json_file,
@@ -494,7 +557,8 @@ mod tests {
             ("reward.json", r#"{"score": 7}"#),
         ] {
             let d = dir(&[(name, text)]);
-            let e = read_rewards(d.path()).unwrap_err();
+            // Lenient, so `score` is read as the reward and its range checked.
+            let e = read_rewards_with(d.path(), true).unwrap_err();
             assert!(
                 matches!(&e, RewardError::Parse { detail, .. } if detail.contains("outside [0, 1]")),
                 "{name} {text}: {e:?}"
@@ -627,7 +691,9 @@ mod tests {
     }
 
     /// Without `reward`, 0.8 takes a reward only from `score` or `rewards`
-    /// (its lenient aliases): `{"errors": 1}` scored 1.0 and passed.
+    /// (its lenient aliases), and only in lenient mode: `{"errors": 1}`
+    /// scored 1.0 and passed, and `{"score": 0.4}` scored where strict 0.8
+    /// refuses it (D5d's open finding, fixed 2026-10-11).
     #[test]
     fn a_reward_comes_only_from_keys_0_8_takes_one_from() {
         for text in [
@@ -649,8 +715,75 @@ mod tests {
             (r#"{"score": 0.4, "rewards": 1, "accuracy": 1}"#, 0.4),
         ] {
             let d = dir(&[("reward.json", text)]);
-            assert_eq!(read_rewards(d.path()).unwrap().reward, want, "{text}");
+            // Strict, 0.8's default: refused, naming the way to allow it.
+            let e = read_rewards(d.path()).unwrap_err();
+            assert!(
+                matches!(&e, RewardError::Parse { detail, .. } if detail.contains("only in lenient mode") && detail.contains("BENCHFLOW_REWARD_LENIENT=1")),
+                "{text}: {e:?}"
+            );
+            assert_eq!(
+                read_rewards_with(d.path(), true).unwrap().reward,
+                want,
+                "{text}"
+            );
         }
+        // Lenient mode takes no other key.
+        let d = dir(&[("reward.json", r#"{"errors": 1}"#)]);
+        assert!(read_rewards_with(d.path(), true).is_err());
+        // A reward.txt still gives the reward in either mode.
+        let d = dir(&[("reward.json", r#"{"score": 0.4}"#), ("reward.txt", "1")]);
+        assert_eq!(read_rewards(d.path()).unwrap().reward, 1.0);
+    }
+
+    /// A task that declares `[verifier] reward_range` (BenchFlow 0.8's, which
+    /// only widens [0, 1]) has rewards inside it scored, and ones outside it
+    /// refused; a rubric item's score stays in [0, 1]. Before 2026-10-11
+    /// (break campaign E9) bench refused such a task at load.
+    #[test]
+    fn a_declared_reward_range_widens_what_is_scored() {
+        let wide = Some((-1.0, 1.0));
+        for (name, text, want) in [
+            ("reward.txt", "-1", -1.0),
+            ("reward.txt", "-0.5", -0.5),
+            ("reward.json", r#"{"reward": -0.25, "accuracy": -1}"#, -0.25),
+            (
+                "reward.json",
+                r#"{"reward": 1, "metrics": {"safety": -0.5}}"#,
+                1.0,
+            ),
+        ] {
+            let d = dir(&[(name, text)]);
+            assert_eq!(
+                read_rewards_in(d.path(), false, wide).unwrap().reward,
+                want,
+                "{name} {text}"
+            );
+            // Undeclared, the same file is refused, as before.
+            assert!(read_rewards(d.path()).is_err(), "{name} {text}");
+        }
+        for (name, text) in [
+            ("reward.txt", "-1.5"),
+            ("reward.txt", "2"),
+            ("reward.json", r#"{"reward": 0.5, "accuracy": -2}"#),
+            (
+                "reward.json",
+                r#"{"reward": 0.5, "rubric": [{"score": -0.5}]}"#,
+            ),
+        ] {
+            let d = dir(&[(name, text)]);
+            let e = read_rewards_in(d.path(), false, wide).unwrap_err();
+            assert!(
+                matches!(&e, RewardError::Parse { detail, .. } if detail.contains("outside [")),
+                "{name} {text}: {e:?}"
+            );
+        }
+        let d = dir(&[("reward.txt", "3")]);
+        let e = read_rewards_in(d.path(), false, wide).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("outside [-1, 1] (the task's reward_range)"),
+            "{e}"
+        );
     }
 
     /// 0.8 computes a reward from `metrics` and an `aggregate` policy;
@@ -699,7 +832,7 @@ mod tests {
     #[test]
     fn a_single_number_without_a_reward_key_is_the_reward() {
         let d = dir(&[("reward.json", r#"{"score": 0.4}"#)]);
-        assert_eq!(read_rewards(d.path()).unwrap().reward, 0.4);
+        assert_eq!(read_rewards_with(d.path(), true).unwrap().reward, 0.4);
         let d = dir(&[("reward.json", r#"{"a": 0.4, "b": 1}"#)]);
         assert!(matches!(
             read_rewards(d.path()),

@@ -158,12 +158,26 @@ impl From<ApiError> for SandboxError {
                     },
                 }
             }
+            // Daytona's rate limit: its own answer (convergence review
+            // E9-C-A N2), kept apart from a 5xx, which a sandbox broken from
+            // inside can surface through the toolbox's proxy.
+            ApiError::Status {
+                status: 429,
+                message,
+                what,
+                attempts,
+            } => SandboxError::Throttled(format!(
+                "Daytona refused {what} for its rate limit (HTTP 429: {message}){}. This is on \
+                 Daytona's side and usually passes; run again, with lower concurrency if it keeps \
+                 happening.",
+                tries(attempts)
+            )),
             ApiError::Status {
                 status,
                 message,
                 what,
                 attempts,
-            } if status == 429 || status >= 500 => SandboxError::Transport(format!(
+            } if status >= 500 => SandboxError::Transport(format!(
                 "Daytona failed while {what} (HTTP {status}: {message}){}. This is on Daytona's \
                  side and usually passes; run again, with lower concurrency if it keeps happening.",
                 tries(attempts)
@@ -223,6 +237,9 @@ pub(crate) struct Api {
     key: Option<Secret>,
     pub(crate) target: Option<String>,
     redactor: Redactor,
+    /// Creates this run sent whose sandbox got no answer and has not been
+    /// found yet (see `remove_if_it_lands`).
+    pub(crate) unanswered: std::sync::atomic::AtomicUsize,
 }
 
 impl fmt::Debug for Api {
@@ -235,8 +252,17 @@ impl fmt::Debug for Api {
     }
 }
 
-/// How many times a request is tried at most.
+/// How many times a request is tried at most (but see [`THROTTLE_PATIENCE`]).
 const MAX_ATTEMPTS: u32 = 5;
+
+/// How long a request Daytona keeps refusing with 429 is tried again.
+/// Five tries spanned 7.5 s, shorter than a rate limit's window: a 20 s
+/// burst of 429s (as a shared account at high concurrency sees) failed a
+/// trial's image (E5).
+const THROTTLE_PATIENCE: Duration = Duration::from_secs(60);
+
+/// The shortest wait before a try again, so `Retry-After: 0` is no busy loop.
+const MIN_WAIT: Duration = Duration::from_millis(250);
 
 /// The Daytona key goes to `DAYTONA_API_URL` as a bearer header: it must be
 /// https, or http to this machine (a local fake), wherever it was set.
@@ -293,6 +319,7 @@ impl Api {
             key,
             target: target.filter(|t| !t.is_empty()),
             redactor,
+            unanswered: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -347,6 +374,7 @@ impl Api {
     {
         let headers = self.headers()?;
         let mut attempt = 0;
+        let first = std::time::Instant::now();
         loop {
             attempt += 1;
             let request = build(&self.http)?.headers(headers.clone());
@@ -364,9 +392,11 @@ impl Api {
                     let status = response.status();
                     let wait = retry_after(&response);
                     let body = response.text().await.unwrap_or_default();
-                    let again = status == StatusCode::TOO_MANY_REQUESTS
-                        || (retry == Retry::Safe && status.is_server_error());
-                    if again && attempt < MAX_ATTEMPTS {
+                    let throttled = status == StatusCode::TOO_MANY_REQUESTS;
+                    let again = throttled || (retry == Retry::Safe && status.is_server_error());
+                    let more = attempt < MAX_ATTEMPTS
+                        || (throttled && first.elapsed() < THROTTLE_PATIENCE);
+                    if again && more {
                         tracing::debug!("Daytona {what}: HTTP {status}, retrying");
                         tokio::time::sleep(backoff(attempt, wait)).await;
                         continue;
@@ -514,7 +544,7 @@ impl Api {
 /// or the server's `Retry-After` when it is shorter than 30 s.
 fn backoff(attempt: u32, retry_after: Option<Duration>) -> Duration {
     if let Some(wait) = retry_after.filter(|w| *w <= Duration::from_secs(30)) {
-        return wait;
+        return wait.max(MIN_WAIT);
     }
     let base = Duration::from_millis(500) * 2u32.saturating_pow(attempt.saturating_sub(1));
     let jitter = std::time::SystemTime::now()
@@ -658,9 +688,14 @@ mod tests {
         assert!(fix.contains("resource limit"), "{fix}");
         let err = SandboxError::from(status(503, "Service Unavailable"));
         assert!(err.is_transient());
+        assert!(matches!(err, SandboxError::Transport(_)), "{err:?}");
         assert!(err.to_string().contains("after 3 attempts"), "{err}");
+        // A 429 is Daytona's own answer, which no code inside a sandbox can
+        // produce; a 5xx may come through the toolbox's proxy from a
+        // sandbox broken from inside (convergence review E9-C-A N2).
         let err = SandboxError::from(status(429, "slow down"));
         assert!(err.is_transient());
+        assert!(matches!(err, SandboxError::Throttled(_)), "{err:?}");
         assert!(matches!(
             SandboxError::from(status(400, "bad")),
             SandboxError::Unsupported(_)
@@ -704,6 +739,47 @@ mod tests {
         assert_eq!(api.redact("key dtn_secret_123 here"), "key [redacted] here");
         assert_eq!(api.url("/sandbox"), "https://example.invalid/api/sandbox");
         assert_eq!(format!("{:?}", Secret::new("x".into())), "[redacted]");
+    }
+
+    /// E5 (429s from a fault proxy before Daytona's API): a burst of 429s
+    /// longer than five quick tries failed the request; `Retry-After: 0`
+    /// made the tries back to back.
+    #[tokio::test]
+    async fn a_throttled_request_waits_out_the_burst() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<std::time::Instant>::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let n = {
+                    let mut l = log.lock().unwrap();
+                    l.push(std::time::Instant::now());
+                    l.len()
+                };
+                let answer = if n <= 8 {
+                    "HTTP/1.1 429 Too Many Requests\r\nretry-after: 0\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"
+                } else {
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"
+                };
+                let _ = sock.write_all(answer.as_bytes()).await;
+            }
+        });
+        let api = Api::new(&format!("http://{addr}/api"), Some("k".into()), None).unwrap();
+        let response = api
+            .send("listing sandboxes", Retry::Unsent, |http| {
+                Ok(http.get(format!("http://{addr}/api/sandbox")))
+            })
+            .await;
+        assert!(response.is_ok(), "{:?}", response.err());
+        let times = seen.lock().unwrap().clone();
+        assert_eq!(times.len(), 9);
+        for pair in times.windows(2) {
+            assert!(pair[1] - pair[0] >= Duration::from_millis(200), "{times:?}");
+        }
     }
 
     #[tokio::test]

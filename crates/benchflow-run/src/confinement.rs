@@ -253,6 +253,7 @@ echo "BF root-oom $(cat /proc/self/oom_score_adj 2>/dev/null || echo unreadable)
 if [ -r /proc/sys/kernel/yama/ptrace_scope ]; then echo "BF ptrace $(cat /proc/sys/kernel/yama/ptrace_scope)"; else echo "BF ptrace none"; fi
 echo "BF kernel $(cat /proc/version 2>/dev/null | cut -c1-80)"
 echo "BF dmesg $(dmesg 2>/dev/null | head -n 2 | tr '\n' ' ' | cut -c1-120)"
+echo "BF pids-max $(cat /sys/fs/cgroup/pids.max 2>/dev/null || cat /sys/fs/cgroup/pids/pids.max 2>/dev/null || echo unreadable)"
 {memory}"#,
         dirs = dirs.join(" "),
         workdir = crate::shell_quote(WORKDIR),
@@ -349,6 +350,7 @@ async fn read_back(
     s.push(preload(&state));
     s.push(oom(&state, &pid));
     s.push(memory(applied.get("memory_limit")));
+    s.push(processes(&state, opts.pids_limit));
     s.push(runtime(&state, backend, opts.runtime.as_deref()));
     s.push(ptrace(&state));
     s.push(root_environ(&environ));
@@ -447,6 +449,42 @@ fn memory(applied: Option<&crate::outcome::Defense>) -> Setting {
             State::NotSet => "the sandbox has no memory limit".into(),
         },
         evidence: note,
+    }
+}
+
+/// The process limit, read back from the sandbox's cgroup (`pids.max`), so
+/// a backend that drops the limit shows as such rather than as asked.
+fn processes(state: &Report, asked: u32) -> Setting {
+    let v = state
+        .first("pids-max")
+        .unwrap_or("unreadable")
+        .trim()
+        .to_string();
+    match v.parse::<u64>() {
+        Ok(n) if n <= u64::from(asked) => Setting {
+            name: "process_limit",
+            state: State::Enforced,
+            summary: "the kernel caps how many processes the sandbox may run".into(),
+            evidence: format!("pids.max = {n} (BenchFlow asks for {asked})"),
+        },
+        Ok(n) => Setting {
+            name: "process_limit",
+            state: State::NotSet,
+            summary: format!("the sandbox may run {n} processes, more than the {asked} BenchFlow asks for"),
+            evidence: format!("pids.max = {n}"),
+        },
+        Err(_) if v == "max" => Setting {
+            name: "process_limit",
+            state: State::NotSet,
+            summary: "the sandbox has no process limit, so a fork bomb can use up every process slot its kernel has".into(),
+            evidence: format!("pids.max = max (BenchFlow asks for {asked})"),
+        },
+        Err(_) => Setting {
+            name: "process_limit",
+            state: State::NotSupported,
+            summary: "no process limit is visible inside the sandbox".into(),
+            evidence: format!("pids.max is unreadable (BenchFlow asks for {asked})"),
+        },
     }
 }
 
@@ -603,5 +641,19 @@ mod tests {
         let r = Report::parse("BF agent-oom 0 agent\nBF root-oom 0\nBF ptrace 0\n");
         assert_eq!(oom(&r, "42").state, State::NotSet);
         assert_eq!(ptrace(&r).state, State::NotSet);
+    }
+
+    #[test]
+    fn the_process_limit_is_read_back_not_assumed() {
+        let p = |line: &str| processes(&Report::parse(line), 4096);
+        let set = p("BF pids-max 4096\n");
+        assert_eq!(set.state, State::Enforced);
+        assert!(set.evidence.contains("pids.max = 4096"));
+        assert_eq!(p("BF pids-max 64\n").state, State::Enforced);
+        assert_eq!(p("BF pids-max 100000\n").state, State::NotSet);
+        assert_eq!(p("BF pids-max max\n").state, State::NotSet);
+        assert_eq!(p("BF pids-max unreadable\n").state, State::NotSupported);
+        assert_eq!(p("").state, State::NotSupported);
+        assert!(state_program("1").contains("pids.max"));
     }
 }

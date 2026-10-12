@@ -1,0 +1,4 @@
+# OpenCode over ACP on MiMo v2.6 Flash. Needs MIMO_API_KEY.
+targets = ["../tasks/hello"]
+agent = "opencode"
+model = "mimo/mimo-v2.6-flash"

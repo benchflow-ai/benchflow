@@ -46,6 +46,62 @@ struct FakeSandbox {
     fail_load: bool,
     /// Root's removal of the login files finds `~/.codex` a link.
     linked: bool,
+    /// The parent's grading waits here (see [`Hold`]).
+    hold: Option<Arc<Hold>>,
+}
+
+/// Holds a continuing parent's grading until the first child's end is in
+/// the fork's records (or 10 s pass), and keeps what the records said
+/// then: the parent is still running while a child has ended.
+struct Hold {
+    /// The job folder the records are written under.
+    jobs: std::path::PathBuf,
+    /// tree.json, and whether labels.json and the child's observation.json
+    /// were there, as first seen with a child scored.
+    seen: Mutex<Option<(Value, bool, bool)>>,
+}
+
+impl Hold {
+    async fn wait(&self) {
+        for _ in 0..200 {
+            let trees = walk(&self.jobs, "tree.json");
+            for t in trees {
+                let Ok(tree) =
+                    serde_json::from_str::<Value>(&std::fs::read_to_string(&t).unwrap_or_default())
+                else {
+                    continue;
+                };
+                if tree["forks"][0]["children"][0]["status"] == "scored" {
+                    let trial = t.parent().unwrap();
+                    let fork = trial
+                        .join("branches")
+                        .join(tree["forks"][0]["id"].as_str().unwrap());
+                    let labels = fork.join("labels.json").is_file();
+                    let observation = fork.join("children/n1/observation.json").is_file();
+                    *self.seen.lock().unwrap() = Some((tree, labels, observation));
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// Every file named `name` under `dir`, at any depth.
+fn walk(dir: &Path, name: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            found.extend(walk(&p, name));
+        } else if p.file_name().is_some_and(|n| n == name) {
+            found.push(p);
+        }
+    }
+    found
 }
 
 #[async_trait]
@@ -205,6 +261,9 @@ impl Sandbox for FakeSandbox {
     }
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
         if remote == "/logs/verifier" {
+            if let Some(hold) = &self.hold {
+                hold.wait().await;
+            }
             std::fs::create_dir_all(local).unwrap();
             let solved = self.world.lock().unwrap().solved;
             std::fs::write(local.join("reward.txt"), if solved { "1\n" } else { "0\n" }).unwrap();
@@ -259,6 +318,8 @@ struct FakeProvider {
     fail_load_in: Option<usize>,
     /// Sandboxes whose login files are behind a link.
     linked: bool,
+    /// The parent's grading waits for a child's end to be in the records.
+    hold: Option<Arc<Hold>>,
 }
 
 impl FakeProvider {
@@ -268,6 +329,7 @@ impl FakeProvider {
             checkpoints: self.checkpoints.clone(),
             fail_load,
             linked: self.linked,
+            hold: None,
         })
     }
 }
@@ -305,7 +367,13 @@ impl Provider for FakeProvider {
         })
     }
     async fn create(&self, _spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
-        Ok(self.sandbox(false, false))
+        Ok(Box::new(FakeSandbox {
+            world: Arc::new(Mutex::new(World { solved: false })),
+            checkpoints: self.checkpoints.clone(),
+            fail_load: false,
+            linked: self.linked,
+            hold: self.hold.clone(),
+        }))
     }
     async fn create_from_checkpoint(
         &self,
@@ -394,6 +462,7 @@ fn task(root: &Path) -> TaskPackage {
             network: None,
             isolation: Isolation::Shared,
             rubric: None,
+            reward_range: None,
         },
         oracle: None,
         controls: Vec::new(),
@@ -424,6 +493,25 @@ async fn run_fork_timed(
     children: &[&str],
     agent_timeout: Duration,
 ) -> branch::BranchJob {
+    run_fork_with(
+        tmp,
+        provider,
+        children,
+        agent_timeout,
+        false,
+        Events::none(),
+    )
+    .await
+}
+
+async fn run_fork_with(
+    tmp: &Path,
+    provider: Arc<FakeProvider>,
+    children: &[&str],
+    agent_timeout: Duration,
+    continue_parent: bool,
+    events: Events,
+) -> branch::BranchJob {
     let mut t = task(&tmp.join("branch"));
     t.agent.timeout = Some(agent_timeout);
     let t = Arc::new(t);
@@ -436,7 +524,7 @@ async fn run_fork_timed(
             idle_timeout: Duration::from_secs(30),
             ..RunOptions::default()
         },
-        events: Events::none(),
+        events,
         stop: rx,
     });
     let manifest = AgentManifest::parse(MANIFEST, ManifestSource::Builtin("fake.toml")).unwrap();
@@ -450,7 +538,7 @@ async fn run_fork_timed(
         retain: false,
         resume: true,
         concurrency: 1,
-        continue_parent: false,
+        continue_parent,
     };
     branch::run_job(
         vec![t],
@@ -462,6 +550,35 @@ async fn run_fork_timed(
     )
     .await
     .unwrap()
+}
+
+/// A branch job tells the live view how many trial lines to expect (the
+/// parent and each child), as `bench run` does; without it the progress
+/// line read "1/0 done, 2 running". Guards the E7 examples fix on
+/// `rust/e7-examples`.
+#[tokio::test]
+async fn a_branch_job_announces_its_parent_and_children_as_its_total() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    run_fork_with(
+        tmp.path(),
+        Arc::new(FakeProvider::default()),
+        &[
+            "label=a,prompt=Check your work.",
+            "label=b,prompt=Check your work.",
+        ],
+        Duration::from_secs(60),
+        false,
+        Events::new(tx),
+    )
+    .await;
+    let mut started = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let benchflow_run::events::Event::JobStarted { total, reused, .. } = ev {
+            started.push((total, reused));
+        }
+    }
+    assert_eq!(started, [(3, 0)]);
 }
 
 /// A child whose agent cannot load the parent's session never ran from the
@@ -486,6 +603,10 @@ async fn a_child_that_cannot_resume_leaves_a_partial_fork() {
     let f = &out.forks[0];
     assert_eq!(f.status, "partial");
     assert_eq!(f.value, None);
+    // The parent stopped after its agent's turn, not in setup.
+    let p = f.parent.problem.as_ref().unwrap();
+    assert_eq!(p.code, "R000");
+    assert_eq!(p.phase, benchflow_run::outcome::Phase::Agent);
     let tree = read_json(&out.dir.join(&f.parent.rollout_name).join("tree.json"));
     let kids = tree["forks"][0]["children"].as_array().unwrap().clone();
     assert_eq!(kids[0]["status"], "scored");
@@ -749,6 +870,65 @@ async fn a_timed_out_child_is_failed_in_tree_and_results() {
     assert!(row["reward"].is_null(), "{row}");
     assert!(row["passed"].is_null(), "{row}");
     assert!(row["metrics"]["reward"].is_null(), "{row}");
+}
+
+/// With a continuing parent, a child's end is written while the parent is
+/// still running (as docs/rust/branching.md promises: "whenever the parent
+/// or a child ends"): tree.json with the fork `running`, the parent with no
+/// grade yet, the ended child scored and the next `not_started`;
+/// labels.json; and the child's observation.json. The parent's grading
+/// waits until the records show a child's end (10 s at most), so a run
+/// killed then would leave them.
+#[tokio::test]
+async fn a_childs_end_is_recorded_while_a_continuing_parent_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hold = Arc::new(Hold {
+        jobs: tmp.path().join("jobs"),
+        seen: Mutex::new(None),
+    });
+    let provider = Arc::new(FakeProvider {
+        hold: Some(hold.clone()),
+        ..FakeProvider::default()
+    });
+    let out = run_fork_with(
+        tmp.path(),
+        provider,
+        &[
+            "label=keep,prompt=Check your work.",
+            "label=undo,prompt=Now break it.",
+        ],
+        Duration::from_secs(60),
+        true,
+        Events::none(),
+    )
+    .await;
+    let f = &out.forks[0];
+    assert_eq!(f.status, "completed", "{:?}", f.parent.problem);
+    assert_eq!(f.parent.status, benchflow_run::outcome::Status::Scored);
+    let (tree, labels, observation) = hold
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("no record of a child's end while the parent ran");
+    let fork = &tree["forks"][0];
+    assert_eq!(fork["status"], "running", "{fork}");
+    assert!(fork["value"].is_null(), "{fork}");
+    assert!(fork["parent_reward"].is_null(), "{fork}");
+    assert!(fork["cost"]["parent_sandbox_seconds"].is_null(), "{fork}");
+    assert_eq!(fork["children"][0]["status"], "scored", "{fork}");
+    assert_eq!(fork["children"][1]["status"], "not_started", "{fork}");
+    assert!(labels, "labels.json was not written while the parent ran");
+    assert!(
+        observation,
+        "observation.json was not written while the parent ran"
+    );
+    // The final records replace them, with the parent's grade.
+    let tree = read_json(&out.dir.join(&f.parent.rollout_name).join("tree.json"));
+    assert_eq!(tree["forks"][0]["status"], "completed");
+    assert_eq!(tree["forks"][0]["parent_reward"], 1.0);
+    let result = read_json(&out.dir.join(&f.parent.rollout_name).join("result.json"));
+    assert_eq!(result["branches"]["forks"][0]["parent_reward"], 1.0);
 }
 
 /// A credential file the agent's family writes, left in place because a

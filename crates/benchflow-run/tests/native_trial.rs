@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use base64::Engine;
@@ -51,6 +51,8 @@ struct Script {
     repeat: Option<Value>,
     requests: Vec<Value>,
     bearer_ok: bool,
+    /// Take every request and never answer it.
+    stall: bool,
 }
 
 type Shared = Arc<Mutex<Script>>;
@@ -60,6 +62,10 @@ async fn completions(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
+    if s.lock().unwrap().stall {
+        s.lock().unwrap().requests.push(body.clone());
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+    }
     let mut s = s.lock().unwrap();
     s.bearer_ok = headers
         .get("authorization")
@@ -102,6 +108,9 @@ async fn serve(script: Shared) -> String {
     let app = axum::Router::new()
         .route("/v1/chat/completions", post(completions))
         .route("/v1/models/{*path}", get(endpoints))
+        // Read a request that carries a huge earlier reply whole, as a
+        // provider does; axum's default 2 MB limit would refuse it.
+        .layer(DefaultBodyLimit::disable())
         .with_state(script);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -184,6 +193,9 @@ impl FakeSandbox {
             return ok("BF path /usr/local/bin:/usr/bin:/bin\n");
         }
         // The handoff program confirms it ran to the end.
+        if c.contains("BF baseline $(") {
+            return ok("BF baseline 0\n");
+        }
         if c.contains("BF handoff done") {
             return ok("BF handoff done\n");
         }
@@ -354,6 +366,11 @@ struct Run {
 }
 
 async fn run_trial(agent: &str, script: Script, options: RunOptions) -> Run {
+    run_trial_on(&hello(), agent, script, options).await
+}
+
+/// [`run_trial`] on another task folder.
+async fn run_trial_on(task_dir: &Path, agent: &str, script: Script, options: RunOptions) -> Run {
     let script: Shared = Arc::new(Mutex::new(script));
     let base = serve(script.clone()).await;
     let host = HostEnv::new(
@@ -370,9 +387,10 @@ async fn run_trial(agent: &str, script: Script, options: RunOptions) -> Run {
             max_attempts: 3,
             backoff_base: Duration::from_millis(5),
             backoff_cap: Duration::from_millis(20),
+            ..ClientOptions::default()
         });
     let tmp = tempfile::tempdir().unwrap();
-    let task = Arc::new(benchflow_task::load(&hello()).expect("the hello fixture loads"));
+    let task = Arc::new(benchflow_task::load(task_dir).expect("the task fixture loads"));
     let provider = Arc::new(FakeProvider {
         worlds: Mutex::new(Vec::new()),
     });
@@ -393,7 +411,7 @@ async fn run_trial(agent: &str, script: Script, options: RunOptions) -> Run {
         job_name: Some("native-job".into()),
         fresh: true,
         concurrency: 1,
-        source: json!({"path": hello()}),
+        source: json!({"path": task_dir}),
     };
     let out = job::run(spec, rt).await.unwrap();
     let rec = out.records[0].clone();
@@ -583,6 +601,125 @@ async fn builtin_solves_hello_with_scripted_tool_calls() {
     assert_no_key(&r.dir);
 }
 
+/// E1 round 2 (and E2's comparison with another harness's transcript): the
+/// builtin loop's ATIF is what the model saw. The system prompt is a step,
+/// each model call is one agent step with its usage as `metrics`, and a
+/// tool result is recorded with the "Time remaining" note the model got.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn builtin_atif_is_one_step_per_model_call_with_what_the_model_saw() {
+    let script = Script {
+        replies: VecDeque::from([
+            (
+                200,
+                tool_reply(
+                    "c1",
+                    "write",
+                    json!({"file_path": "/app/hello.txt", "content": "Hello, world!"}),
+                ),
+            ),
+            (
+                200,
+                tool_reply("c2", "submit", json!({"summary": "wrote the file"})),
+            ),
+        ]),
+        ..Script::default()
+    };
+    let r = run_trial("builtin", script, options()).await;
+    assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
+    let script = r.script.lock().unwrap();
+    let system = script.requests[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let second = script.requests[1]["messages"].as_array().unwrap();
+    let seen = second.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    drop(script);
+    assert!(seen.contains("Time remaining:"), "{seen}");
+
+    let atif: Value =
+        serde_json::from_str(&std::fs::read_to_string(r.dir.join("trainer/atif.json")).unwrap())
+            .unwrap();
+    let steps = atif["steps"].as_array().unwrap();
+    let sources: Vec<&str> = steps
+        .iter()
+        .map(|s| s["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["system", "user", "agent", "agent"], "{atif}");
+    assert_eq!(steps[0]["message"], system.as_str());
+    for step in &steps[2..] {
+        assert_eq!(step["llm_call_count"], 1, "{step}");
+        assert_eq!(
+            step["metrics"],
+            json!({"prompt_tokens": 10, "completion_tokens": 5, "cached_tokens": 0, "cost_usd": 0.001})
+        );
+        assert_eq!(step["extra"], json!({"finish_reason": "tool_calls"}));
+    }
+    // The write's result as the model read it, note included.
+    assert_eq!(
+        steps[2]["observation"]["results"][0]["content"],
+        seen.as_str()
+    );
+    assert_eq!(atif["final_metrics"]["total_prompt_tokens"], 20);
+    // The agent's version is BenchFlow's, which runs the loop.
+    assert_eq!(atif["agent"]["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        r.rec.agent_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+    // The model calls and the system prompt are not steps in result.json.
+    assert_eq!(r.rec.trajectory_summary["other_steps"], 0);
+}
+
+/// E1 round 2: Terminus-2's ATIF has one agent step per model call, with
+/// the turn's commands as its tool calls, as other ATIF writers do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminus_2_atif_is_one_step_per_model_call() {
+    let script = Script {
+        replies: VecDeque::from([
+            (
+                200,
+                keystrokes_reply(
+                    "Need to write the file.",
+                    &[
+                        "printf 'Hello, world!' > /app/hello.txt\n",
+                        "cat /app/hello.txt\n",
+                    ],
+                    true,
+                ),
+            ),
+            (200, keystrokes_reply("The file is written.", &[], true)),
+        ]),
+        ..Script::default()
+    };
+    let r = run_trial("terminus-2", script, options()).await;
+    assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
+    let atif: Value =
+        serde_json::from_str(&std::fs::read_to_string(r.dir.join("trainer/atif.json")).unwrap())
+            .unwrap();
+    let steps = atif["steps"].as_array().unwrap();
+    let sources: Vec<&str> = steps
+        .iter()
+        .map(|s| s["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["user", "agent", "agent"], "{atif}");
+    let first = &steps[1];
+    assert!(
+        first["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Analysis: Need to write the file.")
+    );
+    // Both commands and the completion mark, one step.
+    assert_eq!(first["tool_calls"].as_array().unwrap().len(), 3, "{first}");
+    assert_eq!(first["llm_call_count"], 1);
+    assert_eq!(first["metrics"]["prompt_tokens"], 10);
+    assert_eq!(first["metrics"]["completion_tokens"], 5);
+    assert_eq!(atif["final_metrics"]["total_steps"], 3);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_gateway_request_is_pinned_and_a_baseten_only_model_never_starts() {
     let script: Shared = Arc::new(Mutex::new(Script {
@@ -657,6 +794,115 @@ async fn max_tool_calls_stops_the_loop_and_the_trajectory_says_so() {
     assert_eq!(echoes, 2);
 }
 
+/// A model that answers every turn with tool calls whose arguments are not
+/// JSON gets an error result each time; after three such turns in a row the
+/// loop stops. The trial is still graded (DECISIONS row 27), and its summary
+/// records the stop as the model's failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn endless_invalid_tool_calls_stop_the_loop_and_the_trial_is_graded() {
+    let bad = json!({"model": "fake/model", "choices": [{"finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": "bad", "type": "function",
+                        "function": {"name": "bash", "arguments": "{\"command\": "}}]}}],
+        "usage": usage()});
+    let script = Script {
+        repeat: Some(bad),
+        ..Script::default()
+    };
+    let r = run_trial(
+        "builtin",
+        script,
+        RunOptions {
+            // hello's 2-minute agent limit becomes 6 s, so a loop without
+            // the cap fails this test quickly by timing out instead.
+            timeout_multiplier: 0.05,
+            ..options()
+        },
+    )
+    .await;
+    assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
+    assert!(r.rec.problem.is_none(), "{:?}", r.rec.problem);
+    assert_eq!(r.rec.reward, Some(0.0));
+    assert!(!r.rec.timed_out);
+    assert_eq!(r.script.lock().unwrap().requests.len(), 4);
+    let stop = &r.rec.trajectory_summary["stop"];
+    assert_eq!(stop["owner"], "model", "{stop}");
+    assert_eq!(stop["turns"], 4, "{stop}");
+    assert!(
+        stop["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not JSON 4 turns in a row"),
+        "{stop}"
+    );
+    let result: Value =
+        serde_json::from_str(&std::fs::read_to_string(r.dir.join("result.json")).unwrap()).unwrap();
+    assert_eq!(result["trajectory_summary"]["stop"]["owner"], "model");
+    let trajectory =
+        std::fs::read_to_string(r.dir.join("trajectory/acp_trajectory.jsonl")).unwrap();
+    assert!(
+        trajectory.contains("not JSON 4 turns in a row"),
+        "{trajectory}"
+    );
+    assert!(trajectory.contains("the model's failure"), "{trajectory}");
+}
+
+/// Review E2-C-A: in a task with stages, a stage's invalid-tool-call stop
+/// stays in the record after a later stage ends normally: on that stage's
+/// row of `step_results`, and in the trial's `trajectory_summary` (`stop`,
+/// the first, and `stops`, every one with its stage).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_earlier_stages_invalid_call_stop_stays_in_the_record() {
+    let bad = json!({"model": "fake/model", "choices": [{"finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": "bad", "type": "function",
+                        "function": {"name": "bash", "arguments": "{\"command\": "}}]}}],
+        "usage": usage()});
+    // The two-stage fixture without its gate, so stage two runs whatever
+    // stage one scored.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/two-stage");
+    let task = tmp.path().join("two-stage");
+    copy_tree(&src, &task);
+    let md = std::fs::read_to_string(task.join("task.md")).unwrap();
+    std::fs::write(task.join("task.md"), md.replace("gate = 1.0\n", "")).unwrap();
+    let script = Script {
+        replies: VecDeque::from(vec![(200, bad); 4]),
+        repeat: Some(text_reply("done")),
+        ..Script::default()
+    };
+    let r = run_trial_on(&task, "builtin", script, options()).await;
+    assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
+    let rows = r.rec.step_results.clone().expect("stage rows");
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["stop"]["owner"], "model", "{rows:?}");
+    assert!(rows[1].get("stop").is_none(), "{rows:?}");
+    let summary = &r.rec.trajectory_summary;
+    assert_eq!(summary["stop"]["stage"], "first", "{summary}");
+    assert_eq!(
+        summary["stops"].as_array().map(Vec::len),
+        Some(1),
+        "{summary}"
+    );
+    let result: Value =
+        serde_json::from_str(&std::fs::read_to_string(r.dir.join("result.json")).unwrap()).unwrap();
+    assert_eq!(result["trajectory_summary"]["stop"]["owner"], "model");
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let dest = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_tree(&e.path(), &dest);
+        } else {
+            std::fs::copy(e.path(), dest).unwrap();
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rejected_key_is_r212_and_a_missing_model_is_r215() {
     let script = Script {
@@ -713,6 +959,35 @@ async fn server_errors_are_retried() {
         })
         .collect();
     assert_eq!(statuses, [500, 429, 200, 200]);
+}
+
+/// E5 (a fault proxy before the model, live on Docker): a provider that
+/// took the request and never answered ran out the agent's time, and the
+/// trial was R206, "the agent did nothing", blamed on the agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_that_never_answers_is_the_providers() {
+    let script = Script {
+        stall: true,
+        ..Script::default()
+    };
+    let r = run_trial(
+        "builtin",
+        script,
+        RunOptions {
+            timeout_multiplier: 0.02,
+            ..options()
+        },
+    )
+    .await;
+    let p = r.rec.problem.expect("a problem");
+    assert_eq!(
+        (p.code.as_str(), p.owner),
+        ("R214", benchflow_run::outcome::Owner::Model),
+        "{p:?}"
+    );
+    assert!(p.message.contains("never answered"), "{}", p.message);
+    // One request per try: a transient problem is tried once more.
+    assert!(!r.script.lock().unwrap().requests.is_empty());
 }
 
 fn keystrokes_reply(analysis: &str, keystrokes: &[&str], complete: bool) -> Value {
@@ -814,4 +1089,76 @@ async fn terminus_2_feeds_parse_errors_back() {
         "{feedback}"
     );
     assert!(feedback.ends_with("Please fix these issues and provide a proper JSON response."));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_huge_reply_is_kept_whole_once_and_capped_in_derived_copies() {
+    // A 9 MiB reply: the raw log keeps it; the model-call log (whose later
+    // requests carry it again), the trainer files and the job's
+    // concatenations keep a marked cut, so the folder holds it about once.
+    let huge = "y".repeat(9 << 20);
+    let first = json!({"model": "fake/model", "choices": [{"finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": huge,
+        "tool_calls": [{"id": "c1", "type": "function",
+                        "function": {"name": "bash", "arguments": json!({"command": "echo hi"}).to_string()}}]}}],
+        "usage": usage()});
+    let r = run_trial(
+        "builtin",
+        Script {
+            replies: VecDeque::from([
+                (200, first),
+                (200, tool_reply("c2", "submit", json!({"summary": "done"}))),
+            ]),
+            ..Script::default()
+        },
+        options(),
+    )
+    .await;
+    // One run of two calls: the second carries the reply back.
+    assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
+    assert_eq!(r.script.lock().unwrap().requests.len(), 2);
+    let read = |rel: &str| std::fs::read_to_string(r.dir.join(rel)).unwrap();
+    let marker = "[BenchFlow cut this text: ";
+    let raw = read("trajectory/acp_trajectory.jsonl");
+    assert!(raw.contains(&huge), "the raw log keeps the reply whole");
+    assert!(!raw.contains(marker));
+    let calls = read("agent/model_calls.jsonl");
+    assert!(calls.contains(marker), "the call log cuts it");
+    for line in calls.lines() {
+        assert!(
+            line.len() < (1 << 20) + 65_536,
+            "a call-log line of {} bytes",
+            line.len()
+        );
+    }
+    for rel in [
+        "trainer/atif.json",
+        "trainer/adp.jsonl",
+        "trainer/verifiers.jsonl",
+    ] {
+        let text = read(rel);
+        assert!(text.contains(marker), "{rel} marks the cut");
+        assert!(
+            text.contains("of 9437184 bytes kept"),
+            "{rel} gives the size"
+        );
+        assert!(
+            text.len() < (1 << 20) + 65_536,
+            "{rel} is {} bytes",
+            text.len()
+        );
+    }
+    let job = r.dir.parent().unwrap();
+    assert!(
+        std::fs::read_to_string(job.join("verifiers.jsonl"))
+            .unwrap()
+            .contains(marker)
+    );
+    // The whole folder holds the reply about once, not seven times.
+    let total: u64 = walk(&r.dir)
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    assert!(total < 2 * (9 << 20), "the trial folder is {total} bytes");
 }

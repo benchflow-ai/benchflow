@@ -124,6 +124,7 @@ fn agent(base: &str) -> Arc<NativeAgent> {
                 max_attempts: 2,
                 backoff_base: Duration::from_millis(5),
                 backoff_cap: Duration::from_millis(20),
+                ..ClientOptions::default()
             }),
     )
 }

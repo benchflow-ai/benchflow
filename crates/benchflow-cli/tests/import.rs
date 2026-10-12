@@ -47,3 +47,48 @@ fn imports_a_folder_of_terminal_bench_tasks_and_they_check_clean() {
         .success()
         .stdout(predicate::str::contains("3 ok"));
 }
+
+/// `bench run` and `bench check` on a Terminal-Bench v1 task, or a folder of
+/// them, find no task to run; the error says what they are and gives the
+/// `bench import` that converts them, rather than only "no tasks found".
+#[test]
+fn run_and_check_on_terminal_bench_tasks_name_bench_import() {
+    let d = tempfile::tempdir().unwrap();
+    let one = tbench_inputs().join("hello");
+    for (args, target, hint) in [
+        (
+            vec!["check"],
+            one.clone(),
+            "it holds a Terminal-Bench v1 task (task.yaml)",
+        ),
+        (
+            vec!["run", "--dry-run"],
+            one.clone(),
+            "it holds a Terminal-Bench v1 task (task.yaml)",
+        ),
+        (
+            vec!["check"],
+            tbench_inputs(),
+            "Terminal-Bench v1 tasks (task.yaml)",
+        ),
+    ] {
+        bench(d.path())
+            .args(&args)
+            .arg(&target)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("no tasks found"))
+            .stderr(predicate::str::contains(hint))
+            .stderr(predicate::str::contains("`bench import "));
+    }
+    // An empty folder keeps the plain advice.
+    let empty = d.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    bench(d.path())
+        .arg("check")
+        .arg(&empty)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("`bench new <name>` creates one"))
+        .stderr(predicate::str::contains("bench import").not());
+}

@@ -5,15 +5,15 @@
 | Page | What it shows |
 |---|---|
 | `/` | The run list (0.8's page), and each trial's trajectory, verifier output, and files |
-| `/compare` | Tasks by job, each job's pass rate with its 95% Wilson interval, and paired differences over the tasks both jobs ran, with a 95% t-interval (none from fewer than 3 shared tasks or when every task differs by the same amount, and never past the range rewards allow, as in `bench results`) |
-| `/outcomes` | How each job's trials ended (passed, failed, unscored, errored), the problems behind them by code and owner, and the median and 90th percentile of each phase's time |
+| `/compare` | Tasks by job, each job's pass rate with its 95% Wilson interval, and paired differences over the tasks both jobs ran, with a 95% t-interval (none from fewer than 3 shared tasks or when every task differs by the same amount, and never past the range rewards allow, as in `bench results`). A job, or an agent and model in it, with trials stopped or planned but never run (a drained run) shows how many never ran by its name and its rate as partial, with no interval, as `bench results` does |
+| `/outcomes` | How each job's trials ended (passed, failed, unscored, errored), how many it planned that never ran, the problems behind them by code and owner, and the median and 90th percentile of each phase's time |
 | `/pareto` | Pass rate against cost per trial, against time, and against tokens per trial, with the jobs no other job beats on each |
 
 Each page keeps its jobs and filters in the URL (`/pareto?runs=jobs/a,jobs/b&agent=codex`; a job is named as from the folder `bench view` was started in, or by its name under the folder served, so `bench view jobs` takes `runs=a,b` too), so a link reproduces the view, and `/api/<page>` answers the same query as JSON. With two or more jobs, `bench view` opens on `/compare`.
 
 ## The Pareto view
 
-One point per job, or per agent and model when a job ran several (the columns of `/compare`). The vertical axis is the pass rate: passed trials over all trials, so errored and unscored trials count as not passed, with its 95% Wilson interval drawn as a bar. There is one chart for each horizontal axis, never two scales on one chart:
+One point per job, or per agent and model when a job ran several (the columns of `/compare`). The vertical axis is the pass rate: passed trials over all trials, so errored and unscored trials count as not passed, with its 95% Wilson interval drawn as a bar; a point with trials stopped or never run is marked partial and has no bar, as on `/compare`. There is one chart for each horizontal axis, never two scales on one chart:
 
 | Axis | Value per point | Read from |
 |---|---|---|

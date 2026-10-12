@@ -44,6 +44,66 @@ impl PartialEq for Hold {
 }
 impl Eq for Hold {}
 
+/// Written after a checkout and its checks succeed, holding the commit, and
+/// removed before any change to the checkout: a checkout that failed
+/// partway has none. It also lets a repository git never finds clean (CRLF
+/// files under `text eol=lf`, names that differ only in case on macOS) be
+/// reused.
+fn done_file(dir: &Path) -> PathBuf {
+    dir.join(".git").join("benchflow-done")
+}
+
+/// Whether no index entry under `wanted` (anywhere, for the whole
+/// repository) is still marked skip-worktree, which git status ignores: a
+/// folder whose parent an earlier dataset did not ask for (`tasks` after
+/// `tasks/a`), or the rest of a folder an interrupted `sparse-checkout set`
+/// wrote only partly. Local only: no network.
+async fn none_skipped(dir: &Path, wanted: &[String], whole: bool) -> bool {
+    if !whole && wanted.is_empty() {
+        return true;
+    }
+    let mut args = vec!["--literal-pathspecs", "ls-files", "-t", "--"];
+    if !whole {
+        args.extend(wanted.iter().map(String::as_str));
+    }
+    git(&args, Some(dir))
+        .await
+        .is_ok_and(|out| !out.lines().any(|l| l.starts_with("S ")))
+}
+
+/// Whether git's index matches `HEAD` and the working tree matches the
+/// index, for a checkout an earlier build wrote without the done marker: a
+/// checkout that failed partway (`HEAD` at the commit, files missing) shows
+/// changes here. Local only: no network.
+async fn status_clean(dir: &Path) -> bool {
+    git(
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            "--no-renames",
+        ],
+        Some(dir),
+    )
+    .await
+    .is_ok_and(|out| out.trim().is_empty())
+}
+
+/// Whether a failed checkout failed because the server refused the file
+/// contents git asked for after the contents-free fetch, as git 2.34 to 2.50
+/// word it: "could not fetch <blob> from promisor remote", "remote error:
+/// upload-pack: not our ref", or "RPC failed" with the HTTP error.
+fn contents_refused(stderr: &str) -> bool {
+    [
+        "promisor remote",
+        "not our ref",
+        "remote error",
+        "RPC failed",
+    ]
+    .iter()
+    .any(|s| stderr.contains(s))
+}
+
 /// The file a checkout's users hold shared.
 fn use_file(dir: &Path) -> PathBuf {
     let mut name = dir.as_os_str().to_owned();
@@ -203,17 +263,55 @@ fn expand_home(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// How long a git transfer may run below 1 KB/s before git gives up.
+const GIT_STALL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The longest one git command may take, whatever it does.
+const GIT_CALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
+    git_within(args, cwd, GIT_STALL, GIT_CALL_LIMIT).await
+}
+
+/// [`git`] with its limits. git sets no timeout of its own: a server (or a
+/// proxy) that stopped sending mid-answer held `bench run` forever (E5,
+/// GitHub through a stalling proxy). So a transfer slower than 1 KB/s for
+/// `stall` is given up (unless this shell sets git's own low-speed
+/// variables), and the whole command at `limit`.
+async fn git_within(
+    args: &[&str],
+    cwd: Option<&Path>,
+    stall: std::time::Duration,
+    limit: std::time::Duration,
+) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if std::env::var_os("GIT_HTTP_LOW_SPEED_LIMIT").is_none()
+        && std::env::var_os("GIT_HTTP_LOW_SPEED_TIME").is_none()
+    {
+        cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", "1000").env(
+            "GIT_HTTP_LOW_SPEED_TIME",
+            stall.as_secs().max(1).to_string(),
+        );
+    }
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
-    let out = cmd.output().await.map_err(|e| e.to_string())?;
+    let out = match tokio::time::timeout(limit, cmd.output()).await {
+        Ok(out) => out.map_err(|e| e.to_string())?,
+        Err(_) => {
+            return Err(format!(
+                "`git {}` did not finish within {} s; the network or the server stalled",
+                args.first().copied().unwrap_or_default(),
+                limit.as_secs()
+            ));
+        }
+    };
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -513,19 +611,41 @@ pub async fn fetch_git(
                 .ok()
                 .as_deref()
                 != Some("true"))
+        && none_skipped(&dir, &wanted, whole).await
+        && (std::fs::read_to_string(done_file(&dir)).ok().as_deref() == Some(commit)
+            || status_clean(&dir).await)
     {
         if let Some(link) = escaping_link(&dir) {
             return Err(err(link));
         }
+        // A complete checkout an earlier build wrote: mark it, so it is
+        // reused even if git later finds it unclean.
+        let _ = std::fs::write(done_file(&dir), commit);
         return Ok(GitCheckout {
             dir,
             commit: commit.to_string(),
             hold,
         });
     }
+    // Until this checkout succeeds again, it may not be reused.
+    let _ = std::fs::remove_file(done_file(&dir));
+    let sparse = git(&["config", "core.sparseCheckout"], Some(&dir))
+        .await
+        .ok()
+        .as_deref()
+        == Some("true");
+    let started = git(&["rev-parse", "-q", "--verify", "HEAD"], Some(&dir))
+        .await
+        .is_ok();
     if whole {
-        let _ = git(&["sparse-checkout", "disable"], Some(&dir)).await;
-    } else {
+        // A sparse checkout left as it is would return only the folders
+        // earlier datasets asked for, as if they were the whole repository.
+        if sparse {
+            git(&["sparse-checkout", "disable"], Some(&dir))
+                .await
+                .map_err(err)?;
+        }
+    } else if sparse || !started {
         // Keep the folders earlier datasets asked for at this commit.
         let mut patterns: Vec<String> = git(&["sparse-checkout", "list"], Some(&dir))
             .await
@@ -572,10 +692,32 @@ pub async fn fetch_git(
                     },
                 )
             })?;
-    } else {
+    } else if let Err(first) = git(&["checkout", "-q", "--force", "FETCH_HEAD"], Some(&dir)).await {
+        // Some servers send the commit without file contents but refuse the
+        // contents asked for afterwards (Hugging Face's datasets); fetch the
+        // commit with them. Not after other failures (a full disk, a name
+        // this file system refuses, a timeout), which a bigger download
+        // cannot fix.
+        if !contents_refused(&first) {
+            return Err(err(first));
+        }
+        git(
+            &[
+                "fetch",
+                "-q",
+                "--depth",
+                "1",
+                "--no-filter",
+                "origin",
+                reference,
+            ],
+            Some(&dir),
+        )
+        .await
+        .map_err(|m| err(format!("{first}; then: {m}")))?;
         git(&["checkout", "-q", "--force", "FETCH_HEAD"], Some(&dir))
             .await
-            .map_err(err)?;
+            .map_err(|m| err(format!("{first}; then: {m}")))?;
     }
     let head = git(&["rev-parse", "HEAD"], Some(&dir)).await.map_err(err)?;
     let missing: Vec<&String> = wanted.iter().filter(|p| !dir.join(p).exists()).collect();
@@ -595,6 +737,7 @@ pub async fn fetch_git(
     if let Some(link) = escaping_link(&dir) {
         return Err(err(link));
     }
+    std::fs::write(done_file(&dir), &head).map_err(|e| err(e.to_string()))?;
     Ok(GitCheckout {
         dir,
         commit: head,
@@ -721,6 +864,50 @@ pub fn which(program: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A git server that sends the start of an answer, then nothing.
+    async fn stalling_git_server() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: 100000\r\n\r\n001e# service=git-upload-pack\n",
+                        )
+                        .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                });
+            }
+        });
+        format!("http://{addr}/repo.git")
+    }
+
+    /// E5 (GitHub through a stalling proxy): git waited forever.
+    #[tokio::test]
+    async fn a_git_server_that_stalls_is_given_up_on() {
+        if std::env::var_os("GIT_HTTP_LOW_SPEED_LIMIT").is_some() {
+            return;
+        }
+        let url = stalling_git_server().await;
+        let secs = std::time::Duration::from_secs;
+        let started = std::time::Instant::now();
+        let r = tokio::time::timeout(
+            secs(40),
+            git_within(&["ls-remote", &url], None, secs(2), secs(120)),
+        )
+        .await
+        .expect("git gave up on its own");
+        assert!(r.is_err(), "{r:?}");
+        assert!(started.elapsed() < secs(30), "{:?}", started.elapsed());
+        // And the whole command has a limit.
+        let r = git_within(&["ls-remote", &url], None, secs(60), secs(1)).await;
+        assert!(r.unwrap_err().contains("did not finish within 1 s"));
+    }
 
     #[test]
     fn parses_short_forms() {
@@ -981,11 +1168,242 @@ mod tests {
         let changing = lock_checkout(&checkout).await.unwrap();
         assert!(crate::cache::remove(&entry).is_err());
         drop(changing);
-        crate::cache::remove(&entry).unwrap();
+        // The same moment for inherited copies of the fetch lock.
+        let mut removed = crate::cache::remove(&entry);
+        for _ in 0..50 {
+            if !matches!(&removed, Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            removed = crate::cache::remove(&entry);
+        }
+        removed.unwrap();
         let mut lock = checkout.as_os_str().to_owned();
         lock.push(".lock");
         assert!(!checkout.exists() && !use_file(&checkout).exists());
         assert!(!PathBuf::from(lock).exists());
+    }
+
+    /// Reviews FETCH-B and FETCH-C-A: a checkout git finds complete is used
+    /// as it is, with no network, whichever build wrote it; one that failed
+    /// partway (`HEAD` at the commit, a file missing) is checked out again.
+    #[tokio::test]
+    async fn a_checkout_is_reused_only_when_complete() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        std::fs::create_dir_all(repo.join("tasks/a")).unwrap();
+        std::fs::write(repo.join("tasks/a/task.md"), "a").unwrap();
+        std::fs::write(repo.join("tasks/a/test.sh"), "t").unwrap();
+        run(&["init", "-q"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "a"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let co = fetch_git(&url, &sha, &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        // Complete, with no marker an earlier build might have written, and
+        // the repository out of reach: used as it is.
+        let _ = std::fs::remove_file(co.dir.join(".git").join("benchflow-done"));
+        let away = tmp.path().join("away");
+        std::fs::rename(&repo, &away).unwrap();
+        let offline = fetch_git(&url, &sha, &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        assert_eq!(offline.dir, co.dir);
+        std::fs::rename(&away, &repo).unwrap();
+        // What a checkout that failed partway leaves: HEAD at the commit, a
+        // file missing, and no done marker (a fetch removes it first).
+        let done = co.dir.join(".git").join("benchflow-done");
+        std::fs::remove_file(&done).unwrap();
+        std::fs::remove_file(co.dir.join("tasks/a/test.sh")).unwrap();
+        let again = fetch_git(&url, &sha, &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        assert!(
+            again.dir.join("tasks/a/test.sh").is_file(),
+            "checked out again"
+        );
+        // Review FETCH-D-B: what an interrupted `sparse-checkout set` leaves:
+        // part of the folder written and the rest still marked
+        // skip-worktree, which git status ignores.
+        let skip = std::process::Command::new("git")
+            .args(["update-index", "--skip-worktree", "tasks/a/test.sh"])
+            .current_dir(&co.dir)
+            .output()
+            .unwrap();
+        assert!(skip.status.success());
+        std::fs::remove_file(&done).unwrap();
+        std::fs::remove_file(co.dir.join("tasks/a/test.sh")).unwrap();
+        let skipped = fetch_git(&url, &sha, &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        assert!(
+            skipped.dir.join("tasks/a/test.sh").is_file(),
+            "a skipped file is checked out too"
+        );
+    }
+
+    /// Review FETCH-C-B: a checkout of the whole repository, which another
+    /// run may be using, is never narrowed to the folders a later dataset
+    /// asks for, even when that dataset names a folder the commit lacks.
+    #[tokio::test]
+    async fn a_whole_checkout_is_never_narrowed() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        for p in ["tasks/a", "tasks/b"] {
+            std::fs::create_dir_all(repo.join(p)).unwrap();
+            std::fs::write(repo.join(p).join("task.md"), p).unwrap();
+        }
+        run(&["init", "-q"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "tasks"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let whole = fetch_git(&url, &sha, &["".into()], &cache).await.unwrap();
+        let both = |dir: &Path| {
+            dir.join("tasks/a/task.md").is_file() && dir.join("tasks/b/task.md").is_file()
+        };
+        assert!(both(&whole.dir));
+        let e = fetch_git(&url, &sha, &["tasks/zzz".into()], &cache)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("no folder tasks/zzz"), "{e}");
+        assert!(both(&whole.dir), "still whole after a missing folder");
+        let a = fetch_git(&url, &sha, &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        assert_eq!(a.dir, whole.dir);
+        assert!(both(&whole.dir), "still whole after a folder of it");
+    }
+
+    /// Review FETCH-D-A: a dataset asking for a parent of a folder an
+    /// earlier dataset asked for (`tasks` after `tasks/a`) gets the whole
+    /// parent, not the earlier folder alone; and a repository git never
+    /// finds clean (a CRLF file under `text eol=lf`) is reused after one
+    /// fetch, with no network.
+    #[tokio::test]
+    async fn a_parent_folder_is_fetched_whole_and_an_unclean_repository_reused() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        for p in ["tasks/a", "tasks/b"] {
+            std::fs::create_dir_all(repo.join(p)).unwrap();
+            std::fs::write(repo.join(p).join("task.md"), p).unwrap();
+        }
+        std::fs::write(repo.join("tasks/b/crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        run(&["init", "-q"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "tasks"]);
+        // Normalization added later, without renormalizing the CRLF file.
+        std::fs::write(repo.join(".gitattributes"), "* text eol=lf\n").unwrap();
+        run(&["add", ".gitattributes"]);
+        run(&["commit", "-q", "-m", "attributes"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let a = fetch_git(&url, &sha, &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        assert!(!a.dir.join("tasks/b").exists());
+        let tasks = fetch_git(&url, &sha, &["tasks".into()], &cache)
+            .await
+            .unwrap();
+        assert_eq!(tasks.dir, a.dir);
+        assert!(
+            tasks.dir.join("tasks/b/task.md").is_file(),
+            "the whole parent, not the earlier folder alone"
+        );
+        let away = tmp.path().join("away");
+        std::fs::rename(&repo, &away).unwrap();
+        let offline = fetch_git(&url, &sha, &["tasks".into()], &cache)
+            .await
+            .unwrap();
+        assert_eq!(offline.dir, a.dir);
+    }
+
+    /// Reviews FETCH-A and FETCH-B: only a server that refused the contents
+    /// (in the words of git 2.34 to 2.50) gets the commit fetched again with
+    /// its contents; a bigger download cannot fix a local failure.
+    #[test]
+    fn only_refused_contents_are_fetched_again() {
+        for refused in [
+            "fatal: could not fetch 4fdf671c from promisor remote",
+            "fatal: git upload-pack: not our ref 4fdf671c",
+            "fatal: remote error: upload-pack: not our ref 4fdf671c",
+            "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500",
+        ] {
+            assert!(contents_refused(refused), "{refused}");
+        }
+        for local in [
+            "fatal: Unable to create '/c/.git/index.lock': File exists.",
+            "error: unable to create file t/a: No space left on device",
+            "error: unable to create file t/m\u{fffd}x: Illegal byte sequence",
+            "`git checkout` did not finish within 1800 s; the network or the server stalled",
+        ] {
+            assert!(!contents_refused(local), "{local}");
+        }
     }
 
     /// Security review F2: a repository whose task folder (or a file in

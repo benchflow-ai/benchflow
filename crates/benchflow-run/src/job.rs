@@ -474,6 +474,9 @@ fn load_finished(t: &TrialSpec, rerun: &Rerun, opts: &RunOptions) -> Option<Tria
     let reuse = match status {
         Status::Scored => !(rerun.failed && rec.passed != Some(true)),
         Status::Unscored => !rerun.unscored,
+        // The same unexplained loss twice in a row: kept, so code inside a
+        // sandbox cannot buy a rerun on every resume.
+        Status::Errored => !rerun.errored && rec.problem.as_ref().is_some_and(|p| p.rerun_capped),
         _ => false,
     };
     reuse.then_some(rec)
@@ -645,6 +648,10 @@ fn evaluation_json(spec: &JobSpec, rt: &Runtime, name: &str, fp: &str) -> Value 
             "sandbox_user": rt.options.sandbox_user,
             "agent_idle_timeout": rt.options.idle_timeout.as_secs(),
             "timeout_multiplier": rt.options.timeout_multiplier,
+            // Whether reward files were read as BenchFlow 0.8's lenient
+            // mode reads them (BENCHFLOW_REWARD_LENIENT): the same file can
+            // score in one mode and not the other.
+            "reward_lenient": benchflow_task::reward::lenient_from_env(),
             "tasks": spec.units.iter().map(|(t, _)| json!({"name": t.name, "id": t.id, "digest": t.digest, "path": t.root})).collect::<Vec<_>>(),
         },
         "engine": { "name": "benchflow-rs", "version": env!("CARGO_PKG_VERSION"), "fingerprint": fp },
@@ -784,6 +791,12 @@ pub(crate) fn summary_json(
         "pass_at_k": pass_at_k_table(&stats),
         "failures_by_cause": by_cause.into_values().collect::<Vec<_>>(),
         "environment_warnings": environment_warnings,
+        // Scored although locked_system_dirs failed; the scores stand.
+        "graded_unlocked_system_dirs": tally.graded_unlocked,
+        // Rewards outside [0, 1], counted as written in mean_reward.
+        "rewards_out_of_range": records.iter().filter(|r| !r.stopped()).filter_map(|r| {
+            r.reward_out_of_range().map(|x| json!({"trial": r.rollout_name, "reward": x}))
+        }).collect::<Vec<_>>(),
         "engine": { "name": "benchflow-rs", "version": env!("CARGO_PKG_VERSION") },
     })
 }
@@ -828,7 +841,16 @@ async fn run_counted(
                     .map(|p| p.message.clone())
                     .unwrap_or_default(),
             });
-            tokio::time::sleep(Duration::from_secs(3 * attempt_no as u64)).await;
+            // A drain, a stop, or a spent login during the wait ends it:
+            // the errored attempt stands (convergence reviews E9-E-B 2,
+            // E9-E-A).
+            if !wait_to_retry(retry_delay(&rec, attempt_no, &rt.options), || {
+                !halt.load(Ordering::SeqCst) && rt.starting_new()
+            })
+            .await
+            {
+                return Some(rec);
+            }
             // Start the retry from a clean folder, keeping this one.
             set_aside(job_dir, &t.dir);
             continue;
@@ -837,9 +859,91 @@ async fn run_counted(
     }
 }
 
+/// Wait `delay` before a retry, checking `still` (no drain, stop or spent
+/// login) a few times a second. False, at once, when it no longer holds:
+/// the retry must not start.
+async fn wait_to_retry(delay: Duration, still: impl Fn() -> bool) -> bool {
+    let end = std::time::Instant::now() + delay;
+    loop {
+        if !still() {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        if now >= end {
+            return true;
+        }
+        tokio::time::sleep((end - now).min(Duration::from_millis(200))).await;
+    }
+}
+
+/// How long to wait before an in-run retry: a few seconds, or, after a
+/// sandbox loss the backend did not confirm, long enough that a short
+/// outage of the sandbox's own channel does not catch the retry too (the
+/// second such loss is capped).
+fn retry_delay(rec: &TrialRecord, attempt_no: u32, options: &RunOptions) -> Duration {
+    let base = Duration::from_secs(3 * attempt_no as u64);
+    if rec
+        .problem
+        .as_ref()
+        .is_some_and(|p| p.loss_confirmed == Some(false))
+    {
+        base.max(Duration::from_secs(options.unexplained_loss_retry_secs))
+    } else {
+        base
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Convergence reviews E9-E-B 2 and E9-E-A: the two-minute wait before
+    /// a retry ignored a drain or a stop, so a drained run still started
+    /// the retry. The wait ends as soon as the run no longer starts trials.
+    #[tokio::test]
+    async fn a_drain_ends_the_wait_before_a_retry() {
+        let stopped = std::sync::atomic::AtomicBool::new(false);
+        let waiting = wait_to_retry(Duration::from_secs(120), || !stopped.load(Ordering::SeqCst));
+        let drain = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stopped.store(true, Ordering::SeqCst);
+        };
+        let (go, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(waiting, drain)
+        })
+        .await
+        .expect("the wait ends within moments of the drain");
+        assert!(!go, "no retry after a drain");
+        assert!(wait_to_retry(Duration::ZERO, || true).await);
+    }
+
+    /// Convergence review E9-D-A 3: the retry after an unconfirmed loss
+    /// came 3 s later, so one short proxy outage caught both attempts and
+    /// capped the trial. It now waits minutes; other retries keep 3 s.
+    #[test]
+    fn a_retry_after_an_unexplained_loss_waits_minutes() {
+        let o = RunOptions::default();
+        let mut rec = crate::read::record_from_json(
+            &serde_json::json!({"task_name": "t", "rollout_name": "t__1", "status": "errored"}),
+            std::path::Path::new("/nonexistent"),
+        )
+        .unwrap();
+        let mut p = crate::outcome::Problem::new(
+            "R103",
+            crate::outcome::Owner::Sandbox,
+            crate::outcome::Phase::Verify,
+            "lost",
+            "retry",
+        );
+        rec.problem = Some(p.clone());
+        assert_eq!(retry_delay(&rec, 1, &o), Duration::from_secs(3));
+        p.loss_confirmed = Some(true);
+        rec.problem = Some(p.clone());
+        assert_eq!(retry_delay(&rec, 1, &o), Duration::from_secs(3));
+        p.loss_confirmed = Some(false);
+        rec.problem = Some(p);
+        assert_eq!(retry_delay(&rec, 1, &o), Duration::from_secs(120));
+    }
 
     /// Review of rust/d4-chaos (7cd50c84 tested only its helper): the job's
     /// results.jsonl goes through the temporary file, so a write that fails

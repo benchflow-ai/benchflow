@@ -76,6 +76,11 @@ pub fn verifiers_line(record: &Value, redactor: &Redactor) -> String {
     // writes; doing both keeps any rule that is not idempotent in step.
     redactor.redact_json(&mut clean);
     redactor.redact_json(&mut clean);
+    super::export_common::cap_long_strings(
+        &mut clean,
+        super::export_common::DERIVED_TEXT_CAP,
+        "trajectory/acp_trajectory.jsonl",
+    );
     let mut line = to_python_json(&clean);
     line.push('\n');
     line

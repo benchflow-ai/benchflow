@@ -67,6 +67,12 @@ const MAX_MEMORY_GB: u32 = 16;
 const AUTO_STOP_MINUTES: u32 = 15;
 /// How often a held sandbox is marked active.
 const KEEPALIVE_EVERY: Duration = Duration::from_secs(180);
+/// A stopped sandbox Daytona had seen no activity from for this long may
+/// have been stopped by Daytona itself (its idle stop after
+/// [`AUTO_STOP_MINUTES`], when the keepalive failed): it is lost, not
+/// stopped by code inside. The keepalive marks a held sandbox active every
+/// 3 minutes, so one stopped from inside is idle for less.
+const IDLE_STOP_FLOOR: Duration = Duration::from_secs(600);
 /// How long `create` waits for a sandbox to run. Long enough for Daytona to
 /// rebuild an image whose cache it dropped.
 const START_TIMEOUT: Duration = Duration::from_secs(1200);
@@ -81,6 +87,13 @@ const MAX_REBUILDS: u32 = 5;
 /// A build cut off at that limit gets as long again to finish, so the
 /// sweep leaves a sandbox still building alone for twice its limit.
 const BUILD_LIMIT_LABEL: &str = "ai.benchflow.build-limit";
+/// A builder's label: the key of the recipe it builds. A build of the same
+/// recipe looks for a builder still building it before starting another
+/// (decision 26: at most one builder per image at a time).
+const RECIPE_LABEL: &str = "ai.benchflow.recipe";
+/// What Daytona adds to a task's build timeout: its builder sandbox has
+/// to start before the build does.
+const BUILDER_ALLOWANCE: Duration = Duration::from_secs(120);
 /// How often a builder left to finish its build is checked.
 const RETIRE_POLL: Duration = Duration::from_secs(2);
 /// How long the sweep at the start of a run spends on one sandbox (its
@@ -295,11 +308,17 @@ impl DaytonaProvider {
         recipe: &Recipe,
         log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<bool, SandboxError> {
-        let limit = spec
+        let task_limit = spec
             .build_timeout
             .unwrap_or(DEFAULT_BUILD_TIMEOUT)
-            .min(MAX_LIMIT)
-            .saturating_add(Duration::from_secs(120));
+            .min(MAX_LIMIT);
+        let limit = task_limit.saturating_add(BUILDER_ALLOWANCE);
+        log(&format!(
+            "Daytona gets {}s to build: the build timeout ({}s) plus {}s for its builder sandbox to start",
+            limit.as_secs(),
+            task_limit.as_secs(),
+            BUILDER_ALLOWANCE.as_secs()
+        ));
         self.build_within(spec, recipe, limit, log).await
     }
 
@@ -311,9 +330,28 @@ impl DaytonaProvider {
         limit: Duration,
         log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<bool, SandboxError> {
+        let key = recipe.key();
+        // A builder still building this recipe (an earlier attempt's, left
+        // to finish when it ran out of time, or another run's): wait for
+        // it rather than start a second build of the same image.
+        if let Some(id) = self.builder_still_building(&key).await {
+            log(&format!(
+                "a builder is still building this image (Daytona sandbox {id}); waiting for it instead of starting another"
+            ));
+            match lifecycle::wait_started(&self.api, &id, limit, log).await {
+                Ok(_) => return Ok(true),
+                // Gone: it finished and was removed (or was deleted); a new
+                // builder then finds the image built, or builds it.
+                Err(failure) if failure.state == "gone" => {}
+                // Still building at the limit: it stays (whoever started
+                // it removes it once built), and no other builder starts.
+                Err(failure) => return Err(build_failure(&spec.name, *failure, limit)),
+            }
+        }
         let mut labels = owner::labels();
         labels.insert("ai.benchflow.role".into(), "builder".into());
         labels.insert("ai.benchflow.name".into(), spec.name.clone());
+        labels.insert(RECIPE_LABEL.into(), key);
         labels.insert(BUILD_LIMIT_LABEL.into(), limit.as_secs().to_string());
         labels.insert(
             ATTEMPT_LABEL.into(),
@@ -373,6 +411,22 @@ impl DaytonaProvider {
             Ok(started) => Ok(started.built),
             Err(failure) => Err(build_failure(&spec.name, *failure, limit)),
         }
+    }
+}
+
+impl DaytonaProvider {
+    /// A builder of the recipe with `key` that Daytona is still building
+    /// and that is not stuck. `None` when there is none, or the list
+    /// cannot be read (then a build starts as before).
+    async fn builder_still_building(&self, key: &str) -> Option<String> {
+        let filter = serde_json::json!({ "ai.benchflow.role": "builder", RECIPE_LABEL: key });
+        let now = Utc::now();
+        lifecycle::list(&self.api, &filter)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|b| !done_building(b.state()) && !build_overdue(b, now))
+            .map(|b| b.id)
     }
 }
 
@@ -463,6 +517,75 @@ async fn retire(api: &Api, id: &str, until: Instant) {
         tracing::warn!("builder sandbox {id}: {err}");
         crate::note_left_behind("daytona", id);
     }
+}
+
+/// How long [`remove_if_it_lands`] keeps asking for a sandbox Daytona
+/// cannot be asked about.
+const LANDING_PATIENCE: Duration = Duration::from_secs(if cfg!(test) { 12 } else { 90 });
+
+/// How many creates may be waiting on [`remove_if_it_lands`] before a run
+/// makes no more, for as long as they wait (at most [`LANDING_PATIENCE`]).
+pub(crate) const UNANSWERED_LIMIT: usize = 4;
+
+/// A create whose answer was lost, and whose sandbox the lookup after it
+/// could not find (the list lags a create) or could not ask for (the API
+/// failing too): the sandbox may exist, with no trial holding it, and the
+/// sweep spares it while it is young. Look for it by its attempt label in
+/// the background and retire it when it shows up. Until then it is on the
+/// end-of-run list of sandboxes left behind (a run that exits first names
+/// it), and counts toward [`UNANSWERED_LIMIT`] while it is looked for. One
+/// never found stays on that list but stops counting when the search gives
+/// up, so a run makes sandboxes again once Daytona answers (E5: answers cut
+/// mid-body left 7 sandboxes running for 2 trials, and 48 for 8 trials when
+/// the cut outlasted the search; review: a permanent stop burned the rest
+/// of a long run).
+pub(crate) fn remove_if_it_lands(api: Arc<Api>, attempt: String) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let entry = format!("labelled {ATTEMPT_LABEL}={attempt}");
+    api.unanswered
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    crate::note_left_behind("daytona", &entry);
+    let release = |api: &Api| {
+        api.unanswered
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    };
+    let resolved = move |api: &Api| {
+        release(api);
+        crate::forget_left_behind("daytona", &entry);
+    };
+    crate::track_cleanup(runtime.spawn(async move {
+        let give_up = Instant::now() + LANDING_PATIENCE;
+        let mut absent = 0;
+        loop {
+            match lifecycle::find_by_label(&api, ATTEMPT_LABEL, &attempt).await {
+                Ok(Some(dto)) => {
+                    resolved(&api);
+                    retire(&api, &dto.id, deadline(START_TIMEOUT)).await;
+                    return;
+                }
+                // Listed as absent three times, some seconds apart: the
+                // create did not land.
+                Ok(None) => {
+                    absent += 1;
+                    if absent >= 3 {
+                        resolved(&api);
+                        return;
+                    }
+                }
+                Err(_) => {}
+            }
+            if Instant::now() >= give_up {
+                tracing::warn!(
+                    "a sandbox whose create got no answer could not be looked up (label {ATTEMPT_LABEL}={attempt})"
+                );
+                release(&api);
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }));
 }
 
 /// [`retire`] in the background; the run waits for it before it exits
@@ -574,10 +697,13 @@ fn build_failure(name: &str, failure: Failure, limit: Duration) -> SandboxError 
         return SandboxError::Image {
             name: name.to_string(),
             message: format!(
-                "Daytona did not finish building the image within {}s (it was `{}`). BenchFlow \
-                 leaves the build running rather than cancel it, so a run started after it \
-                 finishes uses it; if the build is just slow, raise the task's build timeout.",
+                "Daytona did not finish building the image within {}s (the task's build timeout \
+                 plus {}s for Daytona's builder to start; it was `{}`). BenchFlow leaves the \
+                 build running rather than cancel it, so a run started after it finishes uses \
+                 it, and a retry waits for it instead of starting another; if the build is just \
+                 slow, raise the task's build timeout.",
                 limit.as_secs(),
+                BUILDER_ALLOWANCE.as_secs(),
                 failure.state
             ),
             log_tail,
@@ -622,7 +748,21 @@ fn build_failure(name: &str, failure: Failure, limit: Duration) -> SandboxError 
     if let Some(err) = limit_error(&failure.reason) {
         return err;
     }
-    let message = if failure.state == "build_failed" && reading.task_fault {
+    // A base image published for other platforms only is the task's, whatever
+    // else the log says.
+    let platform =
+        failure.state == "build_failed" && output.contains("no match for platform in manifest");
+    let message = if platform {
+        // A base image published for other platforms only (bixbench's is
+        // arm64-only): `docker build` on an arm64 machine succeeds, so the
+        // Dockerfile advice below would send the user looking for a bug.
+        format!(
+            "the task's base image has no build for Daytona's platform, linux/amd64 ({}). This is a \
+             problem in the task: use a base image published for linux/amd64 (on an arm64 machine \
+             `docker build` succeeds, since it builds for that machine).",
+            reading.key_line
+        )
+    } else if failure.state == "build_failed" && reading.task_fault {
         format!(
             "the task's Dockerfile failed to build on Daytona ({}). This is a problem in the task: \
              fix the Dockerfile; `docker build` shows the same failure locally.",
@@ -648,7 +788,7 @@ fn build_failure(name: &str, failure: Failure, limit: Duration) -> SandboxError 
         name: name.to_string(),
         message,
         log_tail,
-        task_fault: failure.state == "build_failed" && reading.task_fault,
+        task_fault: platform || (failure.state == "build_failed" && reading.task_fault),
     }
 }
 
@@ -891,7 +1031,17 @@ impl Provider for DaytonaProvider {
         }
         let fresh = self.build_fresh(spec, &recipe, log).await?;
         *built = true;
-        log(&format!("image ready: {reference}"));
+        // Daytona keeps what it built under the recipe's key, which covers
+        // the layers bench adds: an update of bench that changes them builds
+        // every image once more, which only the time would otherwise show.
+        log(&if fresh {
+            format!(
+                "image ready, built now: {reference} (Daytona keeps it for later runs; it is built \
+again when the task's files change, or when a newer bench adds different layers to every image)"
+            )
+        } else {
+            format!("image ready: {reference} (built earlier; Daytona kept it)")
+        });
         Ok(Image {
             reference,
             fresh,
@@ -1016,16 +1166,10 @@ impl DaytonaProvider {
             &serde_json::json!({ OWNER_LABEL: owner::scope() }),
         )
         .await?;
-        // Daytona's clock, not this machine's: the ages compare Daytona's
-        // own stamps, and a fast clock here made live sandboxes look idle.
-        // The margin only makes sandboxes look younger.
-        let now = lifecycle::server_now(&self.api)
-            .await
-            .unwrap_or_else(Utc::now)
-            - CLOCK_MARGIN;
+        let (now, ages) = sweep_clock(lifecycle::server_now(&self.api).await, Utc::now());
         let mut stale = Vec::new();
         for sandbox in ours {
-            if !recently_active(&sandbox, now) && is_stale(&sandbox, now).await {
+            if !recently_active(&sandbox, now) && is_stale(&sandbox, now, ages).await {
                 stale.push(sandbox);
             }
         }
@@ -1036,7 +1180,8 @@ impl DaytonaProvider {
             futures::stream::iter(stale)
                 .map(|sandbox| async move {
                     let result =
-                        tokio::time::timeout(SWEEP_PATIENCE, sweep_one(api, &sandbox, now)).await;
+                        tokio::time::timeout(SWEEP_PATIENCE, sweep_one(api, &sandbox, now, ages))
+                            .await;
                     (sandbox, result)
                 })
                 .buffer_unordered(8)
@@ -1065,7 +1210,7 @@ impl DaytonaProvider {
                 ),
             }
         }
-        Ok(removed + snapshots::sweep(&self.api).await)
+        Ok(removed + snapshots::sweep(&self.api, ages.then_some(now)).await)
     }
 }
 
@@ -1215,11 +1360,30 @@ impl DaytonaProvider {
     }
 }
 
+/// The sweep's clock, and whether its age rules may run. Ages compare
+/// Daytona's own stamps, so a fast clock on this machine made live
+/// sandboxes look idle; a Daytona clock (or anything between, such as a
+/// proxy rewriting `Date`) a day fast made every live run's sandbox look a
+/// day old and idle, and the sweep deleted them (E5). So the earlier of the
+/// two clocks is used, less a margin: either clock running fast only makes
+/// sandboxes look younger. When Daytona's clock cannot be read, this
+/// machine's alone is not trusted with ages: only sandboxes whose process
+/// on this machine is gone are removed.
+fn sweep_clock(server: Option<DateTime<Utc>>, local: DateTime<Utc>) -> (DateTime<Utc>, bool) {
+    match server {
+        Some(server) => (server.min(local) - CLOCK_MARGIN, true),
+        None => (local - CLOCK_MARGIN, false),
+    }
+}
+
 /// Check one stale sandbox again and delete it. True when it was deleted.
+/// `ages`: whether [`sweep_clock`] trusts `now` with ages (else a sandbox
+/// still building is never taken for stuck).
 async fn sweep_one(
     api: &Api,
     sandbox: &SandboxDto,
     now: DateTime<Utc>,
+    ages: bool,
 ) -> Result<bool, SandboxError> {
     // The list lags deletes by a few seconds: a sandbox the last run
     // deleted can still be listed as started. Ask for it directly.
@@ -1235,11 +1399,22 @@ async fn sweep_one(
     // A sandbox still building its image is left to finish: deleting it
     // cancels the build, which Daytona keeps (see `retire`). Only one
     // building for longer than any build may take is stuck, and goes.
-    if !done_building(&state) && !build_overdue(sandbox, now) {
+    if !done_building(&state) && !(ages && build_overdue(sandbox, now)) {
         return Ok(false);
     }
     lifecycle::delete_within(api, &sandbox.id, SWEEP_PATIENCE).await?;
     Ok(true)
+}
+
+/// How long Daytona had seen no activity from a sandbox at `now`; `None`
+/// when it gives no stamp.
+fn idle_for(sandbox: &SandboxDto, now: DateTime<Utc>) -> Option<Duration> {
+    let at = DateTime::parse_from_rfc3339(sandbox.last_activity_at.as_deref()?).ok()?;
+    Some(
+        now.signed_duration_since(at.with_timezone(&Utc))
+            .to_std()
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 /// Whether a sandbox was active within [`ACTIVE_WINDOW`] of `now`: a live
@@ -1257,13 +1432,15 @@ fn recently_active(sandbox: &SandboxDto, now: DateTime<Utc>) -> bool {
 }
 
 /// Whether a sandbox carrying our owner label may be deleted: its process
-/// on this host is gone; or it is older than 24 hours and idle for 30
-/// minutes; or it failed to start more than 2 hours ago.
-async fn is_stale(sandbox: &SandboxDto, now: DateTime<Utc>) -> bool {
+/// on this host is gone; or (when `ages`, see [`sweep_clock`]) it is older
+/// than 24 hours and idle for 30 minutes, or it failed to start more than 2
+/// hours ago.
+async fn is_stale(sandbox: &SandboxDto, now: DateTime<Utc>, ages: bool) -> bool {
     let verdict = owner::judge(|k| sandbox.labels.get(k).map(String::as_str)).await;
     match verdict {
         Verdict::Foreign => return false,
         Verdict::Leftover => return true,
+        Verdict::Live | Verdict::OtherHost if !ages => return false,
         Verdict::Live | Verdict::OtherHost => {}
     }
     let age = |stamp: &Option<String>| {
@@ -1389,6 +1566,25 @@ pub(crate) struct SandboxCore {
 pub struct DaytonaSandbox {
     core: Arc<SandboxCore>,
     keepalive: tokio::task::JoinHandle<()>,
+    /// When the keepalive last marked the sandbox active, and the longest
+    /// stretch between two such marks, on this machine's wall clock (which,
+    /// unlike a monotonic clock on macOS, runs while the machine sleeps).
+    marks: Arc<std::sync::Mutex<Marks>>,
+}
+
+/// The keepalive's record of its own gaps.
+#[derive(Debug, Clone, Copy)]
+struct Marks {
+    last: std::time::SystemTime,
+    longest: Duration,
+}
+
+impl Marks {
+    /// The longest stretch without a mark, the current one included.
+    fn longest_gap(&self, now: std::time::SystemTime) -> Duration {
+        self.longest
+            .max(now.duration_since(self.last).unwrap_or_default())
+    }
 }
 
 impl fmt::Debug for DaytonaSandbox {
@@ -1403,6 +1599,11 @@ impl DaytonaSandbox {
     fn new(core: Arc<SandboxCore>) -> Self {
         let api = core.toolbox.api.clone();
         let id = core.toolbox.sandbox_id.clone();
+        let marks = Arc::new(std::sync::Mutex::new(Marks {
+            last: std::time::SystemTime::now(),
+            longest: Duration::ZERO,
+        }));
+        let marked = marks.clone();
         let keepalive = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(KEEPALIVE_EVERY).await;
@@ -1414,13 +1615,22 @@ impl DaytonaSandbox {
                     })
                     .await;
                 match result {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        let now = std::time::SystemTime::now();
+                        let mut m = marked.lock().expect("lock");
+                        m.longest = m.longest_gap(now);
+                        m.last = now;
+                    }
                     Err(err) if err.status() == Some(404) => break,
                     Err(err) => tracing::debug!("keepalive for {id}: {}", err.message()),
                 }
             }
         });
-        Self { core, keepalive }
+        Self {
+            core,
+            keepalive,
+            marks,
+        }
     }
 }
 
@@ -1500,12 +1710,51 @@ impl Sandbox for DaytonaSandbox {
 
     async fn presence(&self) -> Result<crate::Presence, SandboxError> {
         let id = &self.core.toolbox.sandbox_id;
-        match lifecycle::get(&self.core.toolbox.api, id).await {
-            Ok(dto) => Ok(match dto.state() {
-                "started" => crate::Presence::Running,
-                "destroyed" | "destroying" => crate::Presence::Gone,
-                _ => crate::Presence::Stopped,
-            }),
+        let api = &self.core.toolbox.api;
+        match lifecycle::get(api, id).await {
+            Ok(dto) => match dto.state() {
+                "started" => Ok(crate::Presence::Running),
+                "destroyed" | "destroying" => Ok(crate::Presence::Gone),
+                // Stopped, and not by Daytona's idle stop: code inside.
+                "stopped" => {
+                    let now = lifecycle::server_now(api).await.unwrap_or_else(Utc::now);
+                    // The keepalive may have gone quiet (this machine
+                    // slept, or the API failed) and marked the sandbox
+                    // active again only after Daytona's idle stop, which
+                    // refreshes the stamp (round-2 review E9-A M4).
+                    let gap = self
+                        .marks
+                        .lock()
+                        .expect("lock")
+                        .longest_gap(std::time::SystemTime::now());
+                    match idle_for(&dto, now) {
+                        Some(idle) if idle < IDLE_STOP_FLOOR && gap < IDLE_STOP_FLOOR => {
+                            Ok(crate::Presence::Stopped)
+                        }
+                        _ => Err(SandboxError::Transport(format!(
+                            "Daytona stopped sandbox {id}: it had been idle long enough for \
+                             Daytona's own idle stop (its last activity: {}; the keepalive's \
+                             longest gap: {} s)",
+                            dto.last_activity_at.as_deref().unwrap_or("not given"),
+                            gap.as_secs()
+                        ))),
+                    }
+                }
+                // An error, a stop under way, or no state: Daytona cannot
+                // say what did it, and root code inside that kills the
+                // sandbox's daemon may cause it.
+                "error" | "unknown" | "" | "stopping" => Ok(crate::Presence::Halted),
+                // An archive, or a state between two others Daytona moves
+                // a sandbox through itself: Daytona's doing.
+                state => Err(SandboxError::Transport(format!(
+                    "Daytona reports sandbox {id} as `{state}`{}, not running",
+                    dto.error_reason
+                        .as_deref()
+                        .filter(|r| !r.is_empty())
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default()
+                ))),
+            },
             Err(e) if e.status() == Some(404) => Ok(crate::Presence::Gone),
             // Never `Unsupported`: that would send the caller back to
             // asking a program inside the sandbox.
@@ -1808,6 +2057,11 @@ mod tests {
         /// Daytona's clock against this machine's: answers carry a `Date`
         /// header this far off when set.
         skew: Option<chrono::Duration>,
+        /// The next this many creates land, but their answers are cut
+        /// midway.
+        cut_creates: usize,
+        /// Until then, listing sandboxes answers 400 (not retried).
+        lists_fail_until: Option<Instant>,
     }
 
     impl FakeWorld {
@@ -1852,6 +2106,8 @@ mod tests {
             deletes: Vec::new(),
             builds: Vec::new(),
             checks_fail_until: None,
+            cut_creates: 0,
+            lists_fail_until: None,
             checks_hang: false,
             url: format!("http://{addr}"),
             skew: None,
@@ -1906,10 +2162,23 @@ mod tests {
                     if hang {
                         tokio::time::sleep(Duration::from_secs(600)).await;
                     }
+                    let mut cut = false;
                     let (status, reply) = {
                         let mut w = w.lock().unwrap();
                         match (method.as_str(), path) {
+                            ("GET", "/sandbox")
+                                if w.lists_fail_until.is_some_and(|t| Instant::now() < t) =>
+                            {
+                                (
+                                    400,
+                                    r#"{"message":"bad gateway in front of the API"}"#.into(),
+                                )
+                            }
                             ("POST", "/sandbox") => {
+                                if w.cut_creates > 0 {
+                                    w.cut_creates -= 1;
+                                    cut = true;
+                                }
                                 let v: serde_json::Value = serde_json::from_str(&body).unwrap();
                                 let dockerfile = v["buildInfo"]["dockerfileContent"]
                                     .as_str()
@@ -1989,13 +2258,14 @@ mod tests {
                             _ => (200, "{}".into()),
                         }
                     };
-                    let date = match w.lock().unwrap().skew {
-                        Some(skew) => format!("date: {}\r\n", (Utc::now() + skew).to_rfc2822()),
-                        None => String::new(),
-                    };
+                    // Daytona always sends its clock.
+                    let skew = w.lock().unwrap().skew.unwrap_or_default();
+                    let date = format!("date: {}\r\n", (Utc::now() + skew).to_rfc2822());
+                    let full = reply.len();
+                    // A cut answer says its whole length, then stops halfway.
+                    let reply = if cut { &reply[..full / 2] } else { &reply[..] };
                     let reply = format!(
-                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{date}connection: close\r\n\r\n{reply}",
-                        reply.len()
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {full}\r\n{date}connection: close\r\n\r\n{reply}"
                     );
                     let _ = conn.write_all(reply.as_bytes()).await;
                 });
@@ -2082,6 +2352,44 @@ mod tests {
         );
     }
 
+    /// The image log says whether Daytona built the image now or had it
+    /// already, and why a known task builds again (the one-time rebuild of
+    /// every image after an update that changes bench's layers, which
+    /// nothing told users; break campaign E9, 2026-10-11).
+    #[tokio::test]
+    async fn the_image_log_says_whether_daytona_built_it_now() {
+        let lines = |build: Duration| async move {
+            let (provider, _world) = fake_daytona(build).await;
+            let spec = pull_spec(&["echo logged"], None);
+            let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+            let sink = seen.clone();
+            let image = provider
+                .prepare(&spec, &move |l: &str| {
+                    sink.lock().unwrap().push(l.to_string())
+                })
+                .await
+                .unwrap();
+            let seen = seen.lock().unwrap().clone();
+            (image.fresh, seen)
+        };
+        let (fresh, seen) = lines(Duration::from_secs(1)).await;
+        assert!(fresh);
+        assert!(
+            seen.iter().any(|l| l.starts_with("image ready, built now:")
+                && l.contains("when a newer bench adds different layers")),
+            "{seen:?}"
+        );
+        // The fake skips the building state for a build of no length, as
+        // Daytona does for a recipe it built before.
+        let (fresh, seen) = lines(Duration::ZERO).await;
+        assert!(!fresh);
+        assert!(
+            seen.iter()
+                .any(|l| l.ends_with("(built earlier; Daytona kept it)")),
+            "{seen:?}"
+        );
+    }
+
     /// Reviews of D4's branch: a build that ran past its limit still had
     /// its builder deleted mid-build, which cancels the build and leaves
     /// the image broken for every later run.
@@ -2100,6 +2408,43 @@ mod tests {
         let w = world.lock().unwrap();
         assert_eq!(w.deletes, vec![("sb1".to_string(), false)]);
         assert!(w.poisoned.is_empty());
+    }
+
+    /// Decision 26 (E7 finding: one trial of a build past its limit left 4
+    /// builders on Daytona): a retry of a build still running attaches to
+    /// its builder instead of starting another, whether it runs out of time
+    /// again or the first builder finishes meanwhile.
+    #[tokio::test]
+    async fn a_retry_waits_for_the_builder_still_building() {
+        let (provider, world) = fake_daytona(Duration::from_secs(8)).await;
+        let spec = pull_spec(&["echo slow"], None);
+        let recipe = Recipe::new("FROM ubuntu:24.04\n", &spec.layers, Vec::new());
+        let short = Duration::from_secs(1);
+        for _ in 0..2 {
+            let err = provider
+                .build_within(&spec, &recipe, short, &|_| {})
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("did not finish building"), "{err}");
+        }
+        assert_eq!(world.lock().unwrap().builds.len(), 1, "one builder");
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = lines.clone();
+        let log = move |l: &str| seen.lock().unwrap().push(l.to_string());
+        assert!(
+            provider
+                .build_within(&spec, &recipe, Duration::from_secs(20), &log)
+                .await
+                .unwrap()
+        );
+        assert_eq!(world.lock().unwrap().builds.len(), 1, "still one builder");
+        assert!(
+            lines.lock().unwrap()[0].starts_with("a builder is still building this image"),
+            "{:?}",
+            lines.lock().unwrap()
+        );
+        // Nothing was deleted mid-build.
+        assert!(world.lock().unwrap().poisoned.is_empty());
     }
 
     /// Reviews of D4's branch: a dropped build's guard deleted the builder
@@ -2222,6 +2567,50 @@ mod tests {
         assert_eq!(sandbox.presence().await.unwrap(), crate::Presence::Running);
         world.lock().unwrap().boxes[0].fixed = Some("stopped");
         assert_eq!(sandbox.presence().await.unwrap(), crate::Presence::Stopped);
+        // Review of rust/d4-chaos (final review, finding 1): only a stop
+        // code inside can make is `Stopped`. An error, an archive, a state
+        // between two others, or a stop after Daytona saw no activity for
+        // its idle interval is Daytona's: lost, and rerun.
+        for state in ["archived", "archiving", "starting", "restoring", "resizing"] {
+            world.lock().unwrap().boxes[0].fixed = Some(state);
+            let presence = sandbox.presence().await;
+            assert!(
+                matches!(&presence, Err(SandboxError::Transport(m)) if m.contains(state)),
+                "{state}: {presence:?}"
+            );
+        }
+        // An error, or a stop under way: Daytona cannot say what did it,
+        // and root code that kills the sandbox's daemon may (diff review
+        // of rust/e9-decisions, M1): lost, but capped by the trial.
+        for state in ["error", "unknown", "stopping"] {
+            world.lock().unwrap().boxes[0].fixed = Some(state);
+            assert_eq!(
+                sandbox.presence().await.unwrap(),
+                crate::Presence::Halted,
+                "{state}"
+            );
+        }
+        // Recent activity, but the keepalive went quiet for longer than the
+        // idle floor (this machine slept, then marked the sandbox active
+        // after Daytona's idle stop): Daytona's stop, lost (round-2 review
+        // E9-A M4).
+        world.lock().unwrap().boxes[0].fixed = Some("stopped");
+        world.lock().unwrap().boxes[0].last_activity = Some(Utc::now().to_rfc3339());
+        sandbox.marks.lock().unwrap().longest = Duration::from_secs(16 * 60);
+        let presence = sandbox.presence().await;
+        assert!(
+            matches!(&presence, Err(SandboxError::Transport(m)) if m.contains("longest gap: 960 s")),
+            "{presence:?}"
+        );
+        sandbox.marks.lock().unwrap().longest = Duration::ZERO;
+        world.lock().unwrap().boxes[0].fixed = Some("stopped");
+        world.lock().unwrap().boxes[0].last_activity =
+            Some((Utc::now() - chrono::Duration::minutes(16)).to_rfc3339());
+        let presence = sandbox.presence().await;
+        assert!(
+            matches!(&presence, Err(SandboxError::Transport(m)) if m.contains("idle")),
+            "{presence:?}"
+        );
         world.lock().unwrap().boxes[0].deleted = true;
         assert_eq!(sandbox.presence().await.unwrap(), crate::Presence::Gone);
         // An API error is never "cannot tell" (Outcomes 7), which would send
@@ -2314,6 +2703,135 @@ mod tests {
         assert_eq!(provider.sweep().await.unwrap(), 0);
         world.lock().unwrap().skew = None;
         assert_eq!(provider.sweep().await.unwrap(), 1);
+    }
+
+    /// E5 (answers cut midway by a proxy, live on Daytona): a create that
+    /// landed but whose answer was lost, while the lookup after it failed
+    /// too, left its sandbox running with no trial holding it: 7 for 2
+    /// trials. It is now looked for in the background and removed.
+    #[tokio::test]
+    async fn a_create_whose_answer_was_lost_leaves_no_sandbox() {
+        let (provider, world) = fake_daytona(Duration::ZERO).await;
+        let ispec = pull_spec(&["echo agent"], None);
+        let image = provider.prepare(&ispec, &|_| {}).await.unwrap();
+        let before = world.lock().unwrap().boxes.len();
+        {
+            let mut w = world.lock().unwrap();
+            w.cut_creates = 1;
+            w.lists_fail_until = Some(Instant::now() + Duration::from_secs(9));
+        }
+        let mut trial = spec();
+        trial.image.reference = image.reference.clone();
+        assert!(provider.create(&trial).await.is_err());
+        // Not `settle_cleanups`: other tests' removals share its list.
+        until(|| {
+            world.lock().unwrap().boxes[before..]
+                .iter()
+                .any(|b| b.deleted)
+        })
+        .await;
+        let w = world.lock().unwrap();
+        let made: Vec<&FakeBox> = w.boxes[before..].iter().collect();
+        assert_eq!(made.len(), 1, "one create landed");
+        assert!(made[0].deleted, "the landed sandbox was removed");
+    }
+
+    /// E5 (120 s of cut answers at -k 4 -j 8, live): every trial's create
+    /// landed unseen and was tried again, 48 sandboxes for 8 trials. Creates
+    /// stop once [`UNANSWERED_LIMIT`] are unresolved, and each unresolved one
+    /// is on the end-of-run list.
+    #[tokio::test]
+    async fn creates_stop_while_their_answers_are_lost() {
+        let (provider, world) = fake_daytona(Duration::ZERO).await;
+        let ispec = pull_spec(&["echo agent"], None);
+        let image = provider.prepare(&ispec, &|_| {}).await.unwrap();
+        let before = world.lock().unwrap().boxes.len();
+        {
+            let mut w = world.lock().unwrap();
+            w.cut_creates = 100;
+            w.lists_fail_until = Some(Instant::now() + Duration::from_secs(120));
+        }
+        let mut trial = spec();
+        trial.image.reference = image.reference.clone();
+        for _ in 0..UNANSWERED_LIMIT + 2 {
+            assert!(provider.create(&trial).await.is_err());
+        }
+        let made = world.lock().unwrap().boxes.len() - before;
+        assert_eq!(made, UNANSWERED_LIMIT);
+        let attempts: Vec<String> = world.lock().unwrap().boxes[before..]
+            .iter()
+            .map(|b| b.labels[ATTEMPT_LABEL].clone())
+            .collect();
+        let left = crate::left_behind();
+        for a in &attempts {
+            assert!(
+                left.iter().any(|e| e.ends_with(&format!("={a}"))),
+                "{left:?}"
+            );
+        }
+        // E5 review (A2, B3): the stop is not for the rest of the run. Once
+        // the search gives up, creates are made again; the lost ones stay
+        // on the end-of-run list.
+        let unanswered = || {
+            provider
+                .api
+                .unanswered
+                .load(std::sync::atomic::Ordering::SeqCst)
+        };
+        until(|| unanswered() == 0).await;
+        assert_eq!(unanswered(), 0);
+        world.lock().unwrap().cut_creates = 0;
+        world.lock().unwrap().lists_fail_until = None;
+        assert!(provider.create(&trial).await.is_ok(), "creates resume");
+        let left = crate::left_behind();
+        assert!(
+            left.iter()
+                .any(|e| e.ends_with(&format!("={}", attempts[0]))),
+            "{left:?}"
+        );
+    }
+
+    /// E5 (clock skew through a proxy, live on Daytona): with Daytona's
+    /// `Date` a day ahead, another run's live sandbox (created an hour ago,
+    /// active a minute ago) looked a day old and idle, and the sweep
+    /// deleted it mid-agent.
+    #[tokio::test]
+    async fn a_fast_daytona_clock_never_ages_a_live_sandbox() {
+        let (provider, world) = fake_daytona(Duration::ZERO).await;
+        let mut labels = owner::labels();
+        labels.insert(crate::HOST_LABEL.into(), "another-machine".into());
+        let ago = |d: chrono::Duration| (Utc::now() - d).to_rfc3339();
+        world.lock().unwrap().boxes = vec![FakeBox {
+            id: "live-elsewhere".into(),
+            dockerfile: "FROM elsewhere\n".into(),
+            labels,
+            made: Instant::now(),
+            created_at: ago(chrono::Duration::hours(1)),
+            last_activity: Some(ago(chrono::Duration::minutes(1))),
+            fixed: Some("started"),
+            deleted: false,
+        }];
+        world.lock().unwrap().skew = Some(chrono::Duration::hours(25));
+        assert_eq!(provider.sweep().await.unwrap(), 0);
+        assert!(world.lock().unwrap().deletes.is_empty());
+    }
+
+    /// E5: the sweep's clock is the earlier of the two, and without
+    /// Daytona's this machine's is not trusted with ages.
+    #[test]
+    fn the_sweep_clock_takes_the_earlier_clock() {
+        let local = Utc::now();
+        let ahead = local + chrono::Duration::hours(25);
+        let behind = local - chrono::Duration::hours(1);
+        assert_eq!(
+            sweep_clock(Some(ahead), local),
+            (local - CLOCK_MARGIN, true)
+        );
+        assert_eq!(
+            sweep_clock(Some(behind), local),
+            (behind - CLOCK_MARGIN, true)
+        );
+        assert_eq!(sweep_clock(None, ahead), (ahead - CLOCK_MARGIN, false));
     }
 
     /// Review of rust/d4-chaos (Daytona 7): the sweep's 15 s limit covered
@@ -2410,6 +2928,42 @@ mod tests {
             );
             assert!(err.is_transient());
         }
+    }
+
+    /// bixbench's base image is arm64-only, so Daytona (linux/amd64) cannot
+    /// build it. The message said to fix the Dockerfile because "`docker
+    /// build` shows the same failure locally", which is not so on an arm64
+    /// machine; it names the platform instead, still as the task's problem.
+    #[test]
+    fn a_base_image_without_an_amd64_build_is_named_as_such() {
+        let failure = Failure {
+            state: "build_failed".into(),
+            reason: String::new(),
+            log_tail: vec![
+                "#3 [internal] load metadata for docker.io/futurehouse/bixbench:aviary-notebook-env".into(),
+                "ERROR: no match for platform in manifest: not found".into(),
+            ],
+            timed_out: false,
+            api: None,
+        };
+        let err = build_failure("t", failure, Duration::from_secs(60));
+        let SandboxError::Image {
+            message,
+            task_fault,
+            ..
+        } = &err
+        else {
+            panic!("{err:?}")
+        };
+        assert!(*task_fault, "{message}");
+        assert!(
+            message.contains("no build for Daytona's platform, linux/amd64"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("shows the same failure locally"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -2590,19 +3144,19 @@ mod tests {
             };
         let h = chrono::Duration::hours;
         let m = chrono::Duration::minutes;
-        assert!(!is_stale(&sandbox("started", h(2), m(1)), now).await);
+        assert!(!is_stale(&sandbox("started", h(2), m(1)), now, true).await);
         assert!(
-            !is_stale(&sandbox("started", h(30), m(5)), now).await,
+            !is_stale(&sandbox("started", h(30), m(5)), now, true).await,
             "recently active"
         );
-        assert!(is_stale(&sandbox("started", h(30), h(2)), now).await);
-        assert!(is_stale(&sandbox("build_failed", h(3), h(3)), now).await);
-        assert!(!is_stale(&sandbox("build_failed", m(30), m(30)), now).await);
+        assert!(is_stale(&sandbox("started", h(30), h(2)), now, true).await);
+        assert!(is_stale(&sandbox("build_failed", h(3), h(3)), now, true).await);
+        assert!(!is_stale(&sandbox("build_failed", m(30), m(30)), now, true).await);
         let mut foreign = sandbox("started", h(100), h(100));
         foreign
             .labels
             .insert(OWNER_LABEL.into(), "someone-else".into());
-        assert!(!is_stale(&foreign, now).await);
+        assert!(!is_stale(&foreign, now, true).await);
     }
 
     #[test]

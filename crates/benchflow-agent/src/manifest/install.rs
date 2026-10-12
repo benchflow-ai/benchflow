@@ -5,7 +5,8 @@
 //!
 //! 1. bootstrap a private Node.js 22.20.0 into `/opt/benchflow/node` when it
 //!    is not there (installing curl, tar and xz with apt, dnf or apk when the
-//!    image lacks them, and picking the x64 or arm64 build);
+//!    image lacks them, and picking the x64 or arm64 build, or on a musl
+//!    image such as Alpine the x64 musl build, which 0.8 did not);
 //! 2. `npm install -g --prefix /opt/benchflow/js-agents` the agent and its
 //!    companions;
 //! 3. write a launcher to `/opt/benchflow/bin/<bin>` that exports the
@@ -30,11 +31,28 @@ pub(crate) const JS_PREFIX: &str = "/opt/benchflow/js-agents";
 /// Where launchers are written.
 pub(crate) const BIN_PREFIX: &str = "/opt/benchflow/bin";
 
-/// 0.8's `_NODE_INSTALL`, verbatim. The Node version is pinned here.
+/// Shell that succeeds on a musl image (Alpine): the image's own `/bin/sh`
+/// runs on musl's loader. A glibc image with the `musl` package installed
+/// (Rust images that build static binaries) has `/lib/ld-musl-*.so.1` too,
+/// so testing for that file gave it Node's musl build, whose C++ runtime
+/// it lacks. busybox's `tr` takes no character classes, hence the range.
+macro_rules! is_musl {
+    () => {
+        r"head -c 4096 /bin/sh 2>/dev/null | tr -c '\040-\176' '\n' | grep -q '^/lib/ld-musl-'"
+    };
+}
+pub(crate) const IS_MUSL: &str = is_musl!();
+
+/// 0.8's `_NODE_INSTALL` plus `NODE_DIST`, `NODE_MUSL` and `NODE_MUSL_SUM`
+/// (below), which pick Node's musl build on a musl image (0.8 fetched the
+/// glibc build there, which cannot run: "node: cannot execute: required file
+/// not found" on Alpine) and check it. The Node version is pinned here, and
+/// the musl build's SHA-256 with it.
 pub(crate) const NODE_BOOTSTRAP: &str = concat!(
     "export DEBIAN_FRONTEND=noninteractive; ",
     "BF_NODE_DIR=/opt/benchflow/node; ",
     "BF_NODE_VERSION=22.20.0; ",
+    "bf_node_dist=https://nodejs.org/dist; ",
     r#"if [ ! -x "$BF_NODE_DIR/bin/node" ]; then "#,
     "  if ! command -v curl >/dev/null 2>&1 || ",
     "     ! command -v tar >/dev/null 2>&1 || ",
@@ -57,10 +75,19 @@ pub(crate) const NODE_BOOTSTRAP: &str = concat!(
     "    aarch64|arm64) node_arch=arm64 ;; ",
     r#"    *) echo "Unsupported architecture for Node.js: $arch" >&2; exit 1 ;; "#,
     "  esac; ",
+    "  if ",
+    is_musl!(),
+    "; then ",
+    r#"    if [ "$node_arch" != x64 ]; then echo "Node.js has no musl (Alpine) build for $arch" >&2; exit 1; fi; "#,
+    "    if command -v apk >/dev/null 2>&1; then apk add --no-cache libstdc++ libgcc; fi; ",
+    "    node_arch=x64-musl; ",
+    "    bf_node_dist=https://unofficial-builds.nodejs.org/download/release; ",
+    "  fi; ",
     r#"  tmp="$(mktemp -d)"; "#,
     "  mkdir -p /opt/benchflow; ",
     r#"  curl -fsSLo "$tmp/node.tar.xz" "#,
-    r#""https://nodejs.org/dist/v${BF_NODE_VERSION}/node-v${BF_NODE_VERSION}-linux-${node_arch}.tar.xz"; "#,
+    r#""${bf_node_dist}/v${BF_NODE_VERSION}/node-v${BF_NODE_VERSION}-linux-${node_arch}.tar.xz"; "#,
+    r#"  if [ "$node_arch" = x64-musl ]; then echo "119817f0a2cb86e9b8f058a9fc0a9fcb1b56a8a6da7c6ebef64398328ee52d82  $tmp/node.tar.xz" | sha256sum -c - >/dev/null || { echo "Node.js musl build failed its checksum" >&2; exit 1; }; fi; "#,
     r#"  rm -rf "$BF_NODE_DIR"; "#,
     r#"  mkdir -p "$BF_NODE_DIR"; "#,
     r#"  tar -xJf "$tmp/node.tar.xz" -C "$BF_NODE_DIR" --strip-components=1 --no-same-owner; "#,
@@ -70,6 +97,66 @@ pub(crate) const NODE_BOOTSTRAP: &str = concat!(
     r#""$BF_NODE_DIR/bin/node" --version; "#,
     r#""$BF_NODE_DIR/bin/npm" --version"#,
 );
+
+/// Where [`NODE_BOOTSTRAP`] downloads Node from: 0.8's address, which
+/// `NODE_MUSL` changes on a musl image. The comparisons with 0.8 strip it.
+#[cfg(test)]
+pub(crate) const NODE_DIST: &str = "bf_node_dist=https://nodejs.org/dist; ";
+
+/// [`NODE_BOOTSTRAP`]'s musl branch: an image whose C library is musl gets
+/// Node's x64 musl build and the C++ runtime it links; no arm64 musl build
+/// exists. A musl loader alone is not enough: Debian's `musl` package (which
+/// `musl-tools` pulls in) puts one beside glibc's, and that image runs the
+/// glibc build (review E4-A 3, E4-B 1). Alpine counts even with `gcompat`'s
+/// glibc-named loader. The comparisons with 0.8 strip it.
+#[cfg(test)]
+pub(crate) const NODE_MUSL: &str = concat!(
+    "  if ",
+    is_musl!(),
+    "; then ",
+    r#"    if [ "$node_arch" != x64 ]; then echo "Node.js has no musl (Alpine) build for $arch" >&2; exit 1; fi; "#,
+    "    if command -v apk >/dev/null 2>&1; then apk add --no-cache libstdc++ libgcc; fi; ",
+    "    node_arch=x64-musl; ",
+    "    bf_node_dist=https://unofficial-builds.nodejs.org/download/release; ",
+    "  fi; ",
+);
+
+/// [`NODE_BOOTSTRAP`]'s check of the musl build it downloaded (the
+/// unofficial builds' published SHA-256 for 22.20.0). The comparisons with
+/// 0.8 strip it.
+#[cfg(test)]
+pub(crate) const NODE_MUSL_SUM: &str = r#"  if [ "$node_arch" = x64-musl ]; then echo "119817f0a2cb86e9b8f058a9fc0a9fcb1b56a8a6da7c6ebef64398328ee52d82  $tmp/node.tar.xz" | sha256sum -c - >/dev/null || { echo "Node.js musl build failed its checksum" >&2; exit 1; }; fi; "#;
+
+/// An install script as 0.8 wrote it: without `NODE_DIST`, `NODE_MUSL` and
+/// `NODE_MUSL_SUM`, and with 0.8's download address.
+#[cfg(test)]
+pub(crate) fn as_0_8(script: &str) -> String {
+    let musl_start = script.find(MUSL_START_CHECK_HEAD);
+    let script = match musl_start {
+        Some(i) => {
+            let end = i
+                + script[i..].find(MUSL_START_CHECK_TAIL).unwrap_or(0)
+                + MUSL_START_CHECK_TAIL.len();
+            format!("{}{}", &script[..i], &script[end..])
+        }
+        None => script.to_string(),
+    };
+    script
+        .replace(NODE_DIST, "")
+        .replace(NODE_MUSL, "")
+        .replace(NODE_MUSL_SUM, "")
+        .replace("\"${bf_node_dist}/v", "\"https://nodejs.org/dist/v")
+}
+
+/// `script` as an image layer runs it, as root: with a `TMPDIR` of its own,
+/// removed afterwards, keeping the script's exit status, so nothing it leaves
+/// in `/tmp` (npm's `node-compile-cache`, OpenCode's `opencode`) stays
+/// root's in the image for the agent user to trip over.
+pub fn with_private_tmp(script: &str) -> String {
+    format!(
+        "bf_install_tmp=$(mktemp -d /tmp/benchflow-install.XXXXXX) && export TMPDIR=\"$bf_install_tmp\" && (\n{script}\n); bf_rc=$?; rm -rf \"$bf_install_tmp\"; exit $bf_rc"
+    )
+}
 
 /// An npm install spec: an unversioned package installs `@latest`
 /// (0.8's `_npm_package_spec`).
@@ -111,6 +198,42 @@ pub(crate) fn launcher_script(npm: &NpmInstall) -> String {
     lines.iter().map(|line| format!("{line}\n")).collect()
 }
 
+/// Where [`musl_start_check`] begins, for the comparisons with 0.8.
+#[cfg(test)]
+const MUSL_START_CHECK_HEAD: &str = " && { ! head -c 4096 /bin/sh";
+const MUSL_START_CHECK_TAIL: &str = "esac; }; }";
+
+/// On a musl image (Alpine), start the installed agent once with
+/// `--version`: a package whose native executable has no musl build
+/// (cline, MiMo Code; a vendor archive's glibc Node in Cursor's, a vendor
+/// installer's glibc binary in Antigravity's) installs cleanly, then fails
+/// as the trial starts ("spawnSync … ENOENT", or exit 127 for a glibc
+/// loader that is not there). The install fails instead, saying why. An
+/// agent that answered `--version` (exit 0) is never refused, whatever it
+/// printed: a fresh `HOME` makes some warn about a missing settings file
+/// (`ENOENT`). The `BenchFlow:` line comes last, after at most 2,000 bytes of
+/// the agent's output, and quotes the line that says why: a long Node stack
+/// trace had pushed it out of the tail, and R201 fell back to advice about
+/// curl. Not
+/// in 0.8. Shell source that follows a command with `&&`; it holds under
+/// `set -e` (the binary installs'), where a failing `$(...)` assignment
+/// would end the script before the message.
+pub(crate) fn musl_start_check(bin: &str, wrapper: &str) -> String {
+    let say = quote(&format!(
+        "BenchFlow: {bin} does not start on this image, which uses musl (as Alpine does): its package has no build for musl; run {bin} on an image with glibc (Debian, Ubuntu). It said: "
+    ));
+    format!(
+        " && {{ ! {IS_MUSL} || {{ bf_h=\"$(mktemp -d)\"; bf_to=; \
+         command -v timeout >/dev/null 2>&1 && bf_to='timeout 60'; \
+         bf_rc=0; bf_out=\"$(HOME=\"$bf_h\" $bf_to {wrapper} --version 2>&1 < /dev/null)\" || bf_rc=$?; rm -rf \"$bf_h\"; \
+         case \"$bf_rc:$bf_out\" in 0:*) ;; 127:*|*ENOENT*) \
+         bf_why=\"$(printf '%s\\n' \"$bf_out\" | grep -m 1 -E 'ENOENT|not found|cannot execute' | cut -c 1-300)\"; \
+         [ -n \"$bf_why\" ] || bf_why=\"$(printf '%s\\n' \"$bf_out\" | tail -n 1 | cut -c 1-300)\"; \
+         printf '%s\\n' \"$bf_out\" | tail -c 2000 >&2; echo {say}\"$bf_why\" >&2; exit 1 ;; \
+         {MUSL_START_CHECK_TAIL}"
+    )
+}
+
 /// The full install script for an npm agent.
 pub(crate) fn npm_install_script(npm: &NpmInstall) -> String {
     let agent_bin = format!("{JS_PREFIX}/bin/{}", npm.bin);
@@ -140,6 +263,7 @@ pub(crate) fn npm_install_script(npm: &NpmInstall) -> String {
          [ -x {agent_bin} ] && [ -x {wrapper} ]",
         launcher_lines.join(" ")
     ));
+    script.push_str(&musl_start_check(&npm.bin, &wrapper));
     if let Some(verify) = &npm.verify {
         script.push_str(" && ");
         script.push_str(verify);
@@ -274,6 +398,10 @@ pub(crate) fn home_install_script(agent: &str, home: &HomeInstall) -> String {
         ));
     }
     script.push_str("chmod -R a+rX /opt/benchflow");
+    for link in &home.links {
+        let name = link.rsplit('/').next().unwrap_or(link);
+        script.push_str(&musl_start_check(name, &format!("{BIN_PREFIX}/{name}")));
+    }
     if let Some(verify) = &home.verify {
         script.push_str(" && ");
         script.push_str(verify);

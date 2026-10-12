@@ -295,6 +295,114 @@ fn datasets_resolve_from_a_registry_file_and_fetch_pinned() {
         .stderr(predicate::str::contains("one or the other"));
 }
 
+/// Some registries name a task differently from its folder (a registry
+/// task `greeting` at `tasks/hello`). --include and --exclude choose by the
+/// registry's names, so the folder's name must not filter the fetched tasks
+/// again.
+#[test]
+fn dataset_include_matches_the_registry_name_not_the_folder_name() {
+    if which("git").is_none() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let (registry, _) = registry_fixture(d.path());
+    let text = std::fs::read_to_string(&registry)
+        .unwrap()
+        .replace(r#""name":"hello""#, r#""name":"greeting""#);
+    assert!(text.contains("greeting"), "{text}");
+    std::fs::write(&registry, text).unwrap();
+    let cache = d.path().join("cache");
+    // Chosen by the registry's name: the task is fetched and loaded, and the
+    // run stops at the sandbox (none is ready here), not at the selection.
+    bench(d.path(), &cache)
+        .args([
+            "run",
+            "-d",
+            "demo@1.1",
+            "-a",
+            "nop",
+            "-s",
+            "daytona",
+            "-i",
+            "greeting",
+            "--registry",
+        ])
+        .arg(&registry)
+        .assert()
+        .code(3)
+        .stderr(
+            predicate::str::contains("fetching")
+                .and(predicate::str::contains("no tasks left").not()),
+        );
+    // An --exclude written with the folder's name (the name records and
+    // trial folders show) drops the task too (review E4-A, 2).
+    bench(d.path(), &cache)
+        .args([
+            "run",
+            "-d",
+            "demo@1.1",
+            "-a",
+            "nop",
+            "-s",
+            "daytona",
+            "-x",
+            "hello",
+            "--registry",
+        ])
+        .arg(&registry)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no tasks left"));
+}
+
+/// A server that sends a commit without its file contents but then refuses
+/// the contents asked for one by one (Hugging Face's dataset repositories:
+/// "could not fetch <blob> from promisor remote") left every task of
+/// spider2-dbt, bird-bench and code-contests unfetchable. Here a repository
+/// that refuses objects it did not advertise, over git's protocol v0, does
+/// the same; the fetch then takes the commit with its contents.
+#[test]
+fn a_server_refusing_lazy_contents_still_fetches_the_dataset() {
+    if which("git").is_none() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let (registry, _) = registry_fixture(d.path());
+    let repo = d.path().join("repo");
+    for (key, value) in [
+        ("uploadpack.allowAnySHA1InWant", "false"),
+        ("uploadpack.allowTipSHA1InWant", "true"),
+    ] {
+        let out = StdCommand::new("git")
+            .args(["config", key, value])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    let cache = d.path().join("cache");
+    bench(d.path(), &cache)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "protocol.version")
+        .env("GIT_CONFIG_VALUE_0", "0")
+        .args([
+            "run",
+            "-d",
+            "demo@1.1",
+            "-a",
+            "nop",
+            "-s",
+            "daytona",
+            "--registry",
+        ])
+        .arg(&registry)
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "1 of 1 pinned task match the registry",
+        ));
+}
+
 #[test]
 fn a_dataset_plan_counts_the_selected_tasks_and_names_their_source() {
     let d = tempfile::tempdir().unwrap();
@@ -428,6 +536,80 @@ fn a_dataset_dry_run_without_a_login_exits_not_ready() {
             .as_str()
             .is_some_and(|n| !n.is_empty()),
         "{out}"
+    );
+}
+
+/// The dataset plan's other path: with an earlier job of the same tasks in
+/// the jobs folder, the plan fetches the tasks to tell whether it would
+/// resume, and still names the missing login and exits 3, in text and
+/// `--json` (D13's low: this path had no test of its own). An `acp:`
+/// agent's plan does not say nothing is fetched: its check may refresh the
+/// ACP registry's index.
+#[test]
+fn a_fetched_dataset_dry_run_without_a_login_exits_not_ready() {
+    let d = tempfile::tempdir().unwrap();
+    let ds = d.path().join("ds");
+    copy_dir(&fixture_task(), &ds.join("hello"));
+    std::fs::write(
+        ds.join("dataset.toml"),
+        "[dataset]\nname = \"mine\"\nversion = \"0.1\"\n\n[[tasks]]\nname = \"hello\"\n",
+    )
+    .unwrap();
+    let snapshot = d.path().join("acp-registry.json");
+    std::fs::write(&snapshot, benchflow_agent::acp_registry::SNAPSHOT).unwrap();
+    let plan = |agent: &str, json: bool| {
+        let mut c = bench(d.path(), &d.path().join("cache"));
+        c.env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", d.path())
+            .env("NO_COLOR", "1")
+            .env("BENCHFLOW_CACHE_DIR", d.path().join("cache"))
+            .env("BENCHFLOW_ACP_REGISTRY", &snapshot);
+        if json {
+            c.arg("--json");
+        }
+        let out = c
+            .args(["run", "-d", "ds", "-a", agent, "--dry-run"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    // No earlier job: the early path, which fetches nothing.
+    let early = plan("acp:codex-acp", false);
+    assert!(
+        early.contains("Plan (nothing runs and no task is fetched with --dry-run)"),
+        "{early}"
+    );
+    let early = plan("claude", false);
+    assert!(
+        early.contains("Plan (nothing runs or is fetched with --dry-run)"),
+        "{early}"
+    );
+    // An earlier job of the task: the plan fetches to tell whether it resumes.
+    let job = d.path().join("jobs/earlier");
+    std::fs::create_dir_all(&job).unwrap();
+    std::fs::write(
+        job.join("evaluation.json"),
+        serde_json::json!({"job_name": "earlier", "config": {"tasks": [{"name": "hello"}]}})
+            .to_string(),
+    )
+    .unwrap();
+    let out = plan("claude", false);
+    assert!(out.contains("Plan (nothing runs with --dry-run)"), "{out}");
+    assert!(
+        out.contains(
+            "a run would stop here, before any sandbox starts: [R211] no login for agent `claude`"
+        ),
+        "{out}"
+    );
+    let doc: serde_json::Value = serde_json::from_str(&plan("claude", true)).unwrap();
+    assert_eq!(doc["not_ready"]["code"], "R211", "{doc}");
+    assert!(
+        doc["not_ready"]["next"]
+            .as_str()
+            .is_some_and(|n| !n.is_empty()),
+        "{doc}"
     );
 }
 
@@ -778,6 +960,155 @@ fn results_leave_stopped_trials_out_of_the_pass_rate() {
     assert!(
         list.contains("3 trials + 2 stopped + 2 never ran · 3 passed · 100.0% partial"),
         "{list}"
+    );
+}
+
+/// Scores that stand but should not be read as they look are named, in
+/// text and `--json` (DECISIONS.md 13 and 18, 2026-10-11): a reward outside
+/// 0 to 1 is counted as written and named with its trial, and a trial
+/// graded although `locked_system_dirs` failed is counted next to the
+/// unscored ones. A lock that repaired the image before the agent ran is
+/// not counted: the folders were locked.
+#[test]
+fn results_name_wide_rewards_and_trials_graded_with_unlocked_system_folders() {
+    let d = tempfile::tempdir().unwrap();
+    write_job(d.path(), "j", &[1.0, 0.0]);
+    let trial = |i: usize, reward: f64, note: &str| {
+        let dir = d.path().join(format!("jobs/j/t{i}__0000000{i}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("result.json"),
+            serde_json::json!({
+                "task_name": format!("t{i}"), "rollout_name": format!("t{i}__0000000{i}"),
+                "agent": "builtin", "model": "m", "status": "scored",
+                "passed": reward >= 1.0, "rewards": {"reward": reward},
+                "defenses": {"locked_system_dirs": {"name": "locked_system_dirs",
+                    "state": "failed", "note": note}},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    trial(
+        2,
+        7.0,
+        "the image lets group or others write 3 paths in system folders; removed that permission before the agent ran: /usr/local/bin (777)",
+    );
+    trial(
+        3,
+        1.0,
+        "the agent user owns 5369 paths in system folders, which it can change whatever their permissions: /usr/local/lib",
+    );
+    trial(
+        4,
+        -1.0,
+        "the image lets group or others write 1 paths in system folders; removed that permission before the agent ran: /opt (777)",
+    );
+    // A reward inside the range its task declared (round-2 review E9-B M3):
+    // scored as bench graded it, with nothing to warn about.
+    let ranged = d.path().join("jobs/j/t5__00000005");
+    std::fs::create_dir_all(&ranged).unwrap();
+    std::fs::write(
+        ranged.join("result.json"),
+        serde_json::json!({
+            "task_name": "t5", "rollout_name": "t5__00000005",
+            "agent": "builtin", "model": "m", "status": "scored",
+            "passed": false, "rewards": {"reward": -0.5}, "reward_range": [-1.0, 1.0],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(!out.contains("t5__00000005 (-0.5)"), "{out}");
+    assert!(
+        out.contains("· 1 graded with system folders unlocked"),
+        "{out}"
+    );
+    assert!(
+        out.contains("2 trials scored a reward outside its task's range"),
+        "{out}"
+    );
+    assert!(out.contains("t2__00000002 (7)"), "{out}");
+    assert!(out.contains("t4__00000004 (-1)"), "{out}");
+    assert!(
+        out.contains("1 trial graded although locked_system_dirs failed"),
+        "{out}"
+    );
+    assert!(out.contains("the agent user owns 5369 paths"), "{out}");
+    let json = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j", "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(v["graded_unlocked_system_dirs"].as_u64(), Some(1), "{v}");
+    assert_eq!(
+        v["rewards_out_of_range"],
+        serde_json::json!([
+            {"trial": "t2__00000002", "reward": 7.0},
+            {"trial": "t4__00000004", "reward": -1.0},
+        ]),
+        "{v}"
+    );
+    // A job with neither says nothing about them.
+    write_job(d.path(), "k", &[1.0]);
+    let clean = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/k"])
+        .output()
+        .unwrap();
+    let clean = String::from_utf8(clean.stdout).unwrap();
+    assert!(
+        !clean.contains("unlocked") && !clean.contains("outside its task's range"),
+        "{clean}"
+    );
+}
+
+/// A model agent that ran on Daytona without the guard on the sandbox
+/// daemon's ports (no iptables in the image) gets one warning line per job,
+/// however many trials (decision 8, 2026-10-11); an agent running as root
+/// (`off`) or the oracle does not.
+#[test]
+fn results_warn_once_when_model_agents_ran_without_the_daemon_guard() {
+    let d = tempfile::tempdir().unwrap();
+    write_job(d.path(), "j", &[]);
+    let note = "the task's image has no iptables, and BenchFlow could not install it (the image has no apt-get, apk, dnf, or yum that worked), so the agent can reach the sandbox daemon's ports (2280, 22220, 22222, 33333), and the daemon runs commands as root for any user who reaches it";
+    let trial = |i: usize, agent: &str, model: Option<&str>, state: &str| {
+        let dir = d.path().join(format!("jobs/j/t{i}__0000000{i}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("result.json"),
+            serde_json::json!({
+                "task_name": format!("t{i}"), "rollout_name": format!("t{i}__0000000{i}"),
+                "agent": agent, "model": model, "status": "scored",
+                "passed": true, "rewards": {"reward": 1.0},
+                "defenses": {"root_service": {"name": "root_service", "state": state, "note": note}},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    trial(0, "opencode", Some("mimo/mimo-v2.6-flash"), "not-supported");
+    trial(1, "opencode", Some("mimo/mimo-v2.6-flash"), "not-supported");
+    trial(2, "opencode", Some("mimo/mimo-v2.6-flash"), "off");
+    trial(3, "oracle", None, "not-supported");
+    // An ACP agent on its default model may record none (diff review L8).
+    trial(4, "acp:codex-acp", None, "not-supported");
+    let out = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    // The warning wraps; read it as one line.
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(flat.matches("without the guard").count(), 1, "{out}");
+    assert!(
+        flat.contains(
+            "3 trials ran a model agent without the guard on the sandbox daemon's ports (the task's image has no iptables"
+        ),
+        "{out}"
     );
 }
 

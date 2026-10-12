@@ -27,6 +27,14 @@ use tools::ToolContext;
 /// Karotte's limit on consecutive empty turns.
 pub const MAX_CONSECUTIVE_EMPTY_TURNS: u32 = 3;
 
+/// Turns in a row whose every tool call had arguments that are not a JSON
+/// object, before the loop stops. Each such call is answered with an error
+/// so the model can correct itself; without a cap a model that keeps doing
+/// it is asked again until the agent's time runs out (one faulty endpoint
+/// made 1,528 calls in 134 s). The stop is the model's failure and the
+/// trial is still graded.
+pub const MAX_CONSECUTIVE_INVALID_TURNS: u32 = 3;
+
 /// Karotte's nudge after an empty turn.
 pub const EMPTY_TURN_NUDGE: &str = "Your last turn produced no message or tool call. Pick up where you left off. Do not apologize or recap. Break the remaining work into smaller pieces if necessary.";
 
@@ -72,6 +80,7 @@ pub async fn run(
     let specs = tools::specs(config.bash_timeout);
     let mut messages: Vec<Message> = Vec::new();
     let system = system_prompt(ctx.workdir);
+    recorder.system_prompt(&system);
     for prompt in &ctx.prompts {
         recorder.user(prompt);
         messages.push(Message::user(prompt.clone()));
@@ -107,6 +116,8 @@ async fn prompt_loop(
     meter: &mut Meter,
 ) -> Result<(), Stop> {
     let mut empty_turns = 0;
+    let mut invalid_turns = 0;
+    let mut invalid_cut = 0;
     loop {
         meter.before_model_call(client.usage().total())?;
         let req = ChatRequest {
@@ -123,6 +134,12 @@ async fn prompt_loop(
             .await?
             .map_err(Stop::Model)?;
         recorder.usage(&client.usage());
+        recorder.model_call(
+            &client.usage(),
+            client.calls(),
+            Some(response.finish.as_str()),
+            response.model.as_deref(),
+        );
         if let Some(r) = &response.message.reasoning {
             recorder.thought(r);
         }
@@ -154,6 +171,9 @@ async fn prompt_loop(
         }
         empty_turns = 0;
         let mut submitted = false;
+        let mut all_invalid = true;
+        // The last recorded result, so the time note can be recorded with it.
+        let mut last_result: Option<(String, ToolCallStatus, Value)> = None;
         for call in &calls {
             if submitted {
                 // The turn ended at `submit`; later calls are answered so the
@@ -172,6 +192,9 @@ async fn prompt_loop(
                     .ok()
                     .and_then(|v| v.as_object().cloned())
             };
+            if parsed.is_some() {
+                all_invalid = false;
+            }
             let args = parsed.clone().unwrap_or_default();
             let (kind, title) = tools::describe(&call.name, &args);
             let raw_input = match &parsed {
@@ -235,6 +258,7 @@ async fn prompt_loop(
                 outcome.result.clone(),
                 Some(&outcome.text),
             );
+            last_result = Some((call.id.clone(), status, outcome.result.clone()));
             messages.push(Message::Tool {
                 call_id: call.id.clone(),
                 content: outcome.text,
@@ -244,13 +268,41 @@ async fn prompt_loop(
         if submitted {
             return Ok(());
         }
+        if all_invalid {
+            invalid_turns += 1;
+            if response.finish == FinishReason::Length {
+                invalid_cut += 1;
+            }
+            if invalid_turns > MAX_CONSECUTIVE_INVALID_TURNS {
+                let cut = if invalid_cut > 0 {
+                    format!(" ({invalid_cut} of them cut off at the output-token limit)")
+                } else {
+                    String::new()
+                };
+                return Err(Stop::ModelLoop {
+                    reason: format!(
+                        "the model's tool calls had arguments that are not JSON {invalid_turns} turns in a row{cut}"
+                    ),
+                    turns: invalid_turns,
+                });
+            }
+        } else {
+            invalid_turns = 0;
+            invalid_cut = 0;
+        }
         if let Some(remaining) = meter.remaining()
-            && let Some(Message::Tool { content, .. }) = messages.last_mut()
+            && let Some(Message::Tool { call_id, content }) = messages.last_mut()
         {
             content.push_str(&format!(
                 "\n\nTime remaining: {} seconds",
                 remaining.as_secs()
             ));
+            // Record the result as the model will read it, note included.
+            if let Some((id, status, result)) = &last_result
+                && id == call_id
+            {
+                recorder.tool_finish(id, *status, result.clone(), Some(content));
+            }
         }
     }
 }
