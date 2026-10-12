@@ -168,9 +168,10 @@ class SandboxDaemonGuardError(RuntimeError):
 
 
 def _daemon_guard_cmd(sandbox_user: str, proc: str = "/proc") -> str:
-    """Drop the sandbox user's TCP connections to the sandbox daemon's
-    ports, on every interface (``-o lo`` is not relied on), and nothing
-    else. The rules sit in the mangle table's OUTPUT chain, which the kernel
+    """Drop every non-root uid's TCP connections to the sandbox daemon's
+    ports, on every interface (``-o lo`` is not relied on), and nothing else
+    (only the daemon and BenchFlow's own root processes use them, so a
+    service user the agent drives cannot relay to the daemon). The rules sit in the mangle table's OUTPUT chain, which the kernel
     walks before the filter table's, so no ACCEPT there (the egress
     firewall's loopback ACCEPT) can let a packet past them, not even for a
     moment; running it again adds nothing. Uses ``iptables`` or, where that
@@ -193,7 +194,10 @@ def _daemon_guard_cmd(sandbox_user: str, proc: str = "/proc") -> str:
         'command -v "$c" >/dev/null 2>&1 && "$c" -w -t mangle -S OUTPUT >/dev/null 2>&1 && '
         '{ echo "$c"; return 0; }; done; return 1; }; '
         "guard() { for p in $ports; do "
-        'r="OUTPUT -p tcp --dport $p -m owner --uid-owner $agent_uid -j DROP"; '
+        # Every non-root uid: only the daemon and BenchFlow's own root
+        # processes use these ports, so a service user the agent drives
+        # (postgres, www-data) cannot relay to the daemon either.
+        'r="OUTPUT -p tcp --dport $p -m owner ! --uid-owner 0 -j DROP"; '
         '"$1" -w -t mangle -C $r 2>/dev/null || '
         '"$1" -w -t mangle -I $r || return 1; done; }; '
         "status=0; out=; "
