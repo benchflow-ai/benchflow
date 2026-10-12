@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -600,9 +601,28 @@ class TestSandboxDaemonGuard:
             )
         return proc
 
+    @staticmethod
+    def _system_bin(tmp_path):
+        """/usr/bin and /bin as links, without the host's own package
+        managers and iptables: the guard would find those first (a Linux CI
+        runner has apt-get) and use them instead of the test's fakes."""
+        sys_bin = tmp_path / "sysbin"
+        if sys_bin.exists():
+            return sys_bin
+        sys_bin.mkdir()
+        hidden = {"apk", "apt", "apt-get", "dnf", "microdnf", "yum"}
+        for d in ("/usr/bin", "/bin"):
+            for src in Path(d).iterdir():
+                name = src.name
+                if name in hidden or name.startswith(("iptables", "ip6tables")):
+                    continue
+                if not (sys_bin / name).is_symlink():
+                    (sys_bin / name).symlink_to(src)
+        return sys_bin
+
     def _sh(self, tmp_path, cmd, bin_dir, shell="bash", broken=""):
         env = {
-            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "PATH": f"{bin_dir}:{self._system_bin(tmp_path)}",
             "FW_STATE": str(tmp_path / "fw.json"),
             "FW_LOG": str(tmp_path / "fw.log"),
             "FW_BROKEN": broken,
