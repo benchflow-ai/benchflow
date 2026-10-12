@@ -270,7 +270,9 @@ class RetryConfig:
         if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
             return True
         if self.retry_on_infra and category in {INFRA_ERROR, SANDBOX_SETUP}:
-            return True
+            # An image that cannot keep the agent from Daytona's root daemon
+            # refuses the same way every time.
+            return not _image_cannot_guard_daemon(error)
         if category == API_ERROR:
             # Transient-only: rate limit / provider 5xx self-heal on backoff;
             # permanent (auth, quota, model_not_found, rejected_request) do not.
@@ -2025,3 +2027,12 @@ class Evaluation:
         )
 
         return job_result
+
+
+def _image_cannot_guard_daemon(error: str | None) -> bool:
+    """A sandbox-daemon guard refusal the task's image always gives."""
+    lower = (error or "").lower()
+    return "could not be kept away from daytona" in lower and (
+        "the image has no iptables and no package manager" in lower
+        or "the image has ipv6 but no ip6tables" in lower
+    )
