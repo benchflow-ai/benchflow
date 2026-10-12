@@ -126,7 +126,100 @@ def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
         "-j REJECT 2>/dev/null || "
         'ip6tables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
         "fi"
+        f"; {_daemon_guard_cmd(sandbox_user)}"
     )
+
+
+#: Ports Daytona's sandbox daemon (process 1, running as root) answers on
+#: without credentials; its toolbox API runs commands as root. An agent user
+#: that reaches it reaches root (seen live: an agent installed packages as
+#: root through ``POST /process/session`` on 127.0.0.1:2280).
+SANDBOX_DAEMON_PORTS = (2280, 22220, 22222, 33333)
+
+# Prints the TCP ports process 1 (or another process running the same
+# program) listens on, one per line, from $P/net/tcp{,6} and the processes'
+# socket inodes. Root only reads another process's fds, so run it as root.
+_DAEMON_PORTS_SH = r"""bf_daemon_ports() {
+  exe=$(readlink "$P/1/exe" 2>/dev/null) || exe=""
+  inodes=" "
+  for d in "$P"/[0-9]*; do
+    if [ "$d" != "$P/1" ]; then
+      [ -n "$exe" ] && [ "$(readlink "$d/exe" 2>/dev/null)" = "$exe" ] || continue
+    fi
+    for f in "$d"/fd/*; do
+      l=$(readlink "$f" 2>/dev/null) || continue
+      case $l in socket:\[*\]) i=${l#socket:[}; inodes="$inodes${i%]} ";; esac
+    done
+  done
+  for f in "$P/net/tcp" "$P/net/tcp6"; do
+    [ -r "$f" ] || continue
+    awk -v want="$inodes" 'FNR > 1 && $4 == "0A" && index(want, " " $10 " ") { n = split($2, a, ":"); print a[n] }' "$f"
+  done | while read -r hex; do
+    case $hex in *[!0-9A-Fa-f]*|'') continue;; esac
+    printf '%d\n' "0x$hex"
+  done | sort -un
+}
+"""
+
+
+def _daemon_guard_cmd(sandbox_user: str, proc: str = "/proc") -> str:
+    """Refuse the sandbox user's TCP connections to the sandbox daemon's
+    ports on every local address (loopback carries them all), and nothing
+    else. Each rule is moved to the top of OUTPUT, so a loopback ACCEPT
+    inserted earlier (the egress firewall's) cannot shadow it; running it
+    again is harmless. Never fails the caller: it prints
+    ``BF daemon-guard ports=... status=N`` (0 enforced, 1 a rule failed,
+    2 no iptables, 3 IPv6 without ip6tables).
+    """
+    user = shlex.quote(sandbox_user)
+    floor = " ".join(str(p) for p in SANDBOX_DAEMON_PORTS)
+    return (
+        "( "
+        f"agent_uid=$(id -u {user} 2>/dev/null) || exit 0; "
+        f"P={shlex.quote(proc)}; "
+        f"{_DAEMON_PORTS_SH}"
+        f"ports=$(printf '%s\\n' {floor} $(bf_daemon_ports) | sort -un | tr '\\n' ' '); "
+        "guard() { for p in $ports; do "
+        'r="OUTPUT -o lo -p tcp --dport $p -m owner --uid-owner $agent_uid -j REJECT --reject-with tcp-reset"; '
+        'while "$1" -w -D $r 2>/dev/null; do :; done; '
+        '"$1" -w -I OUTPUT 1 -o lo -p tcp --dport "$p" -m owner --uid-owner "$agent_uid" '
+        "-j REJECT --reject-with tcp-reset || return 1; done; }; "
+        "if ! command -v iptables >/dev/null 2>&1; then "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables >/dev/null 2>&1 || "
+        "{ apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive "
+        "apt-get install -y -qq iptables >/dev/null 2>&1; }; "
+        "elif command -v dnf >/dev/null 2>&1; then dnf -y install iptables >/dev/null 2>&1; "
+        "elif command -v apk >/dev/null 2>&1; then apk add --no-cache iptables >/dev/null 2>&1; fi; fi; "
+        "status=0; "
+        "if command -v iptables >/dev/null 2>&1; then guard iptables || status=1; else status=2; fi; "
+        f"if [ -e {shlex.quote(proc)}/net/if_inet6 ]; then "
+        "if command -v ip6tables >/dev/null 2>&1; then guard ip6tables || status=1; "
+        "elif [ $status = 0 ]; then status=3; fi; fi; "
+        'echo "BF daemon-guard ports=$ports status=$status" '
+        ")"
+    )
+
+
+async def guard_sandbox_daemon(env: Any, sandbox_user: str) -> bool:
+    """Install the daemon guard for ``sandbox_user`` (see
+    ``_daemon_guard_cmd``). Returns whether every rule holds; logs a warning
+    when not, since on Daytona the agent user could then reach root."""
+    result = await env.exec(
+        _daemon_guard_cmd(sandbox_user), user="root", timeout_sec=180
+    )
+    out = getattr(result, "stdout", "") or ""
+    ok = _exec_return_code(result) == 0 and "status=0" in out
+    if not ok:
+        line = next((ln for ln in out.splitlines() if "daemon-guard" in ln), "")
+        logger.warning(
+            "Could not refuse %s's connections to the sandbox daemon's ports "
+            "(%s); on Daytona the agent user may reach root through it.%s",
+            sandbox_user,
+            line or "no report",
+            _exec_failure_detail(result),
+        )
+    return ok
 
 
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
@@ -250,6 +343,9 @@ async def setup_sandbox_user(
         f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
         timeout_sec=timeout_sec,
     )
+    # Daytona's daemon runs commands as root for anyone who reaches it on
+    # loopback; keep the agent user away from it in every network mode.
+    await guard_sandbox_daemon(env, sandbox_user)
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
 

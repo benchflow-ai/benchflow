@@ -489,3 +489,113 @@ class TestAgentEgressFirewall:
             )
 
         env.exec.assert_not_awaited()
+
+
+class TestSandboxDaemonGuard:
+    """The agent user cannot reach Daytona's root daemon on loopback."""
+
+    @staticmethod
+    def _fake_bin(tmp_path, ip6=True):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        log = tmp_path / "fw.log"
+        for name in ["iptables"] + (["ip6tables"] if ip6 else []):
+            p = bin_dir / name
+            # -D finds nothing (exit 1), every other call succeeds.
+            p.write_text(
+                "#!/bin/sh\n"
+                f'echo "{name} $*" >> {log}\n'
+                'for a in "$@"; do [ "$a" = -D ] && exit 1; done\n'
+                "exit 0\n"
+            )
+            p.chmod(0o755)
+        idp = bin_dir / "id"
+        idp.write_text("#!/bin/sh\necho 1000\n")
+        idp.chmod(0o755)
+        return bin_dir, log
+
+    @staticmethod
+    def _fake_proc(tmp_path, listen_port=None, ipv6=True):
+        proc = tmp_path / "proc"
+        (proc / "net").mkdir(parents=True)
+        (proc / "1" / "fd").mkdir(parents=True)
+        (proc / "1" / "exe").symlink_to("/usr/local/bin/daytona")
+        header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+        lines = header
+        if listen_port is not None:
+            (proc / "1" / "fd" / "3").symlink_to("socket:[4242]")
+            lines += f"   0: 00000000:{listen_port:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4242 1\n"
+        (proc / "net" / "tcp").write_text(lines)
+        (proc / "net" / "tcp6").write_text(header)
+        if ipv6:
+            (proc / "net" / "if_inet6").write_text(
+                "00000000000000000000000000000001 01 80 10 80       lo\n"
+            )
+        return proc
+
+    def _run(self, tmp_path, **kw):
+        from benchflow.sandbox.lockdown import _daemon_guard_cmd
+
+        bin_dir, log = self._fake_bin(tmp_path, ip6=kw.pop("ip6", True))
+        proc = self._fake_proc(tmp_path, **kw)
+        out = subprocess.run(
+            ["bash", "-c", _daemon_guard_cmd("agent", proc=str(proc))],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            check=True,
+        ).stdout
+        return out, log.read_text().splitlines()
+
+    def test_rejects_the_agent_on_every_daemon_port_over_ipv4_and_ipv6(self, tmp_path):
+        out, calls = self._run(tmp_path)
+        assert "status=0" in out
+        for fw in ("iptables", "ip6tables"):
+            for port in (2280, 22220, 22222, 33333):
+                assert (
+                    f"{fw} -w -I OUTPUT 1 -o lo -p tcp --dport {port} -m owner "
+                    "--uid-owner 1000 -j REJECT --reject-with tcp-reset"
+                ) in calls, calls
+        # Nothing but those ports is touched.
+        inserts = [c for c in calls if " -I " in c]
+        assert len(inserts) == 8
+
+    def test_a_port_the_daemon_listens_on_is_guarded_too(self, tmp_path):
+        out, calls = self._run(tmp_path, listen_port=8080)
+        assert "ports=2280 8080 22220 22222 33333" in out
+        assert any("--dport 8080" in c and c.startswith("iptables") for c in calls)
+
+    def test_ipv6_without_ip6tables_is_reported(self, tmp_path):
+        out, _ = self._run(tmp_path, ip6=False)
+        assert "status=3" in out
+
+    def test_the_egress_firewall_reapplies_the_guard_above_its_loopback_accept(self):
+        from benchflow.sandbox.lockdown import _agent_egress_firewall_cmd
+
+        cmd = _agent_egress_firewall_cmd("agent")
+        accept = cmd.index(
+            '-I OUTPUT 1 -o lo -m owner --uid-owner "$agent_uid" -j ACCEPT'
+        )
+        guard = cmd.index("BF daemon-guard")
+        # Inserted at the top after the ACCEPT, the REJECTs come first.
+        assert guard > accept
+        subprocess.run(["bash", "-n", "-c", cmd], check=True)
+
+    async def test_setup_sandbox_user_installs_the_guard(self):
+        from benchflow.sandbox.lockdown import setup_sandbox_user
+
+        env = MagicMock()
+        env.exec = AsyncMock(
+            return_value=MagicMock(
+                return_code=0, stdout="BF daemon-guard ports=2280 status=0"
+            )
+        )
+        await setup_sandbox_user(env, "agent", "/app")
+        cmds = [c.args[0] for c in env.exec.await_args_list]
+        guard = [c for c in cmds if "BF daemon-guard" in c]
+        assert len(guard) == 1
+        assert "--dport $p -m owner" in guard[0] or '--dport "$p"' in guard[0]
+        call = next(
+            c for c in env.exec.await_args_list if "BF daemon-guard" in c.args[0]
+        )
+        assert call.kwargs.get("user") == "root"
