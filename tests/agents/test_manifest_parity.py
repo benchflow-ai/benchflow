@@ -72,6 +72,14 @@ from benchflow.agents.registry import AgentConfig
 #   "no web" run would keep agy's server-side web search.
 _CORE_ONLY_EXCEPTIONS = frozenset({"omnigent-pi", "antigravity"})
 
+# Core agents that must NOT get a manifest in benchflow-ai/agents, by name or by
+# alias. A manifest mirroring core would pass the parity checks above, but
+# released 0.7.x versions would auto-load it from agents@main without core's
+# _SHIM_ONLY web-tool and MCP policy (see antigravity above). Lift an entry only
+# once that policy can travel with the manifest.
+_MANIFEST_FORBIDDEN = frozenset({"antigravity"})
+_MANIFEST_FORBIDDEN_ALIASES = frozenset({"antigravity", "agy"})
+
 # Import roots so the child interpreter finds benchflow whether it is installed
 # (CI) or only on PYTHONPATH from a worktree (dev VM) — mirrors the approach in
 # test_manifest_wiring.py.
@@ -194,6 +202,30 @@ def test_only_documented_core_agents_lack_a_manifest() -> None:
         "These are the documented exceptions (see _CORE_ONLY_EXCEPTIONS). Every "
         "other core agent must ship a manifest in benchflow-ai/agents; a new "
         "unmanifested core agent must add one (or extend the exceptions on purpose)."
+    )
+
+
+@pytest.mark.skipif(not os.environ.get(MANIFEST_DIR_ENV), reason=_SKIP_REASON)
+def test_core_only_agents_have_no_manifest() -> None:
+    """No manifest may claim a forbidden core-only agent's name or alias.
+
+    The subset check above can only shrink when a manifest is added, so it would
+    stay green if someone mirrored antigravity into benchflow-ai/agents. This
+    check fails instead (see _MANIFEST_FORBIDDEN for why).
+    """
+    loaded = _live_manifests()
+    by_name = sorted(set(loaded) & _MANIFEST_FORBIDDEN)
+    by_alias = sorted(
+        (name, alias)
+        for name, m in loaded.items()
+        for alias in m.aliases
+        if alias in _MANIFEST_FORBIDDEN_ALIASES
+    )
+    assert not by_name and not by_alias, (
+        f"forbidden manifests in benchflow-ai/agents: names {by_name}, "
+        f"aliases {by_alias}. These agents stay core-only until their _SHIM_ONLY "
+        "web-tool and MCP policy can travel with a manifest; released 0.7.x would "
+        "auto-load the manifest without it (see _MANIFEST_FORBIDDEN)."
     )
 
 
