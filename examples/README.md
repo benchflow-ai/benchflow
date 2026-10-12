@@ -15,7 +15,7 @@ e2e/run.sh --bench target/release/bench --backend docker --tier full -k examples
 | Folder | What it holds |
 |---|---|
 | `tasks/` | One task per feature or failure, each a few lines long |
-| `agents/` | Scripted attempts for `-a script:<file>`: they run in the sandbox like the oracle |
+| `agents/` | Scripted attempts for `-a script:<file>`: they run in the sandbox like the oracle. `backend.py` (an outside service for `-a external`) and `refusing_provider.py` (a provider that refuses every request) run on this machine |
 | `skills/` | A skill folder for `--skill` |
 | `job-files/` | Job files for `-c`, in TOML, YAML, and JSON |
 | `datasets/mini/` | A local `dataset.toml` with two tasks |
@@ -69,6 +69,7 @@ Each refusal's reason is in the trial's `result.json` (`problem.message`) and in
 | E23b | The image build outlives its 15 s | `bench run tasks/build-timeout` | errored, `R102`, recorded as the sandbox's and transient (a slow network looks the same), so it is retried. Daytona allows 2 minutes more for its builder and leaves the builder running to finish (a known limit); a retry waits for it rather than starting another |
 | E23 | The Dockerfile fails | `bench run tasks/broken-image` | errored, `R101`, the task's |
 | E65 | A readiness check that never passes | `bench run tasks/ready-never` | errored, `R105`, the task's, before any agent starts (`ready` follows Compose's healthcheck: `timeout` is per check, then `retries`) |
+| E71 | A model provider that refuses every request | `mkdir -p scratch && python3 agents/refusing_provider.py scratch/port.txt &`, then `BENCHFLOW_NATIVE_BASE_URL=http://127.0.0.1:$(cat scratch/port.txt)/v1 MIMO_API_KEY=placeholder bench run tasks/hello -a builtin -m mimo/mimo-v2.6-flash` | errored, `R214`, the model provider's; never a scored 0. No key is needed: the builtin loop calls the model from this machine, and `BENCHFLOW_NATIVE_BASE_URL` (read only from the shell, as https or http to this machine) sends its calls to the local service, which answers every one with HTTP 400 |
 | E24 | More time for slow agents | `bench run tasks/agent-timeout --agent-timeout-multiplier 9` | reward 1 |
 | E59 | A model-agent flag with a script | `bench run tasks/hello -a script:agents/slow.sh --idle-timeout 10s` | a note: `--idle-timeout` has no effect on a script, which runs to its task's timeout (reward 1 after 60 s) |
 | E39 | Interrupt and resume | `bench run tasks/hello -a script:agents/slow.sh --job slow`, Ctrl-C twice, then the same command | the first exits 1 with the trial stopped (`R001`, not counted); the second runs it again: reward 1 |
@@ -95,8 +96,7 @@ These run on MiMo v2.6 Flash (`MIMO_API_KEY`). Model runs are not deterministic;
 | E45 | BenchFlow's own tool loop | `bench run tasks/hello -a builtin -m mimo/mimo-v2.6-flash --max-tool-calls 10` | reward 1 |
 | E46 | Terminus-2 | `bench run tasks/hello -a terminus-2 -m mimo/mimo-v2.6-flash` | scored |
 | E47 | An SDK runner | `bench run tasks/hello -a openhands-sdk -m mimo/mimo-v2.6-flash` | scored |
-| E71 | A provider that rejects every request | `bench run tasks/hello -a codex -m mimo/mimo-v2.6-flash` (over ACP, where `--ak web_search=disabled` is refused: codex-acp does not take `-c` options) | errored, `R214`, the model provider's: MiMo answers Codex's `web_search` tool with HTTP 400; never a scored 0 |
-| E72 | The same agent over ACP with its settings in `CODEX_CONFIG` | `bench run tasks/hello -a codex -m mimo/mimo-v2.6-flash --env 'CODEX_CONFIG={"web_search":"disabled"}'` | scored (reward 1 in our run): codex-acp reads `CODEX_CONFIG`, not `-c` options |
+| E72 | Codex over ACP with its settings in `CODEX_CONFIG` (`--ak web_search=disabled` is refused there) | `bench run tasks/hello -a codex -m mimo/mimo-v2.6-flash --env 'CODEX_CONFIG={"web_search":"disabled"}'` | scored (reward 1 in our run): codex-acp reads `CODEX_CONFIG`, not `-c` options |
 | E69 | A computer-use agent on a virtual desktop | `bench run tasks/desktop-hello -a computer-1 -m mimo/mimo-v2.6-flash` | the agent opens a page in Chromium, types, clicks, and reports the code it shows: reward 1; each screenshot in `agent/screenshots/` |
 | E70 | DSPy's recursive language model | `bench run tasks/hello -a dspy-rlm -m mimo/mimo-v2.6-flash` | reward 1 |
 | E48 | Task skills | `bench run tasks/skills -a opencode -m mimo/mimo-v2.6-flash` | reward 1 (the answer is only in the skill); with `--no-task-skills`, reward 0 |

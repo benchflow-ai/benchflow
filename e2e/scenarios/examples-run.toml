@@ -1,4 +1,4 @@
-# The examples folder on a sandbox, no model: formats, scripted agents, reward shapes, timeouts, stages, mounts, outputs, separate verifiers (examples/README.md).
+# The examples folder on a sandbox, no model: formats, scripted agents, reward shapes, timeouts, a provider that refuses every request, stages, mounts, outputs, separate verifiers (examples/README.md).
 tier = "full"
 needs = ["sandbox"]
 tasks = ["examples/hello", "examples/hello-split", "examples/hello-08", "examples/stages", "examples/mount-outputs", "examples/separate-verifier",
@@ -125,3 +125,11 @@ files = ["formats-hf/data/train.jsonl", "formats-hf/README.md"]
 run = ["export", "jobs/formats", "--format", "otel", "formats.otel.jsonl"]
 exit = 0
 files = ["formats.otel.jsonl"]
+
+[[step]]
+name = "E71 a provider that rejects every request (a local endpoint answering 400, no key): the trial is the provider's (R214), not a scored 0"
+sh = "python3 {examples}/agents/refusing_provider.py provider-port.txt > provider.log 2>&1 & pid=$!; for i in 1 2 3 4 5; do [ -s provider-port.txt ] && break; sleep 1; done; BENCHFLOW_NATIVE_BASE_URL=http://127.0.0.1:$(cat provider-port.txt)/v1 MIMO_API_KEY=placeholder {bench} run tasks/hello -a builtin -m mimo/mimo-v2.6-flash -s {backend} --job provider-rejected; code=$?; kill $pid; cat provider.log; exit $code"
+exit = 1
+timeout = 600
+output_has = ['model calls for mimo go to 127\.0\.0\.1:\d+ \(BENCHFLOW_NATIVE_BASE_URL\)', 'POST /v1/chat/completions -> 400', 'mimo answered 400: this endpoint refuses every request']
+trials = [{ job = "provider-rejected", task = "hello", status = "errored", code = "R214", owner = "model" }]

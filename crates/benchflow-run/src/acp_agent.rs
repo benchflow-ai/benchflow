@@ -728,7 +728,7 @@ pub(crate) fn event_sink(
 }
 
 fn engine_usage(u: AcpUsage) -> Usage {
-    Usage {
+    let mut usage = Usage {
         input_tokens: u.input_tokens.unwrap_or(0),
         output_tokens: u.output_tokens.unwrap_or(0),
         cache_read_tokens: u.cached_read_tokens.unwrap_or(0),
@@ -737,8 +737,18 @@ fn engine_usage(u: AcpUsage) -> Usage {
         source: "acp".into(),
         cost_source: None,
         cost_note: None,
+    };
+    // ACP's usage has no price. A run through the forwarder gets the
+    // provider's (`forwarding::provider_usage` replaces this note); one on
+    // a subscription login or the agent's own key says why it has none.
+    if usage.total() > 0 {
+        usage.cost_note = Some(UNPRICED_ACP.into());
     }
+    usage
 }
+
+/// Why an ACP run that used tokens outside the forwarder has no cost.
+const UNPRICED_ACP: &str = "the agent reports tokens but not their price, and the run did not go through BenchFlow's forwarder (a subscription login, or the agent's own key), so the cost is unknown";
 
 /// A failed exchange as a trial problem: its code, whose it is, and what to
 /// do. `prompting` says whether a prompt had been sent (a crash before that
@@ -988,6 +998,21 @@ fn with_detail(p: Problem, stderr_tail: String) -> Problem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unpriced_acp_run_says_why_it_has_no_cost() {
+        // A Claude Code run on a subscription login: tokens, no price.
+        let u = engine_usage(AcpUsage {
+            input_tokens: Some(565_300),
+            output_tokens: Some(14_200),
+            ..AcpUsage::default()
+        });
+        assert_eq!(u.cost_usd, None);
+        let note = u.cost_note.expect("a cost note");
+        assert!(note.contains("subscription login"), "{note}");
+        // No tokens, nothing to explain.
+        assert_eq!(engine_usage(AcpUsage::default()).cost_note, None);
+    }
 
     #[test]
     fn a_missing_login_names_the_vendor_account() {

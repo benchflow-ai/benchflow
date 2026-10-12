@@ -135,15 +135,6 @@ timeout = 1200
 trials = [{ job = "dspy-rlm", task = "hello", status = "scored" }]
 
 [[step]]
-name = "E71 a provider that rejects every request: Codex over ACP sends a web_search tool MiMo does not take; the trial is the provider's (R214), not a scored 0"
-run = ["run", "tasks/hello", "-a", "codex", "-m", "mimo/mimo-v2.6-flash", "-s", "{backend}", "--job", "codex-rejected"]
-env = { HOME = "{work}/home" }
-exit = 1
-timeout = 900
-output_has = ['the model provider rejected every request the agent sent \(1 × HTTP 400\)']
-trials = [{ job = "codex-rejected", task = "hello", status = "errored", code = "R214", owner = "model" }]
-
-[[step]]
 name = "E72 over ACP, Codex takes its settings from CODEX_CONFIG: with web search off, MiMo takes its requests"
 run = ["run", "tasks/hello", "-a", "codex", "-m", "mimo/mimo-v2.6-flash", "--env", "CODEX_CONFIG={\"web_search\":\"disabled\"}", "-s", "{backend}", "--job", "codex-acp-config"]
 env = { HOME = "{work}/home" }

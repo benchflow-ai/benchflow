@@ -538,6 +538,27 @@ fn only_dots(part: &str) -> bool {
     !part.is_empty() && part.chars().all(|c| c == '.')
 }
 
+/// `path` as a literal for a `sparse-checkout set --no-cone` pattern, which
+/// git reads as a gitignore glob: `\`, `*`, `?` and `[` get a backslash, and
+/// so does a trailing space (else dropped). Unescaped, `tasks/a[1]` matched
+/// `tasks/a1` and left the folder asked for out (review FETCH-E-A, 1).
+/// `sparse-checkout list` gives the escaped form back, so the union with
+/// earlier patterns still finds its duplicates.
+fn sparse_literal(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if matches!(c, '\\' | '*' | '?' | '[') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    if out.ends_with(' ') {
+        out.pop();
+        out.push_str("\\ ");
+    }
+    out
+}
+
 /// A sparse checkout of one repository at one commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCheckout {
@@ -646,12 +667,21 @@ pub async fn fetch_git(
                 .map_err(err)?;
         }
     } else if sparse || !started {
-        // Keep the folders earlier datasets asked for at this commit.
+        // Keep the folders earlier datasets asked for at this commit: only
+        // lines BenchFlow writes (each starts with `/`), so a `!` line an
+        // earlier build let a newline in a path inject is dropped and the
+        // checkout heals (review CTRL-PATHS-B).
         let mut patterns: Vec<String> = git(&["sparse-checkout", "list"], Some(&dir))
             .await
-            .map(|out| out.lines().map(str::to_string).collect())
+            .map(|out| {
+                out.lines()
+                    .filter(|l| l.starts_with('/'))
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
         for p in &wanted {
+            let p = sparse_literal(p);
             for pat in [format!("/{p}/"), format!("/{p}")] {
                 if !patterns.contains(&pat) {
                     patterns.push(pat);
@@ -821,6 +851,14 @@ fn unsafe_git_value(repo: &str, reference: &str, paths: &[String]) -> Result<(),
         return Err(err(format!(
             "the path `{p}` leaves the repository or names no folder in it (absolute, or with \
              a part made only of dots)"
+        )));
+    }
+    // A newline would add lines of its own to the checkout's sparse
+    // patterns (a `!` line hides files other datasets' folders need), and
+    // no pattern can escape one (review E4-GLOBS-B).
+    if let Some(p) = paths.iter().find(|p| p.chars().any(char::is_control)) {
+        return Err(err(format!(
+            "the path {p:?} has a control character, which no task folder name may hold"
         )));
     }
     Ok(())
@@ -1319,6 +1357,75 @@ mod tests {
         assert!(both(&whole.dir), "still whole after a folder of it");
     }
 
+    /// Review FETCH-E-A, 1: sparse patterns are gitignore globs, so the
+    /// folder `tasks/a[1]` was fetched as `tasks/a1` and reported missing.
+    /// Folders named with glob characters are fetched exactly, alone and
+    /// together with folders asked for earlier.
+    #[tokio::test]
+    async fn a_folder_named_like_a_glob_is_fetched_exactly() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        for p in ["tasks/a[1]", "tasks/a1", "tasks/c*d", "tasks/cxd"] {
+            std::fs::create_dir_all(repo.join(p)).unwrap();
+            std::fs::write(repo.join(p).join("task.md"), p).unwrap();
+        }
+        run(&["init", "-q"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "tasks"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let one = fetch_git(&url, &sha, &["tasks/a[1]".into()], &cache)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(one.dir.join("tasks/a[1]/task.md")).unwrap(),
+            "tasks/a[1]"
+        );
+        assert!(
+            !one.dir.join("tasks/a1").exists(),
+            "exactly the folder asked for"
+        );
+        // A later request keeps the earlier folder (the union reads the
+        // escaped patterns back) and adds its own, again exactly.
+        let two = fetch_git(&url, &sha, &["tasks/c*d".into()], &cache)
+            .await
+            .unwrap();
+        assert_eq!(two.dir, one.dir);
+        assert!(two.dir.join("tasks/a[1]/task.md").is_file());
+        assert!(two.dir.join("tasks/c*d/task.md").is_file());
+        assert!(!two.dir.join("tasks/cxd").exists());
+        assert!(!two.dir.join("tasks/a1").exists());
+    }
+
+    #[test]
+    fn sparse_patterns_escape_glob_characters() {
+        assert_eq!(sparse_literal("tasks/a[1]"), r"tasks/a\[1]");
+        assert_eq!(sparse_literal(r"x\y*z?"), r"x\\y\*z\?");
+        assert_eq!(sparse_literal("b "), r"b\ ");
+        assert_eq!(sparse_literal("plain/name"), "plain/name");
+    }
+
     /// Review FETCH-D-A: a dataset asking for a parent of a folder an
     /// earlier dataset asked for (`tasks` after `tasks/a`) gets the whole
     /// parent, not the earlier folder alone; and a repository git never
@@ -1538,5 +1645,87 @@ mod tests {
         assert_eq!(r.path.as_deref(), Some("a/b"));
         let r = parse_remote("https://github.com/org/repo.git").unwrap();
         assert_eq!(r.repo, "org/repo");
+    }
+
+    /// Review E4-GLOBS-B: a newline in a folder name would add lines of
+    /// its own to the checkout's sparse patterns (a `!` line hides files
+    /// another dataset's folder needs), so a path with any control
+    /// character is refused before git runs.
+    #[tokio::test]
+    async fn a_path_with_a_control_character_is_refused() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        for path in ["tasks/zz\n!/tasks/x/y/task.md", "tasks/a\rb", "tasks/a\tb"] {
+            let e = fetch_git("file:///nowhere/repo", sha, &[path.into()], &cache)
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("control character"), "{path:?}: {e}");
+        }
+        assert!(!cache.join("sources").exists(), "nothing was fetched");
+    }
+
+    /// Review CTRL-PATHS-B: a cached checkout whose sparse patterns an
+    /// earlier build let a newline in a path poison (a `!` line hiding a
+    /// file of another folder) heals on the next fetch of that folder.
+    #[tokio::test]
+    async fn a_poisoned_sparse_pattern_is_dropped() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        std::fs::create_dir_all(repo.join("tasks/x/y")).unwrap();
+        std::fs::write(repo.join("tasks/x/task.md"), "x").unwrap();
+        std::fs::write(repo.join("tasks/x/y/test.sh"), "t").unwrap();
+        run(&["init", "-q"]);
+        run(&["config", "uploadpack.allowFilter", "true"]);
+        run(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "x"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let co = fetch_git(&url, &sha, &["tasks/x".into()], &cache)
+            .await
+            .unwrap();
+        // What an earlier build's injected line leaves: a negation that
+        // hides one file, and that file skipped in the working tree.
+        let sparse = co.dir.join(".git/info/sparse-checkout");
+        let mut lines = std::fs::read_to_string(&sparse).unwrap();
+        lines.push_str("!/tasks/x/y/test.sh\n");
+        std::fs::write(&sparse, lines).unwrap();
+        let reapply = std::process::Command::new("git")
+            .args(["sparse-checkout", "reapply"])
+            .current_dir(&co.dir)
+            .output()
+            .unwrap();
+        assert!(reapply.status.success());
+        assert!(!co.dir.join("tasks/x/y/test.sh").exists());
+        let again = fetch_git(&url, &sha, &["tasks/x".into()], &cache)
+            .await
+            .unwrap();
+        assert!(
+            again.dir.join("tasks/x/y/test.sh").is_file(),
+            "the injected line is gone and the file is back"
+        );
     }
 }

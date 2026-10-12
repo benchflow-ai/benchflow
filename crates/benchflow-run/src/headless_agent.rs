@@ -499,7 +499,12 @@ fn engine_usage(u: AgentUsage, cost: Option<f64>) -> Usage {
         // The agent's own figure; a run through the forwarder replaces it
         // with the provider's (`forwarding::provider_usage`).
         cost_source: cost.map(|_| COST_BY_AGENT.into()),
-        cost_note: None,
+        // As an ACP run: say why tokens have no cost.
+        cost_note: (cost.is_none()
+            && u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0) > 0)
+            .then(|| {
+                "the agent reported tokens but no cost, and the run did not go through BenchFlow's forwarder, so the cost is unknown".into()
+            }),
     }
 }
 
@@ -551,6 +556,20 @@ pub fn headless_problem(e: &HeadlessError, agent: &str, stderr_tail: String) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unpriced_headless_run_says_why_it_has_no_cost() {
+        let used = AgentUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(50),
+            ..AgentUsage::default()
+        };
+        let note = engine_usage(used, None).cost_note.expect("a cost note");
+        assert!(note.contains("forwarder"), "{note}");
+        // A cost of the agent's own, or no tokens: nothing to explain.
+        assert_eq!(engine_usage(used, Some(0.01)).cost_note, None);
+        assert_eq!(engine_usage(AgentUsage::default(), None).cost_note, None);
+    }
 
     #[test]
     fn a_missing_login_names_the_vendor_account() {
