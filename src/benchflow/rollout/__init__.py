@@ -1451,11 +1451,14 @@ class Rollout:
 
         if is_scripted_agent(cfg.primary_agent):
             if cfg.sandbox_user:
+                # Nothing runs as the sandbox user (the oracle runs as root),
+                # so the sandbox-daemon guard has nobody to keep away.
                 await self._planes.setup_sandbox_user(
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
                     timeout_sec=cfg.sandbox_setup_timeout,
+                    guard_daemon=False,
                 )
             await verifier_baseline()
             await self._planes.deploy_skills(

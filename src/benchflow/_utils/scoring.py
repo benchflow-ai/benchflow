@@ -289,7 +289,9 @@ def classify_error(error: str | None) -> str | None:
 _UNRECOVERABLE_STARTUP_RES = (
     re.compile(r"path does not exist: "),
     # The image cannot keep the agent from Daytona's root daemon.
-    re.compile(r"agent user could not be kept away from daytona"),
+    re.compile(
+        r"agent user could not be kept away from daytona.s root toolbox daemon: (?:the image has no iptables and no package manager|the image has ipv6 but no ip6tables)"
+    ),
     re.compile(r'failed to calculate checksum of ref \S+ "[^"]+": not found'),
     re.compile(r"docker daemon unreachable: "),
     re.compile(r"remote docker host unreachable: "),

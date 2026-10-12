@@ -1,7 +1,9 @@
 """Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, lockdown_paths."""
 
+import json
 import shutil
 import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -492,33 +494,162 @@ class TestAgentEgressFirewall:
         env.exec.assert_not_awaited()
 
 
+FAKE_IPTABLES = r'''#!{python}
+"""A stateful iptables: rules per table and chain in a JSON file."""
+import json, os, sys
+state_path = os.environ["FW_STATE"]
+name = os.path.basename(sys.argv[0])
+args = [a for a in sys.argv[1:] if a != "-w"]
+with open(os.environ["FW_LOG"], "a") as log:
+    log.write(name + " " + " ".join(sys.argv[1:]) + "\n")
+if os.environ.get("FW_BROKEN") == name:
+    sys.exit(1)
+state = json.load(open(state_path)) if os.path.exists(state_path) else {{}}
+table = "filter"
+if args[:1] == ["-t"]:
+    table, args = args[1], args[2:]
+key = name.replace("-legacy", "") + ":" + table
+op, chain, rest = args[0], (args[1] if len(args) > 1 else ""), args[2:]
+rules = state.setdefault(key, {{}}).setdefault(chain, [])
+if op in ("-S", "-L", "-nL"):
+    sys.exit(0)
+if op == "-I" and rest and rest[0].isdigit():
+    pos, rest = int(rest[0]) - 1, rest[1:]
+else:
+    pos = 0
+spec = " ".join(rest)
+if op == "-C":
+    sys.exit(0 if spec in rules else 1)
+if op == "-D":
+    if spec in rules:
+        rules.remove(spec)
+        json.dump(state, open(state_path, "w"))
+        sys.exit(0)
+    sys.exit(1)
+if op == "-I":
+    rules.insert(pos, spec)
+elif op == "-A":
+    rules.append(spec)
+json.dump(state, open(state_path, "w"))
+'''
+
+
+def _verdict(state, fam="iptables", uid=1000, dport=2280, out="lo"):
+    """What the kernel does with the agent's packet: mangle, then filter."""
+
+    def matches(spec):
+        t = spec.split()
+        ok = True
+        for i, w in enumerate(t):
+            if w == "-o" and t[i + 1] != out:
+                ok = False
+            if w == "--dport" and int(t[i + 1]) != dport:
+                ok = False
+            if w == "--uid-owner":
+                neg = t[i - 1] == "!"
+                ok = ok and ((int(t[i + 1]) == uid) != neg)
+        return ok
+
+    for table in ("mangle", "filter"):
+        for spec in state.get(f"{fam}:{table}", {}).get("OUTPUT", []):
+            if matches(spec):
+                target = spec.split("-j", 1)[1].split()[0]
+                if target in ("DROP", "REJECT"):
+                    return "blocked"
+                if target == "ACCEPT":
+                    break
+    return "passes"
+
+
+FAKE_IPTABLES = r'''#!{python}
+"""A stateful iptables: rules per table and chain in a JSON file."""
+import json, os, sys
+state_path = os.environ["FW_STATE"]
+name = os.path.basename(sys.argv[0])
+args = [a for a in sys.argv[1:] if a != "-w"]
+with open(os.environ["FW_LOG"], "a") as log:
+    log.write(name + " " + " ".join(sys.argv[1:]) + "\n")
+if os.environ.get("FW_BROKEN") == name:
+    sys.exit(1)
+state = json.load(open(state_path)) if os.path.exists(state_path) else {{}}
+table = "filter"
+if args[:1] == ["-t"]:
+    table, args = args[1], args[2:]
+key = name.replace("-legacy", "") + ":" + table
+op, chain, rest = args[0], (args[1] if len(args) > 1 else ""), args[2:]
+rules = state.setdefault(key, {{}}).setdefault(chain, [])
+if op in ("-S", "-L", "-nL"):
+    sys.exit(0)
+if op == "-I" and rest and rest[0].isdigit():
+    pos, rest = int(rest[0]) - 1, rest[1:]
+else:
+    pos = 0
+spec = " ".join(rest)
+if op == "-C":
+    sys.exit(0 if spec in rules else 1)
+if op == "-D":
+    if spec in rules:
+        rules.remove(spec)
+        json.dump(state, open(state_path, "w"))
+        sys.exit(0)
+    sys.exit(1)
+if op == "-I":
+    rules.insert(pos, spec)
+elif op == "-A":
+    rules.append(spec)
+json.dump(state, open(state_path, "w"))
+'''
+
+
+def _verdict(state, fam="iptables", uid=1000, dport=2280, out="lo"):
+    """What the kernel does with the agent's packet: mangle, then filter."""
+
+    def matches(spec):
+        t = spec.split()
+        ok = True
+        for i, w in enumerate(t):
+            if w == "-o" and t[i + 1] != out:
+                ok = False
+            if w == "--dport" and int(t[i + 1]) != dport:
+                ok = False
+            if w == "--uid-owner":
+                neg = t[i - 1] == "!"
+                ok = ok and ((int(t[i + 1]) == uid) != neg)
+        return ok
+
+    for table in ("mangle", "filter"):
+        for spec in state.get(f"{fam}:{table}", {}).get("OUTPUT", []):
+            if matches(spec):
+                target = spec.split("-j", 1)[1].split()[0]
+                if target in ("DROP", "REJECT"):
+                    return "blocked"
+                if target == "ACCEPT":
+                    break
+    return "passes"
+
+
 class TestSandboxDaemonGuard:
     """The agent user cannot reach Daytona's root daemon, or the run is refused."""
 
     @staticmethod
-    def _fake_bin(tmp_path, ip6=True):
+    def _bin(tmp_path, tools=("iptables", "ip6tables"), extra=None):
         bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        log = tmp_path / "fw.log"
-        for name in ["iptables"] + (["ip6tables"] if ip6 else []):
+        bin_dir.mkdir(exist_ok=True)
+        for name in tools:
             p = bin_dir / name
-            # -D finds nothing (exit 1), every other call succeeds.
-            p.write_text(
-                "#!/bin/sh\n"
-                f'echo "{name} $*" >> {log}\n'
-                'for a in "$@"; do [ "$a" = -D ] && exit 1; done\n'
-                "exit 0\n"
-            )
+            p.write_text(FAKE_IPTABLES.format(python=sys.executable))
+            p.chmod(0o755)
+        for name, body in (extra or {}).items():
+            p = bin_dir / name
+            p.write_text("#!/bin/sh\n" + body)
             p.chmod(0o755)
         idp = bin_dir / "id"
         idp.write_text("#!/bin/sh\necho 1000\n")
         idp.chmod(0o755)
-        return bin_dir, log
+        return bin_dir
 
     @staticmethod
-    def _fake_proc(
-        tmp_path, pid1="/usr/local/bin/daytona", listen_port=None, ipv6=True
-    ):
+    def _proc(tmp_path, pid1="/usr/local/bin/daytona", listen_port=None, ipv6=True):
         proc = tmp_path / "proc"
         (proc / "net").mkdir(parents=True)
         (proc / "1" / "fd").mkdir(parents=True)
@@ -536,51 +667,137 @@ class TestSandboxDaemonGuard:
             )
         return proc
 
-    def _run(self, tmp_path, shell="bash", **kw):
+    def _sh(self, tmp_path, cmd, bin_dir, shell="bash", broken=""):
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "FW_STATE": str(tmp_path / "fw.json"),
+            "FW_LOG": str(tmp_path / "fw.log"),
+            "FW_BROKEN": broken,
+        }
+        return subprocess.run(
+            [shell, "-c", cmd], capture_output=True, text=True, env=env, check=True
+        ).stdout
+
+    def _state(self, tmp_path):
+        p = tmp_path / "fw.json"
+        return json.loads(p.read_text()) if p.exists() else {}
+
+    def _calls(self, tmp_path):
+        p = tmp_path / "fw.log"
+        return p.read_text().splitlines() if p.exists() else []
+
+    def _guard(
+        self,
+        tmp_path,
+        shell="bash",
+        tools=("iptables", "ip6tables"),
+        extra=None,
+        broken="",
+        **kw,
+    ):
         from benchflow.sandbox.lockdown import _daemon_guard_cmd
 
-        bin_dir, log = self._fake_bin(tmp_path, ip6=kw.pop("ip6", True))
-        proc = self._fake_proc(tmp_path, **kw)
-        out = subprocess.run(
-            [shell, "-c", _daemon_guard_cmd("agent", proc=str(proc))],
-            capture_output=True,
-            text=True,
-            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
-            check=True,
-        ).stdout
-        return out, log.read_text().splitlines() if log.exists() else []
+        bin_dir = self._bin(tmp_path, tools, extra)
+        proc = self._proc(tmp_path, **kw)
+        return self._sh(
+            tmp_path, _daemon_guard_cmd("agent", proc=str(proc)), bin_dir, shell, broken
+        )
 
-    def test_rejects_the_agent_on_every_daemon_port_on_any_interface(self, tmp_path):
-        out, calls = self._run(tmp_path)
+    def test_drops_the_agent_on_every_daemon_port_in_the_mangle_table(self, tmp_path):
+        out = self._guard(tmp_path)
         assert "status=0" in out
-        for fw in ("iptables", "ip6tables"):
+        state = self._state(tmp_path)
+        for fam in ("iptables", "ip6tables"):
+            rules = state[f"{fam}:mangle"]["OUTPUT"]
             for port in (2280, 22220, 22222, 33333):
                 # No `-o lo`: the gateway or another address is refused too.
                 assert (
-                    f"{fw} -w -I OUTPUT 1 -p tcp --dport {port} -m owner "
-                    "--uid-owner 1000 -j REJECT --reject-with tcp-reset"
-                ) in calls, calls
-        assert len([c for c in calls if " -I " in c]) == 8
+                    f"-p tcp --dport {port} -m owner --uid-owner 1000 -j DROP" in rules
+                )
+            assert len(rules) == 4
+        # Running it again adds nothing and removes nothing.
+        self._guard_again(tmp_path)
+        assert len(self._state(tmp_path)["iptables:mangle"]["OUTPUT"]) == 4
+
+    def _guard_again(self, tmp_path):
+        from benchflow.sandbox.lockdown import _daemon_guard_cmd
+
+        self._sh(
+            tmp_path,
+            _daemon_guard_cmd("agent", proc=str(tmp_path / "proc")),
+            tmp_path / "bin",
+        )
+
+    def test_the_egress_firewall_never_opens_a_window(self, tmp_path):
+        # The guard at setup, then the firewall with its loopback ACCEPT at
+        # the top of filter: at no point does the agent's packet pass.
+        from benchflow.sandbox.lockdown import _agent_egress_firewall_cmd
+
+        self._guard(tmp_path)
+        assert _verdict(self._state(tmp_path)) == "blocked"
+        self._sh(tmp_path, _agent_egress_firewall_cmd("agent"), tmp_path / "bin")
+        state = self._state(tmp_path)
+        assert any("ACCEPT" in r for r in state["iptables:filter"]["OUTPUT"])
+        assert _verdict(state) == "blocked"
+        assert _verdict(state, fam="ip6tables") == "blocked"
+        # Other loopback ports stay open to the agent.
+        assert _verdict(state, dport=8080) == "passes"
 
     def test_a_port_the_daemon_listens_on_is_guarded_too(self, tmp_path):
-        out, calls = self._run(tmp_path, listen_port=8080)
+        out = self._guard(tmp_path, listen_port=8080)
         assert "ports=2280 8080 22220 22222 33333" in out
-        assert any("--dport 8080" in c and c.startswith("iptables") for c in calls)
 
     def test_a_process_1_that_is_not_the_daemon_adds_no_port(self, tmp_path):
-        # A task whose own server is process 1 keeps its port.
-        out, calls = self._run(tmp_path, pid1="/usr/bin/python3.11", listen_port=8000)
+        out = self._guard(tmp_path, pid1="/usr/bin/python3.11", listen_port=8000)
         assert "ports=2280 22220 22222 33333 " in out
-        assert not any("--dport 8000" in c for c in calls)
 
     def test_discovery_works_under_dash(self, tmp_path):
         if not shutil.which("dash"):
             pytest.skip("no dash here")
-        out, _ = self._run(tmp_path, shell="dash", listen_port=8080)
+        out = self._guard(tmp_path, shell="dash", listen_port=8080)
         assert "ports=2280 8080 22220 22222 33333" in out
 
+    def test_no_iptables_and_no_package_manager_is_status_2(self, tmp_path):
+        out = self._guard(tmp_path, tools=())
+        assert "status=2" in out
+
+    def test_a_failed_install_is_status_5_with_its_words(self, tmp_path):
+        apt = "echo 'E: Could not get lock /var/lib/dpkg/lock-frontend' >&2; exit 100\n"
+        out = self._guard(tmp_path, tools=(), extra={"apt-get": apt})
+        assert "status=5" in out
+        assert "BF daemon-guard install: E: Could not get lock" in out
+
+    def test_alpine_gets_ip6tables_too(self, tmp_path):
+        # Alpine ships ip6tables apart from iptables.
+        apk = (
+            'for t in iptables ip6tables; do cp "$(dirname "$0")/fw-template" "$(dirname "$0")/$t"; '
+            'chmod 755 "$(dirname "$0")/$t"; done\n'
+        )
+        bin_dir = self._bin(tmp_path, tools=("iptables",), extra={"apk": apk})
+        (bin_dir / "fw-template").write_text(
+            FAKE_IPTABLES.format(python=sys.executable)
+        )
+        from benchflow.sandbox.lockdown import _daemon_guard_cmd
+
+        proc = self._proc(tmp_path)
+        out = self._sh(tmp_path, _daemon_guard_cmd("agent", proc=str(proc)), bin_dir)
+        assert "status=0" in out
+        assert len(self._state(tmp_path)["ip6tables:mangle"]["OUTPUT"]) == 4
+
+    def test_the_legacy_backend_is_used_where_nft_does_not_work(self, tmp_path):
+        out = self._guard(
+            tmp_path,
+            tools=("iptables", "iptables-legacy", "ip6tables", "ip6tables-legacy"),
+            broken="iptables",
+        )
+        assert "status=0" in out
+        assert any(
+            c.startswith("iptables-legacy -w -t mangle -I")
+            for c in self._calls(tmp_path)
+        )
+
     def test_ipv6_without_ip6tables_is_reported(self, tmp_path):
-        out, _ = self._run(tmp_path, ip6=False)
+        out = self._guard(tmp_path, tools=("iptables",))
         assert "status=3" in out
 
     @staticmethod
@@ -601,49 +818,57 @@ class TestSandboxDaemonGuard:
             env.exec.assert_not_awaited()
         env = self._env("container")
         await guard_sandbox_daemon(env, "agent")
-        (cmd,) = env.exec.await_args.args
-        assert "BF daemon-guard" in cmd
+        assert "BF daemon-guard" in env.exec.await_args.args[0]
         assert env.exec.await_args.kwargs["user"] == "root"
 
+    async def test_a_run_that_runs_nothing_as_the_user_needs_no_guard(self):
+        # The oracle runs as root: an image without iptables must not refuse it.
+        from benchflow.rollout_planes import DefaultRolloutPlanes
+        from benchflow.sandbox.lockdown import setup_sandbox_user
+
+        env = self._env("container", stdout="BF daemon-guard ports=2280 status=2")
+        await setup_sandbox_user(env, "agent", "/app", guard_daemon=False)
+        assert all("BF daemon-guard" not in c.args[0] for c in env.exec.await_args_list)
+        env = self._env("container", stdout="BF daemon-guard ports=2280 status=2")
+        await DefaultRolloutPlanes().setup_sandbox_user(
+            env, "agent", workspace="/app", guard_daemon=False
+        )
+        assert all("BF daemon-guard" not in c.args[0] for c in env.exec.await_args_list)
+
     @pytest.mark.parametrize(
-        "line, why",
+        "out, why, lasting",
         [
-            ("BF daemon-guard ports=2280 status=2", "no iptables"),
-            ("BF daemon-guard ports=2280 status=1", "rule could not be added"),
-            ("BF daemon-guard ports=2280 status=3", "no ip6tables"),
-            ("", "did not report"),
+            (
+                "BF daemon-guard ports=2280 status=2",
+                "no iptables and no package manager",
+                True,
+            ),
+            ("BF daemon-guard ports=2280 status=3", "has IPv6 but no ip6tables", True),
+            ("BF daemon-guard ports=2280 status=1", "rule could not be added", False),
+            (
+                "BF daemon-guard install: E: Could not get lock\nBF daemon-guard ports=2280 status=5",
+                "installing iptables failed (E: Could not get lock)",
+                False,
+            ),
+            ("", "did not report", False),
         ],
     )
-    async def test_a_guard_that_cannot_be_installed_refuses_the_run(self, line, why):
+    async def test_a_guard_that_cannot_be_installed_refuses_the_run(
+        self, out, why, lasting
+    ):
         from benchflow._utils.scoring import SANDBOX_SETUP, classify_error
         from benchflow.sandbox.lockdown import (
             SandboxDaemonGuardError,
             setup_sandbox_user,
         )
 
-        env = self._env("container", stdout=line)
+        env = self._env("container", stdout=out)
         with pytest.raises(SandboxDaemonGuardError) as e:
             await setup_sandbox_user(env, "agent", "/app")
-        assert why in str(e.value)
-        assert classify_error(str(e.value)) == SANDBOX_SETUP
-
-    async def test_the_egress_firewall_reapplies_the_guard_after_its_loopback_accept(
-        self,
-    ):
-        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
-
-        env = self._env("container")
-        await enforce_agent_egress_firewall(
-            env,
-            "agent",
-            {
-                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
-                "LLM_BASE_URL": "http://127.0.0.1:1234",
-            },
-        )
-        cmds = [c.args[0] for c in env.exec.await_args_list]
-        assert "-o lo -m owner" in cmds[0] and "ACCEPT" in cmds[0]
-        assert "BF daemon-guard" in cmds[1]
+        msg = str(e.value)
+        assert why in msg
+        assert classify_error(msg) == SANDBOX_SETUP
+        assert _never_retried(msg) == lasting
 
     async def test_docker_gets_no_guard_and_no_iptables_install(self):
         from benchflow.sandbox.lockdown import setup_sandbox_user
@@ -654,6 +879,17 @@ class TestSandboxDaemonGuard:
         )
         await setup_sandbox_user(env, "agent", "/app")
         assert all("BF daemon-guard" not in c.args[0] for c in env.exec.await_args_list)
+
+
+def _never_retried(msg):
+    """Whether a refusal is the kind retrying cannot fix (the image's)."""
+    try:
+        from benchflow._utils.scoring import is_unrecoverable_startup_error
+    except ImportError:
+        from benchflow.evaluation import (
+            _image_cannot_guard_daemon as is_unrecoverable_startup_error,
+        )
+    return is_unrecoverable_startup_error(msg)
 
 
 class TestDinDDaemonGuard:
@@ -669,14 +905,45 @@ class TestDinDDaemonGuard:
         )
         return strat
 
-    async def test_the_vm_rejects_bridge_traffic_to_every_daemon_port(self):
+    async def _command(self):
         strat = self._strategy("BF dind-daemon-guard status=0\n")
         await strat._guard_daemon_from_containers()
-        (cmd,) = strat._vm_exec.await_args.args
-        assert "for i in docker0 br-+" in cmd
-        assert "for p in 2280 22220 22222 33333" in cmd
-        assert '-I INPUT 1 -i "$i" -p tcp --dport "$p" -j REJECT' in cmd
-        subprocess.run(["sh", "-n", "-c", cmd], check=True)
+        return strat._vm_exec.await_args.args[0]
+
+    async def test_the_vm_refuses_bridges_and_host_network_processes(self, tmp_path):
+        cmd = await self._command()
+        t = TestSandboxDaemonGuard()
+        bin_dir = t._bin(tmp_path)
+        out = t._sh(tmp_path, cmd, bin_dir, shell="sh")
+        assert "status=0" in out
+        state = t._state(tmp_path)
+        for fam in ("iptables", "ip6tables"):
+            inp = state[f"{fam}:filter"]["INPUT"]
+            for i in ("docker0", "br-+"):
+                for p in (2280, 22220, 22222, 33333):
+                    assert (
+                        f"-i {i} -p tcp --dport {p} -j REJECT --reject-with tcp-reset"
+                        in inp
+                    )
+            # A host-network container's agent (uid 1000) is dropped on the
+            # VM itself; root (the daemon, dockerd, the runner) is not.
+            assert _verdict(state, fam=fam, uid=1000) == "blocked"
+            assert _verdict(state, fam=fam, uid=0) == "passes"
+
+    async def test_the_vm_uses_the_legacy_backend_where_nft_does_not_work(
+        self, tmp_path
+    ):
+        cmd = await self._command()
+        t = TestSandboxDaemonGuard()
+        bin_dir = t._bin(
+            tmp_path,
+            tools=("iptables", "iptables-legacy", "ip6tables", "ip6tables-legacy"),
+        )
+        out = t._sh(tmp_path, cmd, bin_dir, shell="sh", broken="iptables")
+        assert "status=0" in out
+        assert any(
+            c.startswith("iptables-legacy -w -I INPUT") for c in t._calls(tmp_path)
+        )
 
     async def test_rules_that_cannot_be_installed_refuse_the_run(self):
         from benchflow.sandbox.lockdown import SandboxDaemonGuardError

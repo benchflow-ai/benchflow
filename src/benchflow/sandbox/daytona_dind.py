@@ -217,8 +217,12 @@ class _DaytonaDinD(_DaytonaStrategy):
         so a compose container reaches it through its bridge gateway, and
         the daemon can ``docker exec`` into ``main`` as root. Traffic from
         the containers arrives on ``docker0`` or a ``br-*`` bridge; the
-        runner's own reaches the VM elsewhere and is untouched. Raises when
-        the rules cannot be installed, so the run is refused.
+        runner's own reaches the VM elsewhere and is untouched. A container
+        on the host network shares the VM's namespace, so it crosses no
+        bridge: the VM also drops every non-root uid's own connections to
+        those ports (the daemon and dockerd run as root, and Docker does not
+        remap uids, so the agent keeps its uid there). Raises when the rules
+        cannot be installed, so the run is refused.
         """
         from benchflow.sandbox.lockdown import (
             SANDBOX_DAEMON_PORTS,
@@ -226,16 +230,25 @@ class _DaytonaDinD(_DaytonaStrategy):
         )
 
         ports = " ".join(str(p) for p in SANDBOX_DAEMON_PORTS)
+        # dockerd-entrypoint.sh falls back to iptables-legacy (on its own
+        # PATH) where nf_tables does not work; pick the same way here.
         command = (
             "status=0; "
-            "for fw in iptables ip6tables; do "
-            'if ! command -v "$fw" >/dev/null 2>&1; then '
-            '[ "$fw" = iptables ] && status=2; continue; fi; '
+            'pick() { for c in "$1" "$1-legacy"; do '
+            'command -v "$c" >/dev/null 2>&1 && "$c" -w -nL >/dev/null 2>&1 && '
+            '"$c" -w -t mangle -S OUTPUT >/dev/null 2>&1 && { echo "$c"; return 0; }; '
+            "done; return 1; }; "
+            "for fam in iptables ip6tables; do "
+            'if ! fw=$(pick "$fam"); then [ "$fam" = iptables ] && status=2; continue; fi; '
             "for i in docker0 br-+; do "
             f"for p in {ports}; do "
-            '"$fw" -C INPUT -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset 2>/dev/null || '
-            '"$fw" -I INPUT 1 -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset || status=1; '
-            "done; done; done; "
+            '"$fw" -w -C INPUT -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset 2>/dev/null || '
+            '"$fw" -w -I INPUT 1 -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset || status=1; '
+            "done; done; "
+            f"for p in {ports}; do "
+            '"$fw" -w -t mangle -C OUTPUT -p tcp --dport "$p" -m owner ! --uid-owner 0 -j DROP 2>/dev/null || '
+            '"$fw" -w -t mangle -I OUTPUT 1 -p tcp --dport "$p" -m owner ! --uid-owner 0 -j DROP || status=1; '
+            "done; done; "
             'echo "BF dind-daemon-guard status=$status"'
         )
         result = await self._vm_exec(command, timeout_sec=60)
