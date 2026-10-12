@@ -1195,11 +1195,14 @@ class Rollout:
 
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
+                # Nothing runs as the sandbox user (the oracle runs as root),
+                # so the sandbox-daemon guard has nobody to keep away.
                 await self._planes.setup_sandbox_user(
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
                     timeout_sec=cfg.sandbox_setup_timeout,
+                    guard_daemon=False,
                 )
             await self._planes.snapshot_build_config(
                 self._env, workspace=self._agent_cwd
