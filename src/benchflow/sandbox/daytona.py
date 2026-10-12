@@ -1079,6 +1079,13 @@ class DaytonaSandbox(BaseSandbox):
 
     # Public interface — delegates to strategy
 
+    @property
+    def sandbox_daemon_guard(self) -> str:
+        """Where the agent user is kept from Daytona's root toolbox daemon:
+        inside the sandbox ("container", see ``lockdown.guard_sandbox_daemon``)
+        or, for a compose task, on the DinD VM when it starts ("vm")."""
+        return "vm" if self._compose_mode else "container"
+
     async def start(self, force_build: bool) -> None:
         return await self._strategy.start(force_build)
 

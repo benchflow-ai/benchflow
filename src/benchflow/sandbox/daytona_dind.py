@@ -210,6 +210,45 @@ class _DaytonaDinD(_DaytonaStrategy):
             cleanup_session=cleanup_session,
         )
 
+    async def _guard_daemon_from_containers(self) -> None:
+        """Refuse connections from the compose containers to the daemon.
+
+        Daytona's toolbox daemon (root on this VM) listens on every address,
+        so a compose container reaches it through its bridge gateway, and
+        the daemon can ``docker exec`` into ``main`` as root. Traffic from
+        the containers arrives on ``docker0`` or a ``br-*`` bridge; the
+        runner's own reaches the VM elsewhere and is untouched. Raises when
+        the rules cannot be installed, so the run is refused.
+        """
+        from benchflow.sandbox.lockdown import (
+            SANDBOX_DAEMON_PORTS,
+            SandboxDaemonGuardError,
+        )
+
+        ports = " ".join(str(p) for p in SANDBOX_DAEMON_PORTS)
+        command = (
+            "status=0; "
+            "for fw in iptables ip6tables; do "
+            'if ! command -v "$fw" >/dev/null 2>&1; then '
+            '[ "$fw" = iptables ] && status=2; continue; fi; '
+            "for i in docker0 br-+; do "
+            f"for p in {ports}; do "
+            '"$fw" -C INPUT -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset 2>/dev/null || '
+            '"$fw" -I INPUT 1 -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset || status=1; '
+            "done; done; done; "
+            'echo "BF dind-daemon-guard status=$status"'
+        )
+        result = await self._vm_exec(command, timeout_sec=60)
+        out = result.stdout or ""
+        if result.return_code == 0 and "BF dind-daemon-guard status=0" in out:
+            return
+        raise SandboxDaemonGuardError(
+            "sandbox startup refused: the compose containers could not be kept "
+            "away from Daytona's root toolbox daemon on the DinD VM "
+            f"({out.strip() or 'no report'}; {(result.stderr or '').strip()[:300]}), so "
+            "the agent could reach root through the bridge gateway."
+        )
+
     def _compose_env_vars(self) -> dict[str, str]:
         env_vars: dict[str, str] = {
             "CONTEXT_DIR": self._ENVIRONMENT_DIR,
@@ -404,6 +443,7 @@ class _DaytonaDinD(_DaytonaStrategy):
             )
 
             await self._wait_for_docker_daemon()
+            await self._guard_daemon_from_containers()
 
             # Upload BenchFlow compose files to the sandbox
             for path in self._BENCHFLOW_COMPOSE_FILES:

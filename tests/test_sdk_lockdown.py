@@ -1,5 +1,6 @@
 """Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, lockdown_paths."""
 
+import shutil
 import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
@@ -492,7 +493,7 @@ class TestAgentEgressFirewall:
 
 
 class TestSandboxDaemonGuard:
-    """The agent user cannot reach Daytona's root daemon on loopback."""
+    """The agent user cannot reach Daytona's root daemon, or the run is refused."""
 
     @staticmethod
     def _fake_bin(tmp_path, ip6=True):
@@ -515,11 +516,13 @@ class TestSandboxDaemonGuard:
         return bin_dir, log
 
     @staticmethod
-    def _fake_proc(tmp_path, listen_port=None, ipv6=True):
+    def _fake_proc(
+        tmp_path, pid1="/usr/local/bin/daytona", listen_port=None, ipv6=True
+    ):
         proc = tmp_path / "proc"
         (proc / "net").mkdir(parents=True)
         (proc / "1" / "fd").mkdir(parents=True)
-        (proc / "1" / "exe").symlink_to("/usr/local/bin/daytona")
+        (proc / "1" / "exe").symlink_to(pid1)
         header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
         lines = header
         if listen_port is not None:
@@ -533,69 +536,160 @@ class TestSandboxDaemonGuard:
             )
         return proc
 
-    def _run(self, tmp_path, **kw):
+    def _run(self, tmp_path, shell="bash", **kw):
         from benchflow.sandbox.lockdown import _daemon_guard_cmd
 
         bin_dir, log = self._fake_bin(tmp_path, ip6=kw.pop("ip6", True))
         proc = self._fake_proc(tmp_path, **kw)
         out = subprocess.run(
-            ["bash", "-c", _daemon_guard_cmd("agent", proc=str(proc))],
+            [shell, "-c", _daemon_guard_cmd("agent", proc=str(proc))],
             capture_output=True,
             text=True,
             env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
             check=True,
         ).stdout
-        return out, log.read_text().splitlines()
+        return out, log.read_text().splitlines() if log.exists() else []
 
-    def test_rejects_the_agent_on_every_daemon_port_over_ipv4_and_ipv6(self, tmp_path):
+    def test_rejects_the_agent_on_every_daemon_port_on_any_interface(self, tmp_path):
         out, calls = self._run(tmp_path)
         assert "status=0" in out
         for fw in ("iptables", "ip6tables"):
             for port in (2280, 22220, 22222, 33333):
+                # No `-o lo`: the gateway or another address is refused too.
                 assert (
-                    f"{fw} -w -I OUTPUT 1 -o lo -p tcp --dport {port} -m owner "
+                    f"{fw} -w -I OUTPUT 1 -p tcp --dport {port} -m owner "
                     "--uid-owner 1000 -j REJECT --reject-with tcp-reset"
                 ) in calls, calls
-        # Nothing but those ports is touched.
-        inserts = [c for c in calls if " -I " in c]
-        assert len(inserts) == 8
+        assert len([c for c in calls if " -I " in c]) == 8
 
     def test_a_port_the_daemon_listens_on_is_guarded_too(self, tmp_path):
         out, calls = self._run(tmp_path, listen_port=8080)
         assert "ports=2280 8080 22220 22222 33333" in out
         assert any("--dport 8080" in c and c.startswith("iptables") for c in calls)
 
+    def test_a_process_1_that_is_not_the_daemon_adds_no_port(self, tmp_path):
+        # A task whose own server is process 1 keeps its port.
+        out, calls = self._run(tmp_path, pid1="/usr/bin/python3.11", listen_port=8000)
+        assert "ports=2280 22220 22222 33333 " in out
+        assert not any("--dport 8000" in c for c in calls)
+
+    def test_discovery_works_under_dash(self, tmp_path):
+        if not shutil.which("dash"):
+            pytest.skip("no dash here")
+        out, _ = self._run(tmp_path, shell="dash", listen_port=8080)
+        assert "ports=2280 8080 22220 22222 33333" in out
+
     def test_ipv6_without_ip6tables_is_reported(self, tmp_path):
         out, _ = self._run(tmp_path, ip6=False)
         assert "status=3" in out
 
-    def test_the_egress_firewall_reapplies_the_guard_above_its_loopback_accept(self):
-        from benchflow.sandbox.lockdown import _agent_egress_firewall_cmd
-
-        cmd = _agent_egress_firewall_cmd("agent")
-        accept = cmd.index(
-            '-I OUTPUT 1 -o lo -m owner --uid-owner "$agent_uid" -j ACCEPT'
+    @staticmethod
+    def _env(mode, stdout="BF daemon-guard ports=2280 status=0", rc=0):
+        env = MagicMock()
+        env.sandbox_daemon_guard = mode
+        env.exec = AsyncMock(
+            return_value=MagicMock(return_code=rc, stdout=stdout, stderr="")
         )
-        guard = cmd.index("BF daemon-guard")
-        # Inserted at the top after the ACCEPT, the REJECTs come first.
-        assert guard > accept
-        subprocess.run(["bash", "-n", "-c", cmd], check=True)
+        return env
 
-    async def test_setup_sandbox_user_installs_the_guard(self):
+    async def test_the_guard_runs_only_where_the_daemon_shares_the_network(self):
+        from benchflow.sandbox.lockdown import guard_sandbox_daemon
+
+        for mode in (None, "vm"):
+            env = self._env(mode)
+            await guard_sandbox_daemon(env, "agent")
+            env.exec.assert_not_awaited()
+        env = self._env("container")
+        await guard_sandbox_daemon(env, "agent")
+        (cmd,) = env.exec.await_args.args
+        assert "BF daemon-guard" in cmd
+        assert env.exec.await_args.kwargs["user"] == "root"
+
+    @pytest.mark.parametrize(
+        "line, why",
+        [
+            ("BF daemon-guard ports=2280 status=2", "no iptables"),
+            ("BF daemon-guard ports=2280 status=1", "rule could not be added"),
+            ("BF daemon-guard ports=2280 status=3", "no ip6tables"),
+            ("", "did not report"),
+        ],
+    )
+    async def test_a_guard_that_cannot_be_installed_refuses_the_run(self, line, why):
+        from benchflow._utils.scoring import SANDBOX_SETUP, classify_error
+        from benchflow.sandbox.lockdown import (
+            SandboxDaemonGuardError,
+            setup_sandbox_user,
+        )
+
+        env = self._env("container", stdout=line)
+        with pytest.raises(SandboxDaemonGuardError) as e:
+            await setup_sandbox_user(env, "agent", "/app")
+        assert why in str(e.value)
+        assert classify_error(str(e.value)) == SANDBOX_SETUP
+
+    async def test_the_egress_firewall_reapplies_the_guard_after_its_loopback_accept(
+        self,
+    ):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = self._env("container")
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            {
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                "LLM_BASE_URL": "http://127.0.0.1:1234",
+            },
+        )
+        cmds = [c.args[0] for c in env.exec.await_args_list]
+        assert "-o lo -m owner" in cmds[0] and "ACCEPT" in cmds[0]
+        assert "BF daemon-guard" in cmds[1]
+
+    async def test_docker_gets_no_guard_and_no_iptables_install(self):
         from benchflow.sandbox.lockdown import setup_sandbox_user
 
-        env = MagicMock()
+        env = MagicMock(spec=["exec"])
         env.exec = AsyncMock(
-            return_value=MagicMock(
-                return_code=0, stdout="BF daemon-guard ports=2280 status=0"
-            )
+            return_value=MagicMock(return_code=0, stdout="", stderr="")
         )
         await setup_sandbox_user(env, "agent", "/app")
-        cmds = [c.args[0] for c in env.exec.await_args_list]
-        guard = [c for c in cmds if "BF daemon-guard" in c]
-        assert len(guard) == 1
-        assert "--dport $p -m owner" in guard[0] or '--dport "$p"' in guard[0]
-        call = next(
-            c for c in env.exec.await_args_list if "BF daemon-guard" in c.args[0]
+        assert all("BF daemon-guard" not in c.args[0] for c in env.exec.await_args_list)
+
+
+class TestDinDDaemonGuard:
+    """Compose tasks on Daytona: the VM refuses the containers' connections."""
+
+    @staticmethod
+    def _strategy(stdout, rc=0):
+        from benchflow.sandbox.daytona_dind import _DaytonaDinD
+
+        strat = _DaytonaDinD.__new__(_DaytonaDinD)
+        strat._vm_exec = AsyncMock(
+            return_value=MagicMock(return_code=rc, stdout=stdout, stderr="")
         )
-        assert call.kwargs.get("user") == "root"
+        return strat
+
+    async def test_the_vm_rejects_bridge_traffic_to_every_daemon_port(self):
+        strat = self._strategy("BF dind-daemon-guard status=0\n")
+        await strat._guard_daemon_from_containers()
+        (cmd,) = strat._vm_exec.await_args.args
+        assert "for i in docker0 br-+" in cmd
+        assert "for p in 2280 22220 22222 33333" in cmd
+        assert '-I INPUT 1 -i "$i" -p tcp --dport "$p" -j REJECT' in cmd
+        subprocess.run(["sh", "-n", "-c", cmd], check=True)
+
+    async def test_rules_that_cannot_be_installed_refuse_the_run(self):
+        from benchflow.sandbox.lockdown import SandboxDaemonGuardError
+
+        strat = self._strategy("BF dind-daemon-guard status=1\n")
+        with pytest.raises(SandboxDaemonGuardError, match="sandbox startup refused"):
+            await strat._guard_daemon_from_containers()
+
+    def test_daytona_says_where_its_daemon_is_guarded(self):
+        from benchflow.sandbox.daytona import DaytonaSandbox
+
+        env = DaytonaSandbox.__new__(DaytonaSandbox)
+        env._compose_mode = False
+        assert env.sandbox_daemon_guard == "container"
+        env._compose_mode = True
+        assert env.sandbox_daemon_guard == "vm"

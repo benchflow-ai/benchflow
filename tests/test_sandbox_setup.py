@@ -19,11 +19,8 @@ async def _run_setup_sandbox_user(
 
     await setup_sandbox_user(env, sandbox_user, workspace)
 
-    # Two calls: the user's setup, then the sandbox-daemon guard.
-    assert env.exec.await_count == 2
-    assert "BF daemon-guard" in env.exec.await_args_list[1].args[0]
-    first = env.exec.await_args_list[0]
-    return first.args[0], first.kwargs
+    env.exec.assert_awaited_once()
+    return env.exec.call_args.args[0], env.exec.call_args.kwargs
 
 
 def _assert_conditional_legacy_symlink(cmd: str, *, source: str, dest: str) -> None:

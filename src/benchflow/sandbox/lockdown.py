@@ -212,7 +212,6 @@ def _agent_egress_firewall_cmd(
         'ip6tables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
         "fi"
         f"{allow}"
-        f"; {_daemon_guard_cmd(sandbox_user)}"
     )
 
 
@@ -222,20 +221,17 @@ def _agent_egress_firewall_cmd(
 #: root through ``POST /process/session`` on 127.0.0.1:2280).
 SANDBOX_DAEMON_PORTS = (2280, 22220, 22222, 33333)
 
-# Prints the TCP ports process 1 (or another process running the same
-# program) listens on, one per line, from $P/net/tcp{,6} and the processes'
-# socket inodes. Root only reads another process's fds, so run it as root.
+# Prints the TCP ports process 1 listens on, one per line, when process 1 is
+# Daytona's daemon (its program's name says so); nothing otherwise, so a
+# task whose own server is process 1 keeps it. POSIX sh (dash included).
+# Root only reads another process's fds, so run it as root.
 _DAEMON_PORTS_SH = r"""bf_daemon_ports() {
-  exe=$(readlink "$P/1/exe" 2>/dev/null) || exe=""
+  exe=$(readlink "$P/1/exe" 2>/dev/null) || return 0
+  case "${exe##*/}" in *daytona*) ;; *) return 0;; esac
   inodes=" "
-  for d in "$P"/[0-9]*; do
-    if [ "$d" != "$P/1" ]; then
-      [ -n "$exe" ] && [ "$(readlink "$d/exe" 2>/dev/null)" = "$exe" ] || continue
-    fi
-    for f in "$d"/fd/*; do
-      l=$(readlink "$f" 2>/dev/null) || continue
-      case $l in socket:\[*\]) i=${l#socket:[}; inodes="$inodes${i%]} ";; esac
-    done
+  for f in "$P"/1/fd/*; do
+    l=$(readlink "$f" 2>/dev/null) || continue
+    case $l in socket:\[*\]) inodes="$inodes$(printf '%s' "$l" | tr -cd 0-9) ";; esac
   done
   for f in "$P/net/tcp" "$P/net/tcp6"; do
     [ -r "$f" ] || continue
@@ -248,27 +244,35 @@ _DAEMON_PORTS_SH = r"""bf_daemon_ports() {
 """
 
 
+class SandboxDaemonGuardError(RuntimeError):
+    """The agent user could not be kept away from Daytona's root daemon.
+
+    The message starts with "sandbox startup refused", so the trial is
+    classified as a sandbox-setup failure (the task image's, see the
+    message) rather than run with an agent that can reach root.
+    """
+
+
 def _daemon_guard_cmd(sandbox_user: str, proc: str = "/proc") -> str:
     """Refuse the sandbox user's TCP connections to the sandbox daemon's
-    ports on every local address (loopback carries them all), and nothing
+    ports, on every interface (``-o lo`` is not relied on), and nothing
     else. Each rule is moved to the top of OUTPUT, so a loopback ACCEPT
     inserted earlier (the egress firewall's) cannot shadow it; running it
-    again is harmless. Never fails the caller: it prints
-    ``BF daemon-guard ports=... status=N`` (0 enforced, 1 a rule failed,
-    2 no iptables, 3 IPv6 without ip6tables).
+    again is harmless. Prints ``BF daemon-guard ports=... status=N``
+    (0 enforced, 1 a rule failed, 2 no iptables, 3 IPv6 without ip6tables).
     """
     user = shlex.quote(sandbox_user)
     floor = " ".join(str(p) for p in SANDBOX_DAEMON_PORTS)
     return (
         "( "
-        f"agent_uid=$(id -u {user} 2>/dev/null) || exit 0; "
+        f"agent_uid=$(id -u {user} 2>/dev/null) || {{ echo 'BF daemon-guard ports= status=4'; exit 0; }}; "
         f"P={shlex.quote(proc)}; "
         f"{_DAEMON_PORTS_SH}"
         f"ports=$(printf '%s\\n' {floor} $(bf_daemon_ports) | sort -un | tr '\\n' ' '); "
         "guard() { for p in $ports; do "
-        'r="OUTPUT -o lo -p tcp --dport $p -m owner --uid-owner $agent_uid -j REJECT --reject-with tcp-reset"; '
+        'r="OUTPUT -p tcp --dport $p -m owner --uid-owner $agent_uid -j REJECT --reject-with tcp-reset"; '
         'while "$1" -w -D $r 2>/dev/null; do :; done; '
-        '"$1" -w -I OUTPUT 1 -o lo -p tcp --dport "$p" -m owner --uid-owner "$agent_uid" '
+        '"$1" -w -I OUTPUT 1 -p tcp --dport "$p" -m owner --uid-owner "$agent_uid" '
         "-j REJECT --reject-with tcp-reset || return 1; done; }; "
         "if ! command -v iptables >/dev/null 2>&1; then "
         "if command -v apt-get >/dev/null 2>&1; then "
@@ -287,25 +291,43 @@ def _daemon_guard_cmd(sandbox_user: str, proc: str = "/proc") -> str:
     )
 
 
-async def guard_sandbox_daemon(env: Any, sandbox_user: str) -> bool:
-    """Install the daemon guard for ``sandbox_user`` (see
-    ``_daemon_guard_cmd``). Returns whether every rule holds; logs a warning
-    when not, since on Daytona the agent user could then reach root."""
+def _guard_needed_here(env: Any) -> bool:
+    """Whether the agent user shares a network namespace with Daytona's root
+    daemon: a single-container Daytona sandbox. (A compose task on Daytona
+    is guarded on its VM when it starts; other backends have no such
+    daemon, and get no iptables install either.)"""
+    return getattr(env, "sandbox_daemon_guard", None) == "container"
+
+
+async def guard_sandbox_daemon(env: Any, sandbox_user: str) -> None:
+    """Install the daemon guard for ``sandbox_user`` where it is needed,
+    or raise :class:`SandboxDaemonGuardError`: an agent that can reach the
+    daemon can rewrite its own grade, so the run is refused, never run
+    unguarded."""
+    if not _guard_needed_here(env):
+        return
     result = await env.exec(
         _daemon_guard_cmd(sandbox_user), user="root", timeout_sec=180
     )
     out = getattr(result, "stdout", "") or ""
-    ok = _exec_return_code(result) == 0 and "status=0" in out
-    if not ok:
-        line = next((ln for ln in out.splitlines() if "daemon-guard" in ln), "")
-        logger.warning(
-            "Could not refuse %s's connections to the sandbox daemon's ports "
-            "(%s); on Daytona the agent user may reach root through it.%s",
-            sandbox_user,
-            line or "no report",
-            _exec_failure_detail(result),
-        )
-    return ok
+    line = next((ln for ln in out.splitlines() if "daemon-guard" in ln), "")
+    if _exec_return_code(result) == 0 and re.search(r"\bstatus=0\b", line):
+        return
+    why = {
+        "status=1": "an iptables rule could not be added (no owner match, or no permission)",
+        "status=2": "the image has no iptables and no apt-get, dnf or apk to install it",
+        "status=3": "the sandbox has IPv6 but no ip6tables",
+        "status=4": f"the user {sandbox_user!r} does not exist",
+    }
+    reason = next((v for k, v in why.items() if k in line), "the guard did not report")
+    raise SandboxDaemonGuardError(
+        "sandbox startup refused: the agent user could not be kept away from "
+        f"Daytona's root toolbox daemon ({reason}; {line or 'no report'}), so "
+        "the agent could reach root and rewrite its own grade. The task's image "
+        "needs iptables (or apt-get, dnf or apk to install it), and ip6tables "
+        "when IPv6 is on; or run the agent as root (no sandbox user)."
+        f"{_exec_failure_detail(result)}"
+    )
 
 
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
@@ -408,6 +430,9 @@ async def enforce_sandbox_uid_egress(
         "Sandbox-user egress firewall active for %s (loopback allowed)",
         sandbox_user,
     )
+    # The firewall inserts a loopback ACCEPT at the top; put the daemon
+    # guard back above it.
+    await guard_sandbox_daemon(env, sandbox_user)
 
 
 def _legacy_root_tool_link_cmd(source: str, dest: str) -> str:
@@ -465,8 +490,8 @@ async def setup_sandbox_user(
                 f"root with --sandbox-user none or add one to the image.{detail}"
             )
         logger.warning(f"Sandbox user {sandbox_user} setup step failed.{detail}")
-    # Daytona's daemon runs commands as root for anyone who reaches it on
-    # loopback; keep the agent user away from it in every network mode.
+    # Daytona's daemon runs commands as root for anyone who reaches it;
+    # keep the agent user away from it in every network mode, or refuse.
     await guard_sandbox_daemon(env, sandbox_user)
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
