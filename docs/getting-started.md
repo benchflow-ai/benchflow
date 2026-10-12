@@ -21,6 +21,8 @@ Confirm with `bench --version`. If `uv` reports `Executables already exist: benc
 
 BenchFlow's CLI package requires Python 3.12 or newer. If `uv` is allowed to reuse Python 3.10 or 3.11, it may resolve an old `benchflow` package that does not provide the `bench` / `benchflow` executables and fail with `No executables are provided by package benchflow`. Keeping `--python 3.12` in the install command avoids that resolver fallback.
 
+On Intel Macs (x86_64), the install builds `cryptography` from source: BenchFlow needs version 49 or newer for its security fixes, and those versions ship prebuilt wheels only for Apple Silicon, Linux and 64-bit Windows. Install a Rust toolchain (`rustup`) and OpenSSL (`brew install openssl@3`) first.
+
 For optional sandbox integrations, include the extra in the tool install:
 
 ```bash

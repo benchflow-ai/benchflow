@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-LITELLM_VERSION_SPEC = "litellm[proxy]==1.91.0"
+LITELLM_VERSION_SPEC = "litellm[proxy]==1.91.5"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 # Read by the callback's model gate (litellm_logging.callback_module_source).

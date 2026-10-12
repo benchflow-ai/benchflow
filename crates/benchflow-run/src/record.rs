@@ -668,10 +668,12 @@ fn sync_with(
 fn unsyncable(e: &std::io::Error) -> bool {
     #[cfg(unix)]
     {
-        matches!(
-            e.raw_os_error(),
-            Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL | libc::EOPNOTSUPP)
-        )
+        // A list, not a pattern: on Linux ENOTSUP and EOPNOTSUPP are one
+        // value, and a pattern naming both is unreachable there, an error
+        // under `clippy -D warnings`.
+        e.raw_os_error().is_some_and(|code| {
+            [libc::ENOTSUP, libc::ENOTTY, libc::EINVAL, libc::EOPNOTSUPP].contains(&code)
+        })
     }
     #[cfg(not(unix))]
     {

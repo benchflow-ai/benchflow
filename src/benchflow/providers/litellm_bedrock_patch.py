@@ -214,7 +214,8 @@ def _patch_bedrock_invoke_system_messages() -> None:
     """Keep mid-conversation system messages in place on Bedrock Invoke (#1135).
 
     LiteLLM 1.91.0 hoists every ``role: "system"`` message into the top-level
-    ``system`` field. The cache breakpoint Claude Code places on the newest
+    ``system`` field (1.91.5 keeps them in place only for models its own map
+    flags). The cache breakpoint Claude Code places on the newest
     system message moves with it, so no breakpoint is left in ``messages`` and
     each turn re-bills the whole transcript as uncached input; only the system
     prefix is read from cache. Models that accept mid-conversation system
@@ -232,16 +233,20 @@ def _patch_bedrock_invoke_system_messages() -> None:
         AmazonAnthropicClaudeMessagesConfig._normalize_system_role_messages_for_bedrock
     )
 
-    def normalize(self: Any, anthropic_messages_request: dict) -> None:
+    def normalize(
+        self: Any, anthropic_messages_request: dict, *args: Any, **kwargs: Any
+    ) -> None:
+        # LiteLLM 1.91.5 also passes the model (``model=``); 1.91.0 did not.
+        model = anthropic_messages_request.get("model") or kwargs.get(
+            "model", args[0] if args else None
+        )
         messages = anthropic_messages_request.get("messages")
         if not (
             isinstance(messages, list)
             and any(_is_system_message(m) for m in messages)
-            and _supports_mid_conversation_system(
-                anthropic_messages_request.get("model")
-            )
+            and _supports_mid_conversation_system(model)
         ):
-            return original(self, anthropic_messages_request)
+            return original(self, anthropic_messages_request, *args, **kwargs)
         # Bedrock rejects per-message fields such as ``output_config`` with
         # "Extra inputs are not permitted"; the top-level effort still applies.
         messages = [
