@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/benchflow-cli"]
 
 [workspace.package]
-version = "0.8.1-dev.0"
+version = "0.8.1-rc.1"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
@@ -13,11 +13,11 @@ homepage = "https://benchflow.ai"
 authors = ["BenchFlow <hello@benchflow.ai>"]
 
 [workspace.dependencies]
-benchflow-task = { path = "crates/benchflow-task", version = "0.8.1-dev.0" }
-benchflow-sandbox = { path = "crates/benchflow-sandbox", version = "0.8.1-dev.0" }
-benchflow-agent = { path = "crates/benchflow-agent", version = "0.8.1-dev.0" }
-benchflow-run = { path = "crates/benchflow-run", version = "0.8.1-dev.0" }
-benchflow-viewer = { path = "crates/benchflow-viewer", version = "0.8.1-dev.0" }
+benchflow-task = { path = "crates/benchflow-task", version = "0.8.1-rc.1" }
+benchflow-sandbox = { path = "crates/benchflow-sandbox", version = "0.8.1-rc.1" }
+benchflow-agent = { path = "crates/benchflow-agent", version = "0.8.1-rc.1" }
+benchflow-run = { path = "crates/benchflow-run", version = "0.8.1-rc.1" }
+benchflow-viewer = { path = "crates/benchflow-viewer", version = "0.8.1-rc.1" }
 
 anstream = "1.0"
 anstyle = "1.0"
