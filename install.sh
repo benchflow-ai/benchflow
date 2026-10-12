@@ -27,7 +27,7 @@
 REPO=https://github.com/benchflow-ai/benchflow
 # The repository's releases as JSON, newest first: the latest bench release
 # is found here, since <releases>/latest is often the Python package's.
-RELEASES_API=https://api.github.com/repos/benchflow-ai/benchflow/releases?per_page=100
+RELEASES_API="https://api.github.com/repos/benchflow-ai/benchflow/releases?per_page=100"
 SCRIPT_URL=https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/install.sh
 FROM_SOURCE="cargo install --locked --git $REPO --branch bench-rs benchflow-cli"
 

@@ -385,6 +385,19 @@ impl Provider for FakeProvider {
             *n += 1;
             *n
         };
+        // With a hold, the second child starts only once the first child's
+        // end has been seen in the records (10 s at most), so the test tells
+        // a write per child from one write after every child.
+        if let Some(hold) = &self.hold
+            && n == 2
+        {
+            for _ in 0..200 {
+                if hold.seen.lock().unwrap().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
         let solved = *self
             .checkpoints
             .lock()
