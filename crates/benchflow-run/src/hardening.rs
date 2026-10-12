@@ -2013,8 +2013,18 @@ mod tests {
             "{out}"
         );
         // Root's folders it cannot write (here: the system's) are not open.
-        let out = run("/usr/share/benchflow-none/data");
-        assert!(!out.contains("BF open /usr"), "{out}");
+        // Some CI runners give the test user /usr/share, or run as root;
+        // there these two checks say nothing, so they are skipped.
+        let system_closed = {
+            use std::os::unix::fs::MetadataExt;
+            let mine_uid = std::fs::metadata(&root).unwrap().uid();
+            std::fs::metadata("/usr/share")
+                .is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0 && mine_uid != 0)
+        };
+        if system_closed {
+            let out = run("/usr/share/benchflow-none/data");
+            assert!(!out.contains("BF open /usr"), "{out}");
+        }
         // A sticky folder others may write is.
         if std::path::Path::new("/private/tmp").is_dir() || std::path::Path::new("/tmp").is_dir() {
             let t = std::fs::canonicalize("/tmp").unwrap();
@@ -2023,8 +2033,10 @@ mod tests {
         }
         // A target that is already a folder it cannot write (root's): said
         // so (REVIEW-OUTCOMES M2); one of its own is not.
-        let out = run("/usr/share");
-        assert!(out.contains("BF target-closed"), "{out}");
+        if system_closed {
+            let out = run("/usr/share");
+            assert!(out.contains("BF target-closed"), "{out}");
+        }
         let out = run(mine.to_str().unwrap());
         assert!(!out.contains("BF target-closed"), "{out}");
         // An unknown user: said so.
@@ -2243,7 +2255,9 @@ mod tests {
         let made = std::process::Command::new("sh")
             .arg("-c")
             .arg(format!(
-                "cd {} && i=0; while [ $i -lt 30 ]; do mkdir {name} && cd {name} || exit 1; i=$((i+1)); done; echo x > f",
+                // `cd -P`: dash resolves a logical `cd` to the whole path,
+                // which fails past PATH_MAX (4096 on Linux).
+                "cd {} && i=0; while [ $i -lt 30 ]; do mkdir {name} && cd -P {name} || exit 1; i=$((i+1)); done; echo x > f",
                 q(w.to_str().unwrap())
             ))
             .output()
