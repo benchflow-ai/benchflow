@@ -484,11 +484,15 @@ async def _recover_verifier(
                 raise EvidenceError("could not install workspace in recovery sandbox")
             child._agent_cwd = str(workspace)
             if cfg.sandbox_user:
+                # Only the verifier runs here, as root; no agent runs as the
+                # sandbox user, so the sandbox-daemon guard is not needed (and
+                # an image without a package manager would wrongly refuse it).
                 await rollout._planes.setup_sandbox_user(
                     child._env,
                     cfg.sandbox_user,
                     workspace=str(workspace),
                     timeout_sec=cfg.sandbox_setup_timeout,
+                    guard_daemon=False,
                 )
         recovery_sandbox = agent_network_sandbox_config(child._task.config)
         child._egress_denylist = egress_denylist_for(recovery_sandbox)

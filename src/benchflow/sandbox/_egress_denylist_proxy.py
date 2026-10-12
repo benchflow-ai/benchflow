@@ -32,6 +32,10 @@ from typing import Any, cast
 
 HEAD_LIMIT = 64 * 1024
 HEAD_TIMEOUT = 30
+# The Daytona sandbox daemon (root) answers on these ports with no
+# credentials and runs commands as root. The proxy runs as root,
+# outside the uid firewall, so it must never open them, on any address.
+SANDBOX_DAEMON_PORTS = frozenset({2280, 22220, 22222, 33333})
 # A relayed connection closes after this long with no byte in either
 # direction. A streaming model response is silent on the client side for its
 # whole length, so neither side's silence alone may close it.
@@ -224,13 +228,17 @@ class Policy:
             for net in self.allow_networks
         )
 
-    def address_allowed(self, address: str) -> bool:
-        """Whether the root proxy may open a socket to ``address``.
+    def address_allowed(self, address: str, port: int = 0) -> bool:
+        """Whether the root proxy may open a socket to ``address``:``port``.
 
         Deny mode: public addresses only. Allow mode: public addresses, plus
         non-public ones inside a listed range. Loopback, unspecified and
-        multicast are never reached through the proxy.
+        multicast are never reached through the proxy, nor is the sandbox
+        daemon's port on any address (the proxy is root, outside the uid
+        firewall).
         """
+        if port in SANDBOX_DAEMON_PORTS:
+            return False
         parsed = self._address(address)
         if parsed is None:
             return False
@@ -788,7 +796,7 @@ def _resolve(host: str, port: int) -> list[str]:
     return list(addresses)
 
 
-def _upstream_allowed(address: str) -> bool:
+def _upstream_allowed(address: str, port: int = 0) -> bool:
     try:
         return ipaddress.ip_address(address).is_global
     except ValueError:
@@ -800,7 +808,7 @@ def _connect_upstream(
     port: int,
     *,
     model_gateway_port: int | None = None,
-    address_allowed: Callable[[str], bool] = _upstream_allowed,
+    address_allowed: Callable[..., bool] = _upstream_allowed,
 ) -> socket.socket:
     """Connect to a vetted address of ``host``; the root proxy must not reach sandbox-internal services.
 
@@ -814,7 +822,7 @@ def _connect_upstream(
     if (host, port) == ("127.0.0.1", model_gateway_port):
         return socket.create_connection((host, port), timeout=HEAD_TIMEOUT)
     addresses = _resolve(host, port)
-    if not addresses or not all(address_allowed(a) for a in addresses):
+    if not addresses or not all(address_allowed(a, port) for a in addresses):
         raise _PrivateDestination(host)
     error: OSError | None = None
     for address in addresses:
@@ -1053,7 +1061,7 @@ class Handler(socketserver.BaseRequestHandler):
                     )
                     return
                 if not addresses or not all(
-                    self.proxy.policy.address_allowed(a) for a in addresses
+                    self.proxy.policy.address_allowed(a, port) for a in addresses
                 ):
                     self._deny(
                         self.request, "CONNECT", f"{host}:{port}", "private-address"

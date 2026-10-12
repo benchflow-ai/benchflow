@@ -561,73 +561,6 @@ def _verdict(state, fam="iptables", uid=1000, dport=2280, out="lo"):
     return "passes"
 
 
-FAKE_IPTABLES = r'''#!{python}
-"""A stateful iptables: rules per table and chain in a JSON file."""
-import json, os, sys
-state_path = os.environ["FW_STATE"]
-name = os.path.basename(sys.argv[0])
-args = [a for a in sys.argv[1:] if a != "-w"]
-with open(os.environ["FW_LOG"], "a") as log:
-    log.write(name + " " + " ".join(sys.argv[1:]) + "\n")
-if os.environ.get("FW_BROKEN") == name:
-    sys.exit(1)
-state = json.load(open(state_path)) if os.path.exists(state_path) else {{}}
-table = "filter"
-if args[:1] == ["-t"]:
-    table, args = args[1], args[2:]
-key = name.replace("-legacy", "") + ":" + table
-op, chain, rest = args[0], (args[1] if len(args) > 1 else ""), args[2:]
-rules = state.setdefault(key, {{}}).setdefault(chain, [])
-if op in ("-S", "-L", "-nL"):
-    sys.exit(0)
-if op == "-I" and rest and rest[0].isdigit():
-    pos, rest = int(rest[0]) - 1, rest[1:]
-else:
-    pos = 0
-spec = " ".join(rest)
-if op == "-C":
-    sys.exit(0 if spec in rules else 1)
-if op == "-D":
-    if spec in rules:
-        rules.remove(spec)
-        json.dump(state, open(state_path, "w"))
-        sys.exit(0)
-    sys.exit(1)
-if op == "-I":
-    rules.insert(pos, spec)
-elif op == "-A":
-    rules.append(spec)
-json.dump(state, open(state_path, "w"))
-'''
-
-
-def _verdict(state, fam="iptables", uid=1000, dport=2280, out="lo"):
-    """What the kernel does with the agent's packet: mangle, then filter."""
-
-    def matches(spec):
-        t = spec.split()
-        ok = True
-        for i, w in enumerate(t):
-            if w == "-o" and t[i + 1] != out:
-                ok = False
-            if w == "--dport" and int(t[i + 1]) != dport:
-                ok = False
-            if w == "--uid-owner":
-                neg = t[i - 1] == "!"
-                ok = ok and ((int(t[i + 1]) == uid) != neg)
-        return ok
-
-    for table in ("mangle", "filter"):
-        for spec in state.get(f"{fam}:{table}", {}).get("OUTPUT", []):
-            if matches(spec):
-                target = spec.split("-j", 1)[1].split()[0]
-                if target in ("DROP", "REJECT"):
-                    return "blocked"
-                if target == "ACCEPT":
-                    break
-    return "passes"
-
-
 class TestSandboxDaemonGuard:
     """The agent user cannot reach Daytona's root daemon, or the run is refused."""
 
@@ -711,8 +644,9 @@ class TestSandboxDaemonGuard:
             rules = state[f"{fam}:mangle"]["OUTPUT"]
             for port in (2280, 22220, 22222, 33333):
                 # No `-o lo`: the gateway or another address is refused too.
+                # Every non-root uid, not only the agent's.
                 assert (
-                    f"-p tcp --dport {port} -m owner --uid-owner 1000 -j DROP" in rules
+                    f"-p tcp --dport {port} -m owner ! --uid-owner 0 -j DROP" in rules
                 )
             assert len(rules) == 4
         # Running it again adds nothing and removes nothing.
@@ -960,3 +894,99 @@ class TestDinDDaemonGuard:
         assert env.sandbox_daemon_guard == "container"
         env._compose_mode = True
         assert env.sandbox_daemon_guard == "vm"
+
+
+# --- round 5 (review D) additions -------------------------------------------
+
+
+class TestGuardCoversEveryNonRootUid:
+    """D-A 1: the single-container guard drops every non-root uid, so a
+    service user the agent can drive (postgres, www-data) cannot relay."""
+
+    def test_a_non_agent_service_uid_is_dropped_and_root_passes(self, tmp_path):
+        t = TestSandboxDaemonGuard()
+        from benchflow.sandbox.lockdown import _daemon_guard_cmd
+
+        bin_dir = t._bin(tmp_path)
+        proc = t._proc(tmp_path)
+        t._sh(tmp_path, _daemon_guard_cmd("agent", proc=str(proc)), bin_dir)
+        state = t._state(tmp_path)
+        for uid in (1000, 70, 33, 999):  # agent, postgres, www-data, another
+            assert _verdict(state, uid=uid) == "blocked", uid
+            assert _verdict(state, fam="ip6tables", uid=uid) == "blocked", uid
+        # Root (the daemon, dockerd, the runner's toolbox calls) is not.
+        assert _verdict(state, uid=0) == "passes"
+        assert _verdict(state, fam="ip6tables", uid=0) == "passes"
+        # The rule is owner-negated, not pinned to the agent uid.
+        assert all("! --uid-owner 0" in r for r in state["iptables:mangle"]["OUTPUT"])
+
+
+class TestDinDIPv6NotSilent:
+    """D-A 2: the DinD VM guard must not report success when IPv6 is up and
+    ip6tables cannot be used."""
+
+    def _run(self, tmp_path, ip6_ok, if_inet6):
+        from benchflow.sandbox.daytona_dind import _DaytonaDinD
+
+        t = TestSandboxDaemonGuard()
+        tools = ("iptables",) + (("ip6tables",) if ip6_ok else ())
+        bin_dir = t._bin(tmp_path, tools=tools)
+        proc = tmp_path / "proc" / "net"
+        proc.mkdir(parents=True)
+        if if_inet6:
+            (proc / "if_inet6").write_text("x\n")
+        cmd = _DaytonaDinD._guard_daemon_command(
+            "2280 22220 22222 33333", proc=str(tmp_path / "proc")
+        )
+        return t._sh(tmp_path, cmd, bin_dir, shell="sh")
+
+    def test_ipv6_up_without_ip6tables_reports_status_3(self, tmp_path):
+        assert "status=3" in self._run(tmp_path, ip6_ok=False, if_inet6=True)
+
+    def test_ipv6_off_without_ip6tables_is_fine(self, tmp_path):
+        out = self._run(tmp_path, ip6_ok=False, if_inet6=False)
+        assert "status=0" in out
+
+    def test_ip6tables_present_installs_the_v6_rules(self, tmp_path):
+        assert "status=0" in self._run(tmp_path, ip6_ok=True, if_inet6=True)
+
+
+class TestDaemonPortsRefusedByProxy:
+    """D-A 3 (0.8): the root egress proxy must never open the daemon's ports,
+    even to an allowlisted private address."""
+
+    def _policy(self, allow):
+        proxy = pytest.importorskip("benchflow.sandbox._egress_denylist_proxy")
+        if not hasattr(proxy, "SANDBOX_DAEMON_PORTS"):
+            pytest.skip("this proxy is public-only (no allowlist mode to the daemon)")
+        return proxy.Policy(blocked_urls=[], blocked_hosts=[], allowed_hosts=allow)
+
+    def test_the_daemon_port_is_refused_on_a_listed_private_address(self):
+        pol = self._policy(["10.0.0.0/8"])
+        # The sandbox's own address is inside the listed range.
+        assert pol.address_allowed("10.1.2.3", 443) is True
+        assert pol.address_allowed("10.1.2.3", 2280) is False
+        for p in (2280, 22220, 22222, 33333):
+            assert pol.address_allowed("10.1.2.3", p) is False
+
+    def test_a_public_address_on_a_daemon_port_is_also_refused(self):
+        pol = self._policy(["example.com"])
+        assert pol.address_allowed("93.184.216.34", 443) is True
+        assert pol.address_allowed("93.184.216.34", 2280) is False
+
+
+class TestScriptedSetupSkipsGuard:
+    """D-B (0.8): regrade and verifier recovery run nothing as the sandbox
+    user, so they must not be refused by the guard."""
+
+    async def test_regrade_and_recovery_pass_guard_daemon_false(self):
+        import inspect
+
+        regrade = pytest.importorskip("benchflow.eval_regrade")
+        recovery = pytest.importorskip("benchflow.rollout._verifier_recovery")
+        for mod in (regrade, recovery):
+            src = inspect.getsource(mod)
+            assert "setup_sandbox_user(" in src
+            # Every setup_sandbox_user call here turns the guard off.
+            for call in src.split("setup_sandbox_user(")[1:]:
+                assert "guard_daemon=False" in call[:400], mod.__name__

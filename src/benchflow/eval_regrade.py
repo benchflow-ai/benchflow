@@ -581,16 +581,18 @@ async def run_verifier_on_frozen_trial(
                 raise EvidenceError(f"could not restore artifact {artifact.source}")
         await _restore_logs_artifacts(env, trial, staging)
         if sandbox_user:
+            # No agent runs here (only the verifier, as root), so no agent-UID
+            # firewall and no sandbox-daemon guard: both only confine the
+            # agent user, and installing iptables needs a package manager that
+            # no-network sandboxes cannot reach. The provider still applies the
+            # task's sandbox network mode to the verifier.
             await child._planes.setup_sandbox_user(
                 env,
                 sandbox_user,
                 workspace=workspace,
                 timeout_sec=child._config.sandbox_setup_timeout,
+                guard_daemon=False,
             )
-        # No agent-UID firewall: it only confines agent processes, none run
-        # here, and installing it needs a package manager that no-network
-        # sandboxes cannot reach. The provider still applies the task's
-        # sandbox network mode to the verifier.
         trajectory_path = trial / "trajectory" / "acp_trajectory.jsonl"
         if trajectory_path.is_file():
             trajectory = [
