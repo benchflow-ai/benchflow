@@ -538,3 +538,23 @@ fn an_absolute_skills_path_is_a_folder_in_the_sandbox() {
     assert_eq!(pkg.sandbox.skills, None);
     assert_eq!(pkg.sandbox.skills_dir.as_deref(), Some("/skills"));
 }
+
+/// F1 (rc.2): `[sandbox] x-allow-cloud-metadata = true` (an extension key,
+/// so the format's own checker accepts it) opts the task out of the refusal
+/// of the cloud metadata endpoints; anything but a boolean is refused by
+/// name.
+#[test]
+fn the_cloud_metadata_opt_out_is_read() {
+    let (_d, pkg) = package("[sandbox]\nx-allow-cloud-metadata = true\n", &[], "Fix it.");
+    assert!(pkg.unsupported.is_empty(), "{:?}", pkg.unsupported);
+    assert!(pkg.sandbox.allow_cloud_metadata);
+    let (_d, pkg) = package("[sandbox]\nnetwork = \"open\"\n", &[], "Fix it.");
+    assert!(!pkg.sandbox.allow_cloud_metadata);
+    let (_d, pkg) = package(
+        "[sandbox]\nx-allow-cloud-metadata = \"yes\"\n",
+        &[],
+        "Fix it.",
+    );
+    assert_eq!(refused(&pkg), [("[sandbox] x-allow-cloud-metadata", false)]);
+    assert!(!pkg.sandbox.allow_cloud_metadata);
+}

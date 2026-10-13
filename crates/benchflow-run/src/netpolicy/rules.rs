@@ -9,7 +9,7 @@
 use benchflow_sandbox::shell::quote;
 use benchflow_task::values::Network;
 
-use super::PhaseNet;
+use super::{METADATA_V4, METADATA_V6, PhaseNet};
 use crate::hardening::STATE_DIR;
 use crate::outcome::Owner;
 
@@ -85,6 +85,12 @@ pub(super) const DISCOVER_PORTS: &str = r#"bf_daemon_ports() {
 
 /// Finds the iptables binaries and the IPv6 state, and defines
 /// `fingerprint` and `unhook`.
+///
+/// The fingerprint covers BenchFlow's own rules only: its chain, and
+/// `OUTPUT` up to its last jump into the chain (a rule placed before the
+/// jumps could let traffic past them). The rest of the tables is the
+/// image's: a root service there (fail2ban, a VPN agent) may change it at
+/// any time, and that changes nothing the chain refuses.
 fn prelude() -> String {
     format!(
         r#"CH={CHAIN}
@@ -104,8 +110,14 @@ unhook() {{
   "$t" -w -F "$CH" 2>/dev/null; "$t" -w -X "$CH" 2>/dev/null
   return 0
 }}
+fp_rules() {{
+  t=$1; o=$("$t" -w -S OUTPUT 2>/dev/null)
+  n=$(printf '%s\n' "$o" | grep -n -- "-j $CH\$" | tail -n 1 | cut -d: -f1)
+  [ -z "$n" ] || printf '%s\n' "$o" | head -n "$n"
+  "$t" -w -S "$CH" 2>/dev/null
+}}
 fingerprint() {{
-  {{ [ -n "$fw4" ] && "$fw4" -w -S 2>/dev/null; [ -n "$fw6" ] && "$fw6" -w -S 2>/dev/null
+  {{ [ -n "$fw4" ] && fp_rules "$fw4"; [ -n "$fw6" ] && fp_rules "$fw6"
      sed -n '/^# BEGIN benchflow network$/,/^# END benchflow network$/p' /etc/hosts; }} | cksum | cut -d ' ' -f 1
 }}
 "#
@@ -169,7 +181,18 @@ fn pins(net: &PhaseNet) -> String {
 /// root) still guards the daemon's ports from the agent user only, so root
 /// keeps the access BenchFlow's commands use and the guard's proof (root
 /// reaches the ports the agent user is refused) still holds.
-fn chain_rules(net: &PhaseNet, v6: bool, guard: bool, v6_only: bool, spare_root: bool) -> String {
+///
+/// With `metadata`, TCP to the cloud metadata endpoints is refused on every
+/// port but 53: on some clouds (GCE) the same address is the sandbox's DNS
+/// resolver, and DNS carries no credentials.
+fn chain_rules(
+    net: &PhaseNet,
+    v6: bool,
+    guard: bool,
+    v6_only: bool,
+    spare_root: bool,
+    metadata: bool,
+) -> String {
     let ranges: Vec<&String> = net
         .ranges
         .iter()
@@ -189,6 +212,11 @@ fn chain_rules(net: &PhaseNet, v6: bool, guard: bool, v6_only: bool, spare_root:
         ));
     }
     let mut add = |rule: &str| s.push_str(&format!("\"$t\" -w -A \"$CH\" {rule} || exit_rule\n"));
+    if metadata {
+        for addr in if v6 { METADATA_V6 } else { METADATA_V4 } {
+            add(&format!("-d {addr} -p tcp ! --dport 53 -j \"$RT\" $RTO"));
+        }
+    }
     // `match` refused: TCP with a reset first, then everything else.
     let refuse = |add: &mut dyn FnMut(&str), matching: &str| {
         let sep = if matching.is_empty() { "" } else { " " };
@@ -234,13 +262,15 @@ fn chain_rules(net: &PhaseNet, v6: bool, guard: bool, v6_only: bool, spare_root:
 /// script runs, and `guard` as a floor. The script then prints
 /// `BF fw-guard-found <ports, or none>` and `BF fw-guard-ports <ports>`.
 /// It always prints `BF fw-v6 <absent|local|global>` first. `v6_only`: see
-/// [`chain_rules`].
+/// [`chain_rules`]. `metadata` adds the refusal of the cloud metadata
+/// endpoints (see [`chain_rules`]).
 pub(super) fn install(
     scope: &Scope,
     net: &PhaseNet,
     guard: &[u16],
     v6_only: bool,
     v6_required: bool,
+    metadata: bool,
 ) -> String {
     let uid = match scope {
         Scope::AgentUser(user) => format!(
@@ -301,8 +331,8 @@ echo "BF fw-sum $(fingerprint)"
 "#,
         prelude = prelude(),
         uid = uid,
-        rules4 = chain_rules(net, false, !guard.is_empty(), v6_only, spare_root),
-        rules6 = chain_rules(net, true, !guard.is_empty(), v6_only, spare_root),
+        rules4 = chain_rules(net, false, !guard.is_empty(), v6_only, spare_root, metadata),
+        rules6 = chain_rules(net, true, !guard.is_empty(), v6_only, spare_root, metadata),
         discover = if guard.is_empty() {
             String::new()
         } else {
@@ -334,6 +364,29 @@ pub(super) fn fingerprint() -> String {
     format!("{}echo \"BF fw-sum $(fingerprint)\"\n", prelude())
 }
 
+/// The script (root) that prints how many packets the chain's refusals of
+/// the cloud metadata endpoints have matched, per family:
+/// `BF fw-meta-hits <IPv4> <IPv6>`, each `-` without that family's
+/// iptables. Read from `-S -v`, whose `-c <packets> <bytes>` every backend
+/// prints the same way.
+pub(super) fn metadata_hits() -> String {
+    let addrs = |list: &[&str]| list.join(" ");
+    format!(
+        r#"{prelude}hits() {{
+  [ -n "$1" ] || {{ echo -; return; }}
+  "$1" -w -S "$CH" -v 2>/dev/null | awk -v want=" $2 " '
+    {{ d = ""; c = 0; for (i = 1; i < NF; i++) {{ if ($i == "-d") d = $(i + 1); if ($i == "-c") c = $(i + 1) }}
+       sub(/\/(32|128)$/, "", d); if (d != "" && index(want, " " d " ")) n += c }}
+    END {{ print n + 0 }}'
+}}
+echo "BF fw-meta-hits $(hits "$fw4" "{v4}") $(hits "$fw6" "{v6}")"
+"#,
+        prelude = prelude(),
+        v4 = addrs(METADATA_V4),
+        v6 = addrs(METADATA_V6),
+    )
+}
+
 /// The script that removes the chain and the pinned names.
 pub(super) fn remove() -> String {
     format!(
@@ -344,7 +397,13 @@ pub(super) fn remove() -> String {
 }
 
 /// What the installed firewall covers, in one clause.
-pub(super) fn describe(scope: &Scope, net: &PhaseNet, how: &str, v6_only: bool) -> String {
+pub(super) fn describe(
+    scope: &Scope,
+    net: &PhaseNet,
+    how: &str,
+    v6_only: bool,
+    metadata: bool,
+) -> String {
     let who = match scope {
         Scope::AgentUser(u) => {
             format!("every packet of `{u}` and every new connection of other non-root users")
@@ -375,6 +434,11 @@ pub(super) fn describe(scope: &Scope, net: &PhaseNet, how: &str, v6_only: bool) 
             names(net.names.len())
         ),
         Network::Open => "nothing".into(),
+    };
+    let what = match (metadata, &net.network) {
+        (true, Network::Open) => "the cloud metadata endpoints refused".to_string(),
+        (true, _) => format!("{what}; the cloud metadata endpoints refused"),
+        (false, _) => what,
     };
     format!("iptables firewall on {who}: {what}; {v6}")
 }
@@ -450,7 +514,7 @@ mod tests {
             "{:?}",
             n.ranges
         );
-        let rules = chain_rules(&n, false, false, false, false);
+        let rules = chain_rules(&n, false, false, false, false, false);
         assert!(
             rules.contains("-d '127.0.0.1/32'") || rules.contains("-d 127.0.0.1/32"),
             "{rules}"
@@ -504,6 +568,7 @@ mod tests {
                 &[2280],
                 false,
                 false,
+                false,
             ));
             bash_ok(&install(
                 &Scope::AgentUser("agent".into()),
@@ -511,10 +576,11 @@ mod tests {
                 &[2280],
                 true,
                 true,
+                false,
             ));
             bash_ok(&format!("P=/proc\n{DISCOVER_PORTS}"));
-            bash_ok(&install(&Scope::Everyone, n, &[], false, false));
-            bash_ok(&install(&Scope::Everyone, n, &[], true, true));
+            bash_ok(&install(&Scope::Everyone, n, &[], false, false, false));
+            bash_ok(&install(&Scope::Everyone, n, &[], true, true, false));
         }
         bash_ok(&fingerprint());
         bash_ok(&remove());
@@ -537,7 +603,7 @@ mod tests {
             &[("github.com", "140.82.114.4")],
             &["140.82.114.4/32", "2001:db8::/32"],
         );
-        let v4 = chain_rules(&allow, false, false, false, false);
+        let v4 = chain_rules(&allow, false, false, false, false, false);
         assert!(v4.contains("-d 127.0.0.11 -p tcp -j \"$RT\" $RTO"), "{v4}");
         assert!(v4.contains("-d 127.0.0.11 -j \"$REJ\""), "{v4}");
         assert!(v4.contains("-d 140.82.114.4/32 -j RETURN"), "{v4}");
@@ -547,7 +613,7 @@ mod tests {
             "{v4}"
         );
         assert!(v4.trim_end().ends_with("-j \"$REJ\" || exit_rule"), "{v4}");
-        let v6 = chain_rules(&allow, true, false, false, false);
+        let v6 = chain_rules(&allow, true, false, false, false, false);
         assert!(v6.contains("-d 2001:db8::/32 -j RETURN"), "{v6}");
         assert_eq!(pins(&allow), "140.82.114.4 github.com\n");
     }
@@ -559,7 +625,7 @@ mod tests {
             &[("www.debian.org", "128.31.0.62")],
             &["128.31.0.62/32"],
         );
-        let v4 = chain_rules(&block, false, false, false, false);
+        let v4 = chain_rules(&block, false, false, false, false, false);
         assert!(
             v4.contains("-d 128.31.0.62/32 -p tcp -j \"$RT\" $RTO"),
             "{v4}"
@@ -570,7 +636,7 @@ mod tests {
             pins(&block),
             "192.0.2.1 www.debian.org\n100::1 www.debian.org\n"
         );
-        assert!(chain_rules(&block, true, false, false, false).contains("-d 100::/64"));
+        assert!(chain_rules(&block, true, false, false, false, false).contains("-d 100::/64"));
     }
 
     /// An ICMP unreachable fails a TCP connect only after a SYN retry (about
@@ -584,6 +650,7 @@ mod tests {
             &Scope::AgentUser("agent".into()),
             &net(Network::Open, &[], &[]),
             &[2280],
+            false,
             false,
             false,
         );
@@ -602,7 +669,7 @@ mod tests {
             &["128.31.0.62/32"],
         );
         for v6 in [false, true] {
-            let rules = chain_rules(&block, v6, false, false, false);
+            let rules = chain_rules(&block, v6, false, false, false, false);
             let mut tcp_first = 0;
             for (i, line) in rules.lines().enumerate() {
                 if line.contains("-j \"$REJ\"") {
@@ -625,7 +692,7 @@ mod tests {
         let ports = [2280, 22220, 22222, 33333];
         for v6 in [false, true] {
             assert_eq!(
-                chain_rules(&open, v6, true, false, false),
+                chain_rules(&open, v6, true, false, false, false),
                 "for port in $GUARD; do \"$t\" -w -A \"$CH\" -o lo -p tcp --dport \"$port\" -j \"$RT\" $RTO || exit_rule; done\n"
             );
         }
@@ -633,6 +700,7 @@ mod tests {
             &Scope::AgentUser("agent".into()),
             &open,
             &ports,
+            false,
             false,
             false,
         );
@@ -650,6 +718,7 @@ mod tests {
             &Scope::Everyone,
             &net(Network::None, &[], &[]),
             &[],
+            false,
             false,
             false,
         );
@@ -728,6 +797,7 @@ mod tests {
             &[2280],
             false,
             false,
+            false,
         );
         assert!(s.contains("--uid-owner \"$uid\""), "{s}");
         assert!(s.contains("-o lo -p tcp --dport \"$port\" -j"), "{s}");
@@ -739,6 +809,7 @@ mod tests {
             &[],
             false,
             false,
+            false,
         );
         assert!(!s.contains("--uid-owner"), "{s}");
     }
@@ -748,7 +819,7 @@ mod tests {
         let none = net(Network::None, &[], &[]);
         // IPv4 backs the backend's block up: the guard, loopback (its
         // resolver included), then nothing.
-        let v4 = chain_rules(&none, false, true, true, false);
+        let v4 = chain_rules(&none, false, true, true, false, false);
         assert!(v4.starts_with("for port in $GUARD"), "{v4}");
         assert!(
             !v4.contains("--dport 53") && !v4.contains("127.0.0.11"),
@@ -760,13 +831,13 @@ mod tests {
             .expect("the rest refused");
         assert!(lo < rej, "{v4}");
         // IPv6: loopback, a task's own resolver on it included, then nothing.
-        let v6 = chain_rules(&none, true, false, true, false);
+        let v6 = chain_rules(&none, true, false, true, false, false);
         assert!(!v6.contains("--dport 53"), "{v6}");
         assert!(v6.contains("-o lo -j RETURN"), "{v6}");
         assert!(v6.trim_end().ends_with("-j \"$REJ\" || exit_rule"), "{v6}");
         // Without v6_only a none refuses loopback resolvers as before.
-        assert!(chain_rules(&none, false, false, false, false).contains("--dport 53"));
-        let s = install(&Scope::Everyone, &none, &[], true, true);
+        assert!(chain_rules(&none, false, false, false, false, false).contains("--dport 53"));
+        let s = install(&Scope::Everyone, &none, &[], true, true, false);
         bash_ok(&s);
         assert!(s.contains("echo \"BF fw-v6 $v6\""), "{s}");
     }
@@ -824,7 +895,7 @@ mod tests {
         let agent = Scope::AgentUser("agent".into());
         // Required (Daytona's allowlist with the daemon guard): IPv6
         // loopback alone without ip6tables is refused.
-        let s = install(&agent, &allow, &[2280], false, true);
+        let s = install(&agent, &allow, &[2280], false, true, false);
         let out = run_v6_check(&s, loopback, false);
         assert!(out.contains("BF fw-v6 local"), "{out}");
         assert!(out.contains("BF fw-error ipv6-unfiltered"), "{out}");
@@ -832,7 +903,7 @@ mod tests {
         assert!(run_v6_check(&s, loopback, true).contains("passed-v6-check"));
         assert!(run_v6_check(&s, None, false).contains("passed-v6-check"));
         // Not required (Docker): only an address that routes out needs it.
-        let s = install(&agent, &allow, &[], false, false);
+        let s = install(&agent, &allow, &[], false, false, false);
         assert!(run_v6_check(&s, loopback, false).contains("passed-v6-check"));
     }
 
@@ -845,5 +916,171 @@ mod tests {
             "{INSTALL_LAYER}"
         );
         assert!(INSTALL_LAYER.contains("apk add --no-cache iptables ip6tables"));
+    }
+
+    /// F1: the cloud metadata endpoints are refused over TCP on every port
+    /// but 53 (GCE's resolver is 169.254.169.254), each family in its own
+    /// chain, and only when asked for.
+    #[test]
+    fn the_metadata_rules_refuse_tcp_but_dns_to_each_endpoint() {
+        let open = net(Network::Open, &[], &[]);
+        let v4 = chain_rules(&open, false, false, false, false, true);
+        let v6 = chain_rules(&open, true, false, false, false, true);
+        for a in METADATA_V4 {
+            assert!(
+                v4.contains(&format!(
+                    "\"$t\" -w -A \"$CH\" -d {a} -p tcp ! --dport 53 -j \"$RT\" $RTO || exit_rule\n"
+                )),
+                "{v4}"
+            );
+            assert!(!v6.contains(a), "{v6}");
+        }
+        for a in METADATA_V6 {
+            assert!(v6.contains(&format!("-d {a} -p tcp ! --dport 53")), "{v6}");
+            assert!(!v4.contains(a), "{v4}");
+        }
+        assert_eq!(v4.lines().count(), METADATA_V4.len());
+        assert!(chain_rules(&open, false, false, false, false, false).is_empty());
+        // With the daemon guard, and in a blocklist, they come along.
+        let s = install(
+            &Scope::AgentUser("agent".into()),
+            &open,
+            &[2280],
+            false,
+            false,
+            true,
+        );
+        bash_ok(&s);
+        assert!(s.contains("--dport \"$port\""), "{s}");
+        assert!(s.contains("-d 169.254.169.254 -p tcp ! --dport 53"), "{s}");
+        let block = net(
+            Network::Block(vec!["10.1.2.3".into()]),
+            &[],
+            &["10.1.2.3/32"],
+        );
+        let v4 = chain_rules(&block, false, false, false, false, true);
+        assert!(
+            v4.contains("-d 169.254.169.254 -p tcp ! --dport 53"),
+            "{v4}"
+        );
+        assert!(v4.contains("-d 10.1.2.3/32 -p tcp"), "{v4}");
+        let d = describe(
+            &Scope::AgentUser("agent".into()),
+            &open,
+            "/usr/sbin/iptables v6=absent fw6=none reject=REJECT",
+            false,
+            true,
+        );
+        assert!(
+            d.ends_with(": the cloud metadata endpoints refused; no IPv6 in the sandbox"),
+            "{d}"
+        );
+    }
+
+    /// The counter script reads `-S -v` as iptables 1.8.9 prints it, nft and
+    /// legacy alike (taken from a Debian bookworm container): the packets of
+    /// the metadata rules only, per family; `-` without ip6tables.
+    #[cfg(unix)]
+    #[test]
+    fn the_metadata_counter_is_read_from_the_rules_own_packets() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let v4 = "# Warning: iptables-legacy tables present, use iptables-legacy to see them\n\
+-N BENCHFLOW_NET\n\
+-A BENCHFLOW_NET -o lo -p tcp -m tcp --dport 2280 -c 9 540 -j REJECT --reject-with tcp-reset\n\
+-A BENCHFLOW_NET -d 169.254.169.254/32 -p tcp -m tcp ! --dport 53 -c 2 120 -j REJECT --reject-with tcp-reset\n\
+-A BENCHFLOW_NET -d 169.254.170.2/32 -p tcp -m tcp ! --dport 53 -c 1 60 -j REJECT --reject-with tcp-reset\n\
+-A BENCHFLOW_NET -d 10.0.0.1/32 -p tcp -m tcp -c 5 300 -j REJECT --reject-with tcp-reset\n";
+        let tool = |name: &str, out: &str| {
+            let f = bin.join(name);
+            std::fs::write(
+                &f,
+                format!("#!/bin/sh\ncase \"$*\" in *-v*) printf '%s' '{out}';; esac\nexit 0\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        tool("iptables", v4);
+        let run = || {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(metadata_hits())
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        assert_eq!(run().trim_end(), "BF fw-meta-hits 3 -");
+        tool(
+            "ip6tables",
+            "-A BENCHFLOW_NET -d fd00:ec2::254/128 -p tcp -m tcp ! --dport 53 -c 4 240 -j REJECT --reject-with tcp-reset\n",
+        );
+        assert_eq!(run().trim_end(), "BF fw-meta-hits 3 4");
+        bash_ok(&metadata_hits());
+    }
+
+    /// F1 round 2 (F1-B 2): the tamper fingerprint covers BenchFlow's chain
+    /// and `OUTPUT` up to its jumps, so a root service in the image that
+    /// changes other rules (fail2ban's chain, a rule appended after the
+    /// jumps) leaves it alone, while a change to the chain, to a jump, or a
+    /// rule placed before the jumps changes it.
+    #[cfg(unix)]
+    #[test]
+    fn the_tamper_fingerprint_covers_only_benchflows_own_rules() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let rules = d.path().join("rules");
+        // `iptables -w -S [chain]`, as iptables prints it, from `$RULES`.
+        for name in ["iptables", "ip6tables"] {
+            let f = bin.join(name);
+            let body = if name == "iptables" {
+                "shift 2\nif [ -z \"$1\" ]; then cat \"$RULES\"; else grep -E -- \"^-[PNA] $1( |\\$)\" \"$RULES\"; fi\n"
+            } else {
+                "exit 1\n"
+            };
+            std::fs::write(&f, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let sum = |text: &str| {
+            std::fs::write(&rules, text).unwrap();
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(fingerprint())
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("RULES", &rules)
+                .output()
+                .unwrap();
+            let out = String::from_utf8_lossy(&out.stdout).into_owned();
+            assert!(out.starts_with("BF fw-sum "), "{out}");
+            out
+        };
+        let base = "-P INPUT ACCEPT\n-P FORWARD ACCEPT\n-P OUTPUT ACCEPT\n-N BENCHFLOW_NET\n\
+-A OUTPUT -m owner --uid-owner 1000 -j BENCHFLOW_NET\n\
+-A OUTPUT -m owner ! --uid-owner 0 -m conntrack ! --ctstate RELATED,ESTABLISHED -j BENCHFLOW_NET\n\
+-A BENCHFLOW_NET -d 169.254.169.254/32 -p tcp -m tcp ! --dport 53 -j REJECT --reject-with tcp-reset\n";
+        let installed = sum(base);
+        // The image's own root service adds rules elsewhere: unchanged.
+        let unrelated = format!(
+            "{base}-N f2b-sshd\n-A INPUT -p tcp -m tcp --dport 22 -j f2b-sshd\n-A f2b-sshd -s 192.0.2.9/32 -j REJECT\n-A OUTPUT -d 10.9.9.9/32 -j DROP\n"
+        );
+        assert_eq!(sum(&unrelated), installed);
+        // A rule before the jumps, a jump gone, the chain changed: changed.
+        let before = base.replace(
+            "-A OUTPUT -m owner --uid-owner 1000",
+            "-A OUTPUT -j ACCEPT\n-A OUTPUT -m owner --uid-owner 1000",
+        );
+        let no_jump = base.replace("-A OUTPUT -m owner --uid-owner 1000 -j BENCHFLOW_NET\n", "");
+        let emptied = base.replace(
+            "-A BENCHFLOW_NET -d 169.254.169.254/32",
+            "-A BENCHFLOW_NET -d 192.0.2.1/32",
+        );
+        for changed in [before, no_jump, emptied] {
+            assert_ne!(sum(&changed), installed, "{changed}");
+        }
+        bash_ok(&fingerprint());
     }
 }

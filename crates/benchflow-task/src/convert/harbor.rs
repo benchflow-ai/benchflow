@@ -87,6 +87,12 @@ static SANDBOX: &[Spec] = &[
         Conv::Seconds,
     ),
 ];
+/// bench's opt-out from refusing the cloud metadata endpoints to the agent.
+/// task.md keeps it in `[sandbox]`; the split layout and BenchFlow 0.8's
+/// task.md keep it in `[metadata]`, the one table whose keys BenchFlow 0.8
+/// never refuses (its `[environment]` refuses keys it does not know).
+pub(crate) const METADATA_OPT_OUT: &str = "x-allow-cloud-metadata";
+
 static READY: &[Spec] = &[
     same("command", "run"),
     conv("interval_sec", "interval", Conv::Duration, Conv::Seconds),
@@ -646,9 +652,22 @@ pub(crate) fn config_from_harbor(cfg: &Table, stash: &str) -> Result<Imported, S
         out.extend(t);
         im.moves.insert(kp(&["task"]), Vec::new());
     }
+    let mut opt_out = None;
     if has("metadata") {
-        out.insert("about".into(), cfg["metadata"].clone());
+        let mut about = cfg["metadata"].clone();
+        if let Val::Table(t) = &mut about {
+            opt_out = t.shift_remove(METADATA_OPT_OUT);
+        }
+        if !matches!(&about, Val::Table(t) if t.is_empty()) {
+            out.insert("about".into(), about);
+        }
         im.moves.insert(kp(&["metadata"]), kp(&["about"]));
+        if opt_out.is_some() {
+            im.moves.insert(
+                kp(&["metadata", METADATA_OPT_OUT]),
+                kp(&["sandbox", METADATA_OPT_OUT]),
+            );
+        }
     }
     let mut sandbox = if has("environment") {
         im.sandbox(
@@ -677,6 +696,9 @@ pub(crate) fn config_from_harbor(cfg: &Table, stash: &str) -> Result<Imported, S
         if let Some(o) = outputs.get("outputs") {
             sandbox.insert("outputs".into(), o.clone());
         }
+    }
+    if let Some(v) = opt_out {
+        sandbox.insert(METADATA_OPT_OUT.into(), v);
     }
     if has("environment") || !sandbox.is_empty() {
         out.insert("sandbox".into(), Val::Table(sandbox));
@@ -1432,6 +1454,18 @@ pub(crate) fn config_to_harbor(
         ex.moves.insert(kp(&["about"]), kp(&["metadata"]));
     }
     let mut sb: Option<Table> = cfg.get("sandbox").and_then(Val::as_table).cloned();
+    if let Some(v) = sb.as_mut().and_then(|s| s.shift_remove(METADATA_OPT_OUT)) {
+        let metadata = out
+            .entry("metadata".to_string())
+            .or_insert_with(|| Val::Table(Table::new()));
+        if let Val::Table(m) = metadata {
+            m.insert(METADATA_OPT_OUT.into(), v);
+        }
+        ex.moves.insert(
+            kp(&["sandbox", METADATA_OPT_OUT]),
+            kp(&["metadata", METADATA_OPT_OUT]),
+        );
+    }
     if let Some(s) = sb.as_mut() {
         if package_folder(s.get("skills")) {
             let shown = py_repr(&s["skills"]);
@@ -1468,8 +1502,10 @@ pub(crate) fn config_to_harbor(
     }
     let original_sandbox = cfg.get("sandbox").and_then(Val::as_table);
     if let Some(s) = &sb {
-        let only_services =
-            original_sandbox.is_none_or(|o| o.keys().all(|k| k == "compose" || k == "services"));
+        let only_services = original_sandbox.is_none_or(|o| {
+            o.keys()
+                .all(|k| k == "compose" || k == "services" || k == METADATA_OPT_OUT)
+        });
         if !s.is_empty() || (original_sandbox.is_some_and(|o| !o.is_empty()) && !only_services) {
             let env = ex.sandbox(
                 &Val::Table(s.clone()),
@@ -1856,6 +1892,46 @@ mod tests {
             .unwrap();
         assert_eq!(kept["version"], Val::Str("1.0".into()));
         assert_eq!(im.notes.len(), 2);
+    }
+
+    /// F1 round 2 (F1-A 1): the cloud metadata opt-out is `[sandbox]
+    /// x-allow-cloud-metadata` in task.md and `[metadata]
+    /// x-allow-cloud-metadata` in the split layout, where BenchFlow 0.8
+    /// loads it (its `[environment]` refuses a key it does not know); the
+    /// converter moves it between the two, each way, and loses nothing.
+    #[test]
+    fn the_cloud_metadata_opt_out_moves_between_sandbox_and_metadata() {
+        let cfg =
+            parse_toml("name = \"a/b\"\n[sandbox]\nx-allow-cloud-metadata = true\ncpus = 2\n")
+                .unwrap();
+        let ex = config_to_harbor(&cfg, "harbor", &[]).unwrap();
+        let h = &ex.config;
+        assert_eq!(
+            h["metadata"].as_table().unwrap()[METADATA_OPT_OUT],
+            Val::Bool(true)
+        );
+        let env = h["environment"].as_table().unwrap();
+        assert!(!env.contains_key(METADATA_OPT_OUT), "{env:?}");
+        assert!(!env.contains_key("allow_cloud_metadata"), "{env:?}");
+        assert!(ex.losses.is_empty(), "{:?}", ex.losses.len());
+        // Alone in [sandbox], it leaves no empty [environment] behind.
+        let alone =
+            parse_toml("name = \"a/b\"\n[sandbox]\nx-allow-cloud-metadata = true\n").unwrap();
+        let ex = config_to_harbor(&alone, "harbor", &[]).unwrap();
+        assert!(!ex.config.contains_key("environment"));
+        // And back: [metadata] keeps the task's own keys as [about].
+        let split = parse_toml(
+            "[task]\nname = \"a/b\"\n[metadata]\ndifficulty = \"easy\"\nx-allow-cloud-metadata = true\n",
+        )
+        .unwrap();
+        let im = config_from_harbor(&split, "harbor").unwrap();
+        let c = &im.config;
+        assert_eq!(
+            c["sandbox"].as_table().unwrap()[METADATA_OPT_OUT],
+            Val::Bool(true)
+        );
+        let about = c["about"].as_table().unwrap();
+        assert_eq!(about.keys().collect::<Vec<_>>(), vec!["difficulty"]);
     }
 
     #[test]

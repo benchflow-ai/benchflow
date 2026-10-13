@@ -143,6 +143,7 @@ pub(crate) struct Sandbox {
     pub workdir: Option<String>,
     pub setup_commands: usize,
     pub bugswarm_image_tag: Option<String>,
+    pub allow_cloud_metadata: Option<bool>,
 }
 
 /// `[verifier]`.
@@ -385,6 +386,17 @@ pub(crate) fn read(r: &mut Reader<'_>, config: &Value) -> Config {
     }
     if r.dialect == Dialect::Frontmatter {
         apply_benchflow_defaults(&mut out.sandbox);
+    }
+    // bench's opt-out from refusing the cloud metadata endpoints: in
+    // `[metadata]`, whose keys BenchFlow 0.8 never refuses (it refuses an
+    // unknown key in `[environment]`), so a task using it still loads there.
+    if let Some(Value::Object(m)) = top.get("metadata") {
+        out.sandbox.allow_cloud_metadata = r.get(
+            m,
+            "metadata",
+            crate::convert::METADATA_OPT_OUT,
+            lax::boolean,
+        );
     }
     if let Some(v) = r.table(top, "", "verifier") {
         out.verifier = read_verifier(r, v, "verifier");

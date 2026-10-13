@@ -368,6 +368,7 @@ fn task(root: &Path, agent_timeout: Duration) -> TaskPackage {
             skills: None,
             skills_dir: None,
             mcp: Vec::new(),
+            allow_cloud_metadata: false,
         },
         verifier: VerifierPolicy {
             dir: root.join("verifier"),

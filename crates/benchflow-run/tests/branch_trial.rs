@@ -463,6 +463,7 @@ fn task(root: &Path) -> TaskPackage {
             skills: None,
             skills_dir: None,
             mcp: Vec::new(),
+            allow_cloud_metadata: false,
         },
         verifier: VerifierPolicy {
             dir: root.join("verifier"),

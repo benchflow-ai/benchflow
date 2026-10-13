@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::agent::Usage;
 use crate::config::TrialDataset;
-use crate::outcome::{DefenseState, Defenses, Problem, Status};
+use crate::outcome::{DefenseState, Defenses, Phase, Problem, Status};
 
 /// Seconds spent in each phase. The first four keys are 0.8's.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -405,7 +405,7 @@ impl TrialRecord {
     /// ports open to it: on Daytona, the guard (`root_service`) could not be
     /// installed or proven, and the run went ahead as decided, the record
     /// saying why. Not when the agent runs as root (`off`, the task's
-    /// choice) or never started (the guard was not tried).
+    /// choice) or never started (see [`Self::agent_started`]).
     pub fn model_ran_unguarded(&self) -> bool {
         // By the agent's kind, not its recorded model: an ACP agent on its
         // default model may report none.
@@ -414,12 +414,49 @@ impl TrialRecord {
                 .iter()
                 .any(|p| self.agent.starts_with(p));
         !scripted
+            && self.agent_started()
             && self.defenses.get("root_service").is_some_and(|d| {
                 d.state == DefenseState::NotSupported
                     && d.note
                         .as_deref()
                         .is_some_and(|n| n.contains(crate::netpolicy::UNGUARDED))
             })
+    }
+
+    /// Why a model agent in this trial could reach the cloud metadata
+    /// endpoints, from its `cloud_metadata` record: the task opted out, the
+    /// refusal could not be installed or shown to hold, or the agent ran as
+    /// root. `None` when they were refused, for scripted attempts, for an
+    /// agent that never started, and for records from before the defense
+    /// existed.
+    pub fn model_reached_metadata(&self) -> Option<&str> {
+        let scripted = matches!(self.agent.as_str(), "oracle" | "nop")
+            || ["script:", "probe:", "control:"]
+                .iter()
+                .any(|p| self.agent.starts_with(p));
+        if scripted || !self.agent_started() {
+            return None;
+        }
+        let d = self.defenses.get(crate::netpolicy::METADATA_DEFENSE)?;
+        match d.state {
+            DefenseState::Off | DefenseState::NotSupported => {
+                Some(d.note.as_deref().unwrap_or("not refused"))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the agent's phase began: the agent had time, or no problem
+    /// stopped the trial before its phase (the image, the sandbox's start,
+    /// or its setup, the network's own install included). A later stage's
+    /// setup problem in a multi-stage task comes after an agent that ran,
+    /// which its time shows.
+    pub fn agent_started(&self) -> bool {
+        self.timing.agent_execution > 0.0
+            || !self
+                .problem
+                .as_ref()
+                .is_some_and(|p| matches!(p.phase, Phase::Image | Phase::Start | Phase::Setup))
     }
 
     /// The reward when it is outside the range its task allows: the
@@ -788,6 +825,43 @@ mod tests {
         assert_eq!((t.counted, t.passed, t.stopped), (3, 3, 2));
         assert_eq!(t.rate(), Some(1.0));
         assert_eq!(Tally::of(&recs[3..]).rate(), None);
+    }
+
+    /// F1 round 2 (F1-B 3): a model agent whose trial stopped before its
+    /// phase (here at setup, after the network was enforced) is not counted
+    /// as one that could reach the cloud metadata endpoints, nor as one that
+    /// ran without the daemon guard; one that ran, or whose later stage's
+    /// setup failed after it ran, is.
+    #[test]
+    fn an_agent_that_never_started_reached_nothing() {
+        let rec = |phase: Option<&str>, agent_secs: f64| {
+            let mut v = json!({"agent": "opencode", "status": "scored",
+            "timing": {"environment_setup": 1.0, "agent_execution": agent_secs, "verifier": 0.0, "total": 1.0},
+            "defenses": {
+                "cloud_metadata": {"name": "cloud_metadata", "state": "off", "note": "the task opts out, so the agent can reach them"},
+                "root_service": {"name": "root_service", "state": "not-supported", "note": format!("{}: no iptables", crate::netpolicy::UNGUARDED)},
+            }});
+            if let Some(phase) = phase {
+                v["status"] = json!("errored");
+                v["problem"] = json!({"code": "R104", "owner": "task", "phase": phase,
+                    "message": "m", "next": "n", "transient": false});
+            }
+            crate::read::record_from_json(&v, std::path::Path::new("t")).unwrap()
+        };
+        for never in [rec(Some("setup"), 0.0), rec(Some("start"), 0.0)] {
+            assert!(!never.agent_started());
+            assert_eq!(never.model_reached_metadata(), None);
+            assert!(!never.model_ran_unguarded());
+        }
+        for ran in [
+            rec(None, 0.0),
+            rec(Some("agent"), 0.0),
+            rec(Some("setup"), 3.0),
+        ] {
+            assert!(ran.agent_started());
+            assert!(ran.model_reached_metadata().is_some());
+            assert!(ran.model_ran_unguarded());
+        }
     }
 
     use super::*;

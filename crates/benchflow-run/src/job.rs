@@ -403,7 +403,12 @@ pub async fn run(spec: JobSpec, rt: Arc<Runtime>) -> std::io::Result<JobOutcome>
         let rt = rt.clone();
         let halt = halt.clone();
         // Each image is released after the last trial that needs it.
-        let image_key = crate::images::key_for(&t.task, &t.attempt, &rt.provider.capabilities());
+        let image_key = crate::images::key_for(
+            &t.task,
+            &t.attempt,
+            &rt.provider.capabilities(),
+            &rt.options.sandbox_user,
+        );
         let job_dir = dir.clone();
         rt.images.expect(&image_key);
         set.spawn(async move {

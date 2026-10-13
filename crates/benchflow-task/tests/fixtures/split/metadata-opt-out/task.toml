@@ -1,0 +1,18 @@
+schema_version = "1.4"
+
+[task]
+name = "acme/metadata-opt-out"
+version = "1.0.0"
+
+[metadata]
+difficulty = "easy"
+x-allow-cloud-metadata = true
+
+[agent]
+timeout_sec = 120.0
+
+[verifier]
+timeout_sec = 90.0
+
+[environment]
+cpus = 1

@@ -8,7 +8,7 @@ use benchflow_sandbox::shell::quote;
 use benchflow_task::values::Network;
 
 use super::rules::{PINNED_NOWHERE, PINNED_NOWHERE_V6};
-use super::{PhaseNet, Stage, contains};
+use super::{METADATA_V4, METADATA_V6, PhaseNet, Stage, contains};
 use crate::hardening::Report;
 
 /// How a leak caused by a missing tool starts, so the caller can blame the
@@ -114,7 +114,16 @@ fn target(addr: &str, port: u16) -> String {
 }
 
 impl Test {
-    pub(super) fn new(net: &PhaseNet, firewall: bool, stage: Stage, guard: &[u16]) -> Self {
+    /// `metadata`: the chain refuses the cloud metadata endpoints, so the
+    /// user tries the first of each family on port 80 (a connect, nothing
+    /// sent).
+    pub(super) fn new(
+        net: &PhaseNet,
+        firewall: bool,
+        stage: Stage,
+        guard: &[u16],
+        metadata: bool,
+    ) -> Self {
         let mut canaries = Vec::new();
         let allowed = |a: IpAddr| net.ranges.iter().any(|r| contains(r, a));
         match &net.network {
@@ -175,6 +184,11 @@ impl Test {
                 }
             }
             Network::Open => {}
+        }
+        if metadata {
+            for addr in [METADATA_V4[0], METADATA_V6[0]] {
+                canaries.push(Canary::Blocked(addr.into(), 80));
+            }
         }
         canaries.extend(guard.iter().map(|p| Canary::Service(*p)));
         Self {
@@ -459,7 +473,7 @@ mod tests {
 
     #[test]
     fn an_allowlist_tests_its_host_outside_hosts_and_dns() {
-        let t = Test::new(&allow(), true, Stage::Agent, &[]);
+        let t = Test::new(&allow(), true, Stage::Agent, &[], false);
         assert_eq!(
             t.canaries,
             vec![
@@ -488,7 +502,7 @@ mod tests {
 
     #[test]
     fn the_verdict_separates_leaks_from_unreachable_hosts() {
-        let t = Test::new(&allow(), true, Stage::Agent, &[]);
+        let t = Test::new(&allow(), true, Stage::Agent, &[], false);
         let ok = Report::parse(
             "BF canary allow reached 140.82.114.4:443\nBF canary block refused 1.1.1.1:443\n\
              BF canary block timeout 8.8.8.8:53\nBF canary block no-ipv6 [2606:4700:4700::1111]:443\n\
@@ -518,7 +532,7 @@ mod tests {
 
     #[test]
     fn the_daemon_ports_must_be_refused_on_every_local_address() {
-        let t = Test::new(&allow(), true, Stage::Agent, &[2280]);
+        let t = Test::new(&allow(), true, Stage::Agent, &[2280], false);
         assert!(t.canaries.contains(&Canary::Service(2280)));
         let out = std::process::Command::new("bash")
             .arg("-n")
@@ -584,7 +598,7 @@ mod tests {
             names: Vec::new(),
             ranges: Vec::new(),
         };
-        let t = Test::new(&open, true, Stage::Agent, &[2280, 22220]);
+        let t = Test::new(&open, true, Stage::Agent, &[2280, 22220], false);
         assert_eq!(
             t.canaries,
             vec![Canary::Service(2280), Canary::Service(22220)]
@@ -648,7 +662,7 @@ mod tests {
             )],
             ranges: vec!["128.31.0.62/32".into()],
         };
-        let t = Test::new(&net, true, Stage::Agent, &[]);
+        let t = Test::new(&net, true, Stage::Agent, &[], false);
         assert_eq!(
             t.canaries,
             vec![

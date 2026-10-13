@@ -457,6 +457,7 @@ fn task(root: &Path, name: &str) -> TaskPackage {
             skills: None,
             skills_dir: None,
             mcp: Vec::new(),
+            allow_cloud_metadata: false,
         },
         verifier: VerifierPolicy {
             dir: root.join("verifier"),
@@ -1783,11 +1784,27 @@ async fn a_weak_defense_says_what_the_trial_noted() {
     let records: Vec<_> = out.records.iter().collect();
     let v = benchflow_run::testplan::judge(&t, &records, &[]);
     assert!(v.ok, "{:?}", v.checks);
-    assert_eq!(v.weak_defenses, vec!["hidden_verifier".to_string()]);
-    assert_eq!(v.weak_details.len(), 1);
+    // The fake backend installs no firewall, so the cloud metadata
+    // endpoints are not refused there either (F1), and the record says so.
     assert_eq!(
-        v.weak_details[0].note.as_deref(),
+        v.weak_defenses,
+        vec!["cloud_metadata".to_string(), "hidden_verifier".to_string()]
+    );
+    assert_eq!(v.weak_details.len(), 2);
+    let note = |name: &str| {
+        v.weak_details
+            .iter()
+            .find(|d| d.name == name)
+            .and_then(|d| d.note.clone())
+    };
+    assert_eq!(
+        note("hidden_verifier").as_deref(),
         Some("the image ships /solution; locked to root before the agent ran")
+    );
+    assert!(
+        note("cloud_metadata")
+            .unwrap()
+            .starts_with("the fake backend installs no firewall, so the agent can reach")
     );
 }
 

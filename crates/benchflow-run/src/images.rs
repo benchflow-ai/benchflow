@@ -318,12 +318,14 @@ pub fn layers_for(
     task: &TaskPackage,
     attempt: &crate::agent::Attempt,
     caps: &benchflow_sandbox::Capabilities,
+    sandbox_user: &str,
 ) -> Vec<String> {
     let mut layers = match attempt {
         crate::agent::Attempt::Model(m) => m.install_layers(),
         _ => Vec::new(),
     };
-    if let Some(layer) = crate::netpolicy::firewall_layer(task, crate::netpolicy::Host::Agent, caps)
+    if let Some(layer) =
+        crate::netpolicy::firewall_layer(task, crate::netpolicy::Host::Agent, caps, sandbox_user)
     {
         layers.insert(0, layer);
     }
@@ -335,8 +337,12 @@ pub fn key_for(
     task: &TaskPackage,
     attempt: &crate::agent::Attempt,
     caps: &benchflow_sandbox::Capabilities,
+    sandbox_user: &str,
 ) -> String {
-    cache_key(&spec_for(task, layers_for(task, attempt, caps)))
+    cache_key(&spec_for(
+        task,
+        layers_for(task, attempt, caps, sandbox_user),
+    ))
 }
 
 /// A prepared image is the task's image plus its agent layers, if any.
@@ -883,6 +889,7 @@ mod tests {
             &task,
             &crate::agent::Attempt::Oracle,
             &benchflow_sandbox::Capabilities::default(),
+            "agent",
         );
         images.expect(&key);
         images.expect(&key);

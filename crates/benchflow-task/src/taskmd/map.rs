@@ -134,6 +134,7 @@ fn sandbox(cfg: &Value, root: &Path, refusals: &mut Refusals) -> SandboxPolicy {
         skills: None,
         skills_dir: None,
         mcp: Vec::new(),
+        allow_cloud_metadata: false,
     };
     for (key, value) in sb {
         let where_ = format!("[sandbox] {key}");
@@ -158,6 +159,12 @@ fn sandbox(cfg: &Value, root: &Path, refusals: &mut Refusals) -> SandboxPolicy {
                     policy.network = n;
                 }
             }
+            // bench's own, in the format's extension space: other runners
+            // never refuse the cloud metadata endpoints, so they may skip it.
+            "x-allow-cloud-metadata" => match value {
+                Value::Bool(b) => policy.allow_cloud_metadata = *b,
+                _ => refusals.refuse(where_, "must be true or false"),
+            },
             // A folder in the package (`sandbox/skills`), or an absolute path
             // the image fills (a Harbor task's skills_dir).
             "skills" => match value.as_str() {

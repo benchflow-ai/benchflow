@@ -35,6 +35,13 @@
 //! removes it. Where iptables cannot be installed, the trial still runs and
 //! records `root_service` as not supported.
 //!
+//! Under an open network or a blocklist the agent's chain also refuses TCP
+//! to the cloud metadata endpoints ([`METADATA_V4`], [`METADATA_V6`]) on
+//! every port but 53, on every backend with a firewall, unless the task
+//! opts out (`allow_cloud_metadata`); the result is the `cloud_metadata`
+//! defense. On Docker an open network then starts with `NET_ADMIN` and the
+//! image gets the iptables layer, as a blocklist's does.
+//!
 //! What it cannot do: wildcards (`*.example.com`) are refused, because an
 //! address firewall cannot tell which names a wildcard covers. An allowlist
 //! allows addresses, so a host served from a shared CDN address also opens
@@ -65,6 +72,32 @@ fn as_root(script: impl Into<String>) -> Exec {
 }
 
 pub use rules::Scope;
+
+/// The cloud metadata endpoints the agent's chain refuses under an open
+/// network or a blocklist: the link-local address most clouds serve
+/// instance credentials on (AWS, GCE, Azure, Oracle, DigitalOcean,
+/// OpenStack), AWS's container credentials (ECS) and EKS Pod Identity
+/// addresses, Alibaba Cloud's metadata server, Azure's WireServer, and
+/// Tencent Cloud's metadata server.
+pub const METADATA_V4: &[&str] = &[
+    "169.254.169.254",
+    "169.254.170.2",
+    "169.254.170.23",
+    "100.100.100.200",
+    "168.63.129.16",
+    "169.254.0.23",
+];
+/// The IPv6 ones: AWS's (IMDS, then EKS Pod Identity), GCE's, and Oracle
+/// Cloud's.
+pub const METADATA_V6: &[&str] = &[
+    "fd00:ec2::254",
+    "fd00:ec2::23",
+    "fd20:ce::254",
+    "fd00:c1::a9fe:a9fe",
+];
+
+/// The defense the refusal of the cloud metadata endpoints records.
+pub const METADATA_DEFENSE: &str = "cloud_metadata";
 
 /// The longest the firewall install, the self-test, or the tamper check may
 /// take.
@@ -274,10 +307,20 @@ pub struct Plan {
     /// from the `sandbox-user` setting: a root agent the setting made is the
     /// user's doing, not the task's.
     pub agent_user_from_task: bool,
+    /// The agent runs as root (`[agent] user`, or the `sandbox-user`
+    /// setting): root could remove any rule, so none is installed for the
+    /// cloud metadata endpoints, and the sandbox gets no `NET_ADMIN` for it.
+    pub root_agent: bool,
+    /// The key the task opted out of refusing the cloud metadata endpoints
+    /// with, as its format spells it; `None`: they are refused to the agent
+    /// under an open network or a blocklist.
+    pub metadata_opt_out: Option<&'static str>,
 }
 
 impl Plan {
-    pub async fn resolve(task: &TaskPackage) -> Result<Self, Problem> {
+    /// `sandbox_user` is the `sandbox-user` setting, the agent's user when
+    /// the task names none.
+    pub async fn resolve(task: &TaskPackage, sandbox_user: &str) -> Result<Self, Problem> {
         let agent = PhaseNet::resolve(task.agent_network()).await?;
         let verifier = if task.verifier_network() == task.agent_network() {
             agent.clone()
@@ -289,6 +332,11 @@ impl Plan {
             verifier,
             separate: task.verifier.isolation == Isolation::Separate,
             agent_user_from_task: task.agent.user.is_some(),
+            root_agent: agent_runs_as_root(task, sandbox_user),
+            metadata_opt_out: task
+                .sandbox
+                .allow_cloud_metadata
+                .then(|| opt_out_key(task.format)),
         })
     }
 
@@ -306,6 +354,18 @@ impl Plan {
             Host::Agent => vec![Stage::Agent, Stage::Verifier],
             Host::SeparateVerifier => vec![Stage::Verifier],
         }
+    }
+
+    /// Whether `stage`'s chain refuses the cloud metadata endpoints: the
+    /// agent's phase under an open network or a blocklist, on a backend with
+    /// a firewall, unless the task opts out or the agent runs as root.
+    fn metadata(&self, stage: Stage, host: Host, caps: &Capabilities) -> bool {
+        stage == Stage::Agent
+            && host == Host::Agent
+            && self.metadata_opt_out.is_none()
+            && !self.root_agent
+            && caps.firewall
+            && matches!(self.agent.network, Network::Open | Network::Block(_))
     }
 
     /// What the backend enforces itself during `stage`, on a backend that
@@ -336,7 +396,10 @@ impl Plan {
         let nets: Vec<&Network> = stages.iter().map(|s| &self.phase(*s).network).collect();
         if caps.network_none && nets.iter().all(|n| **n == Network::None) {
             NetworkPolicy::None
-        } else if nets.iter().all(|n| **n == Network::Open) {
+        } else if nets.iter().all(|n| **n == Network::Open)
+            // Root installs the metadata refusal from inside.
+            && !self.metadata(Stage::Agent, host, caps)
+        {
             NetworkPolicy::Open
         } else {
             NetworkPolicy::Filtered { allow: None }
@@ -377,7 +440,9 @@ impl Plan {
     fn firewall(&self, stage: Stage, host: Host, caps: &Capabilities) -> (bool, bool) {
         let native = self.native(stage, host, caps);
         match &self.phase(stage).network {
-            Network::Open => (false, false),
+            // Only the metadata refusal: wanted, but the trial runs without
+            // it (recorded) when it cannot be installed.
+            Network::Open => (self.metadata(stage, host, caps), false),
             Network::None => {
                 let need = native != NetworkPolicy::None || self.v6_gap(stage, host, caps);
                 (need, need)
@@ -402,8 +467,13 @@ impl Plan {
 /// on a backend with a root service, which the daemon guard needs. The
 /// layer never fails: an image without a package manager is refused later,
 /// by name, if the firewall is required, and records the guard as not
-/// supported otherwise.
-pub fn firewall_layer(task: &TaskPackage, host: Host, caps: &Capabilities) -> Option<String> {
+/// supported otherwise. `sandbox_user` is the `sandbox-user` setting.
+pub fn firewall_layer(
+    task: &TaskPackage,
+    host: Host,
+    caps: &Capabilities,
+    sandbox_user: &str,
+) -> Option<String> {
     if caps.root_service && host == Host::Agent {
         return Some(rules::INSTALL_LAYER.to_string());
     }
@@ -420,7 +490,21 @@ pub fn firewall_layer(task: &TaskPackage, host: Host, caps: &Capabilities) -> Op
     let none = nets.iter().any(|n| **n == Network::None);
     let mixed = none && nets.iter().any(|n| **n != Network::None);
     let v6_gap = none && caps.network_none_leaks_ipv6;
-    (filtered || mixed || v6_gap).then(|| rules::INSTALL_LAYER.to_string())
+    // The agent's chain refuses the cloud metadata endpoints under open,
+    // unless root (which could remove the rule) runs the agent.
+    let metadata = host == Host::Agent
+        && caps.firewall
+        && !task.sandbox.allow_cloud_metadata
+        && !agent_runs_as_root(task, sandbox_user)
+        && *task.agent_network() == Network::Open;
+    (filtered || mixed || v6_gap || metadata).then(|| rules::INSTALL_LAYER.to_string())
+}
+
+/// Whether the agent runs as root: the task's `[agent] user`, or else the
+/// `sandbox-user` setting.
+pub fn agent_runs_as_root(task: &TaskPackage, sandbox_user: &str) -> bool {
+    let user = task.agent.user.as_deref().unwrap_or(sandbox_user);
+    user == "root" || user == "0"
 }
 
 /// Fields of a task's network this runner refuses, for the trial's refusal.
@@ -467,6 +551,8 @@ pub struct Outcome {
     /// The `root_service` defense, when the agent's chain guarded the
     /// sandbox daemon's ports and the self-test confirmed it.
     pub root_service: Option<(DefenseState, String)>,
+    /// The `cloud_metadata` defense, for the agent's phase.
+    pub metadata: Option<(DefenseState, String)>,
 }
 
 impl Outcome {
@@ -475,7 +561,143 @@ impl Outcome {
             defense: Some((DefenseState::Failed, note)),
             problem: Some(problem),
             root_service: None,
+            metadata: None,
         }
+    }
+}
+
+/// The metadata endpoints in one phrase.
+fn metadata_list() -> String {
+    format!(
+        "the cloud metadata endpoints ({}, {})",
+        METADATA_V4.join(", "),
+        METADATA_V6.join(", ")
+    )
+}
+
+/// How a task's format spells the opt-out from refusing the cloud metadata
+/// endpoints: task.md keeps keys outside its spec in `x-` extensions, and
+/// the split layout and BenchFlow 0.8's task.md in `metadata`, the one
+/// table BenchFlow 0.8 loads with any key.
+pub fn opt_out_key(format: benchflow_task::package::Format) -> &'static str {
+    match format {
+        benchflow_task::package::Format::TaskMd => "[sandbox] x-allow-cloud-metadata",
+        benchflow_task::package::Format::TaskMdV06 => "metadata.x-allow-cloud-metadata",
+        benchflow_task::package::Format::Split => "[metadata] x-allow-cloud-metadata",
+    }
+}
+
+/// The `cloud_metadata` record where no chain of the agent's phase refuses
+/// them: the policy itself does, or nothing does, and why.
+fn metadata_by_policy(plan: &Plan, caps: &Capabilities, backend: &str) -> (DefenseState, String) {
+    let net = &plan.agent;
+    match &net.network {
+        Network::None => (
+            DefenseState::Enforced,
+            format!("{}: the agent's network is none", metadata_list()),
+        ),
+        Network::Allow(_) => {
+            let listed: Vec<&str> = METADATA_V4
+                .iter()
+                .chain(METADATA_V6)
+                .copied()
+                .filter(|a| {
+                    let ip: IpAddr = a.parse().expect("a metadata address");
+                    net.ranges.iter().any(|r| contains(r, ip))
+                })
+                .collect();
+            if listed.is_empty() {
+                (
+                    DefenseState::Enforced,
+                    format!("{}: the agent's allowlist leaves them out", metadata_list()),
+                )
+            } else {
+                (
+                    DefenseState::Off,
+                    format!(
+                        "the task's allowlist includes {}, so the agent can reach them",
+                        listed.join(", ")
+                    ),
+                )
+            }
+        }
+        Network::Open | Network::Block(_) if let Some(key) = plan.metadata_opt_out => {
+            metadata_missing(&format!("the task opts out ({key} = true)"), true)
+        }
+        Network::Open | Network::Block(_) if plan.root_agent => metadata_missing(
+            "the agent runs as root, which could remove a firewall rule; none is installed",
+            true,
+        ),
+        Network::Open | Network::Block(_) if !caps.firewall => metadata_missing(
+            &format!("the {backend} backend installs no firewall"),
+            false,
+        ),
+        Network::Open | Network::Block(_) => (
+            DefenseState::NotSupported,
+            format!("{} were not refused", metadata_list()),
+        ),
+    }
+}
+
+/// The `cloud_metadata` record when the refusal was wanted and is not in
+/// place, so the agent can reach them.
+fn metadata_missing(why: &str, off: bool) -> (DefenseState, String) {
+    (
+        if off {
+            DefenseState::Off
+        } else {
+            DefenseState::NotSupported
+        },
+        format!("{why}, so the agent can reach {}", metadata_list()),
+    )
+}
+
+/// The `cloud_metadata` record for an installed refusal that the self-test
+/// passed: enforced only when the rules' packet counter rose on the agent
+/// user's refused connect, which shows the rule refused it (a host's own
+/// block, outside the sandbox, never counts here). `hits` is the counter
+/// per family, `None` without that family's iptables.
+fn metadata_proof(scope: &Scope, hits: (Option<u64>, Option<u64>)) -> (DefenseState, String) {
+    let who = match scope {
+        Scope::AgentUser(u) => format!("`{u}` and every other non-root user"),
+        Scope::Everyone => "every user, root included (the reference solution runs as root)".into(),
+    };
+    let v6 = if hits.1.is_some() {
+        ""
+    } else {
+        " (IPv4 only: no ip6tables, and no IPv6 route out)"
+    };
+    let what = format!(
+        "the uid firewall refuses TCP from {who} to {} on every port but 53{v6}",
+        metadata_list()
+    );
+    match hits.0 {
+        Some(n) if n > 0 => (
+            DefenseState::Enforced,
+            format!(
+                "{what}; proof: the agent user's connect to {}:80 was refused and the rule counted {n} packet{}",
+                METADATA_V4[0],
+                if n == 1 { "" } else { "s" }
+            ),
+        ),
+        _ => (
+            DefenseState::NotSupported,
+            format!(
+                "nothing shows the rule refused the agent user's connect to {}:80 (its packet counter did not rise), so the agent may reach {}; {what}",
+                METADATA_V4[0],
+                metadata_list()
+            ),
+        ),
+    }
+}
+
+/// The `network_policy` note of an open agent network (E2's B6).
+fn open_note(metadata: Option<&(DefenseState, String)>) -> String {
+    match metadata {
+        Some((DefenseState::Enforced, _)) => {
+            "agent: open: everything but the cloud metadata endpoints (see cloud_metadata)".into()
+        }
+        _ => "agent: open: everything; the cloud metadata endpoints are not proven refused (see cloud_metadata)".into(),
     }
 }
 
@@ -547,11 +769,31 @@ pub async fn enforce(
     root_attempt: bool,
 ) -> Outcome {
     let mut out = enforce_stage(sb, caps, plan, stage, host, user, self_test, root_attempt).await;
-    // With an open network only the daemon guard ran: a failure is its own.
-    if plan.phase(stage).network == Network::Open
-        && let Some(failed) = out.defense.take()
+    let open = plan.phase(stage).network == Network::Open;
+    // With an open network only the daemon guard and the metadata refusal
+    // ran: a failure is theirs, except the verifier's own check made before
+    // the agent runs, which stays the network's.
+    if open
+        && let Some(failed) = out
+            .defense
+            .take_if(|(_, note)| !note.starts_with("verifier:"))
     {
-        out.root_service = Some(failed);
+        let metadata = plan.metadata(stage, host, caps);
+        if metadata {
+            out.metadata = Some(failed.clone());
+        }
+        if !metadata || (caps.root_service && stage == Stage::Agent && host == Host::Agent) {
+            out.root_service = Some(failed);
+        }
+    }
+    if stage == Stage::Agent && host == Host::Agent && out.problem.is_none() {
+        if out.metadata.is_none() {
+            out.metadata = Some(metadata_by_policy(plan, caps, sb.backend()));
+        }
+        // An open network gets a record too (E2's B6).
+        if open {
+            out.defense = Some((DefenseState::Enforced, open_note(out.metadata.as_ref())));
+        }
     }
     out
 }
@@ -605,6 +847,8 @@ async fn enforce_stage(
         );
     }
     let (want, need) = plan.firewall(stage, host, caps);
+    // The chain refuses the cloud metadata endpoints too.
+    let meta = plan.metadata(stage, host, caps);
     // On a backend whose in-sandbox daemon runs commands as root for anyone
     // who reaches it, the agent's chain refuses the daemon's ports, whatever
     // the task's network: on its own when the policy needs no firewall.
@@ -617,12 +861,18 @@ async fn enforce_stage(
     // The other stage's rules in this sandbox give way to this one's.
     let earlier = shared
         && (plan.firewall(other, host, caps).0 || (caps.root_service && other == Stage::Agent));
-    if open && (guard.is_empty() || root_user) {
+    if open && ((guard.is_empty() && !want) || root_user) {
         if earlier {
             let _ = sb.exec(as_root(rules::remove())).await;
         }
         return Outcome {
             root_service: (!guard.is_empty()).then(|| unguarded("the agent runs as root", true)),
+            metadata: (meta && root_user).then(|| {
+                metadata_missing(
+                    "the agent runs as root, which could remove a firewall rule; none is installed",
+                    true,
+                )
+            }),
             ..Outcome::default()
         };
     }
@@ -644,6 +894,8 @@ async fn enforce_stage(
         Stage::Verifier => Scope::Everyone,
     };
     let mut installed: Option<String> = None;
+    // Why the metadata refusal is not in place, if it is not.
+    let mut meta_missing: Option<String> = None;
     // Why the daemon's ports stay open to the agent, if they do.
     let mut open_ports: Option<(String, bool)> = None;
     // The ports the chain refuses, and those the daemon was found on.
@@ -722,7 +974,7 @@ async fn enforce_stage(
         // at all needs ip6tables, not just an address that routes out.
         let v6_required =
             v6_only || (want && need && (caps.network_none_leaks_ipv6 || !guard.is_empty()));
-        let script = rules::install(&scope, rules_net, guard, v6_only, v6_required);
+        let script = rules::install(&scope, rules_net, guard, v6_only, v6_required, meta);
         let out = match sb.exec(as_root(script)).await {
             Ok(o) => o,
             Err(e) => {
@@ -747,7 +999,7 @@ async fn enforce_stage(
             (Some(how), None) => {
                 installed = report.first("fw-sum").map(str::to_string);
                 if want {
-                    notes.push(rules::describe(&scope, net, how, v6_only));
+                    notes.push(rules::describe(&scope, net, how, v6_only, meta));
                 }
                 if let Some(gap) = report.first("fw-guard-gap") {
                     open_ports = Some((gap.to_string(), false));
@@ -801,6 +1053,9 @@ async fn enforce_stage(
                 if !guard.is_empty() {
                     open_ports = Some((rules::guard_error(&error), false));
                 }
+                if meta {
+                    meta_missing = Some(rules::guard_error(&error));
+                }
             }
         }
     }
@@ -849,13 +1104,16 @@ async fn enforce_stage(
     } else {
         &[]
     };
+    let metadata_missing_record = |why: &str| meta.then(|| metadata_missing(why, false));
     if open && installed.is_none() {
         return Outcome {
             root_service: open_ports.map(|(why, off)| unguarded(&why, off)),
+            metadata: meta_missing.as_deref().and_then(metadata_missing_record),
             ..Outcome::default()
         };
     }
-    let test = selftest::Test::new(net, installed.is_some(), stage, guarded);
+    let meta_installed = meta && installed.is_some();
+    let test = selftest::Test::new(net, installed.is_some(), stage, guarded, meta_installed);
     // The self-test runs as the stage's user. After the agent's turn it uses
     // the verifier's trusted PATH and drops the image's loader variables, so
     // a program the agent planted on the image's PATH is never found or
@@ -880,7 +1138,39 @@ async fn enforce_stage(
         }
     };
     let mut verdict = test.judge(&Report::parse(&ran.stdout));
+    // The metadata rules' packet counter, read right after the agent user's
+    // connects and before any of root's.
+    let meta_hits = if meta_installed {
+        match sb.exec(as_root(rules::metadata_hits())).await {
+            Ok(o) => {
+                let report = Report::parse(&o.stdout);
+                let mut w = report
+                    .first("fw-meta-hits")
+                    .unwrap_or("")
+                    .split_whitespace();
+                let mut n = || w.next().and_then(|x| x.parse::<u64>().ok());
+                (n(), n())
+            }
+            Err(e) => {
+                return Outcome::failed(
+                    format!(
+                        "{}: the firewall's counters could not be read: {e}",
+                        stage.label()
+                    ),
+                    crate::trial::sandbox_problem(phase, e),
+                );
+            }
+        }
+    } else {
+        (None, None)
+    };
     // The agent user must not have changed the rules or the pinned names.
+    // Under an open network with only the metadata refusal installed, a
+    // change leaves that refusal unproven and the trial runs: a root
+    // process in the image (one that manages iptables) is the likelier
+    // cause, and nothing else the trial relies on is in the chain.
+    let only_metadata = open && guard.is_empty();
+    let mut meta_unproven = false;
     if let Some(sum) = &installed {
         match sb.exec(as_root(rules::fingerprint())).await {
             Ok(o) if Report::parse(&o.stdout).first("fw-sum") == Some(sum.as_str()) => {
@@ -890,6 +1180,7 @@ async fn enforce_stage(
                         .push("the agent user could not change the rules".into());
                 }
             }
+            Ok(_) if only_metadata => meta_unproven = true,
             Ok(_) => verdict.leaks.push(
                 "the rules or the pinned names changed after the agent user tried to change them"
                     .into(),
@@ -965,10 +1256,15 @@ async fn enforce_stage(
         // the guard stays, unconfirmed.
         if tool && open {
             return Outcome {
-                root_service: Some(unguarded(
-                    "the guard on the daemon's ports could not be tested (the image has no bash or python3)",
-                    false,
-                )),
+                root_service: (!guard.is_empty()).then(|| {
+                    unguarded(
+                        "the guard on the daemon's ports could not be tested (the image has no bash or python3)",
+                        false,
+                    )
+                }),
+                metadata: metadata_missing_record(
+                    "the refusal could not be tested (the image has no bash or python3)",
+                ),
                 ..Outcome::default()
             };
         }
@@ -1035,11 +1331,22 @@ async fn enforce_stage(
             open,
         ))
     };
+    let metadata = if meta_unproven {
+        metadata_missing_record(
+            "the refusal is unproven: BenchFlow's firewall rules changed while they were tested (a root process in the image may manage iptables)",
+        )
+    } else if meta_installed {
+        Some(metadata_proof(&scope, meta_hits))
+    } else {
+        meta_missing.as_deref().and_then(metadata_missing_record)
+    };
     Outcome {
-        // An open network has no policy to record; the guard is root_service.
+        // An open network's record is made by `enforce`; the guard is
+        // root_service and the metadata refusal cloud_metadata.
         defense: (!open).then_some((DefenseState::Enforced, note)),
         problem: None,
         root_service,
+        metadata,
     }
 }
 
@@ -1236,6 +1543,9 @@ mod tests {
             verifier: phase(verifier),
             separate: false,
             agent_user_from_task: true,
+            root_agent: false,
+            // Tests of the metadata refusal turn it on.
+            metadata_opt_out: Some("allow_cloud_metadata"),
         }
     }
 
@@ -1347,6 +1657,12 @@ mod tests {
         lost: bool,
         /// What root's reach probe gets (`BF reached ...` lines).
         reach: &'static str,
+        /// What a blocked canary gets.
+        block: &'static str,
+        /// What the metadata counter script prints.
+        meta_hits: &'static str,
+        /// What a later fingerprint check prints.
+        sum_after: &'static str,
         ran: std::sync::Mutex<Vec<(Option<String>, String)>>,
         /// (command, PATH, unset) of every exec, for the self-test checks.
         env: std::sync::Mutex<Vec<ExecEnv>>,
@@ -1363,6 +1679,9 @@ mod tests {
                 root_svc: "reached",
                 lost: false,
                 reach: "BF reached 127.0.0.1:2280\n",
+                block: "refused",
+                meta_hits: "BF fw-meta-hits 1 0\n",
+                sum_after: "BF fw-sum 42\n",
                 ran: Default::default(),
                 env: Default::default(),
             }
@@ -1382,13 +1701,19 @@ mod tests {
                 .collect()
         }
 
-        /// A refusal for every blocked address and no answer for every
+        /// `block` for every blocked address and no answer for every
         /// name a self-test script tries.
-        fn canary_lines(c: &str) -> String {
+        fn canary_lines(c: &str, block: &str) -> String {
             let mut o = String::new();
             for l in c.lines() {
                 if l.contains("BF canary block") {
-                    o.push_str("BF canary block refused 192.0.2.9:443\n");
+                    let target = l
+                        .split(") \"")
+                        .nth(1)
+                        .and_then(|t| t.split([';', ' ']).next())
+                        .unwrap_or("")
+                        .trim_matches('\'');
+                    o.push_str(&format!("BF canary block {block} {target}\n"));
                 } else if l.contains("BF canary dns") {
                     o.push_str("BF canary dns unresolved example.org\n");
                 }
@@ -1439,11 +1764,13 @@ mod tests {
                     "Daytona lost the sandbox while checking a command (HTTP 404)".into(),
                 ));
             }
-            let stdout = if c.contains("jump_new") {
+            let stdout = if c.contains("fw-meta-hits") {
+                self.meta_hits.to_string()
+            } else if c.contains("jump_new") {
                 self.install.to_string()
             } else if c.contains("BF tamper") {
                 let mut o = Self::svc_lines(&c, self.svc);
-                o.push_str(&Self::canary_lines(&c));
+                o.push_str(&Self::canary_lines(&c, self.block));
                 o.push_str("BF tamper tried\n");
                 o
             } else if c.contains("BF canary svc") {
@@ -1463,13 +1790,13 @@ mod tests {
                     },
                 )
             } else if c.contains("BF canary") {
-                Self::canary_lines(&c)
+                Self::canary_lines(&c, self.block)
             } else if c.contains("BF reached") {
                 self.reach.into()
             } else if c.contains("hosts.tmp") {
                 String::new()
             } else {
-                "BF fw-sum 42\n".into()
+                self.sum_after.into()
             };
             Ok(benchflow_sandbox::ExecOutput {
                 exit_code: 0,
@@ -1526,7 +1853,10 @@ mod tests {
         let fake = Fake::new(INSTALLED, "refused");
         let out = agent_stage(&fake, Network::Open, "agent").await;
         assert!(out.problem.is_none(), "{:?}", out.problem);
-        assert!(out.defense.is_none(), "an open network records no policy");
+        // E2's B6: an open network has a record too.
+        let (state, note) = out.defense.expect("an open network's record");
+        assert_eq!(state, DefenseState::Enforced);
+        assert!(note.starts_with("agent: open: everything;"), "{note}");
         let (state, note) = out.root_service.expect("root_service recorded");
         assert_eq!(state, DefenseState::Enforced, "{note}");
         assert!(
@@ -2139,8 +2469,12 @@ mod tests {
             false,
         )
         .await;
-        assert!(out.root_service.is_none() && out.defense.is_none());
+        assert!(out.root_service.is_none());
+        // The task opts out of the metadata refusal (the plan's default
+        // here), so nothing is installed on Docker, and both say so.
         assert!(fake.ran().is_empty());
+        assert_eq!(out.metadata.unwrap().0, DefenseState::Off);
+        assert!(out.defense.unwrap().1.starts_with("agent: open"));
     }
 
     #[test]
@@ -2149,17 +2483,33 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello");
         let task = benchflow_task::load(&fixture).expect("the hello fixture loads");
         assert_eq!(*task.agent_network(), Network::Open);
-        assert!(firewall_layer(&task, Host::Agent, &daytona_root_service()).is_some());
-        assert!(firewall_layer(&task, Host::Agent, &docker()).is_none());
-        assert!(firewall_layer(&task, Host::SeparateVerifier, &daytona_root_service()).is_none());
+        assert!(firewall_layer(&task, Host::Agent, &daytona_root_service(), "agent").is_some());
+        // Docker's open agent sandbox gets it for the metadata refusal,
+        // unless the task opts out.
+        assert!(firewall_layer(&task, Host::Agent, &docker(), "agent").is_some());
+        let mut opted_out = task.clone();
+        opted_out.sandbox.allow_cloud_metadata = true;
+        assert!(firewall_layer(&opted_out, Host::Agent, &docker(), "agent").is_none());
+        assert!(
+            firewall_layer(&opted_out, Host::Agent, &daytona_root_service(), "agent").is_some()
+        );
+        assert!(
+            firewall_layer(
+                &task,
+                Host::SeparateVerifier,
+                &daytona_root_service(),
+                "agent"
+            )
+            .is_none()
+        );
         // A separate verifier with no network on a backend whose block
         // leaves IPv6 open needs iptables too.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/tasks/separate-verifier");
         let mut task = benchflow_task::load(&fixture).expect("the fixture loads");
         task.verifier.network = Some(Network::None);
-        assert!(firewall_layer(&task, Host::SeparateVerifier, &daytona()).is_some());
-        assert!(firewall_layer(&task, Host::SeparateVerifier, &docker()).is_none());
+        assert!(firewall_layer(&task, Host::SeparateVerifier, &daytona(), "agent").is_some());
+        assert!(firewall_layer(&task, Host::SeparateVerifier, &docker(), "agent").is_none());
     }
 
     #[tokio::test]
@@ -2341,9 +2691,460 @@ mod tests {
             "{}",
             pr.message
         );
+        // F1 round 2 (F1-A, low): the verifier's failure is the network's
+        // record, not the daemon guard's or the metadata refusal's.
+        let fake = Fake::new(
+            "BF fw-v6 local\nBF fw-guard-ports 2280\nBF fw-guard-gap no ip6tables\nBF fw /usr/sbin/iptables v6=local fw6=none reject=REJECT\nBF fw-sum 42\n",
+            "refused",
+        );
+        let p = guarded_plan(Network::Open, Network::None, &[]);
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+            false,
+        )
+        .await;
+        assert!(out.problem.is_some());
+        let (state, note) = out.defense.expect("the network's record");
+        assert_eq!(state, DefenseState::Failed);
+        assert!(note.starts_with("verifier:"), "{note}");
+        assert!(out.metadata.is_none() && out.root_service.is_none());
         // With ip6tables there it goes on.
         let fake = Fake::new(INSTALLED, "refused");
         let out = agent_stage_with(&fake, Network::Open, Network::None, "agent").await;
         assert!(out.problem.is_none(), "{:?}", out.problem);
+    }
+
+    /// The plan of a task that keeps the metadata refusal (no opt-out).
+    fn guarded_plan(agent: Network, verifier: Network, ranges: &[&str]) -> Plan {
+        Plan {
+            metadata_opt_out: None,
+            ..plan(agent, verifier, ranges)
+        }
+    }
+
+    /// The agent's phase on Docker with the metadata refusal on.
+    async fn docker_agent(fake: &Fake, p: &Plan, user: &str, root_attempt: bool) -> Outcome {
+        enforce(
+            fake,
+            &docker(),
+            p,
+            Stage::Agent,
+            Host::Agent,
+            user,
+            SelfTest::default(),
+            root_attempt,
+        )
+        .await
+    }
+
+    const DOCKER_INSTALLED: &str = "BF fw-v6 absent\nBF fw /usr/sbin/iptables v6=absent fw6=none reject=REJECT\nBF fw-sum 42\n";
+
+    /// F1 (rc.2, decision 30 of the break campaign; E2's B5): under the
+    /// default open network on Docker, the agent user could open TCP to
+    /// the cloud metadata server (GCE's 169.254.169.254 from a sandbox on
+    /// the VM). Now the sandbox starts with `NET_ADMIN`, the agent's chain
+    /// refuses the metadata endpoints, the self-test tries one as the agent
+    /// user, and the record is enforced only once the rule's counter rose.
+    #[tokio::test]
+    async fn an_open_network_on_docker_refuses_the_metadata_endpoints_to_the_agent() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        assert_eq!(
+            p.start_policy(Host::Agent, &docker()),
+            NetworkPolicy::Filtered { allow: None },
+            "root needs NET_ADMIN to install the rule"
+        );
+        assert_eq!(
+            p.start_policy(Host::SeparateVerifier, &docker()),
+            NetworkPolicy::Open
+        );
+        assert_eq!(
+            p.firewall(Stage::Agent, Host::Agent, &docker()),
+            (true, false)
+        );
+        assert_eq!(
+            p.firewall(Stage::Verifier, Host::Agent, &docker()),
+            (false, false)
+        );
+        let fake = Fake::new(DOCKER_INSTALLED, "refused");
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        assert!(out.root_service.is_none(), "Docker has no daemon to guard");
+        let (state, note) = out.metadata.expect("cloud_metadata recorded");
+        assert_eq!(state, DefenseState::Enforced, "{note}");
+        assert!(note.contains("169.254.169.254, 169.254.170.2"), "{note}");
+        assert!(note.contains("fd00:ec2::254"), "{note}");
+        assert!(
+            note.contains("proof: the agent user's connect to 169.254.169.254:80 was refused and the rule counted 1 packet"),
+            "{note}"
+        );
+        assert!(
+            note.contains("`agent` and every other non-root user"),
+            "{note}"
+        );
+        let (state, note) = out.defense.expect("an open network's record");
+        assert_eq!(state, DefenseState::Enforced);
+        assert_eq!(
+            note,
+            "agent: open: everything but the cloud metadata endpoints (see cloud_metadata)"
+        );
+        let ran = fake.ran();
+        // The install, as root, covers the agent's uid.
+        assert_eq!(ran[0].0.as_deref(), Some("root"), "{:?}", ran[0]);
+        let install = &ran[0].1;
+        assert!(install.contains("--uid-owner \"$uid\""), "{install}");
+        for addr in METADATA_V4.iter().chain(METADATA_V6) {
+            assert!(
+                install.contains(&format!("-d {addr} -p tcp ! --dport 53 -j \"$RT\" $RTO")),
+                "{addr}: {install}"
+            );
+        }
+        // Nothing else is refused: no daemon guard, no catch-all.
+        assert!(!install.contains("--dport \"$port\""), "{install}");
+        assert!(!install.contains("-j RETURN || exit_rule"), "{install}");
+        // The self-test runs as the agent and tries the endpoint.
+        let selftest = ran
+            .iter()
+            .find(|(_, c)| c.contains("BF tamper"))
+            .expect("a self-test");
+        assert_eq!(selftest.0.as_deref(), Some("agent"));
+        assert!(selftest.1.contains("169.254.169.254 80"), "{}", selftest.1);
+        // The counter is read as root, right after the self-test.
+        let hits = ran
+            .iter()
+            .position(|(_, c)| c.contains("fw-meta-hits"))
+            .expect("the counter read");
+        assert_eq!(ran[hits].0.as_deref(), Some("root"));
+        assert!(ran[hits - 1].1.contains("BF tamper"));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_the_counter_does_not_show_is_not_claimed() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        let mut fake = Fake::new(DOCKER_INSTALLED, "refused");
+        fake.meta_hits = "BF fw-meta-hits 0 -\n";
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none());
+        let (state, note) = out.metadata.unwrap();
+        assert_eq!(state, DefenseState::NotSupported, "{note}");
+        assert!(note.starts_with("nothing shows the rule refused"), "{note}");
+        assert!(note.contains("counter did not rise"), "{note}");
+        assert!(
+            out.defense
+                .unwrap()
+                .1
+                .contains("the cloud metadata endpoints are not proven refused")
+        );
+    }
+
+    /// An agent user that reaches a metadata endpoint past the installed
+    /// rule stops the trial, as any leak of a policy does.
+    #[tokio::test]
+    async fn a_metadata_endpoint_the_agent_reaches_stops_the_trial() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        let mut fake = Fake::new(DOCKER_INSTALLED, "refused");
+        fake.block = "reached";
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        let problem = out.problem.expect("refused");
+        assert_eq!(
+            (problem.code.as_str(), problem.owner),
+            ("R109", Owner::Benchflow)
+        );
+        assert!(
+            problem
+                .message
+                .contains("reached the blocked 169.254.169.254:80"),
+            "{}",
+            problem.message
+        );
+        assert_eq!(out.metadata.unwrap().0, DefenseState::Failed);
+        assert!(out.root_service.is_none(), "Docker has no daemon guard");
+    }
+
+    /// Decision: an image that cannot get iptables (no package manager), or
+    /// a kernel that refuses the rule, does not stop an open trial; the
+    /// record says why, as the daemon guard's does.
+    #[tokio::test]
+    async fn an_open_trial_without_iptables_runs_and_says_why() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        let fake = Fake::new("BF fw-v6 absent\nBF fw-error no-iptables\n", "refused");
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        let (state, note) = out.metadata.unwrap();
+        assert_eq!(state, DefenseState::NotSupported);
+        assert!(
+            note.starts_with("the task's image has no iptables")
+                && note.contains("so the agent can reach the cloud metadata endpoints"),
+            "{note}"
+        );
+        assert_eq!(fake.ran().len(), 1, "no self-test without a rule");
+        let fake = Fake::new(
+            "BF fw-v6 absent\nBF fw-error no-permission iptables: Permission denied\n",
+            "refused",
+        );
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none());
+        let (state, note) = out.metadata.unwrap();
+        assert_eq!(state, DefenseState::NotSupported);
+        assert!(note.contains("cannot change packet filters"), "{note}");
+        // An image with no bash or python3 cannot test the rule.
+        let fake = Fake::new(DOCKER_INSTALLED, "notool");
+        let mut fake = fake;
+        fake.block = "notool";
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        assert_eq!(out.metadata.unwrap().0, DefenseState::NotSupported);
+    }
+
+    #[tokio::test]
+    async fn a_root_agent_or_an_opt_out_turns_the_metadata_refusal_off() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        let fake = Fake::new(DOCKER_INSTALLED, "refused");
+        let out = docker_agent(&fake, &p, "root", false).await;
+        assert!(out.problem.is_none());
+        let (state, note) = out.metadata.unwrap();
+        assert_eq!(state, DefenseState::Off);
+        assert!(note.starts_with("the agent runs as root"), "{note}");
+        assert!(fake.ran().is_empty(), "nothing installed for a root agent");
+        // The task's opt-out: no rule, no NET_ADMIN, no layer.
+        let p = plan(Network::Open, Network::Open, &[]);
+        assert_eq!(p.start_policy(Host::Agent, &docker()), NetworkPolicy::Open);
+        let fake = Fake::new(DOCKER_INSTALLED, "refused");
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(fake.ran().is_empty());
+        let (state, note) = out.metadata.unwrap();
+        assert_eq!(state, DefenseState::Off);
+        assert!(
+            note.starts_with("the task opts out (allow_cloud_metadata = true), so the agent can reach the cloud metadata endpoints (169.254.169.254,"),
+            "{note}"
+        );
+        assert_eq!(
+            opt_out_key(benchflow_task::package::Format::TaskMd),
+            "[sandbox] x-allow-cloud-metadata"
+        );
+    }
+
+    /// F1 round 2 (F1-A 2, F1-B 1): a root agent under an open network keeps
+    /// an open sandbox on Docker: no `NET_ADMIN`, no iptables layer, nothing
+    /// installed. The record says why the refusal is off.
+    #[tokio::test]
+    async fn a_root_agent_gets_no_net_admin_and_no_layer_for_the_metadata_refusal() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tasks/hello");
+        let task = benchflow_task::load(&fixture).expect("the hello fixture loads");
+        assert!(firewall_layer(&task, Host::Agent, &docker(), "agent").is_some());
+        // The sandbox-user setting, or the task's own [agent] user.
+        assert!(firewall_layer(&task, Host::Agent, &docker(), "root").is_none());
+        let mut as_root = task.clone();
+        as_root.agent.user = Some("root".into());
+        assert!(firewall_layer(&as_root, Host::Agent, &docker(), "agent").is_none());
+        for (t, setting) in [(&task, "root"), (&as_root, "agent")] {
+            let p = Plan::resolve(t, setting).await.expect("resolved");
+            assert!(p.root_agent);
+            assert_eq!(p.start_policy(Host::Agent, &docker()), NetworkPolicy::Open);
+            let fake = Fake::new(DOCKER_INSTALLED, "refused");
+            let out = docker_agent(&fake, &p, "root", false).await;
+            assert!(out.problem.is_none(), "{:?}", out.problem);
+            assert!(fake.ran().is_empty(), "nothing installed for a root agent");
+            let (state, note) = out.metadata.expect("cloud_metadata recorded");
+            assert_eq!(state, DefenseState::Off);
+            assert!(
+                note.starts_with("the agent runs as root, which could remove a firewall rule; none is installed, so the agent can reach"),
+                "{note}"
+            );
+        }
+        let p = Plan::resolve(&task, "agent").await.expect("resolved");
+        assert!(!p.root_agent);
+        assert_eq!(
+            p.start_policy(Host::Agent, &docker()),
+            NetworkPolicy::Filtered { allow: None }
+        );
+    }
+
+    /// F1 round 2 (F1-B 2): under an open network on Docker only the
+    /// metadata refusal is installed, so a change to BenchFlow's rules
+    /// during the self-test (a root service in the image that manages
+    /// iptables) leaves the refusal unproven and the trial runs. Where the
+    /// chain holds more (the daemon guard, a blocklist), it still stops it.
+    #[tokio::test]
+    async fn changed_rules_leave_an_open_networks_metadata_refusal_unproven() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        let mut fake = Fake::new(DOCKER_INSTALLED, "refused");
+        fake.sum_after = "BF fw-sum 43\n";
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        let (state, note) = out.metadata.expect("cloud_metadata recorded");
+        assert_eq!(state, DefenseState::NotSupported);
+        assert!(note.starts_with("the refusal is unproven"), "{note}");
+        let (state, note) = out.defense.expect("network_policy recorded");
+        assert_eq!(state, DefenseState::Enforced);
+        assert!(note.contains("not proven refused"), "{note}");
+        // A blocklist's chain is the policy itself: still R109.
+        let p = guarded_plan(
+            Network::Block(vec!["192.0.2.7".into()]),
+            Network::Block(vec!["192.0.2.7".into()]),
+            &["192.0.2.7/32"],
+        );
+        let mut fake = Fake::new(DOCKER_INSTALLED, "refused");
+        fake.sum_after = "BF fw-sum 43\n";
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert_eq!(out.problem.map(|p| p.code), Some("R109".into()));
+        // The daemon guard's chain (Daytona, open): still R109.
+        let mut fake = Fake::new(INSTALLED, "refused");
+        fake.sum_after = "BF fw-sum 43\n";
+        let out = agent_stage(&fake, Network::Open, "agent").await;
+        assert_eq!(out.problem.map(|p| p.code), Some("R109".into()));
+    }
+
+    /// Before the reference solution (root), the chain covers root too, and
+    /// root's own try at the endpoint is refused.
+    #[tokio::test]
+    async fn the_oracle_meets_the_metadata_refusal_too() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        let mut fake = Fake::new(DOCKER_INSTALLED, "refused");
+        fake.reach = "";
+        let out = docker_agent(&fake, &p, "agent", true).await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        let (state, note) = out.metadata.unwrap();
+        assert_eq!(state, DefenseState::Enforced, "{note}");
+        assert!(note.contains("root included"), "{note}");
+        let ran = fake.ran();
+        assert!(ran[0].1.contains("jump_new 1 ||"), "{}", ran[0].1);
+        let root_try = ran
+            .iter()
+            .find(|(u, c)| u.as_deref() == Some("root") && c.contains("BF reached"))
+            .expect("root tries the endpoint");
+        assert!(root_try.1.contains("169.254.169.254"), "{}", root_try.1);
+        // A root that reached it is a leak.
+        let mut fake = Fake::new(DOCKER_INSTALLED, "refused");
+        fake.reach = "BF reached 169.254.169.254:80\n";
+        let out = docker_agent(&fake, &p, "agent", true).await;
+        assert_eq!(out.problem.map(|p| p.code), Some("R109".into()));
+    }
+
+    #[tokio::test]
+    async fn a_blocklist_refuses_the_metadata_endpoints_and_other_policies_record_theirs() {
+        let block = Network::Block(vec!["192.0.2.50".into()]);
+        let p = guarded_plan(block, Network::Open, &["192.0.2.50/32"]);
+        let fake = Fake::new(DOCKER_INSTALLED, "refused");
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        assert_eq!(out.metadata.unwrap().0, DefenseState::Enforced);
+        let (_, note) = out.defense.unwrap();
+        assert!(
+            note.contains("the listed addresses refused; 0 names pinned to 192.0.2.1 and 100::1; the cloud metadata endpoints refused"),
+            "{note}"
+        );
+        let install = &fake.ran()[0].1;
+        assert!(
+            install.contains("-d 169.254.169.254 -p tcp ! --dport 53"),
+            "{install}"
+        );
+        assert!(install.contains("-d '192.0.2.50/32'") || install.contains("-d 192.0.2.50/32"));
+        // none and an allowlist refuse them already: no extra rule.
+        let fake = Fake::new(DOCKER_INSTALLED, "refused");
+        let p = guarded_plan(Network::None, Network::Open, &[]);
+        let out = docker_agent(&fake, &p, "agent", false).await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        let (state, note) = out.metadata.unwrap();
+        assert_eq!(state, DefenseState::Enforced);
+        assert!(note.ends_with("the agent's network is none"), "{note}");
+        assert!(!fake.ran()[0].1.contains("169.254.169.254"));
+        let allow = Network::Allow(vec!["169.254.0.0/16".into()]);
+        let p = guarded_plan(allow, Network::Open, &["169.254.0.0/16"]);
+        assert_eq!(
+            metadata_by_policy(&p, &docker(), "docker"),
+            (
+                DefenseState::Off,
+                "the task's allowlist includes 169.254.169.254, 169.254.170.2, 169.254.170.23, 169.254.0.23, so the agent can reach them".into()
+            )
+        );
+        let p = guarded_plan(
+            Network::Allow(vec!["10.0.0.0/8".into()]),
+            Network::Open,
+            &["10.0.0.0/8"],
+        );
+        assert_eq!(
+            metadata_by_policy(&p, &docker(), "docker").0,
+            DefenseState::Enforced
+        );
+        // A backend without a firewall cannot refuse them.
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        let none = Capabilities::default();
+        assert!(!p.metadata(Stage::Agent, Host::Agent, &none));
+        assert_eq!(
+            metadata_by_policy(&p, &none, "local").0,
+            DefenseState::NotSupported
+        );
+    }
+
+    /// On Daytona the open network's chain already holds the daemon guard;
+    /// the metadata refusal joins it, and the verifier's phase removes both.
+    #[tokio::test]
+    async fn on_daytona_the_metadata_refusal_joins_the_daemon_guard() {
+        let p = guarded_plan(Network::Open, Network::Open, &[]);
+        // Daytona switches networks itself: an open phase stays open there.
+        assert_eq!(
+            p.start_policy(Host::Agent, &daytona_root_service()),
+            NetworkPolicy::Open
+        );
+        let fake = Fake::new(INSTALLED, "refused");
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+            false,
+        )
+        .await;
+        assert!(out.problem.is_none(), "{:?}", out.problem);
+        assert_eq!(out.root_service.unwrap().0, DefenseState::Enforced);
+        assert_eq!(out.metadata.unwrap().0, DefenseState::Enforced);
+        let install = &fake.ran()[0].1;
+        assert!(install.contains("--dport \"$port\""), "{install}");
+        assert!(
+            install.contains("-d fd20:ce::254 -p tcp ! --dport 53"),
+            "{install}"
+        );
+        // A leak of the daemon's ports fails both records of the phase.
+        let fake = Fake::new(INSTALLED, "reached");
+        let out = enforce(
+            &fake,
+            &daytona_root_service(),
+            &p,
+            Stage::Agent,
+            Host::Agent,
+            "agent",
+            SelfTest::default(),
+            false,
+        )
+        .await;
+        assert_eq!(out.root_service.unwrap().0, DefenseState::Failed);
+        assert_eq!(out.metadata.unwrap().0, DefenseState::Failed);
+        // The verifier's phase removes the chain and records nothing new.
+        let fake = Fake::new(INSTALLED, "refused");
+        let out = enforce(
+            &fake,
+            &docker(),
+            &p,
+            Stage::Verifier,
+            Host::Agent,
+            "root",
+            SelfTest::default(),
+            false,
+        )
+        .await;
+        assert!(out.metadata.is_none() && out.defense.is_none());
+        let ran = fake.ran();
+        assert_eq!(ran.len(), 1);
+        assert!(ran[0].1.contains("unhook \"$fw4\""), "{}", ran[0].1);
     }
 }

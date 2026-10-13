@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+pub(crate) use harbor::METADATA_OPT_OUT;
 pub use harbor::{Loss, LossSeverity};
 pub use tbench::{Resources, discover_tbench, is_tbench};
 

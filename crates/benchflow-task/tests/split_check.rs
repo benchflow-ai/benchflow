@@ -403,3 +403,66 @@ fn a_reward_range_may_only_widen_zero_to_one() {
     let report = benchflow_task::check(&root, &CheckOptions { deep: true });
     assert_eq!(report.package.unwrap().verifier.reward_range, None);
 }
+
+/// F1 (rc.2, round 2): `[metadata] x-allow-cloud-metadata = true` is
+/// bench's opt-out from refusing the cloud metadata endpoints; it is read
+/// without a warning, and a value that is not a boolean (as the split
+/// layout reads one: `"yes"` is) is not. `[environment]` cannot hold it:
+/// BenchFlow 0.8 refuses a key it does not know there, so it is an unknown
+/// key here too, and opts nothing out.
+#[test]
+fn the_cloud_metadata_opt_out_is_read() {
+    let d = tempfile::tempdir().unwrap();
+    let write = |toml: &str| {
+        for (rel, text) in [
+            ("task.toml", toml),
+            ("instruction.md", "Do it.\n"),
+            ("environment/Dockerfile", "FROM ubuntu:24.04\n"),
+            ("tests/test.sh", "echo 1 > /logs/verifier/reward.txt\n"),
+        ] {
+            let path = d.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        benchflow_task::check(d.path(), &CheckOptions { deep: true })
+    };
+    let report = write("schema_version = \"1.4\"\n\n[metadata]\nx-allow-cloud-metadata = true\n");
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    let pkg = report.package.expect("a package");
+    assert!(pkg.sandbox.allow_cloud_metadata);
+    assert_eq!(pkg.sandbox.network, Network::Open);
+    let report = write("schema_version = \"1.4\"\n\n[environment]\nnetwork_mode = \"public\"\n");
+    assert!(
+        !report
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+    let report =
+        write("schema_version = \"1.4\"\n\n[metadata]\nx-allow-cloud-metadata = \"maybe\"\n");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("x-allow-cloud-metadata")),
+        "{:#?}",
+        report.diagnostics
+    );
+    let report = write("schema_version = \"1.4\"\n\n[environment]\nallow_cloud_metadata = true\n");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "X100" && d.message.contains("allow_cloud_metadata")),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        !report
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+}

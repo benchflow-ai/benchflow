@@ -1,4 +1,39 @@
 {
+  "v06/metadata-in-sandbox": {
+    "ok": false,
+    "error": "ValidationError: 1 validation error for TaskConfig"
+  },
+  "v06/metadata-opt-out": {
+    "ok": true,
+    "instruction": "# Metadata opt-out\n\nThe task opts out of bench's refusal of the cloud metadata endpoints, in the one table BenchFlow 0.8 loads with any key.",
+    "name": "acme/metadata-opt-out",
+    "agent": {
+      "timeout_sec": 120.0,
+      "user": null,
+      "network_mode": null,
+      "allowed_hosts": null
+    },
+    "sandbox": {
+      "docker_image": null,
+      "cpus": 1,
+      "memory_mb": 2048,
+      "storage_mb": 10240,
+      "gpus": 0,
+      "workdir": null,
+      "env": {},
+      "network_mode": "public",
+      "allowed_hosts": null,
+      "build_timeout_sec": 600.0
+    },
+    "verifier": {
+      "timeout_sec": 90.0,
+      "user": null,
+      "env": {}
+    },
+    "solution": {
+      "env": {}
+    }
+  },
   "v06/plain": {
     "ok": true,
     "instruction": "# Plain task\n\nWrite `/app/out.txt` with the answer.",
@@ -152,6 +187,37 @@
       "env": {
         "HINT": "1"
       }
+    }
+  },
+  "split/metadata-opt-out": {
+    "ok": true,
+    "instruction": "The task opts out of the refusal of the cloud metadata endpoints.\n",
+    "name": "acme/metadata-opt-out",
+    "agent": {
+      "timeout_sec": 120.0,
+      "user": null,
+      "network_mode": null,
+      "allowed_hosts": null
+    },
+    "sandbox": {
+      "docker_image": null,
+      "cpus": 1,
+      "memory_mb": 2048,
+      "storage_mb": 10240,
+      "gpus": 0,
+      "workdir": null,
+      "env": {},
+      "network_mode": "public",
+      "allowed_hosts": null,
+      "build_timeout_sec": 600.0
+    },
+    "verifier": {
+      "timeout_sec": 90.0,
+      "user": null,
+      "env": {}
+    },
+    "solution": {
+      "env": {}
     }
   },
   "split/refused": {

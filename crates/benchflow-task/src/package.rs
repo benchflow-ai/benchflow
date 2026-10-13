@@ -122,6 +122,12 @@ pub struct SandboxPolicy {
     pub skills_dir: Option<String>,
     /// MCP servers, as the task wrote them (Harbor's server tables).
     pub mcp: Vec<serde_json::Value>,
+    /// The agent may reach the cloud metadata endpoints (169.254.169.254
+    /// and the like), which BenchFlow otherwise refuses to the agent user
+    /// under an open network or a blocklist. Left out of records when
+    /// false, so earlier records read the same.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_cloud_metadata: bool,
 }
 
 /// The agent's phase.

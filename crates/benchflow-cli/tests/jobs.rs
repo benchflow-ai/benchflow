@@ -1112,6 +1112,65 @@ fn results_warn_once_when_model_agents_ran_without_the_daemon_guard() {
     );
 }
 
+/// F1 (rc.2): a model agent that could reach the cloud metadata endpoints
+/// (the task opted out, or the refusal could not be installed) gets one
+/// warning line per job in `bench results`, with the first trial's reason;
+/// refused endpoints and the oracle do not.
+#[test]
+fn results_warn_once_when_model_agents_could_reach_the_cloud_metadata_endpoints() {
+    let d = tempfile::tempdir().unwrap();
+    write_job(d.path(), "j", &[]);
+    let opted = "the task opts out ([metadata] x-allow-cloud-metadata = true), so the agent can reach the cloud metadata endpoints (169.254.169.254, 169.254.170.2, 169.254.170.23, 100.100.100.200, 168.63.129.16, fd00:ec2::254, fd00:ec2::23, fd20:ce::254)";
+    let trial = |i: usize, agent: &str, state: &str, note: &str| {
+        let dir = d.path().join(format!("jobs/j/t{i}__0000000{i}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("result.json"),
+            serde_json::json!({
+                "task_name": format!("t{i}"), "rollout_name": format!("t{i}__0000000{i}"),
+                "agent": agent, "model": "mimo/mimo-v2.6-flash", "status": "scored",
+                "passed": true, "rewards": {"reward": 1.0},
+                "defenses": {"cloud_metadata": {"name": "cloud_metadata", "state": state, "note": note}},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    trial(0, "opencode", "off", opted);
+    trial(
+        1,
+        "opencode",
+        "not-supported",
+        "the task's image has no iptables, and BenchFlow could not install it, so the agent can reach the cloud metadata endpoints",
+    );
+    trial(2, "opencode", "enforced", "the uid firewall refuses TCP");
+    trial(3, "oracle", "off", opted);
+    let out = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(flat.matches("cloud metadata endpoints").count(), 1, "{out}");
+    assert!(
+        flat.contains(
+            "2 trials ran a model agent that could reach the cloud metadata endpoints (the task opts out ([metadata] x-allow-cloud-metadata = true));"
+        ),
+        "{out}"
+    );
+    // A job whose agents met the refusal says nothing.
+    write_job(d.path(), "k", &[1.0]);
+    let clean = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/k"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8(clean.stdout)
+            .unwrap()
+            .contains("metadata")
+    );
+}
+
 /// `bench view --port N` with N taken says the port is taken, not that the
 /// folder given is wrong.
 #[test]

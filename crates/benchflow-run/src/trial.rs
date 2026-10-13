@@ -890,6 +890,7 @@ impl<'a> Trial<'a> {
             self.task(),
             &self.spec.attempt,
             &self.rt.provider.capabilities(),
+            &self.rt.options.sandbox_user,
         );
         let spec = images::spec_for(self.task(), layers);
         let log_path = self.spec.dir.join("image.log");
@@ -925,7 +926,8 @@ impl<'a> Trial<'a> {
         host: netpolicy::Host,
     ) -> Result<Box<dyn Sandbox>, Problem> {
         if self.net.is_none() {
-            self.net = Some(netpolicy::Plan::resolve(self.task()).await?);
+            self.net =
+                Some(netpolicy::Plan::resolve(self.task(), &self.rt.options.sandbox_user).await?);
         }
         let caps = self.rt.provider.capabilities();
         let policy = self
@@ -1100,6 +1102,14 @@ impl<'a> Trial<'a> {
         }
         if let Some((state, note)) = out.root_service {
             defense(&mut self.defenses, "root_service", state, Some(note));
+        }
+        if let Some((state, note)) = out.metadata {
+            defense(
+                &mut self.defenses,
+                netpolicy::METADATA_DEFENSE,
+                state,
+                Some(note),
+            );
         }
         match out.problem {
             Some(p) => Err(p),
@@ -2516,6 +2526,7 @@ impl<'a> Trial<'a> {
             &task,
             netpolicy::Host::SeparateVerifier,
             &self.rt.provider.capabilities(),
+            &self.rt.options.sandbox_user,
         ) {
             base.layers.insert(0, layer);
         }

@@ -330,6 +330,7 @@ pub(crate) fn build(cfg: &Config, parts: Parts<'_>) -> TaskPackage {
             .then(|| PathBuf::from("environment/skills")),
         skills_dir,
         mcp: s.mcp_servers.clone(),
+        allow_cloud_metadata: s.allow_cloud_metadata.unwrap_or(false),
     };
 
     refuse_host_templates(&mut refused, &names.field("sandbox", "env"), &s.env);

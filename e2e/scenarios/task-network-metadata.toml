@@ -1,0 +1,24 @@
+# The cloud metadata endpoints under the default open network: the agent's chain refuses them, the self-test's connect is counted by the rule (a block at the host never moves that counter), the oracle and nop still score 1 and 0, and a task that opts out records it.
+tier = "full"
+needs = ["sandbox"]
+tasks = ["hello", "metadata-opt-out"]
+
+[[step]]
+name = "the oracle (root, inside the chain) scores 1 with the endpoints refused and the refusal proven"
+run = ["run", "tasks/hello", "-s", "{backend}", "--job", "o"]
+exit = 0
+timeout = 900
+trials = [{ job = "o", status = "scored", reward = 1.0, result = { "defenses.cloud_metadata.state" = "enforced", "defenses.cloud_metadata.note" = { matches = "root included.*proof: the agent user's connect to 169\\.254\\.169\\.254:80 was refused and the rule counted" }, "defenses.network_policy.note" = { matches = "^agent: open: everything but the cloud metadata endpoints" } } }]
+
+[[step]]
+name = "nop scores 0; the rule covers the agent user and other non-root users"
+run = ["run", "tasks/hello", "-a", "nop", "-s", "{backend}", "--job", "n"]
+exit = 0
+trials = [{ job = "n", status = "scored", reward = 0.0, result = { "defenses.cloud_metadata.state" = "enforced", "defenses.cloud_metadata.note" = { matches = "every other non-root user.*proof:" } } }]
+
+[[step]]
+name = "a task that opts out installs nothing for it and records off"
+run = ["run", "tasks/metadata-opt-out", "-s", "{backend}", "--job", "out"]
+exit = 0
+timeout = 900
+trials = [{ job = "out", status = "scored", reward = 1.0, result = { "defenses.cloud_metadata.state" = "off", "defenses.cloud_metadata.note" = { matches = "x-allow-cloud-metadata = true" } } }]

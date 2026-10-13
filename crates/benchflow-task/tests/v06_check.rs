@@ -156,3 +156,37 @@ fn a_task_format_plugin_task_is_refused() {
         refusal[0].message
     );
 }
+
+/// F1 (rc.2, round 2): in BenchFlow 0.8's task.md the cloud metadata
+/// opt-out is `metadata: {x-allow-cloud-metadata: true}`, which 0.8 loads
+/// (`tests/reference_08.rs` holds what 0.8 read); in `sandbox` it is an
+/// unknown key, which 0.8 refuses, so it is an error here too.
+#[test]
+fn the_cloud_metadata_opt_out_is_read_from_metadata() {
+    let report = check("v06/metadata-opt-out");
+    assert_eq!(report.format, Some(Format::TaskMdV06));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        report
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+    let report = check("v06/metadata-in-sandbox");
+    let errors = with_code(&report, "X201");
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("allow_cloud_metadata")),
+        "{:#?}",
+        report.diagnostics
+    );
+}

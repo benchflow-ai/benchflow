@@ -734,7 +734,50 @@ pub fn score_warnings(recs: &[TrialRecord]) -> Vec<String> {
             ui::width(),
         ));
     }
+    // One line per job: model agents that could reach the cloud metadata
+    // endpoints (instance credentials on a cloud host), with the first
+    // trial's reason.
+    let reached: Vec<(&&TrialRecord, &str)> = counted
+        .iter()
+        .filter_map(|r| r.model_reached_metadata().map(|why| (r, why)))
+        .collect();
+    if let Some((_, why)) = reached.first() {
+        let why = short_reason(why);
+        out.push(ui::wrap(
+            &format!("  {} ", warn_mark()),
+            &format!(
+                "{} ran a model agent that could reach the cloud metadata endpoints ({why}); on a cloud host that can mean the host's credentials; the record's cloud_metadata says why per trial",
+                plural(reached.len(), "trial")
+            ),
+            4,
+            ui::width(),
+        ));
+    }
     out
+}
+
+/// A defense note's reason, short enough for a one-line warning: the part
+/// before ", so the agent", without its asides in parentheses when long.
+fn short_reason(note: &str) -> String {
+    let why = note.split(", so the agent").next().unwrap_or(note);
+    if why.chars().count() <= 80 {
+        return why.to_string();
+    }
+    let mut out = String::new();
+    let mut depth = 0usize;
+    for c in why.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" ,", ",")
+        .replace(" ;", ";")
 }
 
 /// The end-of-run report: the score, failures grouped by cause with whose
@@ -907,6 +950,27 @@ pub fn report(outcome: &JobOutcome) {
 
 #[cfg(all(test, unix))]
 mod tests {
+    /// F1 round 2 (F1-A, low): the cloud metadata warning quotes a short
+    /// reason, not the whole note.
+    #[test]
+    fn a_warnings_reason_drops_the_notes_asides() {
+        let counter = "nothing shows the rule refused the agent user's connect to 169.254.169.254:80 (its packet counter did not rise), so the agent may reach the cloud metadata endpoints (169.254.169.254, fd20:ce::254); the uid firewall refuses TCP";
+        assert_eq!(
+            super::short_reason(counter),
+            "nothing shows the rule refused the agent user's connect to 169.254.169.254:80"
+        );
+        let opted = "the task opts out ([metadata] x-allow-cloud-metadata = true), so the agent can reach them";
+        assert_eq!(
+            super::short_reason(opted),
+            "the task opts out ([metadata] x-allow-cloud-metadata = true)"
+        );
+        let image = "the task's image has no iptables, and BenchFlow could not install it (the image has no apt-get, apk, dnf, or yum that worked), so the agent can reach them";
+        assert_eq!(
+            super::short_reason(image),
+            "the task's image has no iptables, and BenchFlow could not install it"
+        );
+    }
+
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
