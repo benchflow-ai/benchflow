@@ -37,14 +37,14 @@ class TestRegistryEntry:
         assert resolve_agent("muse").name == "muse-code"
         assert resolve_agent("acp:muse-code").name == "muse-code"
 
-    def test_default_model_needs_no_inferred_key(self):
-        """Credentials are a login file or META_API_KEY, never inferred from the model."""
+    def test_default_model_needs_only_the_login(self):
+        """The credential is the subscription login, never inferred from the model."""
         from benchflow.agents.registry import infer_env_key_for_model
 
         cfg, default_model = get_agent("muse-code")
         assert default_model == "muse-spark-1.3"
         assert infer_env_key_for_model(default_model) is None
-        assert cfg.requires_env == []
+        assert cfg.requires_env == ["MUSE_AUTH_JSON"]
         assert cfg.api_protocol == ""
         assert cfg.env_mapping == {}
 
@@ -451,23 +451,48 @@ def test_shim_writes_the_login_and_withholds_the_api_key(shim, tmp_path):
     assert call["has_auth_json_env"] is False
 
 
-def test_shim_uses_the_api_key_without_a_login(tmp_path):
-    client, workspace, init = _start(tmp_path, {"MUSE_AUTH_JSON": None})
-    assert "result" in init
-    session_id = _session(client, workspace)
-    client.request("session/prompt", {"sessionId": session_id, "prompt": "hello"})
-    (call,) = client.muse_log()
-    assert call["has_api_key"] is True
-    assert not (client.home / ".config" / "muse" / "auth.json").exists()
-    client.proc.kill()
-
-
-def test_shim_initialize_fails_closed_without_a_credential(tmp_path):
+@pytest.mark.parametrize("api_key", ["test-meta-api-key", None])
+def test_shim_initialize_fails_closed_without_a_login(tmp_path, api_key):
+    """An API key alone is not a credential: pay-as-you-go has no proxy route."""
     client, _workspace, init = _start(
-        tmp_path, {"MUSE_AUTH_JSON": None, "META_API_KEY": None}
+        tmp_path, {"MUSE_AUTH_JSON": None, "META_API_KEY": api_key}
     )
-    assert "No Muse Code credential" in init["error"]["message"]
+    assert "No Muse Code login" in init["error"]["message"]
     client.proc.kill()
+
+
+class TestRouting:
+    """A login run is native subscription auth; nothing else may start."""
+
+    def test_login_runs_skip_the_proxy(self):
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        assert uses_native_subscription_auth(
+            "muse-code", "muse-wonder-full-1.0", {"MUSE_AUTH_JSON": "{}"}
+        )
+        assert not uses_native_subscription_auth(
+            "muse-code", "muse-wonder-full-1.0", {"META_API_KEY": "k"}
+        )
+
+    def test_runs_without_a_login_are_refused(self, monkeypatch):
+        from benchflow.agents import env as envmod
+
+        monkeypatch.delenv("MUSE_AUTH_JSON", raising=False)
+        monkeypatch.setattr(envmod, "load_dotenv_env", lambda: {})
+        with pytest.raises(ValueError, match="subscription login"):
+            envmod.resolve_agent_env(
+                "muse-code", "muse-wonder-full-1.0", {"META_API_KEY": "k"}
+            )
+
+    def test_the_login_is_inherited_and_the_api_key_is_not(self, monkeypatch):
+        from benchflow.agents import env as envmod
+
+        monkeypatch.setattr(envmod, "load_dotenv_env", lambda: {})
+        monkeypatch.setenv("MUSE_AUTH_JSON", "{}")
+        monkeypatch.setenv("META_API_KEY", "should-not-travel")
+        resolved = envmod.resolve_agent_env("muse-code", "muse-wonder-full-1.0", {})
+        assert resolved["MUSE_AUTH_JSON"] == "{}"
+        assert "META_API_KEY" not in resolved
 
 
 def test_shim_initialize_fails_closed_without_binary(tmp_path):

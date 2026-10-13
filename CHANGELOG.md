@@ -4,26 +4,7 @@
 
 ### Added
 
-- **Meta Muse Code agent (`muse-code`, alias `muse`).** Muse Code has no ACP
-  mode, so BenchFlow bundles an ACP shim that runs one `muse exec --json` per
-  prompt and continues the same Muse session with `--session-id` on the next
-  one. The registry entry pins the native binary (1.4.7-R6101.1, SHA-256
-  verified, no Node.js). The shim turns Muse's session log into ACP updates:
-  messages, reasoning summaries, plans, and tool calls with raw input and
-  output. Per-turn token usage includes the session's sub-agent and reminder
-  calls. Credentials are a subscription login (`MUSE_AUTH_JSON`, the contents
-  of the `auth.json` that `TBH_CREDENTIAL_BACKEND=file muse login` writes;
-  written to `~/.config/muse/auth.json` with mode 0600 and kept out of
-  evidence capture) or `META_API_KEY`. With a login present the key is
-  withheld from Muse, which would otherwise prefer it and bill
-  pay-as-you-go. Every run passes `--contributor-mode off` and contributor
-  model ids are refused. `--model` and `--reasoning-effort` (`minimal` to
-  `max`, plus Muse's `ultra`) go over ACP. The no-web policy maps to
-  `--disable-web-tools`; the denylist policy turns off Muse's Meta-side web
-  search and routes model traffic through the egress proxy. When a
-  subscription's usage window runs out, the prompt fails and names the reset
-  time. With `BENCHFLOW_MUSE_QUOTA_WAIT_SEC` set, the turn instead waits for
-  the reset as one visible tool call and continues the session.
+- **Meta Muse Code agent (`muse-code`, alias `muse`).** Muse Code has no ACP mode, so BenchFlow bundles an ACP shim that runs one `muse exec --json` per prompt and continues the same Muse session with `--session-id` on the next one. The registry entry pins the native binary (1.4.7-R6101.1, SHA-256 verified, no Node.js). The shim turns Muse's session log into ACP updates: messages, reasoning summaries, plans, and tool calls with raw input and output. Per-turn token usage includes the session's sub-agent and reminder calls. The credential is a Muse Code subscription login (`MUSE_AUTH_JSON`, the contents of the `auth.json` that `TBH_CREDENTIAL_BACKEND=file muse login` writes), written to `~/.config/muse/auth.json` with mode 0600 and kept out of evidence capture. Meta's subscription works only through the CLI's own login, so login runs skip the LiteLLM proxy and report usage over ACP, like Claude and Codex subscription runs. A run without a login is refused: a `META_API_KEY` (pay-as-you-go) run has no proxy route, and the key is never passed to Muse, which would prefer it over the login. Every run passes `--contributor-mode off`, and contributor model ids are refused. `--model` and `--reasoning-effort` (`minimal` to `max`, plus Muse's `ultra`) go over ACP. The no-web policy maps to `--disable-web-tools`; the denylist policy turns off Muse's Meta-side web search and routes model traffic through the egress proxy. When a subscription's usage window runs out, the prompt fails and names the reset time; with `BENCHFLOW_MUSE_QUOTA_WAIT_SEC` set, the turn instead waits for the reset as one visible tool call and continues the session.
 
 ## 0.7.8 — 2026-09-14
 

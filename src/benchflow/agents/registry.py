@@ -750,12 +750,12 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=_MUSE_INSTALL_CMD,
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/muse-acp-shim",
         protocol="acp",
-        # Either credential works and neither is inferred from the model id:
-        # MUSE_AUTH_JSON (a subscription login, written to ~/.config/muse/
-        # auth.json below) or META_API_KEY (pay-as-you-go). The shim refuses
-        # to start without one, and withholds META_API_KEY from Muse when a
-        # login is present, since Muse would otherwise prefer the key.
-        requires_env=[],
+        # A subscription login, MUSE_AUTH_JSON (written to ~/.config/muse/
+        # auth.json below), runs natively: Meta's subscription works only
+        # through the CLI's own login. resolve_agent_env refuses a run without
+        # one; a META_API_KEY run has no proxy route. The shim also withholds
+        # META_API_KEY from Muse, which would otherwise prefer the key.
+        requires_env=["MUSE_AUTH_JSON"],
         credential_files=[
             CredentialFile(
                 path=f"{{home}}/{MUSE_AUTH_RELPATH}", env_source=MUSE_AUTH_JSON_ENV
