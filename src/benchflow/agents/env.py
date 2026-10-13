@@ -45,6 +45,8 @@ _BEDROCK_PROVIDER_PLACEHOLDER_API_KEY = "benchflow-litellm"
 _CODEX_API_KEY_ENV = "CODEX_API_KEY"
 _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
+_MUSE_AGENT = "muse-code"
+_MUSE_AUTH_JSON_ENV = "MUSE_AUTH_JSON"
 _CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
 _SUBSCRIPTION_AUTH_MARKER = "_BENCHFLOW_SUBSCRIPTION_AUTH"
@@ -198,7 +200,6 @@ def auto_inherit_env(
         "CODEX_API_KEY",
         "CODEX_AUTH_JSON",
         "MUSE_AUTH_JSON",
-        "META_API_KEY",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
@@ -397,6 +398,12 @@ def uses_native_subscription_auth(
         agent_env.get(key) for key in _LITELLM_RUNTIME_MARKER_KEYS
     ):
         return False
+
+    if agent == _MUSE_AGENT:
+        # Muse Code's subscription works only through the CLI's own login
+        # (Meta's terms), so a login run talks to Meta directly and reports
+        # usage over ACP; there is no API key to put behind the proxy.
+        return bool(agent_env.get(_MUSE_AUTH_JSON_ENV))
 
     if agent == "codex-acp":
         if agent_env.get("OPENAI_API_KEY"):
@@ -699,6 +706,13 @@ def resolve_agent_env(
     auto_inherit_env(agent_env, source_env=load_dotenv_env())
     auto_inherit_env(agent_env)
     _normalize_codex_auth_env(agent, model, agent_env)
+    if agent == _MUSE_AGENT and not agent_env.get(_MUSE_AUTH_JSON_ENV):
+        raise ValueError(
+            "muse-code runs on a Muse Code subscription login: set MUSE_AUTH_JSON to "
+            "the contents of the auth.json that `TBH_CREDENTIAL_BACKEND=file muse "
+            "login` writes. A META_API_KEY (pay-as-you-go) run has no BenchFlow proxy "
+            "route, and BenchFlow never sends API-key traffic around the proxy."
+        )
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
     # Oracle runs solve.sh and never calls an LLM — model env vars and

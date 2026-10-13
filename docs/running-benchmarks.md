@@ -314,7 +314,7 @@ Common choices:
 |-------|-----|------|
 | Gemini | `gemini` | `GEMINI_API_KEY` or host login |
 | Antigravity CLI | `antigravity` (alias: `agy`) | `GEMINI_API_KEY` (Gemini API-key mode; no host login) |
-| Muse Code | `muse-code` (alias: `muse`) | `MUSE_AUTH_JSON` (subscription login file contents) or `META_API_KEY` |
+| Muse Code | `muse-code` (alias: `muse`) | `MUSE_AUTH_JSON` (the contents of a Muse Code subscription login's `auth.json`) |
 | Claude Code | `claude-agent-acp` (alias: `claude`) | `ANTHROPIC_API_KEY` or host login |
 | Codex | `codex-acp` (alias: `codex`) | `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or host login |
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |

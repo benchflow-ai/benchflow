@@ -9,11 +9,11 @@ This shim speaks ACP (JSON-RPC 2.0 over stdio) to BenchFlow and runs one
     benchflow ACP client <-stdio/JSON-RPC-> this shim <-argv, files-> muse exec
 
 Architecture:
-  - ``initialize``      checks the pinned ``muse`` binary and the credential: a
-                        subscription login (``~/.config/muse/auth.json``, written
-                        from ``MUSE_AUTH_JSON``) or ``META_API_KEY``. With a login
-                        present ``META_API_KEY`` is withheld from Muse, which
-                        would otherwise prefer it and bill pay-as-you-go.
+  - ``initialize``      checks the pinned ``muse`` binary and the subscription
+                        login (``~/.config/muse/auth.json``, written from
+                        ``MUSE_AUTH_JSON``). ``META_API_KEY`` is always withheld
+                        from Muse, which would otherwise prefer it over the login
+                        and bill pay-as-you-go.
   - ``session/new``     records the workspace and picks the Muse session id.
   - ``session/set_model`` / ``session/set_config_option`` (``effort``, and
                         ``model``) select the model and reasoning effort.
@@ -238,7 +238,7 @@ def prepare_credentials():
     BenchFlow normally writes the file itself (registry ``credential_files``);
     this covers launches that only carry the variable. The variable is removed
     from the environment either way, so no Muse process or agent shell
-    inherits it. Returns ``"subscription"``, ``"api-key"`` or ``None``.
+    inherits it. Returns ``"subscription"``, or ``None`` without a login.
     """
     raw = os.environ.pop(AUTH_JSON_ENV, "")
     path = auth_path()
@@ -251,18 +251,15 @@ def prepare_credentials():
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)
         return "subscription"
-    if os.environ.get(API_KEY_ENV):
-        return "api-key"
     return None
 
 
 def muse_env(auth_mode):
     env = dict(os.environ)
     env.pop(AUTH_JSON_ENV, None)
-    if auth_mode == "subscription":
-        # Muse prefers META_API_KEY over the login file: a stray key would move
-        # the run off the subscription onto pay-as-you-go billing.
-        env.pop(API_KEY_ENV, None)
+    # Muse prefers META_API_KEY over the login file: a stray key would move the
+    # run off the subscription onto pay-as-you-go billing.
+    env.pop(API_KEY_ENV, None)
     env["MUSE_NO_AUTO_UPDATE"] = "1"
     env["TBH_CREDENTIAL_BACKEND"] = "file"
     env.setdefault("NO_COLOR", "1")
@@ -946,9 +943,8 @@ class Server:
         if self.auth_mode is None:
             _fail(
                 req_id,
-                "No Muse Code credential: set MUSE_AUTH_JSON to the contents of a "
-                "`TBH_CREDENTIAL_BACKEND=file muse login` auth.json (subscription), "
-                "or META_API_KEY (pay-as-you-go)",
+                "No Muse Code login: set MUSE_AUTH_JSON to the contents of the "
+                "auth.json that `TBH_CREDENTIAL_BACKEND=file muse login` writes",
             )
             return
         version = ""
