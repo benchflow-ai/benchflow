@@ -46,6 +46,7 @@ CREDENTIAL_EVIDENCE_PATHS = (
     ".openclaw/openclaw.json",
     ".openclaw/agents/main/agent/auth-profiles.json",
     ".gemini/oauth_creds.json",
+    ".config/muse/auth.json",
     ".aws/credentials",
     ".config/gcloud/application_default_credentials.json",
     ".ssh",

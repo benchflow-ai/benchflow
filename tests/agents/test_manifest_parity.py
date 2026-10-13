@@ -70,15 +70,18 @@ from benchflow.agents.registry import AgentConfig
 #   cannot carry. Released 0.7.x versions have no core entry for it and would
 #   auto-load a manifest from benchflow-ai/agents@main without that policy, so a
 #   "no web" run would keep agy's server-side web search.
-_CORE_ONLY_EXCEPTIONS = frozenset({"omnigent-pi", "antigravity"})
+# * muse-code depends on the same _SHIM_ONLY fields (web-tool and hosted-search
+#   launch flags, the ACP effort option) for the same reason: without them a
+#   "no web" run would keep Muse's Meta-side web search.
+_CORE_ONLY_EXCEPTIONS = frozenset({"omnigent-pi", "antigravity", "muse-code"})
 
 # Core agents that must NOT get a manifest in benchflow-ai/agents, by name or by
 # alias. A manifest mirroring core would pass the parity checks above, but
 # released 0.7.x versions would auto-load it from agents@main without core's
 # _SHIM_ONLY web-tool and MCP policy (see antigravity above). Lift an entry only
 # once that policy can travel with the manifest.
-_MANIFEST_FORBIDDEN = frozenset({"antigravity"})
-_MANIFEST_FORBIDDEN_ALIASES = frozenset({"antigravity", "agy"})
+_MANIFEST_FORBIDDEN = frozenset({"antigravity", "muse-code"})
+_MANIFEST_FORBIDDEN_ALIASES = frozenset({"antigravity", "agy", "muse-code", "muse"})
 
 # Import roots so the child interpreter finds benchflow whether it is installed
 # (CI) or only on PYTHONPATH from a worktree (dev VM) — mirrors the approach in
@@ -182,7 +185,7 @@ def test_manifest_byte_identical_to_core(agent_name: str | None) -> None:
 
 @pytest.mark.skipif(not os.environ.get(MANIFEST_DIR_ENV), reason=_SKIP_REASON)
 def test_only_documented_core_agents_lack_a_manifest() -> None:
-    """omnigent-pi and antigravity are the ONLY core agents without a manifest.
+    """omnigent-pi, antigravity and muse-code are the ONLY core agents without a manifest.
 
     Computed dynamically (core names minus manifest names) rather than hardcoded,
     so adding a new core agent without shipping its manifest fails this gate

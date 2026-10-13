@@ -66,6 +66,12 @@ from benchflow.agents.antigravity_config import (
     agy_install_cmd,
     hooks_deny_mutator,
 )
+from benchflow.agents.muse_config import (
+    MUSE_AUTH_JSON_ENV,
+    MUSE_AUTH_RELPATH,
+    MUSE_SKILLS_PATH,
+    muse_install_cmd,
+)
 
 
 def _install_python_script(container_path: str, source: str) -> str:
@@ -310,6 +316,10 @@ _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text(
 # Path to the Antigravity ACP shim (drives `agy --input-format=stream-json` as an
 # ACP agent; agy has no ACP mode of its own)
 _ANTIGRAVITY_SHIM = (Path(__file__).parent / "antigravity_acp_shim.py").read_text()
+
+# Path to the Muse Code ACP shim (runs one `muse exec --json` per ACP prompt;
+# Muse Code has no ACP mode of its own)
+_MUSE_SHIM = (Path(__file__).parent / "muse_acp_shim.py").read_text()
 
 
 def _json_settings_merge(path: str, mutator: str) -> str:
@@ -588,6 +598,12 @@ _ANTIGRAVITY_NO_HOSTED_SEARCH_CMD = _json_settings_merge(
     ),
 )
 
+_MUSE_INSTALL_CMD = (
+    muse_install_cmd(_apt_install("curl", "ca-certificates"))
+    + " && "
+    + _install_python_script(f"{_BENCHFLOW_BIN_PREFIX}/muse-acp-shim", _MUSE_SHIM)
+)
+
 # Agent registry — all supported agents
 AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
@@ -834,6 +850,40 @@ AGENTS: dict[str, AgentConfig] = {
         # agy loads MCP servers from mcp_config.json, not from ACP session/new.
         task_mcp_transport="native-config",
         task_mcp_config_path=ANTIGRAVITY_MCP_CONFIG_RELPATH,
+    ),
+    "muse-code": AgentConfig(
+        name="muse-code",
+        description=(
+            "Meta Muse Code CLI via BenchFlow's ACP shim over its headless "
+            "`muse exec --json` mode"
+        ),
+        skill_paths=[MUSE_SKILLS_PATH],
+        # Pinned native binary (see muse_config.MUSE_RELEASES) plus the Python
+        # shim; no Node.js is involved.
+        install_cmd=_MUSE_INSTALL_CMD,
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/muse-acp-shim",
+        protocol="acp",
+        # Either credential works and neither is inferred from the model id:
+        # MUSE_AUTH_JSON (a subscription login, written to ~/.config/muse/
+        # auth.json below) or META_API_KEY (pay-as-you-go). The shim refuses
+        # to start without one, and withholds META_API_KEY from Muse when a
+        # login is present, since Muse would otherwise prefer the key.
+        requires_env=[],
+        credential_files=[
+            CredentialFile(
+                path=f"{{home}}/{MUSE_AUTH_RELPATH}", env_source=MUSE_AUTH_JSON_ENV
+            ),
+        ],
+        default_model="muse-spark-1.3",
+        # Muse talks to Meta's API itself; no BenchFlow provider sits between.
+        api_protocol="",
+        # The shim implements session/set_model and an "effort" config option.
+        acp_effort_config_id="effort",
+        # Both switches become muse flags in the shim: --disable-web-tools, or
+        # tools.web_search.mode="off" (Meta-side search, out of the egress
+        # proxy's reach; web_fetch fetches from the sandbox through the proxy).
+        disallow_web_tools_launch_suffix=" --disable-web-tools",
+        disallow_hosted_search_launch_suffix=" --disable-hosted-search",
     ),
     "opencode": AgentConfig(
         name="opencode",
@@ -1210,6 +1260,7 @@ AGENT_ALIASES: dict[str, str] = {
     "codex": "codex-acp",
     "gemini": "gemini",
     "agy": "antigravity",
+    "muse": "muse-code",
     "pi": "pi-acp",
     "openclaw": "openclaw",
     "openhands": "openhands",

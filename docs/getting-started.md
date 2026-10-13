@@ -65,6 +65,7 @@ credential file and copies it into the sandbox. No API key billing.
 | `codex-acp` | `codex login` (Codex CLI) | `~/.codex/auth.json` | `OPENAI_API_KEY` |
 | `gemini` | `gemini` (interactive login) | `~/.gemini/oauth_creds.json` | `GEMINI_API_KEY` |
 | `antigravity` | — (Google sign-in lives in the OS keyring and cannot be copied into a sandbox; use `GEMINI_API_KEY`) | — | `GEMINI_API_KEY` |
+| `muse-code` | `TBH_CREDENTIAL_BACKEND=file muse login`, then `export MUSE_AUTH_JSON="$(cat ~/.config/muse/auth.json)"` (the subscription works only through Muse Code) | `MUSE_AUTH_JSON` (not a host file) | `META_API_KEY` |
 
 When benchflow finds the detect file, you'll see:
 
