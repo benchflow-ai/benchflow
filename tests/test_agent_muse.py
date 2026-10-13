@@ -484,6 +484,23 @@ class TestRouting:
                 "muse-code", "muse-wonder-full-1.0", {"META_API_KEY": "k"}
             )
 
+    def test_no_other_inherited_credential_reaches_the_sandbox(self, monkeypatch):
+        """A reviewer's Azure key or another provider's key in the same process
+        stays out of the Muse sandbox; explicit agent env stays."""
+        from benchflow.agents import env as envmod
+
+        monkeypatch.setattr(envmod, "load_dotenv_env", lambda: {})
+        monkeypatch.setenv("MUSE_AUTH_JSON", "{}")
+        for key in ("AZURE_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.setenv(key, "secret")
+        resolved = envmod.resolve_agent_env(
+            "muse-code", "muse-wonder-full-1.0", {"TZ": "UTC"}
+        )
+        for key in ("AZURE_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+            assert key not in resolved
+        assert resolved["TZ"] == "UTC"
+        assert resolved["MUSE_AUTH_JSON"] == "{}"
+
     def test_the_login_is_inherited_and_the_api_key_is_not(self, monkeypatch):
         from benchflow.agents import env as envmod
 
