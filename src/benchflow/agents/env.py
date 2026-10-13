@@ -197,6 +197,8 @@ def auto_inherit_env(
         "CODEX_ACCESS_TOKEN",
         "CODEX_API_KEY",
         "CODEX_AUTH_JSON",
+        "MUSE_AUTH_JSON",
+        "META_API_KEY",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",

@@ -66,6 +66,9 @@ from benchflow.agents.registry import AgentConfig
 # It is a session-factory agent wired through the #825 omnigent seam (a
 # "module:callable" entrypoint), not data expressible as an acp-only manifest.
 _CORE_ONLY_EXCEPTION = "omnigent-pi"
+# muse-code depends on _SHIM_ONLY fields (web-tool and hosted-search launch
+# flags, the ACP effort option) that a data-only manifest cannot carry.
+_CORE_ONLY_EXCEPTIONS = frozenset({_CORE_ONLY_EXCEPTION, "muse-code"})
 
 # Import roots so the child interpreter finds benchflow whether it is installed
 # (CI) or only on PYTHONPATH from a worktree (dev VM) — mirrors the approach in
@@ -182,9 +185,9 @@ def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
     # agent, but its presence in AGENTS is import-side-effect dependent (the omnigent
     # session-factory package may be unregistered in a lean env such as CI), so its
     # absence is fine; a *new* unmanifested core agent still fails this gate.
-    assert unmanifested <= {_CORE_ONLY_EXCEPTION}, (
+    assert unmanifested <= _CORE_ONLY_EXCEPTIONS, (
         "unmanifested core agents mismatch: tolerated only "
-        f"{{{_CORE_ONLY_EXCEPTION!r}}}, got {sorted(unmanifested)}. "
+        f"{sorted(_CORE_ONLY_EXCEPTIONS)}, got {sorted(unmanifested)}. "
         f"{_CORE_ONLY_EXCEPTION!r} is the documented exception — a session-factory "
         "agent registered via the #825 omnigent seam, not a manifest.toml. Every "
         "other core agent must ship a manifest in benchflow-ai/agents; a new "
