@@ -85,6 +85,10 @@ def _computed_deadline_sec(cfg: RolloutConfig) -> float:
     from benchflow.task import Task
 
     tcfg = Task(cfg.task_path).config
+    if cfg.config_override:
+        from benchflow._utils.config_override import apply_config_override
+
+        tcfg = apply_config_override(tcfg, cfg.config_override)
     agent_default = float(cfg.timeout or tcfg.agent.timeout_sec or 900.0)
     verifier_sec = float(tcfg.verifier.timeout_sec or 900.0)
     build_sec = float(tcfg.sandbox.build_timeout_sec or 600.0)
