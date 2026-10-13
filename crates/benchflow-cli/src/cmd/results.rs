@@ -559,6 +559,12 @@ fn job_json(v: &JobView) -> serde_json::Value {
         "rewards_out_of_range": v.records.iter().filter(|r| !r.stopped()).filter_map(|r| {
             r.reward_out_of_range().map(|x| json!({"trial": r.rollout_name, "reward": x}))
         }).collect::<Vec<_>>(),
+        // Trials whose model agent could reach the cloud metadata endpoints,
+        // or ran on Daytona without the guard on the sandbox daemon's
+        // ports: the text's warning lines, with each trial's record. Stopped
+        // trials too: the agent ran, whatever became of the score.
+        "cloud_metadata_reachable": exposed(v, "cloud_metadata", |r| r.model_reached_metadata().is_some()),
+        "root_service_unguarded": exposed(v, "root_service", TrialRecord::model_ran_unguarded),
         "never_ran": v.never_ran(),
         "unreadable": v.unreadable(),
         // Stopped or never-run trials: the pass rate is not the whole job's.
@@ -568,6 +574,26 @@ fn job_json(v: &JobView) -> serde_json::Value {
         "cost_usd": v.records.iter().filter_map(|r| r.usage.cost_usd).reduce(|a, b| a + b),
         "cost_recorded": v.records.iter().filter(|r| r.usage.cost_usd.is_some()).count(),
     })
+}
+
+/// The trials `pick` names, each with its `defense` record's state and note.
+fn exposed(
+    v: &JobView,
+    defense: &str,
+    pick: impl Fn(&TrialRecord) -> bool,
+) -> Vec<serde_json::Value> {
+    v.records
+        .iter()
+        .filter(|r| pick(r))
+        .map(|r| {
+            let d = r.defenses.get(defense);
+            json!({
+                "trial": r.rollout_name,
+                "state": d.map(|d| d.state),
+                "note": d.and_then(|d| d.note.as_deref()),
+            })
+        })
+        .collect()
 }
 
 /// The paired difference's interval, or why there is none.

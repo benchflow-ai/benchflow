@@ -254,8 +254,12 @@ Scores that stand but need a second look are named under the score, and in
 a task declares [verifier] reward_range; rewards_out_of_range),
 and trials graded although locked_system_dirs failed, so the agent could
 change system folders the verifier runs from (graded_unlocked_system_dirs).
-One more line says when model agents ran on Daytona without the guard on the
-sandbox daemon's ports (their root_service record says why).
+Two more lines count the trials whose model agent could reach the cloud
+metadata endpoints, and those whose model agent ran on Daytona without the
+guard on the sandbox daemon's ports. --json lists each such trial, stopped
+ones included, with its record's state and note (cloud_metadata_reachable,
+root_service_unguarded); with one job it also holds every trial's
+result.json, whose defenses hold all its records.
 ```
 
 ### bench view

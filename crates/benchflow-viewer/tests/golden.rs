@@ -177,13 +177,23 @@ fn without_view_links(page: &str) -> String {
     format!("{}{}", &page[..start], &page[end..])
 }
 
+/// A page with the Rust viewer's script addition taken out: `additions.js`,
+/// joined after `detail.js` as 0.8 joins its scripts. Fails unless it is
+/// there exactly once.
+fn without_additions(page: &str) -> String {
+    let added = format!("\n\n{}", include_str!("../assets/additions.js"));
+    assert_eq!(page.matches(&added).count(), 1, "one additions script");
+    page.replacen(&added, "", 1)
+}
+
 #[tokio::test]
 async fn the_run_list_page_matches_0_8() {
     let router = runs_app();
     let (status, page) = get(&router, "/").await;
     assert_eq!(status, StatusCode::OK);
-    // 0.8's page, byte for byte, once the view links are taken out.
-    let page = normalize(&without_view_links(&page));
+    // 0.8's page, byte for byte, once the view links and the additions
+    // script are taken out.
+    let page = normalize(&without_additions(&without_view_links(&page)));
     assert_same(
         boot_text(&page),
         &golden_text("pages/browse.boot.txt"),
@@ -201,7 +211,9 @@ fn static_trial_pages_match_0_8() {
     for entry in golden_json("pages/index.json").as_array().unwrap() {
         let id = entry["id"].as_str().unwrap();
         let name = entry["page"].as_str().unwrap();
-        let page = normalize(&render_static(&root().join(id)).unwrap());
+        let page = normalize(&without_additions(
+            &render_static(&root().join(id)).unwrap(),
+        ));
         assert_same(
             boot_text(&page),
             &golden_text(&format!("{name}.boot.txt")),

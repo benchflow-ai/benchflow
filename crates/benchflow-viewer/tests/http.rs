@@ -126,6 +126,122 @@ async fn a_run_loads_its_payload_and_hostile_text_stays_data() {
     assert_eq!(payload["meta"]["reward"], 0.0);
 }
 
+/// G10's bug bash, finding 1: a trial's page showed none of its defense
+/// record. The payload now carries every row, in the record's order, with
+/// its state and why, read untyped so a row this viewer does not know (or
+/// one that is not an object) still shows; a record without one gets no key.
+#[tokio::test]
+async fn a_trial_payload_carries_every_row_of_its_defense_record() {
+    let dir = corpus();
+    write_trial(
+        &dir.path().join("jobs/job-2/gamma__dddd0001"),
+        &[r#"{"type": "agent_message", "text": "done"}"#],
+        r#"{"task_name": "gamma-task", "rewards": {"reward": 1.0}, "defenses": {
+            "agent_user": {"name": "agent_user", "state": "enforced", "note": "agent, uid 1001"},
+            "cloud_metadata": {"name": "cloud_metadata", "state": "off",
+              "note": "the task opts out ([metadata] x-allow-cloud-metadata = true)"},
+            "network_policy": {"name": "network_policy", "state": "enforced", "note": "agent: open"},
+            "a_future_defense": {"name": "a_future_defense", "state": "quarantined", "extra": [1]},
+            "process_limit": {"name": "process_limit", "state": "not-supported"},
+            "not_an_object": "enforced"}}"#,
+    );
+    let router = runs_app(dir.path());
+    let (status, _, body) = get(&router, "/api/rollout?id=job-2%2Fgamma__dddd0001").await;
+    assert_eq!(status, StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        payload["meta"]["defenses"],
+        serde_json::json!([
+            {"name": "agent_user", "state": "enforced", "note": "agent, uid 1001"},
+            {"name": "cloud_metadata", "state": "off",
+             "note": "the task opts out ([metadata] x-allow-cloud-metadata = true)"},
+            {"name": "network_policy", "state": "enforced", "note": "agent: open"},
+            {"name": "a_future_defense", "state": "quarantined", "note": null},
+            {"name": "process_limit", "state": "not-supported", "note": null},
+            {"name": "not_an_object", "state": null, "note": null},
+        ])
+    );
+    // A 0.8 trial has no record, and its payload no key (0.8's, byte for byte).
+    let (_, _, body) = get(&router, "/api/rollout?id=job-1%2Falpha__aaaa0001").await;
+    let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(payload["meta"].get("defenses").is_none(), "{body}");
+    // So is a record whose `defenses` is not an object.
+    write_trial(
+        &dir.path().join("jobs/job-2/delta__eeee0001"),
+        &[],
+        r#"{"task_name": "delta-task", "defenses": ["agent_user"]}"#,
+    );
+    let (status, _, body) = get(&router, "/api/rollout?id=job-2%2Fdelta__eeee0001").await;
+    assert_eq!(status, StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(payload["meta"].get("defenses").is_none(), "{body}");
+}
+
+/// G11 review A, M1: a `bench branch` child's page shows the defense record
+/// of the sandbox that graded it, from the child's own result.json (the
+/// e2e fixture `fork-nop`: the parent records 9 rows, child n1 16), on the
+/// served page and in a trial saved as one file alike.
+#[tokio::test]
+async fn a_branch_child_payload_carries_its_own_defense_record() {
+    let job = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/viewer/fixtures/fork-nop");
+    let trial = job.join("hello__ec981dd5");
+    let child = "8b9d7724a324483c9b5f767f1b2e7155/n1";
+    let names = |payload: &serde_json::Value| -> Vec<String> {
+        payload["meta"]["defenses"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row["name"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let router = app(detect(&job).unwrap(), PORT);
+    let (status, _, body) = get(
+        &router,
+        &format!(
+            "/api/rollout?id=hello__ec981dd5&branch={}",
+            child.replace('/', "%2F")
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let served: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = names(&served);
+    assert_eq!(rows.len(), 16, "{rows:?}");
+    // Rows only the child's record has (the grading sandbox's checks).
+    for name in ["clean_verifier_env", "kill_before_grading", "trusted_path"] {
+        assert!(rows.iter().any(|row| row == name), "{name} in {rows:?}");
+    }
+    assert_eq!(served["meta"]["defenses"][0]["state"], "enforced");
+    // The static page embeds the same payload for its `?branch=` link.
+    let page = benchflow_viewer::render_static(&trial).unwrap();
+    assert_eq!(
+        boot(&page)["branches"][child]["meta"]["defenses"],
+        served["meta"]["defenses"]
+    );
+}
+
+/// G10's bug bash, findings 1 and 4: the run page draws the defense record
+/// and keeps the run list's filter on the views "runs" link with a script
+/// of its own, loaded after 0.8's detail view and before its boot, on the
+/// served run list and on a trial saved as one file alike.
+#[tokio::test]
+async fn the_run_page_carries_the_additions_script_before_boot() {
+    let dir = corpus();
+    let router = runs_app(dir.path());
+    let (_, _, list) = get(&router, "/").await;
+    let page =
+        benchflow_viewer::render_static(&dir.path().join("jobs/job-1/alpha__aaaa0001")).unwrap();
+    for page in [&list, &page] {
+        let additions = page.find("BF.additions = ").expect("the additions script");
+        assert!(page.find("BF.detail = ").unwrap() < additions);
+        assert!(additions < page.find("BF.navigation = ").unwrap());
+        assert!(page.contains("BF.detail.loadPayload = "));
+        assert!(page.contains("#bf-views a[href='/']"));
+    }
+}
+
 #[tokio::test]
 async fn unknown_and_crafted_ids_are_refused() {
     let dir = corpus();

@@ -1,0 +1,63 @@
+{
+  "task_name": "broken-image",
+  "rollout_name": "broken-image__d075e6d5",
+  "rewards": null,
+  "agent": "oracle",
+  "agent_name": "oracle",
+  "model": null,
+  "skill_mode": "no-skill",
+  "n_tool_calls": 0,
+  "n_prompts": 0,
+  "agent_result": {
+    "n_tool_calls": 0,
+    "n_prompts": 0,
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable"
+  },
+  "trajectory_summary": null,
+  "error": "[R101] the task's Dockerfile failed to build on Daytona (ERROR: process \"/bin/sh -c exit 7\" did not complete successfully: exit code: 7). This is a problem in the task: fix the Dockerfile; `docker build` shows the same failure locally.",
+  "error_category": "sandbox_startup",
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "started_at": "2026-10-11 20:18:09.250942",
+  "finished_at": "2026-10-11 20:18:48.026713",
+  "timing": {
+    "environment_setup": 0.0,
+    "agent_execution": 0.0,
+    "verifier": 0.0,
+    "total": 38.775680416,
+    "image": 38.769767709,
+    "sandbox_start": 0.0,
+    "setup": 0.0,
+    "handoff": 0.0,
+    "verify": 0.0
+  },
+  "task_digest": "sha256:46baed22ad1b4cf97e2751a36eedfb21d47186691702a8f1ad1d9405971263ca",
+  "sandbox_id": null,
+  "task_id": "examples/broken-image",
+  "status": "errored",
+  "passed": null,
+  "timed_out": false,
+  "problem": {
+    "code": "R101",
+    "owner": "task",
+    "phase": "image",
+    "message": "the task's Dockerfile failed to build on Daytona (ERROR: process \"/bin/sh -c exit 7\" did not complete successfully: exit code: 7). This is a problem in the task: fix the Dockerfile; `docker build` shows the same failure locally.",
+    "next": "fix the failing step in the task's Dockerfile (or the image it names); image.log in the trial folder has the build output",
+    "detail": "#1 [internal] load remote build context\n#2 copy /context /\n#3 [internal] load metadata for docker.io/library/ubuntu:24.04\n#4 [1/3] FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55\n#5 [2/3] RUN exit 7\nERROR: process \"/bin/sh -c exit 7\" did not complete successfully: exit code: 7",
+    "transient": false
+  },
+  "defenses": {},
+  "login": null,
+  "verifier_exit_code": null,
+  "rubric": null,
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0"
+  }
+}

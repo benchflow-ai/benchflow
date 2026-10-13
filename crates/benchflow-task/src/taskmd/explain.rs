@@ -192,7 +192,9 @@ Right:
     memory = "4 GB"
     network = "none"
 
-For a whole split-layout task, `bench import` converts every key at once."#;
+For a whole split-layout task, `bench import` converts every key at once.
+
+One case is a warning: `x-allow-cloud-metadata` under [about], where an import puts the split layout's [metadata]. task.md reads that opt-out only in [sandbox], so under [about] the agent is still refused the cloud metadata endpoints, and `bench export` leaves the key out."#;
 
 KEY_GONE, "A key or value that earlier drafts used",
 r#"Some keys and values were cut or moved between drafts: [trajectory] tokens and format, [training] deterministic, [world.desktop] clock (now [sandbox] clock), feedback = "rationales", ATIF judge views, and others. The message says where each went; where it says "Remove the key", `bench check --fix` removes it.

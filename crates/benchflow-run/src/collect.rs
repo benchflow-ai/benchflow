@@ -44,6 +44,10 @@ fn hook_problem(n: usize, message: String, detail: String) -> Problem {
     .detail(detail)
 }
 
+/// What the copy of the session archive may add to its packed content: the
+/// copy's own tar headers.
+const SESSION_TAR_SLACK: u64 = 64 * 1024 * 1024;
+
 impl Trial<'_> {
     /// Save the agent's session folders (its manifest's `[resume]
     /// session_dirs`) into `agent/sessions/`, at the end of its turn (each
@@ -83,7 +87,10 @@ impl Trial<'_> {
             };
             self.killed_before_save += n;
         }
-        match self.collect_session(&dirs).await {
+        self.hold_watch();
+        let saved = self.collect_session(&dirs).await;
+        self.release_watch(hardening::SESSIONS_TAR).await;
+        match saved {
             Ok(saved) => self.agent_session = saved,
             Err(e) => self.rt.events.log(
                 self.name(),
@@ -116,10 +123,31 @@ impl Trial<'_> {
         let agent_dir = self.spec.dir.join("agent");
         let _ = std::fs::create_dir_all(&agent_dir);
         let archive = agent_dir.join("sessions.tar");
-        self.sb()
-            .download(hardening::SESSIONS_TAR, &archive)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Under a byte cap and a deadline (review F2-A-r67 P1): a root
+        // agent's leftover process can swap the archive for a huge sparse
+        // file, or make the copy never end. Either way the session is not
+        // saved, and no partial archive stays in the trial folder.
+        let copied = tokio::time::timeout(
+            SETUP_TIMEOUT,
+            self.sb().download_capped(
+                hardening::SESSIONS_TAR,
+                &archive,
+                hardening::MAX_OUTPUT_TOTAL_BYTES + SESSION_TAR_SLACK,
+            ),
+        )
+        .await;
+        let failed = match copied {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(format!("copying it out failed: {e}")),
+            Err(_) => Some(format!(
+                "copying it out did not finish within {}s",
+                SETUP_TIMEOUT.as_secs()
+            )),
+        };
+        if let Some(why) = failed {
+            let _ = std::fs::remove_file(&archive);
+            return Err(why);
+        }
         let dest = self.spec.dir.join(SESSIONS_DIR);
         let _ = std::fs::remove_dir_all(&dest);
         let home_rel = PathBuf::from(home.trim_start_matches('/'));
@@ -261,6 +289,13 @@ impl Trial<'_> {
         outputs: &[Output],
         dest: &Path,
     ) -> Result<(), Problem> {
+        self.hold_watch();
+        let r = self.collect_into_held(outputs, dest).await;
+        self.release_watch(hardening::OUTPUTS_TAR).await;
+        r
+    }
+
+    async fn collect_into_held(&mut self, outputs: &[Output], dest: &Path) -> Result<(), Problem> {
         let paths: Vec<String> = outputs.iter().map(|o| o.path.clone()).collect();
         let out = self
             .root(hardening::pack_outputs(&paths), SETUP_TIMEOUT)

@@ -132,6 +132,8 @@ async fn the_forwarder_holds_the_key_and_the_agent_user_cannot_find_it() {
         workdir: Some("/app".into()),
         labels: BTreeMap::from([("ai.benchflow.livetest".to_string(), "1".to_string())]),
         runtime: None,
+        disk_limit_from_parent: None,
+        base_image: None,
     };
     let sandbox = daytona.create(&spec).await.expect("create the sandbox");
     let started = Instant::now();

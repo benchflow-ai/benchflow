@@ -1,0 +1,46 @@
+{
+  "job_name": "dt-r2-split-optout-nop",
+  "agent": "nop",
+  "model": null,
+  "environment": "daytona",
+  "concurrency": 4,
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "errored": 0,
+  "verifier_errored": 0,
+  "unscored": 0,
+  "pass": 0,
+  "fail": 1,
+  "error": 0,
+  "not_started": 0,
+  "stopped": 0,
+  "partial": false,
+  "score": "0.0%",
+  "score_ratio": 0.0,
+  "score_interval": [
+    0.0,
+    0.7934506856227626
+  ],
+  "score_excl_errors": "0.0%",
+  "score_excl_errors_ratio": 0.0,
+  "mean_reward": 0.0,
+  "elapsed_sec": 18.571839083,
+  "total_input_tokens": 0,
+  "total_output_tokens": 0,
+  "total_cache_read_tokens": 0,
+  "total_cache_creation_tokens": 0,
+  "total_tokens": 0,
+  "total_cost_usd": null,
+  "pass_at_k": {
+    "1": 0.0
+  },
+  "failures_by_cause": [],
+  "environment_warnings": [],
+  "graded_unlocked_system_dirs": 0,
+  "rewards_out_of_range": [],
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-rc.1"
+  }
+}

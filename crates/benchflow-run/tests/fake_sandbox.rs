@@ -148,7 +148,10 @@ impl Sandbox for FakeSandbox {
             }
         } else if c.contains("useradd") {
             "BF user agent 1000 /home/agent\n".to_string()
-        } else if c.contains("baseline") && c.contains("files.tar") && !c.contains("after") {
+        } else if c.contains("baseline")
+            && c.contains("files.tar")
+            && !c.contains("BF handoff done")
+        {
             "BF baseline 2\n".to_string()
         } else if c.contains("kill -9 -1") {
             "BF killed 3\n".to_string()
@@ -538,7 +541,9 @@ async fn oracle_and_nop_run_score_and_resume() {
         let expect = r.agent == "oracle";
         assert_eq!(r.passed, Some(expect), "{} {}", r.task_name, r.agent);
         assert_eq!(r.reward, Some(if expect { 1.0 } else { 0.0 }));
-        assert_eq!(r.custody.killed_processes, 3);
+        // The fake reports 3 at each kill: the one at the end of the
+        // agent's turn (F2 round 4) and the one before grading.
+        assert_eq!(r.custody.killed_processes, 6);
         assert_eq!(r.custody.workdir_owner.as_deref(), Some("root"));
         assert_eq!(r.custody.planted, vec!["/app/conftest.py".to_string()]);
         for d in [

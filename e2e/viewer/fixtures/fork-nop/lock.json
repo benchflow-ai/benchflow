@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "job_name": "fork-nop",
+  "created_at": "2026-10-11T19:42:12.130406-07:00",
+  "bench": {
+    "version": "0.8.1-dev.0",
+    "long_version": "0.8.1-dev.0 (416c35f48 2026-10-11)",
+    "commit": "416c35f48",
+    "commit_date": "2026-10-11"
+  },
+  "fingerprint": "branch:1dbf391042574a6a99bfed654102dc8a",
+  "dataset": null,
+  "source": {
+    "targets": [
+      "tasks/hello"
+    ]
+  },
+  "options": {
+    "sandbox": "daytona",
+    "sandbox_user": "agent",
+    "trials_per_task": 1,
+    "concurrency": 4,
+    "agent_timeout_multiplier": 1.0,
+    "verifier_timeout_multiplier": 1.0,
+    "build_timeout_multiplier": 1.0,
+    "default_agent_timeout_sec": null,
+    "default_verifier_timeout_sec": 600.0,
+    "idle_timeout_sec": 600.0,
+    "pids_limit": 4096,
+    "agent_env_keys": [],
+    "extra_instruction": null,
+    "keep": "never",
+    "save_outputs": false,
+    "retries": 1,
+    "rerun": []
+  },
+  "trials": [
+    {
+      "trial": "hello__ec981dd5",
+      "task": {
+        "id": "examples/hello",
+        "name": "hello",
+        "path": "tasks/hello",
+        "digest": "sha256:2a23ec73dc5026789f94c298904ae1f02cf2e4805a3fd5fa7a32925209bc5485",
+        "registry_digest": null,
+        "inputs_digest": "sha256:95d359038c1910ace883316ac713459c24f43dc8b00f442d0e43ad299f004e72",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "nop",
+        "model": null,
+        "kind": "nop",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/hello/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    },
+    {
+      "trial": "hello__ec981dd5/branches/8b9d7724a324483c9b5f767f1b2e7155/children/n1",
+      "task": {
+        "id": "examples/hello",
+        "name": "hello",
+        "path": "tasks/hello",
+        "digest": "sha256:2a23ec73dc5026789f94c298904ae1f02cf2e4805a3fd5fa7a32925209bc5485",
+        "registry_digest": null,
+        "inputs_digest": "sha256:95d359038c1910ace883316ac713459c24f43dc8b00f442d0e43ad299f004e72",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "nop",
+        "model": null,
+        "kind": "nop",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/hello/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona",
+      "branched_from": {
+        "trial": "hello__ec981dd5",
+        "checkpoint": "bf-ckpt-e2e-e7-dt1-13-839bfa-963a75-40070-27fa38f91e9c",
+        "session_id": null
+      }
+    },
+    {
+      "trial": "hello__ec981dd5/branches/8b9d7724a324483c9b5f767f1b2e7155/children/n2",
+      "task": {
+        "id": "examples/hello",
+        "name": "hello",
+        "path": "tasks/hello",
+        "digest": "sha256:2a23ec73dc5026789f94c298904ae1f02cf2e4805a3fd5fa7a32925209bc5485",
+        "registry_digest": null,
+        "inputs_digest": "sha256:95d359038c1910ace883316ac713459c24f43dc8b00f442d0e43ad299f004e72",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "nop",
+        "model": null,
+        "kind": "nop",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/hello/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona",
+      "branched_from": {
+        "trial": "hello__ec981dd5",
+        "checkpoint": "bf-ckpt-e2e-e7-dt1-13-839bfa-963a75-40070-27fa38f91e9c",
+        "session_id": null
+      }
+    }
+  ]
+}

@@ -50,9 +50,14 @@ pub struct Custody {
     /// FIFOs, sockets, and devices removed from the workdir.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub special_files: Vec<String>,
-    /// Symlinks in the workdir that pointed outside it, removed.
+    /// Symlinks in the workdir that pointed outside it, or through `/proc`
+    /// or `/dev/fd`, removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub escaping_symlinks: Vec<String>,
+    /// Interpreter links of the workdir's virtual environments, made again
+    /// by root from the record taken before the agent's first turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repaired_links: Vec<String>,
     /// Test-runner files the agent planted, removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub planted: Vec<String>,
@@ -421,6 +426,24 @@ impl TrialRecord {
                         .as_deref()
                         .is_some_and(|n| n.contains(crate::netpolicy::UNGUARDED))
             })
+    }
+
+    /// Whether the task's disk limit was not enforced on this trial's
+    /// sandbox (decision 22: said once per job), with the reason.
+    pub fn disk_not_enforced(&self) -> Option<&str> {
+        self.defenses
+            .get("disk_limit")
+            .filter(|d| d.state == DefenseState::NotSupported)
+            .map(|d| d.note.as_deref().unwrap_or("disk limit not enforced"))
+    }
+
+    /// Whether the disk limit's watch could not count the layer's entries
+    /// on this trial (only its bytes were watched: said once per job).
+    pub fn disk_entries_unwatched(&self) -> bool {
+        self.defenses
+            .get("disk_limit")
+            .and_then(|d| d.note.as_deref())
+            .is_some_and(|n| n.contains("so only its bytes were watched"))
     }
 
     /// Why a model agent in this trial could reach the cloud metadata
@@ -848,7 +871,15 @@ mod tests {
             }
             crate::read::record_from_json(&v, std::path::Path::new("t")).unwrap()
         };
-        for never in [rec(Some("setup"), 0.0), rec(Some("start"), 0.0)] {
+        // F2's R110 when the disk limit's watch cannot measure the layer
+        // before the first turn: the agent never ran (review
+        // F2-integrate-A A-1).
+        let mut unwatched = rec(Some("setup"), 0.0);
+        if let Some(p) = unwatched.problem.as_mut() {
+            p.code = "R110".into();
+            p.owner = crate::outcome::Owner::Sandbox;
+        }
+        for never in [rec(Some("setup"), 0.0), rec(Some("start"), 0.0), unwatched] {
             assert!(!never.agent_started());
             assert_eq!(never.model_reached_metadata(), None);
             assert!(!never.model_ran_unguarded());

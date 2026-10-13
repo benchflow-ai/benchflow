@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use super::cli::{Cli, EnvArgs, Flavor};
-use crate::{NetworkPolicy, SandboxError, SandboxSpec, owner};
+use crate::{DiskLimit, NetworkPolicy, SandboxError, SandboxSpec, owner};
 
 /// What the container runs: a shell that sleeps until it is stopped. A
 /// `sleep` in the background plus `wait` lets the TERM trap run at once,
@@ -127,30 +127,30 @@ pub(crate) fn run_args(cli: &Cli, spec: &SandboxSpec, name: &str, env: &EnvArgs)
     args
 }
 
-/// Start the container and wait until it runs. Returns its name.
-pub(super) async fn start(cli: &Cli, spec: &SandboxSpec) -> Result<String, SandboxError> {
+/// Start the container and wait until it runs. Returns its name and how
+/// the task's disk limit holds on it.
+pub(super) async fn start(
+    cli: &Cli,
+    spec: &SandboxSpec,
+) -> Result<(String, DiskLimit), SandboxError> {
     start_from(cli, spec, false).await
 }
 
-/// [`start`]; `local_only`: the image is on the daemon (a checkpoint) and
-/// must never be pulled.
-pub(super) async fn start_from(
+/// One `run` of the container, with a size cap of `cap` MB when given.
+async fn run_once(
     cli: &Cli,
     spec: &SandboxSpec,
+    name: &str,
     local_only: bool,
-) -> Result<String, SandboxError> {
-    if spec.disk_mb.is_some() {
-        tracing::debug!(
-            "{} does not cap a container's disk; disk_mb is not enforced for {}",
-            cli.name,
-            spec.name
-        );
-    }
-    let name = container_name(&spec.name);
+    cap: Option<u64>,
+) -> Result<super::cli::Output, SandboxError> {
     let env = EnvArgs::new(&spec.env)?;
-    let mut args = run_args(cli, spec, &name, &env);
+    let mut args = run_args(cli, spec, name, &env);
     if local_only {
         args.splice(2..2, ["--pull".to_string(), "never".to_string()]);
+    }
+    if let Some(mb) = cap {
+        args.splice(2..2, super::disk::cap_args(mb));
     }
     let mut cmd = cli.command(&args);
     for (k, v) in &env.process_env {
@@ -161,7 +161,67 @@ pub(super) async fn start_from(
         .run_command(cmd, &args, Some(Duration::from_secs(300)))
         .await;
     env.close();
-    let out = out?;
+    out
+}
+
+/// [`start`]; `local_only`: the image is on the daemon (a checkpoint) and
+/// must never be pulled.
+///
+/// A disk limit is asked of the daemon as a size cap on the container's
+/// writable layer. When the capped run fails for any reason, the container
+/// is started once more without the cap (a daemon whose storage cannot cap
+/// a layer refuses it, in words that vary); a daemon whose words say so is
+/// not asked again. A cap the daemon took counts as enforced only when the
+/// container's own filesystem shows it (`df`); otherwise the limit is
+/// [`DiskLimit::NotEnforced`], with the reason.
+pub(super) async fn start_from(
+    cli: &Cli,
+    spec: &SandboxSpec,
+    local_only: bool,
+) -> Result<(String, DiskLimit), SandboxError> {
+    let name = container_name(&spec.name);
+    let wanted = spec.disk_mb.filter(|mb| *mb > 0);
+    let mut limit = DiskLimit::None;
+    let mut out = None;
+    let mut capped = false;
+    if let Some(mb) = wanted {
+        if super::disk::try_cap(cli) {
+            let first = run_once(cli, spec, &name, local_only, Some(mb)).await?;
+            if first.ok() {
+                capped = true;
+                out = Some(first);
+            } else {
+                if let Some(err) = cli.daemon_problem(&first) {
+                    return Err(err);
+                }
+                remove(cli, &name).await;
+                let refused = super::disk::refused_cap(&first.message());
+                if refused {
+                    super::disk::learned(cli, false);
+                }
+                limit = DiskLimit::NotEnforced(
+                    mb,
+                    format!(
+                        "the {} daemon refused a size cap on the container's disk ({})",
+                        cli.name,
+                        super::cli::tail_chars(first.message().trim(), 300)
+                    ),
+                );
+            }
+        } else {
+            limit = DiskLimit::NotEnforced(
+                mb,
+                format!(
+                    "the {} daemon refused a size cap on a container's disk earlier in this run",
+                    cli.name
+                ),
+            );
+        }
+    }
+    let out = match out {
+        Some(o) => o,
+        None => run_once(cli, spec, &name, local_only, None).await?,
+    };
     if !out.ok() {
         if let Some(err) = cli.daemon_problem(&out) {
             return Err(err);
@@ -179,7 +239,89 @@ pub(super) async fn start_from(
         remove(cli, &name).await;
         return Err(err);
     }
-    Ok(name)
+    if capped && let Some(mb) = wanted {
+        super::disk::learned(cli, true);
+        limit = match &spec.disk_limit_from_parent {
+            // A branch child: its parent's decision, made before the
+            // parent's agent ran (whose files the child starts from).
+            Some(parent) => parent.clone(),
+            None => confirm_cap(cli, &name, mb, spec, local_only).await,
+        };
+    }
+    Ok((name, limit))
+}
+
+/// The `exec` of root's `df -Pk /` in `name`: `/bin/df` by full path, with
+/// a pinned `PATH` and no loader variables.
+pub(super) fn cap_df_args(name: &str) -> Vec<String> {
+    let path = format!("PATH={}", crate::shell::SYSTEM_PATH);
+    [
+        "exec",
+        "-u",
+        "0",
+        "-e",
+        &path,
+        "-e",
+        "LD_PRELOAD=",
+        "-e",
+        "LD_LIBRARY_PATH=",
+        name,
+        "/bin/df",
+        "-Pk",
+        "/",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/// A cap the daemon took, checked from inside the new container (before
+/// anyone else has used it): its root filesystem must be no bigger than
+/// the cap, and clearly smaller than the daemon's own data disk (the
+/// hardened probe of the task's image, once per daemon). A storage driver
+/// whose quota does not show there (btrfs), or a daemon that took the
+/// option and ignored it (Docker 29's containerd image store), is not
+/// enforcing it.
+async fn confirm_cap(
+    cli: &Cli,
+    name: &str,
+    mb: u64,
+    spec: &SandboxSpec,
+    from_checkpoint: bool,
+) -> DiskLimit {
+    let shown = match cli
+        .run(&cap_df_args(name), Some(Duration::from_secs(30)))
+        .await
+    {
+        Ok(out) if out.ok() => super::disk::df_total_mb(&out.stdout),
+        _ => None,
+    };
+    // A checkpoint is never the probe's image: without the built image,
+    // only a size this daemon was probed for before counts.
+    let image = match &spec.base_image {
+        Some(base) => base.as_str(),
+        None if from_checkpoint => "",
+        None => &spec.image.reference,
+    };
+    let disk = super::disk::data_disk_mb(cli, image, spec.runtime.as_deref()).await;
+    match (shown, disk) {
+        (Some(total), Some(disk)) if super::disk::shows_cap(total, mb, disk) => {
+            DiskLimit::Enforced(mb)
+        }
+        (Some(total), Some(disk)) => DiskLimit::NotEnforced(
+            mb,
+            format!(
+                "the {} daemon took a size cap on the container's disk, but the container's filesystem shows {total} MB, not the cap (the daemon's disk is {disk} MB)",
+                cli.name
+            ),
+        ),
+        _ => DiskLimit::NotEnforced(
+            mb,
+            format!(
+                "the {} daemon took a size cap on the container's disk, and `df` could not confirm it",
+                cli.name
+            ),
+        ),
+    }
 }
 
 fn start_failure(cli: &Cli, spec: &SandboxSpec, message: &str) -> String {

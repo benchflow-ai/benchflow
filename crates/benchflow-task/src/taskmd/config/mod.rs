@@ -342,6 +342,7 @@ impl<'a> Checker<'a> {
         let table = super::pyval::table;
         keys::top_level(self);
         keys::closed_tables(self);
+        keys::about_opt_out(self);
         values::enums(self);
         values::verifier_keys(self, table(config, &["verifier"]), "[verifier]", "verifier");
         for (name, st) in table(config, &["stages"]) {

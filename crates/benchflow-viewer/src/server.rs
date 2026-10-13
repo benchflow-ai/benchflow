@@ -394,12 +394,23 @@ fn view_response(
     let query = view_query(query.as_deref());
     stream(if page { HTML } else { JSON }, move |writer| {
         let (runs, capped) = state.listed();
+        // A discarded branch parent is unscored by design: only the
+        // branches view, which shows its children, counts it. Its job is
+        // still served, so the other views say why it has no trial here.
+        let mut set_aside: Vec<String> = Vec::new();
         let trials: Vec<views::Trial> = runs
             .iter()
             .filter(|run| !views::in_progress(run))
-            // A discarded branch parent is unscored by design: only the
-            // branches view, which shows its children, counts it.
-            .filter(|run| matches!(view, View::Branches) || !views::discarded_parent(run))
+            .filter(|run| {
+                if matches!(view, View::Branches) || !views::discarded_parent(run) {
+                    return true;
+                }
+                let job = views::job_of(&run.id).to_string();
+                if !set_aside.contains(&job) {
+                    set_aside.push(job);
+                }
+                false
+            })
             .map(views::read_trial)
             .collect();
         let title = state.title();
@@ -411,6 +422,7 @@ fn view_response(
         };
         if matches!(view, View::Compare | View::Outcomes | View::Pareto) {
             views::mark_never_ran(&mut data, &views::never_ran_by_job(&runs));
+            views::mark_set_aside(&mut data, &set_aside);
         }
         if page {
             write_view_page(

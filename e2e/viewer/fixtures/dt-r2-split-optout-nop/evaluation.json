@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "job_name": "dt-r2-split-optout-nop",
+  "tasks_dir": "tasks/split-optout",
+  "source": {
+    "targets": [
+      "tasks/split-optout"
+    ],
+    "path": "tasks/split-optout",
+    "remote": []
+  },
+  "config": {
+    "agent": "nop",
+    "model": null,
+    "environment": "daytona",
+    "concurrency": 4,
+    "trials": 1,
+    "sandbox_user": "agent",
+    "agent_idle_timeout": 600,
+    "timeout_multiplier": 1.0,
+    "reward_lenient": false,
+    "tasks": [
+      {
+        "name": "split-optout",
+        "id": "split-optout",
+        "digest": "sha256:7d9fe52bbc1989418da6abc1974c4426852a3c3d60b54d349003add7d97eb93f",
+        "path": "tasks/split-optout"
+      }
+    ]
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-rc.1",
+    "fingerprint": "4a082b61772bddcd"
+  }
+}

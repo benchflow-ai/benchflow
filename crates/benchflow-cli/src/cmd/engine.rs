@@ -714,6 +714,48 @@ pub fn score_warnings(recs: &[TrialRecord]) -> Vec<String> {
             ui::width(),
         ));
     }
+    // One line per job, however many trials (decision 22): a disk limit
+    // the backend did not enforce.
+    let loose: Vec<&str> = counted
+        .iter()
+        .filter_map(|r| r.disk_not_enforced())
+        .collect();
+    if let Some(first) = loose.first() {
+        let why = first
+            .strip_prefix("disk limit not enforced: ")
+            .unwrap_or(first)
+            .split("; BenchFlow measures")
+            .next()
+            .unwrap_or_default();
+        out.push(ui::wrap(
+            &format!("  {} ", warn_mark()),
+            &format!(
+                "disk limit not enforced on {} ({}); BenchFlow measured each sandbox's writable layer from the agent's first turn to the end of grading and stopped it past the limit (R110 or R316); the record's disk_limit says how per trial",
+                plural(loose.len(), "trial"),
+                ui::truncate(why, 300)
+            ),
+            4,
+            ui::width(),
+        ));
+    }
+    // One line per job (F2 round 4): trials whose layer's entries could not
+    // be counted before the agent's turn, so an inode flood was bounded
+    // only by the bytes.
+    let unwatched = counted
+        .iter()
+        .filter(|r| r.disk_entries_unwatched())
+        .count();
+    if unwatched > 0 {
+        out.push(ui::wrap(
+            &format!("  {} ", warn_mark()),
+            &format!(
+                "the disk limit's watch could not count the files in the writable layer of {} before the agent's turn, so only their bytes were watched; the daemon's `diff` is slow (the containerd image store with a large image)",
+                plural(unwatched, "trial")
+            ),
+            4,
+            ui::width(),
+        ));
+    }
     // One line per job, however many trials (decision 8): a model agent
     // that ran with the daemon's ports open could act as root.
     let open: Vec<&&TrialRecord> = counted.iter().filter(|r| r.model_ran_unguarded()).collect();

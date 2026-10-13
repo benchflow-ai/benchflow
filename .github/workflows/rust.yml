@@ -196,6 +196,70 @@ jobs:
           path: ${{ runner.temp }}/e2e*
           if-no-files-found: ignore
 
+  # The browser tests of `bench view` (e2e/viewer): the debug build serves the
+  # stored and fixture jobs, and e2e checks each page in Playwright's
+  # Chromium. Every step is a locator and no model is configured, so no key
+  # is needed. Telemetry is off: e2e's saved opt-out does not exist on a
+  # fresh runner.
+  viewer-e2e:
+    name: viewer browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      E2E_TELEMETRY_DISABLED: "1"
+      DO_NOT_TRACK: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (the channel in rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustc --version && cargo --version
+
+      # Reads the cache the test job saves; never saves its own.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: workspace
+          save-if: false
+
+      - name: cargo build -p benchflow-cli
+        run: cargo build --locked -p benchflow-cli
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/viewer/package-lock.json
+
+      - name: npm ci
+        working-directory: e2e/viewer
+        run: npm ci --ignore-scripts
+
+      # Its own step, so the download stays out of the tests' launch timeout.
+      - name: Install Chromium
+        working-directory: e2e/viewer
+        run: npx e2e-web install chromium --with-deps
+
+      - name: e2e run
+        working-directory: e2e/viewer
+        env:
+          BENCH: ${{ github.workspace }}/target/debug/bench
+        run: npm run test:ci
+
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        if: failure() || cancelled()
+        with:
+          name: viewer-e2e
+          path: |
+            e2e/viewer/.e2e/report.json
+            e2e/viewer/.e2e/junit.xml
+            e2e/viewer/.e2e/results
+            e2e/viewer/.e2e/logs
+          if-no-files-found: ignore
+
   install-script:
     name: install.sh
     runs-on: ubuntu-latest

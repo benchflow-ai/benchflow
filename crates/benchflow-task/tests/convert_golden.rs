@@ -456,3 +456,122 @@ fn a_package_with_only_the_other_record_name_exports_the_same() {
         &["export-report.json"],
     );
 }
+
+fn write_files(root: &Path, files: &[(&str, &str)]) {
+    for (rel, text) in files {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+}
+
+/// F1-B-r2 L3: the split reader takes `x-allow-cloud-metadata = "yes"` as
+/// true; `bench import` writes `true`, which task.md reads, so the imported
+/// package checks clean and still opts out. The same for a BenchFlow 0.8
+/// task.md, whose import goes the same way.
+#[test]
+fn a_loosely_boolean_opt_out_imports_as_a_boolean() {
+    let work = tempfile::tempdir().unwrap();
+    let split = work.path().join("split");
+    write_files(
+        &split,
+        &[
+            (
+                "task.toml",
+                "schema_version = \"1.4\"\n\n[task]\nname = \"acme/meta\"\n\n[metadata]\nx-allow-cloud-metadata = \"yes\"\n",
+            ),
+            ("instruction.md", "Do it.\n"),
+            ("environment/Dockerfile", "FROM ubuntu:24.04\n"),
+            ("tests/test.sh", "echo 1 > /logs/verifier/reward.txt\n"),
+        ],
+    );
+    let v06 = work.path().join("v06");
+    write_files(
+        &v06,
+        &[
+            (
+                "task.md",
+                "---\nschema_version: \"1.3\"\ntask:\n  name: acme/meta\nmetadata:\n  x-allow-cloud-metadata: \"yes\"\n---\nDo it.\n",
+            ),
+            ("environment/Dockerfile", "FROM ubuntu:24.04\n"),
+            ("tests/test.sh", "echo 1 > /logs/verifier/reward.txt\n"),
+        ],
+    );
+    for src in [&split, &v06] {
+        let before = benchflow_task::check(src, &benchflow_task::CheckOptions { deep: true });
+        assert!(
+            before
+                .package
+                .expect("a package")
+                .sandbox
+                .allow_cloud_metadata,
+            "{}",
+            src.display()
+        );
+        let out = work.path().join(format!(
+            "out-{}",
+            src.file_name().unwrap().to_string_lossy()
+        ));
+        convert::import_to_taskmd(src, &out, false).unwrap();
+        let md = fs::read_to_string(out.join("task.md")).unwrap();
+        assert!(md.contains("x-allow-cloud-metadata = true\n"), "{md}");
+        let after = benchflow_task::check(&out, &benchflow_task::CheckOptions { deep: true });
+        assert!(after.ok(), "{}: {:#?}", src.display(), after.diagnostics);
+        assert!(
+            after
+                .package
+                .expect("a package")
+                .sandbox
+                .allow_cloud_metadata
+        );
+    }
+}
+
+/// F1-A-r2: task.md ignores the opt-out under `[about]`; its export must
+/// not opt the split task out, so `[metadata]` keeps the task's own keys
+/// and not the opt-out, and the export names what it left out.
+#[test]
+fn an_opt_out_under_about_is_not_exported() {
+    let work = tempfile::tempdir().unwrap();
+    let src = work.path().join("t");
+    write_files(
+        &src,
+        &[
+            (
+                "task.md",
+                "Do it.\n\n```toml task\nname = \"acme/meta\"\nversion = \"1.0.0\"\n\n[about]\ndifficulty = \"easy\"\nx-allow-cloud-metadata = true\n```\n",
+            ),
+            ("sandbox/Dockerfile", "FROM ubuntu:24.04\n"),
+            ("verifier/test.sh", "echo 1 > /logs/verifier/reward.txt\n"),
+        ],
+    );
+    let before = benchflow_task::check(&src, &benchflow_task::CheckOptions { deep: true });
+    assert!(
+        !before
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+    let out = work.path().join("out");
+    let report = convert::export_split(&src, &out, false).unwrap();
+    let toml = fs::read_to_string(out.join("task.toml")).unwrap();
+    assert!(!toml.contains("x-allow-cloud-metadata"), "{toml}");
+    assert!(toml.contains("difficulty = \"easy\""), "{toml}");
+    assert!(
+        report
+            .losses
+            .iter()
+            .any(|l| l.path == "[about] x-allow-cloud-metadata"),
+        "{:?}",
+        report.losses
+    );
+    let after = benchflow_task::check(&out, &benchflow_task::CheckOptions { deep: true });
+    assert!(
+        !after
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+}

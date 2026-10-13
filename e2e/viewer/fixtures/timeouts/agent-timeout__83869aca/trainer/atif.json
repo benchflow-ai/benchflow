@@ -1,0 +1,26 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "agent-timeout__83869aca",
+  "agent": {
+    "name": "oracle",
+    "version": "unknown"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Write `done` to `/app/done.txt`. (The reference solution is too slow on purpose: it outlives the agent's 10-second budget.)\n"
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "[oracle: oracle/solve.sh]"
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 2,
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0
+  }
+}

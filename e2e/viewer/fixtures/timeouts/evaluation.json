@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "job_name": "timeouts",
+  "tasks_dir": "tasks/agent-timeout",
+  "source": {
+    "targets": [
+      "tasks/agent-timeout",
+      "tasks/verifier-timeout",
+      "tasks/build-timeout",
+      "tasks/broken-image"
+    ],
+    "path": "tasks/agent-timeout",
+    "remote": []
+  },
+  "config": {
+    "agent": "oracle",
+    "model": null,
+    "environment": "daytona",
+    "concurrency": 4,
+    "trials": 1,
+    "sandbox_user": "agent",
+    "agent_idle_timeout": 600,
+    "timeout_multiplier": 1.0,
+    "tasks": [
+      {
+        "name": "agent-timeout",
+        "id": "examples/agent-timeout",
+        "digest": "sha256:4343d11c9c1a89e9acb7d0782452c3d75c715b1ecd2ec68db0e29bf994d71736",
+        "path": "tasks/agent-timeout"
+      },
+      {
+        "name": "broken-image",
+        "id": "examples/broken-image",
+        "digest": "sha256:46baed22ad1b4cf97e2751a36eedfb21d47186691702a8f1ad1d9405971263ca",
+        "path": "tasks/broken-image"
+      },
+      {
+        "name": "build-timeout",
+        "id": "examples/build-timeout",
+        "digest": "sha256:02352d3f61ad06b7d3bd5f96b10279301294a1e12a5355f787cd5f17ae557a6a",
+        "path": "tasks/build-timeout"
+      },
+      {
+        "name": "verifier-timeout",
+        "id": "examples/verifier-timeout",
+        "digest": "sha256:01f6108bfb0c4b7b3c62dd1c7870dadbb3ec1813ef0590dbc05e8ae73cd5671b",
+        "path": "tasks/verifier-timeout"
+      }
+    ]
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0",
+    "fingerprint": "f96850ea3abdce08"
+  }
+}

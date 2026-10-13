@@ -1,0 +1,1 @@
+{"example_id": 0, "prompt": [], "completion": [], "reward": 0.0, "metrics": {}, "is_completed": true, "is_truncated": false, "info": {"task_id": "hello", "environment": "hello", "model": "", "reward_valid": false, "reward_metadata": {"items": {}, "events": [], "error": "no rewards", "space": "output", "granularity": "terminal"}}}

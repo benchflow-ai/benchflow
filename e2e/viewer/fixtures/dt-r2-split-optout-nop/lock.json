@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "job_name": "dt-r2-split-optout-nop",
+  "created_at": "2026-10-12T17:09:27.812846-07:00",
+  "bench": {
+    "version": "0.8.1-rc.1",
+    "long_version": "0.8.1-rc.1 (358ef61c1 2026-10-12)",
+    "commit": "358ef61c1",
+    "commit_date": "2026-10-12"
+  },
+  "fingerprint": "4a082b61772bddcd",
+  "dataset": null,
+  "source": {
+    "targets": [
+      "tasks/split-optout"
+    ],
+    "path": "tasks/split-optout",
+    "remote": []
+  },
+  "options": {
+    "sandbox": "daytona",
+    "sandbox_user": "agent",
+    "trials_per_task": 1,
+    "concurrency": 4,
+    "agent_timeout_multiplier": 1.0,
+    "verifier_timeout_multiplier": 1.0,
+    "build_timeout_multiplier": 1.0,
+    "default_agent_timeout_sec": null,
+    "default_verifier_timeout_sec": 600.0,
+    "idle_timeout_sec": 600.0,
+    "pids_limit": 4096,
+    "agent_env_keys": [],
+    "extra_instruction": null,
+    "keep": "never",
+    "save_outputs": false,
+    "retries": 1,
+    "rerun": []
+  },
+  "trials": [
+    {
+      "trial": "split-optout__486c9892",
+      "task": {
+        "id": "split-optout",
+        "name": "split-optout",
+        "path": "tasks/split-optout",
+        "digest": "sha256:7d9fe52bbc1989418da6abc1974c4426852a3c3d60b54d349003add7d97eb93f",
+        "registry_digest": null,
+        "inputs_digest": "sha256:eb0fcd34067446da1b21f2aac98e395ff9235e2b80c974ae5159d77ee4fc0f74",
+        "format": "split"
+      },
+      "attempt": {
+        "agent": "nop",
+        "model": null,
+        "kind": "nop",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/split-optout/environment/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    }
+  ]
+}

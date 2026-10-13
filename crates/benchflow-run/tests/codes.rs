@@ -157,6 +157,107 @@ enum Fault {
     /// The sandbox halts while the agent works (the backend cannot say
     /// what stopped it), and the agent's process ends with it.
     AgentHalted,
+    /// The task sets a disk limit the backend does not enforce, and the
+    /// sandbox's writable layer passes it while the agent works: the
+    /// disk limit's watch stops the sandbox.
+    DiskOver,
+    /// As `DiskOver`, but the layer held most of the limit before the
+    /// agent's turn began (an earlier verifier, BenchFlow's own setup).
+    DiskOverBefore,
+    /// The daemon caps the disk; the agent's turn fills the cap, and the
+    /// verifier then fails on the full disk.
+    DiskFilled,
+    /// As `DiskOver`, but after the first measure the daemon cannot measure
+    /// the layer, not even with the sandbox frozen, while it still runs.
+    DiskUnmeasurable,
+    /// The daemon caps the disk's bytes; the agent's turn floods it with
+    /// empty files (inodes the cap does not hold).
+    CapInodes,
+    /// The verifier fails on a full disk the agent did not fill (no cap:
+    /// the host's disk).
+    DaemonDiskFull,
+    /// The kill before grading cannot start: the sandbox is at its own
+    /// process limit.
+    ForkBomb,
+    /// The kill before grading cannot start, and the sandbox is below its
+    /// own process limit (the host ran out).
+    HostPids,
+    /// The verifier's output says "No space left on device" (the agent's
+    /// program printed it), but the disk has room.
+    FakeFull,
+    /// Under a cap the daemon enforces, the daemon's own disk fills from
+    /// outside; the verifier fails on it, with the sandbox's quota unspent.
+    CapHostFull,
+    /// The host's out-of-memory killer ends the agent mid-prompt; the
+    /// sandbox's own limit was never hit.
+    HostOom,
+    /// Review F2-C, F-2: the sandbox's own limit ran out once, and the
+    /// out-of-memory killer ended two processes (the host's killed one).
+    MixedOom,
+    /// Review F2-C, F-1 (I1): under a cap, the agent's background writer
+    /// fills the cap after its attempt returned; the sandbox's `df` shows
+    /// it full only once the agent user's processes were killed. The
+    /// verifier then fails on the full disk.
+    CapFilledAfter,
+    /// Review F2-C, F-1 (I2): on a watched layer, the agent's writer takes
+    /// the layer past the limit after the attempt returned, before the kill
+    /// at the end of its turn.
+    LateWriter,
+    /// I8: the layer passes the limit while the verifier runs (outside the
+    /// agent's windows).
+    VerifyWriter,
+    /// Review F2-C, F-3 (I9): under a cap, a sparse file whose size is far
+    /// past the cap; the cap is not full.
+    CapSparse,
+    /// Review F2-C, F-4 (I6): the verifier fails on a disk whose blocks are
+    /// free and whose inodes are all used.
+    InodesFull,
+    /// Review F2-C, F-6 (I5): the verifier writes a reward of 0 and prints
+    /// "No space left on device"; the sandbox's `df` shows the disk full,
+    /// the probe of the daemon's disk does not.
+    ZeroOnFullDf,
+    /// As `ZeroOnFullDf`, but neither shows it full.
+    ZeroWithRoom,
+    /// As `ZeroOnFullDf`, but the probe of the daemon's disk shows it full,
+    /// and the sandbox's `df` does not.
+    ZeroOnFullHost,
+    /// As `ZeroOnFullDf`, but the reward is 1.
+    PassOnFullDf,
+    /// Review F2-C (I10): under a cap, a root agent's `df` says the disk has
+    /// room, the daemon measures the layer at the cap, and the verifier
+    /// fails on the full disk.
+    CapFakedRoom,
+    /// Review F2-C-r4 H1 / F2-D-r4 H1 (blocks): under a cap, a neighbour
+    /// fills the daemon's disk during the turn; the sandbox's `df` follows
+    /// the host's free space (600 MB free at the open, none at the close),
+    /// and the probe of the daemon's disk shows it full. The verifier fails
+    /// on the full disk.
+    CapHostFillBlocks,
+    /// Review F2-C-r5 H1: as `CapHostFillBlocks`, but the daemon's disk has
+    /// room again when grading fails (the probe shows room).
+    CapHostFillRecovered,
+    /// The same with the inodes: the capped sandbox's inode counts are the
+    /// host's (3,000 free at the open, 1,000 at the close, the agent's
+    /// failing commands and neighbours making the files), blocks with room.
+    CapHostInodes,
+    /// Review F2-C-r4 M1: under a cap, a rootless agent's sparse 20 GB file
+    /// makes the layer's apparent size pass the cap; its `df` and the
+    /// daemon's disk have room; the verifier prints the disk words and
+    /// writes 0.
+    CapSparseZero,
+    /// Review F2-integrate-A A-1: the daemon cannot measure the layer from
+    /// its first read, so the agent never runs (R110 before the turn).
+    DiskUnmeasurableFromStart,
+    /// Review F2-A-r4 M4: a rootless agent at its own process limit (the
+    /// kill at the end of its turn cannot start) also left a writer that
+    /// passes the watched limit after the window closed.
+    ForkBombWriter,
+    /// As `CapFakedRoom`, but the daemon cannot measure the layer, and its
+    /// own disk has room: the quota may be full, so not "not full".
+    CapUnknownLayer,
+    /// Review F2-C, F-5 (I11): under a cap, the verifier writes no reward,
+    /// with no word of a full disk.
+    CapNoWords,
     /// The oracle's solve.sh (a scripted attempt, whose failure is the
     /// sandbox's) stops its sandbox from inside.
     OracleStops,
@@ -207,7 +308,132 @@ struct World {
     downloads: usize,
     /// The sandbox is gone: every later command fails.
     gone: bool,
+    /// The sandbox was killed from outside (the disk limit's watch).
+    killed: bool,
+    /// Reads of the sandbox's memory counters so far.
+    memory_reads: u32,
+    /// The agent's process was started.
+    spawned: bool,
+    /// Kills of the agent user's processes so far.
+    user_kills: u32,
+    /// The verifier began.
+    verifying: bool,
+    /// Probes of the daemon's disk, and measures of the layer, after the
+    /// agent's turn.
+    host_probes: u32,
+    /// What happened, in order: `kill`, `df`, `verifier`.
+    log: Vec<&'static str>,
 }
+
+/// The fake sandbox's writable layer, in MB by the fault: `DiskOver` 20,
+/// then 400; `DiskOverBefore` 280, then 400; `DiskUnmeasurable` 20, then
+/// failing; `LateWriter` 20 until the agent user's processes are killed,
+/// then 400; `VerifyWriter` 20 until the verifier begins, then 400;
+/// `CapSparse` 20 GB (a sparse file). 10 entries (`CapInodes`: then
+/// 200,000). The stop leaves the sandbox stopped, as `docker kill` does.
+struct FakeLayer {
+    world: Arc<Mutex<World>>,
+    fault: Fault,
+    reads: Mutex<u32>,
+    counts: Mutex<u32>,
+}
+
+#[async_trait]
+impl benchflow_sandbox::disk::Layer for FakeLayer {
+    async fn bytes(&self, _timeout: Duration) -> Result<u64, SandboxError> {
+        let mut reads = self.reads.lock().unwrap();
+        *reads += 1;
+        let first = *reads == 1;
+        let w = self.world.lock().unwrap();
+        let mb = match self.fault {
+            Fault::DiskUnmeasurableFromStart => {
+                return Err(SandboxError::Transport(
+                    "`docker container inspect --size` was killed after 10s".into(),
+                ));
+            }
+            Fault::DiskOverBefore if first => 280,
+            Fault::DiskUnmeasurable if !first => {
+                return Err(SandboxError::Transport(
+                    "`docker container inspect --size` was killed after 10s".into(),
+                ));
+            }
+            Fault::DiskOver | Fault::DiskOverBefore if !first => 400,
+            Fault::LateWriter if w.user_kills > 0 => 400,
+            Fault::VerifyWriter if w.verifying => 400,
+            Fault::ForkBombWriter if w.user_kills >= 2 => 400,
+            Fault::CapSparse => 20 * 1024,
+            _ => 20,
+        };
+        Ok(mb * 1024 * 1024)
+    }
+    async fn entries(&self, _timeout: Duration) -> Result<u64, SandboxError> {
+        let mut counts = self.counts.lock().unwrap();
+        *counts += 1;
+        Ok(if self.fault == Fault::CapInodes && *counts > 1 {
+            200_000
+        } else {
+            10
+        })
+    }
+    async fn status(&self) -> Result<bool, SandboxError> {
+        Ok(!self.world.lock().unwrap().killed)
+    }
+    async fn unpause(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<(), SandboxError> {
+        self.world.lock().unwrap().killed = true;
+        Ok(())
+    }
+}
+
+/// The fake sandbox's `df` of each path asked: blocks and inodes, by the
+/// fault and what happened so far.
+fn fake_df(fault: Fault, w: &World, command: &str) -> String {
+    const MB: u64 = 1024;
+    let (avail, used, inodes) = match fault {
+        Fault::DiskFull | Fault::DaemonDiskFull | Fault::ZeroOnFullDf | Fault::PassOnFullDf => {
+            (0, 300 * MB, "3000000 100 2999900")
+        }
+        Fault::DiskFilled if w.spawned => (0, 300 * MB, "3000000 100 2999900"),
+        Fault::DiskFilled => (290 * MB, 10 * MB, "3000000 100 2999900"),
+        Fault::CapFilledAfter if w.user_kills > 0 => (10 * MB, 290 * MB, "3000000 100 2999900"),
+        Fault::CapFilledAfter => (200 * MB, 100 * MB, "3000000 100 2999900"),
+        Fault::InodesFull => (5_000 * MB, 300 * MB, "3000000 3000000 0"),
+        Fault::CapHostFillBlocks | Fault::CapHostFillRecovered if w.spawned => {
+            (0, 1024 * MB, "3000000 100 2999900")
+        }
+        Fault::CapHostFillBlocks | Fault::CapHostFillRecovered => {
+            (600 * MB, 424 * MB, "3000000 100 2999900")
+        }
+        Fault::CapHostInodes if w.spawned => (900 * MB, 100 * MB, "10000000 9999000 1000"),
+        Fault::CapHostInodes => (900 * MB, 100 * MB, "10000000 9997000 3000"),
+        _ => (5_000 * MB, 300 * MB, "3000000 100 2999900"),
+    };
+    let n = command
+        .split("-Pi")
+        .nth(1)
+        .map(|r| {
+            r.split_whitespace()
+                .filter(|t| !t.starts_with("2>"))
+                .count()
+        })
+        .unwrap_or(1)
+        .max(1);
+    let mut out = "Filesystem 1024-blocks Used Available Capacity Mounted on\n".to_string();
+    for _ in 0..n {
+        out += &format!("overlay {} {used} {avail} 50% /\n", used + avail);
+    }
+    out += "BF-I\nFilesystem Inodes IUsed IFree IUse% Mounted on\n";
+    for _ in 0..n {
+        out += &format!("overlay {inodes} 1% /\n");
+    }
+    out
+}
+
+/// Probes of the daemon's disk, or measures of the layer, made for a
+/// `CapNoWords` trial (review F2-C, F-5: there must be none).
+static PROBED_WITHOUT_WORDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn gone() -> SandboxError {
     SandboxError::Transport("the sandbox's API stopped answering (connection reset by peer)".into())
@@ -240,10 +466,20 @@ impl Sandbox for FakeSandbox {
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {
         let c = exec.command;
         let silent = matches!(self.fault, Fault::Shadowed | Fault::ShadowedLies);
-        if self.world.lock().unwrap().gone {
+        if self.world.lock().unwrap().gone || self.world.lock().unwrap().killed {
             return Err(gone());
         }
         let verifier = c.contains("/verifier/test.sh") || c.contains("/tests/test.sh");
+        if c.contains("kill -9 -1") {
+            let mut w = self.world.lock().unwrap();
+            w.user_kills += 1;
+            w.log.push("kill");
+        }
+        if verifier {
+            let mut w = self.world.lock().unwrap();
+            w.verifying = true;
+            w.log.push("verifier");
+        }
         if self.fault == Fault::ShadowedLies && c == "true" {
             return Err(SandboxError::Transport(
                 "the sandbox container fake-codes is no longer running (Error response from daemon: No such container: fake-codes)".into(),
@@ -275,7 +511,45 @@ impl Sandbox for FakeSandbox {
             Fault::VerifierHangs if verifier => {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
-            Fault::DiskFull if verifier => {
+            Fault::VerifyWriter if verifier => {
+                // Long enough for the watch to measure the layer meanwhile.
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                return Ok(output(0, "1 passed\n", ""));
+            }
+            Fault::ZeroOnFullDf
+            | Fault::ZeroWithRoom
+            | Fault::ZeroOnFullHost
+            | Fault::PassOnFullDf
+            | Fault::CapSparseZero
+                if verifier =>
+            {
+                return Ok(output(
+                    0,
+                    "",
+                    "ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device\n",
+                ));
+            }
+            Fault::CapNoWords if verifier => {
+                return Ok(output(
+                    1,
+                    "",
+                    "/verifier/test.sh: line 3: pytest: command not found\n",
+                ));
+            }
+            Fault::DiskFull
+            | Fault::DiskFilled
+            | Fault::DaemonDiskFull
+            | Fault::FakeFull
+            | Fault::CapHostFull
+            | Fault::CapFilledAfter
+            | Fault::InodesFull
+            | Fault::CapFakedRoom
+            | Fault::CapUnknownLayer
+            | Fault::CapHostFillBlocks
+            | Fault::CapHostFillRecovered
+            | Fault::CapHostInodes
+                if verifier =>
+            {
                 return Ok(output(
                     1,
                     "",
@@ -301,15 +575,40 @@ impl Sandbox for FakeSandbox {
             }
             _ => {}
         }
-        Ok(if c.contains("BF oom-kill") {
+        Ok(if c.contains("memory.events") {
+            // Before the turn, then after it.
+            let mut w = self.world.lock().unwrap();
+            w.memory_reads += 1;
+            let after = w.memory_reads > 1;
+            let (oom, kills) = match self.fault {
+                Fault::AgentOom if after => (1, 1),
+                Fault::HostOom if after => (0, 1),
+                Fault::MixedOom if after => (1, 2),
+                _ => (0, 0),
+            };
             output(
                 0,
-                if self.fault == Fault::AgentOom {
-                    "BF oom-kill 1\n"
-                } else {
-                    "BF oom-kill 0\n"
-                },
+                &format!("BF mem-max 2147483648\nBF mem-oom {oom}\nBF mem-oom_kill {kills}\n"),
                 "",
+            )
+        } else if c.contains("BF-I") {
+            let mut w = self.world.lock().unwrap();
+            w.log.push("df");
+            output(0, &fake_df(self.fault, &w, &c), "")
+        } else if c.contains("kill -9 -1")
+            && matches!(
+                self.fault,
+                Fault::ForkBomb | Fault::HostPids | Fault::ForkBombWriter
+            )
+        {
+            if self.fault == Fault::ForkBombWriter && self.world.lock().unwrap().user_kills >= 2 {
+                // The handoff's try: long enough for the watch to measure.
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+            output(
+                126,
+                "",
+                "OCI runtime exec failed: exec failed: unable to start container process: read init-p: connection reset by peer: unknown\n",
             )
         } else if c.contains("jump_new") {
             // The network policy's firewall install.
@@ -456,9 +755,12 @@ impl Sandbox for FakeSandbox {
         })
     }
     async fn spawn(&self, _exec: Exec) -> Result<Process, SandboxError> {
+        self.world.lock().unwrap().spawned = true;
         match self.fault {
             Fault::AgentSpawnGone => return Err(gone()),
-            Fault::AgentOom => return Ok(fake_acp_agent(Act::Crash, self.world.clone())),
+            Fault::AgentOom | Fault::HostOom | Fault::MixedOom => {
+                return Ok(fake_acp_agent(Act::Crash, self.world.clone()));
+            }
             Fault::AgentGone => {
                 self.world.lock().unwrap().gone = true;
                 return Ok(fake_acp_agent(Act::Crash, self.world.clone()));
@@ -488,6 +790,13 @@ impl Sandbox for FakeSandbox {
         Ok(())
     }
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
+        if remote.ends_with("outputs.tar") {
+            // The outputs a separate verifier gets: none.
+            tar::Builder::new(std::fs::File::create(local).unwrap())
+                .finish()
+                .unwrap();
+            return Ok(());
+        }
         if remote == "/logs/verifier" {
             let attempt = {
                 let mut w = self.world.lock().unwrap();
@@ -574,7 +883,24 @@ impl Sandbox for FakeSandbox {
                 Fault::NoReward
                 | Fault::VerifierFails
                 | Fault::VerifierTimeout
-                | Fault::DiskFull => {}
+                | Fault::DiskFull
+                | Fault::DiskFilled
+                | Fault::DaemonDiskFull
+                | Fault::FakeFull
+                | Fault::CapHostFull
+                | Fault::CapFilledAfter
+                | Fault::InodesFull
+                | Fault::CapFakedRoom
+                | Fault::CapUnknownLayer
+                | Fault::CapNoWords
+                | Fault::CapHostFillBlocks
+                | Fault::CapHostFillRecovered
+                | Fault::CapHostInodes => {}
+                Fault::ZeroOnFullDf
+                | Fault::ZeroWithRoom
+                | Fault::ZeroOnFullHost
+                | Fault::CapSparseZero => std::fs::write(local.join("reward.txt"), "0\n").unwrap(),
+                Fault::PassOnFullDf => std::fs::write(local.join("reward.txt"), "1\n").unwrap(),
                 Fault::BadReward => std::fs::write(local.join("reward.txt"), "passed\n").unwrap(),
                 _ => std::fs::write(local.join("reward.txt"), if solved { "1\n" } else { "0\n" })
                     .unwrap(),
@@ -582,8 +908,128 @@ impl Sandbox for FakeSandbox {
         }
         Ok(())
     }
+    fn own_cgroup(&self) -> bool {
+        true
+    }
+    async fn processes(&self) -> Result<(u64, u64), SandboxError> {
+        Ok(match self.fault {
+            Fault::ForkBomb | Fault::ForkBombWriter => (4096, 4096),
+            _ => (312, 4096),
+        })
+    }
+    async fn host_df(&self) -> Option<benchflow_sandbox::disk::DfRow> {
+        if self.fault == Fault::CapNoWords {
+            PROBED_WITHOUT_WORDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.world.lock().unwrap().host_probes += 1;
+        let full = matches!(
+            self.fault,
+            Fault::CapHostFull
+                | Fault::ZeroOnFullHost
+                | Fault::CapHostFillBlocks
+                | Fault::CapHostInodes
+        );
+        let room = matches!(
+            self.fault,
+            Fault::ZeroOnFullDf
+                | Fault::ZeroWithRoom
+                | Fault::PassOnFullDf
+                | Fault::CapFakedRoom
+                | Fault::CapUnknownLayer
+                | Fault::DiskFilled
+                | Fault::CapFilledAfter
+                | Fault::CapSparseZero
+                | Fault::CapHostFillRecovered
+        );
+        (full || room).then_some(benchflow_sandbox::disk::DfRow {
+            total_kb: 100 << 20,
+            used_kb: if full { 100 << 20 } else { 1 << 20 },
+            avail_kb: if full { 0 } else { 99 << 20 },
+            inodes: benchflow_sandbox::disk::Inodes::NotApplicable,
+        })
+    }
+    async fn layer_bytes(&self) -> Option<u64> {
+        if self.fault == Fault::CapNoWords {
+            PROBED_WITHOUT_WORDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.world.lock().unwrap().host_probes += 1;
+        match self.fault {
+            Fault::CapFakedRoom => Some(300 << 20),
+            Fault::CapSparseZero => Some(20 << 30),
+            _ => None,
+        }
+    }
+    fn disk_limit(&self) -> benchflow_sandbox::DiskLimit {
+        match self.fault {
+            Fault::DiskOver
+            | Fault::DiskOverBefore
+            | Fault::DiskUnmeasurable
+            | Fault::LateWriter
+            | Fault::VerifyWriter
+            | Fault::ForkBombWriter
+            | Fault::DiskUnmeasurableFromStart => benchflow_sandbox::DiskLimit::NotEnforced(
+                300,
+                "the fake daemon cannot cap it".into(),
+            ),
+            Fault::DiskFilled
+            | Fault::CapHostFull
+            | Fault::CapInodes
+            | Fault::CapFilledAfter
+            | Fault::CapSparse
+            | Fault::CapFakedRoom
+            | Fault::CapUnknownLayer
+            | Fault::CapNoWords
+            | Fault::CapHostFillBlocks
+            | Fault::CapHostFillRecovered
+            | Fault::CapHostInodes
+            | Fault::CapSparseZero => benchflow_sandbox::DiskLimit::Enforced(300),
+            _ => benchflow_sandbox::DiskLimit::None,
+        }
+    }
+    async fn watch_layer(
+        &self,
+        limit_mb: u64,
+        watched: benchflow_sandbox::disk::Watched,
+    ) -> Option<(
+        benchflow_sandbox::LayerWatch,
+        benchflow_sandbox::disk::StartState,
+    )> {
+        let layer = Arc::new(FakeLayer {
+            world: self.world.clone(),
+            fault: self.fault,
+            reads: Mutex::new(0),
+            counts: Mutex::new(0),
+        });
+        let ms = Duration::from_millis;
+        Some(
+            benchflow_sandbox::LayerWatch::start(
+                limit_mb,
+                benchflow_sandbox::disk::Pace {
+                    bytes: ms(5),
+                    entries: ms(5),
+                    most: ms(50),
+                    floor: ms(1),
+                    base_timeout: ms(200),
+                    entries_retry: ms(300),
+                    bytes_timeout: ms(100),
+                    bytes_bound: ms(150),
+                    entries_timeout: ms(100),
+                    entries_bound: ms(150),
+                    settle: Duration::from_secs(5),
+                },
+                watched,
+                layer,
+            )
+            .await,
+        )
+    }
     async fn presence(&self) -> Result<benchflow_sandbox::Presence, SandboxError> {
         let w = self.world.lock().unwrap();
+        if w.killed {
+            return Err(SandboxError::Transport(
+                "the sandbox fake-codes was stopped from outside (docker kill)".into(),
+            ));
+        }
         if w.api_down {
             return Err(SandboxError::Transport(
                 "the backend's API answered HTTP 503".into(),
@@ -1220,6 +1666,29 @@ fn cases() -> Vec<Case> {
         )
         .fault(Fault::LocalRead),
         Case::new(
+            "R110",
+            Sandbox,
+            "the sandbox's layer, mostly full before the agent's turn, passes a disk limit the daemon cannot cap",
+        )
+        .act(Act::Silent)
+        .fault(Fault::DiskOverBefore)
+        .tweak(|t| t.sandbox.disk_mb = Some(300)),
+        Case::new(
+            "R305",
+            Sandbox,
+            "the agent's turn fills the disk the daemon caps, and the verifier fails on it",
+        )
+        .act(Act::Solve)
+        .fault(Fault::DiskFilled)
+        .tweak(|t| t.sandbox.disk_mb = Some(300)),
+        Case::new(
+            "R316",
+            Agent,
+            "the sandbox's own memory limit runs out and the out-of-memory killer ends the agent",
+        )
+        .act(Act::Solve)
+        .fault(Fault::AgentOom),
+        Case::new(
             "R201",
             Agent,
             "the agent's install layer fails on a task image that builds",
@@ -1586,6 +2055,71 @@ async fn a_copy_that_breaks_off_once_is_made_again() {
     assert_eq!(rec.reward, Some(1.0));
 }
 
+/// F2 round 4: a verifier's words of a full disk change a score only on
+/// evidence the agent cannot fake (review F2-C, F-6), a passed score always
+/// stands, and a sparse file under a cap neither stops the trial nor scores
+/// it 0 (F-3).
+#[tokio::test]
+async fn a_score_stands_without_evidence_of_a_full_disk() {
+    let cases = [
+        (
+            Case::new("-", Owner::Agent, "a rootless agent's disk has room")
+                .act(Act::Solve)
+                .fault(Fault::ZeroWithRoom),
+            Some(0.0),
+        ),
+        (
+            Case::new(
+                "-",
+                Owner::Agent,
+                "a root agent's df says full, the daemon's probe has room",
+            )
+            .act(Act::Solve)
+            .fault(Fault::ZeroOnFullDf)
+            .tweak(|t| t.agent.user = Some("root".into())),
+            Some(0.0),
+        ),
+        (
+            Case::new("-", Owner::Agent, "a passed score on a full disk")
+                .act(Act::Solve)
+                .fault(Fault::PassOnFullDf),
+            Some(1.0),
+        ),
+        (
+            Case::new(
+                "-",
+                Owner::Agent,
+                "a rootless agent's sparse file past the cap does not fake a full quota",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapSparseZero)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Some(0.0),
+        ),
+        (
+            Case::new("-", Owner::Agent, "a sparse file far past the cap")
+                .act(Act::Solve)
+                .fault(Fault::CapSparse)
+                .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            None,
+        ),
+    ];
+    for (case, reward) in &cases {
+        let rec = run(case).await.expect("a trial record");
+        assert_eq!(
+            rec.status,
+            benchflow_run::outcome::Status::Scored,
+            "{}: {:?}",
+            case.what,
+            rec.problem
+        );
+        assert!(rec.problem.is_none(), "{}: {:?}", case.what, rec.problem);
+        if let Some(r) = reward {
+            assert_eq!(rec.reward, Some(*r), "{}", case.what);
+        }
+    }
+}
+
 #[tokio::test]
 async fn failures_record_the_right_status_owner_and_phase() {
     use Owner::*;
@@ -1709,10 +2243,357 @@ async fn failures_record_the_right_status_owner_and_phase() {
             Status::Skipped,
             Phase::Verify,
         ),
+        // Decision 21, as clarified: a full disk nothing shows the agent
+        // filled is the sandbox's, run again once; never the task's. Words
+        // alone (the agent's program printing them) change nothing.
         (
-            Case::new("R304", Task, "the verifier fails on a full disk").fault(Fault::DiskFull),
+            Case::new("R305", Sandbox, "the verifier fails on a full disk").fault(Fault::DiskFull),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "the verifier fails on a full disk the daemon does not cap (the host's)",
+            )
+            .act(Act::Solve)
+            .fault(Fault::DaemonDiskFull),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "under a cap the daemon enforces, the daemon's own disk fills from outside and the verifier fails on it",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapHostFull)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R304",
+                Task,
+                "the verifier's output says the disk is full, and it is not",
+            )
+            .fault(Fault::FakeFull),
             Status::Unscored,
             Phase::Verify,
+        ),
+        // The agent's 0, on the sandbox's own evidence only.
+        (
+            // Round 6 (DECISIONS row 13): a full capped disk is the sandbox's
+            // R305, rerun once then kept, whoever filled it.
+            Case::new(
+                "R305",
+                Sandbox,
+                "the agent's turn fills the disk the daemon caps, and the verifier fails on it",
+            )
+            .act(Act::Solve)
+            .fault(Fault::DiskFilled)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R316",
+                Agent,
+                "the agent's turn writes past a disk limit the daemon cannot cap",
+            )
+            .act(Act::Silent)
+            .fault(Fault::DiskOver)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Scored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R316",
+                Agent,
+                "the agent's turn floods the disk the daemon caps with empty files",
+            )
+            .act(Act::Silent)
+            .fault(Fault::CapInodes)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Scored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R110",
+                Sandbox,
+                "the layer cannot be measured, even frozen, while the sandbox runs",
+            )
+            .act(Act::Silent)
+            .fault(Fault::DiskUnmeasurable)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R316",
+                Agent,
+                "the kill before grading cannot start: the sandbox is at its own process limit",
+            )
+            .act(Act::Solve)
+            .fault(Fault::ForkBomb),
+            Status::Scored,
+            // F2 round 5 (review F2-A-r4 M4): read when the kill at the
+            // end of the agent's turn cannot start.
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "the kill before grading cannot start, below the sandbox's own process limit",
+            )
+            .act(Act::Solve)
+            .fault(Fault::HostPids),
+            Status::Errored,
+            Phase::Handoff,
+        ),
+        (
+            Case::new(
+                "R204",
+                Sandbox,
+                "the host's out-of-memory killer ends the agent",
+            )
+            .act(Act::Solve)
+            .fault(Fault::HostOom),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        // F2 round 4 (reviews F2-A-r3, F2-B-r3, F2-C).
+        (
+            Case::new(
+                "R204",
+                Sandbox,
+                "the sandbox's own memory limit runs out once and two processes are killed",
+            )
+            .act(Act::Solve)
+            .fault(Fault::MixedOom),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "under a cap, the agent's background writer fills the cap after its attempt returns",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapFilledAfter)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "under a cap, the host's disk is full at the close of an honest turn and has room again by grading",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapHostFillRecovered)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R316",
+                Agent,
+                "on a watched layer, the agent's writer passes the limit after its attempt returns",
+            )
+            .act(Act::Solve)
+            .fault(Fault::LateWriter)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Scored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R110",
+                Sandbox,
+                "the layer passes the limit while the verifier runs",
+            )
+            .act(Act::Solve)
+            .fault(Fault::VerifyWriter)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "the verifier fails on a disk whose inodes are used up",
+            )
+            .fault(Fault::InodesFull),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "the verifier scores 0 on a full disk, shown full by a rootless agent's sandbox",
+            )
+            .act(Act::Solve)
+            .fault(Fault::ZeroOnFullDf),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "a root agent's verifier scores 0 on a full disk the daemon's probe shows full",
+            )
+            .act(Act::Solve)
+            .fault(Fault::ZeroOnFullHost)
+            .tweak(|t| t.agent.user = Some("root".into())),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "under a cap, a root agent's df says there is room, the daemon measures the layer at the cap, and the verifier fails on it",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapFakedRoom)
+            .tweak(|t| {
+                t.sandbox.disk_mb = Some(300);
+                t.agent.user = Some("root".into());
+            }),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "under a cap, a root agent's layer cannot be measured, the daemon's disk has room, and the verifier fails on a full disk",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapUnknownLayer)
+            .tweak(|t| {
+                t.sandbox.disk_mb = Some(300);
+                t.agent.user = Some("root".into());
+            }),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        // F2 round 5.
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "under a cap, a neighbour fills the daemon's disk during an honest agent's turn and the verifier fails on it",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapHostFillBlocks)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "under a cap, the host's inodes run low during an honest agent's turn and the verifier fails",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapHostInodes)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R305",
+                Sandbox,
+                "a separate verifier scores 0 on a full disk",
+            )
+            .act(Act::Solve)
+            .fault(Fault::ZeroOnFullDf)
+            .tweak(|t| t.verifier.isolation = benchflow_task::package::Isolation::Separate),
+            Status::Errored,
+            Phase::Verify,
+        ),
+        (
+            Case::new(
+                "R316",
+                Agent,
+                "at its own process limit when its turn ends, with a writer that passes the limit after",
+            )
+            .act(Act::Solve)
+            .fault(Fault::ForkBombWriter)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Scored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R110",
+                Sandbox,
+                "the layer cannot be measured before the agent's first turn",
+            )
+            .act(Act::Solve)
+            .fault(Fault::DiskUnmeasurableFromStart)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Setup,
+        ),
+        // No word of a full disk: no probe of the daemon's disk, no
+        // measure of the layer (checked after the cases run).
+        (
+            Case::new(
+                "R304",
+                Task,
+                "under a cap, the verifier writes no reward, with no word of a full disk",
+            )
+            .act(Act::Solve)
+            .fault(Fault::CapNoWords)
+            .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Unscored,
+            Phase::Verify,
+        ),
+        // Decision 22: the disk limit's watch stops a sandbox whose layer
+        // passed the limit. Nothing yet says the agent wrote it, so it is
+        // the sandbox's, rerun once; a repeat is kept as it is.
+        (
+            Case::new("R110", Sandbox, "the disk limit's watch stops the sandbox")
+                .act(Act::Silent)
+                .fault(Fault::DiskOverBefore)
+                .tweak(|t| t.sandbox.disk_mb = Some(300)),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new(
+                "R110",
+                Sandbox,
+                "the disk limit's watch stops the sandbox, in two attempts in a row",
+            )
+            .act(Act::Silent)
+            .fault(Fault::DiskOverBefore)
+            .tweak(|t| t.sandbox.disk_mb = Some(300))
+            .options(|o| {
+                o.retries = 1;
+                o.unexplained_loss_retry_secs = 0;
+            }),
+            Status::Errored,
+            Phase::Agent,
         ),
         (
             Case::new("R214", Model, "429s use up the agent's time").who(Who::Throttled),
@@ -1720,10 +2601,14 @@ async fn failures_record_the_right_status_owner_and_phase() {
             Phase::Agent,
         ),
         (
-            Case::new("R204", Agent, "the out-of-memory killer ends the agent")
-                .act(Act::Solve)
-                .fault(Fault::AgentOom),
-            Status::Errored,
+            Case::new(
+                "R316",
+                Agent,
+                "the sandbox's own memory limit runs out and the out-of-memory killer ends the agent",
+            )
+            .act(Act::Solve)
+            .fault(Fault::AgentOom),
+            Status::Scored,
             Phase::Agent,
         ),
         (
@@ -1998,7 +2883,13 @@ async fn failures_record_the_right_status_owner_and_phase() {
     let mut failures = Vec::new();
     for (case, status, phase) in &cases {
         let rec = run(case).await.expect("a trial record");
-        let p = rec.problem.as_ref().expect("a problem");
+        let Some(p) = rec.problem.as_ref() else {
+            failures.push(format!(
+                "{}: no problem ({:?}, reward {:?})",
+                case.what, rec.status, rec.reward
+            ));
+            continue;
+        };
         if p.code != case.code
             || p.owner != case.owner
             || rec.status != *status
@@ -2038,6 +2929,56 @@ async fn failures_record_the_right_status_owner_and_phase() {
                 case.what, p.rerun_capped
             ));
         }
+        if matches!(case.fault, Fault::DiskOver | Fault::DiskOverBefore)
+            && !(p.message.contains("400 MB") && p.message.contains("disk limit of 300 MB"))
+        {
+            failures.push(format!(
+                "{}: the layer and limit are not named: {p:?}",
+                case.what
+            ));
+        }
+        if case.fault == Fault::DiskOverBefore
+            && !rec.defenses.get("disk_limit").is_some_and(|d| {
+                d.note
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("disk limit not enforced"))
+            })
+        {
+            failures.push(format!(
+                "{}: no disk_limit record: {:?}",
+                case.what, rec.defenses
+            ));
+        }
+        if case.fault == Fault::DiskUnmeasurable
+            && !(p.message.contains("could not be measured")
+                && rec.defenses.get("disk_limit").is_some_and(|d| {
+                    d.note
+                        .as_deref()
+                        .is_some_and(|n| n.contains("could go unmeasured for"))
+                }))
+        {
+            failures.push(format!(
+                "{}: the unmeasured layer is not named: {p:?} {:?}",
+                case.what, rec.defenses
+            ));
+        }
+        // The agent never ran: F1's metadata warning must not count it.
+        if case.fault == Fault::DiskUnmeasurableFromStart
+            && (rec.agent_started() || rec.model_reached_metadata().is_some())
+        {
+            failures.push(format!("{}: counted as an agent that ran", case.what));
+        }
+        if case.fault == Fault::CapNoWords
+            && PROBED_WITHOUT_WORDS.load(std::sync::atomic::Ordering::SeqCst) > 0
+        {
+            failures.push(format!(
+                "{}: the daemon's disk was probed with no word of a full disk",
+                case.what
+            ));
+        }
+        if case.fault == Fault::CapInodes && !p.message.contains("200000 entries") {
+            failures.push(format!("{}: the entries are not named: {p:?}", case.what));
+        }
         if case.fault == Fault::DiskFull && !p.message.contains("disk was full") {
             failures.push(format!("{}: the full disk is not named: {p:?}", case.what));
         }
@@ -2049,7 +2990,14 @@ async fn failures_record_the_right_status_owner_and_phase() {
                 case.what
             ));
         }
-        if p.owner != Task && rec.reward.is_some() {
+        // The agent's 0 for exhausting its own sandbox is a score of 0.
+        if p.code == "R316" && (rec.reward != Some(0.0) || rec.passed != Some(false)) {
+            failures.push(format!(
+                "{}: R316 not scored 0: {:?}",
+                case.what, rec.reward
+            ));
+        }
+        if p.owner != Task && p.code != "R316" && rec.reward.is_some() {
             failures.push(format!(
                 "{}: scored though {}",
                 case.what,

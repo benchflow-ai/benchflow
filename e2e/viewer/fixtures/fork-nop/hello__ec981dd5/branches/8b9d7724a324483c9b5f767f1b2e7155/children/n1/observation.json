@@ -1,0 +1,35 @@
+{
+  "kind": "branch-child",
+  "node_id": "n1",
+  "lineage": {
+    "parent_rollout": "hello__ec981dd5",
+    "fork_id": "8b9d7724a324483c9b5f767f1b2e7155",
+    "parent_node": "root",
+    "index": 0,
+    "label": "c1"
+  },
+  "reward": 0.0,
+  "error": null,
+  "verifier_error": null,
+  "export_error": null,
+  "timing": {
+    "agent_setup": 9.747,
+    "agent_execution": 0.008,
+    "verifier": 10.606
+  },
+  "native_usage": {
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0
+  },
+  "snapshot_start": {
+    "seconds": 3.003
+  },
+  "trajectory": [
+    {
+      "type": "nop"
+    }
+  ]
+}

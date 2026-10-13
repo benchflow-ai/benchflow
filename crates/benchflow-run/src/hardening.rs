@@ -531,10 +531,151 @@ true"#,
     )
 }
 
+/// Shell helpers the baseline's record of virtual environments and the
+/// handoff share:
+///
+/// - `hex <text>` prints the text as lowercase hex, and `unhex <hex>` turns
+///   it back (failing on anything but an even run of hex digits). The
+///   record is written in hex, so no name or link text, whatever it holds,
+///   can read as another entry (E2-A high 1: a newline in a link text
+///   forged one).
+/// - `walk any|dir|root <absolute path>`, always run inside `$(...)` (it
+///   sets variables and `set -f`), follows the path one name at a time,
+///   at most 40 links, from `/`, and prints where it lands (a missing
+///   last name is allowed, as `readlink -f` allows it). It fails, printing
+///   why in parentheses, when a step enters `/proc` (any path under it:
+///   `self`, `thread-self`, a process id, `task/<tid>`, `cwd`, `root`, `fd`)
+///   or `/dev/fd`, `/dev/stdin`, `/dev/stdout` or `/dev/stderr`: where such
+///   a path leads depends on the process that reads it, so the handoff's
+///   answer would not be the verifier's (decision G-8; E2-D-B and E2-E-B).
+///   It also fails on a link text holding a line break or a tab, or a
+///   folder on the way that is missing. With `dir`, every link on the way
+///   must be root's (the agent cannot make one; a workdir link becomes the
+///   agent's when the workdir does) and the end a folder: root can make an
+///   entry there without following a link the agent made. With `root`,
+///   every link on the way is root's, every folder on the way is root's
+///   and closed to group and others, and the end is a regular file of the
+///   same kind: nothing the agent can change is on the way.
+///
+/// Owners are read with `ls -ldn`, which busybox, coreutils and the BSDs
+/// print alike; `bf_roots` holds the uids that count as root.
+const VENV_SHELL: &str = r#"nl='
+'
+tab=$(printf '\t')
+bf_roots=' 0 '
+hex() { printf %s "$1" | od -An -v -tx1 | tr -d ' \n'; }
+unhex() (
+  h=$1; s=
+  case "$h" in ''|*[!0-9a-f]*) exit 1;; esac
+  [ $((${#h} % 2)) = 0 ] || exit 1
+  while [ -n "$h" ]; do
+    r=${h#??}; c=${h%"$r"}; h=$r; o=$((0x$c))
+    s="$s\\$((o / 64))$((o / 8 % 8))$((o % 8))"
+  done
+  printf "$s"
+)
+owned() { set -- $(ls -ldn -- "$1" 2>/dev/null); case "$bf_roots" in *" $3 "*) return 0;; esac; return 1; }
+closed() {
+  owned "$1" || return 1
+  set -- $(ls -ldn -- "$1" 2>/dev/null)
+  case "$1" in ?????w*|????????w*) return 1;; esac
+}
+walk() {
+  set -f
+  m=$1; rest=$2; cur=; n=0
+  case "$rest" in /*) ;; *) echo "(not an absolute path)"; return 1;; esac
+  if [ "$m" = root ] && ! closed /; then echo "(/ is open to others)"; return 1; fi
+  while [ -n "$rest" ]; do
+    c=${rest%%/*}
+    case "$rest" in */*) rest=${rest#*/};; *) rest=;; esac
+    case "$c" in ''|.) continue;; ..) cur=${cur%/*}; continue;; esac
+    p=$cur/$c
+    case "$p" in /proc|/proc/*|/dev/fd|/dev/fd/*|/dev/stdin|/dev/stdout|/dev/stderr) echo "(through $p)"; return 1;; esac
+    if [ -L "$p" ]; then
+      n=$((n + 1))
+      [ "$n" -le 40 ] || { echo "(more than 40 links)"; return 1; }
+      if [ "$m" != any ] && ! owned "$p"; then echo "(through $p, a link not root's)"; return 1; fi
+      t=$(readlink -- "$p" && echo .) || { echo "(unreadable link $p)"; return 1; }
+      t=${t%"$nl."}
+      case "$t" in ''|*"$nl"*|*"$tab"*) echo "(a line break or tab in the link $p)"; return 1;; esac
+      case "$t" in /*) cur=;; esac
+      rest=$t${rest:+/$rest}
+      continue
+    fi
+    if [ -n "$rest" ]; then
+      [ -d "$p" ] || { echo "(no folder $p)"; return 1; }
+      if [ "$m" = root ] && ! closed "$p"; then echo "(through $p, open to others or not root's)"; return 1; fi
+    fi
+    cur=$p
+  done
+  cur=${cur:-/}
+  case "$m" in
+    dir) [ -d "$cur" ] || { echo "(no folder $cur)"; return 1; };;
+    root) { [ -f "$cur" ] && closed "$cur"; } || { echo "($cur is not a file root's alone)"; return 1; };;
+  esac
+  printf '%s\n' "$cur"
+}"#;
+
+/// The names of a virtual environment's interpreter links the baseline
+/// records and the handoff repairs: `bin/python`, `bin/python3` and
+/// `bin/python3.N`.
+const VENV_LINK_NAMES: &str = r#""$D/bin/python" "$D/bin/python3" "$D"/bin/python3.*"#;
+
 /// Snapshot the steering files (path and SHA-256) and keep a copy of each, in
 /// root-only state, before the agent starts; and note the `*.py` files
 /// already in the temp folders.
-pub fn baseline() -> String {
+///
+/// With `venvs_in` (a workdir), also record the virtual environments in
+/// it, replacing any earlier record: for each folder holding a
+/// `pyvenv.cfg` and a `bin` folder, a root-only copy of the `pyvenv.cfg`,
+/// and its `bin/python`, `bin/python3` and `bin/python3.N` links with their
+/// link text (a name or text holding a line break or a tab is left out), in
+/// hex (`<state>/venvs/list`: `V <folder> <copy number>` and `L <folder>
+/// <name> <text>`). Prints `BF venvs <n>`, or `BF venvs-unrecorded no-od`
+/// when the image has no `od` (nothing is then recorded or repaired). The
+/// handoff re-creates those links from this record ([`handoff`]), so the
+/// runner passes `venvs_in` only before the agent's first turn: in a
+/// trial's setup and before the first stage. Without it the record is left
+/// as it is, and later stages reuse it: a record taken after an agent's
+/// turn could list the agent's links.
+pub fn baseline(venvs_in: Option<&str>) -> String {
+    let venvs = match venvs_in {
+        Some(workdir) => format!(
+            r#"
+{shell}
+v={state}/venvs
+rm -rf "$v"; mkdir -p "$v/cfg"; chmod 700 "$v"
+if command -v od >/dev/null 2>&1; then
+  : > "$v/list"; i=0
+  find {workdir} -xdev -name pyvenv.cfg -type f ! -path "*$nl*" ! -path "*$tab*" -print 2>/dev/null > "$v/found"
+  while IFS= read -r c; do
+    D=${{c%/pyvenv.cfg}}
+    [ -d "$D/bin" ] && [ ! -L "$D/bin" ] || continue
+    i=$((i + 1))
+    cat -- "$c" > "$v/cfg/$i" || continue
+    echo "V $(hex "$D") $i" >> "$v/list"
+    for l in {names}; do
+      [ -L "$l" ] || continue
+      x=${{l##*/}}
+      case "$x" in python|python3) ;; *) case "${{x#python3.}}" in ''|*[!0-9]*) continue;; esac;; esac
+      t=$(readlink -- "$l" && echo .) || continue
+      t=${{t%"$nl."}}
+      case "$t" in ''|*"$nl"*|*"$tab"*) continue;; esac
+      echo "L $(hex "$D") $(hex "$x") $(hex "$t")" >> "$v/list"
+    done
+  done < "$v/found"
+  rm -f "$v/found"
+  echo "BF venvs $i"
+else
+  echo "BF venvs-unrecorded no-od"
+fi"#,
+            shell = VENV_SHELL,
+            state = q(STATE_DIR),
+            workdir = q(workdir),
+            names = VENV_LINK_NAMES,
+        ),
+        None => String::new(),
+    };
     format!(
         r#"{umask}
 b={state}/baseline
@@ -547,7 +688,7 @@ done < "$b/list"
 if [ -s "$b/list" ]; then tar -cf "$b/files.tar" -T "$b/list" 2>/dev/null || true; fi
 find /tmp /var/tmp -xdev -name '*.py' -type f -print 2>/dev/null | while IFS= read -r f; do
   s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1) && printf '%s  %s\n' "$s" "$f"
-done > "$b/tmp-sums"
+done > "$b/tmp-sums"{venvs}
 echo "BF baseline $(wc -l < "$b/list" | tr -d ' ')""#,
         umask = STATE_UMASK,
         state = q(STATE_DIR),
@@ -661,6 +802,135 @@ echo "BF state-checked""#,
     )
 }
 
+/// The handoff's shell function `held <link>`: whether an escaping link it
+/// is about to remove is one the baseline recorded, at the same path with
+/// the same text (an image's venv link the agent left alone). The handoff
+/// removes it like any other, but does not list it as the agent's:
+/// [`VENV_REPAIR`] puts it back, or lists it when it cannot.
+const VENV_HELD: &str = r#"held() {
+  case "$1" in */bin/python|*/bin/python3|*/bin/python3.*) ;; *) return 1;; esac
+  [ -f "$sd/venvs/list" ] || return 1
+  t0=$(readlink -- "$1" && echo .) || return 1
+  t0=${t0%"$nl."}
+  grep -Fqx -- "L $(hex "${1%/bin/*}") $(hex "${1##*/}") $(hex "$t0")" "$sd/venvs/list"
+}"#;
+
+/// The handoff's last step (decision G-7): re-create, as root and from the
+/// baseline's record alone, the interpreter links of the virtual
+/// environments the workdir held before the agent's first turn
+/// ([`baseline`] with `venvs_in`). The escaping-link scan has removed them
+/// by then, as it removes every link that leads out of the workdir.
+///
+/// For each recorded venv folder, the way to its `bin` folder must pass
+/// `walk dir` (no link on the way that root does not own), checked after
+/// the agent's processes are gone; otherwise nothing in that venv is
+/// touched. Its `pyvenv.cfg` is put back from root's copy when it is not
+/// that file (`BF restored`; `BF lost` when it cannot be, and the venv is
+/// then left alone). Then each recorded link whose text is
+///
+/// - absolute, and passes `walk root` (root-owned folders closed to group
+///   and others, all the way to a root-owned regular file), or
+/// - a bare name, of another recorded link in the same folder that has
+///   passed (in up to three more rounds, so `python3.12 -> python3 ->
+///   /usr/bin/python3` passes in two),
+///
+/// is made again with its recorded text (`BF repaired <path>`); whatever
+/// the agent left at that path goes first (`BF symlink` for a link,
+/// `BF planted` for anything else). A link already there with the recorded
+/// text stays. At a recorded link that fails, whatever the agent left goes
+/// the same way, after every pass, so the order of the scan does not
+/// matter. A link with the recorded text stays only when that text, read by
+/// name alone (`inwd`), leads into the workdir (an interpreter the image
+/// put there, which the agent could edit as it can edit the venv's
+/// packages), or is the bare name of another recorded link of the same venv
+/// (G3-R2-A-2: `python -> python3.13t`, unrecorded, ran what the agent put
+/// there). Any other one is removed without a line of its own, and listed
+/// below as not repaired: the scan kept it only because its way now lands
+/// in the workdir, which for a text leading out of it means the agent
+/// replaced a folder or file on that way, such as its own home's
+/// interpreter with a link to its script (G3-R2-A-1). Each recorded link
+/// that fails is then listed as `BF symlink <path> -> <text> (not repaired:
+/// <why>)`, unless its kept link leads to a file. In a venv whose route
+/// failed, nothing is removed and every recorded link is listed, whatever
+/// is reached there through the agent's link.
+const VENV_REPAIR: &str = r#"inwd() (
+  set -f; a=; r=$1
+  while [ -n "$r" ]; do
+    c=${r%%/*}
+    case "$r" in */*) r=${r#*/};; *) r=;; esac
+    case "$c" in ''|.) ;; ..) a=${a%/*};; *) a=$a/$c;; esac
+  done
+  case "$a" in "$w"/*|"$rw"/*) ;; *) exit 1;; esac
+)
+if [ -f "$sd/venvs/list" ]; then
+  vl=$sd/venvs/list; okv=' '; okl=' '
+  while read -r k d i; do
+    [ "$k" = V ] || continue
+    D=$(unhex "$d") || continue
+    r_=$(walk dir "$D/bin") || continue
+    c=$D/pyvenv.cfg
+    keep=$(sha256sum < "$sd/venvs/cfg/$i" | cut -d' ' -f1) || continue
+    if [ -L "$c" ] || [ ! -f "$c" ] || [ "$(sha256sum < "$c" | cut -d' ' -f1)" != "$keep" ]; then
+      rm -rf -- "$c"
+      if [ ! -e "$c" ] && [ ! -L "$c" ] && cp -- "$sd/venvs/cfg/$i" "$c" && chmod 644 "$c"; then echo "BF restored $c"
+      else echo "BF lost $c"; continue; fi
+    fi
+    okv="$okv$d "
+  done < "$vl"
+  for pass in 1 2 3 4; do
+    while read -r k d x t; do
+      [ "$k" = L ] || continue
+      case "$okv" in *" $d "*) ;; *) continue;; esac
+      case "$okl" in *" $d.$x "*) continue;; esac
+      D=$(unhex "$d") && N=$(unhex "$x") && T=$(unhex "$t") || continue
+      case "$T" in
+        /*) [ "$pass" = 1 ] && r_=$(walk root "$T") || continue;;
+        */*) continue;;
+        *) [ "$pass" != 1 ] || continue
+           case "$okl" in *" $d.$(hex "$T") "*) ;; *) continue;; esac;;
+      esac
+      p=$D/bin/$N
+      if [ ! -L "$p" ] || [ "$(readlink -- "$p" && echo .)" != "$T$nl." ]; then
+        if [ -L "$p" ]; then printf 'BF symlink %s -> %s\n' "$p" "$(printf %s "$(readlink -- "$p")" | tr '\n\t' '??')"; rm -f -- "$p"
+        elif [ -e "$p" ]; then echo "BF planted $p"; rm -rf -- "$p"; fi
+        if [ ! -e "$p" ] && [ ! -L "$p" ] && ln -s -- "$T" "$p"; then echo "BF repaired $p"; else continue; fi
+      fi
+      okl="$okl$d.$x "
+    done < "$vl"
+  done
+  while read -r k d x t; do
+    [ "$k" = L ] || continue
+    case "$okl" in *" $d.$x "*) continue;; esac
+    case "$okv" in *" $d "*) ;; *) continue;; esac
+    D=$(unhex "$d") && N=$(unhex "$x") && T=$(unhex "$t") || continue
+    p=$D/bin/$N
+    if [ -L "$p" ]; then
+      if [ "$(readlink -- "$p" && echo .)" = "$T$nl." ]; then
+        case "$T" in
+          /*) inwd "$T" && continue;;
+          */*) inwd "$D/bin/$T" && continue;;
+          *) grep -q -- "^L $d $(hex "$T") " "$vl" && continue;;
+        esac
+        rm -f -- "$p"; continue
+      fi
+      printf 'BF symlink %s -> %s\n' "$p" "$(printf %s "$(readlink -- "$p")" | tr '\n\t' '??')"; rm -f -- "$p"
+    elif [ -e "$p" ]; then echo "BF planted $p"; rm -rf -- "$p"; fi
+  done < "$vl"
+  while read -r k d x t; do
+    [ "$k" = L ] || continue
+    case "$okl" in *" $d.$x "*) continue;; esac
+    D=$(unhex "$d") && N=$(unhex "$x") && T=$(unhex "$t") || continue
+    p=$D/bin/$N
+    case "$okv" in
+      *" $d "*) [ -e "$p" ] && continue
+        case "$T" in /*) why=$(walk root "$T") && why="(could not be made)";; *) why="(names no repaired link beside it)";; esac;;
+      *) why=$(walk dir "$D/bin") && why="(its pyvenv.cfg could not be put back)";;
+    esac
+    why=${why#(}; why=${why%)}
+    printf 'BF symlink %s -> %s (not repaired: %s)\n' "$p" "$T" "$why"
+  done < "$vl"
+fi"#;
+
 /// Hand the sandbox from the agent to the verifier.
 ///
 /// - Clears `/logs/verifier` (anything the agent wrote there is discarded).
@@ -714,11 +984,14 @@ pub fn handoff(workdir: &str, verifier_user: Option<&str>, strict_state: bool) -
         _ => String::new(),
     };
     format!(
-        r#"w={workdir}; sd={state}; b={state}/baseline
+        r#"cd / || exit 1
+w={workdir}; sd={state}; b={state}/baseline
 {foreign}
+{venv_shell}
+{venv_held}
 out_of_reach() {{
   foreign_links "$(dirname "$1")" | while IFS= read -r l; do
-    t=$(readlink -f "$l" 2>/dev/null)
+    t=$(walk any "$l") || {{ echo out; break; }}
     case "$t" in "$rw"|"$rw"/*) ;; *) echo out; break;; esac
   done | grep -q out
 }}
@@ -750,25 +1023,35 @@ for d in "$w" {outputs}; do
   done
   rd=$(readlink -f "$d" 2>/dev/null || echo "$d")
   find "$d" -xdev -type l -print 2>/dev/null | while IFS= read -r l; do
-    t=$(readlink -f "$l" 2>/dev/null || true)
-    case "$t" in "$rw"|"$rw"/*|"$rd"|"$rd"/*) ;; *) printf 'BF symlink %s -> %s\n' "$l" "$(printf %s "$t" | tr '\n' '?')"; rm -f "$l";; esac
+    case "$l" in
+      *"$tab"*) t="$(readlink -- "$l") (a tab in its name)";;
+      *) if t=$(walk any "$l"); then case "$t" in "$rw"|"$rw"/*|"$rd"|"$rd"/*) continue;; esac
+         else t="$(readlink -- "$l") $t"; fi;;
+    esac
+    if ! held "$l"; then printf 'BF symlink %s -> %s\n' "$(printf %s "$l" | tr '\t' '?')" "$(printf %s "$t" | tr '\n\t' '??')"; fi
+    rm -f "$l"
   done
   find "$d" -xdev -type f -size +1048576k -print 2>/dev/null | while IFS= read -r f; do echo "BF large $f"; done
 done
 if [ -f "$b/list" ]; then
-  find / -xdev {prune} -o -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; -o {names} -print 2>/dev/null | ({umask}; LC_ALL=C sort > "$b/after")
-  while IFS= read -r f; do
-    if ! grep -Fxq -- "$f" "$b/list"; then {skip}; echo "BF planted $f"; rm -f "$f"; fi
-  done < "$b/after"
+  # Streamed, never written to disk: a full disk cannot empty the list.
+  # A planted file that cannot be removed, or a changed one that cannot be
+  # put back, stops the handoff: grading must not run with it in place.
+  find / -xdev {prune} -o -name "*$nl*" -prune -exec sh -c "$drop" sh {{}} \; -o {names} -print 2>/dev/null | {{
+    while IFS= read -r f; do
+      if ! grep -Fxq -- "$f" "$b/list"; then {skip}; echo "BF planted $f"; rm -f "$f" || {{ echo "BF restore-failed $f"; exit 3; }}; fi
+    done
+  }}
+  if [ $? = 3 ]; then echo "BF handoff stopped"; exit 0; fi
   while IFS= read -r line; do
     s=${{line%%  *}}; f=${{line#*  }}
     now=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
     if [ "$now" != "$s" ]; then
       {skip}
       if out_of_reach "$f"; then echo "BF lost $f"; continue; fi
-      rm -rf "$f"
-      if [ -f "$b/added$f" ]; then cp -p "$b/added$f" "$f" 2>/dev/null && echo "BF restored $f" || echo "BF lost $f"
-      else tar -xf "$b/files.tar" -C / "${{f#/}}" 2>/dev/null && echo "BF restored $f" || echo "BF lost $f"; fi
+      if [ -f "$b/added$f" ]; then rm -rf "$f" && cp -p "$b/added$f" "$f" 2>/dev/null && echo "BF restored $f" && continue
+      else rm -rf "$f" && tar -xf "$b/files.tar" -C / "${{f#/}}" 2>/dev/null && echo "BF restored $f" && continue; fi
+      echo "BF restore-failed $f"; echo "BF handoff stopped"; exit 0
     fi
   done < "$b/sums"
 fi
@@ -777,11 +1060,11 @@ find /tmp /var/tmp -xdev -name '*.py' -type f -print 2>/dev/null | while IFS= re
   [ -f "$b/tmp-sums" ] && grep -Fxq -- "$s  $f" "$b/tmp-sums" && continue
   echo "BF tmp-module $f"; rm -f "$f"
 done
+{repair}
 echo "BF handoff done""#,
         workdir = q(workdir),
         state = q(STATE_DIR),
         not_roots = STATE_NOT_ROOTS,
-        umask = STATE_UMASK,
         state_mode = if strict_state {
             r#"note() { printf 'BF state-owner %s\n' "$1"; }
 stop() { echo "BF handoff stopped"; exit 0; }"#
@@ -795,6 +1078,9 @@ stop() { :; }"#
         names = steering_find_expr(),
         skip = SKIP_UNLESS_STEERING,
         outputs = OUTPUT_DIRS.join(" "),
+        venv_shell = VENV_SHELL,
+        venv_held = VENV_HELD,
+        repair = VENV_REPAIR,
     )
 }
 
@@ -967,12 +1253,23 @@ true"#
 }
 
 /// Print how many processes the sandbox's out-of-memory killer ended:
-/// `BF oom-kill <n>` from the memory cgroup (v2 `memory.events`, or v1
-/// `memory.oom_control` on kernels that count), nothing when neither says.
-pub fn oom_kills() -> String {
-    r#"for f in /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory/memory.oom_control; do
-  [ -r "$f" ] && while read -r k v; do [ "$k" = oom_kill ] && echo "BF oom-kill $v"; done < "$f"
-done
+/// The sandbox's own memory cgroup (cgroup v2, read inside the sandbox's
+/// own cgroup namespace), when it has a limit of its own: `BF mem-max
+/// <bytes>`, then `BF mem-oom <n>` and `BF mem-oom_kill <n>` from
+/// `memory.events`. `oom` rises only when this cgroup's own `memory.max`
+/// is hit; `oom_kill` also when a kill came from outside (the host's or a
+/// parent's out-of-memory killer). Nothing on cgroup v1 or with no limit.
+/// Shell builtins only (`read`, `case`, `echo`): a root agent cannot change
+/// the answer by planting a program on the way (review E6-D-B D4).
+pub fn memory_events() -> String {
+    r#"m=/sys/fs/cgroup/memory.max; e=/sys/fs/cgroup/memory.events
+if [ -r "$m" ] && [ -r "$e" ]; then
+  read -r lim < "$m"
+  if [ "$lim" != max ]; then
+    echo "BF mem-max $lim"
+    while read -r k v; do case "$k" in oom|oom_kill) echo "BF mem-$k $v";; esac; done < "$e"
+  fi
+fi
 true"#
         .to_string()
 }
@@ -1349,6 +1646,22 @@ fi; done; exit 0"#,
         strict: bool,
         as_root: bool,
     ) -> String {
+        handoff_run(root, workdir, strict, as_root, None, false)
+    }
+
+    /// [`handoff_with`], run from the folder `cwd` (a root command starts
+    /// in the container's working folder, often the workdir) or, without
+    /// one, from the test's own; with `my_links_are_roots`, the test's user
+    /// also stands in for root as the owner of the links and folders the
+    /// venv repair's route checks read.
+    fn handoff_run(
+        root: &std::path::Path,
+        workdir: &std::path::Path,
+        strict: bool,
+        as_root: bool,
+        cwd: Option<&std::path::Path>,
+        my_links_are_roots: bool,
+    ) -> String {
         let r = root.to_str().unwrap();
         // Setup made the folder.
         let state = root.join("state");
@@ -1360,6 +1673,10 @@ fi; done; exit 0"#,
             script = script
                 .replace("! -user 0", &format!("! -user {}", id("-u")))
                 .replace("! -group 0", &format!("! -group {}", id("-g")));
+        }
+        if my_links_are_roots {
+            assert!(script.contains("bf_roots=' 0 '"));
+            script = script.replace("bf_roots=' 0 '", &format!("bf_roots=' 0 {} '", id("-u")));
         }
         let script = script
             .replace("/logs/verifier", &format!("{r}/logs/verifier"))
@@ -1383,18 +1700,24 @@ fi; done; exit 0"#,
                 "the test would touch the host ({left:?})"
             );
         }
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&script)
-            .output()
-            .expect("sh");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(&script);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        let out = cmd.output().expect("sh");
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
     /// Run [`baseline`] on the host under `root`, as [`handoff_under`] does.
     fn baseline_under(root: &std::path::Path) -> String {
+        baseline_run(root, None)
+    }
+
+    /// [`baseline_under`], recording the virtual environments in `venvs_in`.
+    fn baseline_run(root: &std::path::Path, venvs_in: Option<&std::path::Path>) -> String {
         let r = root.to_str().unwrap();
-        let script = baseline()
+        let script = baseline(venvs_in.map(|p| p.to_str().unwrap()))
             .replace(STATE_DIR, &format!("{r}/state"))
             .replace("find / -xdev", &format!("find {r} -xdev"))
             .replace("/tmp /var/tmp", &format!("{r}/tmp {r}/var/tmp"));
@@ -1405,6 +1728,82 @@ fi; done; exit 0"#,
             .output()
             .expect("sh");
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Review E6-E-A H2: on a full disk the handoff could not write its list
+    /// of test-runner files, read an empty one, removed nothing, and still
+    /// said `BF handoff done`, so grading ran with a planted `conftest.py`.
+    /// The list is streamed now; a state folder nothing can be written to
+    /// stands in for the full disk.
+    #[cfg(unix)]
+    #[test]
+    fn a_handoff_that_cannot_write_finds_planted_files_all_the_same() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["tmp", "var/tmp", "logs", "state"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        assert!(baseline_under(&root).contains("BF baseline"));
+        std::fs::write(app.join("conftest.py"), "# planted\n").unwrap();
+        let base = root.join("state/baseline");
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let out = handoff_under(&root, &app);
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(out.contains("BF planted"), "{out}");
+        assert!(!app.join("conftest.py").exists(), "{out}");
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+    }
+
+    /// Reviews E6M-B F1 and E6-E-A H2: a planted test-runner file that
+    /// cannot be removed, or a changed one that cannot be put back (on a
+    /// full disk, a whiteout needs a new inode), went to grading as it was
+    /// (`BF lost`). The handoff now stops: `BF restore-failed`, then `BF
+    /// handoff stopped`, never `BF handoff done`. A folder the test's user
+    /// cannot write stands in for the full disk.
+    #[cfg(unix)]
+    #[test]
+    fn a_test_runner_file_that_cannot_be_removed_or_restored_stops_the_handoff() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let ro = |d: &std::path::Path, mode: u32| {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        // A planted one.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["tmp", "var/tmp", "logs", "state"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let app = root.join("app");
+        let sub = app.join("tests");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert!(baseline_under(&root).contains("BF baseline"));
+        std::fs::write(sub.join("conftest.py"), "# planted\n").unwrap();
+        ro(&sub, 0o555);
+        let out = handoff_under(&root, &app);
+        ro(&sub, 0o755);
+        assert!(out.contains("BF restore-failed"), "{out}");
+        assert_eq!(out.lines().last(), Some("BF handoff stopped"), "{out}");
+        // A changed one the baseline holds.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["tmp", "var/tmp", "logs", "state"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let app = root.join("app");
+        let sub = app.join("tests");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("conftest.py"), "# shipped\n").unwrap();
+        assert!(baseline_under(&root).contains("BF baseline 1"));
+        std::fs::write(sub.join("conftest.py"), "# changed by the agent\n").unwrap();
+        ro(&sub, 0o555);
+        let out = handoff_under(&root, &app);
+        ro(&sub, 0o755);
+        assert!(out.contains("BF restore-failed"), "{out}");
+        assert_eq!(out.lines().last(), Some("BF handoff stopped"), "{out}");
+        assert!(!out.contains("BF handoff done"), "{out}");
     }
 
     /// pytest loads every `[pytest11]` entry point it finds, so a plugin the
@@ -1535,12 +1934,15 @@ fi; done; exit 0"#,
         }
         std::fs::write(app.join("conftest.py"), "x").unwrap();
         std::fs::write(app.join("out.txt"), "y").unwrap();
+        // A virtual environment, so the record of it is written too.
+        std::fs::create_dir_all(app.join(".venv/bin")).unwrap();
+        std::fs::write(app.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
         // Each writer is an exec of its own in a trial, and each starts at
         // the backend's umask: one shell for all four would let the first
         // writer's umask cover the others.
         let mut out = String::new();
         for writer in [
-            baseline(),
+            baseline(Some(app.to_str().unwrap())),
             preload_snapshot(),
             pack_outputs(&[format!("{r}/app/out.txt")]),
             handoff(app.to_str().unwrap(), None, false),
@@ -1568,12 +1970,16 @@ fi; done; exit 0"#,
         assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
         for f in [
             "baseline/list",
-            "baseline/after",
             "preload.sum",
             "outputs.tar",
+            "venvs/list",
+            "venvs/cfg/1",
         ] {
             assert!(root.join("state").join(f).is_file(), "{f}: {out}");
         }
+        // The handoff's list of test-runner files is streamed, never
+        // written (E6-E-A H2: a full disk emptied it).
+        assert!(!root.join("state/baseline/after").exists(), "{out}");
         // The strict check, with the test's user standing in for root.
         let out = handoff_with(&root, &app, true, true);
         assert!(!out.contains("BF state-owner"), "{out}");
@@ -2641,7 +3047,8 @@ fi; done; exit 0"#,
                 lock_hidden(&["/verifier".into(), "/oracle".into()]),
             ),
             ("lock_system_path", lock_system_path("/app")),
-            ("baseline", baseline()),
+            ("baseline", baseline(None)),
+            ("baseline_venvs", baseline(Some("/app"))),
             ("kill_user", kill_user("agent")),
             ("handoff", handoff("/app", None, true)),
             ("handoff-lenient", handoff("/app", None, false)),
@@ -2676,5 +3083,952 @@ fi; done; exit 0"#,
                 String::from_utf8_lossy(&out.stderr)
             );
         }
+    }
+
+    // Virtual environments in the workdir (decision G-7) and links through
+    // `/proc` (decision G-8). The handoff runs on the host with the test's
+    // user standing in for root as the state folder's owner; the venvs'
+    // interpreters are the host's own, root's.
+
+    /// A test root with the folders the handoff touches, and its workdir
+    /// `app`, in the system's temp folder.
+    fn venv_root() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for d in ["app", "tmp", "var/tmp", "logs"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let app = root.join("app");
+        (tmp, root, app)
+    }
+
+    /// The names of the interpreter links in `venv/bin`, sorted.
+    fn interpreter_links(venv: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(venv.join("bin"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_symlink()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n == "python" || n == "python3" || n.starts_with("python3."))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Each of `names` in `venv/bin` runs and reports `venv` as its prefix.
+    fn assert_venv_runs(venv: &std::path::Path, names: &[String], out: &str) {
+        assert!(names.iter().any(|n| n == "python"), "{names:?}");
+        assert!(names.iter().any(|n| n == "python3"), "{names:?}");
+        assert!(names.iter().any(|n| n.starts_with("python3.")), "{names:?}");
+        for n in names {
+            let exe = venv.join("bin").join(n);
+            let run = std::process::Command::new(&exe)
+                .args(["-c", "import sys; print(sys.prefix)"])
+                .output();
+            let prefix = run
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            assert_eq!(
+                prefix,
+                venv.display().to_string(),
+                "{} after the handoff: {run:?}\n{out}",
+                exe.display()
+            );
+        }
+    }
+
+    /// The host's own Python, root's in root's folders (`/usr/bin/python3`
+    /// on Linux and macOS), or `None` where there is none.
+    fn system_python() -> Option<std::path::PathBuf> {
+        let p = std::path::Path::new("/usr/bin/python3");
+        let ok = std::process::Command::new(p)
+            .args(["-c", "import venv"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        ok.then(|| p.to_path_buf())
+    }
+
+    /// A venv made by `python3 -m venv` (`python3 -> /usr/bin/python3`,
+    /// `python` and `python3.N` naming it) keeps all three interpreters
+    /// through the handoff: the scan removes the escaping link, and root
+    /// makes it again from the record taken before the agent's first turn.
+    /// None of it is listed as the agent's. E2's B2: the example task's
+    /// oracle scored 0.5 because every such link was removed.
+    #[cfg(unix)]
+    #[test]
+    fn a_python_m_venv_keeps_its_interpreters_through_the_handoff() {
+        let Some(py) = system_python() else {
+            eprintln!("skipped: no /usr/bin/python3 with venv");
+            return;
+        };
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        let made = std::process::Command::new(&py)
+            .args(["-m", "venv", "--without-pip"])
+            .arg(&venv)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let names = interpreter_links(&venv);
+        let base = baseline_run(&root, Some(&app));
+        assert!(base.contains("BF venvs 1"), "{base}");
+        let out = handoff_under(&root, &app);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        assert!(out.contains("BF repaired "), "{out}");
+        assert!(!out.contains("BF symlink"), "{out}");
+        assert_venv_runs(&venv, &names, &out);
+    }
+
+    /// The same for `uv venv` (`python` absolute, `python3` and `python3.N`
+    /// naming it), with uv's cache in the test's folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_uv_venv_keeps_its_interpreters_through_the_handoff() {
+        let Some(py) = system_python() else {
+            eprintln!("skipped: no /usr/bin/python3 with venv");
+            return;
+        };
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        let made = std::process::Command::new("uv")
+            .args(["venv", "-q", "--no-project", "--python"])
+            .arg(&py)
+            .arg(&venv)
+            .current_dir(&root)
+            .env("UV_CACHE_DIR", root.join("uv-cache"))
+            .env("UV_NO_CONFIG", "1")
+            .env("UV_PYTHON_DOWNLOADS", "never")
+            .status();
+        let Ok(made) = made else {
+            eprintln!("skipped: no uv");
+            return;
+        };
+        assert!(made.success());
+        let names = interpreter_links(&venv);
+        assert_eq!(
+            std::fs::read_link(venv.join("bin/python3")).unwrap(),
+            std::path::Path::new("python"),
+            "uv's layout"
+        );
+        let base = baseline_run(&root, Some(&app));
+        assert!(base.contains("BF venvs 1"), "{base}");
+        let out = handoff_under(&root, &app);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        assert!(!out.contains("BF symlink"), "{out}");
+        assert_venv_runs(&venv, &names, &out);
+    }
+
+    /// A venv made by hand whose `python` is `/bin/sh` (root's, in root's
+    /// folders), with `python3 -> python` and `python3.12 -> python3` (a
+    /// chain of two names).
+    fn sh_venv(venv: &std::path::Path) {
+        std::fs::create_dir_all(venv.join("bin")).unwrap();
+        std::fs::write(venv.join("pyvenv.cfg"), "home = /bin\nversion = 3.12.0\n").unwrap();
+        std::os::unix::fs::symlink("/bin/sh", venv.join("bin/python")).unwrap();
+        std::os::unix::fs::symlink("python", venv.join("bin/python3")).unwrap();
+        std::os::unix::fs::symlink("python3", venv.join("bin/python3.12")).unwrap();
+    }
+
+    fn link_text(p: &std::path::Path) -> Option<String> {
+        std::fs::read_link(p)
+            .ok()
+            .map(|t| t.to_string_lossy().into_owned())
+    }
+
+    /// `venv/bin/<name>` runs as `/bin/sh`.
+    fn sh_runs(venv: &std::path::Path, name: &str) -> bool {
+        std::process::Command::new(venv.join("bin").join(name))
+            .args(["-c", "echo ran"])
+            .output()
+            .is_ok_and(|o| o.stdout == b"ran\n")
+    }
+
+    fn assert_sh_venv_repaired(venv: &std::path::Path, out: &str) {
+        assert_eq!(
+            link_text(&venv.join("bin/python")).as_deref(),
+            Some("/bin/sh"),
+            "{out}"
+        );
+        assert_eq!(
+            link_text(&venv.join("bin/python3")).as_deref(),
+            Some("python"),
+            "{out}"
+        );
+        assert_eq!(
+            link_text(&venv.join("bin/python3.12")).as_deref(),
+            Some("python3"),
+            "{out}"
+        );
+        for n in ["python", "python3", "python3.12"] {
+            assert!(sh_runs(venv, n), "{n}: {out}");
+        }
+    }
+
+    /// The handoff's line for a removed link at `p`, if any.
+    fn symlink_line<'a>(out: &'a str, p: &std::path::Path) -> Option<&'a str> {
+        let head = format!("BF symlink {} ", p.display());
+        out.lines().find(|l| l.starts_with(&head))
+    }
+
+    /// An agent's link to `/etc/shadow` is removed and listed, as before;
+    /// the image's venv beside it is repaired and not listed.
+    #[cfg(unix)]
+    #[test]
+    fn an_agents_link_to_etc_shadow_is_removed_beside_a_repaired_venv() {
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        sh_venv(&venv);
+        assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+        std::os::unix::fs::symlink("/etc/shadow", app.join("leak")).unwrap();
+        let out = handoff_under(&root, &app);
+        assert!(symlink_line(&out, &app.join("leak")).is_some(), "{out}");
+        assert!(
+            std::fs::symlink_metadata(app.join("leak")).is_err(),
+            "{out}"
+        );
+        assert_eq!(out.matches("BF symlink").count(), 1, "{out}");
+        assert_sh_venv_repaired(&venv, &out);
+    }
+
+    /// An image venv link the agent retargeted, out of the workdir or to a
+    /// script of its own inside it, or replaced with a file, is removed
+    /// and listed, and root makes the recorded link again. The workdir is
+    /// the agent's, so an inside link was kept before: the verifier ran
+    /// the agent's script as the venv's `python3`.
+    #[cfg(unix)]
+    #[test]
+    fn a_retargeted_image_venv_link_is_removed_listed_and_made_again() {
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        sh_venv(&venv);
+        assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+        let bin = venv.join("bin");
+        std::fs::write(app.join("evil.sh"), "#!/bin/sh\necho evil\n").unwrap();
+        std::fs::remove_file(bin.join("python")).unwrap();
+        std::os::unix::fs::symlink("/etc/shadow", bin.join("python")).unwrap();
+        std::fs::remove_file(bin.join("python3")).unwrap();
+        std::os::unix::fs::symlink("../../evil.sh", bin.join("python3")).unwrap();
+        std::fs::remove_file(bin.join("python3.12")).unwrap();
+        std::fs::write(bin.join("python3.12"), "#!/bin/sh\necho evil\n").unwrap();
+        let out = handoff_under(&root, &app);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        assert!(symlink_line(&out, &bin.join("python")).is_some(), "{out}");
+        assert_eq!(
+            symlink_line(&out, &bin.join("python3")),
+            Some(
+                format!(
+                    "BF symlink {} -> ../../evil.sh",
+                    bin.join("python3").display()
+                )
+                .as_str()
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "BF planted {}\n",
+                bin.join("python3.12").display()
+            )),
+            "{out}"
+        );
+        for n in ["python", "python3", "python3.12"] {
+            assert!(
+                out.contains(&format!("BF repaired {}\n", bin.join(n).display())),
+                "{n}: {out}"
+            );
+        }
+        assert_sh_venv_repaired(&venv, &out);
+    }
+
+    /// In a venv whose recorded interpreter cannot be repaired (it lies
+    /// under a folder the agent can write), what the agent left at the
+    /// other recorded links goes too and is listed: a retargeted `python3`
+    /// and a file planted at `python3.12` were kept before, unlisted, and
+    /// the verifier ran the agent's script as the venv's `python3`
+    /// (G3-R1-A-1). A recorded link the agent left alone is listed as not
+    /// repaired, and not as the agent's, whatever order the scan met it in.
+    #[cfg(unix)]
+    #[test]
+    fn an_unrepairable_venvs_retargeted_links_are_removed_and_listed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for retarget in [true, false] {
+            let (_tmp, root, app) = venv_root();
+            let home = root.join("home/agent");
+            std::fs::create_dir_all(home.join("py/bin")).unwrap();
+            let interp = home.join("py/bin/python3.12");
+            std::fs::write(&interp, "#!/bin/sh\necho ran\n").unwrap();
+            std::fs::set_permissions(&interp, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777)).unwrap();
+            let venv = app.join(".venv");
+            let bin = venv.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(venv.join("pyvenv.cfg"), "home = x\n").unwrap();
+            std::os::unix::fs::symlink(&interp, bin.join("python")).unwrap();
+            std::os::unix::fs::symlink("python", bin.join("python3")).unwrap();
+            std::os::unix::fs::symlink("python3", bin.join("python3.12")).unwrap();
+            assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+            std::fs::write(app.join("evil.sh"), "#!/bin/sh\necho EVIL\n").unwrap();
+            std::fs::set_permissions(app.join("evil.sh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            if retarget {
+                std::fs::remove_file(bin.join("python3")).unwrap();
+                std::os::unix::fs::symlink("../../evil.sh", bin.join("python3")).unwrap();
+                std::fs::remove_file(bin.join("python3.12")).unwrap();
+                std::fs::write(bin.join("python3.12"), "#!/bin/sh\necho EVIL\n").unwrap();
+                std::fs::set_permissions(
+                    bin.join("python3.12"),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+            }
+            let out = handoff_under(&root, &app);
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+            assert!(!out.contains("BF repaired"), "{out}");
+            for n in ["python", "python3", "python3.12"] {
+                let p = bin.join(n);
+                let ran = std::process::Command::new(&p).output();
+                assert!(
+                    !ran.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("EVIL")),
+                    "{n} runs the agent's script: {out}"
+                );
+                let head = format!("BF symlink {} -> ", p.display());
+                let listed = out
+                    .lines()
+                    .any(|l| l.starts_with(&head) && l.contains("(not repaired: "));
+                assert!(listed, "{n} not listed as not repaired: {out}");
+                if !retarget {
+                    let agents = out
+                        .lines()
+                        .any(|l| l.starts_with(&head) && !l.contains("(not repaired: "));
+                    assert!(!agents, "{n} the agent left alone listed as its: {out}");
+                }
+            }
+            if retarget {
+                assert!(
+                    out.contains(&format!(
+                        "BF symlink {} -> ../../evil.sh\n",
+                        bin.join("python3").display()
+                    )),
+                    "{out}"
+                );
+                assert!(
+                    out.contains(&format!(
+                        "BF planted {}\n",
+                        bin.join("python3.12").display()
+                    )),
+                    "{out}"
+                );
+                for n in ["python3", "python3.12"] {
+                    assert!(
+                        std::fs::symlink_metadata(bin.join(n)).is_err(),
+                        "{n} kept: {out}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A runnable script at `p` printing `what`.
+    fn script(p: &std::path::Path, what: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(p, format!("#!/bin/sh\necho {what}\n")).unwrap();
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// `venv/bin/<name>` prints `EVIL`.
+    fn runs_evil(venv: &std::path::Path, name: &str) -> bool {
+        std::process::Command::new(venv.join("bin").join(name))
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("EVIL"))
+    }
+
+    /// A venv whose recorded interpreter lies under the agent's home, where
+    /// the agent replaced that interpreter, or its folder, with a link into
+    /// the workdir (to its own script, or a folder holding one), and left
+    /// the venv's links alone: every recorded link is listed as not
+    /// repaired and none runs the agent's script. The scan followed the
+    /// links into the workdir and kept them, the repair refused the route,
+    /// and the links were then kept, unlisted, because their text was the
+    /// recorded one: `python`, `python3` and `python3.12` all ran the
+    /// agent's script (G3-R2-A-1). Also with the recorded text relative
+    /// (`../../../home/...`), which the repair never makes again.
+    #[cfg(unix)]
+    #[test]
+    fn a_recorded_link_the_agent_redirected_into_the_workdir_is_removed_and_listed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (relative_text, redirect) in [
+            (false, "file"),
+            (false, "file-relative"),
+            (false, "folder"),
+            (true, "file"),
+        ] {
+            let case = format!("relative text {relative_text}, redirect {redirect}");
+            let (_tmp, root, app) = venv_root();
+            let home = root.join("home/agent");
+            std::fs::create_dir_all(home.join("py/bin")).unwrap();
+            let interp = home.join("py/bin/python3.12");
+            script(&interp, "ran");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777)).unwrap();
+            let venv = app.join(".venv");
+            let bin = venv.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(venv.join("pyvenv.cfg"), "home = x\n").unwrap();
+            let text = if relative_text {
+                std::path::PathBuf::from("../../../home/agent/py/bin/python3.12")
+            } else {
+                interp.clone()
+            };
+            std::os::unix::fs::symlink(&text, bin.join("python")).unwrap();
+            std::os::unix::fs::symlink("python", bin.join("python3")).unwrap();
+            std::os::unix::fs::symlink("python", bin.join("python3.12")).unwrap();
+            assert!(sh_runs_text(&venv, "python", "ran"), "{case}");
+            assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+            // The agent's turn.
+            script(&app.join("evil.sh"), "EVIL");
+            match redirect {
+                "file" => {
+                    std::fs::remove_file(&interp).unwrap();
+                    std::os::unix::fs::symlink(app.join("evil.sh"), &interp).unwrap();
+                }
+                "file-relative" => {
+                    std::fs::remove_file(&interp).unwrap();
+                    std::os::unix::fs::symlink("../../../../app/evil.sh", &interp).unwrap();
+                }
+                _ => {
+                    std::fs::create_dir_all(app.join("evdir/bin")).unwrap();
+                    script(&app.join("evdir/bin/python3.12"), "EVIL");
+                    std::fs::remove_dir_all(home.join("py")).unwrap();
+                    std::os::unix::fs::symlink(app.join("evdir"), home.join("py")).unwrap();
+                }
+            }
+            assert!(runs_evil(&venv, "python"), "{case}: the setup");
+            let out = handoff_under(&root, &app);
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+            assert!(!out.contains("BF repaired"), "{case}: {out}");
+            for n in ["python", "python3", "python3.12"] {
+                assert!(
+                    !runs_evil(&venv, n),
+                    "{case}: {n} runs the agent's script: {out}"
+                );
+                let line = symlink_line(&out, &bin.join(n))
+                    .unwrap_or_else(|| panic!("{case}: {n} not listed: {out}"));
+                assert!(line.contains("(not repaired: "), "{case}: {line}");
+            }
+            assert!(
+                std::fs::symlink_metadata(bin.join("python")).is_err(),
+                "{case}: python kept: {out}"
+            );
+        }
+    }
+
+    /// `venv/bin/<name>`, run with no arguments, prints `what`.
+    fn sh_runs_text(venv: &std::path::Path, name: &str, what: &str) -> bool {
+        std::process::Command::new(venv.join("bin").join(name))
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == what)
+    }
+
+    /// A venv whose recorded interpreter the image put inside the workdir
+    /// (a Python installed under it) keeps its links through the handoff,
+    /// unlisted, though the route check fails (the agent can write the
+    /// workdir): the agent could edit that interpreter as it can edit the
+    /// venv's packages, and removing the links would break a task that
+    /// worked on the branch's base. The docs say so (decision on
+    /// G3-R2-A-1).
+    #[cfg(unix)]
+    #[test]
+    fn a_venv_whose_interpreter_lies_in_the_workdir_keeps_its_links() {
+        let (_tmp, root, app) = venv_root();
+        std::fs::create_dir_all(app.join(".python/bin")).unwrap();
+        let interp = app.join(".python/bin/python3.12");
+        script(&interp, "ran");
+        let venv = app.join(".venv");
+        let bin = venv.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(venv.join("pyvenv.cfg"), "home = x\n").unwrap();
+        std::os::unix::fs::symlink(&interp, bin.join("python")).unwrap();
+        std::os::unix::fs::symlink("python", bin.join("python3")).unwrap();
+        std::os::unix::fs::symlink("python", bin.join("python3.12")).unwrap();
+        assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+        let out = handoff_under(&root, &app);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        assert!(!out.contains("BF symlink"), "{out}");
+        for n in ["python", "python3", "python3.12"] {
+            assert!(sh_runs_text(&venv, n, "ran"), "{n}: {out}");
+        }
+    }
+
+    /// A recorded link whose text is the bare name of a link the record
+    /// does not hold (a free-threaded venv's `python -> python3.13t`) is
+    /// removed and listed when it cannot be repaired: it was kept, and ran
+    /// the script the agent put at `python3.13t` (G3-R2-A-2).
+    #[cfg(unix)]
+    #[test]
+    fn a_recorded_link_naming_an_unrecorded_sibling_is_removed_and_listed() {
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        let bin = venv.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(venv.join("pyvenv.cfg"), "home = /bin\n").unwrap();
+        std::os::unix::fs::symlink("/bin/sh", bin.join("python3.13t")).unwrap();
+        std::os::unix::fs::symlink("python3.13t", bin.join("python")).unwrap();
+        std::os::unix::fs::symlink("python", bin.join("python3")).unwrap();
+        std::os::unix::fs::symlink("python", bin.join("python3.13")).unwrap();
+        assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+        std::fs::remove_file(bin.join("python3.13t")).unwrap();
+        script(&bin.join("python3.13t"), "EVIL");
+        let out = handoff_under(&root, &app);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        for n in ["python", "python3", "python3.13"] {
+            assert!(!runs_evil(&venv, n), "{n} runs the agent's script: {out}");
+            let line =
+                symlink_line(&out, &bin.join(n)).unwrap_or_else(|| panic!("{n} not listed: {out}"));
+            assert!(line.contains("(not repaired: "), "{line}");
+        }
+    }
+
+    /// With the venv's folder replaced by the agent's link to another
+    /// workdir folder holding its own `python3`, nothing is written there,
+    /// and every recorded link is listed as not repaired, also the ones
+    /// the agent's folder holds (G3-R1-A-2).
+    #[cfg(unix)]
+    #[test]
+    fn a_venv_behind_the_agents_link_lists_every_recorded_link() {
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        sh_venv(&venv);
+        assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+        let fake = app.join("fake");
+        std::fs::create_dir_all(fake.join("bin")).unwrap();
+        std::fs::write(fake.join("pyvenv.cfg"), "home = /bin\nversion = 3.12.0\n").unwrap();
+        std::fs::write(fake.join("bin/python3"), "#!/bin/sh\necho EVIL\n").unwrap();
+        std::fs::remove_dir_all(&venv).unwrap();
+        std::os::unix::fs::symlink(&fake, &venv).unwrap();
+        let out = handoff_under(&root, &app);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        assert_eq!(
+            std::fs::read_dir(fake.join("bin")).unwrap().count(),
+            1,
+            "root wrote through the agent's link: {out}"
+        );
+        assert!(fake.join("bin/python3").is_file(), "{out}");
+        for n in ["python", "python3", "python3.12"] {
+            let line = symlink_line(&out, &venv.join("bin").join(n))
+                .unwrap_or_else(|| panic!("{n}: {out}"));
+            assert!(line.contains("not repaired"), "{line}");
+        }
+    }
+
+    /// A temp folder whose folders above are root's or the test's and
+    /// closed to group and others (the system's temp folder may be open to
+    /// all, as `/tmp` is), beside the test binary or in the system's temp
+    /// folder; `None` when neither is (a home folder others may write).
+    fn closed_tempdir() -> Option<tempfile::TempDir> {
+        use std::os::unix::fs::MetadataExt as _;
+        let me: u32 = id("-u").parse().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let closed = |p: &std::path::Path| {
+            p.ancestors().all(|a| {
+                std::fs::metadata(a)
+                    .is_ok_and(|m| (m.uid() == 0 || m.uid() == me) && m.mode() & 0o022 == 0)
+            })
+        };
+        [exe.parent().unwrap().to_path_buf(), std::env::temp_dir()]
+            .into_iter()
+            .filter_map(|d| d.canonicalize().ok())
+            .find(|d| closed(d))
+            .map(|d| {
+                tempfile::Builder::new()
+                    .prefix("g3-venv-")
+                    .tempdir_in(d)
+                    .unwrap()
+            })
+    }
+
+    /// A venv whose recorded interpreter lies under a folder the agent can
+    /// write (others or the group may write it; the agent's home or a uv
+    /// tree there, say) is not repaired: the agent could put any program
+    /// there for the verifier to run. Its links stay removed and are
+    /// listed. The same venv with that folder closed is repaired (the
+    /// test's user stands in for root as the interpreter's owner).
+    #[cfg(unix)]
+    #[test]
+    fn a_venv_whose_interpreter_the_agent_can_write_is_not_repaired() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let Some(probe) = closed_tempdir() else {
+            eprintln!("skipped: no temp folder closed to group and others on the way");
+            return;
+        };
+        drop(probe);
+        for (mode, repaired) in [(0o777, false), (0o775, false), (0o755, true)] {
+            let tmp = closed_tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            for d in ["app", "tmp", "var/tmp", "logs", "home/agent/py/bin"] {
+                std::fs::create_dir_all(root.join(d)).unwrap();
+            }
+            let app = root.join("app");
+            let interp = root.join("home/agent/py/bin/python3.12");
+            std::fs::write(&interp, "#!/bin/sh\necho ran\n").unwrap();
+            std::fs::set_permissions(&interp, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let home = root.join("home/agent");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(mode)).unwrap();
+            let venv = app.join(".venv");
+            std::fs::create_dir_all(venv.join("bin")).unwrap();
+            std::fs::write(venv.join("pyvenv.cfg"), "home = x\n").unwrap();
+            std::os::unix::fs::symlink(&interp, venv.join("bin/python")).unwrap();
+            std::os::unix::fs::symlink("python", venv.join("bin/python3")).unwrap();
+            assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+            let out = handoff_run(&root, &app, true, true, None, true);
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+            let python = venv.join("bin/python");
+            if repaired {
+                assert_eq!(
+                    link_text(&python),
+                    Some(interp.display().to_string()),
+                    "{out}"
+                );
+                assert!(!out.contains("BF symlink"), "{out}");
+                continue;
+            }
+            assert!(
+                std::fs::symlink_metadata(&python).is_err(),
+                "{mode:o}: {out}"
+            );
+            let line = symlink_line(&out, &python).unwrap_or_else(|| panic!("{mode:o}: {out}"));
+            assert!(
+                line.contains("not repaired") && line.contains(&home.display().to_string()),
+                "{line}"
+            );
+            assert!(!out.contains("BF repaired"), "{mode:o}: {out}");
+        }
+    }
+
+    /// A `pyvenv.cfg` the agent edited, or replaced with a link, is put back
+    /// from root's copy (`BF restored`): the repair reads that copy, and
+    /// the venv's interpreter reads the file to find its library (an edited
+    /// `home` points it at modules the agent wrote).
+    #[cfg(unix)]
+    #[test]
+    fn an_edited_pyvenv_cfg_is_put_back_from_roots_copy() {
+        for replace_with_link in [false, true] {
+            let (_tmp, root, app) = venv_root();
+            let venv = app.join(".venv");
+            sh_venv(&venv);
+            let cfg = venv.join("pyvenv.cfg");
+            let shipped = std::fs::read_to_string(&cfg).unwrap();
+            assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+            std::fs::write(root.join("evil.cfg"), "home = /home/agent/fake\n").unwrap();
+            if replace_with_link {
+                std::fs::remove_file(&cfg).unwrap();
+                std::os::unix::fs::symlink(root.join("evil.cfg"), &cfg).unwrap();
+            } else {
+                std::fs::write(&cfg, "home = /home/agent/fake\n").unwrap();
+            }
+            let out = handoff_under(&root, &app);
+            assert!(
+                out.contains(&format!("BF restored {}\n", cfg.display())),
+                "{out}"
+            );
+            assert!(
+                !std::fs::symlink_metadata(&cfg)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read_to_string(&cfg).unwrap(), shipped, "{out}");
+            assert_eq!(
+                std::fs::read_to_string(root.join("evil.cfg")).unwrap(),
+                "home = /home/agent/fake\n",
+                "nothing was written through the link"
+            );
+            assert_sh_venv_repaired(&venv, &out);
+        }
+    }
+
+    /// Names and link texts that hold a line break or a tab: removed and
+    /// listed, whether they lead out of the workdir or not (a link text with
+    /// a line break once passed for a baseline entry, E2-A high 1), and the
+    /// record, in hex, is not fooled. Includes E2-A's attack: a folder
+    /// chain in the agent's home named after a venv entry, ending in a link
+    /// to the secret, and `answer.txt` pointing through it.
+    #[cfg(unix)]
+    #[test]
+    fn names_and_link_texts_with_a_line_break_or_a_tab_are_removed_and_listed() {
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        sh_venv(&venv);
+        std::fs::write(app.join("inside.txt"), "x").unwrap();
+        assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+        let list = std::fs::read(root.join("state/venvs/list")).unwrap();
+        let ln = |t: &str, at: &str| std::os::unix::fs::symlink(t, app.join(at)).unwrap();
+        ln("inside.txt", "tab\tname");
+        ln("inside.txt", "line\nname");
+        ln("inside\n.txt", "linetext");
+        ln("in\tside.txt", "tabtext");
+        // E2-A high 1, with the venv's own entry as the folder names.
+        let secret = root.join("secret.txt");
+        std::fs::write(&secret, "SECRET").unwrap();
+        let chain = root.join(format!(
+            "home/agent/a\n{}/bin/python\t/bin/sh",
+            venv.display()
+        ));
+        std::fs::create_dir_all(&chain).unwrap();
+        std::os::unix::fs::symlink(&secret, chain.join("s")).unwrap();
+        std::os::unix::fs::symlink(chain.join("s"), app.join("answer.txt")).unwrap();
+        let out = handoff_under(&root, &app);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        for gone in [
+            "tab\tname",
+            "line\nname",
+            "linetext",
+            "tabtext",
+            "answer.txt",
+        ] {
+            assert!(
+                std::fs::symlink_metadata(app.join(gone)).is_err(),
+                "{gone:?} kept: {out}"
+            );
+        }
+        assert!(
+            out.contains(&format!("BF symlink {}/tab?name -> ", app.display())),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("BF special {}/line?name", app.display())),
+            "{out}"
+        );
+        assert!(symlink_line(&out, &app.join("linetext")).is_some(), "{out}");
+        assert!(symlink_line(&out, &app.join("tabtext")).is_some(), "{out}");
+        assert!(
+            symlink_line(&out, &app.join("answer.txt")).is_some(),
+            "{out}"
+        );
+        assert!(app.join("inside.txt").is_file());
+        assert_eq!(std::fs::read(root.join("state/venvs/list")).unwrap(), list);
+        assert_sh_venv_repaired(&venv, &out);
+    }
+
+    /// The record of venvs is taken only when asked (before the agent's
+    /// first turn); a later stage's baseline leaves it as it is, so a link
+    /// a stage-1 agent added to a venv is not repaired in stage 2: it is
+    /// removed and listed there.
+    #[cfg(unix)]
+    #[test]
+    fn the_venv_record_is_taken_once_and_later_stages_reuse_it() {
+        let (_tmp, root, app) = venv_root();
+        let venv = app.join(".venv");
+        sh_venv(&venv);
+        assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+        let list = std::fs::read(root.join("state/venvs/list")).unwrap();
+        let out = handoff_under(&root, &app);
+        assert_sh_venv_repaired(&venv, &out);
+        // Stage 1's agent adds an interpreter link; stage 2's baseline.
+        let added = venv.join("bin/python3.99");
+        std::os::unix::fs::symlink("/bin/sh", &added).unwrap();
+        let base = baseline_run(&root, None);
+        assert!(!base.contains("BF venvs"), "{base}");
+        assert_eq!(std::fs::read(root.join("state/venvs/list")).unwrap(), list);
+        let out = handoff_under(&root, &app);
+        assert!(symlink_line(&out, &added).is_some(), "{out}");
+        assert!(std::fs::symlink_metadata(&added).is_err(), "{out}");
+        assert_sh_venv_repaired(&venv, &out);
+    }
+
+    /// Root makes no link through a link the agent made: with the venv's
+    /// folder replaced by a link (to another folder in the workdir, which
+    /// the scan keeps) or its `bin` by a link out of the workdir, nothing
+    /// is written there, and the recorded links are listed as not
+    /// repaired. Only root's own links may be on the way.
+    #[cfg(unix)]
+    #[test]
+    fn the_repair_never_writes_through_a_link_the_agent_made() {
+        for out_of_workdir in [false, true] {
+            let (_tmp, root, app) = venv_root();
+            let venv = app.join(".venv");
+            sh_venv(&venv);
+            assert!(baseline_run(&root, Some(&app)).contains("BF venvs 1"));
+            let elsewhere = if out_of_workdir {
+                root.join("elsewhere")
+            } else {
+                app.join("fake")
+            };
+            std::fs::create_dir_all(elsewhere.join("bin")).unwrap();
+            if out_of_workdir {
+                std::fs::remove_dir_all(venv.join("bin")).unwrap();
+                std::os::unix::fs::symlink(elsewhere.join("bin"), venv.join("bin")).unwrap();
+            } else {
+                std::fs::write(
+                    elsewhere.join("pyvenv.cfg"),
+                    "home = /bin\nversion = 3.12.0\n",
+                )
+                .unwrap();
+                std::fs::remove_dir_all(&venv).unwrap();
+                std::os::unix::fs::symlink(&elsewhere, &venv).unwrap();
+            }
+            let out = handoff_under(&root, &app);
+            assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+            assert_eq!(
+                std::fs::read_dir(elsewhere.join("bin")).unwrap().count(),
+                0,
+                "root wrote through the agent's link: {out}"
+            );
+            assert!(!out.contains("BF repaired"), "{out}");
+            let line =
+                symlink_line(&out, &venv.join("bin/python")).unwrap_or_else(|| panic!("{out}"));
+            assert!(line.contains("not repaired"), "{line}");
+        }
+    }
+
+    /// Links through `/dev/fd`, `/dev/stdin` and `/dev/stdout` (where they
+    /// lead depends on the process that opens them) are removed and
+    /// listed, also through a hop the agent owns (decision G-8). Runs on
+    /// macOS too, which has `/dev/fd`.
+    #[cfg(unix)]
+    #[test]
+    fn links_through_dev_fd_are_removed() {
+        let (_tmp, root, app) = venv_root();
+        std::fs::create_dir_all(root.join("home/agent")).unwrap();
+        std::os::unix::fs::symlink("/dev/fd", root.join("home/agent/q")).unwrap();
+        let links = [
+            ("fd", "/dev/fd/0".to_string()),
+            ("stdin", "/dev/stdin".to_string()),
+            ("stdout", "/dev/stdout".to_string()),
+            ("hop", format!("{}/home/agent/q/0", root.display())),
+        ];
+        for (at, to) in &links {
+            std::os::unix::fs::symlink(to, app.join(at)).unwrap();
+        }
+        let out = handoff_under(&root, &app);
+        for (at, _) in &links {
+            let line = symlink_line(&out, &app.join(at)).unwrap_or_else(|| panic!("{at}: {out}"));
+            assert!(line.contains("(through /dev/"), "{line}");
+            assert!(std::fs::symlink_metadata(app.join(at)).is_err(), "{out}");
+        }
+    }
+
+    /// Links through `/proc` (decision G-8; E2-D-B's medium, E2-E-B's high):
+    /// where `/proc/self/cwd/expected.json` leads depends on the reader's
+    /// working folder, so the handoff (which starts in the workdir, as
+    /// `docker exec` does) found it inside the workdir and kept it, and a
+    /// verifier starting in `/tests` read the expected answer through it.
+    /// Every route into `/proc` is removed and listed, also through a hop
+    /// the agent owns; a verifier that starts in the tests' folder, in the
+    /// workdir, or five levels deep reads nothing through any of them.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn links_through_proc_are_removed_wherever_the_verifier_starts() {
+        let (_tmp, root, app) = venv_root();
+        let tests = root.join("tests");
+        let deep = root.join("a/b/c/d/e");
+        for (d, secret) in [(&tests, "SECRET-tests"), (&deep, "SECRET-deep")] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("expected.json"), secret).unwrap();
+        }
+        std::fs::create_dir_all(root.join("home/agent")).unwrap();
+        std::os::unix::fs::symlink("/proc/self/cwd", root.join("home/agent/p")).unwrap();
+        std::fs::write(app.join("data.txt"), "mine").unwrap();
+        let me = std::process::id();
+        let t = tests.display();
+        let links = [
+            ("cwd", "/proc/self/cwd/expected.json".to_string()),
+            ("tself", format!("/proc/thread-self/root{t}/expected.json")),
+            ("pid1", "/proc/1/cwd/expected.json".to_string()),
+            ("task1", "/proc/1/task/1/cwd/expected.json".to_string()),
+            ("tid", format!("/proc/self/task/{me}/root{t}/expected.json")),
+            ("pidfd", format!("/proc/{me}/fd/0")),
+            ("devfd", "/dev/fd/0".to_string()),
+            ("stdin", "/dev/stdin".to_string()),
+            ("up", "../../../../proc/self/cwd/expected.json".to_string()),
+            (
+                "hop",
+                format!("{}/home/agent/p/expected.json", root.display()),
+            ),
+        ];
+        for (at, to) in &links {
+            std::os::unix::fs::symlink(to, app.join(at)).unwrap();
+        }
+        std::os::unix::fs::symlink(app.join("data.txt"), app.join("inside")).unwrap();
+        let out = handoff_run(&root, &app, true, true, Some(&app), false);
+        assert!(out.trim_end().ends_with("BF handoff done"), "{out}");
+        for (at, _) in &links {
+            assert!(
+                symlink_line(&out, &app.join(at)).is_some(),
+                "{at} not listed: {out}"
+            );
+            assert!(
+                std::fs::symlink_metadata(app.join(at)).is_err(),
+                "{at} kept: {out}"
+            );
+        }
+        assert!(app.join("inside").exists(), "an inside link stays: {out}");
+        for start in [&tests, &app, &deep] {
+            for (at, _) in &links {
+                let read = std::process::Command::new("cat")
+                    .arg(app.join(at))
+                    .current_dir(start)
+                    .output()
+                    .unwrap();
+                let got = String::from_utf8_lossy(&read.stdout);
+                assert!(
+                    !got.contains("SECRET"),
+                    "a verifier in {} read {got:?} through {at}",
+                    start.display()
+                );
+            }
+        }
+    }
+
+    /// The restore of a test-runner file never goes through a foreign link
+    /// into `/proc` either: such a link's place depends on the reader, so
+    /// the file is `BF lost`, not written there (decision G-8 applied to
+    /// the handoff's other route check).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_restore_never_goes_through_a_link_into_proc() {
+        let (_tmp, root, app) = venv_root();
+        for d in ["state/baseline", "app/sub"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(root.join("srv")).unwrap();
+        std::os::unix::fs::symlink("/proc/self/cwd/sub", root.join("srv/data")).unwrap();
+        let f = root.join("srv/data/conftest.py");
+        let b = root.join("state/baseline");
+        let sum = |b: &[u8]| {
+            use sha2::Digest;
+            hex::encode(sha2::Sha256::digest(b))
+        };
+        // The workdir's own file is the task's too, as it now is: only the
+        // one reached through the link differs from the baseline.
+        let mine = app.join("sub/conftest.py");
+        std::fs::write(
+            b.join("list"),
+            format!("{}\n{}\n", mine.display(), f.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            b.join("sums"),
+            format!(
+                "{}  {}\n{}  {}\n",
+                sum(b"EDITED\n"),
+                mine.display(),
+                sum(b"SHIPPED\n"),
+                f.display()
+            ),
+        )
+        .unwrap();
+        let copy = root.join(format!("state/baseline/added{}", f.display()));
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, "SHIPPED\n").unwrap();
+        std::fs::write(app.join("sub/conftest.py"), "EDITED\n").unwrap();
+        let out = handoff_run(&root, &app, true, true, Some(&app), false);
+        assert!(out.contains(&format!("BF lost {}\n", f.display())), "{out}");
+        assert_eq!(
+            std::fs::read_to_string(app.join("sub/conftest.py")).unwrap(),
+            "EDITED\n"
+        );
     }
 }

@@ -73,6 +73,28 @@ pub(super) fn top_level(c: &mut Checker<'_>) {
     }
 }
 
+/// The cloud metadata opt-out under `[about]`, where an import puts the
+/// split layout's `[metadata]`: task.md reads it only in `[sandbox]`, so
+/// there it opts nothing out, and a reader expecting the split layout's
+/// place would think it does (F1-A-r2). A warning, since the task runs
+/// with the refusal on, the safe side.
+pub(super) fn about_opt_out(c: &mut Checker<'_>) {
+    let key = crate::convert::METADATA_OPT_OUT;
+    let Some(Value::Object(about)) = c.config.get("about") else {
+        return;
+    };
+    if !about.contains_key(key) {
+        return;
+    }
+    let path = join("about", key);
+    c.warn(
+        code::HARBOR_KEY,
+        At::Key(&path),
+        format!("[about] {key} opts nothing out: task.md reads the cloud metadata opt-out only in [sandbox]"),
+    )
+    .help = Some("move it to [sandbox] to opt out, or delete it".into());
+}
+
 /// The help for a Harbor spelling: the reference checker's message names
 /// task-md's converter, which bench users may not have.
 const HARBOR_HELP: &str = "`bench import <folder>` converts a whole split-layout task into task.md";

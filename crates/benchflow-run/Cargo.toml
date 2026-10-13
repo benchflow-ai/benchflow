@@ -45,7 +45,8 @@ base64.workspace = true
 tempfile.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+# Paused time for the disk watch's timing tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

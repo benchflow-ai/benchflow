@@ -1,0 +1,174 @@
+{
+  "task_name": "hello",
+  "rollout_name": "hello__ec981dd5",
+  "rewards": null,
+  "agent": "nop",
+  "agent_name": "nop",
+  "model": null,
+  "skill_mode": "no-skill",
+  "n_tool_calls": 0,
+  "n_prompts": 0,
+  "agent_result": {
+    "n_tool_calls": 0,
+    "n_prompts": 0,
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable"
+  },
+  "trajectory_summary": null,
+  "error": "[R000] not graded: the parent was discarded after its fork (its children are graded)",
+  "error_category": "internal",
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "started_at": "2026-10-11 19:41:13.185550",
+  "finished_at": "2026-10-11 19:41:40.491681",
+  "timing": {
+    "environment_setup": 16.23154375,
+    "agent_execution": 0.0,
+    "verifier": 0.0,
+    "total": 27.265409209,
+    "image": 1.9099095,
+    "sandbox_start": 1.7048073750000001,
+    "setup": 11.129691833,
+    "handoff": 0.0,
+    "verify": 0.0
+  },
+  "task_digest": "sha256:2a23ec73dc5026789f94c298904ae1f02cf2e4805a3fd5fa7a32925209bc5485",
+  "sandbox_id": "b6f91324-fe18-4fd9-acf0-fac4d646519f",
+  "task_id": "examples/hello",
+  "status": "skipped",
+  "passed": null,
+  "timed_out": false,
+  "problem": {
+    "code": "R000",
+    "owner": "you",
+    "phase": "setup",
+    "message": "not graded: the parent was discarded after its fork (its children are graded)",
+    "next": "see the children in branches/ (`bench branches <job>`)",
+    "transient": false
+  },
+  "defenses": {
+    "agent_user": {
+      "name": "agent_user",
+      "state": "enforced",
+      "note": "agent, uid 1001; not checked: file capabilities (no getcap)"
+    },
+    "hidden_verifier": {
+      "name": "hidden_verifier",
+      "state": "enforced",
+      "note": "the verifier and oracle are uploaded only when needed"
+    },
+    "locked_system_dirs": {
+      "name": "locked_system_dirs",
+      "state": "enforced",
+      "note": "system folders were already writable by root alone"
+    },
+    "locked_system_path": {
+      "name": "locked_system_path",
+      "state": "enforced",
+      "note": "the folders on PATH are root's alone"
+    },
+    "memory_limit": {
+      "name": "memory_limit",
+      "state": "enforced",
+      "note": "1024 MB (cgroup v2 memory.max), the daytona backend's own; the task sets none"
+    },
+    "oom_order": {
+      "name": "oom_order",
+      "state": "enforced",
+      "note": "agent processes start at oom_score_adj 1000, the runner and the verifier at 0, so the kernel stops the agent's first"
+    },
+    "planted_file_cleanup": {
+      "name": "planted_file_cleanup",
+      "state": "enforced"
+    },
+    "process_limit": {
+      "name": "process_limit",
+      "state": "not-supported",
+      "note": "the daytona backend cannot cap the number of processes (BenchFlow asks for 4096)"
+    },
+    "root_service": {
+      "name": "root_service",
+      "state": "enforced",
+      "note": "the uid firewall refuses the agent user's connections to the sandbox daemon's ports (2280, 22220, 22222, 33333) on every local address, and nothing else; the daemon listens on 2280, 22220, 22222, 33333; proof: root reached 127.0.0.1:2280, 172.20.0.45:2280, [::1]:2280, 127.0.0.1:22220, 172.20.0.45:22220, [::1]:22220, 127.0.0.1:22222, 172.20.0.45:22222, [::1]:22222, 127.0.0.1:33333, 172.20.0.45:33333, [::1]:33333 and the agent user was refused at each"
+    }
+  },
+  "login": null,
+  "verifier_exit_code": null,
+  "rubric": null,
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0"
+  },
+  "branches": {
+    "tree": "tree.json",
+    "forks": [
+      {
+        "id": "8b9d7724a324483c9b5f767f1b2e7155",
+        "status": "completed",
+        "value": 0.0,
+        "children": 2,
+        "scored": 2,
+        "parent_node": "root",
+        "parent_restore": "skipped",
+        "parent_reward": null,
+        "nodes": [
+          {
+            "index": 0,
+            "node_id": "n1",
+            "label": "c1",
+            "status": "scored",
+            "reward": 0.0,
+            "reward_source": "verifier",
+            "path": "branches/8b9d7724a324483c9b5f767f1b2e7155/children/n1"
+          },
+          {
+            "index": 1,
+            "node_id": "n2",
+            "label": "c2",
+            "status": "scored",
+            "reward": 0.0,
+            "reward_source": "verifier",
+            "path": "branches/8b9d7724a324483c9b5f767f1b2e7155/children/n2"
+          }
+        ],
+        "cost": {
+          "tokens": 0,
+          "usd": null,
+          "usd_known": false,
+          "wall_seconds": 58.794,
+          "parent_sandbox_seconds": 27.265,
+          "children_sandbox_seconds": 42.708,
+          "sandbox_seconds": 69.973
+        }
+      }
+    ],
+    "children": 2,
+    "child_usage": {
+      "n_cache_creation_tokens": 0,
+      "n_cache_read_tokens": 0,
+      "n_input_tokens": 0,
+      "n_output_tokens": 0,
+      "total_tokens": 0
+    },
+    "child_timing_sec": {
+      "agent_execution": 0.013,
+      "agent_setup": 19.333,
+      "verifier": 22.967
+    },
+    "cost": {
+      "tokens": 0,
+      "usd": null,
+      "usd_known": false,
+      "wall_seconds": 58.794,
+      "parent_sandbox_seconds": 27.265,
+      "children_sandbox_seconds": 42.708,
+      "sandbox_seconds": 69.973
+    },
+    "parent": "discarded"
+  }
+}

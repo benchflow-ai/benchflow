@@ -411,6 +411,12 @@ pub(super) struct ParentState {
     /// At `stage:<name>`: the stages the parent ran, which its children go
     /// on from.
     pub stage: Option<StageCarry>,
+    /// How the task's disk limit held on the parent's sandbox, decided
+    /// before its agent ran: the children keep it.
+    pub disk_limit: Option<benchflow_sandbox::DiskLimit>,
+    /// The parent's built image, for the children's probe of the daemon's
+    /// disk.
+    pub base_image: Option<String>,
 }
 
 /// What the parent of a `stage:<name>` fork hands its children: its stages
@@ -714,6 +720,9 @@ impl Trial<'_> {
         if !out_k.success() || report.first("killed").is_none() {
             return Err(super::unreported("the kill before the checkpoint", &out_k));
         }
+        // A stage fork's agent kept its window open: it closes now, with
+        // nothing of the agent's left writing.
+        self.agent_window_close().await;
         let uid = report.first("uid").unwrap_or("").to_string();
         let killed: Vec<String> = report.all("proc").iter().map(|s| s.to_string()).collect();
         // Then, with no process of the agent user left to swap a folder
@@ -849,6 +858,9 @@ impl Trial<'_> {
                 .get("planted_file_cleanup")
                 .is_some_and(|d| d.state == DefenseState::Enforced),
             stage,
+            disk_limit: Some(self.sb().disk_limit())
+                .filter(|l| *l != benchflow_sandbox::DiskLimit::None),
+            base_image: self.base_image.clone(),
         };
         if let Some(tx) = sent {
             // The fork's runner waits on the other end; if it is gone, so is

@@ -16,7 +16,8 @@ use crate::py;
 use crate::pyjson::{Map, Value, Writer, object};
 use crate::target::ViewError;
 
-/// 0.8's assets, embedded unchanged.
+/// 0.8's assets, embedded unchanged, and the Rust viewer's one addition to
+/// its scripts.
 mod assets {
     pub const TEMPLATE: &str = include_str!("../assets/template.html");
     pub const THEME_CSS: &str = include_str!("../assets/theme.css");
@@ -24,11 +25,14 @@ mod assets {
     /// Third-party scripts (see `assets/vendor/LICENSE.highlight.js`).
     pub const VENDOR_JS: [&str; 1] = [include_str!("../assets/vendor/highlight.min.js")];
     /// The app's scripts, in load order: `viewer.js` declares the `BF`
-    /// namespace the others extend.
-    pub const SCRIPTS: [&str; 5] = [
+    /// namespace the others extend. `additions.js` (not 0.8's) shows the
+    /// defense record and keeps the run list's filter on the views link; it
+    /// wraps `detail.js` before `boot.js` opens the first trial.
+    pub const SCRIPTS: [&str; 6] = [
         include_str!("../assets/viewer.js"),
         include_str!("../assets/theme.js"),
         include_str!("../assets/detail.js"),
+        include_str!("../assets/additions.js"),
         include_str!("../assets/catalog.js"),
         include_str!("../assets/boot.js"),
     ];
@@ -312,6 +316,9 @@ mod tests {
         let vendor = page.find("Highlight.js v11.9.0").unwrap();
         assert!(vendor < page.find("BF.highlight = ").unwrap());
         assert!(page.find("const BF = {}").unwrap() < page.find("BF.theme = ").unwrap());
+        // The additions wrap the detail view before boot opens a trial.
+        assert!(page.find("BF.detail = ").unwrap() < page.find("BF.additions = ").unwrap());
+        assert!(page.find("BF.additions = ").unwrap() < page.find("BF.navigation = ").unwrap());
         assert!(
             page.find("localStorage.getItem(\"bf-theme\")").unwrap()
                 < page.find("--background:").unwrap()

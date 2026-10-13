@@ -1,0 +1,21 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "hello__ec981dd5.n1",
+  "agent": {
+    "name": "nop",
+    "version": "unknown"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Create a file `/app/hello.txt` that contains exactly `Hello, world!` with no trailing newline.\n"
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 1,
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0
+  }
+}

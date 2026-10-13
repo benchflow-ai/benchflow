@@ -122,6 +122,8 @@ fn spec_for(image: Image, name: &str, network: NetworkPolicy) -> SandboxSpec {
         workdir: Some("/work".to_string()),
         labels: BTreeMap::from([("ai.benchflow.livetest".to_string(), "1".to_string())]),
         runtime: None,
+        disk_limit_from_parent: None,
+        base_image: None,
     }
 }
 

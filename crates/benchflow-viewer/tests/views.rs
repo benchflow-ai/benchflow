@@ -519,6 +519,75 @@ async fn the_pages_carry_their_data_and_link_to_each_other() {
     assert_eq!(boot(&list)["mode"], "browse");
 }
 
+/// G10's bug bash, finding 3: a served job whose only trial is a `bench
+/// branch` parent discarded at its checkpoint was called "Not found here" on
+/// `/compare`, `/outcomes` and `/pareto`. It is set aside instead, so the
+/// page says why it has no trial; a job that does not exist stays unknown.
+#[tokio::test]
+async fn a_job_of_only_a_discarded_branch_parent_is_set_aside_not_unknown() {
+    let dir = corpus();
+    let parent = dir.path().join("jobs/fork-job/hello__0001");
+    write_trial(
+        &parent,
+        r#"{"task_name": "hello", "agent": "nop", "status": "skipped", "problem": null}"#,
+        None,
+    );
+    std::fs::write(
+        parent.join("tree.json"),
+        r#"{"schema_version": 1, "kind": "benchflow-branch-tree", "nodes": [], "forks": []}"#,
+    )
+    .unwrap();
+    let router = router(dir.path());
+    for view in ["compare", "outcomes", "pareto"] {
+        let answer = api(
+            &router,
+            &format!("/api/{view}?runs=fork-job,jobs/fork-job/,nope,rust-job"),
+        )
+        .await;
+        assert_eq!(answer["unknown"], serde_json::json!(["nope"]), "{view}");
+        assert_eq!(
+            answer["set_aside"],
+            serde_json::json!([{"id": "fork-job", "name": "fork-job"}]),
+            "{view}"
+        );
+        assert_eq!(
+            answer["query"]["runs"],
+            serde_json::json!(["rust-job"]),
+            "{view}"
+        );
+    }
+    // The branches view counts the parent, so nothing is set aside there.
+    let answer = api(&router, "/api/branches?runs=fork-job").await;
+    assert_eq!(answer["unknown"], serde_json::json!([]));
+    // Served on its own, the job is the root `.`, named by its folder as the
+    // other lists name it (G11 review A, L2).
+    let alone = app(detect(&dir.path().join("jobs/fork-job")).unwrap(), PORT);
+    let answer = api(&alone, "/api/compare?runs=.").await;
+    assert_eq!(answer["unknown"], serde_json::json!([]));
+    assert_eq!(
+        answer["set_aside"],
+        serde_json::json!([{"id": ".", "name": "fork-job"}])
+    );
+}
+
+/// G10's bug bash, finding 2: the outcomes notes said "0.8 trials", which
+/// two readers took for a fractional count. They name BenchFlow 0.8.
+#[tokio::test]
+async fn the_outcomes_notes_name_benchflow_0_8() {
+    let dir = corpus();
+    let (status, _, page) = send(
+        &router(dir.path()),
+        Method::GET,
+        "/outcomes",
+        "localhost:8765",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!page.contains("0.8 trials"));
+    assert!(page.contains("Trials from BenchFlow 0.8 record an error and its category"));
+    assert!(page.contains("For trials from BenchFlow 0.8 the code is"));
+}
+
 /// The corpus plus two jobs that record cost: `priced-job` passes both
 /// trials at $0.40 a trial, `cheap-job` one of two at $0.10.
 fn priced_corpus() -> tempfile::TempDir {

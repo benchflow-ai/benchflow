@@ -219,6 +219,8 @@ bench run -d mine@1.0 --registry ./registry.json                  # a registry f
 bench run -d datasets/mine/dataset.toml                           # a local dataset
 ```
 
+A fetch that fails for a network reason (no connection, a timeout, a dropped transfer, HTTP 5xx or 429) is tried twice more, after 2 s and 8 s; a missing branch or commit and refused credentials are not. git runs in these checkouts without starting anything that outlives it (the fsmonitor daemon, background gc, and the daemon of git's `cache` credential helper), because a process git leaves running keeps the checkout locked. Your other credential helpers are used as configured, so a private repository whose only helper is `cache` fails to authenticate, and the error says so.
+
 Two registry files are read: BenchFlow 0.8's dataset registry (skillsbench's `registry.json`, which pins a content digest per task) and the public `registry.json` that lists Terminal-Bench 2 and other datasets; both are JSON arrays of `{name, version, tasks: [{name, git_url, git_commit_id, path}]}`. A local dataset is a `dataset.toml` with its tasks in folders next to it:
 
 ```toml
@@ -298,7 +300,7 @@ The [CLI reference](./cli.md#trace-export) describes the rows, the spans, and th
 
 ## Images between runs
 
-On Docker and Podman, BenchFlow keeps the images it builds. A task's image is tagged by a hash of its build folder, and each agent's install is a cached image on top of it, so the second run of a task starts without building anything. Under an open network (the default), the agent's sandbox also refuses the cloud metadata endpoints with iptables, so an image without iptables gets a small layer that installs it (measured on 2026-10-12 with `ubuntu:24.04`: 3.9 MB, about 20 s to build once per image, then about 1 s per trial to install and test the rule); a task that opts out (see [Network policies](./testing-tasks.md#the-cloud-metadata-endpoints)) gets none. BenchFlow 0.8 removed every image after each task instead.
+On Docker and Podman, BenchFlow keeps the images it builds. A task's image is tagged by a hash of its build folder, and each agent's install is a cached image on top of it, so the second run of a task starts without building anything. Under an open network (the default), the agent's sandbox also refuses the cloud metadata endpoints with iptables, so an image without iptables gets a small layer that installs it (measured on 2026-10-12 with `ubuntu:24.04`: 3.9 MB, about 20 s to build once per image, then about 1 s per trial to install and test the rule); a task that opts out (see [Network policies](./testing-tasks.md#the-cloud-metadata-endpoints)) gets none, and neither does a task whose agent runs as root, since root could remove the rule. BenchFlow 0.8 removed every image after each task instead.
 
 On Daytona, the image is built in your Daytona account from a recipe: the task's Dockerfile, a hash of its build folder, and the layers bench adds to every image (iptables for the network guard, and a record of the image's own environment). Daytona keeps each image it built under the recipe's key, so later runs of the task, from any machine on the account, start from it. A newer bench that changes those layers changes every recipe, so each task's image is built once more on its first run after the update, which can take minutes for a large image. Each trial's `image.log` says which happened: `image ready, built now: ...` or `image ready: ... (built earlier; Daytona kept it)`. Checked on 2026-10-11 with a one-line image: 22 s to build, 2 s the second time.
 

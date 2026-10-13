@@ -1191,3 +1191,49 @@ fn unknown_service_key_lists_the_keys_a_service_takes() {
         Some("a service holds build, command, env, image, name, ready, or x- extensions")
     );
 }
+
+/// F1-A-r2: task.md reads the cloud metadata opt-out only in `[sandbox]`.
+/// Under `[about]` (where an import puts the split layout's `[metadata]`)
+/// it opts nothing out, and the check says so, naming `[sandbox]`, as a
+/// warning; in `[sandbox]` it is read without one.
+#[test]
+fn an_opt_out_under_about_is_a_warning_naming_sandbox() {
+    let dir = package("[about]\nx-allow-cloud-metadata = true\n", &[]);
+    let report = check(dir.path());
+    let d = report
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("x-allow-cloud-metadata"))
+        .unwrap_or_else(|| panic!("no warning: {:#?}", report.diagnostics));
+    assert_eq!(d.code, code::HARBOR_KEY);
+    assert_eq!(d.severity, Severity::Warning);
+    assert!(d.message.contains("[sandbox]"), "{}", d.message);
+    assert_eq!(
+        span_text(dir.path(), d).as_deref(),
+        Some("x-allow-cloud-metadata")
+    );
+    assert!(
+        !report
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+    let dir = package("[sandbox]\nx-allow-cloud-metadata = true\n", &[]);
+    let report = check(dir.path());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|d| !d.message.contains("x-allow-cloud-metadata")),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        report
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+}

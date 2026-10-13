@@ -1830,6 +1830,8 @@ mod tests {
             workdir: None,
             labels: BTreeMap::new(),
             runtime: None,
+            disk_limit_from_parent: None,
+            base_image: None,
         }
     }
 

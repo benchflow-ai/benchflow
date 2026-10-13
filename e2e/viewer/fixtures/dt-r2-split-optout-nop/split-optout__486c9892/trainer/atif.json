@@ -1,0 +1,21 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "split-optout__486c9892",
+  "agent": {
+    "name": "nop",
+    "version": "unknown"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Write the number 42 to `/app/answer.txt`.\n"
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 1,
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cached_tokens": 0
+  }
+}

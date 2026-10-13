@@ -88,14 +88,15 @@ impl Fake {
     }
 
     fn sandbox(&self) -> DockerSandbox {
-        DockerSandbox {
-            cli: Cli {
+        DockerSandbox::new(
+            Cli {
                 name: "docker".into(),
                 binary: self.bin.clone(),
                 flavor: Flavor::Docker,
             },
-            name: "bf-test".into(),
-        }
+            "bf-test".into(),
+            crate::DiskLimit::None,
+        )
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -176,6 +177,8 @@ fn sandbox_spec() -> SandboxSpec {
         workdir: Some("/app".into()),
         labels: BTreeMap::from([("custom".to_string(), "1".to_string())]),
         runtime: None,
+        disk_limit_from_parent: None,
+        base_image: None,
     }
 }
 
@@ -500,17 +503,36 @@ esac"#,
 
 // --- create ---------------------------------------------------------------
 
+/// A daemon whose quota shows inside the container: `df` of `/` reports
+/// the cap, and an uncapped container of the image shows the daemon's
+/// 100 GB data disk.
+const DF_CAPPED: &str = r#"exec) case "$*" in *"/bin/df -Pk /"*) printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\noverlay 10240000 8 10239992 1%% /\n';; esac;;
+  run) case "$*" in *"--entrypoint /bin/sh"*) printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\noverlay 104857600 8 104857592 1%% /\nBF-I\nFilesystem Inodes IUsed IFree IUse%% Mounted on\noverlay 5000000 10 4999990 1%% /\n';; *) echo 0123abcd;; esac;;"#;
+
 #[tokio::test]
 async fn create_runs_one_container_with_limits_labels_and_a_private_env_file() {
-    let fake =
-        Fake::new(r#"case "$1" in run) echo 0123abcd;; inspect) printf 'running\t0\n';; esac"#);
+    let fake = Fake::new(&format!(
+        r#"case "$1" in inspect) printf 'running\t0\n';; {DF_CAPPED} esac"#
+    ));
     let sandbox = fake.provider().create(&sandbox_spec()).await.unwrap();
     assert!(sandbox.id().starts_with("bf-trial-1-"), "{}", sandbox.id());
     assert_eq!(sandbox.backend(), "docker");
+    // Decision 22: the task's disk limit is asked of the daemon as a size
+    // cap, and counts as enforced because the container's `df` shows it.
+    assert_eq!(sandbox.disk_limit(), crate::DiskLimit::Enforced(10_000));
+    let df = &fake.calls_to("exec")[0];
+    assert_eq!(df.args, super::run::cap_df_args(sandbox.id()));
 
     let run = &fake.calls_to("run")[0];
     let env_path = run.args[run.args.iter().position(|a| a == "--env-file").unwrap() + 1].clone();
-    let mut expected = strings(&["run", "-d", "--init", "--name"]);
+    let mut expected = strings(&[
+        "run",
+        "-d",
+        "--storage-opt",
+        "size=10000m",
+        "--init",
+        "--name",
+    ]);
     expected.push(sandbox.id().to_string());
     for (k, v) in [
         ("ai.benchflow.host", owner::hostname().to_string()),
@@ -571,6 +593,351 @@ async fn create_runs_one_container_with_limits_labels_and_a_private_env_file() {
     // Then it waited until the container ran.
     let inspect = &fake.calls_to("inspect")[0];
     assert_eq!(inspect.args.last().unwrap(), sandbox.id());
+}
+
+/// Decision 22 (E6 M2): a daemon whose storage cannot cap a container's
+/// disk refuses the run; the container starts without the cap, the limit
+/// is recorded as not enforced with the daemon's words, and the next start
+/// on that daemon does not ask again. The old code never asked: the limit
+/// was dropped with a debug line.
+#[tokio::test]
+async fn a_daemon_that_cannot_cap_the_disk_starts_it_without_the_cap() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  run) case "$*" in *--storage-opt*) echo "docker: Error response from daemon: --storage-opt is supported only for overlay over xfs with 'pquota' mount option." >&2; exit 125;; esac; echo 0123abcd;;
+  inspect) printf 'running\t0\n';;
+esac"#,
+    );
+    let sandbox = fake.provider().create(&sandbox_spec()).await.unwrap();
+    let crate::DiskLimit::NotEnforced(10_000, why) = sandbox.disk_limit() else {
+        panic!("{:?}", sandbox.disk_limit());
+    };
+    assert!(
+        why.contains("refused a size cap") && why.contains("pquota"),
+        "{why}"
+    );
+    let runs = fake.calls_to("run");
+    assert_eq!(runs.len(), 2, "one refused run with the cap, one without");
+    assert!(runs[0].args.iter().any(|a| a == "--storage-opt"));
+    assert!(!runs[1].args.iter().any(|a| a == "--storage-opt"));
+    assert_eq!(
+        fake.calls_to("rm").len(),
+        1,
+        "the refused container is removed"
+    );
+    // The daemon is known now: no second refused run.
+    let again = fake.provider().create(&sandbox_spec()).await.unwrap();
+    assert!(matches!(
+        again.disk_limit(),
+        crate::DiskLimit::NotEnforced(10_000, _)
+    ));
+    let runs = fake.calls_to("run");
+    assert_eq!(runs.len(), 3);
+    assert!(!runs[2].args.iter().any(|a| a == "--storage-opt"));
+    // No limit asked: none recorded, no cap asked for.
+    let mut spec = sandbox_spec();
+    spec.disk_mb = None;
+    let plain = fake.provider().create(&spec).await.unwrap();
+    assert_eq!(plain.disk_limit(), crate::DiskLimit::None);
+    assert!(
+        !fake.calls_to("run")[3]
+            .args
+            .iter()
+            .any(|a| a == "--storage-opt")
+    );
+}
+
+/// Review E6M-A 2: a capped run that fails in words BenchFlow does not
+/// know (another daemon's dialect) is not a failed start: the container
+/// starts without the cap, and the limit is not enforced. The daemon is not
+/// remembered as one that cannot cap, since the words did not say so.
+#[tokio::test]
+async fn a_capped_run_that_fails_otherwise_is_run_once_more_without_the_cap() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  run) case "$*" in *--storage-opt*) echo "Error: something new went wrong" >&2; exit 125;; esac; echo 0123abcd;;
+  inspect) printf 'running\t0\n';;
+esac"#,
+    );
+    let sandbox = fake.provider().create(&sandbox_spec()).await.unwrap();
+    assert!(matches!(
+        sandbox.disk_limit(),
+        crate::DiskLimit::NotEnforced(10_000, _)
+    ));
+    fake.provider().create(&sandbox_spec()).await.unwrap();
+    let runs = fake.calls_to("run");
+    assert_eq!(
+        runs.len(),
+        4,
+        "asked again: the daemon never said it cannot"
+    );
+    assert!(runs[2].args.iter().any(|a| a == "--storage-opt"));
+}
+
+/// Review E6M-A 2: a daemon that takes the size option but whose container
+/// does not show the cap (btrfs, or one that ignores it) is not recorded as
+/// enforcing it: the limit is not enforced, so it is watched.
+#[tokio::test]
+async fn a_cap_the_container_does_not_show_is_not_enforced() {
+    for exec in [
+        // The host's 6 GB disk through an uncapped overlay.
+        r#"exec) printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\noverlay 6291456 8 6291448 1%% /\n';;"#,
+        // No `df` in the image.
+        r#"exec) echo 'exec: "df": executable file not found in $PATH' >&2; exit 127;;"#,
+    ] {
+        let fake = Fake::new(&format!(
+            r#"case "$1" in run) echo 0123abcd;; inspect) printf 'running\t0\n';; {exec} esac"#
+        ));
+        let mut spec = sandbox_spec();
+        spec.disk_mb = Some(300);
+        let sandbox = fake.provider().create(&spec).await.unwrap();
+        let crate::DiskLimit::NotEnforced(300, why) = sandbox.disk_limit() else {
+            panic!("{:?}", sandbox.disk_limit());
+        };
+        assert!(why.contains("took a size cap"), "{why}");
+    }
+}
+
+/// Review F2A-B M3: a daemon that takes the size option and ignores it,
+/// on a data disk no bigger than the cap, shows its whole disk inside the
+/// container, which passed for the cap. The disk an uncapped container sees
+/// tells them apart.
+#[tokio::test]
+async fn an_ignored_cap_on_a_small_disk_is_not_enforced() {
+    let df = |kb: u64| {
+        format!(
+            "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\noverlay {kb} 8 {kb} 1%% /\\n'"
+        )
+    };
+    let fake = Fake::new(&format!(
+        r#"case "$1" in
+  inspect) printf 'running\t0\n';;
+  exec) {d};;
+  run) case "$*" in *"--entrypoint /bin/sh"*) {d};; *) echo 0123abcd;; esac;;
+esac"#,
+        d = df(9_800 * 1024)
+    ));
+    let mut spec = sandbox_spec();
+    spec.disk_mb = Some(10_240);
+    let sandbox = fake.provider().create(&spec).await.unwrap();
+    let crate::DiskLimit::NotEnforced(10_240, why) = sandbox.disk_limit() else {
+        panic!("{:?}", sandbox.disk_limit());
+    };
+    assert!(why.contains("the daemon's disk is 9800 MB"), "{why}");
+}
+
+/// Decision 22: the layer is measured as the daemon sees it (`inspect
+/// --size` for bytes, `diff` for the entries it added), and the watch
+/// stops the container from outside it (`pause`, then `kill`) once it
+/// passes the limit.
+#[tokio::test]
+async fn the_watch_measures_the_layer_as_the_daemon_sees_it_and_kills_past_the_limit() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  container) n=$(cat "$dir/n" 2>/dev/null || echo 0); echo $((n+1)) > "$dir/n"; echo $((n * 400 * 1048576));;
+  diff) i=0; while [ $i -lt 1000 ]; do echo "A /tmp/f$i"; i=$((i+1)); done;;
+  pause|kill) echo bf-test;;
+esac"#,
+    );
+    let sandbox = fake.sandbox();
+    let inspect = || fake.calls_to("container");
+    // The watch's own pace is seconds: one that never samples in between
+    // keeps the test independent of the machine's speed.
+    let slow = crate::disk::Pace {
+        bytes: Duration::from_secs(3600),
+        entries: Duration::from_secs(3600),
+        most: Duration::from_secs(3600),
+        ..crate::disk::PACE
+    };
+    let layer = crate::disk::Watched::Layer;
+    let (watch, state) = super::disk::watch(&sandbox.cli, "bf-test", 300, slow, layer).await;
+    assert_eq!(state, crate::disk::StartState::Watched);
+    assert_eq!(inspect().len(), 1, "measured before the turn");
+    assert_eq!(
+        inspect()[0].args,
+        strings(&[
+            "container",
+            "inspect",
+            "--size",
+            "--format",
+            "{{.SizeRw}}",
+            "bf-test"
+        ])
+    );
+    // 1000 entries are 4 MB of blocks, counted only when more than the
+    // bytes.
+    assert_eq!(watch.first().unwrap().mb(layer), 4);
+    assert!(fake.calls_to("kill").is_empty());
+    // The end of the turn measures 400 MB: stopped, inside the window.
+    watch.close_window().await;
+    let r = watch.finish().await;
+    assert!(r.stopped.is_some_and(|s| s.in_window), "{r:?}");
+    // Frozen first, then killed.
+    assert_eq!(
+        fake.calls_to("pause")[0].args,
+        strings(&["pause", "bf-test"])
+    );
+    assert_eq!(
+        fake.calls_to("kill")[0].args,
+        strings(&["kill", "--signal", "KILL", "bf-test"])
+    );
+}
+
+/// Review F2A-A L1 (round 2): a `kill` that fails after the freeze, and
+/// again after a thaw, leaves the container thawed.
+#[tokio::test]
+async fn a_failed_kill_thaws_the_container() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  pause|unpause) echo bf-test;;
+  kill) echo "Error response from daemon: permission denied" >&2; exit 1;;
+esac"#,
+    );
+    let sandbox = fake.sandbox();
+    let err = super::disk::kill(&sandbox.cli, "bf-test")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("permission denied"), "{err}");
+    let order: Vec<String> = fake.calls().iter().map(|c| c.args[0].clone()).collect();
+    assert_eq!(order, ["pause", "kill", "unpause", "kill", "unpause"]);
+}
+
+/// U16 (F-9): Podman 3.x refuses to kill a paused container ("container
+/// state improper"): the stop thaws it and kills it again.
+#[tokio::test]
+async fn a_kill_refused_while_paused_is_tried_again_thawed() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  pause) touch "$dir/paused"; echo bf-test;;
+  unpause) rm -f "$dir/paused"; echo bf-test;;
+  kill) if [ -e "$dir/paused" ]; then echo "Error: container state improper" >&2; exit 125; fi; echo bf-test;;
+esac"#,
+    );
+    let sandbox = fake.sandbox();
+    super::disk::kill(&sandbox.cli, "bf-test").await.unwrap();
+    let order: Vec<String> = fake.calls().iter().map(|c| c.args[0].clone()).collect();
+    assert_eq!(order, ["pause", "kill", "unpause", "kill"]);
+}
+
+/// U15 (F-9): whether the container runs is the daemon's `State.Status`:
+/// paused runs (Podman's `State.Running` says false then), exited does
+/// not, anything else or a removed container is an error, never "not
+/// running" (the trial's own check of the sandbox decides then).
+#[tokio::test]
+async fn the_watch_asks_the_daemon_whether_the_container_runs() {
+    let fake = Fake::new(
+        r#"case "$5" in
+  bf-up) echo running;;
+  bf-paused) echo paused;;
+  bf-down) echo exited;;
+  bf-weird) echo weird;;
+  *) echo "Error: No such container: $5" >&2; exit 1;;
+esac"#,
+    );
+    let sb = fake.sandbox();
+    let cli = &sb.cli;
+    assert!(super::disk::running(cli, "bf-up").await.unwrap());
+    assert!(super::disk::running(cli, "bf-paused").await.unwrap());
+    assert!(!super::disk::running(cli, "bf-down").await.unwrap());
+    assert!(super::disk::running(cli, "bf-weird").await.is_err());
+    // The daemon says it no longer has it: not running (the trial's own
+    // check decides); any other failure is no answer (review F2-B-r4 M1).
+    assert!(!super::disk::running(cli, "bf-gone").await.unwrap());
+    assert_eq!(
+        fake.calls()[0].args,
+        strings(&[
+            "container",
+            "inspect",
+            "--format",
+            "{{.State.Status}}",
+            "bf-up"
+        ])
+    );
+}
+
+/// Review F2A-A M2 (round 2): `diff` is given its own timeout; a count
+/// past it fails.
+#[tokio::test]
+async fn the_entry_count_runs_under_its_own_timeout() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  diff) sleep 2; echo "A /tmp/a";;
+esac"#,
+    );
+    let sb = fake.sandbox();
+    let cli = &sb.cli;
+    let short = super::disk::layer_entries(cli, "bf-test", Duration::from_millis(300)).await;
+    assert!(short.is_err());
+    let long = super::disk::layer_entries(cli, "bf-test", Duration::from_secs(20)).await;
+    assert_eq!(long.unwrap(), 1);
+}
+
+/// U19: only added entries count; changed and deleted ones (an honest
+/// agent removing a large image tree) do not.
+#[tokio::test]
+async fn only_added_entries_count() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  diff) printf 'C /usr\nD /usr/lib/big\nA /app/new\nC /app\nA /app/new/a\nD /opt\nAX /odd\n';;
+esac"#,
+    );
+    let sb = fake.sandbox();
+    let n = super::disk::layer_entries(&sb.cli, "bf-test", Duration::from_secs(20)).await;
+    assert_eq!(n.unwrap(), 2);
+}
+
+/// U18 (F-5): the cap is confirmed with root's `/bin/df` by full path and
+/// a pinned `PATH`, and the daemon's disk with the hardened probe of the
+/// task's image; a branch child keeps its parent's decision and runs no
+/// `df` of its own (the parent's agent may have replaced it).
+#[tokio::test]
+async fn a_branch_child_keeps_its_parents_disk_limit() {
+    let fake = Fake::new(&format!(
+        r#"case "$1" in inspect) printf 'running\t0\n';; {DF_CAPPED} esac"#
+    ));
+    let mut spec = sandbox_spec();
+    spec.base_image = Some("bf-task:built".into());
+    let parent = fake.provider().create(&spec).await.unwrap();
+    assert_eq!(parent.disk_limit(), crate::DiskLimit::Enforced(10_000));
+    let exec = &fake.calls_to("exec")[0].args;
+    assert!(exec.contains(&"/bin/df".to_string()), "{exec:?}");
+    assert!(exec.contains(&format!("PATH={}", crate::shell::SYSTEM_PATH)));
+    let execs = fake.calls_to("exec").len();
+    spec.disk_limit_from_parent = Some(crate::DiskLimit::Enforced(10_000));
+    let child = fake.provider().create(&spec).await.unwrap();
+    assert_eq!(child.disk_limit(), crate::DiskLimit::Enforced(10_000));
+    assert_eq!(fake.calls_to("exec").len(), execs, "no df in the child");
+    // Its probe of the daemon's disk runs the built image, not its own.
+    child.host_df().await.unwrap();
+    let probe = fake.calls_to("run").pop().unwrap().args;
+    assert!(probe.contains(&"bf-task:built".to_string()), "{probe:?}");
+    assert!(!probe.contains(&spec.image.reference));
+}
+
+/// U17 (F-5): a probe of the daemon's disk past its time is removed by
+/// name, so none is left running.
+#[tokio::test]
+async fn a_disk_probe_past_its_time_is_removed() {
+    let fake = Fake::new(
+        r#"case "$1" in
+  run) sleep 30;;
+  rm) echo removed;;
+esac"#,
+    );
+    let sb = fake.sandbox();
+    let got = super::disk::host_df(
+        &sb.cli,
+        "bf-task:abc",
+        None,
+        "bf-trial-1-abcdef12",
+        Duration::from_secs(8),
+    )
+    .await;
+    assert_eq!(got, None);
+    let run = &fake.calls_to("run")[0].args;
+    let name = &run[run.iter().position(|a| a == "--name").unwrap() + 1];
+    assert!(name.starts_with("bf-df-abcdef12-"), "{name}");
+    assert_eq!(fake.calls_to("rm")[0].args, strings(&["rm", "-f", name]));
 }
 
 #[tokio::test]
@@ -656,48 +1023,100 @@ async fn exec_passes_user_cwd_and_env_and_captures_both_streams() {
     );
 }
 
+/// The clock starts at the fake command's own `started` marker, not at the
+/// call: under a full workspace test run the fake shell can take seconds to
+/// start, and a 3 s timeout measured from the call fired before it printed
+/// anything (F2A-B-r2). The timeout is 10 s, so a slow start still lands
+/// inside it, and the bound of 20 s from the marker still fails a timeout
+/// that waits out the 30 s command.
+///
+/// A run whose command never started proves nothing either way: at a Mac
+/// load average of about 40 the fake took more than 10 s to start (G9-R1-B-1).
+/// Such a run is retried, and the test fails only when no try of three
+/// starts, which a timeout that fires before any command starts still does.
 #[tokio::test]
 async fn a_timeout_kills_the_command_inside_the_container() {
-    let fake = Fake::new(
-        r#"case "$1" in exec)
+    const TRIES: u32 = 3;
+    for attempt in 1..=TRIES {
+        let fake = Fake::new(
+            r#"case "$1" in exec)
   if [ "$2" = "-u" ] && [ "$3" = "0" ] && [ "$4" = "-e" ]; then exit 0; fi
-  echo started; exec sleep 30;;
+  echo started; : > "$dir/started"; exec sleep 30;;
 esac"#,
-    );
-    let started = std::time::Instant::now();
-    let out = fake
-        .sandbox()
-        .exec(Exec::new("sleep 30").timeout(Duration::from_secs(3)))
-        .await
-        .unwrap();
-    assert!(out.timed_out);
-    assert_eq!(out.exit_code, crate::TIMEOUT_EXIT_CODE);
-    assert_eq!(out.stdout, "started\n");
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        started.elapsed()
-    );
+        );
+        // The marker is written after the echo, so a marker on disk means
+        // `started` is already in the pipe the run drains.
+        let marker = fake.path("started");
+        let sandbox = fake.sandbox();
+        let run = sandbox.exec(Exec::new("sleep 30").timeout(Duration::from_secs(10)));
+        tokio::pin!(run);
+        let mut started = None;
+        let out = loop {
+            tokio::select! {
+                out = &mut run => break out.unwrap(),
+                _ = tokio::time::sleep(Duration::from_millis(20)), if started.is_none() => {
+                    if marker.exists() {
+                        started = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        };
+        // A marker written in the last 20 ms before the run returned.
+        if started.is_none() && marker.exists() {
+            started = Some(std::time::Instant::now());
+        }
+        let Some(started) = started else {
+            // Only a slow start is retried: a timeout that fired early fails
+            // here with its duration (G9F-A-2).
+            assert!(out.timed_out);
+            assert!(
+                out.duration >= Duration::from_secs(10),
+                "{:?}",
+                out.duration
+            );
+            assert!(
+                attempt < TRIES,
+                "the fake command never started before the timeout in {TRIES} tries"
+            );
+            continue;
+        };
+        assert!(out.timed_out);
+        assert_eq!(out.exit_code, crate::TIMEOUT_EXIT_CODE);
+        assert!(out.stdout.contains("started"), "{:?}", out.stdout);
+        // Load only lengthens a run, so a run shorter than its timeout means
+        // the timeout fired early.
+        assert!(
+            out.duration >= Duration::from_secs(10),
+            "{:?}",
+            out.duration
+        );
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(20), "{elapsed:?}");
 
-    let calls = fake.calls();
-    assert_eq!(calls.len(), 2, "{calls:?}");
-    let exec_id = calls
-        .iter()
-        .find_map(|c| c.env_file.as_deref())
-        .unwrap()
-        .lines()
-        .find_map(|l| l.strip_prefix(&format!("{EXEC_ID_ENV}=")))
-        .unwrap()
-        .to_string();
-    let kill = calls
-        .iter()
-        .find(|c| c.args.get(1).map(String::as_str) == Some("-u"))
-        .expect("the kill ran");
-    assert_eq!(kill.args, super::exec::kill_args("bf-test", "0", &exec_id));
-    assert_eq!(
-        kill.args.last().unwrap(),
-        &crate::shell::kill_tagged(&exec_id)
-    );
+        let calls = fake.calls();
+        // Only the arguments: a call's record also holds the test process's
+        // whole environment, which can carry the runner's tokens.
+        let args: Vec<_> = calls.iter().map(|c| &c.args).collect();
+        assert_eq!(calls.len(), 2, "{args:?}");
+        let exec_id = calls
+            .iter()
+            .find_map(|c| c.env_file.as_deref())
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{EXEC_ID_ENV}=")))
+            .unwrap()
+            .to_string();
+        let kill = calls
+            .iter()
+            .find(|c| c.args.get(1).map(String::as_str) == Some("-u"))
+            .expect("the kill ran");
+        assert_eq!(kill.args, super::exec::kill_args("bf-test", "0", &exec_id));
+        assert_eq!(
+            kill.args.last().unwrap(),
+            &crate::shell::kill_tagged(&exec_id)
+        );
+        return;
+    }
 }
 
 /// Root in a container cannot read another user's `/proc/<pid>/environ`
@@ -1577,8 +1996,43 @@ async fn a_child_starts_from_the_local_checkpoint_image_without_pulling() {
         .await
         .unwrap();
     let run = &fake.calls_to("run")[0];
-    assert_eq!(run.args[2..4], strings(&["--pull", "never"]));
+    // The child is capped as its parent was (decision 22), and never pulls.
+    assert_eq!(
+        run.args[2..6],
+        strings(&["--storage-opt", "size=10000m", "--pull", "never"])
+    );
     assert!(run.args.contains(&name) && !run.args.iter().any(|a| a == "ubuntu:24.04"));
+    // Review F2-C, F-5: no probe of the daemon's disk ever runs the
+    // checkpoint (the parent's agent wrote it); without the parent's built
+    // image there is no probe at all.
+    let child = fake
+        .provider()
+        .create_from_checkpoint(&sandbox_spec(), &made)
+        .await
+        .unwrap();
+    assert_eq!(child.host_df().await, None);
+    let probes = |fake: &Fake| -> Vec<Vec<String>> {
+        fake.calls_to("run")
+            .into_iter()
+            .map(|c| c.args)
+            .filter(|a| a.iter().any(|x| x == "ai.benchflow.probe=df"))
+            .collect()
+    };
+    assert!(probes(&fake).is_empty(), "{:?}", probes(&fake));
+    let mut spec = sandbox_spec();
+    spec.base_image = Some("bf-task:built".into());
+    let child = fake
+        .provider()
+        .create_from_checkpoint(&spec, &made)
+        .await
+        .unwrap();
+    let _ = child.host_df().await;
+    let all = probes(&fake);
+    assert!(!all.is_empty());
+    assert!(
+        all.iter()
+            .all(|a| a.contains(&"bf-task:built".to_string()) && !a.contains(&name))
+    );
 }
 
 #[tokio::test]

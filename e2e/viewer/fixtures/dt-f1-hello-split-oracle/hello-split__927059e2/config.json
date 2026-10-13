@@ -1,0 +1,43 @@
+{
+  "task_path": "tasks/hello-split",
+  "task_id": "hello-split",
+  "task_format": "split",
+  "agent": "oracle",
+  "model": null,
+  "reasoning_effort": null,
+  "agent_options": {},
+  "resume_sessions": false,
+  "skills": null,
+  "load_trajectory": null,
+  "environment": "daytona",
+  "sandbox_user": "agent",
+  "workdir": "/app",
+  "timeout_sec": 120.0,
+  "agent_idle_timeout_sec": 600,
+  "agent_env_keys": [],
+  "pids_limit": 4096,
+  "started_at": "2026-10-12 15:45:44.472019",
+  "task_config": {
+    "version": "1.0",
+    "metadata": {
+      "author_name": "BenchFlow",
+      "difficulty": "easy",
+      "category": "fixtures"
+    },
+    "verifier": {
+      "timeout_sec": 60.0
+    },
+    "agent": {
+      "timeout_sec": 120.0
+    },
+    "environment": {
+      "build_timeout_sec": 600.0,
+      "cpus": 1,
+      "memory_mb": 2048
+    }
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-rc.1"
+  }
+}

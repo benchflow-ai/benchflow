@@ -107,6 +107,47 @@ struct World {
     /// When set, each handoff reports removing a link of its own.
     link_per_handoff: bool,
     handoffs: usize,
+    /// F2 round 4 (I3): a disk limit the fake daemon cannot cap (300 MB),
+    /// and who starts a writer that takes the layer to 400 MB: the opening
+    /// stage's script (`Writer::Agent`, killed by a kill of the agent
+    /// user's processes) or BenchFlow's own reset before the next stage
+    /// (`Writer::Benchflow`).
+    writer: Option<Writer>,
+    writing: bool,
+    writer_killed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Writer {
+    Agent,
+    Benchflow,
+}
+
+/// The fake's writable layer: 20 MB, or 400 MB while the writer writes.
+struct Layer(Arc<Mutex<World>>);
+
+#[async_trait]
+impl benchflow_sandbox::disk::Layer for Layer {
+    async fn bytes(&self, _t: Duration) -> Result<u64, SandboxError> {
+        let w = self.0.lock().unwrap();
+        Ok(if w.writing && !w.writer_killed {
+            400
+        } else {
+            20
+        } << 20)
+    }
+    async fn entries(&self, _t: Duration) -> Result<u64, SandboxError> {
+        Ok(10)
+    }
+    async fn status(&self) -> Result<bool, SandboxError> {
+        Ok(true)
+    }
+    async fn stop(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
+    async fn unpause(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
 }
 
 struct Fake {
@@ -132,13 +173,30 @@ impl Sandbox for Fake {
             .unwrap_or(&exec.command)
             .to_string();
         let mut w = self.world.lock().unwrap();
+        match w.writer {
+            Some(Writer::Agent)
+                if exec.env.get("BENCHFLOW_STAGE").map(String::as_str) == Some("first") =>
+            {
+                w.writing = true
+            }
+            Some(Writer::Benchflow) if c.starts_with("rm -rf") && c.contains("/logs/verifier") => {
+                w.writing = true
+            }
+            _ => {}
+        }
+        if c.contains("kill -9 -1") && w.writer == Some(Writer::Agent) && w.writing {
+            w.writer_killed = true;
+        }
         w.commands.push(c.clone());
         w.users
             .push((exec.user.clone().unwrap_or_default(), c.clone()));
         w.envs.push(exec.env.clone());
         let stdout = if c.contains("useradd") {
             "BF user agent 1000 /home/agent\n".to_string()
-        } else if c.contains("baseline") && c.contains("files.tar") && !c.contains("after") {
+        } else if c.contains("baseline")
+            && c.contains("files.tar")
+            && !c.contains("BF handoff done")
+        {
             "BF baseline 2\n".to_string()
         } else if c.contains("kill -9 -1") {
             "BF killed 1\n".to_string()
@@ -202,6 +260,38 @@ impl Sandbox for Fake {
     }
     async fn spawn(&self, _exec: Exec) -> Result<Process, SandboxError> {
         Err(SandboxError::Unsupported("no processes in the fake".into()))
+    }
+    fn disk_limit(&self) -> benchflow_sandbox::DiskLimit {
+        if self.world.lock().unwrap().writer.is_some() {
+            benchflow_sandbox::DiskLimit::NotEnforced(300, "the fake cannot cap it".into())
+        } else {
+            benchflow_sandbox::DiskLimit::None
+        }
+    }
+    async fn watch_layer(
+        &self,
+        limit_mb: u64,
+        watched: benchflow_sandbox::disk::Watched,
+    ) -> Option<(
+        benchflow_sandbox::LayerWatch,
+        benchflow_sandbox::disk::StartState,
+    )> {
+        let ms = Duration::from_millis;
+        let pace = benchflow_sandbox::disk::Pace {
+            bytes: ms(5),
+            entries: ms(5),
+            most: ms(50),
+            floor: ms(1),
+            base_timeout: ms(200),
+            entries_retry: ms(300),
+            bytes_timeout: ms(100),
+            bytes_bound: ms(150),
+            entries_timeout: ms(100),
+            entries_bound: ms(150),
+            settle: Duration::from_secs(5),
+        };
+        let layer = Arc::new(Layer(self.world.clone()));
+        Some(benchflow_sandbox::LayerWatch::start(limit_mb, pace, watched, layer).await)
     }
     async fn upload(&self, local: &Path, remote: &str) -> Result<(), SandboxError> {
         let mut w = self.world.lock().unwrap();
@@ -395,7 +485,10 @@ async fn run_in(
             failing_image,
         }),
         images: Images::new(),
-        options: RunOptions::default(),
+        options: RunOptions {
+            unexplained_loss_retry_secs: 0,
+            ..RunOptions::default()
+        },
         events: Events::none(),
         stop: rx,
     });
@@ -612,10 +705,12 @@ async fn custody_keeps_what_each_stages_handoff_removed() {
         &std::fs::read_to_string(dir.join(&records[0].rollout_name).join("custody.json")).unwrap(),
     )
     .unwrap();
+    // The fake kills one process each time: at the end of each graded
+    // stage's turn (F2 round 4), and again at its handoff.
     assert_eq!(
         custody["killed_processes"].as_u64(),
-        Some(handoffs as u64),
-        "one process killed at each handoff: {custody}"
+        Some(2 * handoffs as u64),
+        "one process killed at each turn's end and each handoff: {custody}"
     );
     let links: Vec<&str> = custody["escaping_symlinks"]
         .as_array()
@@ -656,6 +751,45 @@ async fn after_a_graded_stage_the_workdir_returns_and_the_baseline_is_retaken() 
         .count();
     assert_eq!(copies, 1);
     assert!(after.iter().any(|c| c.contains("chown -R 0:0 /app/data")));
+}
+
+/// Decision G-7 (G3): the record of the workdir's virtual environments,
+/// whose interpreter links the handoff re-creates, is taken under an
+/// explicit flag before the agent's first turn only (in setup, and again
+/// before the first stage, whose files and `setup.sh` may make a venv).
+/// A later stage's baseline, taken after an agent's turn, never records
+/// one: it could list the agent's own links.
+#[tokio::test]
+async fn the_venv_record_is_taken_before_the_first_turn_only() {
+    let pkg = tempfile::tempdir().unwrap();
+    let task = shipping_stages(pkg.path(), true);
+    let (records, _dir, world, _tmp) = run(task, vec![Attempt::Oracle], true).await;
+    assert!(records[0].problem.is_none(), "{:?}", records[0].problem);
+    let w = world.lock().unwrap();
+    let first_grade = w
+        .commands
+        .iter()
+        .position(|c| c.starts_with("unset LD_PRELOAD") && c.contains("exec /"))
+        .expect("a stage was graded");
+    let baselines: Vec<(usize, &String)> = w
+        .commands
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.contains("BF baseline $("))
+        .collect();
+    let recorded: Vec<usize> = baselines
+        .iter()
+        .filter(|(_, c)| c.contains("BF venvs"))
+        .map(|(i, _)| *i)
+        .collect();
+    assert_eq!(recorded.len(), 2, "setup's and the first stage's");
+    assert!(recorded.iter().all(|&i| i < first_grade));
+    assert!(
+        baselines
+            .iter()
+            .any(|(i, c)| *i > first_grade && !c.contains("venvs")),
+        "the later stage's baseline was not taken, or it recorded venvs"
+    );
 }
 
 #[tokio::test]
@@ -847,4 +981,79 @@ async fn a_verifier_image_whose_sandbox_fails_is_not_recorded_as_used() {
         "{:?}",
         r.defenses
     );
+}
+
+/// F2 round 4 (I3, review F2-C F-1): an ungraded opening stage's agent
+/// keeps its processes, and its window stays open, until BenchFlow prepares
+/// the next stage. A writer it left running is charged to it (R316); a
+/// layer that grows only during BenchFlow's own preparation is not (the
+/// sandbox's R110).
+#[tokio::test]
+async fn a_writer_carried_past_an_ungraded_stage_is_the_agents() {
+    let script = |pkg: &Path| {
+        let path = pkg.join("writer.sh");
+        std::fs::write(&path, "true\n").unwrap();
+        Attempt::Script(benchflow_run::agent::UserScript {
+            name: "writer.sh".into(),
+            path,
+            bytes: Arc::new(b"true\n".to_vec()),
+        })
+    };
+    for (writer, code, owner) in [
+        (Writer::Agent, "R316", benchflow_run::outcome::Owner::Agent),
+        (
+            Writer::Benchflow,
+            "R110",
+            benchflow_run::outcome::Owner::Sandbox,
+        ),
+    ] {
+        let pkg = tempfile::tempdir().unwrap();
+        let task = shipping_stages(pkg.path(), false);
+        let world = Arc::new(Mutex::new(World {
+            writer: Some(writer),
+            ..World::default()
+        }));
+        let (records, _dir, _world, _tmp) =
+            run_in(task, vec![script(pkg.path())], true, None, world).await;
+        let p = records[0].problem.as_ref().expect("stopped");
+        assert_eq!(
+            (p.code.as_str(), p.owner),
+            (code, owner),
+            "{writer:?}: {}",
+            p.message
+        );
+    }
+}
+
+/// Review F2-A-r4 M2: BenchFlow's own archives (a stage's outputs) are
+/// removed from the sandbox right after they are copied out, so they never
+/// count against the task's disk limit in a later stage.
+#[tokio::test]
+async fn benchflows_archives_leave_the_sandbox_once_copied() {
+    let pkg = tempfile::tempdir().unwrap();
+    let task = shipping_stages(pkg.path(), true);
+    let (records, _dir, world, _tmp) = run(task, vec![Attempt::Oracle], true).await;
+    assert!(records[0].problem.is_none(), "{:?}", records[0].problem);
+    let w = world.lock().unwrap();
+    let packed = w.commands.iter().position(|c| {
+        c.contains("outputs.tar") && c.contains("BF packed")
+            || c.contains("tar")
+                && c.contains("/var/lib/benchflow/outputs.tar")
+                && !c.starts_with("rm ")
+    });
+    let removed = w
+        .commands
+        .iter()
+        .position(|c| c.starts_with("rm -f") && c.contains("/var/lib/benchflow/outputs.tar"));
+    assert!(
+        removed.is_some(),
+        "no rm of the outputs archive: {:?}",
+        w.commands
+            .iter()
+            .filter(|c| c.contains("outputs"))
+            .collect::<Vec<_>>()
+    );
+    if let (Some(p), Some(r)) = (packed, removed) {
+        assert!(p < r);
+    }
 }

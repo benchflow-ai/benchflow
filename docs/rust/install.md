@@ -12,7 +12,7 @@ The script picks the build for your machine, downloads `bench-<version>-<target>
 
 | Setting or flag | What it does |
 |---|---|
-| `BENCH_VERSION=0.8.1` | Install that version instead of the latest (its release tag, `bench-v0.8.1`, works too) |
+| `BENCH_VERSION=0.8.1` | Install that version, a pre-release too, instead of the newest stable release (its release tag, `bench-v0.8.1`, works too) |
 | `BENCH_INSTALL_DIR=~/bin` | Install into another folder |
 | `BENCH_TARGET=x86_64-unknown-linux-gnu` | Download another build than the one picked for this machine |
 | `BENCH_RELEASES_URL=<url>` | Download from a mirror laid out like `https://github.com/benchflow-ai/benchflow/releases` |
@@ -29,7 +29,13 @@ curl -fsSL https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/ins
 sh install.sh --from bench-0.8.1-x86_64-unknown-linux-musl.tar.gz   # from a clone
 ```
 
-**No release has bench binaries yet.** bench's releases will be tagged `bench-v<version>`. Without `BENCH_VERSION`, the script installs the newest `bench-v*` release that is not a prerelease, read from GitHub's list of releases, since the repository's own latest release is often the Python package's (`v0.7.8` today); with none, it stops, says so, and suggests the alternatives. Until a release has them, build from source (below) or install a build from the `rust` workflow: run it by hand (Actions, then rust, then Run workflow), download the artifact with `gh run download <run-id> -n bench-<version>-<target>`, and run `sh install.sh --from bench-<version>-<target>.tar.gz`.
+**Releases.** bench's releases are tagged `bench-v<version>`; tags of the form `v<version>` are the Python package's. The newest is a GitHub pre-release with a build for each of the three [supported targets](#supported-targets), each a `bench-<version>-<target>.tar.gz` with its `.sha256`. This installs it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/install.sh | BENCH_VERSION=bench-v0.8.1-rc.2 sh
+```
+
+`BENCH_VERSION` installs the release it names, a pre-release too, by its version or its tag. Without it, the script installs the newest `bench-v*` release that is not a pre-release, read from GitHub's list of releases, since the repository's own latest release is the Python package's. When there is none, it stops, says it found no bench release, and suggests `BENCH_VERSION` or building from source (below).
 
 **If you have BenchFlow 0.8.** `uv tool install benchflow` (and pipx, and pip) put the Python CLI's `bench` in `~/.local/bin` too. The script does not replace it unless you pass `--force`; it says what it found and how to install next to it instead, with `BENCH_INSTALL_DIR=~/.bench/bin`. `uv tool install --force benchflow` brings 0.8's `bench` back.
 
@@ -44,7 +50,7 @@ cargo install --locked --path crates/benchflow-cli   # puts bench in ~/.cargo/bi
 
 Without a clone: `cargo install --locked --git https://github.com/benchflow-ai/benchflow --branch bench-rs benchflow-cli`.
 
-Built from git, `bench --version` names the commit and its date, like `bench 0.8.1-dev.0 (7a88169aa 2026-10-10)`. Built from a copy without git history, it prints just the version.
+Built from git, `bench --version` names the commit and its date, like `bench 0.8.1-dev.0 (7a88169aa 2026-10-10)`. Built from a source archive (`git archive`, or GitHub's source tarball of a tag or commit), it names the commit the same way, since git writes it into the archive's `crates/benchflow-cli/archive-commit.txt`; this holds only for commits that have that file, so a bench built from the source tarball of `bench-v0.8.1-rc.1` prints just the version. Built from a plain copy, one that is neither a source archive nor a git checkout of BenchFlow (even inside some other repository), it prints just the version.
 
 The release binaries use the `dist` profile, which is the release profile plus whole-program LTO (6.5% smaller on macOS, for about 20 seconds more build time): `cargo build --locked --profile dist -p benchflow-cli` writes `target/dist/bench`. A clean build takes one to two minutes on a laptop or a 16-core VM. For the static Linux build, install `musl-tools` (it provides the musl C compiler aws-lc needs), then run `rustup target add x86_64-unknown-linux-musl` and `cargo build --locked --profile dist --target x86_64-unknown-linux-musl -p benchflow-cli`.
 
@@ -58,7 +64,7 @@ The release binaries use the `dist` profile, which is the release profile plus w
 
 Sizes are for the build of 2026-10-10 at `9a19876f`, built with the `dist` profile; the download is the `.tar.gz`, packed as the `rust` workflow packs it (MB is a million bytes). Intel Macs, Linux on ARM, and Windows have no prebuilt binary yet; build from source there (on Windows, inside WSL).
 
-The `rust` workflow (`.github/workflows/rust.yml`) builds all three on every `bench-v*` tag, such as `bench-v0.8.1`, after formatting, clippy, and the tests pass. It checks that each binary runs and names its commit, installs it with `install.sh`, and uploads `bench-<version>-<target>.tar.gz` and its `.sha256` as workflow artifacts. It does not publish a GitHub release yet, and it fails when the tag is not `bench-v` plus the version in `Cargo.toml`. Tags of the form `v<version>` belong to the Python package's release (`public-release.yml`, which publishes to PyPI) and do not start this workflow; `install.sh` reads `BENCH_VERSION=0.8.1` as the tag `bench-v0.8.1`.
+The `rust` workflow (`.github/workflows/rust.yml`) builds all three on every `bench-v*` tag, once formatting, clippy, the tests, the Docker smoke tests and the install script's lint pass, and fails when the tag is not `bench-v` plus the version in `Cargo.toml`. It checks that each binary runs and names its commit, installs it with `install.sh`, and uploads `bench-<version>-<target>.tar.gz` and its `.sha256` as workflow artifacts; it publishes no release itself. A maintainer makes the release from those artifacts: `gh run download <run-id>` fetches them, one folder per target, and `gh release create <tag> --verify-tag --latest=false` with the six files inside (each target's `.tar.gz` and `.sha256`) publishes them: a release candidate with `--prerelease` added, a stable release without it. Neither is marked latest, so the repository's latest release stays the Python package's. A run started by hand (Actions, then rust, then Run workflow) builds the same artifacts from any branch; to try one, download it with `gh run download <run-id> -n bench-<version>-<target>` and run `sh install.sh --from bench-<version>-<target>.tar.gz`. Tags of the form `v<version>` start the Python package's release (`public-release.yml`, which publishes to PyPI), not this workflow; `install.sh` reads `BENCH_VERSION=0.8.1` as the tag `bench-v0.8.1`.
 
 ## Upgrading
 

@@ -1112,6 +1112,55 @@ fn results_warn_once_when_model_agents_ran_without_the_daemon_guard() {
     );
 }
 
+/// Decision 22: a disk limit the backend did not enforce is said once per
+/// job, however many trials, with the reason; a trial whose limit held
+/// adds nothing.
+#[test]
+fn results_say_once_when_the_disk_limit_was_not_enforced() {
+    let d = tempfile::tempdir().unwrap();
+    write_job(d.path(), "j", &[]);
+    let loose = "disk limit not enforced: the docker daemon refused a size cap on the container's disk (--storage-opt is supported only for overlay over xfs with 'pquota' mount option.); BenchFlow measures the writable layer while the agent works, each file counted as a 4 KiB block, and stops the sandbox once it passes 300 MB";
+    let trial = |i: usize, state: &str, note: &str| {
+        let dir = d.path().join(format!("jobs/j/t{i}__0000000{i}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("result.json"),
+            serde_json::json!({
+                "task_name": format!("t{i}"), "rollout_name": format!("t{i}__0000000{i}"),
+                "agent": "oracle", "status": "scored",
+                "passed": true, "rewards": {"reward": 1.0},
+                "defenses": {"disk_limit": {"name": "disk_limit", "state": state, "note": note}},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    // F2 round 4: entries not counted before the turn, said once too.
+    let unwatched = format!(
+        "{loose}; the layer's entries could not be counted before the agent's turn, so only its bytes were watched (an inode flood is bounded only by them)"
+    );
+    trial(0, "not-supported", &unwatched);
+    trial(1, "not-supported", &unwatched);
+    trial(2, "enforced", "300 MB, capped by the docker daemon");
+    let out = bench(d.path(), &d.path().join("cache"))
+        .args(["results", "jobs/j"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(flat.matches("disk limit not enforced").count(), 1, "{out}");
+    assert!(
+        flat.contains("disk limit not enforced on 2 trials (the docker daemon refused a size cap"),
+        "{out}"
+    );
+    assert_eq!(
+        flat.matches("could not count the files in the writable layer of 2 trials")
+            .count(),
+        1,
+        "{out}"
+    );
+}
+
 /// F1 (rc.2): a model agent that could reach the cloud metadata endpoints
 /// (the task opted out, or the refusal could not be installed) gets one
 /// warning line per job in `bench results`, with the first trial's reason;

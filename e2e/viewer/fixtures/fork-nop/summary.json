@@ -1,0 +1,77 @@
+{
+  "kind": "benchflow-branch-job",
+  "job_name": "fork-nop",
+  "agent": "nop",
+  "model": null,
+  "sandbox": "daytona",
+  "checkpoint_after_prompt": 0,
+  "fork_point": "start",
+  "snapshot_layers": [
+    "sandbox"
+  ],
+  "parent": "discard",
+  "children_mode": {
+    "isolated": true,
+    "concurrency": 4
+  },
+  "children_requested": [
+    {
+      "label": "c1",
+      "own_prompt": false,
+      "parent": null
+    },
+    {
+      "label": "c2",
+      "own_prompt": false,
+      "parent": null
+    }
+  ],
+  "total": 2,
+  "passed": 0,
+  "scored": 2,
+  "cost": {
+    "tokens": 0,
+    "usd": null,
+    "usd_known": false,
+    "sandbox_seconds": 69.973
+  },
+  "score": 0.0,
+  "trials": [
+    {
+      "trial": "hello__ec981dd5",
+      "rollout_dir": "hello__ec981dd5",
+      "task": "hello",
+      "fork_id": "8b9d7724a324483c9b5f767f1b2e7155",
+      "fork_status": "completed",
+      "value": 0.0,
+      "parent_reward": null,
+      "parent_restore": "skipped",
+      "checkpoint_retention": "deleted",
+      "retention": "deleted",
+      "kept_snapshot": null,
+      "cost": {
+        "tokens": 0,
+        "usd": null,
+        "usd_known": false,
+        "wall_seconds": 58.794,
+        "parent_sandbox_seconds": 27.265,
+        "children_sandbox_seconds": 42.708,
+        "sandbox_seconds": 69.973
+      },
+      "children": [
+        {
+          "label": "c1",
+          "node_id": "n1",
+          "status": "scored",
+          "reward": 0.0
+        },
+        {
+          "label": "c2",
+          "node_id": "n2",
+          "status": "scored",
+          "reward": 0.0
+        }
+      ]
+    }
+  ]
+}

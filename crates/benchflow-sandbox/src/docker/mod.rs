@@ -25,6 +25,7 @@
 mod cache;
 mod checkpoint;
 mod cli;
+mod disk;
 mod exec;
 mod files;
 mod image;
@@ -209,11 +210,10 @@ impl Provider for DockerProvider {
     }
 
     async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
-        let name = run::start(&self.cli, spec).await?;
-        Ok(Box::new(DockerSandbox {
-            cli: self.cli.clone(),
-            name,
-        }))
+        let (name, limit) = run::start(&self.cli, spec).await?;
+        Ok(Box::new(
+            DockerSandbox::new(self.cli.clone(), name, limit).with_spec(spec),
+        ))
     }
 
     async fn sweep(&self) -> Result<usize, SandboxError> {
@@ -229,11 +229,12 @@ impl Provider for DockerProvider {
     ) -> Result<Box<dyn Sandbox>, SandboxError> {
         let mut spec = spec.clone();
         spec.image.reference = checkpoint.reference.clone();
-        let name = run::start_from(&self.cli, &spec, true).await?;
-        Ok(Box::new(DockerSandbox {
-            cli: self.cli.clone(),
-            name,
-        }))
+        let (name, limit) = run::start_from(&self.cli, &spec, true).await?;
+        let mut sandbox = DockerSandbox::new(self.cli.clone(), name, limit).with_spec(&spec);
+        // The probe of the daemon's disk never starts a checkpoint: without
+        // the built image its parent named, there is no probe.
+        sandbox.base_image = spec.base_image.clone().unwrap_or_default();
+        Ok(Box::new(sandbox))
     }
 
     async fn delete_checkpoint(
@@ -312,6 +313,35 @@ pub struct DockerSandbox {
     cli: Cli,
     /// The container's name, which is also its id for the CLI.
     name: String,
+    /// How the task's disk limit holds on this container.
+    limit: crate::DiskLimit,
+    /// The task's built image (never a checkpoint), for the probe that
+    /// reads the daemon's own disk ([`disk::host_df`]).
+    base_image: String,
+    /// The runtime it runs under, for the same probe.
+    runtime: Option<String>,
+}
+
+impl DockerSandbox {
+    fn new(cli: Cli, name: String, limit: crate::DiskLimit) -> Self {
+        Self {
+            cli,
+            name,
+            limit,
+            base_image: String::new(),
+            runtime: None,
+        }
+    }
+    /// The task's built image and the runtime of `spec`: its `base_image`
+    /// when it starts from a checkpoint, else its own image.
+    fn with_spec(mut self, spec: &SandboxSpec) -> Self {
+        self.base_image = spec
+            .base_image
+            .clone()
+            .unwrap_or_else(|| spec.image.reference.clone());
+        self.runtime = spec.runtime.clone();
+        self
+    }
 }
 
 impl std::fmt::Debug for DockerSandbox {
@@ -331,6 +361,43 @@ impl Sandbox for DockerSandbox {
 
     fn backend(&self) -> &str {
         &self.cli.name
+    }
+
+    fn disk_limit(&self) -> crate::DiskLimit {
+        self.limit.clone()
+    }
+
+    async fn watch_layer(
+        &self,
+        limit_mb: u64,
+        watched: crate::disk::Watched,
+    ) -> Option<(crate::LayerWatch, crate::disk::StartState)> {
+        Some(disk::watch(&self.cli, &self.name, limit_mb, crate::disk::PACE, watched).await)
+    }
+
+    async fn host_df(&self) -> Option<crate::disk::DfRow> {
+        disk::host_df(
+            &self.cli,
+            &self.base_image,
+            self.runtime.as_deref(),
+            &self.name,
+            disk::HOST_DF_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn layer_bytes(&self) -> Option<u64> {
+        disk::layer_bytes(&self.cli, &self.name, Duration::from_secs(60))
+            .await
+            .ok()
+    }
+
+    fn own_cgroup(&self) -> bool {
+        true
+    }
+
+    async fn processes(&self) -> Result<(u64, u64), SandboxError> {
+        disk::processes(&self.cli, &self.name).await
     }
 
     async fn exec(&self, exec: Exec) -> Result<ExecOutput, SandboxError> {

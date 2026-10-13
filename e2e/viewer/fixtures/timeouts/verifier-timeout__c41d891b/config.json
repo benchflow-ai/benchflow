@@ -1,0 +1,35 @@
+{
+  "task_path": "tasks/verifier-timeout",
+  "task_id": "examples/verifier-timeout",
+  "task_format": "task-md",
+  "agent": "oracle",
+  "model": null,
+  "reasoning_effort": null,
+  "agent_options": {},
+  "resume_sessions": false,
+  "skills": null,
+  "load_trajectory": null,
+  "environment": "daytona",
+  "sandbox_user": "agent",
+  "workdir": "/app",
+  "timeout_sec": 60.0,
+  "agent_idle_timeout_sec": 600,
+  "agent_env_keys": [],
+  "pids_limit": 4096,
+  "started_at": "2026-10-11 20:18:09.251228",
+  "task_config": {
+    "name": "examples/verifier-timeout",
+    "title": "The verifier runs past its timeout",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "1m"
+    },
+    "verifier": {
+      "timeout": "5s"
+    }
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0"
+  }
+}

@@ -30,12 +30,15 @@ mod build_log;
 mod capture;
 pub mod checkpoint;
 pub mod daytona;
+pub mod disk;
 pub mod docker;
 pub mod owner;
 pub mod redact;
 pub mod services;
 pub mod shell;
 mod transfer;
+
+pub use disk::{DiskLimit, LayerUsage, LayerWatch, WatchReport};
 
 /// Removals started in the background for sandboxes whose operation was
 /// cancelled midway (a stopped run dropped it), so the run can wait for
@@ -292,6 +295,55 @@ pub trait Sandbox: Send + Sync {
     /// Stop the sandbox and delete it.
     async fn destroy(&self) -> Result<(), SandboxError>;
 
+    /// How the task's disk limit ([`SandboxSpec::disk_mb`]) holds on this
+    /// sandbox.
+    fn disk_limit(&self) -> DiskLimit {
+        DiskLimit::None
+    }
+
+    /// Start watching the sandbox's writable layer against `limit_mb`, from
+    /// outside the sandbox, for one turn of the agent ([`LayerWatch`]): what
+    /// `watched` says. `None` when the backend cannot measure it.
+    async fn watch_layer(
+        &self,
+        limit_mb: u64,
+        watched: disk::Watched,
+    ) -> Option<(LayerWatch, disk::StartState)> {
+        let _ = (limit_mb, watched);
+        None
+    }
+
+    /// The disk the backend keeps its sandboxes on (not this sandbox's own
+    /// cap), blocks and inodes, as a hardened throwaway sandbox of the
+    /// task's own image sees it, never one the agent wrote. `None` when the
+    /// backend cannot tell.
+    async fn host_df(&self) -> Option<disk::DfRow> {
+        None
+    }
+
+    /// The bytes of the sandbox's writable layer as the backend measures
+    /// it now, from outside (60 s at most). `None` when it cannot.
+    async fn layer_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    /// Whether the sandbox's cgroup files (`/sys/fs/cgroup`, read inside)
+    /// are its own: a container in a cgroup namespace of its own, whose
+    /// counters (`memory.events`) count this sandbox's processes against
+    /// this sandbox's limits. A backend that cannot say answers no.
+    fn own_cgroup(&self) -> bool {
+        false
+    }
+
+    /// The sandbox's process count and its own process limit, as the
+    /// backend sees them from outside (`docker stats`, `docker inspect`).
+    async fn processes(&self) -> Result<(u64, u64), SandboxError> {
+        Err(SandboxError::Unsupported(format!(
+            "the {} backend cannot count a sandbox's processes",
+            self.backend()
+        )))
+    }
+
     /// What the backend itself says about this sandbox (`docker inspect`
     /// and `docker events`, Daytona's API), never a program inside the
     /// sandbox, which the agent may have replaced. A sandbox the backend
@@ -442,6 +494,16 @@ pub struct SandboxSpec {
     /// the backend's default. Backends with no choice of runtime refuse it.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// A branch child's: how the task's disk limit held on its parent's
+    /// sandbox, decided before the parent's agent ran. The child keeps it
+    /// rather than read its own `df`, which the parent's agent could have
+    /// replaced.
+    #[serde(default)]
+    pub disk_limit_from_parent: Option<DiskLimit>,
+    /// The task's built image when `image` is a checkpoint: what a probe of
+    /// the backend's own disk runs.
+    #[serde(default)]
+    pub base_image: Option<String>,
 }
 
 impl std::fmt::Debug for SandboxSpec {
@@ -459,6 +521,8 @@ impl std::fmt::Debug for SandboxSpec {
             .field("workdir", &self.workdir)
             .field("labels", &self.labels)
             .field("runtime", &self.runtime)
+            .field("disk_limit_from_parent", &self.disk_limit_from_parent)
+            .field("base_image", &self.base_image)
             .finish()
     }
 }
@@ -731,6 +795,8 @@ mod debug_tests {
             workdir: None,
             labels: BTreeMap::new(),
             runtime: None,
+            disk_limit_from_parent: None,
+            base_image: None,
         };
         let shown = format!("{spec:?}");
         assert!(

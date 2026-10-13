@@ -4,12 +4,16 @@
 
 | Page | What it shows |
 |---|---|
-| `/` | The run list (0.8's page), and each trial's trajectory, verifier output, and files |
+| `/` | The run list (0.8's page), and each trial's trajectory, verifier output, files, and defense record |
 | `/compare` | Tasks by job, each job's pass rate with its 95% Wilson interval, and paired differences over the tasks both jobs ran, with a 95% t-interval (none from fewer than 3 shared tasks or when every task differs by the same amount, and never past the range rewards allow, as in `bench results`). A job, or an agent and model in it, with trials stopped or planned but never run (a drained run) shows how many never ran by its name and its rate as partial, with no interval, as `bench results` does |
 | `/outcomes` | How each job's trials ended (passed, failed, unscored, errored), how many it planned that never ran, the problems behind them by code and owner, and the median and 90th percentile of each phase's time |
 | `/pareto` | Pass rate against cost per trial, against time, and against tokens per trial, with the jobs no other job beats on each |
 
-Each page keeps its jobs and filters in the URL (`/pareto?runs=jobs/a,jobs/b&agent=codex`; a job is named as from the folder `bench view` was started in, or by its name under the folder served, so `bench view jobs` takes `runs=a,b` too), so a link reproduces the view, and `/api/<page>` answers the same query as JSON. With two or more jobs, `bench view` opens on `/compare`.
+Each page keeps its jobs and filters in the URL (`/pareto?runs=jobs/a,jobs/b&agent=codex`; a job is named as from the folder `bench view` was started in, or by its name under the folder served, so `bench view jobs` takes `runs=a,b` too), so a link reproduces the view, and `/api/<page>` answers the same query as JSON. With two or more jobs, `bench view` opens on `/compare`. On the run list page, with a trial open, the navigation's "runs" link keeps the run list's own filter, grouping and sort, so it returns to the list the trial was opened from; with no trial open it is the whole list. A job whose only trials are `bench branch` parents discarded at their checkpoint has nothing on `/compare`, `/outcomes` or `/pareto`, which leave those parents out as `bench results` does; when the URL names such a job, the page says so and links to `/branches`, where its forks are.
+
+## A trial's defense record
+
+A trial run by this `bench` records each defense the engine applied around the agent, in `result.json`'s `defenses`: the agent user, the network policy and the refusal of the cloud metadata endpoints (`cloud_metadata`), the verifier's clean environment, the limits, and the others. A line in the trial's header, under its stats, counts the rows by state (`enforced`, `failed`, `off`, `not-supported`) and opens to every row with its state and the engine's note on why; it starts open when a defense failed. A row is shown as written, so a defense or a state this viewer does not know still shows. A record can lack the `network_policy` or `cloud_metadata` row: one written before the cloud metadata refusal, a trial that stopped before its agent's network was set up, a trial whose agent network step failed (which records only the failed row), or a regrade, whose record covers only the verifier. The line then shows each missing row as `not recorded` and counts it, so such a record does not read as an all-clear. A `bench branch` child's page shows the record of the sandbox that graded it, from the child's own `result.json`. A trial from BenchFlow 0.8, or one whose record is empty, has no line.
 
 ## The Pareto view
 
@@ -30,4 +34,7 @@ The viewer never estimates a cost from tokens: BenchFlow keeps no price table, s
 - `crates/benchflow-viewer/src/server.rs`: the routes, host checks, and streaming.
 - `crates/benchflow-viewer/src/views.rs`: what `/compare`, `/outcomes`, and `/pareto` compute.
 - `crates/benchflow-viewer/assets/views.js` and `views.css`: how those three pages draw.
+- `crates/benchflow-viewer/assets/additions.js`: what the run page adds to 0.8's: the defense record and the "runs" link's filter. 0.8's own scripts are embedded unchanged.
 - `crates/benchflow-viewer/tests/views.rs`: the router tests, over a Rust job beside a 0.8 job.
+
+The browser tests in `e2e/viewer/` start `bench view` on the stored jobs in `e2e/jobs/` and the fixture jobs in `e2e/viewer/fixtures/`, and check every page in Chromium with [e2e](https://github.com/tester-army/e2e), a test runner built on Playwright. To run them, build `bench` (`cargo build -p benchflow-cli`), then run `npm ci` and `npm test` in `e2e/viewer` (`BENCH=<path to bench>` tests another build). Every step is a locator, so no model or key is needed; the `rust` workflow runs the same suite (`npm run test:ci`). A second config, `e2e.single.config.ts`, serves one trial folder alone, from a fixture edited to hold a failed defense; `npm test` and `npm run test:ci` run it after the main suite. The scripts and the configs turn e2e's telemetry off.

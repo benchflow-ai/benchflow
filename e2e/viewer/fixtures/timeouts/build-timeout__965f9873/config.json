@@ -1,0 +1,38 @@
+{
+  "task_path": "tasks/build-timeout",
+  "task_id": "examples/build-timeout",
+  "task_format": "task-md",
+  "agent": "oracle",
+  "model": null,
+  "reasoning_effort": null,
+  "agent_options": {},
+  "resume_sessions": false,
+  "skills": null,
+  "load_trajectory": null,
+  "environment": "daytona",
+  "sandbox_user": "agent",
+  "workdir": "/app",
+  "timeout_sec": 60.0,
+  "agent_idle_timeout_sec": 600,
+  "agent_env_keys": [],
+  "pids_limit": 4096,
+  "started_at": "2026-10-11 20:18:09.251053",
+  "task_config": {
+    "name": "examples/build-timeout",
+    "title": "The image build runs past its timeout",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "1m"
+    },
+    "sandbox": {
+      "build_timeout": "15s"
+    },
+    "verifier": {
+      "timeout": "1m"
+    }
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0"
+  }
+}

@@ -1,0 +1,3 @@
+[
+  "Write `done` to `/app/done.txt`. (The reference solution is too slow on purpose: it outlives the agent's 10-second budget.)\n"
+]

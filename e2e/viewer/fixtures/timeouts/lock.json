@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "job_name": "timeouts",
+  "created_at": "2026-10-11T20:18:09.220073-07:00",
+  "bench": {
+    "version": "0.8.1-dev.0",
+    "long_version": "0.8.1-dev.0 (416c35f48 2026-10-11)",
+    "commit": "416c35f48",
+    "commit_date": "2026-10-11"
+  },
+  "fingerprint": "f96850ea3abdce08",
+  "dataset": null,
+  "source": {
+    "targets": [
+      "tasks/agent-timeout",
+      "tasks/verifier-timeout",
+      "tasks/build-timeout",
+      "tasks/broken-image"
+    ],
+    "path": "tasks/agent-timeout",
+    "remote": []
+  },
+  "options": {
+    "sandbox": "daytona",
+    "sandbox_user": "agent",
+    "trials_per_task": 1,
+    "concurrency": 4,
+    "agent_timeout_multiplier": 1.0,
+    "verifier_timeout_multiplier": 1.0,
+    "build_timeout_multiplier": 1.0,
+    "default_agent_timeout_sec": null,
+    "default_verifier_timeout_sec": 600.0,
+    "idle_timeout_sec": 600.0,
+    "pids_limit": 4096,
+    "agent_env_keys": [],
+    "extra_instruction": null,
+    "keep": "never",
+    "save_outputs": false,
+    "retries": 1,
+    "rerun": []
+  },
+  "trials": [
+    {
+      "trial": "agent-timeout__83869aca",
+      "task": {
+        "id": "examples/agent-timeout",
+        "name": "agent-timeout",
+        "path": "tasks/agent-timeout",
+        "digest": "sha256:4343d11c9c1a89e9acb7d0782452c3d75c715b1ecd2ec68db0e29bf994d71736",
+        "registry_digest": null,
+        "inputs_digest": "sha256:ac9b0aede43f2f7c3d02282d6d3989725289aef9cf1308fc4a4203bd02c06aaa",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "oracle",
+        "model": null,
+        "kind": "oracle",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/agent-timeout/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    },
+    {
+      "trial": "broken-image__d075e6d5",
+      "task": {
+        "id": "examples/broken-image",
+        "name": "broken-image",
+        "path": "tasks/broken-image",
+        "digest": "sha256:46baed22ad1b4cf97e2751a36eedfb21d47186691702a8f1ad1d9405971263ca",
+        "registry_digest": null,
+        "inputs_digest": "sha256:cc6302f80e32baef052243aecd4387a83258b7cd530822caf9a81284838f7e52",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "oracle",
+        "model": null,
+        "kind": "oracle",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/broken-image/sandbox/Dockerfile",
+        "digest": "122b80310f7d73d3247b8726d03dac671f77bba4c2714590e84576bbdabb638e"
+      },
+      "sandbox": "daytona"
+    },
+    {
+      "trial": "build-timeout__965f9873",
+      "task": {
+        "id": "examples/build-timeout",
+        "name": "build-timeout",
+        "path": "tasks/build-timeout",
+        "digest": "sha256:02352d3f61ad06b7d3bd5f96b10279301294a1e12a5355f787cd5f17ae557a6a",
+        "registry_digest": null,
+        "inputs_digest": "sha256:a382ffb0477f39b7fd81dbf1e9634385a5b25a6eb09491c7527e86829ce18889",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "oracle",
+        "model": null,
+        "kind": "oracle",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/build-timeout/sandbox/Dockerfile",
+        "digest": "37b70b592398019bb3925ef7ad22e82e04c276c41add24177b08f97a1d7818f2"
+      },
+      "sandbox": "daytona"
+    },
+    {
+      "trial": "verifier-timeout__c41d891b",
+      "task": {
+        "id": "examples/verifier-timeout",
+        "name": "verifier-timeout",
+        "path": "tasks/verifier-timeout",
+        "digest": "sha256:01f6108bfb0c4b7b3c62dd1c7870dadbb3ec1813ef0590dbc05e8ae73cd5671b",
+        "registry_digest": null,
+        "inputs_digest": "sha256:94cef023aa14ff7e46cf8f70e4595906d674bcdec02a7605ee8a7485cef6fad3",
+        "format": "task-md"
+      },
+      "attempt": {
+        "agent": "oracle",
+        "model": null,
+        "kind": "oracle",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/verifier-timeout/sandbox/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    }
+  ]
+}

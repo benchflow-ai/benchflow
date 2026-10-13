@@ -286,9 +286,39 @@ BF.views = (() => {
     if (unknown.length) {
       body.appendChild(el("div", "vwarn", "Not found here: " + unknown.join(", ") + ". The jobs on offer are in the jobs menu."));
     }
+    // Served jobs whose only trials here are branch parents discarded at
+    // their checkpoint: one neutral note for all of them (this is by design,
+    // not a warning), linking to their forks on /branches.
+    const setAside = setAsideJobs();
+    if (setAside.length) {
+      const many = setAside.length > 1;
+      const note = el(
+        "div",
+        "vaside",
+        setAside.map((job) => job.name).join(", ") + (many ? " have" : " has")
+          + " no trial here but branch parents discarded at their checkpoint, which this page leaves out; "
+          + (many ? "their" : "its") + " forks are on ",
+      );
+      const link = el("a", null, "branches");
+      link.href = "/branches?runs=" + setAside.map((job) => encodeId(job.id)).join(",");
+      note.append(link, ".");
+      body.appendChild(note);
+    }
     if (data.capped) {
       body.appendChild(el("div", "vwarn", "Only the first trials were read (raise BENCHFLOW_VIEWER_MAX_RUNS to read more)."));
     }
+  }
+
+  function setAsideJobs() {
+    return (Array.isArray(data.set_aside) ? data.set_aside : [])
+      .filter((job) => isRecord(job) && typeof job.id === "string" && typeof job.name === "string");
+  }
+
+  // "No trials match.", unless the query named only jobs set aside (and
+  // unknown ones): the note above already says why there is nothing.
+  function noTrials(body) {
+    if (setAsideJobs().length && !selectedJobs().length) return;
+    body.appendChild(el("div", "vempty", "No trials match."));
   }
 
   function countText(count, total) {
@@ -305,7 +335,7 @@ BF.views = (() => {
     const rows = Array.isArray(data.rows) ? data.rows : [];
     const pairs = Array.isArray(data.pairs) ? data.pairs : [];
     if (!columns.length || !rows.length) {
-      body.appendChild(el("div", "vempty", "No trials match."));
+      noTrials(body);
       return;
     }
 
@@ -437,7 +467,7 @@ BF.views = (() => {
     const owners = Array.isArray(data.owners) ? data.owners : [];
     const timing = Array.isArray(data.timing) ? data.timing : [];
     if (!summary.some((job) => job.trials > 0)) {
-      body.appendChild(el("div", "vempty", "No trials match."));
+      noTrials(body);
       return;
     }
 
@@ -471,7 +501,7 @@ BF.views = (() => {
     const byOwner = section(
       "Problems by owner",
       problems.length
-        ? "Who should act, from each trial's problem. 0.8 trials record an error and its category but no owner."
+        ? "Who should act, from each trial's problem. Trials from BenchFlow 0.8 record an error and its category but no owner."
         : "No trial recorded a problem.",
     );
     if (owners.length) {
@@ -488,7 +518,7 @@ BF.views = (() => {
     if (problems.length) {
       const byCode = section(
         "Problems by code",
-        "Grouped by code and owner. For 0.8 trials the code is the error's category (error_category or verifier_error_category, or the viewer's classification of the text). "
+        "Grouped by code and owner. For trials from BenchFlow 0.8 the code is the error's category (error_category or verifier_error_category, or the viewer's classification of the text). "
           + "The message and next step shown are the most common in the group.",
       );
       const codeTable = table(["code", "owner", "recorded in", "message", "next step", numTh("trials"), "by job", "trials"]);
@@ -672,7 +702,7 @@ BF.views = (() => {
   function renderPareto(body) {
     const points = Array.isArray(data.points) ? data.points.filter((point) => point.trials > 0) : [];
     if (!points.length) {
-      body.appendChild(el("div", "vempty", "No trials match."));
+      noTrials(body);
       return;
     }
     if (data.same_tasks === false) {

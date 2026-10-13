@@ -41,6 +41,13 @@ pub(crate) struct KeyIssue {
     pub is_table: bool,
 }
 
+/// The first spelling of bench's cloud metadata opt-out, in `[environment]`
+/// (a BenchFlow 0.8 task.md's `sandbox`). No release read it; it moved to
+/// `[metadata] x-allow-cloud-metadata`, which 0.8 loads. A task written
+/// against the old spelling is told the new place, not only that the key is
+/// unknown (F1-B-r2 L2); it still opts nothing out.
+const STALE_OPT_OUT: &str = "allow_cloud_metadata";
+
 /// Every key in `config` that the dialect's readers would not honor.
 pub(crate) fn unknown_keys(config: &Value, dialect: Dialect) -> Vec<KeyIssue> {
     let mut out = Vec::new();
@@ -107,8 +114,15 @@ fn issue(
     value: &Value,
 ) -> KeyIssue {
     let holds = schema::names(fields, dialect);
-    let suggestion = did_you_mean(key, holds.iter().copied());
-    let close = suggestion.as_deref().is_some_and(|s| ratio(key, s) >= 0.8);
+    let stale_opt_out = key == STALE_OPT_OUT && matches!(table, "environment" | "sandbox");
+    let suggestion = if stale_opt_out {
+        Some(format!("[metadata] {}", crate::convert::METADATA_OPT_OUT))
+    } else {
+        did_you_mean(key, holds.iter().copied())
+    };
+    // The opt-out moves to another table, so it is never offered as a
+    // rename in place.
+    let close = !stale_opt_out && suggestion.as_deref().is_some_and(|s| ratio(key, s) >= 0.8);
     let homes = rank_homes(
         schema::homes(key, dialect)
             .into_iter()
@@ -233,6 +247,34 @@ mod tests {
             Problem::Misplaced { .. }
         ));
         assert_eq!(issues.len(), 4);
+    }
+
+    /// F1-B-r2 L2: the opt-out's first spelling names its new place, in
+    /// both dialects, and is never offered as a rename in place.
+    #[test]
+    fn the_stale_opt_out_names_its_new_place() {
+        let place = Some("[metadata] x-allow-cloud-metadata");
+        for (cfg, dialect) in [
+            (
+                json!({"environment": {"allow_cloud_metadata": true}}),
+                Dialect::TaskToml,
+            ),
+            (
+                json!({"sandbox": {"allow_cloud_metadata": true}}),
+                Dialect::Frontmatter,
+            ),
+        ] {
+            let issues = unknown_keys(&cfg, dialect);
+            assert_eq!(issues.len(), 1, "{issues:?}");
+            assert_eq!(issues[0].problem, Problem::Unknown);
+            assert_eq!(issues[0].suggestion.as_deref(), place);
+            assert!(!issues[0].close);
+        }
+        let issues = unknown_keys(
+            &json!({"agent": {"allow_cloud_metadata": true}}),
+            Dialect::TaskToml,
+        );
+        assert_ne!(issues[0].suggestion.as_deref(), place);
     }
 
     #[test]

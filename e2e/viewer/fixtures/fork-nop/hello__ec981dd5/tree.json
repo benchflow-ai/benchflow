@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "kind": "benchflow-branch-tree",
+  "nodes": [
+    {
+      "id": "root",
+      "parent": null,
+      "step_id": null
+    },
+    {
+      "id": "n1",
+      "parent": "root",
+      "step_id": null
+    },
+    {
+      "id": "n2",
+      "parent": "root",
+      "step_id": null
+    }
+  ],
+  "forks": [
+    {
+      "id": "8b9d7724a324483c9b5f767f1b2e7155",
+      "rollout": "hello__ec981dd5",
+      "parent_node": "root",
+      "fork_point": "start",
+      "requested_children": 2,
+      "snapshot": {
+        "requested_layers": [
+          "sandbox"
+        ],
+        "captured_layers": [
+          "sandbox"
+        ],
+        "environment": null,
+        "sandbox": {
+          "provider": "daytona",
+          "ref": "bf-ckpt-e2e-e7-dt1-13-839bfa-963a75-40070-27fa38f91e9c",
+          "digest": null,
+          "size_bytes": 82105769
+        },
+        "excluded": [
+          "agent_session",
+          "process_memory",
+          "mounted_contents",
+          "external_services",
+          "physical_state"
+        ],
+        "agent_session": "fresh",
+        "login_files_removed": 0,
+        "login_files_left": [],
+        "lifetime": "provider_local",
+        "restore_available": false,
+        "retention": "deleted",
+        "lossy": false,
+        "killed": []
+      },
+      "status": "completed",
+      "parent_restore": "skipped",
+      "children_mode": {
+        "isolated": true,
+        "concurrency": 4
+      },
+      "timing_sec": {
+        "checkpoint": 8.575,
+        "child_restore": [
+          3.003,
+          3.085
+        ],
+        "children": 58.794,
+        "parent_restore": null
+      },
+      "value": 0.0,
+      "value_stderr": 0.0,
+      "cost": {
+        "tokens": 0,
+        "usd": null,
+        "usd_known": false,
+        "wall_seconds": 58.794,
+        "parent_sandbox_seconds": 27.265,
+        "children_sandbox_seconds": 42.708,
+        "sandbox_seconds": 69.973
+      },
+      "value_scored": 0.0,
+      "scored": 2,
+      "parent_reward": null,
+      "error": null,
+      "parent_restore_error": null,
+      "artifact_error": null,
+      "children": [
+        {
+          "index": 0,
+          "node_id": "n1",
+          "status": "scored",
+          "reward": 0.0,
+          "reward_source": "verifier",
+          "error": null,
+          "cleanup_error": null,
+          "intervention": {
+            "label": "c1",
+            "requested": "parent's remaining prompts (1)",
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/8b9d7724a324483c9b5f767f1b2e7155/children/n1"
+          },
+          "attempts": 1,
+          "retried_after": null,
+          "usage": {
+            "n_input_tokens": 0,
+            "n_output_tokens": 0,
+            "n_cache_read_tokens": 0,
+            "n_cache_creation_tokens": 0,
+            "total_tokens": 0
+          },
+          "timing_sec": {
+            "agent_setup": 9.747,
+            "agent_execution": 0.008,
+            "verifier": 10.606
+          },
+          "cost": {
+            "tokens": 0,
+            "usd": null,
+            "usd_known": false,
+            "sandbox_seconds": 20.551
+          },
+          "snapshot_start": {
+            "seconds": 3.003
+          }
+        },
+        {
+          "index": 1,
+          "node_id": "n2",
+          "status": "scored",
+          "reward": 0.0,
+          "reward_source": "verifier",
+          "error": null,
+          "cleanup_error": null,
+          "intervention": {
+            "label": "c2",
+            "requested": "parent's remaining prompts (1)",
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/8b9d7724a324483c9b5f767f1b2e7155/children/n2"
+          },
+          "attempts": 1,
+          "retried_after": null,
+          "usage": {
+            "n_input_tokens": 0,
+            "n_output_tokens": 0,
+            "n_cache_read_tokens": 0,
+            "n_cache_creation_tokens": 0,
+            "total_tokens": 0
+          },
+          "timing_sec": {
+            "agent_setup": 9.586,
+            "agent_execution": 0.005,
+            "verifier": 12.361
+          },
+          "cost": {
+            "tokens": 0,
+            "usd": null,
+            "usd_known": false,
+            "sandbox_seconds": 22.157
+          },
+          "snapshot_start": {
+            "seconds": 3.085
+          }
+        }
+      ]
+    }
+  ]
+}

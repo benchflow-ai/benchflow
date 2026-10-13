@@ -39,6 +39,20 @@ struct Setup {
     load_session: bool,
     /// The agent's session folders are not empty after the handoff.
     sessions_kept: bool,
+    /// How the copy of the session archive out of the sandbox behaves.
+    copy: SessionCopy,
+}
+
+/// The copy of the session archive (review F2-A-r67 P1: a root agent's
+/// leftover process can swap the archive for a huge sparse file, or make
+/// the copy never end).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SessionCopy {
+    Normal,
+    /// The archive is far past any session's size.
+    Huge,
+    /// The copy never ends.
+    Endless,
 }
 
 #[derive(Default)]
@@ -94,7 +108,10 @@ impl Sandbox for FakeSandbox {
             }
         } else if c.contains("useradd") {
             ok("BF user agent 1000 /home/agent\n")
-        } else if c.contains("baseline") && c.contains("files.tar") && !c.contains("after") {
+        } else if c.contains("baseline")
+            && c.contains("files.tar")
+            && !c.contains("BF handoff done")
+        {
             // Each stage retakes the test-runner baseline.
             ok("BF baseline 2\n")
         } else if c.contains("kill -9 -1") {
@@ -148,6 +165,17 @@ impl Sandbox for FakeSandbox {
             // Every stage passes, so the gate lets the second one run.
             std::fs::create_dir_all(local).unwrap();
             std::fs::write(local.join("reward.txt"), "1\n").unwrap();
+        } else if remote.ends_with("sessions.tar") && self.setup.copy != SessionCopy::Normal {
+            // Copied without a cap: it writes on and on (here, 4 MB of it).
+            self.world
+                .lock()
+                .unwrap()
+                .log
+                .push("uncapped session copy".into());
+            if self.setup.copy == SessionCopy::Endless {
+                std::future::pending::<()>().await;
+            }
+            std::fs::write(local, vec![0u8; 4 << 20]).unwrap();
         } else if remote.ends_with("sessions.tar") {
             // The agent's session folder, with a login file beside the
             // session that must never be saved.
@@ -171,6 +199,28 @@ impl Sandbox for FakeSandbox {
             b.finish().unwrap();
         }
         Ok(())
+    }
+    async fn download_capped(
+        &self,
+        remote: &str,
+        local: &Path,
+        max_bytes: u64,
+    ) -> Result<(), SandboxError> {
+        match self.setup.copy {
+            SessionCopy::Huge if remote.ends_with("sessions.tar") => {
+                // Stopped at the cap, part of it written.
+                std::fs::write(local, vec![0u8; 1 << 20]).unwrap();
+                Err(SandboxError::Content(format!(
+                    "copying {remote} out of the sandbox would pass its cap of {max_bytes} bytes"
+                )))
+            }
+            SessionCopy::Endless if remote.ends_with("sessions.tar") => {
+                std::fs::write(local, vec![0u8; 1 << 20]).unwrap();
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            _ => self.download(remote, local).await,
+        }
     }
     async fn destroy(&self) -> Result<(), SandboxError> {
         Ok(())
@@ -449,6 +499,7 @@ async fn the_second_stage_loads_the_first_stages_acp_session() {
         Setup {
             load_session: true,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         true,
     )
@@ -492,6 +543,7 @@ async fn the_agents_session_is_saved_into_the_trial_without_its_login_files() {
         Setup {
             load_session: true,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         true,
     )
@@ -538,6 +590,7 @@ async fn the_agents_processes_are_killed_before_root_packs_its_session() {
         Setup {
             load_session: true,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         true,
     )
@@ -569,6 +622,7 @@ async fn without_the_option_every_stage_starts_fresh() {
         Setup {
             load_session: true,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         false,
     )
@@ -588,6 +642,7 @@ async fn an_agent_without_session_load_starts_fresh_and_says_so() {
         Setup {
             load_session: false,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         true,
     )
@@ -612,6 +667,7 @@ async fn empty_session_folders_start_a_fresh_session() {
         Setup {
             load_session: true,
             sessions_kept: false,
+            copy: SessionCopy::Normal,
         },
         true,
     )
@@ -649,6 +705,7 @@ async fn headless_stages_resume_with_the_clis_flag_and_options_reach_it() {
         Setup {
             load_session: false,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         true,
     )
@@ -723,6 +780,7 @@ async fn an_agent_that_cannot_resume_runs_each_stage_fresh_and_the_record_says_s
         Setup {
             load_session: true,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         true,
     )
@@ -755,6 +813,7 @@ async fn a_later_stages_readiness_check_gets_the_trusted_path() {
         Setup {
             load_session: true,
             sessions_kept: true,
+            copy: SessionCopy::Normal,
         },
         false,
         |task| {
@@ -771,4 +830,40 @@ async fn a_later_stages_readiness_check_gets_the_trusted_path() {
     assert!(command.starts_with("unset LD_PRELOAD"), "{command}");
     assert!(command.ends_with("fake-ready-check second"), "{command}");
     assert_eq!(path.as_deref(), Some("/usr/bin:/bin"));
+}
+
+/// Review F2-A-r67 P1: the session archive is copied out under a byte cap
+/// and a deadline. One past the cap, or one that never ends, is not saved:
+/// no partial archive stays in the trial folder, and the trial goes on.
+#[tokio::test(start_paused = true)]
+async fn a_session_copy_past_its_cap_or_without_end_is_dropped() {
+    for copy in [SessionCopy::Huge, SessionCopy::Endless] {
+        let r = tokio::time::timeout(
+            Duration::from_secs(3600),
+            run(
+                acp_agent(),
+                Setup {
+                    load_session: true,
+                    sessions_kept: true,
+                    copy,
+                },
+                true,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{copy:?}: the trial never ended"));
+        assert_eq!(
+            r.rec.status,
+            Status::Scored,
+            "{copy:?}: {:?}",
+            r.rec.problem
+        );
+        let w = r.world.lock().unwrap();
+        assert!(
+            !w.log.iter().any(|c| c == "uncapped session copy"),
+            "{copy:?}: the session was copied without a cap"
+        );
+        assert!(!r.dir.join("agent/sessions.tar").exists(), "{copy:?}");
+        assert!(!r.dir.join("agent/sessions").exists(), "{copy:?}");
+    }
 }

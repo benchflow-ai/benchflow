@@ -39,6 +39,8 @@ mod agent_files;
 pub mod branch;
 #[path = "collect.rs"]
 mod collect;
+#[path = "exhaust.rs"]
+mod exhaust;
 #[path = "services.rs"]
 mod services;
 #[path = "stages.rs"]
@@ -262,6 +264,12 @@ async fn run_trial(
         agent_session: None,
         resources_raised: None,
         killed_before_save: 0,
+        layer_watch: None,
+        watch_ended: false,
+        disk_seen: Default::default(),
+        memory_before: None,
+        turn_kill_failed: None,
+        base_image: None,
         fork,
     };
     // A bug that panics ends this trial, not the run: it is recorded (R901)
@@ -304,9 +312,24 @@ async fn run_trial(
             "please report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder",
         ))
     });
+    // The disk limit's watch runs to the end of the trial (grading
+    // included), and a stop or a panic may have cut a turn short: end it
+    // here, before the sandbox goes, so nothing goes on measuring or
+    // stopping the sandbox (a kept one included). A stop it made replaces
+    // the result: the agent's R316, or the sandbox's R110.
+    let result = if t.layer_watch.is_some() {
+        let pending = result.as_ref().err().cloned();
+        match t.end_watch(pending.as_ref()).await {
+            Some(p) => Err(p),
+            None => result,
+        }
+    } else {
+        result
+    };
     let result = match result {
         Err(p) => {
             let p = t.sandbox_lost_instead(p).await;
+            let p = t.exhausted_instead(p).await;
             Err(t.lost_again(p).await)
         }
         ok => ok,
@@ -374,6 +397,15 @@ async fn run_trial(
             rec.passed = Some(passed);
             rec.rubric = score.rubric;
             passed_for_keep = passed;
+        }
+        // The agent exhausted its own sandbox (decision 21): a 0, kept on
+        // resume and counted in every score.
+        Err(p) if p.code == exhaust::EXHAUSTED && p.owner == Owner::Agent => {
+            rec.status = Status::Scored;
+            rec.rewards = Some(BTreeMap::from([("reward".to_string(), 0.0)]));
+            rec.reward = Some(0.0);
+            rec.passed = Some(false);
+            rec.problem = Some(p);
         }
         Err(p) if p.code == "R000" || p.code == "R001" => {
             if p.code == "R001" && rec.tool_calls == 0 {
@@ -663,6 +695,20 @@ struct Trial<'a> {
     resources_raised: Option<crate::record::ResourcesRaised>,
     /// The trial's part in a fork (`bench branch`).
     fork: Option<branch::Role>,
+    /// The disk limit's watch, from the agent's first turn to the end of
+    /// the trial.
+    layer_watch: Option<benchflow_sandbox::LayerWatch>,
+    /// The watch was ended: no other starts.
+    watch_ended: bool,
+    /// The kill at the end of the agent's turn failed: why.
+    turn_kill_failed: Option<String>,
+    /// The task's built image the agent's sandbox started from (a branch
+    /// child's: its parent's), for the probe of the daemon's disk.
+    base_image: Option<String>,
+    /// What the disk limit's watch could not see, over the agent's turns.
+    disk_seen: exhaust::DiskSeen,
+    /// The sandbox's own memory counters when the agent's turn began.
+    memory_before: Option<exhaust::Memory>,
 }
 
 impl<'a> Trial<'a> {
@@ -753,11 +799,16 @@ impl<'a> Trial<'a> {
         // Attempt.
         self.enter(Phase::Agent);
         let agent_clock = Instant::now();
-        let mut attempted = self.attempt().await;
+        self.turn_begin().await?;
+        let attempted = self.attempt().await;
+        let mut attempted = self.turn_end(attempted, exhaust::TurnEnd::Stop).await;
+        // A sandbox the disk limit stopped is decided already.
+        let exhausted = matches!(&attempted, Err(p) if p.code == exhaust::DISK_STOP || p.code == exhaust::EXHAUSTED);
         // An agent that exited, went silent, or broke off because its
         // sandbox died did not fail on its own.
         if let Err(p) = &attempted
             && p.owner == Owner::Agent
+            && !exhausted
         {
             // A sandbox lost under the agent (gone, stopped from outside,
             // or stopped for a reason the backend cannot name): the
@@ -767,16 +818,6 @@ impl<'a> Trial<'a> {
                 let what = format!("the agent stopped ({})", p.message);
                 attempted =
                     Err(lost(Phase::Agent, &what, e).detail(p.detail.clone().unwrap_or_default()));
-            } else if let Some(n) = self.oom_kills().await
-                && let Err(p) = &mut attempted
-            {
-                // Killed for memory, not broken: say so, and how to fix it.
-                p.message = format!(
-                    "{} (the sandbox's out-of-memory killer ended {n} process{}: the agent most likely ran out of memory)",
-                    p.message,
-                    if n == 1 { "" } else { "es" }
-                );
-                p.next = "give the trial more memory: the task's `[sandbox] memory`, or the agent's memory floor, then rerun the same command".into();
             }
         }
         // An agent that did nothing or went silent while its model call
@@ -785,6 +826,7 @@ impl<'a> Trial<'a> {
         // provider (E5: each of these was the agent's R206 or R205).
         if let Err(p) = &attempted
             && p.owner == Owner::Agent
+            && !exhausted
             && let Some(provider) =
                 provider_instead(&p.code, &self.spec.dir.join("agent"), agent_clock.elapsed())
         {
@@ -949,6 +991,14 @@ impl<'a> Trial<'a> {
             self.rt.events.log(self.name(), raised_line(&raised));
             self.resources_raised = Some(raised);
         }
+        // A branch child keeps its parent's disk-limit decision and probes
+        // the daemon's disk with its parent's built image.
+        let (disk_limit_from_parent, base_image) = match &self.fork {
+            Some(branch::Role::Child { state, .. }) if host == netpolicy::Host::Agent => {
+                (state.disk_limit.clone(), state.base_image.clone())
+            }
+            _ => (None, None),
+        };
         let task = self.task();
         let spec = SandboxSpec {
             image: image.clone(),
@@ -965,6 +1015,8 @@ impl<'a> Trial<'a> {
             workdir: task.sandbox.workdir.clone().filter(|w| !w.is_empty()),
             labels,
             runtime: self.rt.options.runtime.clone(),
+            disk_limit_from_parent,
+            base_image,
         };
         if let Some(d) = crate::confine::runtime(spec.runtime.as_deref()) {
             self.defenses.insert(d.name.clone(), d);
@@ -1002,7 +1054,17 @@ impl<'a> Trial<'a> {
         let mut attempt = 0;
         loop {
             match self.create_sandbox(&spec).await {
-                Ok(sb) => return Ok(sb),
+                Ok(sb) => {
+                    if host == netpolicy::Host::Agent {
+                        self.record_disk_limit(sb.as_ref(), &caps);
+                        self.base_image = Some(
+                            spec.base_image
+                                .clone()
+                                .unwrap_or_else(|| image.reference.clone()),
+                        );
+                    }
+                    return Ok(sb);
+                }
                 Err(e) if e.is_transient() && attempt < 2 => {
                     attempt += 1;
                     self.rt
@@ -1310,9 +1372,12 @@ impl<'a> Trial<'a> {
                 }),
             );
         }
-        // Snapshot the files that steer test runners.
+        // Snapshot the files that steer test runners, and record the
+        // workdir's virtual environments, whose interpreter links the
+        // handoff re-creates: setup runs before the agent's first turn (a
+        // child's runs `child_setup` and keeps its parent's record).
         let out = self
-            .root(hardening::baseline(), SETUP_TIMEOUT)
+            .root(hardening::baseline(Some(&workdir)), SETUP_TIMEOUT)
             .await
             .map_err(|e| sandbox_problem(Phase::Setup, e))?;
         let baseline_ok = out.success() && Report::parse(&out.stdout).first("baseline").is_some();
@@ -1734,11 +1799,15 @@ impl<'a> Trial<'a> {
             // Each graded stage's handoff kills too: add to the earlier ones'.
             self.custody.killed_processes +=
                 killed.parse::<u64>().unwrap_or(0) + std::mem::take(&mut self.killed_before_save);
+            let mut note = format!("{} processes", self.custody.killed_processes);
+            if let Some(why) = &self.turn_kill_failed {
+                note += &format!("; {why}");
+            }
             defense(
                 &mut self.defenses,
                 "kill_before_grading",
                 DefenseState::Enforced,
-                Some(format!("{} processes", self.custody.killed_processes)),
+                Some(note),
             );
         } else {
             defense(
@@ -1754,11 +1823,7 @@ impl<'a> Trial<'a> {
         // grading. Otherwise (a root agent, one with a way to root, the
         // reference solution run as root) it is noted and grading goes on,
         // as before the check existed.
-        let rootless_agent = self.user != "root"
-            && self
-                .defenses
-                .get("agent_user")
-                .is_some_and(|d| d.state == DefenseState::Enforced);
+        let rootless_agent = self.rootless_agent();
         let root_solution =
             matches!(self.spec.attempt, Attempt::Oracle) && self.task().agent.user.is_none();
         let strict = rootless_agent && !root_solution;
@@ -1822,6 +1887,34 @@ impl<'a> Trial<'a> {
                 .detail(out.combined()));
             }
         }
+        // A planted or changed test-runner file that could not be removed
+        // or put back (a full disk: E6-E-A H2, E6M-B F1): not graded with
+        // it in place. Whether the agent filled the disk is decided with
+        // the sandbox's own evidence (`exhaust`); without it, the
+        // sandbox's.
+        let unrestored = r.all("restore-failed");
+        if last == Some("BF handoff stopped") && !unrestored.is_empty() {
+            defense(
+                &mut self.defenses,
+                "special_file_custody",
+                DefenseState::Failed,
+                Some(format!(
+                    "could not remove or put back: {}",
+                    unrestored.join(", ")
+                )),
+            );
+            return Err(Problem::new(
+                "R305",
+                Owner::Sandbox,
+                Phase::Handoff,
+                format!(
+                    "a test-runner file the agent planted or changed ({}) could not be removed or put back before grading, so the trial was not graded; a full disk is the usual cause",
+                    unrestored.join(", ")
+                ),
+                "look at what filled the sandbox's disk; if it was not the agent, give the task more disk (`[sandbox] disk`)",
+            )
+            .detail(out.combined()));
+        }
         if out.timed_out {
             for name in [
                 "clean_verifier_logs",
@@ -1874,6 +1967,7 @@ impl<'a> Trial<'a> {
         };
         add(&mut self.custody.special_files, r.all("special"));
         add(&mut self.custody.escaping_symlinks, r.all("symlink"));
+        add(&mut self.custody.repaired_links, r.all("repaired"));
         add(&mut self.custody.planted, r.all("planted"));
         add(&mut self.custody.restored, r.all("restored"));
         add(&mut self.custody.tmp_modules, r.all("tmp-module"));
@@ -2158,6 +2252,22 @@ impl<'a> Trial<'a> {
         }
         let judged = self.judge_rubric(&vdir).await?;
         match scoring::score(&task, &vdir, judged.as_ref().map(|(j, m)| (j, m.as_str()))) {
+            // A score that did not pass on a full disk (review F2-C, F-6):
+            // the agent's when it filled its own disk, the sandbox's when
+            // the disk is shown full by what the agent cannot fake.
+            Ok(score) if !score.passed => {
+                match self
+                    .full_disk_instead(&out.combined(), agent_was_here)
+                    .await
+                {
+                    Some(p) => Err(p.detail(format!(
+                        "the verifier scored {} before this: {}",
+                        score.reward,
+                        out.tail(1500)
+                    ))),
+                    None => Ok(score),
+                }
+            }
             Ok(score) => Ok(score),
             Err(mut p) => {
                 // No reward, because the sandbox died under the verifier, is
@@ -2200,20 +2310,6 @@ impl<'a> Trial<'a> {
             "no reward came back from the verifier",
             e,
         ))
-    }
-
-    /// How many processes the out-of-memory killer ended, if any.
-    async fn oom_kills(&self) -> Option<u64> {
-        let out = self
-            .root(hardening::oom_kills(), Duration::from_secs(30))
-            .await
-            .ok()?;
-        let n: u64 = Report::parse(&out.stdout)
-            .all("oom-kill")
-            .iter()
-            .filter_map(|v| v.trim().parse::<u64>().ok())
-            .sum();
-        (n > 0).then_some(n)
     }
 
     /// A copy of the verifier's folder that failed twice, as a problem.
@@ -2354,6 +2450,19 @@ impl<'a> Trial<'a> {
         let Some(sb) = self.sandbox.as_ref() else {
             return p;
         };
+        // BenchFlow stopped it (the disk limit): not a loss, and not code
+        // inside stopping it; but the agent may have filled the layer, and
+        // nothing shows it did, so it counts as an unexplained failure.
+        if p.code == exhaust::EXHAUSTED {
+            return p;
+        }
+        // A sandbox the disk limit stopped, or hardening before grading
+        // that failed (a full disk or process table nothing shows the agent
+        // caused, a stuck process): the sandbox's, run again once; a repeat
+        // is kept as it is, never scored (decision 21, as clarified).
+        if matches!(p.code.as_str(), exhaust::DISK_STOP | "R305") {
+            return self.capped_if_before(p);
+        }
         let presence = sb.presence().await;
         if p.phase == Phase::Agent && matches!(presence, Ok(Presence::Stopped)) {
             let mut own = Problem::new(
@@ -2386,6 +2495,16 @@ impl<'a> Trial<'a> {
         };
         let mut p = p;
         p.loss_confirmed = Some(confirmed);
+        if confirmed {
+            return p;
+        }
+        self.capped_if_before(p)
+    }
+
+    /// `p`, an unexplained failure of the sandbox, capped when an earlier
+    /// attempt of the trial had one too ([`lost_before`]): not run again.
+    fn capped_if_before(&self, mut p: Problem) -> Problem {
+        p.loss_confirmed = Some(false);
         let label = self.spec.attempt.label();
         let model = self.spec.attempt.model();
         let same = Same {
@@ -2393,13 +2512,20 @@ impl<'a> Trial<'a> {
             agent: &label,
             model: model.as_deref(),
         };
-        if confirmed || !lost_before(&self.spec.dir, &same) {
+        if !lost_before(&self.spec.dir, &same) {
             return p;
         }
-        p.message = format!(
-            "{} (an earlier attempt of this trial lost its sandbox the same way, and the backend still has this one, so it is not run again: code inside the sandbox can break it)",
-            p.message
-        );
+        p.message = if p.code == "R103" || p.phase == Phase::Agent && p.code != exhaust::DISK_STOP {
+            format!(
+                "{} (an earlier attempt of this trial lost its sandbox the same way, and the backend still has this one, so it is not run again: code inside the sandbox can break it)",
+                p.message
+            )
+        } else {
+            format!(
+                "{} (an earlier attempt of this trial also failed in a way the backend could not explain, so it is not run again: code inside the sandbox can cause it; it stays the sandbox's error, never a score)",
+                p.message
+            )
+        };
         p.next = "check the backend first (`bench doctor`); if it is healthy, look at what the agent's code and the verifier do to the sandbox; `--rerun errored` runs the trial again".into();
         p.transient = false;
         p.rerun_capped = true;
@@ -2498,8 +2624,12 @@ impl<'a> Trial<'a> {
     /// Run the verifier in a fresh sandbox that holds only the agent's
     /// outputs.
     async fn verify_separate(&mut self) -> Result<scoring::Score, Problem> {
-        // Take custody of the outputs, then retire the agent's sandbox.
+        // Take custody of the outputs, then retire the agent's sandbox,
+        // its disk watch ended first.
         let archive = self.collect_outputs().await?;
+        if let Some(p) = self.end_watch(None).await {
+            return Err(p);
+        }
         if let Some(sb) = self.sandbox.take() {
             if self.rt.options.keep == Keep::Never {
                 if let Err(e) = sb.destroy().await {
@@ -2604,7 +2734,16 @@ impl<'a> Trial<'a> {
     /// Pack the outputs in the sandbox under the custody caps, download the
     /// archive, and unpack it into the trial's `outputs/`. Returns the
     /// archive's path on the host.
+    /// [`Self::collect_outputs_held`], with the disk watch held while the
+    /// archive is in the sandbox, and the archive removed after.
     async fn collect_outputs(&mut self) -> Result<PathBuf, Problem> {
+        self.hold_watch();
+        let r = self.collect_outputs_held().await;
+        self.release_watch(hardening::OUTPUTS_TAR).await;
+        r
+    }
+
+    async fn collect_outputs_held(&mut self) -> Result<PathBuf, Problem> {
         let task = self.spec.task.clone();
         let paths: Vec<String> = output_paths(&task, &self.workdir)
             .into_iter()

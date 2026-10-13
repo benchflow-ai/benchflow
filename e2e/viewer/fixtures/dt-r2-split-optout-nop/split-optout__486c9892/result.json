@@ -1,0 +1,159 @@
+{
+  "task_name": "split-optout",
+  "rollout_name": "split-optout__486c9892",
+  "rewards": {
+    "reward": 0.0
+  },
+  "agent": "nop",
+  "agent_name": "nop",
+  "model": null,
+  "skill_mode": "no-skill",
+  "n_tool_calls": 0,
+  "n_prompts": 1,
+  "agent_result": {
+    "n_tool_calls": 0,
+    "n_prompts": 1,
+    "n_input_tokens": 0,
+    "n_output_tokens": 0,
+    "n_cache_read_tokens": 0,
+    "n_cache_creation_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": null,
+    "usage_source": "unavailable"
+  },
+  "trajectory_summary": {
+    "steps": 1,
+    "tool_call_steps": 0,
+    "user_message_steps": 0,
+    "agent_message_steps": 0,
+    "agent_thought_steps": 0,
+    "other_steps": 1,
+    "event_type_counts": {
+      "nop": 1
+    },
+    "tool_call_status_counts": {},
+    "partial_trajectory": false,
+    "trajectory_source": "scripted"
+  },
+  "trajectory_source": "scripted",
+  "error": null,
+  "error_category": null,
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "started_at": "2026-10-12 17:09:27.832223",
+  "finished_at": "2026-10-12 17:09:46.290196",
+  "timing": {
+    "environment_setup": 11.859342375,
+    "agent_execution": 0.000464667,
+    "verifier": 6.486477542,
+    "total": 18.455458583,
+    "image": 1.8892305,
+    "sandbox_start": 1.639022542,
+    "setup": 7.386477167,
+    "handoff": 1.881357959,
+    "verify": 4.6051111670000004
+  },
+  "task_digest": "sha256:7d9fe52bbc1989418da6abc1974c4426852a3c3d60b54d349003add7d97eb93f",
+  "sandbox_id": "9da8c582-a3b9-4c13-97ee-79c0ef79c1a9",
+  "task_id": "split-optout",
+  "status": "scored",
+  "passed": false,
+  "timed_out": false,
+  "problem": null,
+  "defenses": {
+    "agent_user": {
+      "name": "agent_user",
+      "state": "enforced",
+      "note": "agent, uid 1001; not checked: file capabilities (no getcap)"
+    },
+    "clean_verifier_env": {
+      "name": "clean_verifier_env",
+      "state": "off",
+      "note": "no loader variables, PYTHONSAFEPATH off: left to the image, as 0.8 runs this task format, PATH of root-owned folders only"
+    },
+    "clean_verifier_logs": {
+      "name": "clean_verifier_logs",
+      "state": "enforced"
+    },
+    "cloud_metadata": {
+      "name": "cloud_metadata",
+      "state": "off",
+      "note": "the task opts out ([metadata] x-allow-cloud-metadata = true), so the agent can reach the cloud metadata endpoints (169.254.169.254, 169.254.170.2, 169.254.170.23, 100.100.100.200, 168.63.129.16, 169.254.0.23, fd00:ec2::254, fd00:ec2::23, fd20:ce::254, fd00:c1::a9fe:a9fe)"
+    },
+    "hidden_verifier": {
+      "name": "hidden_verifier",
+      "state": "enforced",
+      "note": "the verifier and oracle are uploaded only when needed"
+    },
+    "kill_before_grading": {
+      "name": "kill_before_grading",
+      "state": "enforced",
+      "note": "0 processes"
+    },
+    "ld_so_preload": {
+      "name": "ld_so_preload",
+      "state": "enforced",
+      "note": "absent before and after the agent's turn"
+    },
+    "locked_system_dirs": {
+      "name": "locked_system_dirs",
+      "state": "enforced",
+      "note": "system folders were already writable by root alone"
+    },
+    "locked_system_path": {
+      "name": "locked_system_path",
+      "state": "enforced",
+      "note": "the folders on PATH are root's alone"
+    },
+    "memory_limit": {
+      "name": "memory_limit",
+      "state": "enforced",
+      "note": "2048 MB (cgroup v2 memory.max)"
+    },
+    "network_policy": {
+      "name": "network_policy",
+      "state": "enforced",
+      "note": "agent: open: everything; the cloud metadata endpoints are not proven refused (see cloud_metadata)"
+    },
+    "oom_order": {
+      "name": "oom_order",
+      "state": "enforced",
+      "note": "agent processes start at oom_score_adj 1000, the runner and the verifier at 0, so the kernel stops the agent's first"
+    },
+    "planted_file_cleanup": {
+      "name": "planted_file_cleanup",
+      "state": "enforced"
+    },
+    "process_limit": {
+      "name": "process_limit",
+      "state": "not-supported",
+      "note": "the daytona backend cannot cap the number of processes (BenchFlow asks for 4096)"
+    },
+    "root_service": {
+      "name": "root_service",
+      "state": "enforced",
+      "note": "the uid firewall refuses the agent user's connections to the sandbox daemon's ports (2280, 22220, 22222, 33333) on every local address, and nothing else; the daemon listens on 2280, 22220, 22222, 33333; proof: root reached 127.0.0.1:2280, 172.20.0.44:2280, [::1]:2280, [fd00:dead:beef:0000:0000:0000:0000:002c]:2280, 127.0.0.1:22220, 172.20.0.44:22220, [::1]:22220, [fd00:dead:beef:0000:0000:0000:0000:002c]:22220, 127.0.0.1:22222, 172.20.0.44:22222, [::1]:22222, [fd00:dead:beef:0000:0000:0000:0000:002c]:22222, 127.0.0.1:33333, 172.20.0.44:33333, [::1]:33333, [fd00:dead:beef:0000:0000:0000:0000:002c]:33333 and the agent user was refused at each"
+    },
+    "special_file_custody": {
+      "name": "special_file_custody",
+      "state": "enforced"
+    },
+    "state_custody": {
+      "name": "state_custody",
+      "state": "enforced",
+      "note": "BenchFlow's state folder was root's alone at the handoff"
+    },
+    "trusted_path": {
+      "name": "trusted_path",
+      "state": "enforced",
+      "note": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+    }
+  },
+  "login": null,
+  "verifier_exit_code": 0,
+  "rubric": null,
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-rc.1"
+  }
+}

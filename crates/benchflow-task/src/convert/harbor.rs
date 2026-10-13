@@ -616,6 +616,21 @@ impl Import {
     }
 }
 
+/// The cloud metadata opt-out as the split reader reads it (`lax::boolean`:
+/// `"yes"`, `1`, `"off"`, ...), as the boolean task.md requires (F1-B-r2
+/// L3). A value the split reader refuses is kept, so task.md refuses it
+/// too, by name.
+fn opt_out_value(v: &Val) -> Val {
+    let json = match v {
+        Val::Bool(b) => serde_json::Value::Bool(*b),
+        Val::Int(i) => serde_json::Value::from(*i),
+        Val::Float(f) => serde_json::Value::from(*f),
+        Val::Str(s) => serde_json::Value::String(s.clone()),
+        _ => return v.clone(),
+    };
+    crate::split::lax::boolean(&json).map_or_else(|_| v.clone(), Val::Bool)
+}
+
 /// The result of mapping a Harbor config: the task.md config, where each
 /// Harbor path went, and notes.
 pub(crate) struct Imported {
@@ -698,7 +713,15 @@ pub(crate) fn config_from_harbor(cfg: &Table, stash: &str) -> Result<Imported, S
         }
     }
     if let Some(v) = opt_out {
-        sandbox.insert(METADATA_OPT_OUT.into(), v);
+        let read = opt_out_value(&v);
+        if read != v {
+            im.notes.push(format!(
+                "metadata.{METADATA_OPT_OUT} = {} imported as [sandbox] {METADATA_OPT_OUT} = {}",
+                py_repr(&v),
+                read.truthy()
+            ));
+        }
+        sandbox.insert(METADATA_OPT_OUT.into(), read);
     }
     if has("environment") || !sandbox.is_empty() {
         out.insert("sandbox".into(), Val::Table(sandbox));
@@ -1449,9 +1472,26 @@ pub(crate) fn config_to_harbor(
             None,
         ));
     }
-    if let Some(about @ Val::Table(_)) = cfg.get("about") {
-        out.insert("metadata".into(), about.clone());
-        ex.moves.insert(kp(&["about"]), kp(&["metadata"]));
+    if let Some(Val::Table(about)) = cfg.get("about") {
+        // task.md reads the cloud metadata opt-out only in [sandbox], so
+        // under [about] it opts nothing out; copied into [metadata], where
+        // the split reader honours it, it would (F1-A-r2).
+        let mut about = about.clone();
+        if let Some(v) = about.shift_remove(METADATA_OPT_OUT) {
+            ex.losses.push(Loss::new(
+                format!(
+                    "[about] {METADATA_OPT_OUT} = {} (not copied: task.md reads it only in [sandbox], and in [metadata] it would opt the task out)",
+                    py_repr(&v)
+                ),
+                LossSeverity::Metadata,
+                "task.md reads the opt-out only in [sandbox], so it opted nothing out; in the split layout's [metadata] it would opt the task out",
+                Some(format!("[about] {METADATA_OPT_OUT}")),
+            ));
+        }
+        if !about.is_empty() || cfg["about"].as_table().is_some_and(Table::is_empty) {
+            out.insert("metadata".into(), Val::Table(about));
+            ex.moves.insert(kp(&["about"]), kp(&["metadata"]));
+        }
     }
     let mut sb: Option<Table> = cfg.get("sandbox").and_then(Val::as_table).cloned();
     if let Some(v) = sb.as_mut().and_then(|s| s.shift_remove(METADATA_OPT_OUT)) {
@@ -1932,6 +1972,72 @@ mod tests {
         );
         let about = c["about"].as_table().unwrap();
         assert_eq!(about.keys().collect::<Vec<_>>(), vec!["difficulty"]);
+    }
+
+    /// F1-B-r2 L3: a split value the split reader takes as a boolean
+    /// (`"yes"`, `1`, `"off"`) is imported as that boolean, which task.md
+    /// requires; one it refuses is kept, so task.md refuses it too.
+    #[test]
+    fn a_loosely_boolean_opt_out_imports_as_a_boolean() {
+        for (raw, read) in [
+            ("\"yes\"", Val::Bool(true)),
+            ("\"Off\"", Val::Bool(false)),
+            ("1", Val::Bool(true)),
+            ("true", Val::Bool(true)),
+            ("\"maybe\"", Val::Str("maybe".into())),
+        ] {
+            let split = parse_toml(&format!(
+                "[task]\nname = \"a/b\"\n[metadata]\nx-allow-cloud-metadata = {raw}\n"
+            ))
+            .unwrap();
+            let im = config_from_harbor(&split, "harbor").unwrap();
+            assert_eq!(
+                im.config["sandbox"].as_table().unwrap()[METADATA_OPT_OUT],
+                read,
+                "{raw}"
+            );
+            let noted = im.notes.iter().any(|n| n.contains(METADATA_OPT_OUT));
+            assert_eq!(
+                noted,
+                matches!(raw, "\"yes\"" | "\"Off\"" | "1"),
+                "{raw}: {:?}",
+                im.notes
+            );
+        }
+    }
+
+    /// F1-A-r2: task.md ignores the opt-out under [about]; export must not
+    /// move it into [metadata], where the split reader would honour it.
+    #[test]
+    fn an_opt_out_under_about_is_not_exported() {
+        let cfg = parse_toml(
+            "name = \"a/b\"\n[about]\ndifficulty = \"easy\"\nx-allow-cloud-metadata = true\n",
+        )
+        .unwrap();
+        let ex = config_to_harbor(&cfg, "harbor", &[]).unwrap();
+        let m = ex.config["metadata"].as_table().unwrap();
+        assert_eq!(m.keys().collect::<Vec<_>>(), vec!["difficulty"]);
+        assert!(
+            ex.losses
+                .iter()
+                .any(|l| l.path == "[about] x-allow-cloud-metadata"),
+            "{:?}",
+            ex.losses
+        );
+        // Alone in [about], it leaves no [metadata]; [sandbox]'s own
+        // opt-out still lands there.
+        let cfg = parse_toml("name = \"a/b\"\n[about]\nx-allow-cloud-metadata = true\n").unwrap();
+        let ex = config_to_harbor(&cfg, "harbor", &[]).unwrap();
+        assert!(!ex.config.contains_key("metadata"), "{:?}", ex.config);
+        let cfg = parse_toml(
+            "name = \"a/b\"\n[about]\nx-allow-cloud-metadata = true\n[sandbox]\nx-allow-cloud-metadata = false\n",
+        )
+        .unwrap();
+        let ex = config_to_harbor(&cfg, "harbor", &[]).unwrap();
+        assert_eq!(
+            ex.config["metadata"].as_table().unwrap()[METADATA_OPT_OUT],
+            Val::Bool(false)
+        );
     }
 
     #[test]

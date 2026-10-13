@@ -47,6 +47,8 @@
   background: var(--warn-bg); border: 1px solid var(--warn-line); border-left: 3px solid var(--warn-strip);
   border-radius: var(--radius); padding: 8px 14px; font-size: 12.5px; margin-bottom: 14px; color: var(--ink-secondary);
 }
+.vaside { font-size: 13px; color: var(--muted-foreground); margin: 10px 0; }
+.vaside a { color: var(--foreground); text-underline-offset: 2px; }
 .vempty { color: var(--faint); padding: 30px 0; text-align: center; font-size: 13px; }
 
 .vscroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }

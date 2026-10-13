@@ -8,13 +8,14 @@ use std::path::Path;
 
 use crate::lineage::{BRANCH_OBSERVATION, Lineage, branch_child_dir, load_lineage};
 use crate::metadata::{
-    ErrorBanner, RolloutMetadata, RunStatus, Timing, load_rollout_metadata, normalize_metadata,
+    DefenseRow, ErrorBanner, RolloutMetadata, RunStatus, Timing, defense_rows,
+    load_rollout_metadata, normalize_metadata,
 };
 use crate::py;
-use crate::pyjson::{Int, Map, Value, object};
+use crate::pyjson::{Int, Map, Value, get, object};
 use crate::rubric::{RubricReview, load_rubric};
 use crate::steps::{Step, StepCounts, load_prompts, normalize_steps, trajectory_steps};
-use crate::values::load_json;
+use crate::values::{load_json, load_object};
 use crate::verifier::{VerifierArtifacts, load_recovery, load_verifier};
 
 /// Where a trial's trajectory lives, relative to the trial folder.
@@ -99,10 +100,11 @@ impl Meta {
             started_at,
             finished_at,
             status,
+            defenses,
             ..
         } = self.metadata;
         let duration_sec = timing.as_ref().and_then(|timing| timing.total);
-        object([
+        let mut meta = object([
             ("task_name", task_name.into()),
             ("agent_name", agent_name.into()),
             ("model", model.into()),
@@ -127,7 +129,18 @@ impl Meta {
             ("finished_at", finished_at.into()),
             ("status", status.map(RunStatus::into_value).into()),
             ("branch", self.branch.map(BranchOrigin::into_value).into()),
-        ])
+        ]);
+        // Only a record that has one gets the key, so a 0.8 trial's payload
+        // stays 0.8's, byte for byte.
+        if !defenses.is_empty()
+            && let Value::Object(fields) = &mut meta
+        {
+            fields.insert(
+                "defenses".into(),
+                Value::Array(defenses.into_iter().map(DefenseRow::into_value).collect()),
+            );
+        }
+        meta
     }
 }
 
@@ -234,10 +247,17 @@ pub fn build_branch_child_payload(rollout_dir: &Path, child_ref: &str) -> Option
         ("trajectory_source", "branch observation".into()),
     ]);
     let timing = field("timing");
-    let metadata = normalize_metadata(
+    let mut metadata = normalize_metadata(
         result.as_object().expect("built as an object"),
         Some(&timing).filter(|timing| timing.as_object().is_some()),
     );
+    // The record of the sandbox that graded the child is in the child's own
+    // result.json (the observation does not carry it); a child without one
+    // shows no record.
+    metadata.defenses = defense_rows(get(
+        &load_object(&child_dir.join("result.json")),
+        "defenses",
+    ));
     let steps = normalize_steps(events, None);
     let origin = BranchOrigin {
         parent_rollout: py::name_of(rollout_dir),

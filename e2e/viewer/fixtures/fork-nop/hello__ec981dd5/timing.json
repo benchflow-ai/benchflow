@@ -1,0 +1,11 @@
+{
+  "environment_setup": 16.23154375,
+  "agent_execution": 0.0,
+  "verifier": 0.0,
+  "total": 27.265409209,
+  "image": 1.9099095,
+  "sandbox_start": 1.7048073750000001,
+  "setup": 11.129691833,
+  "handoff": 0.0,
+  "verify": 0.0
+}

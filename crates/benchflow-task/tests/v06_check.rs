@@ -157,6 +157,27 @@ fn a_task_format_plugin_task_is_refused() {
     );
 }
 
+/// F1-B-r2 L2: `sandbox: allow_cloud_metadata`, the opt-out's first
+/// spelling, stays an X201 error (0.8 refuses it too), and its help names
+/// the key's new place.
+#[test]
+fn the_stale_opt_out_names_its_new_place() {
+    let report = check("v06/metadata-in-sandbox");
+    let errors = with_code(&report, "X201");
+    let d = errors
+        .iter()
+        .find(|d| d.message.contains("allow_cloud_metadata"))
+        .unwrap_or_else(|| panic!("{:#?}", report.diagnostics));
+    assert_eq!(d.severity, Severity::Error);
+    assert!(
+        d.help
+            .as_deref()
+            .is_some_and(|h| h.contains("`[metadata] x-allow-cloud-metadata`")),
+        "{:?}",
+        d.help
+    );
+}
+
 /// F1 (rc.2, round 2): in BenchFlow 0.8's task.md the cloud metadata
 /// opt-out is `metadata: {x-allow-cloud-metadata: true}`, which 0.8 loads
 /// (`tests/reference_08.rs` holds what 0.8 read); in `sandbox` it is an

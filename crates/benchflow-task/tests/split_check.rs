@@ -404,6 +404,50 @@ fn a_reward_range_may_only_widen_zero_to_one() {
     assert_eq!(report.package.unwrap().verifier.reward_range, None);
 }
 
+/// F1-B-r2 L2: the opt-out's first spelling, `[environment]
+/// allow_cloud_metadata`, is still an X100 warning that opts nothing out,
+/// and its message names the key's new place. No rename is offered: the
+/// key moves to another table.
+#[test]
+fn the_stale_opt_out_names_its_new_place() {
+    let d = tempfile::tempdir().unwrap();
+    for (rel, text) in [
+        (
+            "task.toml",
+            "schema_version = \"1.4\"\n\n[environment]\nallow_cloud_metadata = true\n",
+        ),
+        ("instruction.md", "Do it.\n"),
+        ("environment/Dockerfile", "FROM ubuntu:24.04\n"),
+        ("tests/test.sh", "echo 1 > /logs/verifier/reward.txt\n"),
+    ] {
+        let path = d.path().join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let report = benchflow_task::check(d.path(), &CheckOptions { deep: true });
+    let x100: Vec<&Diagnostic> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "X100")
+        .collect();
+    assert_eq!(x100.len(), 1, "{:#?}", report.diagnostics);
+    let d = x100[0];
+    assert_eq!(d.severity, Severity::Warning);
+    let said = format!("{} {:?} {:?}", d.message, d.label, d.help);
+    assert!(
+        said.contains("`[metadata] x-allow-cloud-metadata`"),
+        "{said}"
+    );
+    assert!(d.fix.is_none(), "{:?}", d.fix);
+    assert!(
+        !report
+            .package
+            .expect("a package")
+            .sandbox
+            .allow_cloud_metadata
+    );
+}
+
 /// F1 (rc.2, round 2): `[metadata] x-allow-cloud-metadata = true` is
 /// bench's opt-out from refusing the cloud metadata endpoints; it is read
 /// without a warning, and a value that is not a boolean (as the split

@@ -120,7 +120,10 @@ impl Sandbox for FakeSandbox {
             "BF killed 1\n"
         } else if self.linked && c.contains("BF left") && c.contains("BF state-checked") {
             "BF left /home/agent/.codex/auth.json\nBF state-baseline\nBF state-checked\n"
-        } else if c.contains("baseline") && c.contains("files.tar") && !c.contains("after") {
+        } else if c.contains("baseline")
+            && c.contains("files.tar")
+            && !c.contains("BF handoff done")
+        {
             // A stage's test-runner baseline.
             "BF baseline 1\n"
         } else if c.contains("BF state-checked") {

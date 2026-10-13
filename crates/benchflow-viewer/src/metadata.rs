@@ -58,6 +58,32 @@ pub struct RolloutMetadata {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub status: Option<RunStatus>,
+    /// The defense record, in the record's order; empty for a record that
+    /// has none (every 0.8 trial).
+    pub defenses: Vec<DefenseRow>,
+}
+
+/// One row of a trial's defense record (`result.json`'s `defenses`, which
+/// the Rust engine writes and 0.8 does not): which defense, its state
+/// (`enforced`, `off`, `not-supported`, `failed`) and why.
+///
+/// Read untyped, so a row a later engine adds, or a state this viewer does
+/// not know, still shows as written.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefenseRow {
+    pub name: String,
+    pub state: Option<String>,
+    pub note: Option<String>,
+}
+
+impl DefenseRow {
+    pub fn into_value(self) -> Value {
+        object([
+            ("name", self.name.into()),
+            ("state", self.state.into()),
+            ("note", self.note.into()),
+        ])
+    }
 }
 
 /// `agent_result`, with its counters, cost, and sources cleaned.
@@ -350,7 +376,31 @@ pub fn normalize_metadata(result: &Map, timing: Option<&Value>) -> RolloutMetada
         started_at: optional_text(get(result, "started_at")),
         finished_at: optional_text(get(result, "finished_at")),
         status: (!result.is_empty()).then(|| run_status(result, reward)),
+        defenses: defense_rows(get(result, "defenses")),
     }
+}
+
+/// The rows of a defense record: an object keyed by defense name, each row
+/// `{"name", "state", "note"}`. A row that is not an object keeps its name
+/// with no state; a record that is not an object has no rows.
+pub(crate) fn defense_rows(record: &Value) -> Vec<DefenseRow> {
+    let Some(record) = record.as_object() else {
+        return Vec::new();
+    };
+    record
+        .iter()
+        .map(|(name, row)| {
+            let field = |key: &str| {
+                row.as_object()
+                    .and_then(|row| nonempty(optional_text(get(row, key))))
+            };
+            DefenseRow {
+                name: name.clone(),
+                state: field("state"),
+                note: field("note"),
+            }
+        })
+        .collect()
 }
 
 /// Read and normalize a trial's metadata (`_load_rollout_metadata`):

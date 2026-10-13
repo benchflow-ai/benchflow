@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "job_name": "dt-f1-hello-split-oracle",
+  "created_at": "2026-10-12T15:45:44.457949-07:00",
+  "bench": {
+    "version": "0.8.1-rc.1",
+    "long_version": "0.8.1-rc.1 (1936d1951 2026-10-12)",
+    "commit": "1936d1951",
+    "commit_date": "2026-10-12"
+  },
+  "fingerprint": "0f850b7e563e7dfc",
+  "dataset": null,
+  "source": {
+    "targets": [
+      "tasks/hello-split"
+    ],
+    "path": "tasks/hello-split",
+    "remote": []
+  },
+  "options": {
+    "sandbox": "daytona",
+    "sandbox_user": "agent",
+    "trials_per_task": 1,
+    "concurrency": 4,
+    "agent_timeout_multiplier": 1.0,
+    "verifier_timeout_multiplier": 1.0,
+    "build_timeout_multiplier": 1.0,
+    "default_agent_timeout_sec": null,
+    "default_verifier_timeout_sec": 600.0,
+    "idle_timeout_sec": 600.0,
+    "pids_limit": 4096,
+    "agent_env_keys": [],
+    "extra_instruction": null,
+    "keep": "never",
+    "save_outputs": false,
+    "retries": 1,
+    "rerun": []
+  },
+  "trials": [
+    {
+      "trial": "hello-split__927059e2",
+      "task": {
+        "id": "hello-split",
+        "name": "hello-split",
+        "path": "tasks/hello-split",
+        "digest": "sha256:6acc0dcc151367b9730b9173d8fbccfb748e6656f779642f5d1ba22dbfacd635",
+        "registry_digest": null,
+        "inputs_digest": "sha256:f2392a170a52ebe1c3604a3d93876b7a5b93dff8bd559f0ae0d32cf331631930",
+        "format": "split"
+      },
+      "attempt": {
+        "agent": "oracle",
+        "model": null,
+        "kind": "oracle",
+        "agent_fingerprint": null
+      },
+      "image": {
+        "source": "build",
+        "reference": null,
+        "dockerfile": "tasks/hello-split/environment/Dockerfile",
+        "digest": "45d5160498eabb5303c6b6e1c103158753f06682a1a1b536573ae394a136eaf0"
+      },
+      "sandbox": "daytona"
+    }
+  ]
+}

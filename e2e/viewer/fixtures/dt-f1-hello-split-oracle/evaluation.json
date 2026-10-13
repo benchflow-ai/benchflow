@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "job_name": "dt-f1-hello-split-oracle",
+  "tasks_dir": "tasks/hello-split",
+  "source": {
+    "targets": [
+      "tasks/hello-split"
+    ],
+    "path": "tasks/hello-split",
+    "remote": []
+  },
+  "config": {
+    "agent": "oracle",
+    "model": null,
+    "environment": "daytona",
+    "concurrency": 4,
+    "trials": 1,
+    "sandbox_user": "agent",
+    "agent_idle_timeout": 600,
+    "timeout_multiplier": 1.0,
+    "reward_lenient": false,
+    "tasks": [
+      {
+        "name": "hello-split",
+        "id": "hello-split",
+        "digest": "sha256:6acc0dcc151367b9730b9173d8fbccfb748e6656f779642f5d1ba22dbfacd635",
+        "path": "tasks/hello-split"
+      }
+    ]
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-rc.1",
+    "fingerprint": "0f850b7e563e7dfc"
+  }
+}

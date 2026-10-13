@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "job_name": "fork-nop",
+  "kind": "branch",
+  "source": {
+    "targets": [
+      "tasks/hello"
+    ]
+  },
+  "config": {
+    "environment": "daytona",
+    "agent": "nop",
+    "model": null,
+    "fork_point": "start",
+    "children": [
+      {
+        "label": "c1",
+        "own_prompt": false
+      },
+      {
+        "label": "c2",
+        "own_prompt": false
+      }
+    ],
+    "tasks": [
+      {
+        "name": "hello",
+        "id": "examples/hello",
+        "digest": "sha256:2a23ec73dc5026789f94c298904ae1f02cf2e4805a3fd5fa7a32925209bc5485",
+        "path": "tasks/hello"
+      }
+    ]
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0",
+    "fingerprint": "branch:1dbf391042574a6a99bfed654102dc8a"
+  }
+}

@@ -35,6 +35,8 @@ walkdir.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Paused time for the disk watch's timing tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

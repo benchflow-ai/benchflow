@@ -199,6 +199,8 @@ async fn run(
         workdir: Some(WORKDIR.to_string()),
         labels,
         runtime: None,
+        disk_limit_from_parent: None,
+        base_image: None,
     };
     let sandbox = provider.create(&sandbox_spec).await.map_err(|e| match e {
         SandboxError::Start(why) => Problem::new(

@@ -1,0 +1,35 @@
+{
+  "task_path": "tasks/broken-image",
+  "task_id": "examples/broken-image",
+  "task_format": "task-md",
+  "agent": "oracle",
+  "model": null,
+  "reasoning_effort": null,
+  "agent_options": {},
+  "resume_sessions": false,
+  "skills": null,
+  "load_trajectory": null,
+  "environment": "daytona",
+  "sandbox_user": "",
+  "workdir": "",
+  "timeout_sec": 60.0,
+  "agent_idle_timeout_sec": 600,
+  "agent_env_keys": [],
+  "pids_limit": 4096,
+  "started_at": "2026-10-11 20:18:09.250942",
+  "task_config": {
+    "name": "examples/broken-image",
+    "title": "A Dockerfile that fails",
+    "version": "1.0.0",
+    "agent": {
+      "timeout": "1m"
+    },
+    "verifier": {
+      "timeout": "1m"
+    }
+  },
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0"
+  }
+}

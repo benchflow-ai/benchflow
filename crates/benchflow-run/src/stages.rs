@@ -200,6 +200,9 @@ impl Trial<'_> {
             .events
             .log(self.name(), format!("stage {}: {}", index + 1, st.name));
         if index > 0 {
+            // An ungraded stage's agent carried its window this far: what it
+            // wrote until now is its own; BenchFlow's preparation is not.
+            self.agent_window_close().await;
             // The previous stage's grading and reference files go before
             // the agent works again.
             let mut gone = vec![task.verifier.mount.clone()];
@@ -242,17 +245,26 @@ impl Trial<'_> {
 
         self.rt.events.phase(self.name(), Phase::Agent);
         let clock = Instant::now();
+        self.turn_begin().await?;
         let attempted = self.stage_attempt(st, resume, index > 0).await;
         // The session is saved once the agent's work stops: after a graded
         // stage (whose kill comes first anyway), the last stage, or a stage
         // that failed. An ungraded stage's agent keeps its processes for the
-        // next stage, so its session waits for the next save.
+        // next stage, so its session waits for the next save, and its window
+        // stays open until BenchFlow prepares that stage.
         let last = task
             .extras
             .steps
             .as_ref()
             .is_none_or(|s| index + 1 >= s.stages.len());
-        if st.graded || last || attempted.is_err() {
+        let stops = st.graded || last || attempted.is_err();
+        let how = if stops {
+            super::exhaust::TurnEnd::Stop
+        } else {
+            super::exhaust::TurnEnd::Carry
+        };
+        let attempted = self.turn_end(attempted, how).await;
+        if stops {
             self.save_session(true).await;
         }
         if matches!(self.spec.attempt, Attempt::Model(_)) {
@@ -415,11 +427,16 @@ impl Trial<'_> {
         // agent planted or edited), it is taken again; while an earlier
         // stage's agent still runs, only the stage's own files are added, as
         // read on this machine.
+        //
+        // The record of the workdir's virtual environments is taken again
+        // only before the first stage (its files and `setup.sh` may make
+        // one), never after an agent's turn: later stages reuse it.
         if agent_alive {
             self.add_to_baseline(st).await?;
         } else {
+            let venvs = (!later).then_some(self.workdir.as_str());
             let out = self
-                .root(hardening::baseline(), SETUP_TIMEOUT)
+                .root(hardening::baseline(venvs), SETUP_TIMEOUT)
                 .await
                 .map_err(|e| sandbox_problem(Phase::Setup, e))?;
             if !(out.success() && Report::parse(&out.stdout).first("baseline").is_some()) {

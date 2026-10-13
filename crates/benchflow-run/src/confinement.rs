@@ -215,6 +215,8 @@ async fn start(
             workdir: Some(WORKDIR.into()),
             labels,
             runtime: opts.runtime.clone(),
+            disk_limit_from_parent: None,
+            base_image: None,
         })
         .await
 }

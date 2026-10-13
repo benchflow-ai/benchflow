@@ -45,8 +45,8 @@ impl PartialEq for Hold {
 impl Eq for Hold {}
 
 /// Written after a checkout and its checks succeed, holding the commit, and
-/// removed before any change to the checkout: a checkout that failed
-/// partway has none. It also lets a repository git never finds clean (CRLF
+/// removed right before the first command that changes the working tree: a
+/// checkout that failed partway has none. It also lets a repository git never finds clean (CRLF
 /// files under `text eol=lf`, names that differ only in case on macOS) be
 /// reused.
 fn done_file(dir: &Path) -> PathBuf {
@@ -58,7 +58,7 @@ fn done_file(dir: &Path) -> PathBuf {
 /// folder whose parent an earlier dataset did not ask for (`tasks` after
 /// `tasks/a`), or the rest of a folder an interrupted `sparse-checkout set`
 /// wrote only partly. Local only: no network.
-async fn none_skipped(dir: &Path, wanted: &[String], whole: bool) -> bool {
+async fn none_skipped(locked: &LockedGit, wanted: &[String], whole: bool) -> bool {
     if !whole && wanted.is_empty() {
         return true;
     }
@@ -66,7 +66,8 @@ async fn none_skipped(dir: &Path, wanted: &[String], whole: bool) -> bool {
     if !whole {
         args.extend(wanted.iter().map(String::as_str));
     }
-    git(&args, Some(dir))
+    locked
+        .git(&args)
         .await
         .is_ok_and(|out| !out.lines().any(|l| l.starts_with("S ")))
 }
@@ -75,18 +76,16 @@ async fn none_skipped(dir: &Path, wanted: &[String], whole: bool) -> bool {
 /// index, for a checkout an earlier build wrote without the done marker: a
 /// checkout that failed partway (`HEAD` at the commit, files missing) shows
 /// changes here. Local only: no network.
-async fn status_clean(dir: &Path) -> bool {
-    git(
-        &[
+async fn status_clean(locked: &LockedGit) -> bool {
+    locked
+        .git(&[
             "status",
             "--porcelain",
             "--untracked-files=no",
             "--no-renames",
-        ],
-        Some(dir),
-    )
-    .await
-    .is_ok_and(|out| out.trim().is_empty())
+        ])
+        .await
+        .is_ok_and(|out| out.trim().is_empty())
 }
 
 /// Whether a failed checkout failed because the server refused the file
@@ -269,23 +268,35 @@ const GIT_STALL: std::time::Duration = std::time::Duration::from_secs(60);
 /// The longest one git command may take, whatever it does.
 const GIT_CALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
-    git_within(args, cwd, GIT_STALL, GIT_CALL_LIMIT).await
-}
-
-/// [`git`] with its limits. git sets no timeout of its own: a server (or a
-/// proxy) that stopped sending mid-answer held `bench run` forever (E5,
-/// GitHub through a stalling proxy). So a transfer slower than 1 KB/s for
-/// `stall` is given up (unless this shell sets git's own low-speed
-/// variables), and the whole command at `limit`.
+/// [`run_git`] with no settings and no lock.
+#[cfg(test)]
 async fn git_within(
     args: &[&str],
     cwd: Option<&Path>,
     stall: std::time::Duration,
     limit: std::time::Duration,
 ) -> Result<String, String> {
+    run_git(&[], args, cwd, stall, limit, None).await
+}
+
+/// Run git with `settings` (`-c` pairs) before `args`; with `lock`, git and
+/// everything it starts inherit that file's lock (see [`LockedGit`]). git
+/// sets no timeout of its own: a server (or a proxy) that stopped sending
+/// mid-answer held `bench run` forever (E5, GitHub through a stalling
+/// proxy). So a transfer slower than 1 KB/s for `stall` is given up (unless
+/// this shell sets git's own low-speed variables), and the whole command at
+/// `limit`.
+async fn run_git(
+    settings: &[String],
+    args: &[&str],
+    cwd: Option<&Path>,
+    stall: std::time::Duration,
+    limit: std::time::Duration,
+    lock: Option<&std::fs::File>,
+) -> Result<String, String> {
     let mut cmd = Command::new("git");
-    cmd.args(args)
+    cmd.args(settings)
+        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -301,6 +312,9 @@ async fn git_within(
     }
     if let Some(c) = cwd {
         cmd.current_dir(c);
+    }
+    if let Some(file) = lock {
+        inherit_lock(&mut cmd, file);
     }
     let out = match tokio::time::timeout(limit, cmd.output()).await {
         Ok(out) => out.map_err(|e| e.to_string())?,
@@ -319,6 +333,329 @@ async fn git_within(
     }
 }
 
+/// Let the child keep `file`'s descriptor across exec. Rust opens files
+/// close-on-exec; this clears the flag on the child's own copy of the
+/// descriptor (the parent's is untouched), so the flock, which belongs to
+/// the open file, is held until the last process that has it exits.
+#[cfg(unix)]
+fn inherit_lock(cmd: &mut Command, file: &std::fs::File) {
+    use std::os::fd::AsRawFd;
+    let fd = file.as_raw_fd();
+    // SAFETY: the closure runs in the child between fork and exec, where
+    // only async-signal-safe calls are allowed: it makes one `fcntl` call
+    // and builds an error from errno, which allocates nothing.
+    #[allow(unsafe_code)]
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn inherit_lock(_cmd: &mut Command, _file: &std::fs::File) {}
+
+/// The settings every git under a checkout's lock gets, so that nothing it
+/// starts outlives it holding the lock: the fsmonitor daemon (lives until
+/// stopped), a detached `gc --auto` or `maintenance run --auto`. A cached
+/// dataset checkout needs none of them.
+const LOCKED_SETTINGS: [&str; 3] = [
+    "core.fsmonitor=false",
+    "gc.auto=0",
+    "maintenance.auto=false",
+];
+
+/// Whether a `credential.helper` value runs git's `cache` helper, which
+/// starts `git credential-cache--daemon` (15 minutes by default) when it
+/// stores a credential: `cache [options]`, a path to
+/// `git-credential-cache`, or a shell command (`!…`) that runs it.
+fn cache_helper(value: &str) -> bool {
+    let value = value.trim();
+    if let Some(shell) = value.strip_prefix('!') {
+        return shell.contains("credential-cache");
+    }
+    let program = value.split_whitespace().next().unwrap_or_default();
+    program == "cache" || program.ends_with("/git-credential-cache")
+}
+
+/// The `-c` settings that give git the credential helpers in `listing`
+/// (`git config --null --get-regexp` of every `credential.helper` and
+/// `credential.<url>.helper`, in the order git reads them) without the
+/// `cache` helper; empty when there is none to drop. An empty
+/// `credential.helper` on the command line, which git reads last, clears
+/// every helper read so far, those for one URL too; each other entry is
+/// then given again under its own key, so git still matches the URL ones
+/// to the repository itself and an empty one still clears the list before
+/// it. Whether a helper was dropped is returned too.
+fn helper_settings(listing: &str) -> (Vec<String>, bool) {
+    let entries: Vec<(&str, &str)> = listing
+        .split('\0')
+        .filter(|e| !e.is_empty())
+        .map(|e| e.split_once('\n').unwrap_or((e, "")))
+        .collect();
+    if !entries.iter().any(|(_, value)| cache_helper(value)) {
+        return (Vec::new(), false);
+    }
+    let mut settings = vec!["-c".to_string(), "credential.helper=".to_string()];
+    for (key, value) in entries {
+        // `-c` splits at the first `=`: a URL key holding one cannot be
+        // given again, and its helper is left out with the cache helper.
+        if cache_helper(value) || key.contains('=') {
+            continue;
+        }
+        settings.push("-c".into());
+        settings.push(format!("{key}={value}"));
+    }
+    (settings, true)
+}
+
+/// Whether a git failure is a refusal of the credentials (or a lack of
+/// them), as git and curl word it.
+fn auth_failure(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    [
+        "authentication failed",
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        "invalid username or password",
+        "permission denied (publickey",
+    ]
+    .iter()
+    .any(|p| s.contains(p))
+        || http_status(&s).is_some_and(|code| code == 401 || code == 403)
+}
+
+/// The HTTP status in a curl or git message (`The requested URL returned
+/// error: 503`, `RPC failed; HTTP 429`), if any.
+fn http_status(lowercase: &str) -> Option<u16> {
+    ["returned error: ", "http "].iter().find_map(|marker| {
+        lowercase.match_indices(marker).find_map(|(at, m)| {
+            let digits = lowercase.get(at + m.len()..at + m.len() + 3)?;
+            digits
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| digits.parse().ok())
+                .flatten()
+        })
+    })
+}
+
+/// Whether a failed fetch failed for a reason a later attempt may not meet
+/// (decision G-6): no connection, a name that did not resolve, a timeout or
+/// a stall, a connection cut off (early EOF, RPC failed, reset), or an
+/// HTTP 5xx or 429. Never a missing ref, refused or missing credentials, a
+/// local disk or permission error, a missing repository, or the whole
+/// command's time limit, which a retry would only repeat.
+fn network_failure(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    let never = [
+        "couldn't find remote ref",
+        "no space left",
+        "disk quota",
+        "read-only file system",
+        "permission denied",
+        "repository not found",
+        "does not appear to be a git repository",
+        "certificate",
+        "did not finish within",
+    ];
+    if auth_failure(&s) || never.iter().any(|p| s.contains(p)) {
+        return false;
+    }
+    if let Some(code) = http_status(&s) {
+        return code >= 500 || code == 429;
+    }
+    [
+        "could not resolve",
+        "couldn't resolve",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "failed to connect",
+        "could not connect",
+        "couldn't connect",
+        "connection refused",
+        "connection reset",
+        "connection timed out",
+        "operation timed out",
+        "timed out",
+        "operation too slow",
+        "early eof",
+        "rpc failed",
+        "unexpected disconnect",
+        "the remote end hung up unexpectedly",
+        "network is unreachable",
+        "empty reply from server",
+        "transfer closed",
+        "ssl_error",
+        "ssl_read",
+        "ssl_connect",
+        "gnutls",
+    ]
+    .iter()
+    .any(|p| s.contains(p))
+}
+
+/// The waits before a fetch's second and third attempts (decision G-6):
+/// one GitHub connect failure cost a whole oracle job (E4 6.4). Shorter
+/// under test.
+const FETCH_BACKOFF: [std::time::Duration; 2] = if cfg!(test) {
+    [
+        std::time::Duration::from_millis(20),
+        std::time::Duration::from_millis(80),
+    ]
+} else {
+    [
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(8),
+    ]
+};
+
+/// Call `fetch` until it succeeds or fails for a reason that is not the
+/// network's, at most once more per wait in `backoff`, saying so each time.
+async fn retrying<F, Fut>(backoff: &[std::time::Duration], mut fetch: F) -> Result<String, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut tried = 0;
+    loop {
+        match fetch().await {
+            Err(m) if tried < backoff.len() && network_failure(&m) => {
+                let wait = backoff[tried];
+                tried += 1;
+                eprintln!(
+                    "  git fetch failed ({}); trying again in {} s (attempt {} of {})",
+                    m.lines().last().unwrap_or_default().trim(),
+                    wait.as_secs_f32(),
+                    tried + 1,
+                    backoff.len() + 1
+                );
+                tokio::time::sleep(wait).await;
+            }
+            done => return done,
+        }
+    }
+}
+
+/// git in a checkout while `bench` holds its lock (`<dir>.lock`, decision
+/// G-4). Every git started here, and everything it starts, inherits the
+/// lock, so a git still running after its `bench` was killed (an OOM kill,
+/// `kill -9`) keeps the checkout locked: the next run waits for it instead
+/// of finding the lock free (review FINAL-B 2). That makes it safe to
+/// delete the lock files a killed git left (review FETCH-E-B), which
+/// [`LockedGit::new`] does. The price is that nothing git starts may
+/// outlive it, so git runs with [`LOCKED_SETTINGS`] and without the `cache`
+/// credential helper (other helpers stay): a private repository whose only
+/// helper is `cache` fails to authenticate, and the error says so.
+struct LockedGit {
+    lock: std::fs::File,
+    dir: PathBuf,
+    settings: Vec<String>,
+    /// The `cache` credential helper was left out.
+    no_cache: bool,
+}
+
+impl LockedGit {
+    /// Take the lock on `dir` (waiting at most [`LOCK_WAIT`]), then delete
+    /// the lock files a killed git left in it.
+    async fn new(dir: &Path) -> std::io::Result<Self> {
+        let lock = lock_checkout(dir).await?;
+        remove_stale_git_locks(dir);
+        Ok(Self {
+            lock,
+            dir: dir.to_path_buf(),
+            settings: LOCKED_SETTINGS
+                .iter()
+                .flat_map(|s| ["-c".to_string(), s.to_string()])
+                .collect(),
+            no_cache: false,
+        })
+    }
+
+    /// Read the credential helpers git would use in the checkout (its own
+    /// repository's settings included, so after `git init`), and leave the
+    /// `cache` helper out of every later call.
+    async fn read_helpers(&mut self) {
+        let listing = run_git(
+            &[],
+            &[
+                "config",
+                "--null",
+                "--get-regexp",
+                r"^credential\.(.*\.)?helper$",
+            ],
+            Some(&self.dir),
+            GIT_STALL,
+            GIT_CALL_LIMIT,
+            None,
+        )
+        .await
+        .unwrap_or_default();
+        let (helpers, dropped) = helper_settings(&listing);
+        self.settings.extend(helpers);
+        self.no_cache = dropped;
+    }
+
+    async fn git(&self, args: &[&str]) -> Result<String, String> {
+        run_git(
+            &self.settings,
+            args,
+            Some(&self.dir),
+            GIT_STALL,
+            GIT_CALL_LIMIT,
+            Some(&self.lock),
+        )
+        .await
+        .map_err(|m| {
+            if self.no_cache && auth_failure(&m) {
+                format!(
+                    "{m}\n(bench leaves git's `cache` credential helper out of its cached \
+                     checkouts, because its daemon would keep the checkout locked for minutes; \
+                     if only that helper held these credentials, give them to another, such as \
+                     `store` or your system's keychain)"
+                )
+            } else {
+                m
+            }
+        })
+    }
+
+    /// A `git fetch`, tried again after a network failure (decision G-6).
+    async fn fetch(&self, args: &[&str]) -> Result<String, String> {
+        retrying(&FETCH_BACKOFF, || self.git(args)).await
+    }
+}
+
+/// Delete the `*.lock` files under `dir/.git` that a git killed while
+/// changing the checkout left (`index.lock`, `info/sparse-checkout.lock`,
+/// `shallow.lock`, ref locks): SIGKILL from the time limit, an OOM kill or
+/// a reboot skips git's own cleanup, and every later change failed with
+/// "File exists" until someone deleted them (reviews FETCH-E-B, FINAL-A 1).
+/// Only while holding the checkout's lock, which every git `bench` starts
+/// there inherits ([`LockedGit`]), so no git of ours is running in it.
+/// Never through a symbolic link: a linked `.git`, folder or lock file is
+/// left alone.
+fn remove_stale_git_locks(dir: &Path) {
+    let git_dir = dir.join(".git");
+    if !std::fs::symlink_metadata(&git_dir).is_ok_and(|m| m.is_dir()) {
+        return;
+    }
+    for entry in walkdir::WalkDir::new(&git_dir)
+        .follow_links(false)
+        .follow_root_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if entry.file_type().is_file() && entry.path().extension().is_some_and(|e| e == "lock") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// How long a run waits for another to finish changing a checkout.
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -326,8 +663,9 @@ const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// created or changed: two runs started together on the same repository
 /// and ref would otherwise race on git's own lock files and one would fail
 /// ("Unable to create .../sparse-checkout.lock: File exists"). The lock is
-/// released when the file is dropped, or when the process dies. A run waits
-/// at most [`LOCK_WAIT`] for another, and says that it is waiting.
+/// released when the file is dropped and every git started under it has
+/// ended ([`LockedGit`]). A run waits at most [`LOCK_WAIT`] for another, and
+/// says that it is waiting.
 async fn lock_checkout(dir: &Path) -> std::io::Result<std::fs::File> {
     lock_checkout_within(dir, LOCK_WAIT).await
 }
@@ -359,17 +697,22 @@ async fn lock_checkout_within(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!(
-                    "another bench process held {} for {}s while fetching into the same \
-                     checkout; run again when it is done (the lock goes when its process ends)",
+                    "{} was held for {}s by another bench process fetching into the same \
+                     checkout, or by a git it started that is still running (perhaps one left \
+                     after its bench process was killed, or a helper that git started); run \
+                     again when it is done (`lsof {}` names the process; the lock goes when \
+                     it ends)",
                     path.display(),
-                    limit.as_secs()
+                    limit.as_secs(),
+                    path.display()
                 ),
             ));
         }
         if !said {
             said = true;
             eprintln!(
-                "  waiting for another bench process to finish fetching into {} (at most {}s)",
+                "  waiting for another bench process, or a git it started, to finish with {} \
+                 (at most {}s)",
                 dir.display(),
                 limit.as_secs()
             );
@@ -445,15 +788,16 @@ async fn resolve_commit(url: &str, reference: &str, cache: &Path) -> Result<Stri
         .join("git")
         .join(repo_folder(url))
         .join(".resolve");
-    let _lock = lock_checkout(&dir).await.map_err(|e| e.to_string())?;
+    let mut locked = LockedGit::new(&dir).await.map_err(|e| e.to_string())?;
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        git(&["init", "-q"], Some(&dir)).await?;
-        git(&["remote", "add", "origin", url], Some(&dir)).await?;
+        locked.git(&["init", "-q"]).await?;
+        locked.git(&["remote", "add", "origin", url]).await?;
     }
+    locked.read_helpers().await;
     let sha_like = looks_like_sha(reference);
-    let named = git(
-        &[
+    let named = locked
+        .fetch(&[
             "fetch",
             "-q",
             "--depth",
@@ -461,13 +805,11 @@ async fn resolve_commit(url: &str, reference: &str, cache: &Path) -> Result<Stri
             "--filter=blob:none",
             "origin",
             reference,
-        ],
-        Some(&dir),
-    )
-    .await;
+        ])
+        .await;
     match named {
         Ok(_) => {
-            let sha = git(&["rev-parse", "FETCH_HEAD^{commit}"], Some(&dir)).await?;
+            let sha = locked.git(&["rev-parse", "FETCH_HEAD^{commit}"]).await?;
             if !sha_like || sha.starts_with(&reference.to_ascii_lowercase()) {
                 return Ok(sha);
             }
@@ -495,14 +837,12 @@ async fn resolve_commit(url: &str, reference: &str, cache: &Path) -> Result<Stri
         "+refs/heads/*:refs/remotes/origin/*",
         "+refs/tags/*:refs/tags/*",
     ]);
-    git(&args, Some(&dir)).await?;
+    locked.fetch(&args).await?;
     let prefix = reference.to_ascii_lowercase();
-    let listed = git(
-        &["rev-parse", &format!("--disambiguate={prefix}")],
-        Some(&dir),
-    )
-    .await
-    .unwrap_or_default();
+    let listed = locked
+        .git(&["rev-parse", &format!("--disambiguate={prefix}")])
+        .await
+        .unwrap_or_default();
     let mut commits = Vec::new();
     let mut other = Vec::new();
     for id in listed
@@ -510,7 +850,7 @@ async fn resolve_commit(url: &str, reference: &str, cache: &Path) -> Result<Stri
         .map(str::trim)
         .filter(|l| l.starts_with(&prefix))
     {
-        match git(&["cat-file", "-t", id], Some(&dir)).await.as_deref() {
+        match locked.git(&["cat-file", "-t", id]).await.as_deref() {
             Ok("commit") => commits.push(id.to_string()),
             Ok(kind) => other.push(format!("{id} ({kind})")),
             Err(_) => {}
@@ -612,29 +952,31 @@ pub async fn fetch_git(
         .join("git")
         .join(repo_folder(url))
         .join(sanitize(reference));
-    let _lock = lock_checkout(&dir).await.map_err(|e| err(e.to_string()))?;
+    let mut locked = LockedGit::new(&dir).await.map_err(|e| err(e.to_string()))?;
     let hold = hold_checkout(&dir).map_err(|e| err(e.to_string()))?;
-    if !dir.join(".git").exists() {
+    let fresh = !dir.join(".git").exists();
+    if fresh {
         std::fs::create_dir_all(&dir).map_err(|e| err(e.to_string()))?;
-        git(&["init", "-q"], Some(&dir)).await.map_err(err)?;
-        git(&["remote", "add", "origin", url], Some(&dir))
+        locked.git(&["init", "-q"]).await.map_err(err)?;
+        locked
+            .git(&["remote", "add", "origin", url])
             .await
             .map_err(err)?;
-    } else if git(&["rev-parse", "HEAD"], Some(&dir))
-        .await
-        .ok()
-        .as_deref()
-        == Some(commit)
+    }
+    locked.read_helpers().await;
+    if !fresh
+        && locked.git(&["rev-parse", "HEAD"]).await.ok().as_deref() == Some(commit)
         && wanted.iter().all(|p| dir.join(p).exists())
         && (!whole
-            || git(&["config", "core.sparseCheckout"], Some(&dir))
+            || locked
+                .git(&["config", "core.sparseCheckout"])
                 .await
                 .ok()
                 .as_deref()
                 != Some("true"))
-        && none_skipped(&dir, &wanted, whole).await
+        && none_skipped(&locked, &wanted, whole).await
         && (std::fs::read_to_string(done_file(&dir)).ok().as_deref() == Some(commit)
-            || status_clean(&dir).await)
+            || status_clean(&locked).await)
     {
         if let Some(link) = escaping_link(&dir) {
             return Err(err(link));
@@ -648,21 +990,66 @@ pub async fn fetch_git(
             hold,
         });
     }
-    // Until this checkout succeeds again, it may not be reused.
-    let _ = std::fs::remove_file(done_file(&dir));
-    let sparse = git(&["config", "core.sparseCheckout"], Some(&dir))
+    // The fetch changes no file of the checkout, so the done marker stays
+    // until the first command that does: a request that fails before then
+    // (offline) leaves a complete checkout reusable, which matters for a
+    // repository git never finds clean (review FETCH-E-A 2).
+    let shallow = locked
+        .fetch(&[
+            "fetch",
+            "-q",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            "origin",
+            reference,
+        ])
+        .await;
+    // What to check out: the commit fetched by name is kept by its sha now,
+    // since a later fetch (git's own, for file contents) may rewrite
+    // FETCH_HEAD.
+    let (target, from_history) = match shallow {
+        Ok(_) => (
+            locked
+                .git(&["rev-parse", "FETCH_HEAD^{commit}"])
+                .await
+                .map_err(err)?,
+            false,
+        ),
+        // A server that could not be reached, or that refused the
+        // credentials, would not answer for the history either.
+        Err(first) if network_failure(&first) || auth_failure(&first) => {
+            return Err(err(first));
+        }
+        Err(first) => {
+            // Some servers refuse to fetch a commit by its sha alone; fetch
+            // the history (still without file contents) and find it there.
+            locked
+                .fetch(&["fetch", "-q", "--filter=blob:none", "origin"])
+                .await
+                .map_err(|m| err(format!("{first}; then: {m}")))?;
+            (commit.to_string(), true)
+        }
+    };
+    let sparse = locked
+        .git(&["config", "core.sparseCheckout"])
         .await
         .ok()
         .as_deref()
         == Some("true");
-    let started = git(&["rev-parse", "-q", "--verify", "HEAD"], Some(&dir))
+    let started = locked
+        .git(&["rev-parse", "-q", "--verify", "HEAD"])
         .await
         .is_ok();
+    // From here on the working tree changes: until this checkout succeeds
+    // again, it may not be reused.
+    let _ = std::fs::remove_file(done_file(&dir));
     if whole {
         // A sparse checkout left as it is would return only the folders
         // earlier datasets asked for, as if they were the whole repository.
         if sparse {
-            git(&["sparse-checkout", "disable"], Some(&dir))
+            locked
+                .git(&["sparse-checkout", "disable"])
                 .await
                 .map_err(err)?;
         }
@@ -671,7 +1058,8 @@ pub async fn fetch_git(
         // lines BenchFlow writes (each starts with `/`), so a `!` line an
         // earlier build let a newline in a path inject is dropped and the
         // checkout heals (review CTRL-PATHS-B).
-        let mut patterns: Vec<String> = git(&["sparse-checkout", "list"], Some(&dir))
+        let mut patterns: Vec<String> = locked
+            .git(&["sparse-checkout", "list"])
             .await
             .map(|out| {
                 out.lines()
@@ -690,28 +1078,11 @@ pub async fn fetch_git(
         }
         let mut args = vec!["sparse-checkout", "set", "--no-cone"];
         args.extend(patterns.iter().map(String::as_str));
-        git(&args, Some(&dir)).await.map_err(err)?;
+        locked.git(&args).await.map_err(err)?;
     }
-    let shallow = git(
-        &[
-            "fetch",
-            "-q",
-            "--depth",
-            "1",
-            "--filter=blob:none",
-            "origin",
-            reference,
-        ],
-        Some(&dir),
-    )
-    .await;
-    if let Err(first) = shallow {
-        // Some servers refuse to fetch a commit by its sha alone; fetch the
-        // history (still without file contents) and find it there.
-        git(&["fetch", "-q", "--filter=blob:none", "origin"], Some(&dir))
-            .await
-            .map_err(|m| err(format!("{first}; then: {m}")))?;
-        git(&["checkout", "-q", "--force", commit], Some(&dir))
+    if from_history {
+        locked
+            .git(&["checkout", "-q", "--force", &target])
             .await
             .map_err(|m| {
                 err(
@@ -722,7 +1093,7 @@ pub async fn fetch_git(
                     },
                 )
             })?;
-    } else if let Err(first) = git(&["checkout", "-q", "--force", "FETCH_HEAD"], Some(&dir)).await {
+    } else if let Err(first) = locked.git(&["checkout", "-q", "--force", &target]).await {
         // Some servers send the commit without file contents but refuse the
         // contents asked for afterwards (Hugging Face's datasets); fetch the
         // commit with them. Not after other failures (a full disk, a name
@@ -731,8 +1102,8 @@ pub async fn fetch_git(
         if !contents_refused(&first) {
             return Err(err(first));
         }
-        git(
-            &[
+        locked
+            .fetch(&[
                 "fetch",
                 "-q",
                 "--depth",
@@ -740,18 +1111,21 @@ pub async fn fetch_git(
                 "--no-filter",
                 "origin",
                 reference,
-            ],
-            Some(&dir),
-        )
-        .await
-        .map_err(|m| err(format!("{first}; then: {m}")))?;
-        git(&["checkout", "-q", "--force", "FETCH_HEAD"], Some(&dir))
+            ])
+            .await
+            .map_err(|m| err(format!("{first}; then: {m}")))?;
+        locked
+            .git(&["checkout", "-q", "--force", &target])
             .await
             .map_err(|m| err(format!("{first}; then: {m}")))?;
     }
-    let head = git(&["rev-parse", "HEAD"], Some(&dir)).await.map_err(err)?;
+    let head = locked.git(&["rev-parse", "HEAD"]).await.map_err(err)?;
     let missing: Vec<&String> = wanted.iter().filter(|p| !dir.join(p).exists()).collect();
     if !missing.is_empty() {
+        // Every change git was asked for succeeded, so the checkout is as
+        // complete as a successful one; only the folder is not in the
+        // repository (a typo). Keep it reusable (review FETCH-E-A 2).
+        let _ = std::fs::write(done_file(&dir), &head);
         let shown: Vec<&str> = missing.iter().take(5).map(|s| s.as_str()).collect();
         return Err(err(format!(
             "the repository has no folder {} at {}{}",
@@ -1603,7 +1977,11 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
-        assert!(e.to_string().contains("another bench process held"), "{e}");
+        assert!(
+            e.to_string().contains("by another bench process")
+                && e.to_string().contains("or by a git it started"),
+            "{e}"
+        );
         drop(held);
         lock_checkout_within(&dir, std::time::Duration::from_millis(300))
             .await
@@ -1727,5 +2105,534 @@ mod tests {
             again.dir.join("tasks/x/y/test.sh").is_file(),
             "the injected line is gone and the file is back"
         );
+    }
+
+    /// Run git in `repo` as the tests' origins do (no signing, a fixed
+    /// identity), failing the test on an error.
+    fn origin_git(repo: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"])
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository at `repo` holding `files` on branch `main`, fetchable
+    /// blobless and by sha; returns its commit.
+    fn make_origin(repo: &Path, files: &[(&str, &str)]) -> String {
+        for (path, text) in files {
+            let path = repo.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        origin_git(repo, &["init", "-q", "-b", "main"]);
+        origin_git(repo, &["config", "uploadpack.allowFilter", "true"]);
+        origin_git(repo, &["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        origin_git(repo, &["add", "."]);
+        origin_git(repo, &["commit", "-q", "-m", "tasks"]);
+        origin_git(repo, &["rev-parse", "HEAD"])
+    }
+
+    /// Reviews FETCH-E-B and FINAL-A 1: a git killed mid-change (the time
+    /// limit's SIGKILL, an OOM kill, a reboot) leaves `index.lock` and
+    /// `info/sparse-checkout.lock` in the checkout, or `shallow.lock` in the
+    /// `.resolve` clone, and every later run at that commit, at `HEAD`, a
+    /// branch or a short sha failed with "File exists" until someone
+    /// deleted them. With no git holding the checkout's lock, they go.
+    #[tokio::test]
+    async fn stale_git_locks_no_longer_block_a_run() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let sha = make_origin(
+            &repo,
+            &[
+                ("tasks/a/task.md", "a"),
+                ("tasks/b/task.md", "b"),
+                ("tasks/c/task.md", "c"),
+                ("tasks/d/task.md", "d"),
+            ],
+        );
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let co = fetch_git(&url, &sha, &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        // The `.resolve` clone, as a run at `HEAD` leaves it (shallow).
+        fetch_git(&url, "HEAD", &["tasks/a".into()], &cache)
+            .await
+            .unwrap();
+        let resolve = cache
+            .join("sources/git")
+            .join(repo_folder(&url))
+            .join(".resolve");
+        assert!(resolve.join(".git/shallow").is_file());
+        let plant = || {
+            for lock in [
+                co.dir.join(".git/index.lock"),
+                co.dir.join(".git/info/sparse-checkout.lock"),
+                resolve.join(".git/shallow.lock"),
+            ] {
+                std::fs::write(lock, "").unwrap();
+            }
+        };
+        // Each case on its own, so a failure names every case that fails.
+        let mut failed = Vec::new();
+        // At a commit: a folder not yet checked out.
+        plant();
+        match fetch_git(&url, &sha, &["tasks/b".into()], &cache).await {
+            Ok(b) => assert!(b.dir.join("tasks/b/task.md").is_file()),
+            Err(e) => failed.push(format!("at a commit: {e}")),
+        }
+        // At `HEAD`.
+        plant();
+        match fetch_git(&url, "HEAD", &["tasks/c".into()], &cache).await {
+            Ok(c) => assert!(c.dir.join("tasks/c/task.md").is_file()),
+            Err(e) => failed.push(format!("at HEAD: {e}")),
+        }
+        // At a branch.
+        plant();
+        let mut branch = parse_remote("o/r/tasks/d@main").unwrap();
+        match fetch_from(&mut branch, &cache, &url).await {
+            Ok((d, _)) => assert!(d.join("task.md").is_file()),
+            Err(e) => failed.push(format!("at a branch: {e}")),
+        }
+        // At a short sha.
+        plant();
+        let mut short = parse_remote(&format!("o/r/tasks/a@{}", &sha[..7])).unwrap();
+        match fetch_from(&mut short, &cache, &url).await {
+            Ok((a, _)) => {
+                assert!(a.join("task.md").is_file());
+                assert_eq!(short.commit.as_deref(), Some(sha.as_str()));
+            }
+            Err(e) => failed.push(format!("at a short sha: {e}")),
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// The lock files go only from inside `.git`, and never through a
+    /// link: a linked lock file, a linked folder of lock files, a `.git`
+    /// that is a link, and a folder named `*.lock` are left as they are.
+    #[test]
+    fn stale_locks_are_removed_never_through_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.lock"), "").unwrap();
+        let dir = tmp.path().join("co");
+        std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+        std::fs::create_dir_all(dir.join(".git/refs/remotes/origin")).unwrap();
+        std::fs::create_dir_all(dir.join(".git/dir.lock")).unwrap();
+        for stale in [
+            "index.lock",
+            "info/sparse-checkout.lock",
+            "shallow.lock",
+            "refs/remotes/origin/main.lock",
+        ] {
+            std::fs::write(dir.join(".git").join(stale), "").unwrap();
+        }
+        std::fs::write(dir.join("worktree.lock"), "").unwrap();
+        std::os::unix::fs::symlink(outside.join("keep.lock"), dir.join(".git/link.lock")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(".git/linked")).unwrap();
+        remove_stale_git_locks(&dir);
+        for gone in [
+            "index.lock",
+            "info/sparse-checkout.lock",
+            "shallow.lock",
+            "refs/remotes/origin/main.lock",
+        ] {
+            assert!(!dir.join(".git").join(gone).exists(), "{gone}");
+        }
+        assert!(dir.join(".git/dir.lock").is_dir());
+        assert!(dir.join("worktree.lock").is_file(), "only under .git");
+        assert!(dir.join(".git/link.lock").symlink_metadata().is_ok());
+        assert!(outside.join("keep.lock").is_file());
+        // A `.git` that is itself a link is not walked.
+        let linked = tmp.path().join("linked-co");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(&outside, linked.join(".git")).unwrap();
+        remove_stale_git_locks(&linked);
+        assert!(outside.join("keep.lock").is_file());
+    }
+
+    /// Review FETCH-E-A 2: in a repository git never finds clean (a CRLF
+    /// file under `text eol=lf`), a request that failed without changing
+    /// the checkout (a typo'd folder; a new folder while offline) removed
+    /// the done marker, so the folder that was complete needed the network
+    /// again. It no longer does.
+    #[tokio::test]
+    async fn a_failed_request_keeps_a_complete_checkout_reusable_offline() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        make_origin(
+            &repo,
+            &[
+                ("tasks/a/task.md", "a"),
+                ("tasks/b/crlf.txt", "one\r\ntwo\r\n"),
+                ("other/task.md", "o"),
+            ],
+        );
+        // Normalization added later, without renormalizing the CRLF file.
+        std::fs::write(repo.join(".gitattributes"), "* text eol=lf\n").unwrap();
+        origin_git(&repo, &["add", ".gitattributes"]);
+        origin_git(&repo, &["commit", "-q", "-m", "attributes"]);
+        let sha = origin_git(&repo, &["rev-parse", "HEAD"]);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let co = fetch_git(&url, &sha, &["tasks".into()], &cache)
+            .await
+            .unwrap();
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=no"])
+            .current_dir(&co.dir)
+            .output()
+            .unwrap();
+        assert!(!status.stdout.is_empty(), "git never finds it clean");
+        let away = tmp.path().join("away");
+        let offline_run = || async {
+            std::fs::rename(&repo, &away).unwrap();
+            let r = fetch_git(&url, &sha, &["tasks".into()], &cache).await;
+            std::fs::rename(&away, &repo).unwrap();
+            r
+        };
+        // A typo'd folder, online.
+        let e = fetch_git(&url, &sha, &["tasks/zzz".into()], &cache)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("no folder tasks/zzz"), "{e}");
+        let reused = offline_run().await.unwrap();
+        assert_eq!(reused.dir, co.dir);
+        // A new folder, offline.
+        std::fs::rename(&repo, &away).unwrap();
+        let e = fetch_git(&url, &sha, &["other".into()], &cache).await;
+        std::fs::rename(&away, &repo).unwrap();
+        assert!(e.is_err());
+        let reused = offline_run().await.unwrap();
+        assert!(reused.dir.join("tasks/b/crlf.txt").is_file());
+        // The new folder, online, is added as before.
+        let other = fetch_git(&url, &sha, &["other".into()], &cache)
+            .await
+            .unwrap();
+        assert!(other.dir.join("other/task.md").is_file());
+    }
+
+    /// The stand-in for a `bench` process that a test kills while its git
+    /// runs: fetches what the environment names. Run only by
+    /// [`an_orphaned_git_keeps_the_checkout_locked`].
+    #[tokio::test]
+    #[ignore = "the stand-in parent an_orphaned_git_keeps_the_checkout_locked starts"]
+    async fn orphan_standin() {
+        let (Ok(url), Ok(sha), Ok(cache)) = (
+            std::env::var("G2_STANDIN_URL"),
+            std::env::var("G2_STANDIN_SHA"),
+            std::env::var("G2_STANDIN_CACHE"),
+        ) else {
+            return;
+        };
+        let _ = fetch_git(&url, &sha, &["tasks/a".into()], Path::new(&cache)).await;
+    }
+
+    /// Lets every git a slowed `upload-pack` holds go on when dropped.
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Review FINAL-B 2: the checkout lock was close-on-exec, so a git
+    /// still running after its `bench` was killed held nothing, and
+    /// deleting stale lock files could delete its live `index.lock` (two
+    /// writers on one index). Git now inherits the lock: the stand-in
+    /// `bench` is killed while its `checkout` waits on a slowed
+    /// `upload-pack`, and the next fetch waits for the orphan instead of
+    /// deleting its lock, then finds the checkout complete.
+    #[tokio::test]
+    async fn an_orphaned_git_keeps_the_checkout_locked() {
+        if which("git").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let files: Vec<(String, String)> = (0..20)
+            .map(|i| (format!("tasks/a/f{i}"), format!("{i}\n")))
+            .collect();
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        let sha = make_origin(&repo, &files);
+        let url = format!("file://{}", repo.display());
+        let cache = tmp.path().join("cache");
+        let dir = cache.join("sources/git").join(repo_folder(&url)).join(&sha);
+        // The second `upload-pack` (the contents `checkout` asks for) waits
+        // while `hold` exists.
+        let hold = tmp.path().join("hold");
+        std::fs::write(&hold, "").unwrap();
+        let release = Release(hold.clone());
+        let wrapper = tmp.path().join("slow-upload-pack");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nd='{}'\nn=$(cat \"$d/count\" 2>/dev/null || echo 0)\nn=$((n+1))\n\
+                 echo $n > \"$d/count\"\nif [ \"$n\" -ge 2 ]; then\n  touch \"$d/slowed\"\n  \
+                 while [ -f \"$d/hold\" ]; do sleep 0.1; done\nfi\nexec git upload-pack \"$@\"\n",
+                tmp.path().display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut standin = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "source::tests::orphan_standin",
+                "--exact",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("G2_STANDIN_URL", &url)
+            .env("G2_STANDIN_SHA", &sha)
+            .env("G2_STANDIN_CACHE", &cache)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "remote.origin.uploadpack")
+            .env("GIT_CONFIG_VALUE_0", &wrapper)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let index_lock = dir.join(".git/index.lock");
+        let started = std::time::Instant::now();
+        while !(tmp.path().join("slowed").exists() && index_lock.exists()) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "the stand-in's checkout never reached the slowed upload-pack"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        // Kill the stand-in `bench` (SIGKILL: no cleanup runs); its git
+        // goes on as an orphan.
+        standin.kill().unwrap();
+        standin.wait().unwrap();
+        assert!(
+            checkout_locked(&dir),
+            "the orphaned git holds the checkout's lock"
+        );
+        let second = tokio::spawn({
+            let (url, sha, cache) = (url.clone(), sha.clone(), cache.clone());
+            async move { fetch_git(&url, &sha, &["tasks/a".into()], &cache).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(!second.is_finished(), "the second fetch waits");
+        assert!(index_lock.exists(), "the orphan's live index.lock is kept");
+        drop(release);
+        let co = tokio::time::timeout(std::time::Duration::from_secs(60), second)
+            .await
+            .expect("the second fetch goes on once the orphan ends")
+            .unwrap()
+            .unwrap();
+        for i in 0..20 {
+            assert!(co.dir.join(format!("tasks/a/f{i}")).is_file(), "f{i}");
+        }
+    }
+
+    /// Decision G-6: which failures a fetch is tried again after, in the
+    /// words of git and curl.
+    #[test]
+    fn only_network_failures_are_tried_again() {
+        for network in [
+            "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host: github.com",
+            "fatal: unable to access 'https://github.com/o/r.git/': Failed to connect to github.com port 443 after 75003 ms: Couldn't connect to server",
+            "fatal: unable to access 'https://github.com/o/r.git/': Operation timed out after 300000 milliseconds",
+            "error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: early EOF",
+            "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502",
+            "fatal: unable to access 'https://h/r/': The requested URL returned error: 503",
+            "fatal: unable to access 'https://h/r/': The requested URL returned error: 429",
+            "fatal: the remote end hung up unexpectedly",
+            "fatal: unable to access 'https://h/r/': Operation too slow. Less than 1000 bytes/sec transferred the last 60 seconds",
+            "ssh: Could not resolve hostname github.com: Temporary failure in name resolution",
+            "fatal: unable to access 'https://h/r/': gnutls_handshake() failed: The TLS connection was non-properly terminated.",
+        ] {
+            assert!(network_failure(network), "{network}");
+        }
+        for other in [
+            "fatal: couldn't find remote ref refs/heads/nope",
+            "fatal: Authentication failed for 'https://github.com/o/r.git/'",
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+            "fatal: unable to access 'https://h/r/': The requested URL returned error: 403",
+            "fatal: unable to access 'https://h/r/': The requested URL returned error: 404",
+            "error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401",
+            "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+            "fatal: write error: No space left on device\nfatal: early EOF",
+            "remote: Repository not found.\nfatal: repository 'https://github.com/o/r.git/' not found",
+            "fatal: '/x/repo' does not appear to be a git repository",
+            "fatal: unable to access 'https://h/r/': SSL certificate problem: unable to get local issuer certificate",
+            "`git fetch` did not finish within 1800 s; the network or the server stalled",
+        ] {
+            assert!(!network_failure(other), "{other}");
+        }
+    }
+
+    /// Decision G-6: at most two more attempts, after the waits given, and
+    /// only for a network failure.
+    #[tokio::test]
+    async fn a_fetch_is_tried_again_only_after_a_network_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let backoff = [
+            std::time::Duration::from_millis(30),
+            std::time::Duration::from_millis(120),
+        ];
+        let attempts = |stderr: &'static str, succeed_at: usize| async move {
+            let calls = AtomicUsize::new(0);
+            let started = std::time::Instant::now();
+            let r = retrying(&backoff, || {
+                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if n == succeed_at {
+                        Ok("ok".to_string())
+                    } else {
+                        Err(stderr.to_string())
+                    }
+                }
+            })
+            .await;
+            (calls.load(Ordering::SeqCst), r, started.elapsed())
+        };
+        let down = "fatal: unable to access 'https://h/r/': Could not resolve host: h";
+        let (calls, r, took) = attempts(down, 0).await;
+        assert_eq!(calls, 3);
+        assert_eq!(r.unwrap_err(), down);
+        assert!(took >= std::time::Duration::from_millis(150), "{took:?}");
+        let (calls, r, _) = attempts(down, 2).await;
+        assert_eq!((calls, r.unwrap().as_str()), (2, "ok"));
+        for refused in [
+            "fatal: couldn't find remote ref refs/heads/nope",
+            "fatal: Authentication failed for 'https://h/r/'",
+            "fatal: could not read Username for 'https://h': terminal prompts disabled",
+            "error: unable to write file x: No space left on device",
+        ] {
+            let (calls, r, _) = attempts(refused, 0).await;
+            assert_eq!(calls, 1, "{refused}");
+            assert_eq!(r.unwrap_err(), refused);
+        }
+    }
+
+    /// A git server that answers every request with `status`, counting
+    /// the requests.
+    async fn refusing_git_server(
+        status: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = count.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+        (format!("http://{addr}/repo.git"), count)
+    }
+
+    /// E4 6.4: one connect failure cost a whole job. A server answering
+    /// 503 is asked three times in all, by name and not again by history.
+    #[tokio::test]
+    async fn a_fetch_from_an_unavailable_server_is_tried_three_times() {
+        if which("git").is_none() {
+            return;
+        }
+        let (url, count) = refusing_git_server("503 Service Unavailable").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let e = fetch_git(&url, sha, &["tasks".into()], tmp.path())
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("503"), "{e}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // A missing page is not.
+        let (url, count) = refusing_git_server("404 Not Found").await;
+        let e = fetch_git(&url, sha, &["tasks".into()], tmp.path())
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("not found"), "{e}");
+        // The fetch by name, then the history once.
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// Decision G-4: the `cache` helper (its daemon would hold the
+    /// checkout's lock for 15 minutes) is left out; every other helper,
+    /// for every URL, is given again in order, and empty values still
+    /// clear the list before them.
+    #[test]
+    fn only_the_cache_credential_helper_is_left_out() {
+        let listing = "credential.helper\ncache --timeout=60\0\
+                       credential.helper\nstore\0\
+                       credential.https://github.com.helper\n\0\
+                       credential.https://github.com.helper\n!/opt/homebrew/bin/gh auth git-credential\0\
+                       credential.https://h.example.helper\n/usr/lib/git-core/git-credential-cache\0\
+                       credential.https://h.example.helper\n!git credential-cache --socket /s\0";
+        let (settings, dropped) = helper_settings(listing);
+        assert!(dropped);
+        assert_eq!(
+            settings,
+            [
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=store",
+                "-c",
+                "credential.https://github.com.helper=",
+                "-c",
+                "credential.https://github.com.helper=!/opt/homebrew/bin/gh auth git-credential",
+            ]
+        );
+        // No cache helper: git is given the helpers as they are.
+        let (settings, dropped) =
+            helper_settings("credential.helper\nosxkeychain\0credential.helper\ncacher\0");
+        assert!(!dropped && settings.is_empty());
+        assert_eq!(helper_settings(""), (Vec::new(), false));
+        for cache in [
+            "cache",
+            "cache --timeout=1",
+            "/x/git-credential-cache",
+            "!git credential-cache",
+        ] {
+            assert!(cache_helper(cache), "{cache}");
+        }
+        for other in [
+            "store",
+            "osxkeychain",
+            "!gh auth git-credential",
+            "manager",
+            "cacher",
+        ] {
+            assert!(!cache_helper(other), "{other}");
+        }
     }
 }

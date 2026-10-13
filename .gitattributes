@@ -1,0 +1,3 @@
+# git archive (and GitHub's source tarballs) write the commit into this file,
+# so a build from an archive names its commit in `bench --version`.
+crates/benchflow-cli/archive-commit.txt export-subst

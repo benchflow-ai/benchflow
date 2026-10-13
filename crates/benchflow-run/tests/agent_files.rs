@@ -170,7 +170,10 @@ impl Sandbox for FakeSandbox {
             ok(&self.skills_report(&c))
         } else if c.contains("useradd") {
             ok("BF user agent 1000 /home/agent\n")
-        } else if c.contains("baseline") && c.contains("files.tar") && !c.contains("after") {
+        } else if c.contains("baseline")
+            && c.contains("files.tar")
+            && !c.contains("BF handoff done")
+        {
             ok("BF baseline 2\n")
         } else if c.contains("kill -9 -1") {
             ok("BF killed 1\n")

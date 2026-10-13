@@ -565,6 +565,40 @@ fn select<'a>(trials: &'a [Trial], query: &ViewQuery) -> Selection<'a> {
     }
 }
 
+/// Move each job the query named that holds only discarded branch parents
+/// (`set_aside`, the jobs of the trials the view left out) from `unknown` to
+/// `set_aside`, as `{"id", "name"}` (the root job by the served folder's
+/// name, as the other lists name it): the server serves it, so the page says
+/// why it has no trial here instead of calling it not found. The rest of
+/// `unknown` stays.
+pub fn mark_set_aside(view: &mut Value, set_aside: &[String]) {
+    let Value::Object(map) = view else {
+        return;
+    };
+    let root_name = get(map, "root").as_str().unwrap_or(ROOT_JOB).to_string();
+    let jobs: Vec<(String, usize)> = set_aside.iter().map(|job| (job.clone(), 0)).collect();
+    let mut found: Vec<String> = Vec::new();
+    if let Some(Value::Array(unknown)) = map.get_mut("unknown") {
+        unknown.retain(|asked| {
+            let Some(job) = asked.as_str().and_then(|asked| match_job(&jobs, asked)) else {
+                return true;
+            };
+            if !found.contains(&job) {
+                found.push(job);
+            }
+            false
+        });
+    }
+    let found = found
+        .into_iter()
+        .map(|job| {
+            let name = job_name(&job, &root_name);
+            object([("id", job.into()), ("name", name.into())])
+        })
+        .collect();
+    map.insert("set_aside".into(), Value::Array(found));
+}
+
 /// The job a `runs=` entry names. Ids are relative to the folder served
 /// (`a` when serving `jobs`), but a path as typed in the shell works too
 /// (`jobs/a`, `./jobs/a/`): the one job whose id ends the path, for a

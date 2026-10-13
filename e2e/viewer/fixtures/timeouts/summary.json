@@ -1,0 +1,63 @@
+{
+  "job_name": "timeouts",
+  "agent": "oracle",
+  "model": null,
+  "environment": "daytona",
+  "concurrency": 4,
+  "total": 4,
+  "passed": 1,
+  "failed": 1,
+  "errored": 1,
+  "verifier_errored": 1,
+  "unscored": 1,
+  "pass": 1,
+  "fail": 1,
+  "error": 1,
+  "not_started": 0,
+  "stopped": 0,
+  "partial": false,
+  "score": "25.0%",
+  "score_ratio": 0.25,
+  "score_interval": [
+    0.04558726080970055,
+    0.6993581574175981
+  ],
+  "score_excl_errors": "50.0%",
+  "score_excl_errors_ratio": 0.5,
+  "mean_reward": 0.5,
+  "elapsed_sec": 170.832138042,
+  "total_input_tokens": 0,
+  "total_output_tokens": 0,
+  "total_cache_read_tokens": 0,
+  "total_cache_creation_tokens": 0,
+  "total_tokens": 0,
+  "total_cost_usd": null,
+  "pass_at_k": {
+    "1": 0.5
+  },
+  "failures_by_cause": [
+    {
+      "code": "R101",
+      "owner": "task",
+      "message": "the task's Dockerfile failed to build on Daytona (ERROR: process \"/bin/sh -c exit 7\" did not complete successfully: exit code: 7). This is a problem in the task: fix the Dockerfile; `docker build` shows the same failure locally.",
+      "next": "fix the failing step in the task's Dockerfile (or the image it names); image.log in the trial folder has the build output",
+      "trials": [
+        "broken-image__d075e6d5"
+      ]
+    },
+    {
+      "code": "R303",
+      "owner": "task",
+      "message": "the verifier ran past its 5s timeout",
+      "next": "install test dependencies in the image rather than in test.sh, or raise [verifier] timeout",
+      "trials": [
+        "verifier-timeout__c41d891b"
+      ]
+    }
+  ],
+  "environment_warnings": [],
+  "engine": {
+    "name": "benchflow-rs",
+    "version": "0.8.1-dev.0"
+  }
+}

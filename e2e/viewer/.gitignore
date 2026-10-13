@@ -1,0 +1,3 @@
+/node_modules/
+# The runner's output.
+/.e2e/

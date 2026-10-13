@@ -119,10 +119,12 @@ impl ServiceHost for DockerProvider {
             remove(&self.cli, &name).await;
             return Err(e);
         }
-        Ok(Box::new(DockerSandbox {
-            cli: self.cli.clone(),
+        // A service is the task's: its disk is not the agent's to watch.
+        Ok(Box::new(DockerSandbox::new(
+            self.cli.clone(),
             name,
-        }))
+            crate::DiskLimit::None,
+        )))
     }
 
     async fn create_on_network(
@@ -130,11 +132,8 @@ impl ServiceHost for DockerProvider {
         spec: &SandboxSpec,
         network: &str,
     ) -> Result<Box<dyn Sandbox>, SandboxError> {
-        let name = super::run::start(&self.cli, spec).await?;
-        let sandbox = DockerSandbox {
-            cli: self.cli.clone(),
-            name: name.clone(),
-        };
+        let (name, limit) = super::run::start(&self.cli, spec).await?;
+        let sandbox = DockerSandbox::new(self.cli.clone(), name.clone(), limit).with_spec(spec);
         if spec.network == NetworkPolicy::None {
             // A container on `none` joins no other network until it leaves it.
             let args = [
