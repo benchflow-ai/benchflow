@@ -3149,6 +3149,20 @@ fi; done; exit 0"#,
         ok.then(|| p.to_path_buf())
     }
 
+    /// The first folder on the way to `link`'s target that its group or
+    /// others can write to, or `None`. The handoff rightly repairs no
+    /// interpreter link through such a folder, so the venv test below skips
+    /// there: GitHub's macOS image makes `/usr/bin/python3 -m venv` name
+    /// Xcode's Python under a group-writable `/Applications`.
+    fn folder_open_to_others(link: &std::path::Path) -> Option<String> {
+        use std::os::unix::fs::MetadataExt;
+        let real = std::fs::canonicalize(link).ok()?;
+        real.ancestors()
+            .skip(1)
+            .find(|p| std::fs::metadata(p).is_ok_and(|m| m.mode() & 0o022 != 0))
+            .map(|p| p.display().to_string())
+    }
+
     /// A venv made by `python3 -m venv` (`python3 -> /usr/bin/python3`,
     /// `python` and `python3.N` naming it) keeps all three interpreters
     /// through the handoff: the scan removes the escaping link, and root
@@ -3170,6 +3184,12 @@ fi; done; exit 0"#,
             .status()
             .unwrap();
         assert!(made.success());
+        if let Some(open) = folder_open_to_others(&venv.join("bin/python3")) {
+            eprintln!(
+                "skipped: the venv's interpreter is reached through {open}, a folder others can write to"
+            );
+            return;
+        }
         let names = interpreter_links(&venv);
         let base = baseline_run(&root, Some(&app));
         assert!(base.contains("BF venvs 1"), "{base}");
