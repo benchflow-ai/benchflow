@@ -684,6 +684,29 @@ def _bridge_explicit_openhands_provider_env(
         agent_env["BENCHFLOW_PROVIDER_API_KEY"] = agent_env["LLM_API_KEY"]
 
 
+def _keep_only_the_muse_login(
+    agent_env: dict[str, str], explicit_agent_env_keys: set[str]
+) -> None:
+    """Drop every inherited credential but the Muse login; refuse a run without one.
+
+    Muse Code talks to Meta with its own login and needs no other key. Anything
+    else auto-inherited from the host (another provider's key, a reviewer's
+    Azure credentials in the same process) would only reach a third party's
+    agent sandbox. Explicit ``agent_env`` entries are the caller's choice and
+    stay.
+    """
+    for key in list(agent_env):
+        if key not in explicit_agent_env_keys and key != _MUSE_AUTH_JSON_ENV:
+            del agent_env[key]
+    if not agent_env.get(_MUSE_AUTH_JSON_ENV):
+        raise ValueError(
+            "muse-code runs on a Muse Code subscription login: set MUSE_AUTH_JSON to "
+            "the contents of the auth.json that `TBH_CREDENTIAL_BACKEND=file muse "
+            "login` writes. A META_API_KEY (pay-as-you-go) run has no BenchFlow proxy "
+            "route, and BenchFlow never sends API-key traffic around the proxy."
+        )
+
+
 def resolve_agent_env(
     agent: str,
     model: str | None,
@@ -697,13 +720,8 @@ def resolve_agent_env(
     auto_inherit_env(agent_env, source_env=load_dotenv_env())
     auto_inherit_env(agent_env)
     _normalize_codex_auth_env(agent, model, agent_env)
-    if agent == _MUSE_AGENT and not agent_env.get(_MUSE_AUTH_JSON_ENV):
-        raise ValueError(
-            "muse-code runs on a Muse Code subscription login: set MUSE_AUTH_JSON to "
-            "the contents of the auth.json that `TBH_CREDENTIAL_BACKEND=file muse "
-            "login` writes. A META_API_KEY (pay-as-you-go) run has no BenchFlow proxy "
-            "route, and BenchFlow never sends API-key traffic around the proxy."
-        )
+    if agent == _MUSE_AGENT:
+        _keep_only_the_muse_login(agent_env, explicit_agent_env_keys)
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
     # Oracle runs solve.sh and never calls an LLM — model env vars and
