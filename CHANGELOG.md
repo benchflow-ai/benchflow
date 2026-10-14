@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.9 — 2026-10-14
+
 ### Fixed
 
 - **Codex knows `gpt-6.1-sol`: the `codex-acp` pin moves from 1.13.1 to
