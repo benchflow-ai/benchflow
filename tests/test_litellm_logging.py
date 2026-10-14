@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from datetime import datetime
 
 import pytest
 
+from benchflow.providers.litellm_config import LITELLM_RESPONSES_TOOL_IMAGES_ENV
 from benchflow.providers.litellm_logging import (
     callback_module_source,
     extract_usage_from_trajectory,
@@ -55,6 +57,182 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
     assert (
         asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
     )
+
+
+_PNG = "data:image/png;base64,iVBORw0KGgo="
+
+
+def _codex_turn_with_tool_images() -> dict:
+    """A Responses body as Codex sends it: a tool result holding text and an
+    image, a text-only tool result, and a list tool result without an image."""
+    return {
+        "model": "zai-org/GLM-5.3",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "look"}],
+            },
+            {"type": "function_call", "call_id": "c1", "name": "view_image"},
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [
+                    {"type": "input_text", "text": "board.png"},
+                    {"type": "input_image", "image_url": _PNG},
+                ],
+            },
+            {"type": "function_call", "call_id": "c2", "name": "shell"},
+            {"type": "function_call_output", "call_id": "c2", "output": "ok"},
+            {"type": "function_call", "call_id": "c3", "name": "shell"},
+            {
+                "type": "function_call_output",
+                "call_id": "c3",
+                "output": [{"type": "input_text", "text": "done"}],
+            },
+        ],
+    }
+
+
+def test_pre_call_hook_moves_tool_result_images_into_a_user_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Baseten's Responses endpoint rejects an image inside a
+    function_call_output and takes it in a user message right after it."""
+    monkeypatch.setenv(LITELLM_RESPONSES_TOOL_IMAGES_ENV, "1")
+    namespace = _callback_namespace()
+    logger = namespace["BenchFlowLiteLLMLogger"]()
+    data = _codex_turn_with_tool_images()
+    items = data["input"]
+    later = copy.deepcopy(items[3:])
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "aresponses"))
+
+    # The same list, changed in place, so the request LiteLLM keeps has it.
+    assert data["input"] is items
+    assert cleaned is None or cleaned["input"] is items
+    assert [(i["type"], i.get("call_id") or i.get("role")) for i in items] == [
+        ("message", "user"),
+        ("function_call", "c1"),
+        ("function_call_output", "c1"),
+        ("message", "user"),
+        ("function_call", "c2"),
+        ("function_call_output", "c2"),
+        ("function_call", "c3"),
+        ("function_call_output", "c3"),
+    ]
+    assert items[2]["output"] == [
+        {"type": "input_text", "text": "board.png"},
+        {"type": "input_text", "text": namespace["_TOOL_IMAGE_MOVED_NOTE"]},
+    ]
+    assert items[3]["content"] == [
+        {"type": "input_text", "text": "The image returned by tool call c1:"},
+        {"type": "input_image", "image_url": _PNG},
+    ]
+    # Text-only tool results, string or list, are untouched.
+    assert items[4:] == later
+
+
+def test_tool_image_move_keeps_each_call_images_in_order():
+    move = _callback_namespace()["_move_tool_images_to_user_message"]
+    a1, a2, b1 = (
+        {"type": "input_image", "image_url": f"data:image/png;base64,{tag}"}
+        for tag in ("A1", "A2", "B1")
+    )
+    data = {
+        "input": [
+            {"type": "function_call_output", "call_id": "a", "output": [a1, a2]},
+            {"type": "function_call_output", "call_id": "b", "output": [b1]},
+        ]
+    }
+
+    assert move(data) == 3
+    items = data["input"]
+    assert [i["type"] for i in items] == [
+        "function_call_output",
+        "message",
+        "function_call_output",
+        "message",
+    ]
+    assert items[1]["content"][0]["text"] == "The image returned by tool call a:"
+    assert items[1]["content"][1:] == [a1, a2]
+    assert items[3]["content"][0]["text"] == "The image returned by tool call b:"
+    assert items[3]["content"][1:] == [b1]
+    # A second pass finds nothing left to move.
+    assert move(data) == 0
+    assert len(data["input"]) == 4
+
+
+def test_pre_call_hook_keeps_tool_images_without_the_capability(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv(LITELLM_RESPONSES_TOOL_IMAGES_ENV, raising=False)
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = _codex_turn_with_tool_images()
+    before = copy.deepcopy(data)
+
+    assert (
+        asyncio.run(logger.async_pre_call_hook(None, None, data, "aresponses")) is None
+    )
+    assert data == before
+
+
+@pytest.mark.parametrize(
+    ("call_type", "body"),
+    [
+        (
+            "acompletion",
+            {
+                "model": "zai-org/GLM-5.3",
+                "messages": [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "content": [{"type": "image_url", "image_url": {"url": _PNG}}],
+                    }
+                ],
+            },
+        ),
+        (
+            "anthropic_messages",
+            {
+                "model": "zai-org/GLM-5.3",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "t1",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": "image/png",
+                                            "data": "iVBORw0KGgo=",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+        ("aresponses", {"model": "zai-org/GLM-5.3", "input": "hi"}),
+    ],
+    ids=["chat", "anthropic-messages", "responses-text-input"],
+)
+def test_tool_image_move_leaves_other_bodies_alone(
+    monkeypatch: pytest.MonkeyPatch, call_type, body
+):
+    monkeypatch.setenv(LITELLM_RESPONSES_TOOL_IMAGES_ENV, "1")
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    before = copy.deepcopy(body)
+
+    assert asyncio.run(logger.async_pre_call_hook(None, None, body, call_type)) is None
+    assert body == before
 
 
 def test_pre_call_hook_opt_in_requests_token_logprobs(

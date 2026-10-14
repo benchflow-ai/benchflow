@@ -45,11 +45,30 @@ Common optional fields
 - ``models``           Optional list of model metadata dicts (id, name,
                        contextWindow, etc.) consumed by agent shims. ``id``
                        is required and must be unique within the provider.
+                       ``input`` lists the accepted modalities (``"text"``,
+                       ``"image"``). ``maxImages`` caps the images one
+                       request may carry (image-input models only); read
+                       it with ``max_images()``.
 - ``model_prefixes``   Bare-model-name family tokens this provider owns
                        (e.g. ``["deepseek"]``), used by
                        ``find_provider_for_bare_model()`` to route
                        prefix-stripped ids. Tokens must be lowercase and
                        unique across providers (longest token wins).
+- ``prefer_agent_protocol`` True when the LiteLLM proxy should reach this
+                       provider over the agent's own protocol (an
+                       ``endpoints`` entry) instead of translating it to
+                       chat completions. The translation turns an image
+                       inside an Anthropic ``tool_result`` into text.
+- ``anthropic_auth_header`` How the ``anthropic-messages`` endpoint takes
+                       the key: ``"x-api-key"`` (default, Anthropic's own
+                       header) or ``"bearer"`` (``Authorization: Bearer``,
+                       for compatible endpoints that reject ``x-api-key``).
+- ``responses_tool_images_in_user_message`` True when the provider's
+                       Responses endpoint rejects an image inside a tool
+                       result (``function_call_output``) but takes it in a
+                       user message. The LiteLLM proxy callback then moves
+                       each such image into a user message right after the
+                       tool result.
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.
@@ -96,6 +115,18 @@ class ProviderConfig:
     credential_files: list[dict] = field(default_factory=list)
     # Files to write into container (e.g. GCP ADC).
     # Each dict: {"path": str, "env_source": str, "post_env": {k: v} (optional)}
+    # The LiteLLM proxy reaches this provider over the agent's own protocol when
+    # it serves it, instead of translating to chat completions (lossy: images
+    # in an Anthropic tool_result become text). Opt-in, so existing routes stay.
+    prefer_agent_protocol: bool = False
+    # Auth header for the anthropic-messages endpoint: "x-api-key" (Anthropic's
+    # own) or "bearer" (Authorization: Bearer, for compatible endpoints that
+    # reject x-api-key).
+    anthropic_auth_header: str = "x-api-key"
+    # The provider's Responses endpoint rejects an input_image inside a
+    # function_call_output but takes it in a user message, so the LiteLLM proxy
+    # callback moves such images into a user message after the tool result.
+    responses_tool_images_in_user_message: bool = False
 
     @property
     def all_endpoints(self) -> dict[str, str]:
@@ -217,6 +248,57 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="openai-completions",
         auth_type="api_key",
         auth_env="OPENROUTER_API_KEY",
+    ),
+    # Baseten Model APIs. One key serves all three protocols. Both models read
+    # images on every protocol; the Anthropic endpoint rejects more than 8
+    # images per request and needs a Bearer token. Codex uses the native
+    # Responses endpoint, which rejects an image inside a tool result
+    # (function_call_output) but takes it in a user message, so the proxy moves
+    # it there.
+    # Cost: USD per 1M tokens (baseten.co/pricing, 2026-09-29); no cached-input
+    # discount is published, so cached tokens are priced as input.
+    "baseten": ProviderConfig(
+        name="baseten",
+        base_url="https://inference.baseten.co/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="BASETEN_API_KEY",
+        endpoints={
+            "openai-completions": "https://inference.baseten.co/v1",
+            "openai-responses": "https://inference.baseten.co/v1",
+            "anthropic-messages": "https://inference.baseten.co",
+        },
+        prefer_agent_protocol=True,
+        anthropic_auth_header="bearer",
+        responses_tool_images_in_user_message=True,
+        models=[
+            {
+                "id": "zai-org/GLM-5.3",
+                "name": "GLM-5.3",
+                "reasoning": True,
+                "input": ["text", "image"],
+                "maxImages": 8,
+                "cost": {
+                    "input": 1.40,
+                    "output": 4.40,
+                    "cacheRead": 1.40,
+                    "cacheWrite": 1.40,
+                },
+            },
+            {
+                "id": "moonshotai/Kimi-K3",
+                "name": "Kimi K3",
+                "reasoning": True,
+                "input": ["text", "image"],
+                "maxImages": 8,
+                "cost": {
+                    "input": 3.00,
+                    "output": 15.00,
+                    "cacheRead": 3.00,
+                    "cacheWrite": 3.00,
+                },
+            },
+        ],
     ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
@@ -529,6 +611,31 @@ def strip_provider_prefix(model: str) -> str:
     if result:
         return model[len(result[0]) + 1 :]
     return model
+
+
+def model_metadata(model: str) -> dict | None:
+    """Return the registry ``models`` entry for a provider-prefixed model id.
+
+    ``"baseten/zai-org/GLM-5.3"`` → the ``zai-org/GLM-5.3`` entry of
+    ``baseten``. Returns None for unregistered providers or undeclared models.
+    """
+    result = find_provider(model)
+    if result is None:
+        return None
+    _, cfg = result
+    bare = strip_provider_prefix(model)
+    for meta in cfg.models:
+        if meta.get("id") == bare:
+            return meta
+    return None
+
+
+def max_images(model: str) -> int | None:
+    """Most images one request to *model* may carry, or None when undeclared."""
+    meta = model_metadata(model)
+    if meta is None:
+        return None
+    return meta.get("maxImages")
 
 
 def resolve_auth_env(model: str) -> str | None:
