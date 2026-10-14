@@ -190,6 +190,50 @@ def agy_binary():
     return os.environ.get(AGY_BIN_ENV) or DEFAULT_AGY_BIN
 
 
+# agy's built-in list (``agy models``) holds only the Gemini models Antigravity
+# ships with; in API-key mode it rejects any other id ("not recognized as a known
+# model or custom model"). Its ad-hoc custom-model form ``gemini-api://<model>``
+# runs any other Gemini API model: agy sends it to
+# ``$GOOGLE_GEMINI_BASE_URL/v1beta/models/<model>`` with the requested effort
+# (gemini-4-argon at --effort=high: thinkingLevel HIGH, agy 1.2.7, 2026-10-14).
+_CUSTOM_MODEL_SCHEME = "gemini-api://"
+_catalog = None
+
+
+def agy_catalog():
+    """The model ids ``agy models`` lists, cached; empty when the listing fails."""
+    global _catalog
+    if _catalog is None:
+        ids = set()
+        try:
+            out = subprocess.run(
+                [agy_binary(), "models"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env={**os.environ, "AGY_CLI_HIDE_LOGO": "1", "NO_COLOR": "1"},
+            ).stdout
+            for line in out.splitlines():
+                model_id = line.split("\t", 1)[0].strip()
+                if model_id and "\t" in line:
+                    ids.add(model_id)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(f"agy models failed: {exc!r}")
+        _catalog = ids
+    return _catalog
+
+
+def agy_model_arg(bare):
+    """``bare`` when agy lists it (any effort variant), else ``gemini-api://<bare>``.
+
+    An empty listing keeps ``bare``, so agy's own error names the problem.
+    """
+    catalog = agy_catalog()
+    if not catalog or any(i == bare or i.startswith(bare + "-") for i in catalog):
+        return bare
+    return _CUSTOM_MODEL_SCHEME + bare
+
+
 def prepare_settings():
     """Write ``~/.gemini/antigravity-cli/settings.json`` for headless runs.
 
@@ -378,7 +422,7 @@ class AgySession:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self):
-        model = self.resolved_model()
+        model = agy_model_arg(self.resolved_model())
         effort = self.resolved_effort()
         args = [
             agy_binary(),

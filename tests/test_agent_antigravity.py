@@ -160,6 +160,42 @@ def test_shim_splits_catalog_ids_into_model_and_effort(model, expected):
     assert _load_shim_module().split_model_effort(model) == expected
 
 
+def _fake_agy_listing(tmp_path):
+    agy = tmp_path / "agy"
+    agy.write_text(
+        "#!/bin/sh\n"
+        "echo 'Fetching available models...'\n"
+        "printf 'gemini-3.8-flash-high\\tGemini 3.8 Flash (High)\\n'\n"
+        "printf 'gemini-3.1-pro-low\\tGemini 3.1 Pro (Low)\\n'\n"
+    )
+    agy.chmod(0o755)
+    return agy
+
+
+@pytest.mark.parametrize(
+    "bare, expected",
+    [
+        ("gemini-3.8-flash", "gemini-3.8-flash"),
+        ("gemini-3.1-pro", "gemini-3.1-pro"),
+        ("gemini-4-argon", "gemini-api://gemini-4-argon"),
+    ],
+)
+def test_shim_runs_models_agy_does_not_list_as_custom_models(
+    bare, expected, tmp_path, monkeypatch
+):
+    """agy rejects ids outside its built-in list; those run through its
+    ``gemini-api://`` custom-model form, while listed models keep their id."""
+    shim = _load_shim_module()
+    monkeypatch.setenv(shim.AGY_BIN_ENV, str(_fake_agy_listing(tmp_path)))
+    assert shim.agy_model_arg(bare) == expected
+
+
+def test_shim_keeps_the_id_when_agy_cannot_list_models(tmp_path, monkeypatch):
+    shim = _load_shim_module()
+    monkeypatch.setenv(shim.AGY_BIN_ENV, str(tmp_path / "missing-agy"))
+    assert shim.agy_model_arg("gemini-4-argon") == "gemini-4-argon"
+
+
 @pytest.mark.parametrize(
     "value, expected",
     [
