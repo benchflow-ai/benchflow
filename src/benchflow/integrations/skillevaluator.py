@@ -411,6 +411,25 @@ def _legacy_findings(
     return found
 
 
+def _audit_unverified(result: Mapping[str, Any]) -> bool:
+    """Whether a dependency audit started on a file but logged no outcome.
+
+    SkillEvaluator 0.5.0 logs ``Auditing requirements.txt`` and then
+    ``requirements.txt: Found 2 vulnerability(ies) (pip-audit)`` or ``...: No
+    vulnerabilities found (pip-audit)``. When pip-audit fails without JSON
+    (for example on pins that cannot be resolved together) it logs nothing
+    more and the audit passes, so benchflow lists it as an incomplete scan.
+    """
+    legacy = result.get("legacy")
+    if not isinstance(legacy, Mapping):
+        return False
+    messages = [str(m) for m in legacy.get("messages") or []]
+    started = [
+        m.removeprefix("Auditing ") for m in messages if m.startswith("Auditing ")
+    ]
+    return any(not any(m.startswith(f"{f}: ") for m in messages) for f in started)
+
+
 def parse_tier1_report(data: Mapping[str, Any], skill_dir: Path) -> Tier1Result:
     """Normalize a ``skillevaluator tier1 -r json`` report.
 
@@ -428,6 +447,7 @@ def parse_tier1_report(data: Mapping[str, Any], skill_dir: Path) -> Tier1Result:
 
     failed: list[str] = []
     findings: list[Finding] = []
+    incomplete = [str(s) for s in data.get("incomplete_scans") or []]
     for result in data.get("results") or []:
         name = str(result.get("validator") or "?")
         if result.get("status") == "failed":
@@ -446,6 +466,8 @@ def parse_tier1_report(data: Mapping[str, Any], skill_dir: Path) -> Tier1Result:
         ]
         findings += structured
         findings += _legacy_findings(result, name, structured)
+        if name == _DEPENDENCY_VALIDATOR and _audit_unverified(result):
+            incomplete.append("pip-audit")
 
     status = str(
         data.get("overall_status")
@@ -457,7 +479,7 @@ def parse_tier1_report(data: Mapping[str, Any], skill_dir: Path) -> Tier1Result:
         quality_score=quality_score,
         quality_grade=quality_grade,
         failed_checks=failed,
-        incomplete_scans=[str(s) for s in data.get("incomplete_scans") or []],
+        incomplete_scans=list(dict.fromkeys(incomplete)),
         findings=findings,
     )
 

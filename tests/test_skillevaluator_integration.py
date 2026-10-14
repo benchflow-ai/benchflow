@@ -536,6 +536,20 @@ class TestParsing:
         (f,) = parse_tier1_report(medium, tmp_path).findings
         assert (f.severity, f.check) == ("medium", "CVE")
 
+    def test_dependency_audit_without_an_outcome_is_incomplete(self, tmp_path):
+        # Recorded: requests==2.19.0 with urllib3==1.24.1 cannot be resolved
+        # together, pip-audit exits without JSON, and the audit "passes".
+        report = self._result(
+            "Dependency Vulnerability Audit",
+            "passed",
+            warnings=["Workflow scope: llm skipped. LLM checks disabled by --no-llm."],
+        )
+        report["results"][0]["legacy"]["messages"] = ["Auditing requirements.txt"]
+        r = parse_tier1_report(report, tmp_path)
+        assert (r.findings, r.incomplete_scans) == ([], ["pip-audit"])
+        audited = parse_tier1_report(TIER1_CVE_REPORT, tmp_path)
+        assert audited.incomplete_scans == []
+
     def test_structured_dependency_findings_are_not_doubled(self, tmp_path):
         structured = {
             "category": "DEPENDENCY",
