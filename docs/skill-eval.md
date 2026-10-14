@@ -173,9 +173,9 @@ uv tool install --python 3.13 "skillevaluator[all] @ git+https://github.com/NVID
 uv tool install "skillspector @ git+https://github.com/NVIDIA/SkillSpector.git@v2.12.0"
 ```
 
-BenchFlow runs whichever tool is installed, and warns when its version is older than these. Set `BENCHFLOW_SKILLEVALUATOR_BIN` or `BENCHFLOW_SKILLSPECTOR_BIN` to use an executable that is not on `PATH`. SkillEvaluator's code-integrity check also uses Semgrep and Gitleaks; without them it reports those scans as incomplete.
+BenchFlow runs whichever tool is installed, and warns when its version is older than these. Set `BENCHFLOW_SKILLEVALUATOR_BIN` or `BENCHFLOW_SKILLSPECTOR_BIN` to use an executable that is not on `PATH`. SkillEvaluator's code-integrity check runs Bandit, and also Semgrep and Gitleaks when they are installed; without them it reports those scans as incomplete. The dependency audit runs pip-audit on the skill's top-level `requirements*.txt` files; pip-audit checks the pinned packages against an online vulnerability database, so the audit needs network access. SkillEvaluator makes this audit opt-in; BenchFlow runs it by default, and a `--checks` list without `dependency` leaves it out.
 
-Point the command at skills, or at any directory to search it for `SKILL.md`:
+Point the command at skills, or at any directory to search it for `SKILL.md`. Every path must exist and hold at least one skill; otherwise the command exits 1 before checking anything:
 
 ```bash
 bench skills validate ./my-skill
@@ -207,11 +207,18 @@ Incomplete SkillEvaluator scans (scanner missing or partial): gitleaks, semgrep
 3 skill(s) checked, 3 blocking (--fail-on high)
 ```
 
-A skill blocks, and the command exits 1, when a schema or security finding is at or above `--fail-on` (`high` by default; also `critical`, `medium`, `low`, or `never` to only report), or when a checker fails to run. Security findings are SkillSpector's, plus SkillEvaluator's PII, secrets, Unicode-smuggling, code-risk and dependency findings. Quality, lint, license and version findings are advisory: they are in `--json` and in the raw reports that `-o DIR` keeps, one folder per skill. `(partial)` means SkillSpector could not fully inspect every file.
+A skill blocks, and the command exits 1, when a schema, security or dependency finding is at or above `--fail-on` (`high` by default; also `critical`, `medium`, `low`, or `never` to only report), or when a checker fails to run. Security findings are SkillSpector's, plus SkillEvaluator's PII, secrets, Unicode-smuggling and code-risk (Bandit, Semgrep) findings. Dependency findings are the known vulnerabilities pip-audit finds in pinned packages, at the severity SkillEvaluator gives each one, and banned packages (high); SkillEvaluator 0.5.0 lists these only in each result's `legacy` errors and warnings, and BenchFlow reads them from there. A failed dependency audit with nothing BenchFlow can parse still blocks. Quality, lint, license, version and dead-link findings are advisory: they are in `--json` and in the raw reports that `-o DIR` keeps, one folder per skill. `(partial)` means SkillSpector could not fully inspect every file.
 
-SkillEvaluator's default policy makes a missing `metadata.author` a high schema finding, which is why all three skills above block. Add `metadata.author: Name <email>` to the frontmatter, or relax the gate with `--fail-on critical`.
+SkillEvaluator's default policy makes a missing `metadata.author` a high schema finding, which is why mesh-analysis blocks; the other two also have high SkillSpector findings. `author` is a nested field under `metadata` in the frontmatter:
 
-Other options: `--no-security` skips SkillSpector, `--checks` picks SkillEvaluator checks, `--min-score` sets the quality score SkillEvaluator's own verdict needs, and `-j` sets how many skills are checked in parallel. SkillEvaluator's `security` check is SkillSpector plus Bandit; BenchFlow runs SkillSpector once, directly, and leaves `security` out of the default checks, so add it with `--checks` if you also want Bandit.
+```yaml
+metadata:
+  author: Name <email@example.com>
+```
+
+`--fail-on critical` relaxes the gate, and all three skills pass at that level: pymatgen's `CRITICAL` is SkillSpector's overall risk rating, not the severity of any one finding.
+
+Other options: `--no-security` skips SkillSpector, `--checks` picks SkillEvaluator checks, `--min-score` sets the quality score SkillEvaluator's own verdict needs (advisory: it changes SkillEvaluator's Tier 1 status, not the exit code), and `-j` sets how many skills are checked in parallel. SkillEvaluator's `security` check reruns SkillSpector and adds its own regex patterns for personal paths, emails and other PII, so BenchFlow, which runs SkillSpector once, directly, leaves `security` out of the default checks; adding it with `--checks` lists SkillSpector's findings twice. Bandit needs no extra check: code-integrity already runs it.
 
 Both tools run with `--no-llm`, so SkillEvaluator's LLM rubric and SkillSpector's LLM pass are off. SkillEvaluator Tier 2 (deduplication, which needs an embeddings provider) and Tier 3 (live agent runs) are not wired into this command; `bench skills eval` measures a skill's live lift.
 

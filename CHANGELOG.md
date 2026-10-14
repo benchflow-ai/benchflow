@@ -57,7 +57,7 @@
 
 ### Added
 
-- **`bench skills validate`: static skill checks with NVIDIA SkillEvaluator 0.5.0 Tier 1 and NVIDIA SkillSpector 2.12.0.** Takes skill directories or any directory to search for `SKILL.md`, runs both external CLIs with `--no-llm`, and prints a per-skill table (Tier 1 status, quality grade and score, SkillSpector risk and verdict) or `--json`. It exits 1 on a schema or security finding at or above `--fail-on` (default `high`) or when a checker fails to run; `--no-security` skips SkillSpector. The tools are not on PyPI, so they stay external installs (`uv tool install` from their release tags, see `docs/skill-eval.md`); a missing tool gets an install hint and an older one a version warning.
+- **`bench skills validate`: static skill checks with NVIDIA SkillEvaluator 0.5.0 Tier 1 and NVIDIA SkillSpector 2.12.0.** Takes skill directories or any directory to search for `SKILL.md`, runs both external CLIs with `--no-llm`, and prints a per-skill table (Tier 1 status, quality grade and score, SkillSpector risk and verdict) or `--json`. It exits 1 on a schema, security or dependency finding (including known vulnerabilities pip-audit finds in pinned packages) at or above `--fail-on` (default `high`), when a checker fails to run, or when a given path holds no `SKILL.md`; `--no-security` skips SkillSpector. The tools are not on PyPI, so they stay external installs (`uv tool install` from their release tags, see `docs/skill-eval.md`); a missing tool gets an install hint and an older one a version warning.
 - **Native Google Antigravity CLI agent (`antigravity`, alias `agy`).** The
   Antigravity CLI replaced the hosted Gemini CLI in mid-2026 but ships no ACP
   mode, so BenchFlow bundles an ACP shim over its headless `stream-json`
