@@ -20,26 +20,28 @@ from __future__ import annotations
 import json
 import shlex
 
-AGY_VERSION = "1.2.7"
+AGY_VERSION = "1.3.5"
 AGY_BIN = "/opt/benchflow/antigravity/agy"
 _AGY_RELEASE_BASE = (
     "https://storage.googleapis.com/antigravity-public/antigravity-cli/"
-    "1.2.7-6731160148115456"
+    "1.3.5-6164039479459840"
 )
 # uname -m -> (tarball URL, SHA-512). Taken from the installer manifests at
 # https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/
-# (linux_amd64.json / linux_arm64.json) on 2026-09-19. Each tarball holds one
+# (linux_amd64.json / linux_arm64.json) on 2026-10-14. Each tarball holds one
 # file, ``antigravity``, which is the CLI binary. Bump all three together.
+# 1.2.7 (2026-09-19) could not send a PDF that view_file attached to a custom
+# model ("unsupported mime type application/pdf"); 1.3.5 can.
 AGY_RELEASES: dict[str, tuple[str, str]] = {
     "x86_64": (
         f"{_AGY_RELEASE_BASE}/linux-x64/cli_linux_x64.tar.gz",
-        "fec769d611c4afdf0ae72d38bdb2652c8e2c8e71e4f6de97a27b80dda3c50429"
-        "160d9e03776a36a59b8857c20e76783c4a49cb0feb8b2f5c3bf925b0cc03bb77",
+        "0fa5ff7ca8661ef6379da219dd30552327b0deaf112ea896882daaba8bd6abff"
+        "76ff097ef7b38211bffb78be6871f7494a1739b7160b483cb68481a24d435c47",
     ),
     "aarch64": (
         f"{_AGY_RELEASE_BASE}/linux-arm/cli_linux_arm64.tar.gz",
-        "d39f939ffc80776bfd2dc10db7b9a1a1b58650f08115fa21065c11d10882c712"
-        "10f368c2e6060f26966d1a33d6b2dd2bc19bfd641062305af6546c51d494511a",
+        "8b57ef509bdddf6ed02824ba8cdf44ec4bcefef91066e1215d5c39566181d10f"
+        "7b93206545b97fa2683595a595e12311b10cd34c12cd58b3afed65d4a70ac4dd",
     ),
 }
 

@@ -103,7 +103,7 @@ class TestRegistryEntry:
         for _arch, (url, sha) in cfgmod.AGY_RELEASES.items():
             assert url in cfg.install_cmd
             assert sha in cfg.install_cmd
-            assert "1.2.7-6731160148115456" in url
+            assert "1.3.5-6164039479459840" in url
         assert "sha512sum -c" in cfg.install_cmd
         # The download stage proves the binary runs on the task image before
         # the shim is deployed after it.
