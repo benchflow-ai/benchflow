@@ -1572,6 +1572,44 @@ class TestConnectAcpModelSelection:
         ]
 
     @pytest.mark.asyncio
+    async def test_opencode_sets_the_effort_its_model_choice_reveals(self, tmp_path):
+        """OpenCode offers "effort" only after a reasoning model is selected, so
+        the effort goes in after the model, against the refreshed options."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        session = mock_acp.session_new.return_value
+        session.config_options = [{"id": "model"}, {"id": "mode"}]
+
+        async def set_option(config_id, value):
+            if config_id == "model":
+                session.config_options = [{"id": "model"}, {"id": "effort"}, {"id": "mode"}]
+            return {}
+
+        mock_acp.set_config_option.side_effect = set_option
+        with (
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=AsyncMock(),
+                agent="opencode",
+                agent_launch="opencode acp",
+                agent_env={},
+                sandbox_user=None,
+                model="gemini/gemini-4-argon",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                reasoning_effort="high",
+            )
+
+        assert mock_acp.set_config_option.await_args_list == [
+            call("model", "google/gemini-4-argon"),
+            call("effort", "high"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_claude_litellm_env_owns_model_selection(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 

@@ -810,6 +810,12 @@ AGENTS: dict[str, AgentConfig] = {
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         acp_model_format="provider/model",
+        # OpenCode adds an "effort" config option once a reasoning model is
+        # selected (its model variants; gemini-4-argon: low/medium/high) and
+        # defaults it to the lowest, which then overrides any thinking level
+        # in its config (1.18.11, checked 2026-10-14). The model is set first,
+        # so the option is there when the effort is set.
+        acp_effort_config_id="effort",
         # OpenCode uses models.dev provider IDs — its parseModel() splits
         # modelId on "/" so set_model must send "google/gemini-3.1-pro-preview",
         # not just "gemini-3.1-pro-preview".
