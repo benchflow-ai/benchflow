@@ -70,6 +70,206 @@ struct FakeSandbox {
     leak: bool,
 }
 
+/// The ways code inside the sandbox (or this machine) can make a copy out
+/// go wrong, as `FakeSandbox::bad_copy` names them.
+const COPY_KINDS: [&str; 13] = [
+    "huge", "endless", "folder", "missing", "link", "empty", "mode000", "dup", "notar", "hostfull",
+    "hostperm", "junk", "flood",
+];
+
+/// Unpack a hand-made archive of `entries` (path, mode, content) at
+/// `local` with the real unpacker, as a backend does with what `tar`
+/// streams, and its error as the backends give it.
+fn unpack_entries(
+    remote: &str,
+    local: &Path,
+    max_bytes: u64,
+    entries: &[(&str, u32, Vec<u8>)],
+) -> Result<(), SandboxError> {
+    unpack_limited(
+        remote,
+        local,
+        benchflow_sandbox::archive::Limits::capped(max_bytes),
+        tar_of(entries),
+    )
+}
+
+/// A hand-made archive of `entries` (path, mode, content); none at all is
+/// an empty archive.
+fn tar_of(entries: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
+    let mut stream = Vec::new();
+    {
+        let mut b = tar::Builder::new(&mut stream);
+        for (path, mode, data) in entries {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(*mode);
+            b.append_data(&mut h, path, &data[..]).unwrap();
+        }
+        b.finish().unwrap();
+    }
+    if entries.is_empty() {
+        // An empty archive: the 1,024 zero bytes `tar` ends with.
+        stream = vec![0u8; 1024];
+    }
+    stream
+}
+
+/// Unpack `stream` at `local` with the real unpacker under `limits`, and
+/// its error as the backends give it.
+fn unpack_limited(
+    remote: &str,
+    local: &Path,
+    limits: benchflow_sandbox::archive::Limits,
+    stream: Vec<u8>,
+) -> Result<(), SandboxError> {
+    let name = remote.rsplit('/').next().unwrap();
+    benchflow_sandbox::archive::unpack_limited(&stream[..], name, local, limits)
+        .map(|_| ())
+        .map_err(|e| {
+            SandboxError::io(
+                format!(
+                    "copying {remote} out of the sandbox into {}",
+                    local.display()
+                ),
+                e,
+            )
+        })
+}
+
+/// One raw archive entry, its name and link target written straight into
+/// the GNU header, past the builder's checks: (name, kind, mode, uid, data,
+/// link target).
+type RawEntry<'a> = (&'a [u8], tar::EntryType, u32, u64, &'a [u8], &'a [u8]);
+
+fn append_raw(b: &mut tar::Builder<std::fs::File>, e: RawEntry) {
+    let (name, kind, mode, uid, data, link) = e;
+    let mut h = tar::Header::new_gnu();
+    h.set_entry_type(kind);
+    h.set_size(data.len() as u64);
+    h.set_mode(mode);
+    h.set_uid(uid);
+    h.set_gid(uid);
+    let gnu = h.as_gnu_mut().unwrap();
+    gnu.name[..name.len()].copy_from_slice(name);
+    gnu.linkname[..link.len()].copy_from_slice(link);
+    h.set_cksum();
+    b.append(&h, data).unwrap();
+}
+
+/// What a forged pack (a root agent's own `tar`, review F2-A-r12 RESTORE)
+/// puts in the outputs archive of a task named `hostile*`, beside the
+/// answer: entries outside the outputs, links, a setuid file, a folder
+/// above the outputs, an honest hard link and two names that differ only
+/// by case; `hostile-longname` adds a long-name entry over 64 KiB.
+fn hostile_outputs(b: &mut tar::Builder<std::fs::File>, id: &str) {
+    use tar::EntryType as K;
+    for e in [
+        (&b"app"[..], K::Directory, 0o777, 1000, &b""[..], &b""[..]),
+        (
+            b"logs/verifier/reward.json",
+            K::Regular,
+            0o644,
+            0,
+            b"{\"reward\": 1}",
+            b"",
+        ),
+        (
+            b"usr/bin/python3",
+            K::Regular,
+            0o755,
+            0,
+            b"#!/bin/sh\n",
+            b"",
+        ),
+        (b"app/rewards", K::Symlink, 0o777, 0, b"", b"/logs/verifier"),
+        (b"../escape.txt", K::Regular, 0o644, 0, b"x", b""),
+        (b"app/tool", K::Regular, 0o4755, 1000, b"tool", b""),
+        (b"app/copy.txt", K::Link, 0o644, 0, b"", b"app/answer.txt"),
+        (b"app/Makefile", K::Regular, 0o644, 1000, b"upper", b""),
+        (b"app/makefile", K::Regular, 0o644, 1000, b"lower", b""),
+    ] {
+        append_raw(b, e);
+    }
+    if id.contains("longname") {
+        let name = format!("app/{}", "n".repeat(64 * 1024));
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(K::GNULongName);
+        h.set_size(name.len() as u64);
+        h.as_gnu_mut().unwrap().name[..13].copy_from_slice(b"././@LongLink");
+        h.set_cksum();
+        b.append(&h, name.as_bytes()).unwrap();
+        append_raw(b, (b"app/long", K::Regular, 0o644, 0, b"x", b""));
+    }
+}
+
+impl FakeSandbox {
+    /// How a copy out goes wrong in a task named for it (reviews F2-A-r8
+    /// H1 and M2: a root agent's leftover process swaps the path for a
+    /// huge sparse file, or makes the copy never end): `huge` or
+    /// `endless`, for the outputs archive (`outputs-*`) or the verifier's
+    /// folder (`vlogs-*`).
+    fn bad_copy(&self, remote: &str) -> Option<&'static str> {
+        let target = if self.id.contains("outputs-") {
+            OUTPUTS_TAR
+        } else if self.id.contains("vlogs-") {
+            "/logs/verifier"
+        } else if self.id.contains("evidence-") {
+            "/app/answer.txt"
+        } else {
+            return None;
+        };
+        if remote != target {
+            return None;
+        }
+        COPY_KINDS
+            .into_iter()
+            .find(|kind| self.id.contains(&format!("-{kind}")))
+    }
+
+    /// What a copy brings when nothing goes wrong.
+    fn honest_download(&self, remote: &str, local: &Path) {
+        if remote == OUTPUTS_TAR {
+            let body: &[u8] = if self.world.lock().unwrap().solved {
+                b"SOLVED"
+            } else {
+                b"nothing"
+            };
+            let mut b = tar::Builder::new(std::fs::File::create(local).unwrap());
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            b.append_data(&mut h, "app/answer.txt", body).unwrap();
+            if self.id.contains("hostile") {
+                hostile_outputs(&mut b, &self.id);
+            }
+            if self.flaky.as_ref().is_some_and(|m| !m.exists()) {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(1);
+                h.set_mode(0o644);
+                b.append_data(&mut h, "app/first-attempt.txt", &b"1"[..])
+                    .unwrap();
+            }
+            b.finish().unwrap();
+        }
+        if remote == "/app/answer.txt" {
+            std::fs::write(local, "SOLVED").unwrap();
+        }
+        if remote == "/logs/verifier" {
+            std::fs::create_dir_all(local).unwrap();
+            let solved = self.world.lock().unwrap().solved;
+            std::fs::write(local.join("reward.txt"), if solved { "1\n" } else { "0\n" }).unwrap();
+            let stdout = if self.id.contains("apt-gone") && !solved {
+                // chess-best-move's oracle today: the package lists were gone.
+                "E: Unable to locate package stockfish\n0 passed\n"
+            } else {
+                "1 passed\n"
+            };
+            std::fs::write(local.join("test-stdout.txt"), stdout).unwrap();
+        }
+    }
+}
+
 #[async_trait]
 impl Sandbox for FakeSandbox {
     fn id(&self) -> &str {
@@ -229,7 +429,16 @@ impl Sandbox for FakeSandbox {
     async fn spawn(&self, _exec: Exec) -> Result<Process, SandboxError> {
         Err(SandboxError::Unsupported("no processes in the fake".into()))
     }
-    async fn upload(&self, local: &Path, _remote: &str) -> Result<(), SandboxError> {
+    async fn upload(&self, local: &Path, remote: &str) -> Result<(), SandboxError> {
+        // `notar-before`: the image has no `tar`, so every upload fails;
+        // `notar-after`: a root agent removed it, so uploads after the
+        // oracle's turn fail (review F2-A-r12-1, the sibling).
+        let solved = self.world.lock().unwrap().solved;
+        if self.id.contains("notar-before") || (self.id.contains("notar-after") && solved) {
+            return Err(SandboxError::Unsupported(format!(
+                "copying files into {remote} needs `tar` inside the sandbox, and the image has none (tar: not found)"
+            )));
+        }
         // Like a real backend, an upload reads the local files.
         std::fs::symlink_metadata(local)
             .map(|_| ())
@@ -253,42 +462,186 @@ impl Sandbox for FakeSandbox {
         Ok(())
     }
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
-        if remote == OUTPUTS_TAR {
-            let body: &[u8] = if self.world.lock().unwrap().solved {
-                b"SOLVED"
-            } else {
-                b"nothing"
-            };
-            let mut b = tar::Builder::new(std::fs::File::create(local).unwrap());
-            let mut h = tar::Header::new_gnu();
-            h.set_size(body.len() as u64);
-            h.set_mode(0o644);
-            b.append_data(&mut h, "app/answer.txt", body).unwrap();
-            if self.flaky.as_ref().is_some_and(|m| !m.exists()) {
-                let mut h = tar::Header::new_gnu();
-                h.set_size(1);
-                h.set_mode(0o644);
-                b.append_data(&mut h, "app/first-attempt.txt", &b"1"[..])
-                    .unwrap();
+        if let Some(copy) = self.bad_copy(remote) {
+            // Copied without a cap: it writes on and on (here, 4 MB of it).
+            self.world
+                .lock()
+                .unwrap()
+                .commands
+                .push(format!("uncapped copy of {remote}"));
+            if copy == "endless" {
+                std::future::pending::<()>().await;
             }
-            b.finish().unwrap();
+            std::fs::write(local, vec![0u8; 4 << 20]).unwrap();
+            return Ok(());
         }
-        if remote == "/app/answer.txt" {
-            std::fs::write(local, "SOLVED").unwrap();
+        self.honest_download(remote, local);
+        Ok(())
+    }
+    async fn download_limited(
+        &self,
+        remote: &str,
+        local: &Path,
+        limits: benchflow_sandbox::archive::Limits,
+    ) -> Result<(), SandboxError> {
+        let max_bytes = limits.bytes.expect("every copy out is capped");
+        // `flood` (review F2-A-r12-3): what the copy should bring, after 20
+        // entries of nothing (refused as outside the path, but each one
+        // costs this machine time and, unrefused, an inode).
+        if self.bad_copy(remote) == Some("flood") {
+            let scratch = tempfile::tempdir().unwrap();
+            let at = scratch.path().join("honest");
+            self.honest_download(remote, &at);
+            let mut entries: Vec<(String, u32, Vec<u8>)> = (0..20)
+                .map(|i| (format!("elsewhere/e{i}"), 0o644, Vec::new()))
+                .collect();
+            if remote == OUTPUTS_TAR {
+                entries.push(("outputs.tar".into(), 0o600, std::fs::read(&at).unwrap()));
+            } else {
+                for f in ["reward.txt", "test-stdout.txt"] {
+                    entries.push((
+                        format!("verifier/{f}"),
+                        0o644,
+                        std::fs::read(at.join(f)).unwrap(),
+                    ));
+                }
+            }
+            let entries: Vec<(&str, u32, Vec<u8>)> = entries
+                .iter()
+                .map(|(p, m, d)| (p.as_str(), *m, d.clone()))
+                .collect();
+            return unpack_limited(remote, local, limits, tar_of(&entries));
         }
+        self.download_capped(remote, local, max_bytes).await
+    }
+    async fn download_capped(
+        &self,
+        remote: &str,
+        local: &Path,
+        max_bytes: u64,
+    ) -> Result<(), SandboxError> {
+        let Some(copy) = self.bad_copy(remote) else {
+            return self.download(remote, local).await;
+        };
+        // `flood` needs the copy's entry budget (`download_limited`);
+        // without one it is the honest copy.
+        if copy == "flood" {
+            return self.download(remote, local).await;
+        }
+        // `junk`: a replaced `tar` that prints junk and exits 0.
+        if copy == "junk" {
+            return unpack_limited(
+                remote,
+                local,
+                benchflow_sandbox::archive::Limits::capped(max_bytes),
+                vec![b'j'; 1024],
+            );
+        }
+        // `folder`: code inside swapped the archive for a folder, which
+        // arrives whole, under the cap.
+        if copy == "folder" {
+            std::fs::create_dir_all(local.join("junk")).unwrap();
+            std::fs::write(local.join("junk/partial.bin"), "x").unwrap();
+            return Ok(());
+        }
+        // `link`: a link, a FIFO or a device in the archive's place, which
+        // the unpacker skips: the copy is done, with nothing written.
+        if copy == "link" {
+            return Ok(());
+        }
+        // `empty`: an empty archive (a replaced `tar` that exits 0), which
+        // the unpacker refuses with its `NotFound`.
+        if copy == "empty" {
+            return unpack_entries(remote, local, max_bytes, &[]);
+        }
+        // `mode000` and `dup` (review F2-A-r11 M1, M2): what the copy
+        // brings is whole, with modes chosen inside. `mode000` is the
+        // archive with mode 000; `dup` sends each file twice, first with
+        // mode 0400 and junk, then as it is.
+        if copy == "mode000" || copy == "dup" {
+            let honest = |path: &Path| -> Vec<(String, Vec<u8>)> {
+                if remote == OUTPUTS_TAR {
+                    vec![("outputs.tar".into(), std::fs::read(path).unwrap())]
+                } else {
+                    ["reward.txt", "test-stdout.txt"]
+                        .into_iter()
+                        .map(|f| {
+                            (
+                                format!("verifier/{f}"),
+                                std::fs::read(path.join(f)).unwrap(),
+                            )
+                        })
+                        .collect()
+                }
+            };
+            let scratch = tempfile::tempdir().unwrap();
+            let at = scratch.path().join("honest");
+            self.honest_download(remote, &at);
+            let mut entries: Vec<(String, u32, Vec<u8>)> = Vec::new();
+            for (path, data) in honest(&at) {
+                if copy == "dup" {
+                    entries.push((path.clone(), 0o400, b"junk".to_vec()));
+                    entries.push((path, 0o644, data));
+                } else {
+                    entries.push((path, 0o000, data));
+                }
+            }
+            let entries: Vec<(&str, u32, Vec<u8>)> = entries
+                .iter()
+                .map(|(p, m, d)| (p.as_str(), *m, d.clone()))
+                .collect();
+            return unpack_entries(remote, local, max_bytes, &entries);
+        }
+        // `notar` (review F2-B-r11 M1): a replaced `tar` that says it is
+        // not there, which both backends report as `Unsupported`.
+        if copy == "notar" {
+            return Err(SandboxError::Unsupported(format!(
+                "copying {remote} out needs `tar` inside the sandbox, and the image has none \
+                 (tar: not found)"
+            )));
+        }
+        // `hostfull` and `hostperm` (review F2-B-r11 L2): this machine's
+        // own disk is full, or its folder is not writable.
+        if copy == "hostfull" || copy == "hostperm" {
+            let kind = if copy == "hostfull" {
+                std::io::ErrorKind::StorageFull
+            } else {
+                std::io::ErrorKind::PermissionDenied
+            };
+            return Err(SandboxError::io(
+                format!(
+                    "copying {remote} out of the sandbox into {}",
+                    local.display()
+                ),
+                std::io::Error::new(kind, "this machine's own"),
+            ));
+        }
+        // Part of it arrives first, as a folder for a folder's copy.
         if remote == "/logs/verifier" {
             std::fs::create_dir_all(local).unwrap();
-            let solved = self.world.lock().unwrap().solved;
-            std::fs::write(local.join("reward.txt"), if solved { "1\n" } else { "0\n" }).unwrap();
-            let stdout = if self.id.contains("apt-gone") && !solved {
-                // chess-best-move's oracle today: the package lists were gone.
-                "E: Unable to locate package stockfish\n0 passed\n"
-            } else {
-                "1 passed\n"
-            };
-            std::fs::write(local.join("test-stdout.txt"), stdout).unwrap();
+            std::fs::write(local.join("partial.bin"), vec![0u8; 1 << 20]).unwrap();
+        } else {
+            std::fs::write(local, vec![0u8; 1 << 20]).unwrap();
         }
-        Ok(())
+        if copy == "endless" {
+            std::future::pending::<()>().await;
+        }
+        // `missing`: a replaced `tar` streamed it, then said it is missing.
+        // Docker no longer reports that as missing (it is `Content`, a
+        // copy that broke off); this pins `copy_out`'s removal behind it.
+        if copy == "missing" {
+            return Err(SandboxError::io(
+                format!("downloading {remote}"),
+                std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+            ));
+        }
+        Err(SandboxError::io(
+            format!("copying {remote} out of the sandbox"),
+            std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                format!("past its {max_bytes}-byte cap"),
+            ),
+        ))
     }
     async fn destroy(&self) -> Result<(), SandboxError> {
         self.world.lock().unwrap().destroyed = true;
@@ -1993,6 +2346,264 @@ async fn a_separate_verifier_run_destroys_the_agents_sandbox_too() {
     );
 }
 
+/// Review F2-A-r12 RESTORE: an honest pack writes the second name of a
+/// file (a git clone's objects) as a hard link. A regrade refused such
+/// outputs as links; the filter a live trial saves them by keeps them, and
+/// the regrade's verifier gets the link.
+#[tokio::test]
+async fn regrade_keeps_an_honest_hard_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("linked"), "linked"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("graded".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let out = job::run(spec, runtime(provider.clone())).await.unwrap();
+    let trial = out.dir.join(&out.records[0].rollout_name);
+    let mut b = tar::Builder::new(std::fs::File::create(trial.join("outputs.tar")).unwrap());
+    append_raw(
+        &mut b,
+        (
+            b"app/answer.txt",
+            tar::EntryType::Regular,
+            0o644,
+            0,
+            b"SOLVED",
+            b"",
+        ),
+    );
+    append_raw(
+        &mut b,
+        (
+            b"app/clone/answer.txt",
+            tar::EntryType::Link,
+            0o644,
+            0,
+            b"",
+            b"app/answer.txt",
+        ),
+    );
+    b.finish().unwrap();
+    drop(b);
+    let load = |_: &Path| Ok(t.clone());
+    let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+    assert_eq!(plan.regradable.len(), 1, "{:?}", plan.not_regradable);
+    let before = provider.worlds.lock().unwrap().len();
+    let re = benchflow_run::regrade::run(plan, runtime(provider.clone()), 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        re.records[0].passed,
+        Some(true),
+        "{:?}",
+        re.records[0].problem
+    );
+    let worlds = provider.worlds.lock().unwrap();
+    let verifier = worlds[before].lock().unwrap();
+    let (_, restored) = verifier
+        .written
+        .iter()
+        .find(|(p, _)| p == OUTPUTS_TAR)
+        .unwrap();
+    let mut ar = tar::Archive::new(&restored[..]);
+    let kinds: Vec<(String, tar::EntryType)> = ar
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (
+                e.path().unwrap().display().to_string(),
+                e.header().entry_type(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("app/answer.txt".to_string(), tar::EntryType::Regular),
+            ("app/clone/answer.txt".into(), tar::EntryType::Link),
+        ]
+    );
+}
+
+/// Review F2-RA-1: a saved `outputs/` folder that names more than a
+/// restore takes (one file copied per hard link before the byte budget)
+/// is not regraded, so packing it never fills this machine.
+#[tokio::test]
+async fn regrade_refuses_saved_outputs_past_the_byte_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("big"), "big"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: Some("graded".into()),
+        fresh: false,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let out = job::run(spec, runtime(provider.clone())).await.unwrap();
+    let saved = out
+        .dir
+        .join(&out.records[0].rollout_name)
+        .join("outputs/app");
+    std::fs::create_dir_all(&saved).unwrap();
+    for i in 0..3 {
+        // Sparse: 400 MiB each, nothing written.
+        let f = std::fs::File::create(saved.join(format!("copy-{i}"))).unwrap();
+        f.set_len(400 << 20).unwrap();
+    }
+    let load = |_: &Path| Ok(t.clone());
+    let plan = benchflow_run::regrade::plan_with(&out.dir, &load).unwrap();
+    assert_eq!(plan.regradable.len(), 0);
+    assert!(
+        plan.not_regradable[0].reason.contains("past the"),
+        "{:?}",
+        plan.not_regradable
+    );
+}
+
+/// Run one oracle trial of `name` with a separate verifier.
+async fn separate_trial(tmp: &Path, name: &str) -> (job::JobOutcome, Arc<FakeProvider>) {
+    let mut t = task(&tmp.join(name), name);
+    t.verifier.isolation = Isolation::Separate;
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(Arc::new(t), vec![Attempt::Oracle])],
+        trials: 1,
+        jobs_dir: tmp.join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 1,
+        source: serde_json::json!({}),
+    };
+    let out = job::run(spec, runtime(provider.clone())).await.unwrap();
+    (out, provider)
+}
+
+/// Review F2-A-r12 RESTORE: a root agent controls the `tar` that packs the
+/// outputs, so the archive can hold anything. A separate verifier's sandbox
+/// gets only regular files inside the outputs (folders strictly inside,
+/// honest hard links), with owners kept and setuid cleared; the rest is
+/// recorded, and the trial is graded, never R107 or R401.
+#[tokio::test]
+async fn a_separate_verifier_gets_only_the_checked_outputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (out, provider) = separate_trial(tmp.path(), "hostile").await;
+    let rec = &out.records[0];
+    assert_eq!(rec.passed, Some(true), "{:?}", rec.problem);
+    let worlds = provider.worlds.lock().unwrap();
+    let verifier = worlds[1].lock().unwrap();
+    let restored: Vec<&Vec<u8>> = verifier
+        .written
+        .iter()
+        .filter(|(p, _)| p == OUTPUTS_TAR)
+        .map(|(_, b)| b)
+        .collect();
+    assert_eq!(restored.len(), 1);
+    let mut ar = tar::Archive::new(&restored[0][..]);
+    let got: Vec<(String, tar::EntryType, u32, u64)> = ar
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            let h = e.header();
+            (
+                e.path().unwrap().display().to_string(),
+                h.entry_type(),
+                h.mode().unwrap_or(0),
+                h.uid().unwrap_or(0),
+            )
+        })
+        .collect();
+    use tar::EntryType as K;
+    assert_eq!(
+        got,
+        [
+            ("app/answer.txt".to_string(), K::Regular, 0o644, 0),
+            ("app/tool".into(), K::Regular, 0o755, 1000),
+            ("app/copy.txt".into(), K::Link, 0o644, 0),
+            ("app/Makefile".into(), K::Regular, 0o644, 1000),
+            ("app/makefile".into(), K::Regular, 0o644, 1000),
+        ]
+    );
+    // Whatever the archive held, the verifier's log folder starts empty.
+    assert!(
+        verifier.commands.iter().any(|c| c.contains("tar -xf")
+            && c.contains("rm -rf /logs/verifier && mkdir -p /logs/verifier")),
+        "{:?}",
+        verifier.commands
+    );
+    // The trial folder keeps only the checked archive.
+    let trial = out.dir.join(&rec.rollout_name);
+    assert!(!trial.join("outputs.raw.tar").exists());
+    assert!(!trial.join("outputs/usr").exists());
+    let custody: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trial.join("custody.json")).unwrap())
+            .unwrap();
+    assert_eq!(custody["outputs_refused_count"], 5, "{custody}");
+    let refused: Vec<&str> = custody["outputs_refused"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            "app",
+            "logs/verifier/reward.json",
+            "usr/bin/python3",
+            "app/rewards",
+            "../escape.txt"
+        ]
+    );
+    let note = rec.defenses["separate_verifier"]
+        .note
+        .clone()
+        .unwrap_or_default();
+    assert!(note.contains("5 other entries"), "{note}");
+}
+
+/// Review F2-A-r12 RESTORE: a long-name entry past 64 KiB is not read; the
+/// outputs archive is then the sandbox's (R103), never this machine's.
+#[tokio::test]
+async fn an_outputs_archive_past_its_limits_is_the_sandboxs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (out, provider) = separate_trial(tmp.path(), "hostile-longname").await;
+    let p = out.records[0].problem.as_ref().expect("a problem");
+    assert_eq!(p.code, "R103", "{p:?}");
+    assert!(
+        p.message.contains("past what BenchFlow reads"),
+        "{}",
+        p.message
+    );
+    assert_eq!(
+        provider.worlds.lock().unwrap().len(),
+        1,
+        "no verifier sandbox"
+    );
+}
+
 /// A trial retried after a transient failure starts from a clean folder: the
 /// failed attempt's saved outputs are not mixed into the retry's (a regrade
 /// would grade them), and the failed attempt is kept under `.rerun/`.
@@ -3157,6 +3768,113 @@ async fn a_model_judged_rubric_scores_oracle_and_nop_on_the_host() {
     assert_eq!(seen.lock().unwrap().len(), 4);
 }
 
+/// Reviews F2-A-r12-1 and F2-B-r12-1: a judge-evidence copy that a root
+/// agent's leftover process breaks (a `tar` that says it is missing, an
+/// empty archive, junk) ends the trial as the sandbox's lost R103, run
+/// again once, never as R401 or R107 (yours, rerun on every resume). This
+/// machine's own full disk stays R107.
+#[tokio::test]
+async fn a_broken_evidence_copy_is_the_sandboxs_never_yours() {
+    use benchflow_run::outcome::{Owner, Phase};
+    for (kind, want) in [
+        ("notar", ("R103", Owner::Sandbox, true)),
+        ("empty", ("R103", Owner::Sandbox, true)),
+        ("junk", ("R103", Owner::Sandbox, true)),
+        ("hostfull", ("R107", Owner::You, false)),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let name = format!("evidence-{kind}");
+        let mut t = task(&tmp.path().join(&name), &name);
+        t.verifier.rubric = Some(
+            benchflow_task::rubric::Rubric::from_value(&serde_json::json!({
+                "$schema": "https://task.md/schema/rubric-1.json",
+                "x-judge": {"model": "vercel/judge/model"},
+                "criteria": [
+                    {"id": "answered", "text": "The answer file holds the answer.", "judge": "llm",
+                     "points": 2, "evidence": ["/app/answer.txt"]}
+                ]
+            }))
+            .unwrap(),
+        );
+        let provider = Arc::new(FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        });
+        let (_seen, vars) = fake_judge().await;
+        let options = RunOptions {
+            judge_env: benchflow_run::config::JudgeEnv(vars),
+            retries: 0,
+            ..RunOptions::default()
+        };
+        let spec = JobSpec {
+            carry: Vec::new(),
+            units: vec![(Arc::new(t), vec![Attempt::Oracle])],
+            trials: 1,
+            jobs_dir: jobs_dir(tmp.path()),
+            job_name: Some(name.clone()),
+            fresh: true,
+            concurrency: 1,
+            source: serde_json::json!({"path": tmp.path()}),
+        };
+        let out = job::run(spec, runtime_with(provider, options))
+            .await
+            .unwrap();
+        let p = out.records[0]
+            .problem
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name}: no problem"));
+        assert_eq!(
+            (p.code.as_str(), p.owner, p.phase, p.transient),
+            (want.0, want.1, Phase::Verify, want.2),
+            "{name}: {p:?}"
+        );
+    }
+}
+
+/// Review F2-A-r12-1, the sibling: in a shared verifier, the verifier's
+/// files go into the sandbox the agent had its turn in, through its `tar`.
+/// A `tar` gone by then is the sandbox's content (R103), never R401
+/// (yours, rerun on every resume). Before the first turn, an image without
+/// `tar` is still yours to fix (R401).
+#[tokio::test]
+async fn a_tar_gone_after_the_turn_is_the_sandboxs() {
+    use benchflow_run::outcome::{Owner, Phase};
+    for (name, want) in [
+        ("notar-after", ("R103", Owner::Sandbox, Phase::Verify)),
+        ("notar-before", ("R401", Owner::You, Phase::Agent)),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = task(&tmp.path().join(name), name);
+        assert_eq!(t.verifier.isolation, Isolation::Shared);
+        let provider = Arc::new(FakeProvider {
+            worlds: Mutex::new(Vec::new()),
+            writable_path: None,
+        });
+        let spec = JobSpec {
+            carry: Vec::new(),
+            units: vec![(Arc::new(t), vec![Attempt::Oracle])],
+            trials: 1,
+            jobs_dir: jobs_dir(tmp.path()),
+            job_name: Some(name.into()),
+            fresh: true,
+            concurrency: 1,
+            source: serde_json::json!({"path": tmp.path()}),
+        };
+        let options = RunOptions {
+            retries: 0,
+            ..RunOptions::default()
+        };
+        let out = job::run(spec, runtime_with(provider, options))
+            .await
+            .unwrap();
+        let p = out.records[0]
+            .problem
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name}: no problem"));
+        assert_eq!((p.code.as_str(), p.owner, p.phase), want, "{name}: {p:?}");
+    }
+}
+
 /// A task of two graded stages, each solved by the oracle.
 fn staged(root: &Path, name: &str) -> TaskPackage {
     use benchflow_task::extras::{Combine, StepSpec, Steps, Unreached};
@@ -3405,4 +4123,218 @@ async fn a_refused_checkpoint_still_grades_a_continuing_parent() {
             assert!(fork["parent_reward"].is_null());
         }
     }
+}
+
+/// Reviews F2-A-r8 H1 and M2: every copy out of a sandbox where a root
+/// agent's leftover processes may still run has a byte cap and a deadline,
+/// and leaves no partial copy in the trial folder. Past either, the
+/// outputs (the separate verifier's custody copy, and a stage's own
+/// outputs) are R103, the sandbox's at saving, as a failed pack is; the
+/// verifier's folder is a copy that broke off (R301). A copy that never
+/// ends is the sandbox's loss, run again once (review F2-A-r9 M3). A
+/// folder in place of an outputs archive, or one streamed and then said to
+/// be missing, is R103 too and leaves nothing (review F2-A-r9 M1, M2); a
+/// verifier's folder said to be missing is one the verifier never left. So
+/// is a link in the archive's place, which arrives as nothing, and an empty
+/// archive (review F2-A-r10 M1): never this machine's R107, which is never
+/// capped.
+#[tokio::test(start_paused = true)]
+async fn copies_out_past_their_cap_or_without_end_fail_and_leave_nothing() {
+    use benchflow_run::outcome::{Owner, Phase};
+    use benchflow_task::extras::StepSpec;
+    for kind in COPY_KINDS {
+        let tmp = tempfile::tempdir().unwrap();
+        let separate = {
+            let mut t = task(
+                &tmp.path().join(format!("outputs-{kind}")),
+                &format!("outputs-{kind}"),
+            );
+            t.verifier.isolation = Isolation::Separate;
+            t
+        };
+        let stage_outputs = {
+            let name = format!("stage-outputs-{kind}");
+            let mut t = staged(&tmp.path().join(&name), &name);
+            let steps = t.extras.steps.as_mut().unwrap();
+            steps.stages[0] = StepSpec {
+                outputs: vec![Output {
+                    path: "/app/answer.txt".into(),
+                    save_as: "answer.txt".into(),
+                    max_bytes: None,
+                    exclude: Vec::new(),
+                }],
+                ..steps.stages[0].clone()
+            };
+            t
+        };
+        let vlogs = task(
+            &tmp.path().join(format!("vlogs-{kind}")),
+            &format!("vlogs-{kind}"),
+        );
+        let lost = kind == "endless";
+        // `None`: the copy is whole and the trial is graded.
+        let save = match kind {
+            "mode000" | "dup" => None,
+            "hostfull" | "hostperm" => Some(("R107", Owner::You, Phase::Save, false)),
+            _ => Some(("R103", Owner::Sandbox, Phase::Save, lost)),
+        };
+        let mut want = vec![(separate, save), (stage_outputs, save)];
+        let task_verify = Some(("R301", Owner::Task, Phase::Verify, false));
+        match kind {
+            "huge" | "missing" | "notar" => want.push((vlogs, task_verify)),
+            "endless" => want.push((vlogs, Some(("R103", Owner::Sandbox, Phase::Verify, true)))),
+            // An empty archive is what streamed out, not this machine's
+            // folder gone (review F2-A-r11 L2).
+            "empty" => want.push((vlogs, task_verify)),
+            "dup" | "flood" => want.push((vlogs, None)),
+            "junk" => want.push((vlogs, task_verify)),
+            // A `reward.txt` with mode 000 is the verifier's unreadable reward
+            // (review F2-B-r12-4).
+            "mode000" => want.push((vlogs, Some(("R302", Owner::Task, Phase::Verify, false)))),
+            "hostfull" | "hostperm" => {
+                want.push((vlogs, Some(("R107", Owner::You, Phase::Verify, false))))
+            }
+            _ => {}
+        }
+        for (t, expected) in want {
+            let name = t.name.clone();
+            let provider = Arc::new(FakeProvider {
+                worlds: Mutex::new(Vec::new()),
+                writable_path: None,
+            });
+            let spec = JobSpec {
+                carry: Vec::new(),
+                units: vec![(Arc::new(t), vec![Attempt::Oracle])],
+                trials: 1,
+                jobs_dir: tmp.path().join("jobs"),
+                job_name: Some(name.clone()),
+                fresh: true,
+                concurrency: 1,
+                source: serde_json::json!({}),
+            };
+            // No retry: its wait runs on the wall clock, and a transient
+            // problem is what the retry rules act on.
+            let options = RunOptions {
+                retries: 0,
+                ..RunOptions::default()
+            };
+            let t0 = tokio::time::Instant::now();
+            let out = tokio::time::timeout(
+                Duration::from_secs(3600),
+                job::run(spec, runtime_with(provider.clone(), options)),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{name}: the trial never ended"))
+            .unwrap();
+            // The deadline itself (review F2-B-r9 L4): 3 minutes a copy;
+            // the verifier's folder is tried twice, 3 s apart.
+            let want_secs = match kind {
+                "endless" if name.starts_with("vlogs-") => 2 * 180 + 3,
+                "endless" => 180,
+                "huge" | "empty" | "notar" | "hostfull" | "hostperm" | "junk"
+                    if name.starts_with("vlogs-") =>
+                {
+                    3
+                }
+                _ => 0,
+            };
+            assert_eq!(t0.elapsed().as_secs(), want_secs, "{name}");
+            let rec = &out.records[0];
+            let uncapped: Vec<String> = provider
+                .worlds
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|w| w.lock().unwrap().commands.clone())
+                .filter(|c| c.starts_with("uncapped copy"))
+                .collect();
+            assert!(uncapped.is_empty(), "{name}: {uncapped:?}");
+            let Some((code, owner, phase, transient)) = expected else {
+                assert!(rec.problem.is_none(), "{name}: {:?}", rec.problem);
+                assert_eq!(rec.reward, Some(1.0), "{name}");
+                // The outputs were restored whole (review F2-B-r12-3): a
+                // copy refused, or saved unreadable, leaves no answer.
+                if !name.starts_with("vlogs-") {
+                    let trial = out.dir.join(&rec.rollout_name);
+                    let saved: Vec<PathBuf> = walk(&trial)
+                        .into_iter()
+                        .filter(|p| {
+                            p.ends_with("app/answer.txt")
+                                && p.components().any(|c| c.as_os_str() == "outputs")
+                                && std::fs::read(p).is_ok_and(|b| b == b"SOLVED")
+                        })
+                        .collect();
+                    assert!(
+                        !saved.is_empty(),
+                        "{name}: no saved answer in {:?}",
+                        walk(&trial)
+                    );
+                }
+                continue;
+            };
+            let p = rec
+                .problem
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name}: no problem"));
+            assert_eq!(
+                (p.code.as_str(), p.owner, p.phase, p.transient),
+                (code, owner, phase, transient),
+                "{name}: {p:?}"
+            );
+            // Every outputs failure that is the sandbox's names the copy
+            // (review F2-B-r10 L3).
+            if !name.starts_with("vlogs-") && code == "R103" {
+                assert!(
+                    p.message
+                        .contains("outputs could not be copied out of the sandbox"),
+                    "{name}: {}",
+                    p.message
+                );
+            }
+            // The cap each copy was given (review F2-B-r9 L4), which the
+            // fake's refusal names: 1 GiB of the verifier's files, or the
+            // 1 GiB of outputs plus 64 MiB for the archive's own headers.
+            if kind == "huge" {
+                let cap: u64 = if name.starts_with("vlogs-") {
+                    1 << 30
+                } else {
+                    (1 << 30) + (64 << 20)
+                };
+                assert!(
+                    p.message.contains(&format!("past its {cap}-byte cap")),
+                    "{name}: {}",
+                    p.message
+                );
+            }
+            // No partial copy anywhere in the trial folder.
+            let trial = out.dir.join(&rec.rollout_name);
+            if name.starts_with("vlogs-") {
+                assert!(
+                    trial.join("verifier/test-stdout.txt").is_file(),
+                    "{name}: the verifier's output was not kept"
+                );
+            }
+            let left: Vec<PathBuf> = walk(&trial)
+                .into_iter()
+                .filter(|p| {
+                    p.file_name()
+                        .is_some_and(|n| n == "outputs.tar" || n == "partial.bin")
+                })
+                .collect();
+            assert!(left.is_empty(), "{name}: {left:?}");
+        }
+    }
+}
+
+/// Every path under `dir`.
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            all.extend(walk(&p));
+        }
+        all.push(p);
+    }
+    all
 }

@@ -247,6 +247,7 @@ impl Trial<'_> {
         let clock = Instant::now();
         self.turn_begin().await?;
         let attempted = self.stage_attempt(st, resume, index > 0).await;
+        self.agent_turned = true;
         // The session is saved once the agent's work stops: after a graded
         // stage (whose kill comes first anyway), the last stage, or a stage
         // that failed. An ungraded stage's agent keeps its processes for the
@@ -381,7 +382,7 @@ impl Trial<'_> {
                 self.sb()
                     .upload(&local, &workdir)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Setup, e, self.after_turn()))?;
             } else {
                 let user = crate::place::AgentUser {
                     name: &self.user,
@@ -477,7 +478,7 @@ impl Trial<'_> {
             self.sb()
                 .write_file(&copy, &bytes, mode & 0o755)
                 .await
-                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+                .map_err(|e| crate::trial::put_problem(Phase::Setup, e, self.after_turn()))?;
             entries.push((
                 path,
                 hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes)),
@@ -624,7 +625,7 @@ impl Trial<'_> {
                 self.sb()
                     .upload(&super::in_package(&task.root, &dir), &oracle.mount)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 let m = shell::quote(&oracle.mount);
                 let _ = self.root(format!("chmod -R a+rX {m}"), SETUP_TIMEOUT).await;
                 let script = format!("{}/{}", oracle.mount.trim_end_matches('/'), oracle.entry);
@@ -663,7 +664,7 @@ impl Trial<'_> {
                 self.sb()
                     .write_file("/tmp/.benchflow-control.sh", &bytes, 0o755)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 let label = format!("controls/{}", control.id);
                 self.run_script(
                     "control",
@@ -679,7 +680,7 @@ impl Trial<'_> {
                 self.sb()
                     .write_file("/tmp/.benchflow-script.sh", &script.bytes, 0o755)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 self.run_script(
                     "script",
                     &format!("script:{}", script.name),
@@ -694,7 +695,7 @@ impl Trial<'_> {
                 self.sb()
                     .write_file("/tmp/.benchflow-probe.sh", probe.script.as_bytes(), 0o755)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 let t = Some(timeout.map_or(PROBE_TIMEOUT, |t| t.min(PROBE_TIMEOUT)));
                 self.run_script(
                     "probe",

@@ -580,6 +580,8 @@ fn regrade_input(
         model: c.record.model.clone(),
         output: crate::regrade::recorded_agent(&c.record),
         agent_files: c.dir.clone(),
+        allowed: crate::regrade::restore_paths(&t.task, &c.dir)
+            .map_err(|why| std::io::Error::new(std::io::ErrorKind::InvalidData, why))?,
     })
 }
 

@@ -29,11 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/ins
 sh install.sh --from bench-0.8.1-x86_64-unknown-linux-musl.tar.gz   # from a clone
 ```
 
-**Releases.** bench's releases are tagged `bench-v<version>`; tags of the form `v<version>` are the Python package's. The newest is a GitHub pre-release with a build for each of the three [supported targets](#supported-targets), each a `bench-<version>-<target>.tar.gz` with its `.sha256`. This installs it:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/benchflow-ai/benchflow/bench-rs/install.sh | BENCH_VERSION=bench-v0.8.1-rc.2 sh
-```
+**Releases.** bench's releases are tagged `bench-v<version>`; tags of the form `v<version>` are the Python package's. Each has a build for each of the three [supported targets](#supported-targets), each a `bench-<version>-<target>.tar.gz` with its `.sha256`; the command at the top of this page installs the newest.
 
 `BENCH_VERSION` installs the release it names, a pre-release too, by its version or its tag. Without it, the script installs the newest `bench-v*` release that is not a pre-release, read from GitHub's list of releases, since the repository's own latest release is the Python package's. When there is none, it stops, says it found no bench release, and suggests `BENCH_VERSION` or building from source (below).
 

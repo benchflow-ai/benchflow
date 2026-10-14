@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 use super::{SETUP_TIMEOUT, Trial, sandbox_problem};
 use crate::agent::Attempt;
+use crate::copy_out;
 use crate::hardening::{self, Report};
 use crate::images;
 use crate::outcome::{DefenseState, Owner, Phase, Problem, defense};
@@ -43,10 +44,6 @@ fn hook_problem(n: usize, message: String, detail: String) -> Problem {
     )
     .detail(detail)
 }
-
-/// What the copy of the session archive may add to its packed content: the
-/// copy's own tar headers.
-const SESSION_TAR_SLACK: u64 = 64 * 1024 * 1024;
 
 impl Trial<'_> {
     /// Save the agent's session folders (its manifest's `[resume]
@@ -123,41 +120,46 @@ impl Trial<'_> {
         let agent_dir = self.spec.dir.join("agent");
         let _ = std::fs::create_dir_all(&agent_dir);
         let archive = agent_dir.join("sessions.tar");
-        // Under a byte cap and a deadline (review F2-A-r67 P1): a root
-        // agent's leftover process can swap the archive for a huge sparse
-        // file, or make the copy never end. Either way the session is not
-        // saved, and no partial archive stays in the trial folder.
-        let copied = tokio::time::timeout(
-            SETUP_TIMEOUT,
-            self.sb().download_capped(
-                hardening::SESSIONS_TAR,
-                &archive,
-                hardening::MAX_OUTPUT_TOTAL_BYTES + SESSION_TAR_SLACK,
-            ),
+        // Under a byte cap and a deadline (reviews F2-A-r67 P1, F2-A-r8 M1):
+        // a root agent's leftover process can swap the archive for a huge
+        // sparse file or a folder, or make the copy never end. Either way
+        // the session is not saved, and no partial archive stays in the
+        // trial folder.
+        copy_out::copy_out(
+            self.sb(),
+            hardening::SESSIONS_TAR,
+            &archive,
+            copy_out::ARCHIVE_CAP,
+            copy_out::COPY_OUT_TIMEOUT,
+            copy_out::Shape::File,
         )
-        .await;
-        let failed = match copied {
-            Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(format!("copying it out failed: {e}")),
-            Err(_) => Some(format!(
-                "copying it out did not finish within {}s",
-                SETUP_TIMEOUT.as_secs()
-            )),
-        };
-        if let Some(why) = failed {
-            let _ = std::fs::remove_file(&archive);
-            return Err(why);
-        }
+        .await
+        .map_err(|e| format!("copying it out failed: {e}"))?;
         let dest = self.spec.dir.join(SESSIONS_DIR);
         let _ = std::fs::remove_dir_all(&dest);
         let home_rel = PathBuf::from(home.trim_start_matches('/'));
-        let unpacked = crate::custody::unpack_mapped(&archive, &dest, &|rel| {
+        let in_session = |rel: &Path| {
             let rest = rel.strip_prefix(&home_rel).ok()?;
             let text = rest.to_string_lossy().replace('\\', "/");
             (!crate::credentials::is_login_file(&text)).then(|| rest.to_path_buf())
-        });
-        let _ = std::fs::remove_file(&archive);
-        let unpacked = unpacked.map_err(|e| e.to_string())?;
+        };
+        let unpacked =
+            crate::custody::unpack_within(&archive, &dest, &in_session, self.unpack_budget());
+        copy_out::remove(&archive);
+        let unpacked = unpacked.map_err(|e| {
+            // A partial copy is not kept (review F2-RA-1).
+            let _ = std::fs::remove_dir_all(&dest);
+            e.to_string()
+        })?;
+        if unpacked.over_budget > 0 {
+            self.rt.events.log(
+                self.name(),
+                format!(
+                    "{} files of the agent's session were not saved: past the byte budget, each name at its file's full size",
+                    unpacked.over_budget
+                ),
+            );
+        }
         left_out.extend(unpacked.left_out.iter().map(|p| {
             Path::new(p)
                 .strip_prefix(&home_rel)
@@ -320,17 +322,36 @@ impl Trial<'_> {
         }
         let _ = std::fs::create_dir_all(dest);
         let archive = dest.join("outputs.tar");
-        self.sb()
-            .download(hardening::OUTPUTS_TAR, &archive)
-            .await
-            .map_err(|e| sandbox_problem(Phase::Save, e))?;
+        copy_out::copy_out(
+            self.sb(),
+            hardening::OUTPUTS_TAR,
+            &archive,
+            copy_out::ARCHIVE_CAP,
+            copy_out::COPY_OUT_TIMEOUT,
+            copy_out::Shape::File,
+        )
+        .await
+        .map_err(|e| super::outputs_copy_problem(e, "the stage's outputs"))?;
         let unpacked = dest.join("outputs");
-        if let Err(e) = crate::custody::unpack(&archive, &unpacked) {
-            self.rt
-                .events
-                .log(self.name(), format!("outputs were not unpacked: {e}"));
+        let all = |rel: &Path| Some(rel.to_path_buf());
+        match crate::custody::unpack_within(&archive, &unpacked, &all, self.unpack_budget()) {
+            Ok(u) if u.over_budget > 0 => self.rt.events.log(
+                self.name(),
+                format!(
+                    "{} files of the stage's outputs were not saved: past the byte budget, each name at its file's full size",
+                    u.over_budget
+                ),
+            ),
+            Ok(_) => {}
+            Err(e) => {
+                // A partial copy is not kept (review F2-RA-1).
+                let _ = std::fs::remove_dir_all(&unpacked);
+                self.rt
+                    .events
+                    .log(self.name(), format!("outputs were not unpacked: {e}"));
+            }
         }
-        let _ = std::fs::remove_file(&archive);
+        copy_out::remove(&archive);
         write_artifacts(&unpacked, outputs, &dest.join("artifacts"));
         Ok(())
     }

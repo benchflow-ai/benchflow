@@ -53,6 +53,50 @@ enum SessionCopy {
     Huge,
     /// The copy never ends.
     Endless,
+    /// The archive arrives as a folder, under the cap (review F2-A-r8 M1).
+    Folder,
+    /// A replaced `tar` streams the archive, then says it is missing
+    /// (review F2-A-r9 M1).
+    MissingAfterWrite,
+    /// The session and the stage's outputs come as one file of 1 MiB and
+    /// 40 hard links to it (review F2-RA-1), under a 4 MiB budget.
+    Links,
+    /// The session and the stage's outputs come as one file, then a broken
+    /// header.
+    Broken,
+}
+
+/// The archive [`SessionCopy::Links`] or [`SessionCopy::Broken`] sends for
+/// `remote`.
+fn bad_archive(copy: SessionCopy, remote: &str, local: &Path) {
+    let dir = if remote.ends_with("sessions.tar") {
+        "home/agent/.fake/sessions"
+    } else {
+        "app"
+    };
+    let first = format!("{dir}/one.txt");
+    let mut b = tar::Builder::new(Vec::new());
+    let body = vec![b'x'; 1 << 20];
+    let mut h = tar::Header::new_gnu();
+    h.set_size(body.len() as u64);
+    h.set_mode(0o644);
+    b.append_data(&mut h, &first, &body[..]).unwrap();
+    if copy == SessionCopy::Links {
+        for i in 0..40 {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Link);
+            h.set_size(0);
+            b.append_link(&mut h, format!("{dir}/link-{i}.txt"), &first)
+                .unwrap();
+        }
+    }
+    let mut bytes = b.into_inner().unwrap();
+    if copy == SessionCopy::Broken {
+        // In place of the end blocks, a header that is not one.
+        bytes.truncate(bytes.len() - 1024);
+        bytes.extend_from_slice(&[b'A'; 512]);
+    }
+    std::fs::write(local, bytes).unwrap();
 }
 
 #[derive(Default)]
@@ -165,6 +209,10 @@ impl Sandbox for FakeSandbox {
             // Every stage passes, so the gate lets the second one run.
             std::fs::create_dir_all(local).unwrap();
             std::fs::write(local.join("reward.txt"), "1\n").unwrap();
+        } else if matches!(self.setup.copy, SessionCopy::Links | SessionCopy::Broken)
+            && (remote.ends_with("sessions.tar") || remote.ends_with("outputs.tar"))
+        {
+            bad_archive(self.setup.copy, remote, local);
         } else if remote.ends_with("sessions.tar") && self.setup.copy != SessionCopy::Normal {
             // Copied without a cap: it writes on and on (here, 4 MB of it).
             self.world
@@ -213,6 +261,18 @@ impl Sandbox for FakeSandbox {
                 Err(SandboxError::Content(format!(
                     "copying {remote} out of the sandbox would pass its cap of {max_bytes} bytes"
                 )))
+            }
+            SessionCopy::Folder if remote.ends_with("sessions.tar") => {
+                std::fs::create_dir_all(local.join("junk")).unwrap();
+                std::fs::write(local.join("junk/f"), vec![0u8; 1 << 20]).unwrap();
+                Ok(())
+            }
+            SessionCopy::MissingAfterWrite if remote.ends_with("sessions.tar") => {
+                std::fs::write(local, vec![0u8; 1 << 20]).unwrap();
+                Err(SandboxError::io(
+                    format!("downloading {remote}"),
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+                ))
             }
             SessionCopy::Endless if remote.ends_with("sessions.tar") => {
                 std::fs::write(local, vec![0u8; 1 << 20]).unwrap();
@@ -452,6 +512,7 @@ async fn run_with(
         options: RunOptions {
             resume_sessions,
             idle_timeout: Duration::from_secs(20),
+            unpack_budget: (setup.copy == SessionCopy::Links).then_some(4 << 20),
             ..RunOptions::default()
         },
         events: Events::none(),
@@ -837,7 +898,12 @@ async fn a_later_stages_readiness_check_gets_the_trusted_path() {
 /// no partial archive stays in the trial folder, and the trial goes on.
 #[tokio::test(start_paused = true)]
 async fn a_session_copy_past_its_cap_or_without_end_is_dropped() {
-    for copy in [SessionCopy::Huge, SessionCopy::Endless] {
+    for copy in [
+        SessionCopy::Huge,
+        SessionCopy::Endless,
+        SessionCopy::Folder,
+        SessionCopy::MissingAfterWrite,
+    ] {
         let r = tokio::time::timeout(
             Duration::from_secs(3600),
             run(
@@ -863,7 +929,82 @@ async fn a_session_copy_past_its_cap_or_without_end_is_dropped() {
             !w.log.iter().any(|c| c == "uncapped session copy"),
             "{copy:?}: the session was copied without a cap"
         );
-        assert!(!r.dir.join("agent/sessions.tar").exists(), "{copy:?}");
-        assert!(!r.dir.join("agent/sessions").exists(), "{copy:?}");
+        // Each stage's `agent/` moves into `steps/<stage>/agent/`.
+        for at in ["agent", "steps/first/agent", "steps/second/agent"] {
+            assert!(
+                !r.dir.join(at).join("sessions.tar").exists(),
+                "{copy:?} {at}"
+            );
+            assert!(!r.dir.join(at).join("sessions").exists(), "{copy:?} {at}");
+        }
     }
+}
+
+/// The bytes of the regular files in each folder under `dir` named
+/// `sessions` or `outputs`.
+fn unpacked_sizes(dir: &Path) -> Vec<(PathBuf, u64)> {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_type().is_dir() && matches!(e.file_name().to_str(), Some("sessions" | "outputs"))
+        })
+        .map(|d| {
+            let bytes = walkdir::WalkDir::new(d.path())
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_type().is_file())
+                .map(|e| e.metadata().unwrap().len())
+                .sum();
+            (d.path().strip_prefix(dir).unwrap().to_path_buf(), bytes)
+        })
+        .collect()
+}
+
+/// Review F2-RA-1: an archive of one file and many hard links to it asked
+/// this machine for a full copy of the file per link. The session and a
+/// stage's outputs, unpacked from archives no filter checked, stay within
+/// the byte budget; what is past it is left out, and the trial goes on.
+#[tokio::test]
+async fn a_session_and_stage_outputs_stay_within_the_byte_budget() {
+    let r = run(
+        acp_agent(),
+        Setup {
+            load_session: true,
+            sessions_kept: true,
+            copy: SessionCopy::Links,
+        },
+        true,
+    )
+    .await;
+    assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
+    let sizes = unpacked_sizes(&r.dir);
+    for kind in ["sessions", "outputs"] {
+        assert!(
+            sizes.iter().any(|(p, _)| p.ends_with(kind)),
+            "no {kind}: {sizes:?}"
+        );
+    }
+    for (path, bytes) in &sizes {
+        assert!(*bytes <= 4 << 20, "{} holds {bytes} bytes", path.display());
+    }
+}
+
+/// Review F2-RA-1: an unpack that fails leaves no partial session or stage
+/// outputs behind.
+#[tokio::test]
+async fn a_failed_unpack_leaves_no_partial_folder() {
+    let r = run(
+        acp_agent(),
+        Setup {
+            load_session: true,
+            sessions_kept: true,
+            copy: SessionCopy::Broken,
+        },
+        true,
+    )
+    .await;
+    assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
+    let sizes = unpacked_sizes(&r.dir);
+    assert!(sizes.iter().all(|(_, b)| *b == 0), "{sizes:?}");
 }

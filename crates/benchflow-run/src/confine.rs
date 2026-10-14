@@ -254,6 +254,14 @@ impl Sandbox for AgentSandbox<'_> {
     ) -> Result<(), SandboxError> {
         self.inner.download_capped(remote, local, max_bytes).await
     }
+    async fn download_limited(
+        &self,
+        remote: &str,
+        local: &Path,
+        limits: benchflow_sandbox::archive::Limits,
+    ) -> Result<(), SandboxError> {
+        self.inner.download_limited(remote, local, limits).await
+    }
 }
 
 /// Read back the `oom_score_adj` an agent command gets through

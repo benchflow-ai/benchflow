@@ -563,9 +563,32 @@ async fn download(
     // Named by the path's hash alone: a name the agent chose may be as long
     // as the system allows, with no room for anything before it.
     let local: PathBuf = tmp.join(uuid_like(path));
-    match sb.download(path, &local).await {
+    // Under the cap and a deadline (review F2-A-r8 M2): the size above was
+    // read before the copy, and a root agent's leftover process can grow
+    // the file in between, which leaves it unreadable. A copy that never
+    // ends fails the fetch (review F2-A-r9 M3): a slow backend looks the
+    // same, and judging the work as missing would score it.
+    let copied = crate::copy_out::copy_out(
+        sb,
+        path,
+        &local,
+        DOWNLOAD_CAP,
+        crate::copy_out::COPY_OUT_TIMEOUT,
+        // A backend may unpack a file into a folder of its name (below).
+        crate::copy_out::Shape::FileOrFolder,
+    )
+    .await;
+    match copied {
         Ok(()) => {}
-        Err(e) if e.is_missing_in_sandbox() || e.to_string().contains("disk is full") => {
+        Err(e) if e.over_cap() => {
+            return Ok(fail(format!(
+                "over the judge's download limits when it was copied ({DOWNLOAD_CAP} bytes, {} entries)",
+                benchflow_sandbox::archive::FILE_ENTRIES
+            )));
+        }
+        Err(crate::copy_out::CopyOutError::Failed(e))
+            if e.is_missing_in_sandbox() || e.to_string().contains("disk is full") =>
+        {
             // Either may also be how a sandbox that just stopped looks:
             // only one that still answers has the file judged so.
             let alive = sb
@@ -582,7 +605,7 @@ async fn download(
                 "the sandbox's disk was full, so it could not be copied out".into()
             }));
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(evidence_copy_error(e.into_sandbox())),
     }
     // A backend may unpack a file into a folder of its name.
     let file = if local.is_dir() {
@@ -612,6 +635,23 @@ async fn download(
         ))),
         // What is left is the file's own doing (not a regular file, say).
         Err(e) => Ok(fail(format!("could not be read after download: {e}"))),
+    }
+}
+
+/// A failed evidence copy, as the error the trial maps (review F2-A-r12-1).
+/// This machine's own disk, quota, permissions or folder stay `Io` (R107);
+/// the backend's answers and a lost connection pass through; a `tar` that
+/// says it is missing, an empty or broken archive, and every other `Io`
+/// error come from what the sandbox sent, so they are its `Content` (R103,
+/// capped). Never graded unreadable: a lost connection on an honest run
+/// would then score the work as missing.
+fn evidence_copy_error(e: SandboxError) -> SandboxError {
+    match e {
+        SandboxError::Io { .. } if crate::trial::host_side_io(&e) => e,
+        SandboxError::Unsupported(_) | SandboxError::Io { .. } => {
+            SandboxError::Content(format!("the evidence copy failed: {e}"))
+        }
+        other => other,
     }
 }
 

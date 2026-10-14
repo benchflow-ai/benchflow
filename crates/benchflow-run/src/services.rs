@@ -311,7 +311,7 @@ impl Trial<'_> {
             self.sb()
                 .upload(&super::in_package(&task.root, &m.source), &m.target)
                 .await
-                .map_err(|e| sandbox_problem(phase, e))?;
+                .map_err(|e| crate::trial::put_problem(phase, e, after_agent))?;
             let t = shell::quote(&m.target);
             let out = self
                 .root(

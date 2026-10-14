@@ -134,7 +134,7 @@ pub(super) async fn download(
     container: &str,
     remote: &str,
     local: &Path,
-    max_bytes: Option<u64>,
+    limits: crate::archive::Limits,
 ) -> Result<(), SandboxError> {
     let remote = remote_path(remote)?;
     let (parent, name) = split_remote(&remote);
@@ -146,7 +146,7 @@ pub(super) async fn download(
     let mut stdout = child.stdout.take().expect("piped");
     let stderr = tokio::spawn(read_tail(child.stderr.take().expect("piped"), 64 * 1024));
 
-    let unpacker = Unpacker::start(name.clone(), local.to_path_buf(), max_bytes);
+    let unpacker = Unpacker::start(name.clone(), local.to_path_buf(), limits);
     let mut buf = vec![0u8; 256 * 1024];
     let mut read_error = None;
     let mut refused = false;
@@ -193,7 +193,12 @@ pub(super) async fn download(
             stderr,
         };
         let lower = out.stderr.to_lowercase();
-        if lower.contains("no such file or directory")
+        // Missing only when nothing arrived: `tar` runs inside, where code
+        // the agent left can stream the path and then say it is missing
+        // (review F2-A-r9 M1); a real `tar` says so too when a file in a
+        // folder goes while it is read. Either is a copy that broke off.
+        if empty
+            && lower.contains("no such file or directory")
             && !lower.contains("executable file not found")
         {
             return Err(SandboxError::io(
@@ -228,6 +233,7 @@ pub(super) async fn download(
     match unpacked {
         Ok(out) => {
             report_skipped(&format!("download of {remote}"), &out.skipped);
+            crate::transfer::report_more(&format!("download of {remote}"), out.skipped_more);
             Ok(())
         }
         // Nothing arrived and the copy failed: the folder is missing only

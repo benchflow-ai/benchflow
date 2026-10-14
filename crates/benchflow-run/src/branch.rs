@@ -882,7 +882,7 @@ impl Trial<'_> {
         self.sb()
             .write_file(&list, body.as_bytes(), 0o600)
             .await
-            .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+            .map_err(|e| crate::trial::put_problem(Phase::Setup, e, self.after_turn()))?;
         let l = shell::quote(&list);
         // Files the agent user owns are searched whatever their size: an
         // agent could pad a file past the cap to hide a value in it.

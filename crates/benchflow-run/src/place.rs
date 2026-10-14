@@ -452,7 +452,7 @@ async fn upload_and_copy(
 ) -> Result<(), Problem> {
     sb.upload(local, &format!("{stage}/t"))
         .await
-        .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+        .map_err(|e| crate::trial::put_problem(Phase::Setup, e, user.earlier_turns))?;
     *handed = true;
     let out = sb
         .exec(as_root(hand_over_script(user.name, stage)).timeout(TREE_STEP))
@@ -553,7 +553,7 @@ async fn stage_and_copy(
         let path = format!("{stage}/{i}");
         sb.write_file(&path, f.contents, 0o600)
             .await
-            .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+            .map_err(|e| crate::trial::put_problem(Phase::Setup, e, user.earlier_turns))?;
         staged.push(q(&path));
     }
     let out = sb

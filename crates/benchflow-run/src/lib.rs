@@ -13,6 +13,7 @@ pub mod cache;
 pub mod config;
 pub mod confine;
 pub mod confinement;
+mod copy_out;
 pub mod credentials;
 pub mod custody;
 pub mod diff;

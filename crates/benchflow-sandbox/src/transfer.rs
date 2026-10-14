@@ -4,13 +4,16 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::SandboxError;
-use crate::archive::{self, Packed, Skipped, Unpacked};
+use crate::archive::{self, Limits, Packed, Skipped, Unpacked};
 
 /// `remote` as a clean absolute path: `.` and `..` resolved, no repeated or
 /// trailing `/`.
@@ -54,6 +57,13 @@ pub(crate) fn report_skipped(what: &str, skipped: &[Skipped]) {
     }
 }
 
+/// Log how many more entries a transfer left out than it kept.
+pub(crate) fn report_more(what: &str, more: u64) {
+    if more > 0 {
+        tracing::warn!("{what}: left out {more} more entries");
+    }
+}
+
 /// Pack a local file or folder into an anonymous temp file, rewound.
 /// `as_name` packs a file under another name.
 pub(crate) async fn pack_to_tempfile(
@@ -94,21 +104,44 @@ pub(crate) async fn pack_bytes_to_tempfile(
 }
 
 /// Unpacks a tar stream fed chunk by chunk, on a blocking thread.
+///
+/// Dropped before [`Unpacker::finish`] (a copy cut at its deadline), it
+/// stops the thread and waits for it, so nothing is written at the
+/// destination after the caller goes on to remove it (review F2-A-r9 L1).
 pub(crate) struct Unpacker {
-    tx: mpsc::Sender<Bytes>,
-    task: JoinHandle<io::Result<Unpacked>>,
+    tx: Option<mpsc::Sender<Bytes>>,
+    task: Option<JoinHandle<io::Result<Unpacked>>>,
+    stop: Arc<AtomicBool>,
+    done: Arc<(Mutex<bool>, Condvar)>,
 }
 
+/// The longest a dropped unpacker waits for its thread.
+const STOP_WAIT: Duration = Duration::from_secs(10);
+
 impl Unpacker {
-    /// Start unpacking into `dest` (see [`archive::unpack`]).
-    pub(crate) fn start(root: String, dest: PathBuf, max_bytes: Option<u64>) -> Self {
+    /// Start unpacking into `dest` (see [`archive::unpack_limited`]).
+    pub(crate) fn start(root: String, dest: PathBuf, limits: Limits) -> Self {
         let (tx, rx) = mpsc::channel(16);
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let (thread_stop, thread_done) = (stop.clone(), done.clone());
         let task = tokio::task::spawn_blocking(move || {
+            // Says the thread is done however it ends.
+            struct Done(Arc<(Mutex<bool>, Condvar)>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    let (lock, cvar) = &*self.0;
+                    *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                    cvar.notify_all();
+                }
+            }
+            let _done = Done(thread_done);
             let mut reader = ChannelReader {
                 rx,
                 chunk: Bytes::new(),
+                stop: thread_stop,
             };
-            let result = archive::unpack(&mut reader, &root, &dest, max_bytes);
+            let result = archive::unpack_limited(&mut reader, &root, &dest, limits);
             // Read what is left (tar's end padding) so the sender never
             // blocks on a full channel; stop at the first error.
             if result.is_ok() {
@@ -116,18 +149,40 @@ impl Unpacker {
             }
             result
         });
-        Self { tx, task }
+        Self {
+            tx: Some(tx),
+            task: Some(task),
+            stop,
+            done,
+        }
     }
 
     /// Hand over the next chunk. False once the unpacker has stopped.
     pub(crate) async fn feed(&self, chunk: Bytes) -> bool {
-        self.tx.send(chunk).await.is_ok()
+        match &self.tx {
+            Some(tx) => tx.send(chunk).await.is_ok(),
+            None => false,
+        }
     }
 
     /// Signal the end of the stream and wait for the result.
-    pub(crate) async fn finish(self) -> io::Result<Unpacked> {
-        drop(self.tx);
-        self.task.await.map_err(io::Error::other)?
+    pub(crate) async fn finish(mut self) -> io::Result<Unpacked> {
+        drop(self.tx.take());
+        let task = self.task.take().expect("finished once");
+        task.await.map_err(io::Error::other)?
+    }
+}
+
+impl Drop for Unpacker {
+    fn drop(&mut self) {
+        if self.task.is_none() {
+            return;
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        drop(self.tx.take());
+        let (lock, cvar) = &*self.done;
+        let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = cvar.wait_timeout_while(guard, STOP_WAIT, |done| !*done);
     }
 }
 
@@ -135,10 +190,14 @@ impl Unpacker {
 struct ChannelReader {
     rx: mpsc::Receiver<Bytes>,
     chunk: Bytes,
+    stop: Arc<AtomicBool>,
 }
 
 impl Read for ChannelReader {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.stop.load(Ordering::SeqCst) {
+            return Err(io::Error::other("the copy was stopped"));
+        }
         while self.chunk.is_empty() {
             match self.rx.blocking_recv() {
                 Some(chunk) => self.chunk = chunk,
@@ -195,7 +254,7 @@ mod tests {
             b.finish().unwrap();
         }
         let dst = tempfile::tempdir().unwrap();
-        let unpacker = Unpacker::start("data".into(), dst.path().join("got"), None);
+        let unpacker = Unpacker::start("data".into(), dst.path().join("got"), Limits::default());
         for chunk in tar_bytes.chunks(7) {
             assert!(unpacker.feed(Bytes::copy_from_slice(chunk)).await);
         }
@@ -216,5 +275,73 @@ mod tests {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         assert!(bytes.len() >= 1024);
+    }
+    /// A stream of folders or empty files past the entry budget fails with
+    /// `FileTooLarge` through the unpacker Daytona's copies use (review
+    /// F2-A-r12-3), with a content cap of one byte that it never reaches.
+    #[tokio::test]
+    async fn a_flood_of_entries_fails_at_the_budget() {
+        let limits = Limits {
+            bytes: Some(1),
+            entries: Some(50),
+        };
+        for folders in [true, false] {
+            let mut tar_bytes = Vec::new();
+            {
+                let mut b = tar::Builder::new(&mut tar_bytes);
+                for i in 0..200 {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_size(0);
+                    h.set_mode(0o755);
+                    h.set_entry_type(if folders {
+                        tar::EntryType::Directory
+                    } else {
+                        tar::EntryType::Regular
+                    });
+                    b.append_data(&mut h, format!("data/e{i}"), &b""[..])
+                        .unwrap();
+                }
+                b.finish().unwrap();
+            }
+            let dst = tempfile::tempdir().unwrap();
+            let unpacker = Unpacker::start("data".into(), dst.path().join("got"), limits);
+            for chunk in tar_bytes.chunks(4096) {
+                if !unpacker.feed(Bytes::copy_from_slice(chunk)).await {
+                    break;
+                }
+            }
+            let e = unpacker.finish().await.unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::FileTooLarge, "{e}");
+        }
+    }
+
+    /// Review F2-A-r9 L1: an unpacker dropped mid-stream (a copy cut at its
+    /// deadline) has stopped writing when the drop returns, so removing
+    /// what arrived removes it for good.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dropped_unpacker_writes_nothing_after_the_drop() {
+        let mut tar_bytes = Vec::new();
+        {
+            let mut b = tar::Builder::new(&mut tar_bytes);
+            for i in 0..2_000 {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(1);
+                h.set_mode(0o644);
+                b.append_data(&mut h, format!("data/f{i}"), &b"x"[..])
+                    .unwrap();
+            }
+            b.finish().unwrap();
+        }
+        let dst = tempfile::tempdir().unwrap();
+        let got = dst.path().join("got");
+        let unpacker = Unpacker::start("data".into(), got.clone(), Limits::default());
+        // Fill the channel, so the thread has a backlog to write.
+        for chunk in tar_bytes.chunks(64 * 1024).take(16) {
+            assert!(unpacker.feed(Bytes::copy_from_slice(chunk)).await);
+        }
+        drop(unpacker);
+        let _ = std::fs::remove_dir_all(&got);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!got.exists(), "the unpacker wrote after it was dropped");
     }
 }

@@ -34,6 +34,9 @@ use crate::trial::sandbox_problem;
 
 /// How often the trajectory file is rewritten while the loop works.
 const TRAJECTORY_EVERY: Duration = Duration::from_secs(2);
+/// The most of Terminus's pane log that is copied out; a longer one is
+/// not saved.
+const PANE_LOG_CAP: u64 = 64 * 1024 * 1024;
 
 /// A native agent (`builtin`, `terminus-2`) on a model endpoint.
 pub struct NativeAgent {
@@ -337,12 +340,19 @@ impl ModelAgent for NativeAgent {
         let _ = background.await;
 
         if matches!(self.native, NativeLoop::Terminus(_)) {
-            // The pane log `pipe-pane` kept (best effort).
+            // The pane log `pipe-pane` kept (best effort), under a cap and a
+            // deadline: the agent's own processes still run and can write
+            // to it, or swap it for a file of any size.
             let local = ctx.trial_dir.join("agent").join("terminus_2.pane");
-            let _ = ctx
-                .sandbox
-                .download("/logs/agent/terminus_2.pane", &local)
-                .await;
+            let _ = crate::copy_out::copy_out(
+                ctx.sandbox,
+                "/logs/agent/terminus_2.pane",
+                &local,
+                PANE_LOG_CAP,
+                crate::copy_out::COPY_OUT_TIMEOUT,
+                crate::copy_out::Shape::File,
+            )
+            .await;
         }
 
         let events = recorder.snapshot();

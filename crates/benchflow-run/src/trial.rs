@@ -208,6 +208,9 @@ pub struct Regrade {
     /// into the new trial when it starts, not before (a drained regrade
     /// leaves no half-made folders behind).
     pub agent_files: PathBuf,
+    /// The paths the archive may restore, as [`crate::regrade::restore_paths`]
+    /// gives them for the earlier trial.
+    pub allowed: Vec<String>,
 }
 
 /// Grade a finished trial again with its task's current verifier: restore
@@ -253,7 +256,9 @@ async fn run_trial(
         verifier_exit: None,
         stage_worked: false,
         stage_own_timeout: false,
+        agent_turned: false,
         regrade: regrade.as_ref().map(|r| r.archive.clone()),
+        restore_paths: regrade.as_ref().map(|r| r.allowed.clone()),
         agent: regrade.map(|r| r.output).unwrap_or_default(),
         // A child enforces the parent's resolved networks again.
         net: branch::parent_net(fork.as_ref()),
@@ -673,9 +678,17 @@ struct Trial<'a> {
     /// An agent's turn ran out of time in a stage this trial ran itself (a
     /// stage-fork child also carries its parent's time-out).
     stage_own_timeout: bool,
+    /// An attempt (an agent's turn) has run in this sandbox: a `tar` its
+    /// setup used that is gone now is the sandbox's content, not the
+    /// image's (review F2-A-r12-1, the sibling).
+    agent_turned: bool,
     verifier_exit: Option<i32>,
     /// Grade these saved outputs instead of running an attempt.
     regrade: Option<PathBuf>,
+    /// The paths the saved outputs may restore in a fresh sandbox: the
+    /// output paths they were packed from (a live trial's, set when they
+    /// are collected), or a regrade's.
+    restore_paths: Option<Vec<String>>,
     /// The trial's networks, resolved when its first sandbox starts.
     net: Option<netpolicy::Plan>,
     /// The phase the trial is in.
@@ -801,6 +814,7 @@ impl<'a> Trial<'a> {
         let agent_clock = Instant::now();
         self.turn_begin().await?;
         let attempted = self.attempt().await;
+        self.agent_turned = true;
         let mut attempted = self.turn_end(attempted, exhaust::TurnEnd::Stop).await;
         // A sandbox the disk limit stopped is decided already.
         let exhausted = matches!(&attempted, Err(p) if p.code == exhaust::DISK_STOP || p.code == exhaust::EXHAUSTED);
@@ -889,6 +903,12 @@ impl<'a> Trial<'a> {
         self.timing.verify = clock.elapsed().as_secs_f64();
         self.timing.verifier = verify_clock.elapsed().as_secs_f64();
         score
+    }
+
+    /// An agent has had a turn in this sandbox: this trial's attempt ran,
+    /// or a fork child restored one made after the parent's turn.
+    fn after_turn(&self) -> bool {
+        self.agent_turned || self.child_after_agent()
     }
 
     fn sb(&self) -> &dyn Sandbox {
@@ -1555,7 +1575,7 @@ impl<'a> Trial<'a> {
                 self.sb()
                     .upload(&in_package(&task.root, &oracle.dir), &oracle.mount)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 let _ = self
                     .root(
                         format!("chmod -R a+rX {m}", m = shell::quote(&oracle.mount)),
@@ -1607,7 +1627,7 @@ impl<'a> Trial<'a> {
                 self.sb()
                     .write_file("/tmp/.benchflow-control.sh", &bytes, 0o755)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 let label = format!(
                     "controls/{}",
                     control
@@ -1630,7 +1650,7 @@ impl<'a> Trial<'a> {
                 self.sb()
                     .write_file("/tmp/.benchflow-script.sh", &script.bytes, 0o755)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 self.run_script(
                     "script",
                     &format!("script:{}", script.name),
@@ -1645,7 +1665,7 @@ impl<'a> Trial<'a> {
                 self.sb()
                     .write_file("/tmp/.benchflow-probe.sh", probe.script.as_bytes(), 0o755)
                     .await
-                    .map_err(|e| sandbox_problem(Phase::Agent, e))?;
+                    .map_err(|e| crate::trial::put_problem(Phase::Agent, e, self.after_turn()))?;
                 let t = Some(timeout.map_or(PROBE_TIMEOUT, |t| t.min(PROBE_TIMEOUT)));
                 self.run_script(
                     "probe",
@@ -2136,7 +2156,7 @@ impl<'a> Trial<'a> {
             self.sb()
                 .upload(&dir, &v.mount)
                 .await
-                .map_err(|e| sandbox_problem(Phase::Verify, e))?;
+                .map_err(|e| crate::trial::put_problem(Phase::Verify, e, agent_was_here))?;
         }
         let mount = shell::quote(&v.mount);
         let _ = self
@@ -2199,10 +2219,23 @@ impl<'a> Trial<'a> {
         let _ = std::fs::create_dir_all(&vdir);
         // Files an earlier, killed attempt left here are never graded.
         clear_folder(&vdir);
-        let mut downloaded = self
-            .sb()
-            .download_capped("/logs/verifier", &vdir, VERIFIER_COPY_CAP)
-            .await;
+        // Under a deadline as well as the cap (review F2-A-r8 M2): in a
+        // shared verifier, a root agent's leftover processes still run, and
+        // one can make the copy never end. A copy past either is one that
+        // broke off.
+        let copy = || async {
+            crate::copy_out::copy_out(
+                self.sb(),
+                "/logs/verifier",
+                &vdir,
+                VERIFIER_COPY_CAP,
+                crate::copy_out::COPY_OUT_TIMEOUT,
+                crate::copy_out::Shape::Any,
+            )
+            .await
+            .map_err(crate::copy_out::CopyOutError::into_sandbox)
+        };
+        let mut downloaded = copy().await;
         // A copy that broke off (a dropped connection, a file that changed
         // as it was read) is made once more, from scratch, after a pause.
         if let Err(e) = &downloaded
@@ -2214,10 +2247,7 @@ impl<'a> Trial<'a> {
             );
             clear_folder(&vdir);
             tokio::time::sleep(VERIFIER_COPY_PAUSE).await;
-            downloaded = self
-                .sb()
-                .download_capped("/logs/verifier", &vdir, VERIFIER_COPY_CAP)
-                .await;
+            downloaded = copy().await;
         }
         // One that broke off again leaves some of the verifier's files and
         // not others: grading them would score the copy, not the agent.
@@ -2233,6 +2263,8 @@ impl<'a> Trial<'a> {
             }
             _ => None,
         };
+        // A failed copy removes the folder, a missing one included.
+        let _ = std::fs::create_dir_all(&vdir);
         let stdout_file = vdir.join("test-stdout.txt");
         if !stdout_file.exists() {
             let _ = std::fs::write(&stdout_file, out.combined());
@@ -2315,10 +2347,13 @@ impl<'a> Trial<'a> {
     /// A copy of the verifier's folder that failed twice, as a problem.
     /// The sandbox lost (the backend no longer has it), or the connection
     /// to one that runs failing, is the sandbox's (R103, rerun). This
-    /// machine's full disk or unwritable job folder is yours (R107, rerun):
-    /// the copy's cap keeps the verifier from filling the disk itself.
-    /// What the folder causes (more than the cap, files `tar` refuses,
-    /// names this machine cannot store, no `tar`), or a connection that
+    /// machine's own disk, quota or permissions, or its job folder gone, is
+    /// yours (R107, rerun): the copy's caps (content, entries, header size)
+    /// keep the verifier from filling this machine itself, except where a
+    /// Docker sandbox with no disk limit shares this machine's disk. What
+    /// the folder causes (past a cap, files `tar` refuses, names this
+    /// machine cannot store, no `tar`, an empty or broken archive), or a
+    /// connection that
     /// fails because code inside stopped the sandbox, is the task's
     /// (R301), and never rerun: the verifier may have run the agent's code.
     async fn copy_problem(&self, e: SandboxError) -> Problem {
@@ -2327,17 +2362,7 @@ impl<'a> Trial<'a> {
                 format!("the verifier's results could not be copied out of the sandbox ({e})");
             return lost(Phase::Verify, &what, gone);
         }
-        // This machine's side: its disk, its permissions, or a folder of
-        // its own gone while the copy was unpacked (not the remote path
-        // missing, which is the verifier's folder).
-        let host_side = matches!(&e, SandboxError::Io { source, .. } if matches!(
-            source.kind(),
-            std::io::ErrorKind::StorageFull
-                | std::io::ErrorKind::QuotaExceeded
-                | std::io::ErrorKind::ReadOnlyFilesystem
-                | std::io::ErrorKind::PermissionDenied
-        ) || (source.kind() == std::io::ErrorKind::NotFound && !remote_missing(&e)));
-        if host_side {
+        if host_side_io(&e) {
             return sandbox_problem(Phase::Verify, e);
         }
         let channel = matches!(
@@ -2375,7 +2400,7 @@ impl<'a> Trial<'a> {
                 "the verifier's results could not be copied out of the sandbox, so the trial was not graded: {why}: {e}"
             ),
             format!(
-                "make the verifier write only small files (under {} GiB in all) that it can read to /logs/verifier, and keep `tar` in the image; verifier/test-stdout.txt in the trial folder has the verifier's output",
+                "make the verifier write only small files (under {} GiB in all, and at most 100,000 files, links and folders) that it can read to /logs/verifier, and keep `tar` in the image; verifier/test-stdout.txt in the trial folder has the verifier's output",
                 VERIFIER_COPY_CAP >> 30
             ),
         )
@@ -2674,24 +2699,36 @@ impl<'a> Trial<'a> {
         self.note_verifier_image();
         self.resolve_workdir().await?;
         let _ = self.root(hardening::prepare_root(&[]), SETUP_TIMEOUT).await;
-        // Restore the outputs at their own paths in the fresh sandbox.
-        let bytes = std::fs::read(archive).map_err(|e| {
-            sandbox_problem(
-                Phase::Verify,
-                SandboxError::io(
-                    format!("reading the saved outputs {}", archive.display()),
-                    e,
-                ),
-            )
-        })?;
+        // Restore the outputs at their own paths in the fresh sandbox: only
+        // what the filter keeps, the same rule a live trial saved them by
+        // (a regrade's archive, packed from `outputs/`, loses the folders
+        // above the outputs here).
+        let mut bytes = Vec::new();
+        let paths = self.restore_paths.clone().unwrap_or_else(|| {
+            output_paths(&self.spec.task, &self.workdir)
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect()
+        });
+        // In memory, under the copy-out's cap (review F2-RA-1).
+        let capped = crate::custody::CappedVec::new(&mut bytes, crate::copy_out::ARCHIVE_CAP);
+        let budget = self.unpack_budget();
+        let filtered = crate::custody::filter_within(archive, capped, &paths, budget)
+            .map_err(|e| filter_problem(e, Phase::Verify))?;
+        self.note_refused(filtered, false);
         self.sb()
             .write_file(hardening::OUTPUTS_TAR, &bytes, 0o600)
             .await
             .map_err(|e| sandbox_problem(Phase::Verify, e))?;
+        drop(bytes);
+        // Then nothing the archive could have put in the verifier's log
+        // folder is there when the verifier starts (a planted
+        // `reward.json`). The verifier's mount and `/tests` stay: an image
+        // built for the verifier may ship files there.
         let out = self
             .root(
                 format!(
-                    "cd / && tar -xf {t} && rm -f {t}",
+                    "cd / && tar -xf {t} && rm -f {t} && rm -rf /logs/verifier && mkdir -p /logs/verifier",
                     t = shell::quote(hardening::OUTPUTS_TAR)
                 ),
                 SETUP_TIMEOUT,
@@ -2716,11 +2753,18 @@ impl<'a> Trial<'a> {
                 SETUP_TIMEOUT,
             )
             .await;
+        let mut note = "graded in a fresh sandbox holding the verifier's files and the saved outputs: regular files and folders inside the task's outputs, without setuid, setgid or sticky bits".to_string();
+        match self.custody.outputs_refused_count {
+            0 => {}
+            n => note.push_str(&format!(
+                "; {n} other entries of the outputs archive were dropped (custody.json lists them)"
+            )),
+        }
         defense(
             &mut self.defenses,
             "separate_verifier",
             DefenseState::Enforced,
-            Some("graded in a fresh sandbox holding only the saved outputs".into()),
+            Some(note),
         );
         self.enforce_network(
             netpolicy::Stage::Verifier,
@@ -2767,12 +2811,36 @@ impl<'a> Trial<'a> {
             )
             .detail(out.tail(1500)));
         }
+        let raw = self.spec.dir.join("outputs.raw.tar");
+        // Under a byte cap and a deadline (review F2-A-r8 H1): a root
+        // agent's leftover process can swap the archive for a huge sparse
+        // file, or make the copy never end.
+        crate::copy_out::copy_out(
+            self.sb(),
+            hardening::OUTPUTS_TAR,
+            &raw,
+            crate::copy_out::ARCHIVE_CAP,
+            crate::copy_out::COPY_OUT_TIMEOUT,
+            crate::copy_out::Shape::File,
+        )
+        .await
+        .map_err(|e| outputs_copy_problem(e, "the outputs"))?;
+        // The archive came from the image's own `tar`, which a root agent
+        // controls (review F2-A-r12 RESTORE): only what the filter keeps is
+        // saved, given to a separate verifier, or regraded later, and what
+        // it refuses is recorded, never an error.
         let archive = self.spec.dir.join("outputs.tar");
-        self.sb()
-            .download(hardening::OUTPUTS_TAR, &archive)
-            .await
-            .map_err(|e| sandbox_problem(Phase::Save, e))?;
-        match crate::custody::unpack(&archive, &self.spec.dir.join("outputs")) {
+        let filtered = filter_into_file(&raw, &archive, &paths, self.unpack_budget());
+        crate::copy_out::remove(&raw);
+        let filtered = filtered.map_err(|e| {
+            crate::copy_out::remove(&archive);
+            filter_problem(e, Phase::Save)
+        })?;
+        self.note_refused(filtered, true);
+        self.restore_paths = Some(paths);
+        let outputs = self.spec.dir.join("outputs");
+        let all = |rel: &Path| Some(rel.to_path_buf());
+        match crate::custody::unpack_within(&archive, &outputs, &all, self.unpack_budget()) {
             Ok(u) => {
                 self.custody.saved_files = u.files as u64;
                 self.custody.saved_bytes = u.bytes;
@@ -2782,12 +2850,53 @@ impl<'a> Trial<'a> {
                     &self.spec.dir.join("artifacts"),
                 );
             }
-            Err(e) => self
-                .rt
-                .events
-                .log(self.name(), format!("outputs were not unpacked: {e}")),
+            Err(e) => {
+                // A partial copy is not kept (review F2-RA-1).
+                let _ = std::fs::remove_dir_all(&outputs);
+                self.rt
+                    .events
+                    .log(self.name(), format!("outputs were not unpacked: {e}"));
+            }
         }
         Ok(archive)
+    }
+
+    /// Record what [`crate::custody::filter_outputs`] refused, after what
+    /// an earlier pass refused. With `above` false, folders at or above an
+    /// output are left out: an archive packed from a regraded trial's
+    /// `outputs/` holds them, and dropping them says nothing about the
+    /// agent.
+    fn note_refused(&mut self, f: crate::custody::Filtered, above: bool) {
+        let (count, refused) = if above {
+            (f.refused_count, f.refused)
+        } else {
+            let rest = f.refused.into_iter();
+            (
+                f.refused_count - f.folders_above,
+                rest.filter(|r| r.reason != crate::custody::ABOVE_OUTPUTS)
+                    .collect(),
+            )
+        };
+        if count == 0 {
+            return;
+        }
+        let c = &mut self.custody;
+        c.outputs_refused_count += count;
+        let room = crate::custody::LISTED_REFUSALS.saturating_sub(c.outputs_refused.len());
+        c.outputs_refused.extend(refused.into_iter().take(room));
+        self.rt.events.log(
+            self.name(),
+            format!(
+                "{count} entries of the outputs archive were not saved or restored: links, special files, or paths outside the task's outputs (custody.json lists them)"
+            ),
+        );
+    }
+
+    /// The byte budget for what the outputs, a stage's outputs and the
+    /// session unpack to on this machine.
+    pub(crate) fn unpack_budget(&self) -> u64 {
+        let full = crate::custody::OUTPUT_BUDGET;
+        self.rt.options.unpack_budget.map_or(full, |b| b.min(full))
     }
 
     async fn save_outputs(&mut self) {
@@ -2795,14 +2904,59 @@ impl<'a> Trial<'a> {
             return;
         }
         match self.collect_outputs().await {
-            Ok(archive) => {
-                let _ = std::fs::remove_file(archive);
-            }
+            Ok(archive) => crate::copy_out::remove(&archive),
             Err(p) => self.rt.events.log(
                 self.name(),
                 format!("outputs were not saved: {}", p.message),
             ),
         }
+    }
+}
+
+/// [`crate::custody::filter_outputs`] from the archive at `raw` into a new
+/// file at `archive`.
+fn filter_into_file(
+    raw: &Path,
+    archive: &Path,
+    allowed: &[String],
+    budget: u64,
+) -> Result<crate::custody::Filtered, crate::custody::FilterError> {
+    let file = std::fs::File::create(archive).map_err(crate::custody::FilterError::Write)?;
+    crate::custody::filter_within(raw, std::io::BufWriter::new(file), allowed, budget)
+}
+
+/// A filter of the outputs archive that stopped: an archive it could not
+/// read, or one past its limits, is what the sandbox's `tar` made
+/// (`R103`), and so is a checked copy past the copy-out's cap in memory; a
+/// copy it could not write is this machine's (`R107`).
+fn filter_problem(e: crate::custody::FilterError, phase: Phase) -> Problem {
+    match e {
+        crate::custody::FilterError::Write(e) if e.kind() == std::io::ErrorKind::FileTooLarge => {
+            Problem::new(
+                "R103",
+                Owner::Sandbox,
+                phase,
+                format!("the checked outputs are past what BenchFlow restores: {e}"),
+                "retry; if it repeats, report it with the trial folder",
+            )
+        }
+        crate::custody::FilterError::Write(e) => sandbox_problem(
+            phase,
+            SandboxError::io("writing the checked copy of the outputs", e),
+        ),
+        crate::custody::FilterError::Archive(e) => Problem::new(
+            "R103",
+            Owner::Sandbox,
+            phase,
+            if e.kind() == std::io::ErrorKind::FileTooLarge {
+                format!(
+                    "the outputs archive the sandbox's `tar` made is past what BenchFlow reads: {e}"
+                )
+            } else {
+                format!("the outputs archive the sandbox's `tar` made could not be read: {e}")
+            },
+            "retry; if it repeats, report it with the trial folder",
+        ),
     }
 }
 
@@ -2815,7 +2969,7 @@ fn root_path_verdict(who: String, ways: &[&str], unchecked: &[&str]) -> (Defense
         DefenseState::Enforced
     } else {
         note.push_str(&format!(
-            ", but it can become root: {}; the trial ran anyway, since a task may need sudo, so every defense that relies on the agent not being root (the firewall, the daemon guard, the locks, the kill before grading) holds only against an agent that does not use it",
+            ", but it can become root: {}; the trial ran anyway, since a task may need sudo, so every defense that relies on the agent not being root (the firewall, the daemon guard, the locks, the kill before grading) holds only against an agent that does not use it; a separate verifier still gets only regular files and folders inside the task's outputs (anything else in the outputs archive is dropped and listed in custody.json), but test-runner files the agent puts inside the outputs (a conftest.py, a .pth file) reach it",
             ways.join("; ")
         ));
         DefenseState::Failed
@@ -3071,6 +3225,85 @@ pub(crate) fn sandbox_problem(phase: Phase, e: SandboxError) -> Problem {
         ),
     };
     if transient { p.transient() } else { p }
+}
+
+/// The error for a file or folder that could not be put into the sandbox.
+/// After an agent's turn in it (`after_turn`), a `tar` that says it is
+/// missing is the sandbox's content (R103), not an image without one
+/// (R401): the same sandbox ran `tar` at setup, and a root agent can
+/// remove or replace it (review F2-A-r12-1, the sibling). Before the first
+/// turn, an image without `tar` is the user's to fix, as before.
+pub(crate) fn put_problem(phase: Phase, e: SandboxError, after_turn: bool) -> Problem {
+    match e {
+        SandboxError::Unsupported(m) if after_turn => sandbox_problem(
+            phase,
+            SandboxError::Content(format!(
+                "{m} (it worked before the agent's turn, so something in the sandbox removed or replaced it)"
+            )),
+        ),
+        e => sandbox_problem(phase, e),
+    }
+}
+
+/// The error for an outputs archive that could not be copied out. Any
+/// failure that is not this machine's own ([`host_side_io`]: its disk,
+/// quota or permissions, or its folder gone) is R103 (the sandbox's, at
+/// saving), as an archive that could not be packed is: past its cap, not
+/// arrived as a file, gone just after it was packed, empty or broken, or a
+/// `tar` that says it is missing (the pack just ran `tar` in that sandbox,
+/// so its absence is the sandbox's content). Code inside can cause each of these, so none may be
+/// the user's (R107, R401), which resumes rerun without a cap (reviews
+/// F2-A-r10 M1, F2-A-r11 M1/M2, F2-B-r11 M1). One that never finished is
+/// the sandbox's lost connection (run again once); the backend's own
+/// answers (an outage, a rate limit) are as [`sandbox_problem`] says.
+pub(crate) fn outputs_copy_problem(e: crate::copy_out::CopyOutError, what: &str) -> Problem {
+    use crate::copy_out::CopyOutError;
+    let what = format!("{what} could not be copied out of the sandbox");
+    let transient = match &e {
+        CopyOutError::TimedOut(_) => return lost(Phase::Save, &what, e.into_sandbox()),
+        CopyOutError::Failed(se)
+            if host_side_io(se)
+                || matches!(
+                    se,
+                    SandboxError::Unavailable { .. } | SandboxError::Throttled(_)
+                ) =>
+        {
+            return sandbox_problem(Phase::Save, e.into_sandbox());
+        }
+        CopyOutError::Failed(se) => se.is_transient(),
+        CopyOutError::NotAFile => false,
+    };
+    let p = Problem::new(
+        "R103",
+        Owner::Sandbox,
+        Phase::Save,
+        format!("{what}: {e}"),
+        "retry; if it repeats, report it with the trial folder (a failure to start the copy on this machine, such as too many open files, shows here too)",
+    );
+    if transient { p.transient() } else { p }
+}
+
+/// A copy's failure on this machine's side: its disk, its quota, its
+/// permissions, or a folder of its own gone while the copy was unpacked.
+/// Not the remote path missing, nor an archive that streamed nothing
+/// under it: both are what came out of the sandbox (review F2-A-r11 L2).
+/// The archive's own modes cannot cause a `PermissionDenied`: the copy
+/// makes an archive readable and the unpacker replaces a file it meets
+/// again (review F2-A-r11 M1, M2).
+pub(crate) fn host_side_io(e: &SandboxError) -> bool {
+    let SandboxError::Io { source, .. } = e else {
+        return false;
+    };
+    match source.kind() {
+        std::io::ErrorKind::StorageFull
+        | std::io::ErrorKind::QuotaExceeded
+        | std::io::ErrorKind::ReadOnlyFilesystem
+        | std::io::ErrorKind::PermissionDenied => true,
+        std::io::ErrorKind::NotFound => {
+            !remote_missing(e) && !benchflow_sandbox::archive::is_empty_archive(source)
+        }
+        _ => false,
+    }
 }
 
 /// When at least a quarter of an agent's model requests (and three or

@@ -301,6 +301,14 @@ impl Sandbox for FakeSandbox {
             let ctrf = json!({"results": {"tool": {"name": "test.sh"},
                 "tests": [{"name": "test_hello", "status": status}]}});
             std::fs::write(local.join("ctrf.json"), ctrf.to_string()).unwrap();
+        } else if remote.ends_with(".tar") {
+            // An archive arrives as a file, as from a real backend: here
+            // an empty one (its end-of-archive blocks).
+            std::fs::write(local, [0u8; 1024]).unwrap();
+        } else if remote.ends_with(".pane") {
+            // Terminus's pane log is a regular file too (review F2-B-r11
+            // L3): an empty one here.
+            std::fs::write(local, b"").unwrap();
         }
         Ok(())
     }
@@ -1021,6 +1029,8 @@ async fn terminus_2_solves_hello_and_confirms_completion() {
     assert_eq!(r.rec.status, Status::Scored, "{:?}", r.rec.problem);
     assert_eq!(r.rec.reward, Some(1.0));
     assert_eq!(r.rec.agent, "terminus-2");
+    // The pane log is copied out as the file it is (review F2-B-r11 L3).
+    assert!(r.dir.join("agent/terminus_2.pane").is_file());
     // The command, then task_complete twice (asked, then confirmed).
     assert_eq!(r.rec.tool_calls, 3);
     let script = r.script.lock().unwrap();

@@ -1742,6 +1742,65 @@ async fn downloading_a_missing_path_is_not_found() {
     assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
 }
 
+/// A `tar` in the sandbox that streams the path, then says it is missing
+/// (one the agent replaced, or a file in the folder gone as it was read),
+/// is a copy that broke off, not a missing path: the caller keeps nothing
+/// of a missing one's copy only because nothing arrived (review F2-A-r9
+/// M1).
+#[tokio::test]
+async fn a_path_streamed_then_said_missing_is_not_missing() {
+    let fake = Fake::new(
+        r#"case "$1" in exec)
+  for a; do bf_pp=$bf_p; bf_p=$bf_n; bf_n=$a; done
+  COPYFILE_DISABLE=1 tar -cf - -C "$dir/root$bf_pp" -- "$bf_n"
+  echo "tar: $bf_n/x: Cannot stat: No such file or directory" >&2; exit 2;;
+esac"#,
+    );
+    std::fs::create_dir_all(fake.path("root/var/lib/benchflow/outputs.tar")).unwrap();
+    std::fs::write(fake.path("root/var/lib/benchflow/outputs.tar/f"), "x").unwrap();
+    std::fs::create_dir_all(fake.path("root/agent")).unwrap();
+    std::fs::write(fake.path("root/agent/sessions.tar"), vec![7u8; 4096]).unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    for remote in ["/var/lib/benchflow/outputs.tar", "/agent/sessions.tar"] {
+        let err = fake
+            .sandbox()
+            .download(remote, &dst.path().join(remote.rsplit('/').next().unwrap()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SandboxError::Content(_)), "{remote}: {err:?}");
+    }
+}
+
+/// Review F2-A-r12-3: a folder of many folders or many empty files, which
+/// cost no content, stops at the copy's entry budget with `FileTooLarge`,
+/// the error every caller maps as a copy past its cap.
+#[tokio::test]
+async fn a_flood_of_entries_stops_at_the_entry_budget() {
+    let fake = download_fake();
+    for i in 0..40 {
+        std::fs::create_dir_all(fake.path(&format!("root/logs/folders/d{i}"))).unwrap();
+        std::fs::create_dir_all(fake.path("root/logs/files")).unwrap();
+        std::fs::write(fake.path(&format!("root/logs/files/f{i}")), "").unwrap();
+    }
+    let dst = tempfile::tempdir().unwrap();
+    let limits = crate::archive::Limits {
+        bytes: Some(1),
+        entries: Some(20),
+    };
+    for remote in ["/logs/folders", "/logs/files"] {
+        let local = dst.path().join(remote.rsplit('/').next().unwrap());
+        let err = fake
+            .sandbox()
+            .download_limited(remote, &local, limits)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Io { source, .. } if source.kind() == std::io::ErrorKind::FileTooLarge),
+            "{remote}: {err:?}"
+        );
+    }
+}
+
 /// A download whose exec fails before tar sends anything (the container
 /// stopped, the daemon failed this exec) is the sandbox's failure, not a
 /// missing file: the judge would otherwise show the agent's work as gone.

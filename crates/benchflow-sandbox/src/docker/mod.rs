@@ -44,6 +44,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::archive::Limits;
 use crate::{
     Capabilities, Exec, ExecOutput, Image, ImageSpec, Process, Provider, ProviderStatus, Sandbox,
     SandboxError, SandboxSpec,
@@ -422,7 +423,7 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
-        files::download(&self.cli, &self.name, remote, local, None).await
+        files::download(&self.cli, &self.name, remote, local, Limits::default()).await
     }
 
     async fn presence(&self) -> Result<crate::Presence, SandboxError> {
@@ -467,7 +468,22 @@ impl Sandbox for DockerSandbox {
         local: &Path,
         max_bytes: u64,
     ) -> Result<(), SandboxError> {
-        files::download(&self.cli, &self.name, remote, local, Some(max_bytes)).await
+        files::download(
+            &self.cli,
+            &self.name,
+            remote,
+            local,
+            Limits::capped(max_bytes),
+        )
+        .await
+    }
+    async fn download_limited(
+        &self,
+        remote: &str,
+        local: &Path,
+        limits: Limits,
+    ) -> Result<(), SandboxError> {
+        files::download(&self.cli, &self.name, remote, local, limits).await
     }
 
     async fn checkpoint(

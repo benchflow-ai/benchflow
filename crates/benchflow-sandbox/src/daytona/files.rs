@@ -136,7 +136,7 @@ pub(crate) async fn download(
     core: &SandboxCore,
     remote: &str,
     local: &Path,
-    max_bytes: Option<u64>,
+    limits: crate::archive::Limits,
 ) -> Result<(), SandboxError> {
     let remote = remote_path(remote)?;
     let (parent, name) = split_remote(&remote);
@@ -163,11 +163,12 @@ pub(crate) async fn download(
         return Err(tar_failure(core, &out, &format!("copying {remote} out")));
     }
 
-    let result = fetch_and_unpack(core, &staged, &name, local, max_bytes).await;
+    let result = fetch_and_unpack(core, &staged, &name, local, limits).await;
     core.toolbox.remove(&staged).await;
     match result {
         Ok(unpacked) => {
             report_skipped(&format!("download of {remote}"), &unpacked.skipped);
+            crate::transfer::report_more(&format!("download of {remote}"), unpacked.skipped_more);
             Ok(())
         }
         Err(Fetch::Api(err)) => Err(err),
@@ -185,10 +186,10 @@ async fn fetch_and_unpack(
     staged: &str,
     name: &str,
     local: &Path,
-    max_bytes: Option<u64>,
+    limits: crate::archive::Limits,
 ) -> Result<crate::archive::Unpacked, Fetch> {
     let response = core.toolbox.download(staged).await.map_err(Fetch::Api)?;
-    let unpacker = Unpacker::start(name.to_string(), local.to_path_buf(), max_bytes);
+    let unpacker = Unpacker::start(name.to_string(), local.to_path_buf(), limits);
     let mut stream = response.bytes_stream();
     let mut transport_error = None;
     while let Some(chunk) = stream.next().await {

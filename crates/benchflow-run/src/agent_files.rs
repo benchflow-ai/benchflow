@@ -200,7 +200,7 @@ impl Trial<'_> {
             self.sb()
                 .upload(folder, skills::STAGING)
                 .await
-                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+                .map_err(|e| crate::trial::put_problem(Phase::Setup, e, self.after_turn()))?;
         }
         let run = self.rt.options.skills.clone();
         for dir in &run {
@@ -216,7 +216,7 @@ impl Trial<'_> {
                     &format!("{}.run/{}", skills::STAGING, skills::name(dir)),
                 )
                 .await
-                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+                .map_err(|e| crate::trial::put_problem(Phase::Setup, e, self.after_turn()))?;
         }
         let run_names: Vec<String> = run.iter().map(|p| skills::name(p)).collect();
         let script = skills::place_script(&self.user, targets, task_sandbox, &run_names);
@@ -290,7 +290,7 @@ impl Trial<'_> {
             self.sb()
                 .write_file(&target, &bytes, 0o600)
                 .await
-                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+                .map_err(|e| crate::trial::put_problem(Phase::Setup, e, self.after_turn()))?;
         } else {
             let file = crate::place::ForAgent {
                 path: target.clone(),

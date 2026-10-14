@@ -204,6 +204,19 @@ impl Sandbox for Files {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
             ));
         }
+        // `!grows:<path>`: after the probe, the agent's leftover process
+        // grows the file far past the cap; `!endless:<path>`: the copy
+        // never ends. Copied without a cap, it writes on and on.
+        if self.0.contains_key(&format!("!grows:{remote}"))
+            || self.0.contains_key(&format!("!endless:{remote}"))
+        {
+            self.1.lock().unwrap().push(format!("uncapped {remote}"));
+            if self.0.contains_key(&format!("!endless:{remote}")) {
+                std::future::pending::<()>().await;
+            }
+            std::fs::write(local, vec![0u8; 32 << 20]).unwrap();
+            return Ok(());
+        }
         self.1.lock().unwrap().push(remote.to_string());
         std::fs::write(local, &self.0[remote]).unwrap();
         // `!mode000:<path>`: the copy keeps the mode the agent gave the
@@ -213,6 +226,29 @@ impl Sandbox for Files {
             std::fs::set_permissions(local, std::fs::Permissions::from_mode(0o000)).unwrap();
         }
         Ok(())
+    }
+    async fn download_capped(
+        &self,
+        remote: &str,
+        local: &Path,
+        max_bytes: u64,
+    ) -> Result<(), SandboxError> {
+        if self.0.contains_key(&format!("!grows:{remote}")) {
+            // Stopped at the cap, part of it written.
+            std::fs::write(local, vec![0u8; 1 << 20]).unwrap();
+            return Err(SandboxError::io(
+                format!("copying {remote} out of the sandbox"),
+                std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    format!("past its {max_bytes}-byte cap"),
+                ),
+            ));
+        }
+        if self.0.contains_key(&format!("!endless:{remote}")) {
+            std::fs::write(local, vec![0u8; 1 << 20]).unwrap();
+            std::future::pending::<()>().await;
+        }
+        self.download(remote, local).await
     }
     async fn destroy(&self) -> Result<(), SandboxError> {
         Ok(())
@@ -787,5 +823,56 @@ async fn an_evidence_probe_the_backend_failed_is_not_an_empty_folder() {
             other => panic!("{other:?}"),
         },
         other => panic!("{other:?}"),
+    }
+}
+
+/// Review F2-A-r8 M2: the probe reads an evidence file's size before the
+/// copy, and a root agent's leftover process can grow the file in between,
+/// or make the copy never end. The copy is capped and has a deadline. A
+/// file grown past the cap is unreadable, never a host disk filled; a copy
+/// that never ends fails the fetch (review F2-A-r9 M3: a slow backend
+/// looks the same, and judging the work as missing would score it), and
+/// the judge never waits for ever.
+#[tokio::test(start_paused = true)]
+async fn evidence_grown_after_its_probe_is_unreadable_or_fails_the_fetch() {
+    let (_d, plan) = one_item(&["memo.md"]);
+    for fault in ["!grows:", "!endless:"] {
+        let sb = Files(
+            BTreeMap::from([
+                (format!("{fault}/app/memo.md"), Vec::new()),
+                ("/app/memo.md".to_string(), MEMO.as_bytes().to_vec()),
+            ]),
+            Mutex::new(Vec::new()),
+        );
+        let start = tokio::time::Instant::now();
+        let evidence =
+            tokio::time::timeout(Duration::from_secs(3600), judge::fetch(&sb, "/app", &plan))
+                .await
+                .unwrap_or_else(|_| panic!("{fault} the copy never ended"));
+        assert!(
+            !sb.1
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.starts_with("uncapped")),
+            "{fault} the evidence was copied without a cap"
+        );
+        if fault == "!endless:" {
+            // Cut at the copy's deadline, 3 minutes, as the sandbox's.
+            let waited = start.elapsed().as_secs();
+            assert!((180..240).contains(&waited), "waited {waited}s");
+            match evidence {
+                Err(SandboxError::Transport(why)) => {
+                    assert!(why.contains("did not finish within 180s"), "{why}")
+                }
+                other => panic!("{fault} {other:?}"),
+            }
+            continue;
+        }
+        let evidence = evidence.expect("the file's own doing is no error");
+        match &evidence["memo.md"][0].text {
+            judge::Text::Unreadable(why) => assert!(why.contains("limit"), "{fault} {why}"),
+            other => panic!("{fault} {other:?}"),
+        }
     }
 }

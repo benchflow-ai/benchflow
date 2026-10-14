@@ -96,6 +96,15 @@ pub struct Custody {
     /// Outputs not saved because they were over the size cap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_large: Vec<String>,
+    /// Entries of the outputs archive (made by the image's own `tar`) that
+    /// were neither saved nor given to a separate verifier: anything but
+    /// regular files inside the task's outputs, folders strictly inside
+    /// them, and hard links between such files. The first
+    /// [`crate::custody::LISTED_REFUSALS`]; `outputs_refused_count` counts all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs_refused: Vec<RefusedEntry>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub outputs_refused_count: u64,
     /// Files and bytes saved from the outputs.
     #[serde(default)]
     pub saved_files: u64,
@@ -105,6 +114,19 @@ pub struct Custody {
     /// started (`bench test` scans; paths and kinds only, never content).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credentials: Vec<crate::credentials::Finding>,
+}
+
+/// An entry of the outputs archive that was not restored: its path as the
+/// archive names it, its kind (`file`, `symbolic link`, ...), and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusedEntry {
+    pub path: String,
+    pub kind: String,
+    pub reason: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Custody {

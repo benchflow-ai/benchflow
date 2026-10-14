@@ -108,6 +108,11 @@ pub struct RunOptions {
     /// saved.
     #[serde(skip)]
     pub judge_env: JudgeEnv,
+    /// A lower byte budget than [`crate::custody::OUTPUT_BUDGET`] for what
+    /// the outputs, a stage's outputs and the agent's session unpack to on
+    /// this machine (tests); a higher one is ignored. Never saved.
+    #[serde(skip)]
+    pub unpack_budget: Option<u64>,
     /// Drain mode: once on, no new trial (or retry) starts, and running
     /// ones go on to finish. The first Ctrl-C turns it on. Never saved.
     #[serde(skip)]
@@ -266,6 +271,7 @@ impl Default for RunOptions {
             scan_credentials: false,
             judge_model: None,
             judge_env: JudgeEnv::default(),
+            unpack_budget: None,
             drain: Drain::default(),
         }
     }

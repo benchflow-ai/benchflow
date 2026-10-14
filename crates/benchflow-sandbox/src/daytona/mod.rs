@@ -43,6 +43,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 
+use crate::archive::Limits;
 use crate::owner::{self, Verdict};
 use crate::{
     Capabilities, Exec, ExecOutput, Image, ImageSource, ImageSpec, NetworkPolicy, OWNER_LABEL,
@@ -1674,7 +1675,7 @@ impl Sandbox for DaytonaSandbox {
     }
 
     async fn download(&self, remote: &str, local: &Path) -> Result<(), SandboxError> {
-        files::download(&self.core, remote, local, None).await
+        files::download(&self.core, remote, local, Limits::default()).await
     }
 
     async fn destroy(&self) -> Result<(), SandboxError> {
@@ -1771,7 +1772,15 @@ impl Sandbox for DaytonaSandbox {
         local: &Path,
         max_bytes: u64,
     ) -> Result<(), SandboxError> {
-        files::download(&self.core, remote, local, Some(max_bytes)).await
+        files::download(&self.core, remote, local, Limits::capped(max_bytes)).await
+    }
+    async fn download_limited(
+        &self,
+        remote: &str,
+        local: &Path,
+        limits: Limits,
+    ) -> Result<(), SandboxError> {
+        files::download(&self.core, remote, local, limits).await
     }
 
     async fn set_network(&self, policy: &NetworkPolicy) -> Result<(), SandboxError> {

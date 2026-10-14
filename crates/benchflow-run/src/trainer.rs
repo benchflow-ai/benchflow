@@ -30,7 +30,6 @@
 //! ([`benchflow_agent::trajectory::to_atif`]): 0.8's v1.7 document plus
 //! step timestamps and the agent's own tool names, arguments, and output.
 
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use benchflow_agent::trajectory::{
@@ -303,7 +302,20 @@ fn write_verifiers(
             model: info.model.as_deref(),
         },
     );
-    write_file(dir, VERIFIERS, &verifiers_line(&record, redactor))
+    write_file(
+        dir,
+        VERIFIERS,
+        &verifiers_line(&clean(record, redactor), redactor),
+    )
+}
+
+/// A trainer record redacted value by value, and without the key body
+/// lines between a key's markers that no single value shows as a key (a
+/// key read in parts) ([`Redactor::redact_record`]). The trial's file and
+/// the job's line are the same.
+fn clean(mut record: Value, redactor: &Redactor) -> Value {
+    redactor.redact_record(&mut record);
+    record
 }
 
 fn write_adp(
@@ -326,7 +338,7 @@ fn write_adp(
     // Like 0.8, a record with nothing to say is not written, and an older
     // file is left alone.
     match record {
-        Some(record) => write_file(dir, ADP, &adp_line(&record, redactor)),
+        Some(record) => write_file(dir, ADP, &adp_line(&clean(record, redactor), redactor)),
         None => Ok(()),
     }
 }
@@ -432,29 +444,19 @@ fn aggregate(
     for (_, path) in &sources {
         match std::fs::read_to_string(path) {
             Ok(lines) => {
-                // Each line is redacted as a value first: a text pass alone
-                // could match inside a JSON escape, or pair a key's BEGIN and
-                // END markers from values at different depths and cut the
-                // JSON between them. The text pass then runs on the result,
-                // as 0.8 ran it on every line, so a BEGIN in one message and
-                // an END in a later one still take the chunks between them
-                // (a key read with `head`, `sed -n` and `tail`); its output
-                // is kept only if it is still JSON. A line that is not JSON
-                // gets the text pass alone.
+                // Each line is redacted as a value, never as text: 0.8's text
+                // pass over the whole line could match inside a JSON escape,
+                // pair a key's BEGIN and END markers across structures, or
+                // cut the messages, the `completion` or the ADP `reward`
+                // between two markers. A key read in parts (`head`, `sed -n`,
+                // `tail`) loses its middle part to the walk over the record's
+                // strings, which removes body lines inside strings and
+                // nothing else ([`Redactor::redact_key_chunks`]). A line
+                // that is not JSON gets the text pass, as 0.8 gave every
+                // line.
                 for line in lines.lines() {
                     match serde_json::from_str::<Value>(line) {
-                        Ok(mut value) => {
-                            redactor.redact_json(&mut value);
-                            let line = to_python_json(&value);
-                            match redactor.redact(&line) {
-                                Cow::Owned(redone)
-                                    if serde_json::from_str::<Value>(&redone).is_ok() =>
-                                {
-                                    text.push_str(&redone)
-                                }
-                                _ => text.push_str(&line),
-                            }
-                        }
+                        Ok(value) => text.push_str(&to_python_json(&clean(value, redactor))),
                         Err(_) => text.push_str(&redactor.redact(line)),
                     }
                     text.push('\n');
@@ -770,9 +772,10 @@ mod tests {
     }
 
     /// Review FIX9-A 1: a key read in three chunks (`head`, `sed -n`,
-    /// `tail`) has a middle chunk with no marker. The job pass pairs the BEGIN
-    /// in one message with the END in a later one and takes it, as 0.8 did.
-    /// The key here is made up.
+    /// `tail`) has a middle chunk with no marker. The job pass's walk opens a
+    /// span at the BEGIN in one message and removes the chunk's lines before
+    /// the END in a later one. The key here is made up; `tests/trainer_keys.rs`
+    /// covers the shapes the exporters write.
     #[test]
     fn job_files_drop_a_key_chunk_between_messages() {
         let job = tempfile::tempdir().unwrap();

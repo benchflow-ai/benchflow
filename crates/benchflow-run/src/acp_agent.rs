@@ -617,7 +617,7 @@ pub(crate) async fn place_files(
             ctx.sandbox
                 .write_file(&file.path_for(home), &file.contents, file.mode)
                 .await
-                .map_err(|e| sandbox_problem(Phase::Setup, e))?;
+                .map_err(|e| crate::trial::put_problem(Phase::Setup, e, ctx.earlier_turns))?;
         }
         return Ok(());
     }

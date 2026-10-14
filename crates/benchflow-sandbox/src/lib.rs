@@ -371,6 +371,21 @@ pub trait Sandbox: Send + Sync {
         self.download(remote, local).await
     }
 
+    /// [`Sandbox::download_capped`] under `limits`: content and entries
+    /// (see [`archive::Limits`]). Backends without an entry budget apply the
+    /// content cap only.
+    async fn download_limited(
+        &self,
+        remote: &str,
+        local: &Path,
+        limits: archive::Limits,
+    ) -> Result<(), SandboxError> {
+        match limits.bytes {
+            Some(max_bytes) => self.download_capped(remote, local, max_bytes).await,
+            None => self.download(remote, local).await,
+        }
+    }
+
     /// Change a running sandbox's network, where the backend can
     /// ([`Capabilities::network_switch`]).
     async fn set_network(&self, policy: &NetworkPolicy) -> Result<(), SandboxError> {

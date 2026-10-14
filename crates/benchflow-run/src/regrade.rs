@@ -153,7 +153,7 @@ pub fn plan_with(
                 if let Some(reason) = stray_outputs(&task, &dir, &outputs) {
                     not_regradable.push(refuse(
                         reason,
-                        "regrade only outputs BenchFlow saved; this trial folder was changed after the run",
+                        "run the trial again: a regrade restores only regular files and folders inside the task's outputs, and these saved outputs hold more (an older bench saved its outputs archive unchecked, or the trial folder was changed after the run)",
                     ));
                     continue;
                 }
@@ -182,9 +182,60 @@ pub fn plan_with(
 }
 
 /// Why a trial's saved outputs cannot be restored for `task`'s verifier:
-/// they are unpacked as root at `/`, so only the task's output paths may be
-/// in them. `None` when they fit.
+/// they are unpacked as root at `/`, so only what
+/// [`crate::custody::filter_outputs`] keeps for the task's output paths may
+/// be in them, the rule a live trial saved them by. `None` when they fit.
 pub(crate) fn stray_outputs(task: &TaskPackage, dir: &Path, outputs: &Outputs) -> Option<String> {
+    let allowed = match restore_paths(task, dir) {
+        Ok(a) => a,
+        Err(why) => return Some(why),
+    };
+    match outputs {
+        Outputs::Archive(a) => match crate::custody::stray_entries(a, &allowed) {
+            Err(e) => Some(format!("its saved outputs cannot be read: {e}")),
+            // Folders above the outputs are dropped and say nothing: an
+            // archive packed from `outputs/` holds them.
+            Ok(f) => {
+                let n = f.refused_count - f.folders_above;
+                let first = f
+                    .refused
+                    .iter()
+                    .find(|r| r.reason != crate::custody::ABOVE_OUTPUTS)
+                    .map(|r| format!(" (the first, {}, is a {}: {})", r.path, r.kind, r.reason))
+                    .unwrap_or_default();
+                (n > 0).then(|| {
+                    format!("its saved outputs hold {n} entries a verifier is not given{first}")
+                })
+            }
+        },
+        Outputs::Folder(f) => {
+            // A folder from before the byte budget can name far more than
+            // a restore takes (review F2-RA-1): one file copied per hard
+            // link.
+            let bytes = folder_bytes(f);
+            if bytes > crate::custody::OUTPUT_BUDGET {
+                return Some(format!(
+                    "its saved outputs hold {bytes} bytes, past the {} a restore takes",
+                    crate::custody::OUTPUT_BUDGET
+                ));
+            }
+            let stray = crate::custody::stray_files(f, &allowed);
+            stray.first().map(|first| {
+                format!(
+                    "its saved outputs hold {} path(s) outside the task's outputs ({}), or links",
+                    stray.len(),
+                    first
+                )
+            })
+        }
+    }
+}
+
+/// The paths a trial's saved outputs may restore for `task`'s verifier:
+/// the task's output paths, in the folder the trial worked in. `Err` with
+/// why when the folder its config records is one root's restore could use
+/// to reach system or grading files.
+pub(crate) fn restore_paths(task: &TaskPackage, dir: &Path) -> Result<Vec<String>, String> {
     // The folder the trial worked in: the task's when it declares one, else
     // as the trial's config recorded it (the image's WORKDIR); older trials
     // recorded none, and used the task's. A trial folder can come from
@@ -202,7 +253,7 @@ pub(crate) fn stray_outputs(task: &TaskPackage, dir: &Path, outputs: &Outputs) -
             if task.sandbox.outputs.is_empty()
                 && let Some(why) = unsafe_restore_dir(task, &w)
             {
-                return Some(format!(
+                return Err(format!(
                     "its config records the working folder {w:?}, which {why}"
                 ));
             }
@@ -210,22 +261,10 @@ pub(crate) fn stray_outputs(task: &TaskPackage, dir: &Path, outputs: &Outputs) -
         }
         (None, None) => task.workdir().to_string(),
     };
-    let allowed: Vec<String> = trial::output_paths(task, &workdir)
+    Ok(trial::output_paths(task, &workdir)
         .into_iter()
         .map(|(p, _)| p)
-        .collect();
-    let stray = match outputs {
-        Outputs::Archive(a) => crate::custody::stray_entries(a, &allowed)
-            .unwrap_or_else(|e| vec![format!("(unreadable: {e})")]),
-        Outputs::Folder(f) => crate::custody::stray_files(f, &allowed),
-    };
-    stray.first().map(|first| {
-        format!(
-            "its saved outputs hold {} path(s) outside the task's outputs ({}), or links",
-            stray.len(),
-            first
-        )
-    })
+        .collect())
 }
 
 /// Why outputs restored as root into `workdir` could reach files that are
@@ -372,7 +411,20 @@ fn task_path(
 /// Pack an `outputs/` folder into a tar archive with the same layout the
 /// runner builds in the sandbox: paths relative to `/`, regular files and
 /// folders only.
+/// More than [`crate::custody::OUTPUT_BUDGET`] bytes of files is refused
+/// with [`std::io::ErrorKind::FileTooLarge`] before anything is written.
 pub fn pack_folder(folder: &Path, archive: &Path) -> std::io::Result<()> {
+    let bytes = folder_bytes(folder);
+    if bytes > crate::custody::OUTPUT_BUDGET {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            format!(
+                "{} holds {bytes} bytes of files, past the {} a restore takes",
+                folder.display(),
+                crate::custody::OUTPUT_BUDGET
+            ),
+        ));
+    }
     let file = std::fs::File::create(archive)?;
     let mut b = tar::Builder::new(file);
     b.follow_symlinks(false);
@@ -392,6 +444,18 @@ pub fn pack_folder(folder: &Path, archive: &Path) -> std::io::Result<()> {
         }
     }
     b.finish()
+}
+
+/// The bytes of the regular files under `folder`, links not followed.
+fn folder_bytes(folder: &Path) -> u64 {
+    walkdir::WalkDir::new(folder)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+        .sum()
 }
 
 /// One trial's old and new score.
@@ -535,6 +599,8 @@ pub async fn run(
             model: r.record.model.clone(),
             output: recorded_agent(&r.record),
             agent_files: r.dir.clone(),
+            // Planned only when they fit, so never empty here.
+            allowed: restore_paths(&r.task, &r.dir).unwrap_or_default(),
         };
         let sem = sem.clone();
         let rt = rt.clone();
@@ -834,5 +900,24 @@ mod tests {
             "it never started a sandbox (R401)"
         );
         assert!(plan.not_regradable[0].next.contains("bench results"));
+    }
+
+    /// Review F2-RA-1: an `outputs/` folder from before the byte budget can
+    /// name far more than a restore takes (a file copied per hard link).
+    /// Packing it for a regrade or `--diff` stops before writing anything.
+    #[test]
+    fn pack_folder_refuses_a_folder_past_the_budget() {
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("outputs/app");
+        std::fs::create_dir_all(&out).unwrap();
+        for name in ["a", "b"] {
+            // Sparse: 600 MiB each, nothing written.
+            let f = std::fs::File::create(out.join(name)).unwrap();
+            f.set_len(600 << 20).unwrap();
+        }
+        let archive = d.path().join("outputs.tar");
+        let e = pack_folder(&d.path().join("outputs"), &archive).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::FileTooLarge, "{e}");
+        assert!(std::fs::metadata(&archive).map_or(0, |m| m.len()) == 0);
     }
 }
