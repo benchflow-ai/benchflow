@@ -243,7 +243,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "tools": optional_params.get("tools") or kwargs.get("tools"),
             "stream": optional_params.get("stream") or kwargs.get("stream"),
         }
-        for key in ("reasoning_effort", "thinking", "output_config"):
+        for key in ("reasoning_effort", "reasoning", "thinking", "output_config", "instructions"):
             value = optional_params.get(key)
             if value is None:
                 value = kwargs.get(key)
@@ -258,6 +258,12 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             if value is not None:
                 request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
+        call_type = kwargs.get("call_type") or litellm_params.get("call_type")
+        request_path = "/v1/chat/completions"
+        if call_type in {"responses", "aresponses"}:
+            request_path = "/v1/responses"
+        elif call_type == "anthropic_messages":
+            request_path = "/v1/messages"
         return {
             "request_model": kwargs.get("model"),
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
@@ -270,7 +276,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             },
             "request": {
                 "method": "POST",
-                "path": "/v1/messages" if kwargs.get("call_type") == "anthropic_messages" else "/v1/chat/completions",
+                "path": request_path,
                 "body": request_body,
             },
             "start_time": _iso(start_time),

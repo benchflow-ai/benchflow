@@ -291,11 +291,24 @@ def _normalize_tool_call(
     }
 
 
+def _responses_tool_name(item: dict[str, Any]) -> str:
+    """Preserve the namespace of Responses function/custom tool declarations."""
+    name = str(item.get("name") or "tool")
+    namespace = item.get("namespace")
+    if (
+        isinstance(namespace, str)
+        and namespace
+        and not name.startswith(namespace + ".")
+    ):
+        return namespace + "." + name
+    return name
+
+
 def _normalize_message(
     message: dict[str, Any], index: int, *, redact: bool = True
 ) -> dict[str, Any]:
     message_type = message.get("type")
-    if message_type == "function_call":
+    if message_type in {"function_call", "custom_tool_call"}:
         return {
             "role": "assistant",
             "content": "",
@@ -305,8 +318,12 @@ def _normalize_message(
                         "id": message.get("call_id") or message.get("id"),
                         "type": "function",
                         "function": {
-                            "name": message.get("name"),
-                            "arguments": message.get("arguments", {}),
+                            "name": _responses_tool_name(message),
+                            "arguments": (
+                                {"input": message.get("input", "")}
+                                if message_type == "custom_tool_call"
+                                else message.get("arguments", {})
+                            ),
                         },
                     },
                     index,
@@ -314,7 +331,7 @@ def _normalize_message(
                 )
             ],
         }
-    if message_type == "function_call_output":
+    if message_type in {"function_call_output", "custom_tool_call_output"}:
         return {
             "role": "tool",
             "tool_call_id": str(message.get("call_id") or message.get("id") or ""),
@@ -387,7 +404,7 @@ def _messages_from_chat_request(
         if not isinstance(message, dict):
             continue
         message = cast(dict[str, Any], message)
-        if message.get("type") == "reasoning":
+        if message.get("type") in {"reasoning", "additional_tools"}:
             continue
         normalized.append(_normalize_message(message, idx, redact=redact))
     return normalized
@@ -408,7 +425,7 @@ def _messages_from_responses_request(
             if not isinstance(item, dict):
                 continue
             item = cast(dict[str, Any], item)
-            if item.get("type") != "reasoning":
+            if item.get("type") not in {"reasoning", "additional_tools"}:
                 messages.append(_normalize_message(item, idx, redact=redact))
     return messages
 
@@ -417,10 +434,31 @@ def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
     raw_tools = body.get("tools") or body.get("tool_defs") or []
     if not isinstance(raw_tools, list):
         return []
+    raw_tools = list(raw_tools)
+    for body_field in ("input", "messages"):
+        items = body.get(body_field)
+        if isinstance(items, list):
+            for item in items:
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "additional_tools"
+                    and isinstance(item.get("tools"), list)
+                ):
+                    raw_tools.extend(item["tools"])
     tools: list[dict[str, Any]] = []
-    for item in raw_tools:
+
+    def append_tool(item: dict[str, Any], namespace: str = "") -> None:
+        if item.get("type") == "namespace":
+            children = item.get("tools")
+            name = item.get("name")
+            if isinstance(children, list) and isinstance(name, str) and name:
+                prefix = namespace + "." + name if namespace else name
+                for child in children:
+                    if isinstance(child, dict):
+                        append_tool(child, prefix)
+            return
         if not isinstance(item, dict):
-            continue
+            return
         if isinstance(item.get("function"), dict):
             function = dict(item["function"])
         else:
@@ -432,10 +470,25 @@ def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
             }
         if not function.get("name"):
-            continue
+            return
+        if namespace:
+            function["name"] = namespace + "." + str(function["name"])
+        if item.get("type") == "custom":
+            # Freeform input is carried losslessly as one string argument;
+            # the native request/response and grammar remain in the raw trace.
+            function["parameters"] = {
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+                "additionalProperties": False,
+            }
         function.setdefault("description", "")
         function.setdefault("parameters", {"type": "object", "properties": {}})
         tools.append({"type": "function", "function": function})
+
+    for item in raw_tools:
+        if isinstance(item, dict):
+            append_tool(item)
     return tools
 
 
@@ -514,14 +567,18 @@ def _assistant_from_responses_response(
         item_type = item.get("type")
         if item_type == "message":
             texts.append(_content_to_text(item.get("content")))
-        elif item_type in {"function_call", "tool_call"}:
+        elif item_type in {"function_call", "tool_call", "custom_tool_call"}:
             tool_calls.append(
                 {
                     "id": item.get("call_id") or item.get("id"),
                     "type": "function",
                     "function": {
-                        "name": item.get("name"),
-                        "arguments": item.get("arguments", {}),
+                        "name": _responses_tool_name(item),
+                        "arguments": (
+                            {"input": item.get("input", "")}
+                            if item_type == "custom_tool_call"
+                            else item.get("arguments", {})
+                        ),
                     },
                 }
             )
@@ -575,9 +632,22 @@ def _exchange_to_messages_and_tools(
     if assistant is None:
         return [], [], "no_assistant"
     messages.append(assistant)
+    tool_defs = _tool_defs_from_body(request_body)
+    declared_names = {tool["function"]["name"] for tool in tool_defs}
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            function = call["function"]
+            name = function["name"]
+            if name not in declared_names:
+                # Codex retains unqualified call names in input history. Resolve
+                # only an unambiguous declaration; unknown/ambiguous calls still
+                # fail the existing validator instead of guessing a namespace.
+                matches = [item for item in declared_names if item.endswith("." + name)]
+                if len(matches) == 1:
+                    function["name"] = matches[0]
     return (
         _normalize_system_messages(messages),
-        _tool_defs_from_body(request_body),
+        tool_defs,
         None,
     )
 

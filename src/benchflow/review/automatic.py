@@ -18,6 +18,7 @@ import uuid
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from benchflow._utils.text import describe_exception
 from benchflow.review.config import Rubric, find_task_rubrics, load_rubric_snapshot
@@ -38,6 +39,8 @@ class PreparedReview:
     rubric_path: Path
     rubric_sha256: str
     config: ReviewerConfig
+    # Selected by the host execution plan, never by agent-authored evidence.
+    subject: Literal["agent", "author_control"] = "agent"
 
     def metadata(self) -> dict:
         return {
@@ -45,6 +48,7 @@ class PreparedReview:
             "rubric_sha256": self.rubric_sha256,
             "contract": self.rubric.contract,
             "reviewer": self.config.to_config_artifact(),
+            "subject": self.subject,
         }
 
 
@@ -133,6 +137,7 @@ def _review_limit(config: ReviewerConfig) -> asyncio.Semaphore:
 async def finish_review(plan: PreparedReview, rollout_dir: Path) -> ScoringResult:
     """Judge immutable solver evidence and retain every attempt's full output."""
     from benchflow.review.evidence import EvidenceManifest, validate_workspace
+    from benchflow.review.prompts import AUTHOR_CONTROL_CONTEXT, REVIEW_TEMPLATE
     from benchflow.review.runner import run_review
 
     source = json.loads((rollout_dir / "solver.json").read_text())
@@ -186,6 +191,9 @@ async def finish_review(plan: PreparedReview, rollout_dir: Path) -> ScoringResul
                 out_dir=out_dir,
                 deterministic_pass=bool(tests_pass),
                 workspace_bundle=bundle,
+                template=(REVIEW_TEMPLATE + AUTHOR_CONTROL_CONTEXT)
+                if plan.subject == "author_control"
+                else None,
             )
         details.update(
             {

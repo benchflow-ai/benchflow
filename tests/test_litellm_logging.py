@@ -107,9 +107,30 @@ def test_callback_record_preserves_logprob_request_fields():
         now,
         now,
     )
-
     assert record["request"]["body"]["logprobs"] is True
     assert record["request"]["body"]["top_logprobs"] == 1
+
+
+def test_responses_capture_retains_instructions_reasoning_and_endpoint():
+    """Guards PR516: Azure reviewer request provenance must retain effective effort."""
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    record = logger._base_record(
+        {
+            "model": "azure/gpt-5.6-sol",
+            "call_type": "aresponses",
+            "input": [{"role": "user", "content": "Inspect the supplied files."}],
+            "optional_params": {
+                "instructions": "Use the supplied rubric.",
+                "reasoning": {"effort": "xhigh"},
+            },
+        },
+        now,
+        now,
+    )
+    assert record["request"]["path"] == "/v1/responses"
+    assert record["request"]["body"]["reasoning"] == {"effort": "xhigh"}
+    assert record["request"]["body"]["instructions"] == "Use the supplied rubric."
 
 
 def test_callback_module_source_exposes_proxy_handler_instance():
