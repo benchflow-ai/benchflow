@@ -82,6 +82,26 @@ class TestDeadlineComputation:
         assert base is not None and raised is not None
         assert raised >= base + 7200 - 60
 
+    def test_config_override_phase_budgets_extend_deadline(self, tmp_path, monkeypatch):
+        """Guard the config-override regression in v0.7.8 (commit 6614f922)."""
+        monkeypatch.delenv("BENCHFLOW_ROLLOUT_HARD_DEADLINE", raising=False)
+        task_dir = tmp_path / "t"
+        _write_task(task_dir)
+        base = hard_deadline_sec(RolloutConfig(task_path=task_dir))
+        raised = hard_deadline_sec(
+            RolloutConfig(
+                task_path=task_dir,
+                config_override={
+                    "agent": {"timeout_sec": 7200},
+                    "sandbox": {"build_timeout_sec": 1200},
+                },
+            )
+        )
+        assert base is not None and raised is not None
+        # Cover the effective agent and build budgets, preserving all other
+        # phase budgets: the watchdog must not end a legitimate longer run.
+        assert raised == base + (7200 - 60) + (1200 - 600)
+
     def test_user_loop_rounds_dominate(self, tmp_path, monkeypatch):
         """A user-loop run legitimately spends max_user_rounds x (agent +
         soft-verify); the backstop must cover it, not fire mid-loop."""
