@@ -47,6 +47,8 @@ _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
 _MUSE_AGENT = "muse-code"
 _MUSE_AUTH_JSON_ENV = "MUSE_AUTH_JSON"
+# The shim's own settings (muse_acp_shim.QUOTA_WAIT_ENV, QUOTA_SLACK_ENV): no credentials.
+_MUSE_SETTINGS_ENV = ("BENCHFLOW_MUSE_QUOTA_WAIT_SEC", "BENCHFLOW_MUSE_QUOTA_SLACK_SEC")
 _CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
 _SUBSCRIPTION_AUTH_MARKER = "_BENCHFLOW_SUBSCRIPTION_AUTH"
@@ -200,6 +202,7 @@ def auto_inherit_env(
         "CODEX_API_KEY",
         "CODEX_AUTH_JSON",
         "MUSE_AUTH_JSON",
+        *_MUSE_SETTINGS_ENV,
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
@@ -693,10 +696,12 @@ def _keep_only_the_muse_login(
     else auto-inherited from the host (another provider's key, a reviewer's
     Azure credentials in the same process) would only reach a third party's
     agent sandbox. Explicit ``agent_env`` entries are the caller's choice and
-    stay.
+    stay, and so do the shim's own settings (the quota wait), which hold no
+    credential.
     """
+    keep = {_MUSE_AUTH_JSON_ENV, *_MUSE_SETTINGS_ENV}
     for key in list(agent_env):
-        if key not in explicit_agent_env_keys and key != _MUSE_AUTH_JSON_ENV:
+        if key not in explicit_agent_env_keys and key not in keep:
             del agent_env[key]
     if not agent_env.get(_MUSE_AUTH_JSON_ENV):
         raise ValueError(
