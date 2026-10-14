@@ -4,8 +4,9 @@ Neither NVIDIA tool is a benchflow dependency, so most tests drive the adapter
 through fake ``skillevaluator`` and ``skillspector`` executables that replay
 reports recorded from SkillEvaluator 0.5.0 and SkillSpector 2.12.0 (trimmed;
 paths made relative). Both real CLIs exit 0 or 1 with a JSON report and exit 2
-without one on a run error; the fakes do the same. The last test runs the real
-CLIs and is skipped unless both are on ``PATH``.
+on a run error, SkillSpector after writing a report that says so; the fakes do
+the same. The last tests run the real CLIs and are skipped unless both are on
+``PATH``.
 """
 
 from __future__ import annotations
@@ -39,33 +40,42 @@ from benchflow.integrations.skillevaluator import (
     tool_version,
 )
 
-# `skillevaluator tier1 validate <skill> --no-llm -r json` (0.5.0) on a
-# SkillsBench skill without `metadata.author`, trimmed to three validators.
+_BANDIT_B314 = (
+    "Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known "
+    "to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring "
+    "with its defusedxml equivalent function or make sure "
+    "defusedxml.defuse_stdlib() is called (CWE-20)"
+)
+_LARGE_SKILL = (
+    "Large skill (8352 tokens, recommended max <5000). Per agentskills.io, "
+    "SKILL.md should be concise (~500 lines) — large skill bodies increase "
+    "token cost after invocation; long or unfocused top-level descriptions can "
+    "degrade agent routing accuracy"
+)
+
+# `skillevaluator tier1 validate <skill> --no-llm -r json --checks <benchflow
+# defaults>` (0.5.0) on the SkillsBench skill citation-management, without
+# Semgrep and Gitleaks installed. Trimmed to four of eleven validators and a
+# few findings each. `legacy` is as recorded: SkillEvaluator mirrors every
+# structured finding there as "[CATEGORY-SEVERITY] message in location", and
+# a missing scanner is only a legacy warning plus `incomplete_scans`.
 TIER1_REPORT = {
     "overall_passed": False,
     "overall_status": "incomplete",
     "incomplete_scans": ["semgrep", "gitleaks"],
-    "total_validators": 3,
-    "total_errors": 1,
-    "total_warnings": 3,
-    "severity_counts": {"critical": 0, "high": 1, "medium": 2, "low": 1},
-    "skills": [{"name": "citation-management", "passed": False, "issue_count": 4}],
+    "total_validators": 11,
+    "total_errors": 5,
+    "total_warnings": 24,
+    "severity_counts": {"critical": 0, "high": 2, "medium": 11, "low": 12},
+    "skills": [{"name": "citation-management", "passed": False, "issue_count": 25}],
     "results": [
         {
             "validator": "Schema & Repository Governance",
             "passed": False,
             "status": "failed",
-            "summary": {"errors": 1, "warnings": 1},
+            "incomplete_scans": [],
+            "summary": {"errors": 1, "warnings": 4, "high_count": 1},
             "findings": [
-                {
-                    "category": "SCHEMA",
-                    "severity": "high",
-                    "check_name": "author_missing",
-                    "message": "Author not specified in metadata",
-                    "file_path": "SKILL.md",
-                    "line_number": None,
-                    "suggestion": "Add 'metadata.author' field",
-                },
                 {
                     "category": "SCHEMA",
                     "severity": "medium",
@@ -74,45 +84,141 @@ TIER1_REPORT = {
                     "file_path": "SKILL.md",
                     "line_number": None,
                 },
+                {
+                    "category": "SCHEMA",
+                    "severity": "high",
+                    "check_name": "author_missing",
+                    "message": "Author not specified in metadata",
+                    "file_path": "SKILL.md",
+                    "line_number": None,
+                    "suggestion": (
+                        "Add 'metadata.author' field with format "
+                        "'Name <email@example.com>'"
+                    ),
+                },
             ],
+            "legacy": {
+                "errors": [
+                    "[SCHEMA-HIGH] Author not specified in metadata in SKILL.md"
+                ],
+                "warnings": [
+                    "[SCHEMA-MEDIUM] Missing recommended section: '## Examples' "
+                    "in SKILL.md",
+                    "Workflow scope: llm skipped. LLM checks disabled by --no-llm.",
+                ],
+                "messages": [],
+            },
         },
         {
             "validator": "Code Risk Analysis",
             "passed": False,
             "status": "incomplete",
             "incomplete_scans": ["semgrep"],
-            "summary": {"errors": 0, "warnings": 1},
+            "summary": {"errors": 3, "warnings": 1, "medium_count": 3},
             "findings": [
                 {
-                    "category": "SEMGREP",
-                    "severity": "low",
-                    "check_name": "semgrep_unavailable",
-                    "message": "Semgrep is not installed",
-                    "file_path": "",
-                    "line_number": None,
+                    "category": "BANDIT",
+                    "severity": "medium",
+                    "check_name": "B314:blacklist",
+                    "message": _BANDIT_B314,
+                    "file_path": "scripts/extract_metadata.py",
+                    "line_number": 164,
+                    "suggestion": "Review blacklist (B314) (CWE-20)",
                 }
             ],
+            "legacy": {
+                "errors": [
+                    f"[BANDIT-MEDIUM] {_BANDIT_B314} in scripts/extract_metadata.py:164"
+                ],
+                "warnings": [
+                    "semgrep not installed. Install Semgrep separately with: brew "
+                    "install semgrep (macOS) or uv tool install semgrep"
+                ],
+                "messages": [],
+            },
+        },
+        {
+            "validator": "Secrets Detection",
+            "passed": False,
+            "status": "incomplete",
+            "incomplete_scans": ["gitleaks"],
+            "summary": {"errors": 0, "warnings": 1},
+            "findings": [],
+            "legacy": {
+                "errors": [],
+                "warnings": [
+                    "gitleaks not installed - secrets scanning skipped. Install "
+                    "with: brew install gitleaks (macOS) or go install "
+                    "github.com/gitleaks/gitleaks/v8@latest"
+                ],
+                "messages": [],
+            },
         },
         {
             "validator": "QUALITY",
-            "passed": True,
-            "status": "passed",
-            "summary": {"errors": 0, "warnings": 1},
+            "passed": False,
+            "status": "failed",
+            "incomplete_scans": [],
+            "summary": {"errors": 1, "warnings": 11, "high_count": 1},
             "findings": [
                 {
                     "category": "QUALITY",
                     "severity": "high",
-                    "check_name": "quality_correctness",
-                    "message": "No documented scripts in table format",
+                    "check_name": "quality_efficiency",
+                    "message": _LARGE_SKILL,
                     "file_path": "SKILL.md",
-                    "line_number": 12,
+                    "line_number": None,
                 }
             ],
+            "legacy": {
+                "errors": [f"[QUALITY-HIGH] {_LARGE_SKILL} in SKILL.md"],
+                "warnings": [],
+                "messages": [],
+            },
         },
     ],
     "quality_summary": [
-        {"overall_score": 79.0, "grade": "C", "skill_name": "citation-management"}
+        {"overall_score": 78.5, "grade": "C", "skill_name": "citation-management"}
     ],
+}
+
+# The same command with `--checks dependency` on a skill whose
+# requirements.txt pins requests==2.19.0. SkillEvaluator 0.5.0 reports each
+# pip-audit hit only as a legacy string (37 of them, each CVE twice), with no
+# structured finding and zero severity counts. Trimmed to three strings.
+TIER1_CVE_REPORT = {
+    "overall_passed": False,
+    "overall_status": "failed",
+    "incomplete_scans": [],
+    "total_validators": 1,
+    "total_errors": 37,
+    "total_warnings": 1,
+    "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+    "results": [
+        {
+            "validator": "Dependency Vulnerability Audit",
+            "passed": False,
+            "status": "failed",
+            "incomplete_scans": [],
+            "summary": {"errors": 37, "warnings": 1, "high_count": 0},
+            "findings": [],
+            "legacy": {
+                "errors": [
+                    "[CVE-HIGH] requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0",
+                    "[CVE-HIGH] requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0",
+                    "[CVE-HIGH] requests==2.19.0: PYSEC-2023-74 -> upgrade to 2.31.0",
+                ],
+                "warnings": [
+                    "Workflow scope: llm skipped. LLM checks disabled by --no-llm."
+                ],
+                "messages": [
+                    "Auditing requirements.txt",
+                    "requirements.txt: Found 37 vulnerability(ies) (pip-audit)",
+                ],
+            },
+        }
+    ],
+    "quality_summary": [],
 }
 
 # `skillspector scan <skill> --no-llm --format json` (2.12.0) on the same
@@ -165,6 +271,7 @@ import json, sys
 from pathlib import Path
 
 TIER1 = json.loads({tier1!r})
+CVE = json.loads({cve!r})
 SPECTOR = json.loads({spector!r})
 SAFE = json.loads({safe!r})
 tool = sys.argv[1]
@@ -184,16 +291,28 @@ else:
 if target.name.endswith("-crash"):
     sys.stderr.write("Error: boom\\n")
     sys.exit(2)
-clean = target.name.endswith("-clean")
+if target.name.endswith("-odd"):  # a report shape this adapter does not know
+    report = dict(results=["?"]) if tool == "skillevaluator" else dict(
+        issues=[dict(severity="HIGH", location="SKILL.md:3")]
+    )
+    if tool == "skillevaluator":
+        out.mkdir(parents=True, exist_ok=True)
+        out = out / "skillevaluator-tier1.json"
+    out.write_text(json.dumps(report))
+    sys.exit(1)
+clean = target.name.endswith(("-clean", "-cve"))
 if tool == "skillevaluator":
-    report = dict(TIER1)
-    if clean:
+    report = dict(CVE if target.name.endswith("-cve") else TIER1)
+    if target.name.endswith("-clean"):
         report.update(overall_passed=True, overall_status="passed", results=[])
     out.mkdir(parents=True, exist_ok=True)
     (out / "skillevaluator-tier1.json").write_text(json.dumps(report))
-else:
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(SAFE if clean else SPECTOR))
+    sys.exit(0 if report["overall_passed"] else 1)
+out.parent.mkdir(parents=True, exist_ok=True)
+if target.name.endswith("-scanfail"):  # SkillSpector: report, then exit 2
+    out.write_text(json.dumps(dict(SAFE, execution_successful=False)))
+    sys.exit(2)
+out.write_text(json.dumps(SAFE if clean else SPECTOR))
 sys.exit(0 if clean else 1)
 """
 
@@ -225,6 +344,7 @@ def _install_fakes(
         textwrap.dedent(
             _FAKE_CLI.format(
                 tier1=json.dumps(TIER1_REPORT),
+                cve=json.dumps(TIER1_CVE_REPORT),
                 spector=json.dumps(SKILLSPECTOR_REPORT),
                 safe=json.dumps(SAFE_SKILLSPECTOR_REPORT),
                 versions=versions,
@@ -316,16 +436,122 @@ class TestParsing:
     def test_tier1_report(self, tmp_path):
         r = parse_tier1_report(TIER1_REPORT, tmp_path / "citation-management")
         assert (r.status, r.passed) == ("incomplete", False)
-        assert (r.quality_score, r.quality_grade) == (79.0, "C")
-        assert r.failed_checks == ["Schema & Repository Governance"]
+        assert (r.quality_score, r.quality_grade) == (78.5, "C")
+        assert r.failed_checks == ["Schema & Repository Governance", "QUALITY"]
         assert r.incomplete_scans == ["semgrep", "gitleaks"]
-        author = r.findings[0]
-        assert (author.severity, author.category, author.check) == (
-            "high",
-            "SCHEMA",
+        # Legacy strings that mirror structured findings are not counted again.
+        assert [f.check for f in r.findings] == [
+            "body_recommended_section",
             "author_missing",
+            "B314:blacklist",
+            "quality_efficiency",
+        ]
+        author = r.findings[1]
+        assert (author.severity, author.category) == ("high", "SCHEMA")
+        assert r.findings[2].location == "scripts/extract_metadata.py:164"
+
+    def test_dependency_cves_come_from_legacy_strings(self, tmp_path):
+        r = parse_tier1_report(TIER1_CVE_REPORT, tmp_path / "cve-skill")
+        assert r.failed_checks == ["Dependency Vulnerability Audit"]
+        assert [(f.severity, f.category, f.check, f.message) for f in r.findings] == [
+            (
+                "high",
+                "DEPENDENCY",
+                "CVE",
+                "requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0",
+            ),
+            (
+                "high",
+                "DEPENDENCY",
+                "CVE",
+                "requests==2.19.0: PYSEC-2023-74 -> upgrade to 2.31.0",
+            ),
+        ]
+        check = SkillCheck(skill_path=tmp_path / "cve-skill", tier1=r)
+        assert len(check.blocking_findings()) == 2
+        assert not check.is_blocking("critical")
+
+    @staticmethod
+    def _result(name: str, status: str, errors=(), warnings=(), findings=()):
+        return {
+            "results": [
+                {
+                    "validator": name,
+                    "status": status,
+                    "findings": list(findings),
+                    "legacy": {"errors": list(errors), "warnings": list(warnings)},
+                }
+            ]
+        }
+
+    def test_other_legacy_only_findings(self, tmp_path):
+        # Strings in the formats SkillEvaluator 0.5.0 uses for Safety hits
+        # (below its error threshold) and for its hygiene validator.
+        safety = self._result(
+            "Dependency Vulnerability Audit",
+            "passed",
+            warnings=["[SAFETY-MEDIUM] jinja2: 70612 - Jinja2 sandbox escape"],
         )
-        assert r.findings[-1].location == "SKILL.md:12"
+        (f,) = parse_tier1_report(safety, tmp_path).findings
+        assert (f.severity, f.category, f.check, f.gates) == (
+            "medium",
+            "DEPENDENCY",
+            "SAFETY",
+            True,
+        )
+        hygiene = self._result(
+            "Code Integrity & Hygiene",
+            "failed",
+            errors=[
+                "requirements.txt:2 - Banned package: pycrypto",
+                "Dead link in SKILL.md: references/missing.md",
+            ],
+            warnings=["No standard Python test-file candidates found"],
+        )
+        banned, dead = parse_tier1_report(hygiene, tmp_path).findings
+        assert (banned.category, banned.check, banned.gates) == (
+            "DEPENDENCY",
+            "banned_package",
+            True,
+        )
+        assert (dead.category, dead.gates) == ("HYGIENE", False)
+
+    def test_failed_dependency_audit_blocks_without_a_parsed_cve(self, tmp_path):
+        report = self._result(
+            "Dependency Vulnerability Audit", "failed", errors=["pip-audit: odd"]
+        )
+        (f,) = parse_tier1_report(report, tmp_path).findings
+        assert (f.severity, f.check, f.message, f.gates) == (
+            "high",
+            "dependency_audit_failed",
+            "pip-audit: odd",
+            True,
+        )
+        # A policy that fails on medium CVEs keeps their severity.
+        medium = self._result(
+            "Dependency Vulnerability Audit",
+            "failed",
+            errors=["[CVE-MEDIUM] idna==2.7: PYSEC-2024-60 -> upgrade to 3.7"],
+        )
+        (f,) = parse_tier1_report(medium, tmp_path).findings
+        assert (f.severity, f.check) == ("medium", "CVE")
+
+    def test_structured_dependency_findings_are_not_doubled(self, tmp_path):
+        structured = {
+            "category": "DEPENDENCY",
+            "severity": "high",
+            "check_name": "cve",
+            "message": "requests==2.19.0: PYSEC-2018-28",
+            "file_path": "requirements.txt",
+        }
+        report = self._result(
+            "Dependency Vulnerability Audit",
+            "failed",
+            errors=["[CVE-HIGH] requests==2.19.0: PYSEC-2018-28"],
+            findings=[structured],
+        )
+        (f,) = parse_tier1_report(report, tmp_path).findings
+        assert f.check == "cve"
 
     def test_tier1_report_tolerates_missing_sections(self, tmp_path):
         r = parse_tier1_report({"overall_passed": True}, tmp_path / "bare")
@@ -393,10 +619,19 @@ class TestGate:
         assert check.blocking_findings("critical") == []
         assert not check.is_blocking("critical")
         medium = {f.check for f in check.blocking_findings("medium")}
-        assert medium == {"author_missing", "body_recommended_section", "AR2", "E1"}
-        assert "semgrep_unavailable" in {
-            f.check for f in check.blocking_findings("low")
+        assert medium == {
+            "author_missing",
+            "body_recommended_section",
+            "B314:blacklist",
+            "AR2",
+            "E1",
         }
+        # A missing scanner is a legacy warning plus `incomplete_scans`, never
+        # a gating finding, even at --fail-on low.
+        assert check.tier1 and check.tier1.incomplete_scans == ["semgrep", "gitleaks"]
+        assert not any(
+            "not installed" in f.message for f in check.blocking_findings("low")
+        )
         assert check.blocking_findings("never") == []
 
     def test_errors_always_block(self, tmp_path):
@@ -472,6 +707,39 @@ class TestCheckSkill:
         )
         assert r.is_blocking()
 
+    def test_unknown_report_shape_is_one_skills_error(self, tmp_path, fakes):
+        evaluator, spector = _tools()
+        skill = _write_skill(tmp_path, "s-odd")
+        r = check_skill(skill, skillevaluator=evaluator, skillspector=spector)
+        assert r.tier1 is None and r.security is None
+        assert len(r.errors) == 2
+        assert all("unexpected" in e and "report shape" in e for e in r.errors)
+        assert r.is_blocking()
+
+    def test_skillspector_run_error_points_at_its_report(self, tmp_path, fakes):
+        _, spector = _tools()
+        skill = _write_skill(tmp_path, "s-scanfail")
+        out = tmp_path / "out"
+        r = check_skill(
+            skill, skillevaluator=None, skillspector=spector, output_dir=out
+        )
+        (error,) = r.errors
+        assert "exited 2 (run error)" in error
+        assert str(out / "skillspector.json") in error
+        assert "execution_successful=False" in error
+
+    def test_unwritable_output_dir_is_one_skills_error(self, tmp_path, fakes):
+        evaluator, spector = _tools()
+        skill = _write_skill(tmp_path, "s-clean")
+        not_a_dir = tmp_path / "file"
+        not_a_dir.write_text("")
+        r = check_skill(
+            skill, skillevaluator=evaluator, skillspector=spector, output_dir=not_a_dir
+        )
+        assert len(r.errors) == 2
+        assert "cannot use report directory" in r.errors[0]
+        assert "cannot write report" in r.errors[1]
+
     def test_needs_skill_md_and_a_tool(self, tmp_path, fakes):
         evaluator, _ = _tools()
         with pytest.raises(FileNotFoundError):
@@ -504,7 +772,7 @@ class TestCli:
         assert result.exit_code == 1, result.output
         out = result.output
         assert "SkillEvaluator 0.5.0" in out and "SkillSpector 2.12.0" in out
-        assert "C 79" in out and "DO_NOT_INSTALL" in out
+        assert "C 78.5" in out and "DO_NOT_INSTALL" in out
         assert "author_missing" in out and "AR2" in out
         assert "assets/citation_checklist.md:203" in out
         assert "gitleaks, semgrep" in out  # incomplete scans, listed once
@@ -572,6 +840,36 @@ class TestCli:
         bad = self._invoke(runner, str(skill), "--fail-on", "sometimes")
         assert bad.exit_code == 1 and "Invalid --fail-on" in bad.output
 
+    def test_every_path_must_hold_a_skill(self, tmp_path, fakes, runner):
+        good = _write_skill(tmp_path / "skills", "a-clean")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        result = self._invoke(
+            runner, str(good), str(tmp_path / "skills" / "b-typo"), str(empty)
+        )
+        assert result.exit_code == 1, result.output
+        assert "b-typo does not exist" in result.output
+        assert "No SKILL.md found under" in result.output
+        assert _calls(fakes) == []  # nothing is checked
+
+    def test_dot_path_keeps_the_skill_name(self, tmp_path, fakes, runner, monkeypatch):
+        skill = _write_skill(tmp_path, "s-clean")
+        out = tmp_path / "reports"
+        monkeypatch.chdir(skill)
+        result = self._invoke(runner, ".", "-o", str(out), "--json")
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["skills"][0]["skill_name"] == "s-clean"
+        assert (out / "s-clean" / "skillspector.json").is_file()
+        named = self._invoke(runner, "SKILL.md", "--json")
+        assert json.loads(named.stdout)["skills"][0]["skill_name"] == "s-clean"
+
+    def test_dependency_cve_blocks(self, tmp_path, fakes, runner):
+        skill = _write_skill(tmp_path, "deps-cve")
+        result = self._invoke(runner, str(skill))
+        assert result.exit_code == 1, result.output
+        assert "DEPENDENCY CVE: requests==2.19.0: PYSEC-2018-28" in result.output
+        assert "1 skill(s) checked, 1 blocking (--fail-on high)" in result.output
+
     def test_existing_subcommands_still_registered(self, runner):
         from benchflow.cli.main import app
 
@@ -613,4 +911,36 @@ def test_real_tools_contract(tmp_path, monkeypatch):
     assert r.security is not None and isinstance(r.security.risk_score, int)
     assert r.security.analysis_status
     assert r.security.findings, "SkillSpector found nothing in a planted injection"
+    assert r.is_blocking()
+
+
+@pytest.mark.skipif(
+    not _real_tools_on_path(),
+    reason="real skillevaluator and skillspector executables not on PATH",
+)
+def test_real_dependency_audit_blocks(tmp_path, monkeypatch):
+    """Real SkillEvaluator: a pinned package with known CVEs blocks.
+
+    pip-audit needs the online vulnerability database; without it the audit
+    finds nothing, so the test skips.
+    """
+    monkeypatch.delenv(BIN_ENV[SKILLEVALUATOR], raising=False)
+    evaluator = locate_tool(SKILLEVALUATOR)
+    assert evaluator is not None
+    skill = _write_skill(tmp_path, "cve-skill")
+    (skill / "requirements.txt").write_text("requests==2.19.0\n")
+    r = check_skill(
+        skill,
+        skillevaluator=evaluator,
+        skillspector=None,
+        checks=("dependency",),
+        output_dir=tmp_path / "o",
+    )
+    assert r.errors == [] and r.tier1 and r.tier1.report_path
+    report = json.loads(r.tier1.report_path.read_text())
+    messages = [m for res in report["results"] for m in res["legacy"]["messages"]]
+    if not any("Found" in m and "pip-audit" in m for m in messages):
+        pytest.skip(f"pip-audit found nothing (offline?): {messages}")
+    found = [f for f in r.findings if f.category == "DEPENDENCY"]
+    assert found and all(f.check in {"CVE", "SAFETY"} for f in found)
     assert r.is_blocking()
