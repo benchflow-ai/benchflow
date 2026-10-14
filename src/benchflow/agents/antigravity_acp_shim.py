@@ -195,7 +195,7 @@ def agy_binary():
 # model or custom model"). Its ad-hoc custom-model form ``gemini-api://<model>``
 # runs any other Gemini API model: agy sends it to
 # ``$GOOGLE_GEMINI_BASE_URL/v1beta/models/<model>`` with the requested effort
-# (gemini-4-argon at --effort=high: thinkingLevel HIGH, agy 1.2.7, 2026-10-14).
+# (gemini-4-argon at --effort=high: thinkingLevel HIGH, agy 1.2.7 and 1.3.5, 2026-10-14).
 _CUSTOM_MODEL_SCHEME = "gemini-api://"
 _catalog = None
 
