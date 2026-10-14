@@ -501,6 +501,23 @@ class TestRouting:
         assert resolved["TZ"] == "UTC"
         assert resolved["MUSE_AUTH_JSON"] == "{}"
 
+    def test_the_quota_wait_reaches_the_shim(self, monkeypatch):
+        """The campaign sets the shim's quota wait in the runner's environment; it
+        must reach the sandbox, or a run that meets a quota wall fails instead of
+        waiting for the reset (three rollouts lost on 2026-10-13)."""
+        from benchflow.agents import env as envmod
+        from benchflow.agents import muse_acp_shim
+
+        monkeypatch.setattr(envmod, "load_dotenv_env", lambda: {})
+        monkeypatch.setenv("MUSE_AUTH_JSON", "{}")
+        monkeypatch.setenv(muse_acp_shim.QUOTA_WAIT_ENV, "18000")
+        monkeypatch.setenv(muse_acp_shim.QUOTA_SLACK_ENV, "45")
+        monkeypatch.setenv("AZURE_API_KEY", "secret")
+        resolved = envmod.resolve_agent_env("muse-code", "muse-wonder-full-1.0", {})
+        assert resolved[muse_acp_shim.QUOTA_WAIT_ENV] == "18000"
+        assert resolved[muse_acp_shim.QUOTA_SLACK_ENV] == "45"
+        assert "AZURE_API_KEY" not in resolved
+
     def test_the_login_is_inherited_and_the_api_key_is_not(self, monkeypatch):
         from benchflow.agents import env as envmod
 
