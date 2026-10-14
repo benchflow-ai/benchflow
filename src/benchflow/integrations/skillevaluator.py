@@ -13,17 +13,21 @@ Design choices:
   their JSON reports, so benchflow never imports their internals or inherits
   their Python pins. Neither is on PyPI, so they cannot be benchflow extras
   (PyPI rejects direct references); users install them with ``uv tool``.
-- **SkillSpector runs once.** SkillEvaluator's own ``security`` check shells
-  out to SkillSpector (plus Bandit). benchflow runs SkillSpector directly,
+- **SkillSpector runs once.** SkillEvaluator's own ``security`` check mainly
+  reruns SkillSpector; its ``code-integrity`` check already runs Bandit (and
+  Semgrep and Gitleaks when installed). benchflow runs SkillSpector directly,
   which keeps its risk score and verdict, and leaves ``security`` out of the
   default Tier 1 checks so the same scan does not run twice.
 - **No model calls.** Both CLIs get ``--no-llm``. Tier 2 (embeddings) and
   Tier 3 (live agents) are not wired here; ``bench skills eval`` measures
-  live lift.
-- **benchflow's gate.** A skill blocks when a schema or security finding is at
-  or above ``fail_on`` (default ``high``), or when a checker fails to run.
-  SkillEvaluator's own verdict also fails on the quality score and on missing
-  scanners; those stay advisory here.
+  live lift. The ``dependency`` check does make network calls: pip-audit
+  looks pinned packages up in a vulnerability database.
+- **benchflow's gate.** A skill blocks when a schema, security or dependency
+  finding is at or above ``fail_on`` (default ``high``), or when a checker
+  fails to run. SkillEvaluator 0.5.0 reports dependency CVEs and banned
+  packages only as legacy strings (``results[].legacy``), so they are read
+  from there. SkillEvaluator's own verdict also fails on the quality score,
+  on dead links and on missing scanners; those stay advisory here.
 """
 
 from __future__ import annotations
@@ -62,8 +66,9 @@ INSTALL_COMMANDS = {
     ),
 }
 
-#: SkillEvaluator 0.5.0's ``tier1`` lineup minus ``security``, which is
-#: SkillSpector plus Bandit; SkillSpector runs as its own pass.
+#: SkillEvaluator 0.5.0's default ``tier1`` checks minus ``security`` (which
+#: mainly reruns SkillSpector, run here as its own pass), plus the opt-in
+#: ``dependency`` CVE audit (pip-audit; needs network access).
 DEFAULT_TIER1_CHECKS: tuple[str, ...] = (
     "schema",
     "version",
@@ -81,11 +86,25 @@ FAIL_ON_CHOICES = ("critical", "high", "medium", "low", "never")
 DEFAULT_FAIL_ON = "high"
 
 #: SkillEvaluator finding categories that gate. Everything else (quality,
-#: lint, license, version) is reported but advisory.
+#: lint, license, version, hygiene) is reported but advisory.
 _SCHEMA_CATEGORIES = frozenset({"SCHEMA", "PLUGIN_SCHEMA"})
 _SECURITY_CATEGORIES = frozenset(
     {"SECURITY", "BANDIT", "SEMGREP", "SECRET", "PII", "UNICODE", "DEPENDENCY"}
 )
+
+#: SkillEvaluator 0.5.0 reports dependency CVEs through its legacy string API
+#: only: ``[CVE-HIGH] requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0``
+#: in ``results[].legacy.errors`` (or ``warnings`` below its error
+#: threshold), never in ``results[].findings``. Only these tags are read: the
+#: other legacy strings repeat structured findings.
+_LEGACY_DEPENDENCY = re.compile(
+    r"\[(CVE|SAFETY)-(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\s*(.*)", re.DOTALL
+)
+_DEPENDENCY_VALIDATOR = "Dependency Vulnerability Audit"
+#: Part of ``code-integrity``; reports banned packages and dead links only as
+#: legacy error strings.
+_HYGIENE_VALIDATOR = "Code Integrity & Hygiene"
+_LEGACY_CATEGORIES = frozenset({"DEPENDENCY", "CVE", "SAFETY", "HYGIENE"})
 
 #: Directories never searched for SKILL.md.
 _SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv"})
@@ -180,7 +199,9 @@ def iter_skill_dirs(paths: Iterable[Path]) -> Iterator[Path]:
 
     A path may be a skill directory, its ``SKILL.md``, or any directory, which
     is searched recursively. A skill's own subdirectories are not searched,
-    and a skill reached through two paths is yielded once.
+    and a skill reached through two paths is yielded once. A path with no
+    name of its own (``.``, ``..``) is yielded resolved, so the skill keeps
+    its directory name.
     """
     seen: set[Path] = set()
     for raw in paths:
@@ -191,7 +212,7 @@ def iter_skill_dirs(paths: Iterable[Path]) -> Iterator[Path]:
             key = skill_dir.resolve()
             if key not in seen:
                 seen.add(key)
-                yield skill_dir
+                yield key if skill_dir.name in ("", "..") else skill_dir
 
 
 def _walk_skills(root: Path) -> Iterator[Path]:
@@ -277,7 +298,7 @@ class SkillCheck:
 
     @property
     def skill_name(self) -> str:
-        return self.skill_path.name
+        return self.skill_path.resolve().name
 
     @property
     def findings(self) -> list[Finding]:
@@ -336,6 +357,60 @@ def _int_or_none(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _legacy_findings(
+    result: Mapping[str, Any], name: str, structured: list[Finding]
+) -> list[Finding]:
+    """Findings SkillEvaluator 0.5.0 reports only as ``legacy`` strings.
+
+    Reads ``[CVE-*]`` and ``[SAFETY-*]`` strings from any validator, and the
+    untagged errors of the hygiene validator (banned packages gate as
+    dependency findings; dead links stay advisory). Skipped when the
+    validator already reports such findings in structured form, so a newer
+    release that does so is not counted twice. A failed dependency audit
+    whose strings do not parse still blocks.
+    """
+    legacy = result.get("legacy")
+    if not isinstance(legacy, Mapping):
+        legacy = {}
+    if any(f.category.upper() in _LEGACY_CATEGORIES for f in structured):
+        return []
+    found: list[Finding] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(severity: str, category: str, check: str, message: str) -> None:
+        if (severity, message) not in seen:
+            seen.add((severity, message))
+            found.append(Finding(SKILLEVALUATOR, severity, category, check, message))
+
+    for key in ("errors", "warnings"):
+        for raw in legacy.get(key) or []:
+            text = str(raw).strip()
+            match = _LEGACY_DEPENDENCY.match(text)
+            if match:
+                tag, severity, message = match.groups()
+                _add(severity.lower(), "DEPENDENCY", tag, message.strip())
+            elif key == "errors" and name == _HYGIENE_VALIDATOR and not structured:
+                if "banned package" in text.lower():
+                    _add("high", "DEPENDENCY", "banned_package", text)
+                else:
+                    _add("high", "HYGIENE", "hygiene", text)
+
+    if (
+        name == _DEPENDENCY_VALIDATOR
+        and result.get("status") == "failed"
+        and not found
+        and not any(f.gates for f in structured)
+    ):
+        errors = [str(e) for e in legacy.get("errors") or []]
+        _add(
+            "high",
+            "DEPENDENCY",
+            "dependency_audit_failed",
+            errors[0] if errors else f"{name} failed",
+        )
+    return found
+
+
 def parse_tier1_report(data: Mapping[str, Any], skill_dir: Path) -> Tier1Result:
     """Normalize a ``skillevaluator tier1 -r json`` report.
 
@@ -357,18 +432,20 @@ def parse_tier1_report(data: Mapping[str, Any], skill_dir: Path) -> Tier1Result:
         name = str(result.get("validator") or "?")
         if result.get("status") == "failed":
             failed.append(name)
-        for f in result.get("findings") or []:
-            findings.append(
-                Finding(
-                    source=SKILLEVALUATOR,
-                    severity=str(f.get("severity") or "info").lower(),
-                    category=str(f.get("category") or ""),
-                    check=str(f.get("check_name") or ""),
-                    message=str(f.get("message") or ""),
-                    file=_relative_file(f.get("file_path"), skill_dir),
-                    line=_int_or_none(f.get("line_number")),
-                )
+        structured = [
+            Finding(
+                source=SKILLEVALUATOR,
+                severity=str(f.get("severity") or "info").lower(),
+                category=str(f.get("category") or ""),
+                check=str(f.get("check_name") or ""),
+                message=str(f.get("message") or ""),
+                file=_relative_file(f.get("file_path"), skill_dir),
+                line=_int_or_none(f.get("line_number")),
             )
+            for f in result.get("findings") or []
+        ]
+        findings += structured
+        findings += _legacy_findings(result, name, structured)
 
     status = str(
         data.get("overall_status")
@@ -489,6 +566,42 @@ def _run(
         ) from e
 
 
+def _report_state(path: Path) -> str:
+    """``execution_successful``, completeness and error from a run-error report."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(data, Mapping):
+        return ""
+    parts = []
+    if "execution_successful" in data:
+        parts.append(f"execution_successful={data['execution_successful']}")
+    completeness = data.get("analysis_completeness")
+    if isinstance(completeness, Mapping) and completeness.get("status"):
+        parts.append(f"analysis {completeness['status']}")
+    if isinstance(data.get("error"), str) and data["error"]:
+        parts.append(f"error: {data['error'][:200]}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _parse[T](
+    parser: Callable[[Mapping[str, Any], Path], T],
+    data: Mapping[str, Any],
+    skill_dir: Path,
+    *,
+    what: str,
+    path: Path | None,
+) -> T:
+    """Run *parser*, turning an unexpected report shape into one skill's error."""
+    try:
+        return parser(data, skill_dir)
+    except (AttributeError, TypeError, KeyError, IndexError, ValueError) as e:
+        raise SkillCheckError(
+            f"unexpected {what} report shape in {path}: {type(e).__name__}: {e}"
+        ) from e
+
+
 def _read_report(
     path: Path | None,
     proc: subprocess.CompletedProcess[str],
@@ -497,13 +610,17 @@ def _read_report(
     skill_dir: Path,
 ) -> dict[str, Any]:
     # Both CLIs exit 0 (clean) or 1 (policy failure) with a report; anything
-    # else, or no report, is a run error.
+    # else, or no report, is a run error. SkillSpector writes its report and
+    # then exits 2 when the scan did not execute successfully.
     if proc.returncode not in (0, 1) or path is None or not path.is_file():
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-6:]
         detail = "\n".join(tail) if tail else "(no output)"
-        raise SkillCheckError(
-            f"{what} exited {proc.returncode} on {skill_dir} without a report:\n{detail}"
-        )
+        if path is not None and path.is_file():
+            state = f"exited {proc.returncode} (run error); report: {path}"
+            state += _report_state(path)
+        else:
+            state = f"exited {proc.returncode} with no usable report"
+        raise SkillCheckError(f"{what} {state} on {skill_dir}:\n{detail}")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -525,9 +642,12 @@ def run_tier1(
     run: RunFn = subprocess.run,
 ) -> Tier1Result:
     """Run SkillEvaluator Tier 1 (no LLM) on one skill and parse its report."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for stale in output_dir.glob("skillevaluator-*.json"):
-        stale.unlink()  # a rerun into -o must not read the last run's report
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for stale in output_dir.glob("skillevaluator-*.json"):
+            stale.unlink()  # a rerun into -o must not read the last run's report
+    except OSError as e:
+        raise SkillCheckError(f"cannot use report directory {output_dir}: {e}") from e
     argv = build_tier1_command(
         tool.path, skill_dir.resolve(), output_dir, checks=checks, min_score=min_score
     )
@@ -544,7 +664,9 @@ def run_tier1(
     )
     report_path = reports[-1] if reports else None
     data = _read_report(report_path, proc, what=SKILLEVALUATOR, skill_dir=skill_dir)
-    result = parse_tier1_report(data, skill_dir)
+    result = _parse(
+        parse_tier1_report, data, skill_dir, what=SKILLEVALUATOR, path=report_path
+    )
     result.report_path = report_path
     return result
 
@@ -559,8 +681,11 @@ def run_skillspector(
     run: RunFn = subprocess.run,
 ) -> SecurityScan:
     """Run the SkillSpector static scan (no LLM) on one skill and parse it."""
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.unlink(missing_ok=True)
+    try:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.unlink(missing_ok=True)
+    except OSError as e:
+        raise SkillCheckError(f"cannot write report {output_file}: {e}") from e
     argv = build_skillspector_command(tool.path, skill_dir.resolve(), output_file)
     proc = _run(
         argv,
@@ -571,7 +696,9 @@ def run_skillspector(
         run=run,
     )
     data = _read_report(output_file, proc, what=SKILLSPECTOR, skill_dir=skill_dir)
-    scan = parse_skillspector_report(data, skill_dir)
+    scan = _parse(
+        parse_skillspector_report, data, skill_dir, what=SKILLSPECTOR, path=output_file
+    )
     scan.report_path = output_file
     return scan
 
