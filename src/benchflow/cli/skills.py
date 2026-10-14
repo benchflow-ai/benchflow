@@ -227,8 +227,8 @@ def register_skills(app: typer.Typer) -> None:
             typer.Option(
                 "--fail-on",
                 help=(
-                    "Exit 1 when a schema or security finding is at or above this "
-                    "severity: critical, high, medium, low, or never"
+                    "Exit 1 when a schema, security or dependency finding is at or "
+                    "above this severity: critical, high, medium, low, or never"
                 ),
             ),
         ] = "high",
@@ -249,7 +249,11 @@ def register_skills(app: typer.Typer) -> None:
                 "--min-score",
                 min=0,
                 max=100,
-                help="Quality score SkillEvaluator's quality check needs (default 70)",
+                help=(
+                    "Quality score SkillEvaluator's quality check needs (default "
+                    "70); advisory: changes SkillEvaluator's Tier 1 status, not "
+                    "the exit code"
+                ),
             ),
         ] = None,
         output_dir: Annotated[
@@ -283,7 +287,8 @@ def register_skills(app: typer.Typer) -> None:
         integrity, dependencies, Unicode smuggling, quality score and script
         lint. SkillSpector scans for security issues. Both run without LLM
         calls; install them separately (see docs/skill-eval.md). Exit 1 when a
-        schema or security finding reaches --fail-on, or a checker fails to run.
+        schema, security or dependency finding reaches --fail-on, or a checker
+        fails to run.
 
         Examples:
             bench skills validate ./my-skill
@@ -310,10 +315,18 @@ def register_skills(app: typer.Typer) -> None:
                 f"Invalid --fail-on {fail_on!r}: choose {', '.join(FAIL_ON_CHOICES)}"
             )
             raise typer.Exit(1)
-        skill_dirs = list(iter_skill_dirs(paths))
-        if not skill_dirs:
-            print_error(f"No SKILL.md found under {', '.join(map(str, paths))}")
+        # Every path must hold a skill: a typo in a CI list must not pass
+        # because another path matched.
+        bad_paths = [
+            f"{p} does not exist" if not p.exists() else f"No SKILL.md found under {p}"
+            for p in paths
+            if not p.exists() or next(iter_skill_dirs([p]), None) is None
+        ]
+        if bad_paths:
+            for message in bad_paths:
+                print_error(message)
             raise typer.Exit(1)
+        skill_dirs = list(iter_skill_dirs(paths))
 
         evaluator = locate_tool(SKILLEVALUATOR)
         spector = None if no_security else locate_tool(SKILLSPECTOR)
@@ -342,7 +355,7 @@ def register_skills(app: typer.Typer) -> None:
             if checks
             else DEFAULT_TIER1_CHECKS
         )
-        labels = [d.name for d in skill_dirs]
+        labels = [d.resolve().name for d in skill_dirs]
         if len(set(labels)) < len(labels):
             labels = [str(d) for d in skill_dirs]
 
