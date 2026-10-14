@@ -12,11 +12,19 @@ under a dedicated ``@ai-sdk/openai-compatible`` provider id
 """
 
 import base64
+import json
+import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
-from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
+from benchflow.agents.registry import (
+    AGENTS,
+    OPENCODE_GOOGLE_BASE_URL_ENV,
+    OPENCODE_PROXY_PROVIDER_ID,
+)
 
 # (agent name, proxy wrapper binary, agent config filename). MiMo is an
 # OpenCode fork, but the current agents-manifest path launches it directly via
@@ -150,3 +158,63 @@ def test_wrapper_runs_native_binary_directly_not_via_node():
     w = _wrapper_script("opencode", "opencode-proxy")
     assert "head -c2" in w  # detect shebang vs native
     assert "/opt/benchflow/js-agents/bin/opencode" in w  # direct native-exec path
+
+
+def test_format_acp_model_sends_gemini_route_to_opencodes_google_provider():
+    """``gemini/<model>`` is LiteLLM's Google AI Studio route; OpenCode knows that
+    provider as models.dev's ``google`` and has no ``gemini`` provider."""
+    from benchflow.acp.runtime import _format_acp_model
+
+    assert _format_acp_model("gemini/gemini-4-argon", "opencode") == "google/gemini-4-argon"
+    assert _format_acp_model("google/gemini-4-argon", "opencode") == "google/gemini-4-argon"
+
+
+def _register_js(w: str) -> str:
+    return w.split("<<'JSEOF'\n", 1)[1].split("\nJSEOF\n", 1)[0]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_proxy_wrapper_points_opencodes_google_provider_at_the_gemini_passthrough(
+    tmp_path,
+):
+    """With the Gemini pass-through set, the wrapper gives OpenCode's built-in
+    ``google`` provider the gateway URL and key, keeps the rest of the config,
+    and registers no chat-completions alias."""
+    w = _wrapper_script("opencode", "opencode-proxy")
+    assert f'[ -n "${OPENCODE_GOOGLE_BASE_URL_ENV}" ]' in w
+    cfg = tmp_path / ".config" / "opencode" / "opencode.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"tools": {"webfetch": False}}))
+    env = {
+        "PATH": os.environ["PATH"],
+        "BENCHFLOW_AGENT_HOME": str(tmp_path),
+        OPENCODE_GOOGLE_BASE_URL_ENV: "http://127.0.0.1:4000/gemini/v1beta",
+        "GOOGLE_GENERATIVE_AI_API_KEY": "sk-gateway",
+    }
+    subprocess.run(["node", "-"], input=_register_js(w), text=True, env=env, check=True)
+    d = json.loads(cfg.read_text())
+    assert d["provider"]["google"]["options"] == {
+        "baseURL": "http://127.0.0.1:4000/gemini/v1beta",
+        "apiKey": "sk-gateway",
+    }
+    assert OPENCODE_PROXY_PROVIDER_ID not in d["provider"]
+    assert "small_model" not in d
+    assert d["tools"] == {"webfetch": False}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_proxy_wrapper_still_registers_the_alias_for_other_models(tmp_path):
+    w = _wrapper_script("opencode", "opencode-proxy")
+    env = {
+        "PATH": os.environ["PATH"],
+        "BENCHFLOW_AGENT_HOME": str(tmp_path),
+        "BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-deepseek-v4-flash",
+        "OPENAI_BASE_URL": "http://127.0.0.1:4000/v1",
+        "OPENAI_API_KEY": "sk-gateway",
+    }
+    subprocess.run(["node", "-"], input=_register_js(w), text=True, env=env, check=True)
+    d = json.loads((tmp_path / ".config" / "opencode" / "opencode.json").read_text())
+    prov = d["provider"][OPENCODE_PROXY_PROVIDER_ID]
+    assert prov["options"] == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": "sk-gateway"}
+    assert "benchflow-deepseek-v4-flash" in prov["models"]
+    assert "google" not in d["provider"]

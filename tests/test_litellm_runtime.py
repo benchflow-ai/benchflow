@@ -802,6 +802,42 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_opencode_gemini_keeps_its_google_client_on_the_passthrough(monkeypatch):
+    """OpenCode on a Gemini model talks to the Gemini pass-through with its own
+    Google client, not to the chat-completions alias, and holds only the
+    gateway key."""
+
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env={
+            "GEMINI_API_KEY": "upstream-gemini-key",
+            "GOOGLE_GENERATIVE_AI_API_KEY": "upstream-generative-ai-key",
+        },
+        model="gemini/gemini-4-argon",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+        sandbox=SimpleNamespace(),
+        force_sandbox_local=True,
+    )
+
+    assert provider_runtime is not None
+    assert (
+        updated["BENCHFLOW_OPENCODE_GOOGLE_BASE_URL"]
+        == "http://127.0.0.1:45678/gemini/v1beta"
+    )
+    assert updated["GOOGLE_GENERATIVE_AI_API_KEY"] == provider_runtime.master_key
+    assert "GEMINI_API_KEY" not in updated
+    assert LITELLM_MODEL_ALIAS_ENV not in updated
+    assert "OPENAI_API_KEY" not in updated
+
+
+@pytest.mark.asyncio
 async def test_oracle_does_not_start_litellm(monkeypatch):
     async def fail_start(**_kwargs):
         raise AssertionError("LiteLLM should not start for oracle")

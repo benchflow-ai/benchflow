@@ -125,6 +125,12 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
+# Gemini models skip that chat-completions alias: OpenCode keeps its native
+# ``google`` provider (``@ai-sdk/google``, which carries Gemini's thought
+# signatures and thinking config) and the ``-proxy`` wrapper points it at
+# LiteLLM's byte-preserving Gemini pass-through, the route Gemini CLI uses.
+# Set by ``litellm_runtime._wire_litellm_agent_env``; read by the wrapper.
+OPENCODE_GOOGLE_BASE_URL_ENV = "BENCHFLOW_OPENCODE_GOOGLE_BASE_URL"
 _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
@@ -344,6 +350,11 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
     expects. ``small_model`` is pinned to the same alias so OpenCode's
     title/summary helper stops falling back to its hard-coded ``gpt-5-nano``
     (which the gateway cannot serve either).
+
+    A Gemini model has no alias: with ``{OPENCODE_GOOGLE_BASE_URL_ENV}`` set,
+    the wrapper instead points OpenCode's built-in ``google`` provider at the
+    gateway's Gemini pass-through and gives it the gateway key, so OpenCode's
+    own Gemini client (thought signatures, thinking config) talks to LiteLLM.
     """
     real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
@@ -360,26 +371,36 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
             'const os = require("os");',
             'const path = require("path");',
             'const alias = (process.env.BENCHFLOW_LITELLM_MODEL_ALIAS || "").trim();',
-            "if (alias) {",
+            f'const googleBase = (process.env.{OPENCODE_GOOGLE_BASE_URL_ENV} || "").trim();',
+            "if (alias || googleBase) {",
             '  const home = (process.env.BENCHFLOW_AGENT_HOME || "").trim() || os.homedir();',
             f"  const p = path.join(home, {config_relpath!r});",
             "  fs.mkdirSync(path.dirname(p), { recursive: true });",
             '  const text = fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim() : "";',
             "  const d = text ? JSON.parse(text) : {};",
+            "  const providers = d.provider ||= {};",
+            "  if (alias) {",
             # Dedicated provider id (see docstring) → chat completions, not the
             # Responses API the built-in ``openai`` id is hard-coded to.
-            "  const providers = d.provider ||= {};",
-            f"  const prov = providers[{provider_id!r}] ||= {{}};",
-            '  prov.npm = "@ai-sdk/openai-compatible";',
-            '  prov.name ||= "BenchFlow Gateway";',
-            "  const opts = prov.options ||= {};",
-            '  const base = (process.env.OPENAI_BASE_URL || "").trim();',
-            "  if (base) opts.baseURL = base;",
-            '  const key = (process.env.OPENAI_API_KEY || "").trim();',
-            "  if (key) opts.apiKey = key;",
-            "  const models = prov.models ||= {};",
-            "  models[alias] ||= { name: alias };",
-            f'  d.small_model = "{provider_id}/" + alias;',
+            f"    const prov = providers[{provider_id!r}] ||= {{}};",
+            '    prov.npm = "@ai-sdk/openai-compatible";',
+            '    prov.name ||= "BenchFlow Gateway";',
+            "    const opts = prov.options ||= {};",
+            '    const base = (process.env.OPENAI_BASE_URL || "").trim();',
+            "    if (base) opts.baseURL = base;",
+            '    const key = (process.env.OPENAI_API_KEY || "").trim();',
+            "    if (key) opts.apiKey = key;",
+            "    const models = prov.models ||= {};",
+            "    models[alias] ||= { name: alias };",
+            f'    d.small_model = "{provider_id}/" + alias;',
+            "  } else {",
+            # Gemini: the built-in google provider, pointed at the gateway's
+            # Gemini pass-through with the gateway key (see docstring).
+            "    const opts = (providers.google ||= {}).options ||= {};",
+            "    opts.baseURL = googleBase;",
+            '    const key = (process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").trim();',
+            "    if (key) opts.apiKey = key;",
+            "  }",
             '  fs.writeFileSync(p, JSON.stringify(d, null, 2) + "\\n");',
             "}",
         ]
@@ -391,7 +412,8 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         # set_model "<provider>/<alias>" for a model now missing from its config
         # and hit ProviderModelNotFoundError with nothing explaining why. A hard
         # exit surfaces the cause instead of a silent broken proxy path.
-        'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]; then\n'
+        'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ] || '
+        f'[ -n "${OPENCODE_GOOGLE_BASE_URL_ENV}" ]; then\n'
         f"  if ! {_BENCHFLOW_NODE_PREFIX}/bin/node - <<'JSEOF'\n"
         f"{register_js}\n"
         "JSEOF\n"

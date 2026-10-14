@@ -296,6 +296,9 @@ def _format_acp_model(model: str, agent: str) -> str:
         return model if find_provider(model) else bare
     if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
         return bare
+    # LiteLLM's ``gemini/`` route (Google AI Studio) is models.dev's ``google``.
+    if bare.startswith("gemini/"):
+        return "google/" + bare.removeprefix("gemini/")
     # Already has a slash — assume it's provider/model already
     if "/" in bare:
         return bare

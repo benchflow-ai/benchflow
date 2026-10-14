@@ -28,7 +28,7 @@ import yaml
 from benchflow._utils.text import describe_exception
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, OPENCODE_GOOGLE_BASE_URL_ENV
 from benchflow.providers.litellm_bedrock_preflight import (
     BEDROCK_PATCH_PREFLIGHT_SOURCE,
     BedrockPatchPreflightError,
@@ -1525,6 +1525,15 @@ def _wire_litellm_agent_env(
         )
         return updated
     if agent == "opencode":
+        if route.upstream_model.lower().startswith("gemini/"):
+            # OpenCode's own Gemini client through LiteLLM's byte-preserving
+            # Gemini pass-through, as for Gemini CLI below: the chat-completions
+            # alias would drop Gemini's thought signatures and thinking config.
+            # The -proxy wrapper points OpenCode's google provider at it.
+            updated.pop(LITELLM_MODEL_ALIAS_ENV, None)
+            updated[OPENCODE_GOOGLE_BASE_URL_ENV] = f"{base_url.rstrip('/')}/gemini/v1beta"
+            updated["GOOGLE_GENERATIVE_AI_API_KEY"] = master_key
+            return updated
         updated["OPENAI_BASE_URL"] = openai_base_url
         updated["OPENAI_API_KEY"] = master_key
         return updated
