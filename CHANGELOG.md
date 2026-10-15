@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`claude-opus-5-5` can run: the `claude-agent-acp` pin moves 0.73.0 to
+  0.81.0.** The old pin bundled `@anthropic-ai/claude-agent-sdk` 0.3.257
+  (Claude Code 2.1.257), and the model rejects Claude Code older than 2.1.280
+  with HTTP 400 — so every turn failed with `ACP error -32603`. The new pin
+  bundles sdk 0.3.280 (Claude Code 2.1.280); the `"model"` / `"effort"` config
+  option wiring is unchanged on 0.81.0 (checked live).
+
 ## 0.7.9 — 2026-10-14
 
 ### Fixed
