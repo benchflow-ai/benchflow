@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.11 — 2026-10-16
+
 ### Added
 
 - **`--separate-verifier-include PATH` carries outputs outside the workspace
