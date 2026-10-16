@@ -10,7 +10,7 @@ verifier, in the shared sandbox and in a separate verifier sandbox alike
 (the frozen workspace is that sandbox's WORKDIR too). ``python3 -I`` keeps the
 working directory, the user site and ``PYTHON*`` variables out.
 
-Guards PR #NNNN against the planted-module path it closes.
+Guards PR #1185 against the planted-module path it closes.
 """
 
 from __future__ import annotations

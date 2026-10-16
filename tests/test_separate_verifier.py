@@ -6,7 +6,7 @@ only the frozen workspace from the agent's sandbox. Nothing else the agent
 left behind reaches it. A failed transfer is an assessment error (no reward),
 never a 0 and never a pass.
 
-Guards PR #NNNN, which executes the mode main parsed but refused ("separate
+Guards PR #1185, which executes the mode main parsed but refused ("separate
 verifier sandboxes are parsed but not executed") and adds
 ``--separate-verifier``; the implementation follows release/0.8's
 ``rollout/_separate_verifier.py``.
