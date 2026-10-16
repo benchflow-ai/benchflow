@@ -252,15 +252,16 @@ def build_transfer_payload(rollout_dir: Path, dest: Path) -> dict[str, Any]:
 # Runs in the agent's sandbox as root after the agent stops, before hardening.
 # Advisory only: it lists regular files created or changed during the agent
 # phase outside everything that crosses (the workspace, include paths), so a
-# verifier that reads them does not silently score 0. Software, scratch and
-# provider trees are skipped, as are package caches and the agent's own home.
+# verifier that reads them does not silently score 0. Software, scratch,
+# provider and harness-mounted trees (/oracle, /tests, ...) are skipped, as are
+# package caches and the agent's own home.
 _OUTSIDE_WRITES_SCRIPT = r"""
 import json, os, stat, sys
 root, since, limit = sys.argv[1], float(sys.argv[2]), int(sys.argv[5])
 keep, components = json.loads(sys.argv[3]), json.loads(sys.argv[4])
 system = ("/proc", "/sys", "/dev", "/run", "/tmp", "/var", "/usr", "/etc", "/bin",
           "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/logs", "/nix",
-          "/snap", "/lost+found")
+          "/snap", "/lost+found", "/oracle", "/solution", "/tests", "/verifier")
 skip = [os.path.join(root, p.lstrip("/")).rstrip("/") for p in (*system, *keep)]
 def skipped(path):
     return any(path == s or path.startswith(s + "/") for s in skip) or any(

@@ -2275,6 +2275,9 @@ class Rollout:
                     user="root",
                     timeout_sec=10,
                 )
+                # That harness step writes /root/.gitconfig: restart the agent
+                # phase clock so it is not listed as the solver's output.
+                await mark_agent_phase_start(self)
                 self._trajectory, self._agent_name = await _run_oracle(
                     self._env, cfg.task_path, self._timeout, sandbox_user=None
                 )

@@ -1072,6 +1072,7 @@ async def test_files_written_outside_everything_that_crosses_are_listed(
         "usr/lib/x.py",
         "var/log/y",
         "logs/verifier/reward.txt",
+        "oracle/__pycache__/solve.cpython-312.pyc",  # harness mount
         "root/.cache/uv/wheel",  # package cache
         "root/.daytona/sessions/s",  # provider runtime state
     ):
