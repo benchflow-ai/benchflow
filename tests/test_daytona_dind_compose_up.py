@@ -290,6 +290,8 @@ async def test_denylist_build_uploads_every_referenced_compose_file(
         return_value=ExecResult(stdout="", stderr="", return_code=0)
     )
     strategy._wait_for_docker_daemon = AsyncMock()
+    # The daemon guard has its own tests in test_sdk_lockdown.py.
+    strategy._guard_daemon_from_containers = AsyncMock()
     strategy._run_pre_compose_hook = AsyncMock()
     strategy._compose_up_with_retry = AsyncMock()
     strategy._wait_for_main_container = AsyncMock()
