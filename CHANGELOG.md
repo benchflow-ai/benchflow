@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.10 — 2026-10-16
+
 ### Added
 
 - **Separate verifier sandboxes run on Docker and Daytona.** A task that sets
