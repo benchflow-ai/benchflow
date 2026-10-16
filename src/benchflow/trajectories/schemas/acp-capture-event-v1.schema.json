@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://benchflow.ai/schemas/acp-capture-event-v1.schema.json",
+  "title": "BenchFlow ACP-session capture event (v1)",
+  "description": "One event produced by the ACP-session capture emitter: the records built by `benchflow.trajectories._capture._events_to_trajectory`, plus the `ACPSession` legacy fallback in `_capture_session_trajectory`, serialized by `TrajectoryWriter` into a line of `trajectory/acp_trajectory.jsonl`. SCOPE IS NARROWER THAN THE FILE — this schema does not describe the complete `acp_trajectory.jsonl` artifact. Two other sources can contribute records to that file and are not modelled here: session-factory Sessions, for which `_snapshot_session_trajectory` returns `session.steps` unchanged and so bypasses the ACP-session emitter entirely; and oracle-mode rollouts, in which the agent is not executed at all — `_run_oracle` (`benchflow.rollout._setup`) produces an oracle-only trajectory, and that list becomes the rollout's trajectory. The same `acp_trajectory.jsonl` artifact path can therefore hold a different record family depending on the rollout mode, and no production path emits a mixed ACP + oracle artifact today. Validating every line of a final trajectory against this schema is therefore NOT equivalent to validating the artifact: a failing line may come from one of those sources rather than be malformed. No document defines the artifact-level contract, and this schema does not create one; see docs/trace-interop.md §2.1. Separately, this describes the emitter and not everything `TrajectoryWriter` will accept: the writer performs no validation and will persist arbitrary dicts. The `v1` in this file's name and `$id` identifies the schema document only — it does NOT correspond to any `schema_version` field in the artifact, which carries none.",
+  "oneOf": [
+    { "$ref": "#/$defs/text_event" },
+    { "$ref": "#/$defs/tool_call_event" },
+    { "$ref": "#/$defs/agent_timeout_event" }
+  ],
+  "$defs": {
+    "content_block": {
+      "title": "ACP tool-call content block",
+      "description": "Pass-through from the ACP wire: BenchFlow stores `session/update.content` verbatim on the tool-call record and never reshapes it, so this stays permissive by design. Two shapes are known to be consumed by `benchflow.trajectories._export_common.content_blocks_to_text`: the nested ACP shape `{\"type\": \"content\", \"content\": {\"type\": \"text\", \"text\": \"...\"}}` and a flat `{\"text\": \"...\"}` form. The ACP protocol additionally defines file-edit and terminal block variants, which BenchFlow persists but does not interpret.",
+      "type": "object"
+    },
+
+    "text_event": {
+      "title": "Text event — user_message | agent_message | agent_thought",
+      "description": "Emitted by `_events_to_trajectory` for the three text-bearing event types. Consecutive same-type streamed chunks are merged into one event before serialization (`ACPSession._flush_agent_text`), so a single event may span many wire notifications.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": ["user_message", "agent_message", "agent_thought"]
+        },
+        "text": {
+          "type": "string",
+          "description": "The merged text. MAY be the empty string: `record_user_prompt` records a prompt unconditionally, and the `agent_message_chunk` / `agent_thought_chunk` handlers append a chunk whose text is \"\" (unlike the `text_update` / `agent_thought` shim handlers, which skip empty text). Verified by driving a live session with empty chunks."
+        }
+      },
+      "required": ["type", "text"],
+      "additionalProperties": false
+    },
+
+    "tool_call_event": {
+      "title": "Tool-call event",
+      "description": "One tool call and its captured output, flattened into a single record. All six properties are always written: `_events_to_trajectory` builds this dict literally, so a missing key means the record did not come from the ACP-session capture emitter.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "tool_call" },
+        "tool_call_id": {
+          "type": "string",
+          "description": "The ACP `toolCallId`. May be the empty string when the agent omitted it — `handle_update` defaults to \"\" rather than synthesizing an id. The ATIF and ADP exporters synthesize their own ids downstream."
+        },
+        "kind": {
+          "type": "string",
+          "description": "OPEN string, deliberately not an enum. `_canonical_tool_kind` passes the agent-supplied `kind` through unchanged, so production values are not limited to the vendored `benchflow.acp.types.ToolKind` members. Values observed in production include `execute`, `edit`, `delete`, `move`, `fetch`, `think`, `switch_mode` (none of which are ToolKind members) plus the literal `tool`, which `handle_update` uses as the fallback when a `tool_call_update` arrives for an id that was never opened. Only `skill` is assigned by BenchFlow itself, by the classifier in `benchflow.trajectories.metrics`."
+        },
+        "title": {
+          "type": "string",
+          "description": "Human-readable label. Empty string when the agent supplied none. For ACP `execute` calls this is conventionally the command line."
+        },
+        "status": {
+          "enum": ["pending", "in_progress", "completed", "failed", "cancelled"],
+          "description": "CLOSED enum: the serialized value is always `ToolCallStatus(...).value`, and `handle_update` falls back to `in_progress` for any status it cannot parse, so no out-of-vocabulary value can reach disk."
+        },
+        "content": {
+          "type": "array",
+          "description": "Captured tool output, accumulated across `tool_call_update` notifications. Empty array when the tool produced no content or the call never reached a terminal status.",
+          "items": { "$ref": "#/$defs/content_block" }
+        }
+      },
+      "required": ["type", "tool_call_id", "kind", "title", "status", "content"],
+      "additionalProperties": false
+    },
+
+    "agent_timeout_event": {
+      "title": "Agent timeout marker",
+      "description": "BenchFlow's own terminal marker, appended by `ACPSession.record_agent_timeout` when the rollout hits its wall-clock limit. It is not an ACP protocol notification. Note that no trajectory exporter currently reads this event (see the loss table in docs/trace-interop.md).",
+      "type": "object",
+      "properties": {
+        "type": { "const": "agent_timeout" },
+        "reason": {
+          "enum": ["wall_clock_timeout"],
+          "description": "Single-member enum: `record_agent_timeout` is the only producer and hardcodes this value. A second timeout reason would require updating this schema."
+        },
+        "timeout_sec": {
+          "type": "number",
+          "description": "The wall-clock budget that was exceeded, in seconds."
+        },
+        "pending_tool_call_ids": {
+          "type": "array",
+          "description": "Tool calls that had not reached a terminal status when the timeout fired.",
+          "items": { "type": "string" }
+        },
+        "terminal_trajectory_complete": {
+          "type": "boolean",
+          "description": "Whether the captured trajectory is considered complete despite the timeout."
+        }
+      },
+      "required": [
+        "type",
+        "reason",
+        "timeout_sec",
+        "pending_tool_call_ids",
+        "terminal_trajectory_complete"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
