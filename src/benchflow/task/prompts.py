@@ -650,7 +650,7 @@ def _str_or_none(value: object) -> str | None:
 def _document_user_model_kind(
     model: str | None,
 ) -> Literal["scripted-linear", "model-linear"] | None:
-    if model in {None, "scripted", "deterministic"}:
+    if model is None or model in {"scripted", "deterministic"}:
         return "scripted-linear"
     if model.startswith(
         (
