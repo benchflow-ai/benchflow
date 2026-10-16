@@ -368,6 +368,7 @@ async def capture_workspace(
     command = shlex.join(
         [
             "python3",
+            "-I",
             "-c",
             _CAPTURE_SCRIPT,
             workspace,
@@ -475,7 +476,9 @@ async def validate_uploaded_workspace(
     env: Sandbox, workspace: str, manifest_path: str, *, timeout_sec: int = 600
 ) -> None:
     """Reject missing or changed files in the reviewer sandbox after upload."""
-    command = shlex.join(["python3", "-c", _ADMISSION_SCRIPT, workspace, manifest_path])
+    command = shlex.join(
+        ["python3", "-I", "-c", _ADMISSION_SCRIPT, workspace, manifest_path]
+    )
     result = await env.exec(command, user="root", timeout_sec=timeout_sec)
     if result.return_code:
         raise EvidenceError(
@@ -574,7 +577,7 @@ async def install_uploaded_workspace(
     The destination must be fresh; a failed installation is never admissible.
     """
     command = shlex.join(
-        ["python3", "-c", _UNPACK_SCRIPT, archive_path, workspace, manifest_path]
+        ["python3", "-I", "-c", _UNPACK_SCRIPT, archive_path, workspace, manifest_path]
     )
     result = await env.exec(command, user="root", timeout_sec=timeout_sec)
     if result.return_code:
@@ -646,6 +649,7 @@ async def capture_task_evidence(
             command = shlex.join(
                 [
                     "python3",
+                    "-I",
                     "-c",
                     _ARTIFACT_PROBE_SCRIPT,
                     manifest.workspace,
