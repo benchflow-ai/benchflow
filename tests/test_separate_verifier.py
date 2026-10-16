@@ -1073,6 +1073,9 @@ async def test_files_written_outside_everything_that_crosses_are_listed(
         "var/log/y",
         "logs/verifier/reward.txt",
         "oracle/__pycache__/solve.cpython-312.pyc",  # harness mount
+        "opt/benchflow-egress/policy.json",  # BenchFlow's egress proxy
+        "opt/benchflow_agentcore_shim.py",
+        "opt/benchflow/node/bin/node",
         "root/.cache/uv/wheel",  # package cache
         "root/.daytona/sessions/s",  # provider runtime state
     ):

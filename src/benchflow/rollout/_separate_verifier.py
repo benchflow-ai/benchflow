@@ -253,8 +253,9 @@ def build_transfer_payload(rollout_dir: Path, dest: Path) -> dict[str, Any]:
 # Advisory only: it lists regular files created or changed during the agent
 # phase outside everything that crosses (the workspace, include paths), so a
 # verifier that reads them does not silently score 0. Software, scratch,
-# provider and harness-mounted trees (/oracle, /tests, ...) are skipped, as are
-# package caches and the agent's own home.
+# provider and harness trees (/oracle, /tests, BenchFlow's own /opt/benchflow*
+# installs such as the egress proxy) are skipped, as are package caches and the
+# agent's own home.
 _OUTSIDE_WRITES_SCRIPT = r"""
 import json, os, stat, sys
 root, since, limit = sys.argv[1], float(sys.argv[2]), int(sys.argv[5])
@@ -263,8 +264,10 @@ system = ("/proc", "/sys", "/dev", "/run", "/tmp", "/var", "/usr", "/etc", "/bin
           "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/logs", "/nix",
           "/snap", "/lost+found", "/oracle", "/solution", "/tests", "/verifier")
 skip = [os.path.join(root, p.lstrip("/")).rstrip("/") for p in (*system, *keep)]
+harness = os.path.join(root, "opt", "benchflow")
 def skipped(path):
-    return any(path == s or path.startswith(s + "/") for s in skip) or any(
+    return path.startswith(harness) or any(
+        path == s or path.startswith(s + "/") for s in skip) or any(
         path.endswith("/" + c) for c in components)
 device = os.lstat(root).st_dev
 count, sample, by_root = 0, [], {}
@@ -280,6 +283,8 @@ for directory, dirs, files in os.walk(root, followlinks=False):
     dirs[:] = kept
     for name in files:
         path = os.path.join(directory, name)
+        if skipped(path):
+            continue
         try:
             info = os.lstat(path)
         except OSError:
