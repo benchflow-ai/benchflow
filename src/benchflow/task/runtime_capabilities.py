@@ -27,7 +27,6 @@ from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
     TaskOS,
-    VerifierSandboxMode,
 )
 from benchflow.task.document import TaskDocument
 from benchflow.task.paths import TaskPaths, local_script_strategy_files
@@ -37,6 +36,11 @@ from benchflow.task.prompts import (
     compile_task_prompt_plan,
 )
 from benchflow.task.verifier_document import load_verifier_document
+from benchflow.task.verifier_sandbox import (
+    separate_verifier_issues,
+    separate_verifier_requested,
+    verifier_image_issue,
+)
 
 # Back-compat name kept for this module's existing membership check; the
 # canonical set lives in benchflow.sandbox.providers.
@@ -96,7 +100,34 @@ def validate_task_runtime_support(
         _append_document_issues(unsupported, document=document, sandbox=sandbox)
     if task_dir is not None:
         _append_layout_issues(unsupported, task_dir=Path(task_dir), sandbox=sandbox)
+        _append_verifier_image_issue(
+            unsupported, config=config, task_dir=Path(task_dir), sandbox=sandbox
+        )
     return unsupported
+
+
+def _append_verifier_image_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    task_dir: Path,
+    sandbox: str,
+) -> None:
+    """A separate verifier needs an image to start from (see plan_verifier_image)."""
+    if not separate_verifier_requested(config):
+        return
+    problem = verifier_image_issue(config, task_dir)
+    if problem is not None:
+        _issue(
+            unsupported,
+            path=(
+                "verifier.sandbox"
+                if config.verifier.sandbox is not None
+                else "verifier.sandbox_mode"
+            ),
+            reason=problem,
+            sandbox=sandbox,
+        )
 
 
 def raise_for_task_runtime_support(
@@ -184,20 +215,18 @@ def _append_config_issues(
         sandbox=sandbox,
     )
 
-    if config.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE:
-        _issue(
-            unsupported,
-            path="verifier.sandbox_mode",
-            reason="separate verifier sandboxes are parsed but not executed",
-            sandbox=sandbox,
-        )
-    if config.verifier.sandbox is not None:
-        _issue(
-            unsupported,
-            path="verifier.sandbox",
-            reason="verifier-specific sandbox materialization is not implemented",
-            sandbox=sandbox,
-        )
+    if separate_verifier_requested(config):
+        for reason in separate_verifier_issues(config, sandbox=sandbox):
+            _issue(
+                unsupported,
+                path=(
+                    "verifier.sandbox.network_mode"
+                    if reason.startswith("verifier.sandbox.network_mode")
+                    else "verifier.sandbox_mode"
+                ),
+                reason=reason,
+                sandbox=sandbox,
+            )
     if config.verifier.service != "main" and sandbox != "docker":
         _issue(
             unsupported,

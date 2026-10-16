@@ -13,6 +13,7 @@ from benchflow.review.evidence import capture_task_evidence
 from benchflow.review.evidence_runtime import ensure_evidence_python
 from benchflow.review.outcome import scoring_error
 from benchflow.review.persistence import commit_scoring_result, scoring_lock
+from benchflow.task.verifier_sandbox import separate_verifier_requested
 
 if TYPE_CHECKING:
     from benchflow.models import RolloutResult
@@ -36,9 +37,22 @@ def prepare_terminal_review(rollout: Rollout) -> None:
         cfg.task_digest = digest
 
 
+def _freeze_requested(rollout: Rollout) -> bool:
+    """Whether the terminal workspace must be frozen into ``evidence/``.
+
+    A rubric review grades it, a reviewer rollout is it, and a separate
+    verifier sandbox receives nothing else from the agent's sandbox.
+    """
+    return (
+        rollout._review_plan is not None
+        or rollout._config.purpose == "reviewer"
+        or separate_verifier_requested(getattr(rollout._task, "config", None))
+    )
+
+
 async def prepare_capture_runtime(rollout: Rollout) -> None:
     """Ensure required capture dependencies exist before solver execution."""
-    if rollout._review_plan is not None or rollout._config.purpose == "reviewer":
+    if _freeze_requested(rollout):
         await ensure_evidence_python(
             rollout._env, timeout_sec=rollout._config.sandbox_setup_timeout
         )
@@ -46,7 +60,7 @@ async def prepare_capture_runtime(rollout: Rollout) -> None:
 
 async def capture_terminal_workspace(rollout: Rollout) -> None:
     """Freeze solver or reviewer files before verifier hardening mutates them."""
-    if rollout._review_plan is None and rollout._config.purpose != "reviewer":
+    if not _freeze_requested(rollout):
         return
     try:
         await rollout.disconnect()

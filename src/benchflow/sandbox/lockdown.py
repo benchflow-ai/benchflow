@@ -774,7 +774,7 @@ print(json.dumps(trusted))
 def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -> str:
     """Build the container-side command that validates verifier PATH extras."""
     return (
-        f"python3 -c {shlex.quote(_TRUSTED_PATH_EXTRAS_SCRIPT)} "
+        f"python3 -I -c {shlex.quote(_TRUSTED_PATH_EXTRAS_SCRIPT)} "
         f"{shlex.quote(_json.dumps(raw_path))} "
         f"{shlex.quote(_json.dumps(_SAFE_VERIFIER_PATH_PARTS))} "
         f"{shlex.quote(_json.dumps(blocked_prefixes))}"
@@ -782,12 +782,14 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
 
 
 async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
-    """Auto-discover pytest plugins from root-owned system packages.
+    """Auto-discover pytest plugins from the interpreter's own packages.
 
-    Runs a sandbox-side script that enumerates pytest11 entry points and
-    filters to only those whose dist-info is in a root-owned directory.
-    Falls back to task verifier pytest_plugins declarations if discovery fails.
-    Replaces the previous hand-curated whitelist mechanism.
+    Runs a sandbox-side script that enumerates pytest11 entry points. It runs
+    isolated (``python3 -I`` from ``/``), so only the image's site-packages
+    are scanned: a dist-info the agent left in the workspace, a user site or
+    a ``PYTHONPATH`` directory is never enabled. Falls back to task verifier
+    pytest_plugins declarations if discovery fails, so a plugin installed
+    outside site-packages must be declared there.
     """
     plugins: list[str] = []
 
@@ -799,7 +801,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     # Sandbox-side auto-discovery
     try:
         result = await env.exec(
-            f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
+            f"cd / && python3 -I -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
             user="root",
             timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
@@ -1147,8 +1149,11 @@ def _build_cleanup_cmd(hardening: dict[str, bool] | None = None) -> str:
             "-delete 2>/dev/null"
         )
     parts.append("find /tmp /var/tmp -name '*.py' -delete 2>/dev/null")
+    # Not -I: the purge must see the PYTHONPATH and user-site directories a
+    # verifier interpreter would load. From / so the workspace (the default
+    # cwd) is not on its sys.path either.
     parts.append(
-        'python3 -c "'
+        'cd / && python3 -c "'
         "import sys,os;"
         "[os.remove(os.path.join(d,f)) "
         " for d in sys.path "
@@ -1188,7 +1193,7 @@ CLEANUP_CMD = _build_cleanup_cmd()
 _RESTORE_WORKSPACE_CMD_TEMPLATE = (
     "if [ -d /testbed_verify ]; then "
     "  rsync -a --delete /testbed_verify/ __WSQ__/ 2>/dev/null || "
-    "  python3 -c 'import shutil,sys; "
+    "  python3 -I -c 'import shutil,sys; "
     'shutil.copytree("/testbed_verify",sys.argv[1],dirs_exist_ok=True)\''
     "  __WSQ__; "
     "fi"
@@ -1235,7 +1240,7 @@ def _restore_workspace_cmd(workspace: str) -> str:
 def _purge_external_symlinks_cmd(workspace: str) -> str:
     """Render the external-symlink purge command for the workspace."""
     return (
-        f"python3 -c {shlex.quote(_PURGE_EXTERNAL_SYMLINKS_SCRIPT)} "
+        f"python3 -I -c {shlex.quote(_PURGE_EXTERNAL_SYMLINKS_SCRIPT)} "
         f"{shlex.quote(workspace)} 2>/dev/null; true"
     )
 

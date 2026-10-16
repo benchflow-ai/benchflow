@@ -126,6 +126,7 @@ from benchflow.rollout._review import (
     finish_terminal_review,
     prepare_terminal_review,
 )
+from benchflow.rollout._separate_verifier import run_separate_verifier
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
@@ -219,6 +220,10 @@ from benchflow.skill_policy import (
     task_bundled_skills_dir,
 )
 from benchflow.skill_policy import SKILL_MODE_WITH_SKILL as SKILL_MODE_WITH_SKILL
+from benchflow.task.verifier_sandbox import (
+    apply_separate_verifier_flag,
+    separate_verifier_requested,
+)
 from benchflow.trajectories._capture import (
     TrajectoryWriter,
     _capture_session_trajectory,
@@ -967,6 +972,14 @@ class Rollout:
                 self._task.config, cfg.config_override
             )
 
+        if cfg.separate_verifier:
+            # --separate-verifier: this run's verifier gets its own sandbox,
+            # the task's files (and digest) stay as they are. Refused here,
+            # before any sandbox exists, where that sandbox cannot run.
+            self._task.config = apply_separate_verifier_flag(
+                self._task.config, sandbox=cfg.environment, task_dir=cfg.task_path
+            )
+
         prepare_terminal_review(self)
 
         self._disallow_web_tools = (
@@ -1106,6 +1119,11 @@ class Rollout:
             started_at=self._started_at,
             agent_env=self._agent_env,
             base_image_override=cfg.base_image_override,
+            verifier_sandbox_mode=(
+                "separate"
+                if separate_verifier_requested(getattr(self._task, "config", None))
+                else "shared"
+            ),
             usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
             agent_idle_timeout=cfg.agent_idle_timeout,
@@ -1899,6 +1917,13 @@ class Rollout:
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
 
+        if separate_verifier_requested(getattr(self._task, "config", None)):
+            # The verifier never runs in the agent's sandbox: a fresh one gets
+            # only the frozen workspace.
+            self._rewards, self._verifier_error = await run_separate_verifier(self)
+            self._phase = "verified"
+            return self._rewards
+
         await _publish_trajectory_for_verifier(
             self._env, self._trajectory, self._rollout_paths.agent_dir
         )
@@ -1933,6 +1958,14 @@ class Rollout:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
+        if separate_verifier_requested(getattr(self._task, "config", None)):
+            # Soft verification would upload tests/ into the agent's sandbox.
+            return (
+                None,
+                None,
+                "soft_verify is unavailable: the task uses a separate verifier "
+                "sandbox, so tests never enter the agent's sandbox",
+            )
         self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
