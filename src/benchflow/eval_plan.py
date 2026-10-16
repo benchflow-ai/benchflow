@@ -104,6 +104,7 @@ class EvalCreateRequest:
     context_root: Path | None = None
     base_image_override: str | None = None
     separate_verifier: bool = False
+    separate_verifier_include: tuple[str, ...] = ()
     skills_dir: Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: Path | None = None
@@ -203,6 +204,7 @@ class EvalPlan:
             context_root=str(req.context_root) if req.context_root else None,
             base_image_override=req.base_image_override,
             separate_verifier=req.separate_verifier,
+            separate_verifier_include=req.separate_verifier_include,
             skills_dir=str(req.skills_dir) if req.skills_dir else None,
             skill_mode=req.skill_mode,
             skill_creator_dir=(

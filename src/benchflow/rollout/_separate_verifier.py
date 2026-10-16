@@ -236,9 +236,116 @@ def build_transfer_payload(rollout_dir: Path, dest: Path) -> dict[str, Any]:
         "files": payload.files,
         "bytes": payload.bytes,
         "declared_artifacts": len(subs),
+        # Paths captured beside the workspace (``--separate-verifier-include``)
+        # and what became of each: captured, missing or already in_workspace.
+        "artifacts": [
+            {"source": artifact.source, "status": artifact.status}
+            for artifact in manifest.artifacts
+        ],
         "excluded": len(manifest.exclusions),
         "sha256": sha256,
     }
+
+
+# --- agent sandbox: what does not cross -------------------------------------
+
+# Runs in the agent's sandbox as root after the agent stops, before hardening.
+# Advisory only: it lists regular files created or changed during the agent
+# phase outside everything that crosses (the workspace, include paths), so a
+# verifier that reads them does not silently score 0. Software, scratch,
+# provider and harness trees (/oracle, /tests, BenchFlow's own /opt/benchflow*
+# installs such as the egress proxy) are skipped, as are package caches and the
+# agent's own home.
+_OUTSIDE_WRITES_SCRIPT = r"""
+import json, os, stat, sys
+root, since, limit = sys.argv[1], float(sys.argv[2]), int(sys.argv[5])
+keep, components = json.loads(sys.argv[3]), json.loads(sys.argv[4])
+system = ("/proc", "/sys", "/dev", "/run", "/tmp", "/var", "/usr", "/etc", "/bin",
+          "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/logs", "/nix",
+          "/snap", "/lost+found", "/oracle", "/solution", "/tests", "/verifier")
+skip = [os.path.join(root, p.lstrip("/")).rstrip("/") for p in (*system, *keep)]
+harness = os.path.join(root, "opt", "benchflow")
+def skipped(path):
+    return path.startswith(harness) or any(
+        path == s or path.startswith(s + "/") for s in skip) or any(
+        path.endswith("/" + c) for c in components)
+device = os.lstat(root).st_dev
+count, sample, by_root = 0, [], {}
+for directory, dirs, files in os.walk(root, followlinks=False):
+    kept = []
+    for name in dirs:
+        path = os.path.join(directory, name)
+        try:
+            if not skipped(path) and os.lstat(path).st_dev == device:
+                kept.append(name)
+        except OSError:
+            pass
+    dirs[:] = kept
+    for name in files:
+        path = os.path.join(directory, name)
+        if skipped(path):
+            continue
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or max(info.st_mtime, info.st_ctime) < since:
+            continue
+        count += 1
+        shown = "/" + os.path.relpath(path, root)
+        top = "/" + shown.split("/")[1]
+        by_root[top] = by_root.get(top, 0) + 1
+        if len(sample) < 20:
+            sample.append(shown)
+        if count >= limit:
+            break
+    if count >= limit:
+        break
+print(json.dumps({"count": count, "truncated": count >= limit,
+                  "by_directory": by_root, "sample": sample}))
+"""
+_OUTSIDE_WRITES_LIMIT = 100_000
+
+
+async def scan_outside_workspace_writes(
+    env: Any,
+    *,
+    since: float,
+    keep: list[str],
+    root: str = "/",
+    timeout_sec: int = 120,
+) -> dict[str, Any] | None:
+    """Files written after ``since`` that a separate verifier will not see.
+
+    ``keep`` lists what crosses or belongs to the harness (workspace, include
+    paths, the agent's home). Returns ``None`` when the scan cannot run; it
+    never fails the rollout.
+    """
+    from benchflow.review.evidence import PACKAGE_CACHE_PATHS
+    from benchflow.sandbox.protocol import SANDBOX_RUNTIME_STATE_PATHS
+
+    command = shlex.join(
+        [
+            "python3",
+            "-I",
+            "-c",
+            _OUTSIDE_WRITES_SCRIPT,
+            root,
+            repr(since),
+            json.dumps(keep),
+            json.dumps([*PACKAGE_CACHE_PATHS, *SANDBOX_RUNTIME_STATE_PATHS]),
+            str(_OUTSIDE_WRITES_LIMIT),
+        ]
+    )
+    try:
+        result = await env.exec(command, user="root", timeout_sec=timeout_sec)
+        if getattr(result, "return_code", 0):
+            raise RuntimeError((result.stderr or result.stdout or "")[-500:])
+        report = json.loads((result.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        logger.warning("Could not list files outside the workspace", exc_info=True)
+        return None
+    return report if isinstance(report, dict) else None
 
 
 # --- sandbox side ------------------------------------------------------------
@@ -440,6 +547,9 @@ async def run_separate_verifier(
         "image_source": None,
         "sandbox_id": None,
         "transfer": None,
+        # Files the agent phase wrote outside everything that crosses; see
+        # scan_outside_workspace_writes. None when the scan did not run.
+        "outside_workspace_writes": getattr(rollout, "_outside_workspace_writes", None),
         "error": None,
     }
     archive = root / "transfer.tar"

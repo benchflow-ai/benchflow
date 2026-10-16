@@ -502,6 +502,7 @@ class EvaluationConfig:
     context_root: str | None = None
     base_image_override: str | None = None
     separate_verifier: bool = False
+    separate_verifier_include: tuple[str, ...] = ()
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = SKILL_MODE_NO_SKILL
@@ -912,6 +913,7 @@ class Evaluation:
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
             separate_verifier=bool(raw.get("separate_verifier", False)),
+            separate_verifier_include=tuple(raw.get("separate_verifier_include") or ()),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1010,6 +1012,7 @@ class Evaluation:
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
             separate_verifier=bool(raw.get("separate_verifier", False)),
+            separate_verifier_include=tuple(raw.get("separate_verifier_include") or ()),
             include_tasks=include,
             exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1288,6 +1291,7 @@ class Evaluation:
             context_root=cfg.context_root,
             base_image_override=cfg.base_image_override,
             separate_verifier=cfg.separate_verifier,
+            separate_verifier_include=cfg.separate_verifier_include,
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1350,6 +1354,7 @@ class Evaluation:
             context_root=cfg.context_root,
             base_image_override=cfg.base_image_override,
             separate_verifier=cfg.separate_verifier,
+            separate_verifier_include=cfg.separate_verifier_include,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,

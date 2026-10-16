@@ -220,6 +220,7 @@ class RuntimeConfig:
     context_root: str | Path | None = None
     base_image_override: str | None = None
     separate_verifier: bool = False
+    separate_verifier_include: tuple[str, ...] = ()
     pre_agent_hooks: list | None = None
     sandbox_locked_paths: list[str] | None = None
     usage_tracking: Any = None
@@ -351,6 +352,7 @@ class Runtime:
             context_root=config.context_root,
             base_image_override=config.base_image_override,
             separate_verifier=config.separate_verifier,
+            separate_verifier_include=config.separate_verifier_include,
             pre_agent_hooks=config.pre_agent_hooks,
             agent=self.agent.name,
             model=self.agent.model,
@@ -454,6 +456,7 @@ async def run(
             context_root=rc.context_root,
             base_image_override=rc.base_image_override,
             separate_verifier=rc.separate_verifier,
+            separate_verifier_include=rc.separate_verifier_include,
             pre_agent_hooks=rc.pre_agent_hooks,
             skills_dir=rc.skills_dir,
             skill_mode=rc.skill_mode,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -172,6 +173,7 @@ class SDK:
         context_root: str | Path | None = None,
         base_image_override: str | None = None,
         separate_verifier: bool = False,
+        separate_verifier_include: Sequence[str] = (),
         skill_mode: str = SKILL_MODE_NO_SKILL,
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
@@ -224,6 +226,7 @@ class SDK:
             context_root=context_root,
             base_image_override=base_image_override,
             separate_verifier=separate_verifier,
+            separate_verifier_include=tuple(separate_verifier_include),
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,

@@ -6,8 +6,10 @@ rollout (``benchflow.rollout._separate_verifier``), which runs it.
 
 from __future__ import annotations
 
+import posixpath
+from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from benchflow.task.config import (
@@ -30,6 +32,59 @@ ImageSource = Literal[
 
 class SeparateVerifierError(RuntimeError):
     """The verifier sandbox could not be given the agent's outputs."""
+
+
+# What ``--separate-verifier-include`` may not name: pseudo filesystems, and
+# roots so broad that carrying them would carry the agent's system state back
+# into the verifier sandbox.
+_INCLUDE_FORBIDDEN_TREES = ("/proc", "/sys", "/dev", "/run")
+_INCLUDE_FORBIDDEN_ROOTS = frozenset(
+    {
+        "/",
+        "/bin",
+        "/boot",
+        "/etc",
+        "/home",
+        "/lib",
+        "/lib32",
+        "/lib64",
+        "/libx32",
+        "/sbin",
+        "/usr",
+        "/var",
+    }
+)
+
+
+def normalize_include_paths(paths: Iterable[str]) -> tuple[str, ...]:
+    """Validated, de-duplicated ``--separate-verifier-include`` paths.
+
+    Each names a directory or file outside the workspace that a separate
+    verifier sandbox receives too, at the same path: a task whose agent writes
+    graded files to ``/root`` while its workspace is ``/app`` needs ``/root``.
+    """
+    seen: dict[str, None] = {}
+    for raw in paths:
+        value = str(raw).strip()
+        if not value.startswith("/"):
+            raise ValueError(
+                f"--separate-verifier-include needs an absolute path, got {raw!r}"
+            )
+        if ".." in PurePosixPath(value).parts:
+            raise ValueError(
+                f"--separate-verifier-include path {raw!r} must not contain '..'"
+            )
+        path = "/" + posixpath.normpath(value).lstrip("/")
+        if path in _INCLUDE_FORBIDDEN_ROOTS or any(
+            path == tree or path.startswith(tree + "/")
+            for tree in _INCLUDE_FORBIDDEN_TREES
+        ):
+            raise ValueError(
+                f"--separate-verifier-include cannot carry {path}: name the "
+                "directory the agent writes its outputs to, such as /root"
+            )
+        seen.setdefault(path, None)
+    return tuple(seen)
 
 
 def separate_verifier_requested(config: TaskConfig | None) -> bool:

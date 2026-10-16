@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`--separate-verifier-include PATH` carries outputs outside the workspace
+  into a separate verifier sandbox.** Only the workspace (`sandbox.workdir`,
+  else the image's `WORKDIR`) crossed, so a task whose agent writes graded
+  files elsewhere scored 0 with no error: FrontierPhysics
+  `kinked-ladder-polymer-scattering` (workspace `/app`, outputs in `/root`)
+  went from 19/19 in shared mode to 0/19 with `--separate-verifier`, and 14
+  of its 56 tasks grade files outside the workspace. Each include path
+  (repeatable; SDK and config `separate_verifier_include`) is captured beside
+  the workspace into `evidence/artifacts/`, hash-checked, and laid over the
+  verifier image's copy at the same path; pseudo filesystems and roots such as
+  `/`, `/usr` and `/home` are refused before any sandbox starts.
+  `config.json` records `verifier_include`, and the transfer inventory lists
+  each path as captured, missing or already in the workspace.
+- **A separate verifier lists files the agent left outside everything that
+  crosses.** When the workspace is frozen, the regular files written during
+  the agent phase outside the workspace and include paths (skipping system,
+  scratch and provider trees, package caches and the agent's home) are logged
+  as a warning with a count per directory and examples, and recorded under
+  `outside_workspace_writes` in `verifier-sandbox/verifier-sandbox.json`.
+  Advisory: it never fails a rollout.
+
+### Fixed
+
+- **The verifier ignores pip's and git's per-user config under `/root`.**
+  The verifier runs as root with `HOME=/root`, the agent's workspace in many
+  tasks, so `~/.config/pip/pip.conf` or `~/.gitconfig` there were whatever the
+  agent left, in both modes (a separate verifier receives the `/root`
+  workspace too). `VERIFIER_ENV` now sets `PIP_CONFIG_FILE=/dev/null` and
+  `GIT_CONFIG_GLOBAL=/dev/null` (git 2.32+; `/etc/gitconfig` still applies),
+  and drops `PIP_NO_USER_CONFIG`, which is not a pip option and did nothing.
+  A task that needs either config back sets it in its verifier `env`.
+- **Package-manager caches stay out of workspace evidence.** `.cache/pip`,
+  `.cache/uv` and npm's `_cacache`, `_npx` and `_logs` below a captured root
+  are recorded as `package_cache` exclusions instead of captured. With a
+  `/root` workspace the harness's own installs fill them as root before the
+  agent starts: on a FrontierPhysics ion-trap-design run they were 97% of the
+  745 MB the separate verifier received, and of the rubric review's upload.
+- **`mcp` 1.30.0 in `uv.lock`** for CVE-2026-59951 (was 1.28.1), which failed
+  the `pip-audit` job and, through it, `main`'s release gate.
+
 ## 0.7.10 — 2026-10-16
 
 ### Added

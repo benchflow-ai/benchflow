@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -36,11 +37,14 @@ from benchflow.rollout._separate_verifier import (
     _install_script,
     build_transfer_payload,
     run_separate_verifier,
+    scan_outside_workspace_writes,
 )
 from benchflow.sandbox.protocol import ExecResult
 from benchflow.task import TaskConfig, validate_task_runtime_support
+from benchflow.task.config import ArtifactConfig
 from benchflow.task.verifier_sandbox import (
     apply_separate_verifier_flag,
+    normalize_include_paths,
     plan_verifier_image,
     separate_verifier_requested,
 )
@@ -767,3 +771,351 @@ def test_config_json_records_where_the_verifier_ran(tmp_path: Path) -> None:
         )
         config = json.loads((rollout_dir / "config.json").read_text())
         assert config["verifier_sandbox_mode"] == mode
+
+
+# --- outputs outside the workspace (--separate-verifier-include) -------------
+# Guards the verifier-followups PR. Only the workspace crossed, so a task whose
+# workspace is /app but whose agent writes graded files to /root scored 0 in
+# separate mode, silently: FrontierPhysics kinked-ladder-polymer-scattering
+# went from 19/19 to 0/19 on 2026-10-16.
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        (["/root"], ("/root",)),
+        (["/root/", "//root", "/root"], ("/root",)),
+        (["/root/outputs", "/srv/results"], ("/root/outputs", "/srv/results")),
+    ],
+)
+def test_include_paths_are_normalized(given: list[str], expected: tuple) -> None:
+    assert normalize_include_paths(given) == expected
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "root",
+        "./root",
+        "/root/../etc",
+        "/",
+        "/usr",
+        "/home",
+        "/var",
+        "/proc/1",
+        "/run/x",
+        "/dev",
+    ],
+)
+def test_include_paths_refuse_relative_and_system_paths(bad: str) -> None:
+    with pytest.raises(ValueError, match="separate-verifier-include"):
+        normalize_include_paths([bad])
+
+
+def test_rollout_config_normalizes_include_paths(tmp_path: Path) -> None:
+    from benchflow.rollout import RolloutConfig
+
+    task = _task_dir(tmp_path, "")
+    config = RolloutConfig(
+        task_path=task, separate_verifier_include=("/root/", "/root")
+    )
+    assert config.separate_verifier_include == ("/root",)
+    with pytest.raises(ValueError, match="absolute path"):
+        RolloutConfig(task_path=task, separate_verifier_include=("relative",))
+
+
+def _flag_task(tmp_path: Path) -> Path:
+    task = tmp_path / "flag-task"
+    (task / "environment").mkdir(parents=True)
+    (task / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task / "tests").mkdir()
+    (task / "tests" / "test.sh").write_text("#!/bin/bash\necho 1\n")
+    (task / "solution").mkdir()
+    (task / "solution" / "solve.sh").write_text("#!/bin/bash\n")
+    (task / "task.toml").write_text('version = "1.0"\n')
+    (task / "instruction.md").write_text("Do it.\n")
+    return task
+
+
+def test_eval_run_threads_include_paths(tmp_path: Path) -> None:
+    from benchflow.cli.main import app
+    from benchflow.evaluation import Evaluation
+
+    captured: dict[str, Any] = {}
+
+    async def capture(self):
+        captured["include"] = self._config.separate_verifier_include
+        return SimpleNamespace(
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
+        )
+
+    with patch.object(Evaluation, "run", new=capture):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(_flag_task(tmp_path)),
+                "--agent",
+                "oracle",
+                "--separate-verifier",
+                "--separate-verifier-include",
+                "/root",
+                "--separate-verifier-include",
+                "/root/",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert captured["include"] == ("/root",)
+
+
+def test_eval_run_refuses_a_bad_include_path_before_any_sandbox(tmp_path: Path) -> None:
+    from benchflow.cli.main import app
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(_flag_task(tmp_path)),
+            "--agent",
+            "oracle",
+            "--separate-verifier",
+            "--separate-verifier-include",
+            "root",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "absolute path" in result.output
+
+
+def test_include_paths_survive_sharding() -> None:
+    from benchflow.eval_sharding import EvalShard, _config_payload
+    from benchflow.eval_worker import _evaluation_config
+    from benchflow.evaluation import EvaluationConfig
+
+    shard = EvalShard(index=0, task_names=("t",), concurrency=1)
+    config = EvaluationConfig(
+        separate_verifier=True, separate_verifier_include=("/root",)
+    )
+    assert _evaluation_config(
+        _config_payload(config, shard=shard)
+    ).separate_verifier_include == ("/root",)
+
+
+@pytest.mark.asyncio
+async def test_include_paths_cross_into_the_verifier_sandbox(tmp_path: Path) -> None:
+    box = tmp_path / "box"
+    workspace = box / "app"
+    workspace.mkdir(parents=True)
+    (workspace / "notes.md").write_text("work\n")
+    outputs = box / "root"
+    (outputs / "results").mkdir(parents=True)
+    (outputs / "paper.pdf").write_bytes(b"%PDF-1.7\n")
+    (outputs / "results" / "fit.csv").write_text("a,b\n1,2\n")
+    (box / "tmp").mkdir()
+    (box / "tmp" / "scratch.txt").write_text("stays behind\n")
+    trial = tmp_path / "trial"
+    trial.mkdir()
+    await capture_task_evidence(
+        LocalTransport(),
+        str(workspace),
+        trial / "evidence",
+        artifacts=[
+            ArtifactConfig(source=str(outputs)),
+            ArtifactConfig(source=str(box / "missing")),
+        ],
+    )
+    payload = tmp_path / "payload.tar"
+
+    summary = build_transfer_payload(trial, payload)
+
+    root = str(box).lstrip("/")
+    files = {name for name, data in _members(payload).items() if data is not None}
+    assert files == {
+        f"{root}/app/notes.md",
+        f"{root}/root/paper.pdf",
+        f"{root}/root/results/fit.csv",
+    }
+    assert summary["artifacts"] == [
+        {"source": str(outputs), "status": "captured"},
+        {"source": str(box / "missing"), "status": "missing"},
+    ]
+    # Laid over the verifier image's copy of the directory, which keeps its own files.
+    verifier_root = tmp_path / "verifier-root"
+    image_copy = verifier_root / root / "root"
+    image_copy.mkdir(parents=True)
+    (image_copy / ".bashrc").write_text("image file\n")
+    script = _install_script(
+        str(payload), summary["workspace"], summary["sha256"], root=str(verifier_root)
+    )
+    subprocess.run(["sh", "-c", script], check=True)
+    assert (image_copy / "paper.pdf").read_bytes() == b"%PDF-1.7\n"
+    assert (image_copy / "results" / "fit.csv").read_text() == "a,b\n1,2\n"
+    assert (image_copy / ".bashrc").read_text() == "image file\n"
+    assert not (verifier_root / root / "tmp").exists()
+
+
+def _capture_rollout(tmp_path: Path, config: TaskConfig, *, review: bool = False):
+    async def disconnect() -> None:
+        return None
+
+    async def quiesce(env, user) -> None:
+        return None
+
+    return SimpleNamespace(
+        _review_plan=object() if review else None,
+        _config=SimpleNamespace(
+            purpose="task", sandbox_user="agent", separate_verifier_include=("/root",)
+        ),
+        _task=SimpleNamespace(config=config),
+        _env=object(),
+        _agent_cwd="/app",
+        _agent_env={},
+        _agent_phase_started=100.0,
+        _outside_workspace_writes=None,
+        _export_error=None,
+        _planes=SimpleNamespace(quiesce_agent=quiesce),
+        disconnect=disconnect,
+        _require_rollout_dir=lambda: tmp_path,
+    )
+
+
+@pytest.mark.asyncio
+async def test_include_paths_and_the_scan_apply_only_to_a_separate_verifier(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from benchflow.rollout import _review
+
+    captured: list[list[str]] = []
+    scanned: list[tuple[float, list[str]]] = []
+    report = {
+        "count": 1,
+        "truncated": False,
+        "by_directory": {"/root": 1},
+        "sample": ["/root/paper.pdf"],
+    }
+
+    async def fake_capture(
+        env, workspace, destination, *, artifacts=(), excluded_paths=()
+    ):
+        captured.append([artifact.source for artifact in artifacts])
+
+    async def fake_scan(env, *, since, keep, **_):
+        scanned.append((since, keep))
+        return report
+
+    monkeypatch.setattr(_review, "capture_task_evidence", fake_capture)
+    monkeypatch.setattr(_review, "scan_outside_workspace_writes", fake_scan)
+
+    separate = _capture_rollout(
+        tmp_path, TaskConfig.model_validate({"verifier": {"sandbox_mode": "separate"}})
+    )
+    await _review.capture_terminal_workspace(separate)
+    assert captured == [["/root"]]
+    assert scanned == [(100.0, ["/app", "/root", "/home/agent"])]
+    assert separate._outside_workspace_writes == report
+
+    shared = _capture_rollout(tmp_path, TaskConfig(), review=True)
+    await _review.capture_terminal_workspace(shared)
+    assert captured[-1] == []
+    assert len(scanned) == 1 and shared._outside_workspace_writes is None
+
+
+@pytest.mark.asyncio
+async def test_the_agent_phase_start_is_read_from_the_sandbox_clock() -> None:
+    from benchflow.rollout._review import mark_agent_phase_start
+
+    class Clock:
+        async def exec(self, cmd: str, *, user: str = "root", timeout_sec: int = 30):
+            assert "time.time()" in cmd and user == "root"
+            return ExecResult(0, "1792170000.25\n", "")
+
+    separate = SimpleNamespace(
+        _task=SimpleNamespace(
+            config=TaskConfig.model_validate({"verifier": {"sandbox_mode": "separate"}})
+        ),
+        _env=Clock(),
+        _agent_phase_started=None,
+    )
+    await mark_agent_phase_start(separate)
+    assert separate._agent_phase_started == 1792170000.25
+
+    shared = SimpleNamespace(
+        _task=SimpleNamespace(config=TaskConfig()),
+        _env=Clock(),
+        _agent_phase_started=None,
+    )
+    await mark_agent_phase_start(shared)
+    assert shared._agent_phase_started is None
+
+
+@pytest.mark.asyncio
+async def test_files_written_outside_everything_that_crosses_are_listed(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "box"
+    (root / "root").mkdir(parents=True)
+    (root / "root" / "proposal.pdf").write_text("an input from before the agent\n")
+    time.sleep(0.05)
+    since = time.time()
+    time.sleep(0.05)
+    for path in (
+        "root/paper.pdf",  # graded output outside the /app workspace: listed
+        "srv/data/fit.csv",  # listed
+        "app/out.txt",  # the workspace crosses
+        "home/agent/.codex/session.json",  # the agent's home is harness state
+        "tmp/scratch",
+        "usr/lib/x.py",
+        "var/log/y",
+        "logs/verifier/reward.txt",
+        "oracle/__pycache__/solve.cpython-312.pyc",  # harness mount
+        "opt/benchflow-egress/policy.json",  # BenchFlow's egress proxy
+        "opt/benchflow_agentcore_shim.py",
+        "opt/benchflow/node/bin/node",
+        "root/.cache/uv/wheel",  # package cache
+        "root/.daytona/sessions/s",  # provider runtime state
+    ):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("new\n")
+
+    report = await scan_outside_workspace_writes(
+        LocalTransport(), since=since, keep=["/app", "/home/agent"], root=str(root)
+    )
+
+    assert report is not None
+    assert report["count"] == 2 and not report["truncated"]
+    assert report["by_directory"] == {"/root": 1, "/srv": 1}
+    assert set(report["sample"]) == {"/root/paper.pdf", "/srv/data/fit.csv"}
+
+
+@pytest.mark.asyncio
+async def test_the_record_lists_files_left_outside_the_workspace(
+    tmp_path: Path,
+) -> None:
+    _, workspace, trial = await _agent_trial(tmp_path)
+    task = _task_dir(tmp_path, '[verifier]\nenvironment_mode = "separate"\n')
+    rollout = _fake_rollout(trial, task, str(workspace))
+    rollout._outside_workspace_writes = {
+        "count": 1,
+        "truncated": False,
+        "by_directory": {"/root": 1},
+        "sample": ["/root/paper.pdf"],
+    }
+    box = FakeVerifierSandbox(tmp_path / "verifier-box")
+
+    async def verify(env, vtask, vpaths, timing, *, workspace):
+        return {"reward": 1.0}, None
+
+    await run_separate_verifier(
+        rollout, create_environment=lambda *_: box, verify=verify
+    )
+
+    record = json.loads(
+        (trial / "verifier-sandbox" / "verifier-sandbox.json").read_text()
+    )
+    assert record["outside_workspace_writes"]["sample"] == ["/root/paper.pdf"]
+    assert record["transfer"]["artifacts"] == []
