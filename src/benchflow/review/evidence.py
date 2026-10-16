@@ -30,6 +30,19 @@ from benchflow.task.config import ArtifactConfig
 
 logger = logging.getLogger(__name__)
 
+# Package-manager caches, matched as path components below a captured root.
+# With a /root workspace, the harness's own installs (codex-acp through npm,
+# tools through uv) fill these as root before the agent starts, and they can
+# be most of the workspace's bytes. A cache is never an output: the review and
+# the separate verifier sandbox both do without it.
+PACKAGE_CACHE_PATHS = (
+    ".cache/pip",
+    ".cache/uv",
+    ".npm/_cacache",
+    ".npm/_logs",
+    ".npm/_npx",
+)
+
 
 class EvidenceError(RuntimeError):
     """Required evidence could not be captured or verified completely."""
@@ -51,7 +64,9 @@ class EvidenceExclusion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     original_path: str
-    reason: Literal["credential", "sandbox_runtime", "special_file", "task_exclude"]
+    reason: Literal[
+        "credential", "sandbox_runtime", "package_cache", "special_file", "task_exclude"
+    ]
 
 
 class ArtifactEvidence(BaseModel):
@@ -125,6 +140,8 @@ def excluded(path):
     # but a root that itself lies under such a directory is still captured.
     if reason is None and any(component("/" + relative, rule) for rule in rules["sandbox_runtime"]):
         reason = "sandbox_runtime"
+    if reason is None and any(component("/" + relative, rule) for rule in rules["package_cache"]):
+        reason = "package_cache"
     if reason is None and any(fnmatch.fnmatchcase(relative, rule) or fnmatch.fnmatchcase(path.name, rule) for rule in rules["exclude"]):
         reason = "task_exclude"
     if reason:
@@ -346,9 +363,9 @@ async def capture_workspace(
     ``destination`` must not exist. It receives ``workspace/`` and
     ``manifest.json`` together after successful validation. Capture limits are
     hard errors: this API never labels a truncated tree complete. Credential
-    files, provider runtime state (``SANDBOX_RUNTIME_STATE_PATHS``) and
-    sockets, FIFOs or device nodes stay out of the bundle, each recorded in
-    ``manifest.exclusions``.
+    files, provider runtime state (``SANDBOX_RUNTIME_STATE_PATHS``), package
+    manager caches (``PACKAGE_CACHE_PATHS``) and sockets, FIFOs or device
+    nodes stay out of the bundle, each recorded in ``manifest.exclusions``.
     """
     if destination.exists() or destination.is_symlink():
         raise EvidenceError(f"Evidence destination already exists: {destination}")
@@ -361,6 +378,7 @@ async def capture_workspace(
         {
             "credentials": CREDENTIAL_EVIDENCE_PATHS,
             "sandbox_runtime": SANDBOX_RUNTIME_STATE_PATHS,
+            "package_cache": PACKAGE_CACHE_PATHS,
             "exclude": list(exclude),
             "paths": list(excluded_paths),
         }

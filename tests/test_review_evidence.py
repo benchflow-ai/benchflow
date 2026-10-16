@@ -238,6 +238,55 @@ async def test_daytona_session_state_never_blocks_or_enters_evidence(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_package_manager_caches_stay_out_of_evidence(tmp_path):
+    """Guards the capture size of /root workspaces (verifier-followups PR).
+
+    On a 2026-10-16 ion-trap-design run the harness's npm and uv caches under
+    /root were 97% of the 745 MB the separate verifier received. Caches are
+    recorded as exclusions; look-alikes that could be solver output stay.
+    """
+    source = tmp_path / "root"
+    for cache in (
+        ".cache/uv/archive-v0/abc/pkg.py",
+        ".cache/pip/http-v2/0/1",
+        ".npm/_cacache/content-v2/sha512/aa",
+        ".npm/_logs/debug-0.log",
+        ".npm/_npx/f1/package.json",
+        "project/.cache/uv/wheel",
+    ):
+        (source / cache).parent.mkdir(parents=True, exist_ok=True)
+        (source / cache).write_text("cache")
+    kept = (
+        ".cache/matplotlib/fontlist.json",
+        ".npmrc",
+        ".local/bin/tool",
+        "results/cache/uv/table.csv",
+        "uv.lock",
+    )
+    for path in kept:
+        (source / path).parent.mkdir(parents=True, exist_ok=True)
+        (source / path).write_text("solver")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert sorted((e.original_path, e.reason) for e in manifest.exclusions) == sorted(
+        (str(source / path), "package_cache")
+        for path in (
+            ".cache/pip",
+            ".cache/uv",
+            ".npm/_cacache",
+            ".npm/_logs",
+            ".npm/_npx",
+            "project/.cache/uv",
+        )
+    )
+    files = {e.path for e in manifest.entries if e.kind == "file"}
+    assert files == set(kept)
+    validate_workspace(bundle / "workspace", manifest)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ["bytes", "addition", "deletion", "symlink"])
 async def test_host_and_reviewer_admission_reject_changed_evidence(tmp_path, mutation):
     """Guards PR #942's evidence boundary against post-capture substitution."""
