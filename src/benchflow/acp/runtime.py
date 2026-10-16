@@ -96,6 +96,73 @@ def _acp_handshake_timeout_sec() -> float:
     )
 
 
+_ACP_SETTLE_TIMEOUT_ENV = "BENCHFLOW_ACP_SETTLE_TIMEOUT"
+
+
+def _acp_settle_timeout_sec() -> float:
+    """Quiet seconds after the agent's final message that end its turn; 0 = off.
+
+    An ACP agent ends a turn by answering ``session/prompt``, and some agent
+    and transport pairs lose that answer: in an Oct 2, 2026 SkillsBench run,
+    55 of the 255 OpenCode attempts on Daytona that ended with a final message
+    (22%) then sat silent until the wall clock ran out (a median 244 s each)
+    and were recorded as timeouts, although in the stalled attempts examined
+    OpenCode's own log shows its loop exiting. With
+    ``BENCHFLOW_ACP_SETTLE_TIMEOUT`` set to a number of seconds, a turn whose
+    last update is message text, with no tool call pending, ends after that
+    many quiet seconds as ``end_turn``, and the trajectory records
+    ``agent_turn_end_inferred``. Off by default: an agent that sends a message
+    and then works without reporting a tool call would be cut off.
+    """
+    return _timeout_sec_from_env(_ACP_SETTLE_TIMEOUT_ENV, 0.0)
+
+
+def _settle_poll_sec(settle_sec: float) -> float:
+    """How often to look for a settled turn: a quarter of the quiet period."""
+    return max(0.05, min(30.0, settle_sec / 4))
+
+
+def _settled_quiet_sec(
+    session, settle_sec: float, *, now: float, deadline: float
+) -> float | None:
+    """The agent's quiet time if its turn settled before ``deadline``, else None."""
+    if settle_sec <= 0:
+        return None
+    quiet_of = getattr(session, "quiet_after_final_message_sec", None)
+    quiet = quiet_of() if callable(quiet_of) else None
+    if quiet is None or quiet < settle_sec:
+        return None
+    # The turn settled when the quiet period ran out, not when a poll saw it.
+    if now - (quiet - settle_sec) > deadline:
+        return None
+    return quiet
+
+
+async def _end_settled_turn(
+    acp_client: ACPClient,
+    prompt_task: asyncio.Task,
+    session,
+    *,
+    settle_sec: float,
+    quiet_sec: float,
+) -> PromptResult:
+    """End a turn the agent finished without answering ``session/prompt``.
+
+    ``session/cancel`` closes the request on the agent's side (an answer that
+    still arrives only adds its usage); the turn then counts as ``end_turn``.
+    """
+    logger.warning(
+        "Agent quiet for %.0fs after its final message with no tool call "
+        "pending; ending the turn (%s=%g)",
+        quiet_sec,
+        _ACP_SETTLE_TIMEOUT_ENV,
+        settle_sec,
+    )
+    await cancel_prompt_after_timeout(acp_client, prompt_task)
+    session.record_inferred_turn_end(settle_timeout_sec=settle_sec, quiet_sec=quiet_sec)
+    return PromptResult(stop_reason="end_turn")
+
+
 async def _prepare_openhands_direct_execution(
     env,
     *,
@@ -832,16 +899,37 @@ async def _prompt_with_wall_clock_budget(
     prompt: str,
     timeout: int,
 ):
-    """Run a prompt until either it finishes or BenchFlow's budget expires."""
-    deadline = asyncio.get_running_loop().time() + timeout
+    """Run a prompt until it finishes, its turn settles, or BenchFlow's budget expires."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    settle_sec = _acp_settle_timeout_sec()
     prompt_task = asyncio.create_task(_timed_prompt(acp_client, prompt))
     cleanup_attempted = False
     try:
-        done, _pending = await asyncio.wait({prompt_task}, timeout=timeout)
-        if done:
-            return _completed_prompt_result(
-                prompt_task, session, deadline=deadline, timeout=timeout
+        while True:
+            remaining = deadline - loop.time()
+            if settle_sec:
+                remaining = min(remaining, _settle_poll_sec(settle_sec))
+            done, _pending = await asyncio.wait(
+                {prompt_task}, timeout=max(0.0, remaining)
             )
+            if done:
+                return _completed_prompt_result(
+                    prompt_task, session, deadline=deadline, timeout=timeout
+                )
+            now = loop.time()
+            quiet = _settled_quiet_sec(session, settle_sec, now=now, deadline=deadline)
+            if quiet is not None:
+                cleanup_attempted = True
+                return await _end_settled_turn(
+                    acp_client,
+                    prompt_task,
+                    session,
+                    settle_sec=settle_sec,
+                    quiet_sec=quiet,
+                )
+            if now >= deadline:
+                break
         cleanup_attempted = True
         if await cancel_prompt_after_timeout(acp_client, prompt_task):
             raise _agent_prompt_timeout_error(session, timeout)
@@ -869,10 +957,14 @@ async def _prompt_with_idle_watchdog(
         wall_timeout_sec=timeout,
         now=loop.time(),
     )
+    settle_sec = _acp_settle_timeout_sec()
+    poll_sec = watchdog.poll_interval_sec
+    if settle_sec:
+        poll_sec = min(poll_sec, _settle_poll_sec(settle_sec))
 
     try:
         while not prompt_task.done():
-            await asyncio.sleep(watchdog.poll_interval_sec)
+            await asyncio.sleep(poll_sec)
             # Re-check done() after the sleep — the prompt may have completed
             # during the poll interval. Without this, we'd cancel an already-
             # completed task and discard a successful result.
@@ -880,6 +972,18 @@ async def _prompt_with_idle_watchdog(
                 break
             now = loop.time()
             watchdog.observe(session, now=now)
+            quiet = _settled_quiet_sec(
+                session, settle_sec, now=now, deadline=watchdog.deadline
+            )
+            if quiet is not None:
+                cleanup_attempted = True
+                return await _end_settled_turn(
+                    acp_client,
+                    prompt_task,
+                    session,
+                    settle_sec=settle_sec,
+                    quiet_sec=quiet,
+                )
             if watchdog.idle_expired(now):
                 error = watchdog.timeout_error(session, now=now)
                 cleanup_attempted = True

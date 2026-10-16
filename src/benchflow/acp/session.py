@@ -50,6 +50,9 @@ _ACP_USAGE_FIELDS: tuple[str, ...] = (
     "thought_tokens",
 )
 
+# Session updates that carry the agent's message text (not thoughts or tools).
+_MESSAGE_UPDATE_TYPES = frozenset({"agent_message_chunk", "text_update"})
+
 
 def _coerce_usage_int(value: object) -> int | None:
     if value is None:
@@ -283,6 +286,11 @@ class ACPSession:
         self._progress_enabled = _console_progress_enabled()
         self._prompt_started_at: float | None = None
         self._last_progress_at = 0.0
+        # What the agent sent last and when (time.monotonic()), for the
+        # settle rule: a turn whose last update is message text, with no tool
+        # call pending, has ended once the agent stays quiet long enough.
+        self._last_update_type: str | None = None
+        self._last_update_at: float | None = None
 
     def _notify_change(self) -> None:
         self._maybe_log_progress()
@@ -340,6 +348,8 @@ class ACPSession:
         # Grace period: the first heartbeat waits a full interval so short
         # prompts stay single-line.
         self._last_progress_at = time.monotonic()
+        self._last_update_type = "user_message"
+        self._last_update_at = time.monotonic()
         self._flush_agent_text()
         self.events.append({"type": "user_message", "text": text})
         self._notify_change()
@@ -358,6 +368,42 @@ class ACPSession:
             for record in self.tool_calls
             if record.status in pending_statuses
         ]
+
+    def quiet_after_final_message_sec(self, now: float | None = None) -> float | None:
+        """Seconds the agent has been quiet since its final message, else None.
+
+        A number only when the last update the agent sent is message text and
+        no tool call is pending: an agent still working sends a tool call, a
+        thought or more text instead. ``now`` is on ``time.monotonic()``'s
+        clock (the default).
+        """
+        if self._last_update_type not in _MESSAGE_UPDATE_TYPES:
+            return None
+        if self._last_update_at is None or self.pending_tool_call_ids():
+            return None
+        return (time.monotonic() if now is None else now) - self._last_update_at
+
+    def record_inferred_turn_end(
+        self, *, settle_timeout_sec: float, quiet_sec: float
+    ) -> None:
+        """Record that BenchFlow ended a turn the agent finished but never closed.
+
+        The agent sent its final message and stayed quiet for
+        ``settle_timeout_sec`` without answering ``session/prompt``; the turn
+        counts as ``end_turn`` and the trajectory says it was inferred.
+        """
+        self._events_active = True
+        self._flush_agent_text()
+        self.stop_reason = StopReason.END_TURN
+        self.events.append(
+            {
+                "type": "agent_turn_end_inferred",
+                "reason": "quiet_after_final_message",
+                "settle_timeout_sec": settle_timeout_sec,
+                "quiet_sec": round(quiet_sec, 1),
+            }
+        )
+        self._notify_change()
 
     def pending_tool_call_state(self) -> tuple[tuple[str, int], ...]:
         """Return stable pending-call identities with progress versions."""
@@ -460,6 +506,8 @@ class ACPSession:
         # types.
         if update_type not in self._RECOGNIZED_UPDATE_TYPES:
             return
+        self._last_update_type = update_type
+        self._last_update_at = time.monotonic()
 
         if update_type == "tool_call":
             self._flush_agent_text()

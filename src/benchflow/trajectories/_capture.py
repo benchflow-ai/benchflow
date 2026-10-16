@@ -99,6 +99,15 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                     ],
                 }
             )
+        elif event["type"] == "agent_turn_end_inferred":
+            out.append(
+                {
+                    "type": "agent_turn_end_inferred",
+                    "reason": event["reason"],
+                    "settle_timeout_sec": event["settle_timeout_sec"],
+                    "quiet_sec": event["quiet_sec"],
+                }
+            )
     return out
 
 
