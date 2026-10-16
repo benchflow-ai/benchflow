@@ -807,7 +807,9 @@ class TestVerifierUserHarden:
 
         assert VERIFIER_ENV["PYTHONNOUSERSITE"] == "1"
         assert VERIFIER_ENV["PIP_USER"] == "0"
-        assert VERIFIER_ENV["PIP_NO_USER_CONFIG"] == "1"
+        assert VERIFIER_ENV["PIP_CONFIG_FILE"] == "/dev/null"
+        assert VERIFIER_ENV["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert "PIP_NO_USER_CONFIG" not in VERIFIER_ENV  # not a pip option
         assert VERIFIER_ENV["HOME"] == "/root"
 
     @pytest.mark.asyncio
@@ -882,7 +884,8 @@ class TestVerifierEnv:
             "LD_LIBRARY_PATH",
             "PYTHONNOUSERSITE",
             "PIP_USER",
-            "PIP_NO_USER_CONFIG",
+            "PIP_CONFIG_FILE",
+            "GIT_CONFIG_GLOBAL",
             "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",

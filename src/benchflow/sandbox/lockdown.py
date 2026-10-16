@@ -603,15 +603,22 @@ VERIFIER_ENV: dict[str, str] = {
     # Prevent pip from writing to user site-packages during pip install -e .
     "PYTHONNOUSERSITE": "1",
     "PIP_USER": "0",
-    "PIP_NO_USER_CONFIG": "1",
+    # pip loads no configuration file at all when this is os.devnull: not
+    # ~/.config/pip/pip.conf or ~/.pip/pip.conf under the HOME below, not
+    # /etc/pip.conf.
+    "PIP_CONFIG_FILE": "/dev/null",
+    # git reads no ~/.gitconfig or ~/.config/git/config (git >= 2.32); the
+    # system file /etc/gitconfig still applies.
+    "GIT_CONFIG_GLOBAL": "/dev/null",
     # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
     # system-site without this flag. Verifier runs as root and system-site is
     # root-owned, so allowing it is safe; without it, tasks that pip-install
     # pytest in test.sh either fail outright or fall back to a user-site path
     # that PYTHONNOUSERSITE=1 hides at import time.
     "PIP_BREAK_SYSTEM_PACKAGES": "1",
-    # /root is root-owned; sandbox_user cannot pre-stage caches there. Pip
-    # config is already blocked by the PIP_* / PYTHONNOUSERSITE vars above.
+    # Often the agent's workspace (WORKDIR /root), so its per-user files are
+    # whatever the agent left: Python's user site, pip's and git's per-user
+    # config are switched off above; other tools that read HOME are not.
     "HOME": "/root",
     # Disable breakpoint() — any other value imports an arbitrary callable.
     "PYTHONBREAKPOINT": "0",
