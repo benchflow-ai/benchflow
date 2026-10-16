@@ -8,6 +8,10 @@ ANSWER_JSON="$WORKSPACE/answer.json"
 mkdir -p "$WORKSPACE"
 
 python3 - "$INPUT_BIB" "$ANSWER_JSON" <<'PY'
+# Outside the task image, `python3` can be older than 3.10; keep the
+# `str | None` hints below unevaluated so the oracle still runs there.
+from __future__ import annotations
+
 import json
 import re
 import sys
