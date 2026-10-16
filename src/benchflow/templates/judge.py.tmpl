@@ -83,32 +83,46 @@ def read_trajectory() -> str:
     return text
 
 
-def call_llm(prompt: str) -> str:
-    """Call LLM judge, trying Gemini, Anthropic, or OpenAI based on model name and available keys."""
-    model = JUDGE_MODEL
-    is_openai_model = model.startswith(("gpt-", "o1", "o3"))
-    is_gemini_model = model.startswith("gemini")
+PROVIDER_PREFIXES = {"anthropic": "anthropic", "openai": "openai", "google": "gemini", "gemini": "gemini"}
 
-    # Try Gemini first (if model is gemini or GOOGLE_API_KEY/GEMINI_API_KEY is set)
-    if is_gemini_model or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
-        try:
+
+def bare_model(model: str) -> str:
+    """Drop a ``provider/`` prefix, as ``rewards.llm._strip_provider_prefix`` does."""
+    prefix, sep, rest = model.partition("/")
+    return rest if sep and prefix in PROVIDER_PREFIXES else model
+
+
+def judge_provider(model: str) -> str:
+    """Return the only provider allowed to score with ``model``."""
+    prefix, sep, _ = model.partition("/")
+    if sep and prefix in PROVIDER_PREFIXES:
+        return PROVIDER_PREFIXES[prefix]
+    if model.startswith("gemini"):
+        return "gemini"
+    if model.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    return "anthropic"
+
+
+def call_llm(prompt: str) -> str:
+    """Call the provider that serves JUDGE_MODEL.
+
+    The judge never falls back to another provider or model: a rollout scored
+    by a different model than the configured judge is worse than an unjudged
+    one, so any failure raises JudgeUnavailableError.
+    """
+    provider = judge_provider(JUDGE_MODEL)
+    model = bare_model(JUDGE_MODEL)
+    try:
+        if provider == "gemini":
             from google import genai
             api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-            if api_key:
-                client = genai.Client(api_key=api_key)
-                response = client.models.generate_content(
-                    model=model if is_gemini_model else "gemini-3.1-flash-lite",
-                    contents=prompt,
-                )
-                return response.text
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"WARNING: Gemini API error: {e}", file=sys.stderr)
-
-    # Try Anthropic
-    if not is_openai_model and not is_gemini_model:
-        try:
+            if not api_key:
+                raise JudgeUnavailableError(f"{model} needs GOOGLE_API_KEY or GEMINI_API_KEY")
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(model=model, contents=prompt)
+            text = response.text
+        elif provider == "anthropic":
             import anthropic
             client = anthropic.Anthropic()
             response = client.messages.create(
@@ -116,31 +130,28 @@ def call_llm(prompt: str) -> str:
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"WARNING: Anthropic API error: {e}", file=sys.stderr)
-
-    # Try OpenAI
-    try:
-        import openai
-        client = openai.OpenAI()
-        response = client.chat.completions.create(
-            model=model if is_openai_model else "gpt-4o-mini",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content
-    except ImportError:
-        pass
+            # Claude can return a thinking block before the text block, so
+            # content[0] is not always text.
+            text = "".join(b.text for b in response.content if b.type == "text")
+        else:
+            import openai
+            client = openai.OpenAI()
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.choices[0].message.content
+    except JudgeUnavailableError:
+        raise
+    except ImportError as e:
+        raise JudgeUnavailableError(f"SDK for {provider} judge {model} is not installed: {e}") from e
     except Exception as e:
-        print(f"WARNING: OpenAI API error: {e}", file=sys.stderr)
+        raise JudgeUnavailableError(f"{provider} judge {model} failed: {e}") from e
 
-    print("ERROR: No LLM SDK available (tried google-genai, anthropic, openai)", file=sys.stderr)
-    raise JudgeUnavailableError(
-        "No LLM judge available (tried google-genai, anthropic, openai)"
-    )
+    if not text:
+        raise JudgeUnavailableError(f"{provider} judge {model} returned no text")
+    return text
 
 
 def judge_with_llm(trajectory_text: str) -> float:
@@ -151,6 +162,9 @@ def judge_with_llm(trajectory_text: str) -> float:
     try:
         result = json.loads(text)
         score = float(result["score"])
+        # Record which model actually answered, next to the verdict.
+        result["judge_provider"] = judge_provider(JUDGE_MODEL)
+        result["judge_model"] = JUDGE_MODEL
         # Write detailed results for analysis
         (VERIFIER_DIR / "judge_result.json").write_text(json.dumps(result, indent=2))
         return max(0.0, min(1.0, score))
