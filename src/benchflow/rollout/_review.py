@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,8 @@ from benchflow.review.evidence import capture_task_evidence
 from benchflow.review.evidence_runtime import ensure_evidence_python
 from benchflow.review.outcome import scoring_error
 from benchflow.review.persistence import commit_scoring_result, scoring_lock
+from benchflow.rollout._separate_verifier import scan_outside_workspace_writes
+from benchflow.task.config import ArtifactConfig
 from benchflow.task.verifier_sandbox import separate_verifier_requested
 
 if TYPE_CHECKING:
@@ -58,10 +61,70 @@ async def prepare_capture_runtime(rollout: Rollout) -> None:
         )
 
 
+def _separate(rollout: Rollout) -> bool:
+    return separate_verifier_requested(getattr(rollout._task, "config", None))
+
+
+async def mark_agent_phase_start(rollout: Rollout) -> None:
+    """Read the sandbox clock as harness setup ends and the agent phase begins.
+
+    Only for a separate verifier: files written after this instant outside
+    everything that crosses are listed when the workspace is frozen.
+    """
+    if not _separate(rollout):
+        return
+    try:
+        result = await rollout._env.exec(
+            shlex.join(
+                ["python3", "-I", "-c", "import time; print(repr(time.time()))"]
+            ),
+            user="root",
+            timeout_sec=30,
+        )
+        rollout._agent_phase_started = float((result.stdout or "").split()[-1])
+    except Exception:
+        logger.warning(
+            "Could not read the sandbox clock; files written outside the "
+            "workspace will not be listed",
+            exc_info=True,
+        )
+
+
+async def _list_outside_workspace_writes(rollout: Rollout) -> None:
+    since = getattr(rollout, "_agent_phase_started", None)
+    if since is None or not _separate(rollout):
+        return
+    cfg = rollout._config
+    keep = [rollout._agent_cwd, *cfg.separate_verifier_include]
+    if cfg.sandbox_user:
+        keep.append(f"/home/{cfg.sandbox_user}")
+    report = await scan_outside_workspace_writes(rollout._env, since=since, keep=keep)
+    rollout._outside_workspace_writes = report
+    if report and report.get("count"):
+        logger.warning(
+            "%d file(s) written outside the workspace %s during the agent phase "
+            "will not reach the separate verifier (by directory: %s; e.g. %s). "
+            "If the verifier reads them, pass --separate-verifier-include for "
+            "their directory.",
+            report["count"],
+            rollout._agent_cwd,
+            report.get("by_directory"),
+            ", ".join(report.get("sample", [])[:5]),
+        )
+
+
 async def capture_terminal_workspace(rollout: Rollout) -> None:
     """Freeze solver or reviewer files before verifier hardening mutates them."""
     if not _freeze_requested(rollout):
         return
+    includes: list[ArtifactConfig] = []
+    if _separate(rollout):
+        # Captured beside the workspace and carried into the verifier sandbox
+        # at the same paths; the review sees them as outputs outside it.
+        includes = [
+            ArtifactConfig(source=path)
+            for path in rollout._config.separate_verifier_include
+        ]
     try:
         await rollout.disconnect()
         if rollout._config.sandbox_user:
@@ -72,7 +135,7 @@ async def capture_terminal_workspace(rollout: Rollout) -> None:
             rollout._env,
             rollout._agent_cwd,
             rollout._require_rollout_dir() / "evidence",
-            artifacts=rollout._task.config.artifacts,
+            artifacts=[*rollout._task.config.artifacts, *includes],
             excluded_paths=credential_evidence_overrides(
                 rollout._agent_env,
                 workspace=rollout._agent_cwd,
@@ -88,6 +151,8 @@ async def capture_terminal_workspace(rollout: Rollout) -> None:
         # final rubric scoring and must not become a solver capability error.
         rollout._export_error = f"Workspace evidence capture failed: {exc}"
         logger.exception("Workspace evidence capture failed")
+        return
+    await _list_outside_workspace_writes(rollout)
 
 
 async def finish_terminal_review(

@@ -841,7 +841,7 @@ Current implementation status:
 | root/step artifacts | yes | no/partial | implement collection or fail closed |
 | network allowlist | yes | no/partial | per-sandbox capability check |
 | network denylist | yes | partial | `docker`: yes; `daytona`: yes; `modal`, `apple-container`, and `agentcore` refuse the mode at the capability gate |
-| separate verifier env | yes | partial | `docker` and `daytona` run test-script verifiers in a fresh sandbox that receives the frozen workspace (`--separate-verifier` forces it per run); other backends fail closed |
+| separate verifier env | yes | partial | `docker` and `daytona` run test-script verifiers in a fresh sandbox that receives the frozen workspace (`--separate-verifier` forces it per run; `--separate-verifier-include` carries output paths outside the workspace); other backends fail closed |
 | Windows / TPU | yes | no | fail closed |
 | healthcheck | yes | no/partial | fail closed until sandbox healthcheck support lands |
 | workdir | yes | partial | absolute non-root paths are materialized; root/relative paths fail closed |

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -122,6 +123,7 @@ def _write_config(
     agent_env: dict[str, str],
     base_image_override: str | None = None,
     verifier_sandbox_mode: str = "shared",
+    verifier_include: Sequence[str] = (),
     reasoning_effort: str | None = None,
     usage_tracking: UsageTrackingConfig | None = None,
     concurrency: int | None = None,
@@ -172,6 +174,7 @@ def _write_config(
         "context_root": str(context_root) if context_root else None,
         "base_image_override": base_image_override,
         "verifier_sandbox_mode": verifier_sandbox_mode,
+        "verifier_include": list(verifier_include),
         "timeout_sec": timeout,
         "concurrency": concurrency,
         "agent_idle_timeout_sec": agent_idle_timeout,

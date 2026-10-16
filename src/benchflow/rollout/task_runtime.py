@@ -37,6 +37,7 @@ class TaskRuntimeConfig:
     context_root: str | Path | None = None
     base_image_override: str | None = None
     separate_verifier: bool = False
+    separate_verifier_include: tuple[str, ...] = ()
     pre_agent_hooks: list | None = None
     environment_manifest: EnvironmentManifest | None = None
     config_override: dict | None = None
@@ -71,6 +72,7 @@ class TaskRuntimeConfig:
             context_root=self.context_root,
             base_image_override=self.base_image_override,
             separate_verifier=self.separate_verifier,
+            separate_verifier_include=self.separate_verifier_include,
             pre_agent_hooks=self.pre_agent_hooks,
             environment_manifest=self.environment_manifest,
             config_override=self.config_override,

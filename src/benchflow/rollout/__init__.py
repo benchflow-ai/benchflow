@@ -124,6 +124,7 @@ from benchflow.rollout._results import (
 from benchflow.rollout._review import (
     capture_terminal_workspace,
     finish_terminal_review,
+    mark_agent_phase_start,
     prepare_terminal_review,
 )
 from benchflow.rollout._separate_verifier import run_separate_verifier
@@ -775,6 +776,10 @@ class Rollout:
         # an export-time infra failure ("connection lost") as the agent's own
         # infra_failure category in dashboards.
         self._export_error: str | None = None
+        # Separate verifier only: the sandbox clock as the agent phase began,
+        # and the files written outside everything that crosses since then.
+        self._agent_phase_started: float | None = None
+        self._outside_workspace_writes: dict | None = None
         # Single bag for the four parallel diagnostic fields the old code
         # carried as separate attrs (issue #503). Each callsite that used
         # to assign to one of those slots now calls ``self._diagnostics.set(...)``
@@ -980,6 +985,15 @@ class Rollout:
                 self._task.config, sandbox=cfg.environment, task_dir=cfg.task_path
             )
 
+        if cfg.separate_verifier_include and not separate_verifier_requested(
+            self._task.config
+        ):
+            logger.warning(
+                "--separate-verifier-include has no effect for %s: its verifier "
+                "runs in the agent's sandbox",
+                self._task.name,
+            )
+
         prepare_terminal_review(self)
 
         self._disallow_web_tools = (
@@ -1124,6 +1138,11 @@ class Rollout:
                 if separate_verifier_requested(getattr(self._task, "config", None))
                 else "shared"
             ),
+            verifier_include=(
+                cfg.separate_verifier_include
+                if separate_verifier_requested(getattr(self._task, "config", None))
+                else ()
+            ),
             usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
             agent_idle_timeout=cfg.agent_idle_timeout,
@@ -1242,6 +1261,7 @@ class Rollout:
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
+            await mark_agent_phase_start(self)
             self._phase = "installed"
             return
 
@@ -1309,6 +1329,7 @@ class Rollout:
                 self._env, cfg.generated_skills_root, cfg.sandbox_user
             )
         await self._planes.lockdown_paths(self._env, self._effective_locked)
+        await mark_agent_phase_start(self)
 
         self._phase = "installed"
 
