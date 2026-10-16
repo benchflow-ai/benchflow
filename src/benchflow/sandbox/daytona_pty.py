@@ -81,11 +81,18 @@ def _daytona_preflight() -> None:
 
 _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES = frozenset(
     {
+        "DaytonaBadGatewayError",
         "DaytonaConnectionError",
+        "DaytonaConnectionTimeoutError",
         "DaytonaRateLimitError",
+        "DaytonaServiceUnavailableError",
         "DaytonaTimeoutError",
     }
 )
+# Gateway statuses Daytona's API front end returns while its backend is
+# briefly unreachable. SDKs older than the typed gateway classes above raise
+# the base ``DaytonaError`` with the status code; typed classes go by name.
+_DAYTONA_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
 _DAYTONA_EMPTY_EXIT_CODE_MARKERS = (
     "failed to convert exit code to int",
     'strconv.Atoi: parsing "": invalid syntax',
@@ -98,6 +105,12 @@ def _is_daytona_transient_retry_error(exc: BaseException) -> bool:
     exc_type = type(exc)
     if exc_type.__module__.startswith("daytona.") and all(
         marker in str(exc) for marker in _DAYTONA_EMPTY_EXIT_CODE_MARKERS
+    ):
+        return True
+    if (
+        exc_type.__module__.startswith("daytona.")
+        and exc_type.__name__ == "DaytonaError"
+        and getattr(exc, "status_code", None) in _DAYTONA_TRANSIENT_STATUS_CODES
     ):
         return True
     return (

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Compose tasks with a URL denylist start on Daytona.** Daytona DinD added
+  `docker-compose-net-admin.yaml` to every denylist compose command but never
+  uploaded it, so such tasks failed before their image build with `open
+  /benchflow/compose/docker-compose-net-admin.yaml: no such file or
+  directory`; FrontierPhysics `ion-trap-3d-vs-2d` and
+  `twisted-slinky-wave-coupling` could not run their oracles on Daytona.
+- **Daytona gateway errors are retried, and a failed sandbox creation leaves no
+  sandbox running.** The SDK creates a sandbox and then waits for it to start
+  inside one call; a 502 during that wait failed the attempt with no retry
+  (502/503/504 were not transient) and left the new sandbox running with
+  nothing able to delete it. 502/503/504 (and `DaytonaConnectionTimeoutError`)
+  now retry, and every sandbox a `DaytonaSandbox` creates carries a
+  `benchflow.create_attempt` label: after a failed attempt, after a retry
+  succeeds, and in `stop()`, sandboxes carrying it other than the one in use
+  are deleted. Only that label is matched, so other sandboxes on a shared API
+  key are never touched.
+
 ## 0.7.11 — 2026-10-16
 
 ### Added

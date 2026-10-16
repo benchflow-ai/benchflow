@@ -140,6 +140,7 @@ DaytonaNotFoundError: Any = None
 FileDownloadRequest: Any = None
 FileUpload: Any = None
 Image: Any = None
+ListSandboxesQuery: Any = None
 Resources: Any = None
 SessionExecuteRequest: Any = None
 SnapshotState: Any = None
@@ -157,7 +158,7 @@ def _load_daytona_sdk() -> None:
     global AsyncDaytona, AsyncSandbox
     global CreateSandboxFromImageParams, CreateSandboxFromSnapshotParams
     global DaytonaNotFoundError, FileDownloadRequest, FileUpload
-    global Image, Resources, SessionExecuteRequest, SnapshotState
+    global Image, ListSandboxesQuery, Resources, SessionExecuteRequest, SnapshotState
 
     if _DAYTONA_SDK_LOADED:
         return
@@ -180,6 +181,7 @@ def _load_daytona_sdk() -> None:
     FileDownloadRequest = _daytona.FileDownloadRequest
     FileUpload = _daytona.FileUpload
     Image = _daytona.Image
+    ListSandboxesQuery = _daytona.ListSandboxesQuery
     Resources = _daytona.Resources
     SessionExecuteRequest = _daytona.SessionExecuteRequest
     SnapshotState = _snapshot.SnapshotState
@@ -243,6 +245,17 @@ _DAYTONA_TRANSIENT_RETRY: Any = retry_if_exception(_is_daytona_transient_retry_e
 # sandbox creation (#532). ``_stop_sandbox`` deliberately uses a smaller budget.
 _DAYTONA_RETRY_ATTEMPTS = 3
 _DAYTONA_STOP_RETRY_ATTEMPTS = 2
+# Label tying every sandbox one DaytonaSandbox creates to it, so a sandbox whose
+# creation failed after Daytona made it can still be found and deleted; see
+# ``DaytonaSandbox._create_sandbox``.
+_CREATE_ATTEMPT_LABEL = "benchflow.create_attempt"
+# Budget for that lookup and delete, which meet the same gateway errors.
+_LEFTOVER_RETRY = retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=_DAYTONA_TRANSIENT_RETRY,
+    reraise=True,
+)
 
 # Shared tenacity policy for the idempotent Daytona SDK calls — session-command
 # polling and filesystem up/download. Three attempts with exponential backoff,
@@ -468,6 +481,15 @@ class DaytonaSandbox(BaseSandbox):
         daytona = await self._client_manager.get_client()
         build_timeout = round(self.task_env_config.build_timeout_sec)
         hard_timeout = build_timeout + _STARTUP_HARD_TIMEOUT_BUFFER_SEC
+        # The SDK creates the sandbox, then waits for it to start inside the
+        # same call. When that wait fails (a 502 while refreshing its state,
+        # say) the sandbox exists but no handle comes back, so neither the
+        # cleanup above nor stop() can reach it. Every attempt carries this
+        # instance's label, so whatever a failed one left can be found.
+        params.labels = {
+            **(params.labels or {}),
+            _CREATE_ATTEMPT_LABEL: self._create_label(),
+        }
 
         create_task = asyncio.ensure_future(
             daytona.create(
@@ -489,6 +511,8 @@ class DaytonaSandbox(BaseSandbox):
                 f"(build_timeout={build_timeout}s + buffer={_STARTUP_HARD_TIMEOUT_BUFFER_SEC}s)"
             )
             create_task.cancel()
+            self._create_failures = getattr(self, "_create_failures", 0) + 1
+            await self._delete_create_leftovers(daytona)
             raise
         except asyncio.CancelledError:
             try:
@@ -498,7 +522,72 @@ class DaytonaSandbox(BaseSandbox):
                 self._on_sandbox_created()
             except (TimeoutError, asyncio.CancelledError, Exception):
                 create_task.cancel()
+                self._create_failures = getattr(self, "_create_failures", 0) + 1
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await asyncio.wait_for(
+                        asyncio.shield(self._delete_create_leftovers(daytona)),
+                        timeout=30,
+                    )
             raise
+        except Exception:
+            if self._sandbox is None:
+                self._create_failures = getattr(self, "_create_failures", 0) + 1
+                await self._delete_create_leftovers(daytona)
+            raise
+        if getattr(self, "_create_failures", 0):
+            # A sandbox Daytona made after an earlier attempt's error answer.
+            await self._delete_create_leftovers(daytona, keep=self._sandbox)
+
+    def _create_label(self) -> str:
+        """This instance's creation label, the same value for every attempt."""
+        label = getattr(self, "_create_label_value", None)
+        if label is None:
+            label = self._create_label_value = uuid4().hex
+        return label
+
+    async def _delete_create_leftovers(self, daytona: Any, keep: Any = None) -> None:
+        """Delete the sandboxes this instance's failed creations left, best effort.
+
+        Only sandboxes carrying this instance's own label are touched, so a
+        shared API key's other sandboxes are never at risk; ``keep`` is the
+        sandbox in use. The lookup and each delete retry gateway errors.
+        """
+        label = self._create_label()
+        keep_id = getattr(keep, "id", None)
+        try:
+            found = await self._list_create_leftovers(daytona, label)
+        except Exception as err:
+            self.logger.warning(
+                f"Could not look for a sandbox left by a failed creation: {err}"
+            )
+            return
+        for sandbox in found:
+            if sandbox.id == keep_id:
+                continue
+            try:
+                await self._delete_leftover(sandbox)
+                self.logger.warning(
+                    f"Deleted sandbox {sandbox.id} left by a failed creation"
+                )
+            except Exception as err:
+                self.logger.warning(
+                    f"Could not delete sandbox {sandbox.id} left by a failed "
+                    f"creation: {err}"
+                )
+
+    @_LEFTOVER_RETRY
+    async def _list_create_leftovers(self, daytona: Any, label: str) -> list[Any]:
+        query = ListSandboxesQuery(labels={_CREATE_ATTEMPT_LABEL: label})
+        return [
+            sandbox
+            async for sandbox in daytona.list(query)
+            if (getattr(sandbox, "labels", None) or {}).get(_CREATE_ATTEMPT_LABEL)
+            == label
+        ]
+
+    @_LEFTOVER_RETRY
+    async def _delete_leftover(self, sandbox: Any) -> None:
+        await sandbox.delete()
 
     @retry(
         stop=stop_after_attempt(_DAYTONA_STOP_RETRY_ATTEMPTS),
@@ -828,6 +917,12 @@ class DaytonaSandbox(BaseSandbox):
         return await self._strategy.start(force_build)
 
     async def stop(self, delete: bool) -> None:
+        if getattr(self, "_create_failures", 0) and self._client_manager:
+            # A sandbox Daytona made after its creation call failed can surface
+            # late; sweep once more before the client goes away.
+            with contextlib.suppress(Exception):
+                daytona = await self._client_manager.get_client()
+                await self._delete_create_leftovers(daytona, keep=self._sandbox)
         return await self._strategy.stop(delete)
 
     async def exec(
