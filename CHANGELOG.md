@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Separate verifier sandboxes run on Docker and Daytona.** A task that sets
+  `[verifier] sandbox_mode = "separate"` (Harbor `environment_mode`) or
+  declares `[verifier.sandbox]` was refused with "separate verifier
+  sandboxes are parsed but not executed". It now runs: after the agent stops,
+  the workspace is frozen into `evidence/`, and a fresh sandbox built from
+  the verifier image (`[verifier.sandbox].docker_image`, `[sandbox]
+  .docker_image`, `tests/Dockerfile`, then the task's own
+  `environment/Dockerfile`) receives only those hash-checked bytes before the
+  normal hardening and `test.sh` run there. Nothing else from the agent's
+  sandbox reaches the verifier. `bench eval run --separate-verifier` (SDK and
+  config `separate_verifier`) forces the mode for every task of a run without
+  editing them, so task digests do not change. A transfer or sandbox failure
+  is a verifier infrastructure error, never a score;
+  `verifier-sandbox/verifier-sandbox.json` records the image source, sandbox
+  id, transfer inventory and timing, and `config.json` records
+  `verifier_sandbox_mode`. Ported from release/0.8's separate verifier,
+  without its declared-artifact and `/logs/artifacts` transfer, which main
+  does not have.
+
+### Fixed
+
+- **Root helpers no longer import modules from the agent's workspace.** The
+  helpers BenchFlow runs as root after the agent stops (disk reclaim, the
+  verifier PATH check, pytest-plugin discovery, the external-symlink purge,
+  the workspace-restore fallback, workspace evidence capture and its
+  reviewer-side admission) ran plain `python3 -c` from the sandbox's default
+  working directory, which is the agent's workspace, so a `json.py` or
+  `glob.py` left there was imported as root before the verifier. They now run
+  `python3 -I`; the `.pth`/`sitecustomize.py` purge keeps its environment
+  but runs from `/`. Pytest-plugin discovery therefore scans only the
+  interpreter's site-packages: declare a plugin installed elsewhere in
+  `verifier.pytest_plugins`.
+
 ## 0.7.9 — 2026-10-14
 
 ### Fixed

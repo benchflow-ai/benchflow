@@ -18,9 +18,26 @@ Between the agent's last action and the verifier's first command, `harden_before
 7. **chown workspace to root** — belt-and-suspenders against zombie sandbox-user processes.
 8. **`CLEANUP_CMD`** — delete `conftest.py` outside `/tests/`, `*.py` from `/tmp`/`/var/tmp`, `sitecustomize.py`/`usercustomize.py`/`*.pth` from writable `sys.path` entries.
 9. **Set `VERIFIER_ENV`** — pinned `PATH`, `PYTEST_ADDOPTS=-c /dev/null --confcutdir=/tests --rootdir=/app -p no:cacheprovider`, `PYTHONPATH=""`, `PYTHONDONTWRITEBYTECODE=1`, plugin auto-discovery off.
-10. **Discover allowed pytest plugins** — `importlib.metadata` scan inside the container, then merge with the task-declared `pytest_plugins` from its config (`task.md` front-matter, or `task.toml` for split-layout tasks). Anything not in the allow-list is blocked.
+10. **Discover allowed pytest plugins** — `importlib.metadata` scan of the interpreter's own site-packages inside the container, then merge with the task-declared `pytest_plugins` from its config (`task.md` front-matter, or `task.toml` for split-layout tasks). Anything not in the allow-list is blocked; a plugin installed outside site-packages (a `PYTHONPATH` directory, a user site) must be declared.
 
 The verifier then runs against this hardened workspace.
+
+These steps, and the workspace evidence capture that runs before them, run small Python helpers as root. The sandbox's default working directory is the task's WORKDIR, which is the agent's workspace, and a plain `python3 -c` puts that directory first on `sys.path`. So every helper runs `python3 -I` (no working directory, user site or `PYTHON*` variables on its path): a `json.py` or `glob.py` the agent left in its workspace is never imported as root. The `.pth`/`sitecustomize.py` purge is the one exception: it must see the `PYTHONPATH` and user-site directories a verifier interpreter would load, so it keeps its environment, runs from `/`, and imports only `sys` and `os`.
+
+## Separate verifier sandbox
+
+In the default (shared) mode the verifier runs in the agent's sandbox after the steps above, so its integrity depends on that cleanup being complete. A separate verifier sandbox removes the dependence: the verifier never runs where the agent ran.
+
+Request it per task with `[verifier] sandbox_mode = "separate"` (Harbor: `environment_mode`) or a `[verifier.sandbox]` table, or for every task of a run with `bench eval run --separate-verifier` (the task's files, and so its digest, stay unchanged). Then:
+
+1. After the agent stops, its workspace is frozen into the rollout's `evidence/`, the same hash-checked capture the rubric review uses.
+2. A fresh sandbox starts from the verifier image: `[verifier.sandbox].docker_image`, else the task's `[sandbox].docker_image`, else `tests/Dockerfile`, else the task's own `environment/Dockerfile`.
+3. Only the frozen workspace is unpacked there, at its original path; a dedicated workspace directory such as `/app` is replaced, a shared one such as `/root` is laid over the image's copy. Nothing else from the agent's sandbox exists in the verifier sandbox: not `/logs/verifier`, not site-packages, not anything a process with root changed outside the workspace.
+4. The hardening above (with no sandbox user) and `test.sh` run there; outputs are copied back to the rollout's `verifier/`.
+
+`verifier-sandbox/verifier-sandbox.json` in the rollout records the image source, sandbox id, transfer inventory and status, and `config.json` records `verifier_sandbox_mode`. A failure before the verifier produces a reward — no frozen workspace, a manifest mismatch, an image that does not build, an upload that does not unpack — is a verifier infrastructure error (`verifier_error` starts with `separate verifier`), never a score. Both sandboxes are billed while the verifier runs.
+
+Limits: Docker and Daytona only; test-script verifiers on the `main` service; `soft_verify` is unavailable (it would upload `tests/` into the agent's sandbox); permission bits are normalized to 0644/0755 (the executable bit is kept); declared `artifacts` are still refused at launch, so only the workspace crosses. The workspace capture needs Python 3.10+ in the agent image, provisioned as for rubric-reviewed runs: installed before the agent starts when the image lacks it.
 
 ## Per-task opt-outs
 
@@ -130,6 +147,7 @@ Benchflow's hardening assumes:
 - The Docker image and pre-installed packages are trusted (they're built before the agent runs).
 - The agent runs as a non-root sandbox user (`sandbox_user`) — when set to `None`, hardening still runs but the agent can defeat lockdown by being root. Don't run untrusted agents as root.
 - The verifier itself is trusted code shipped with the task; benchflow only hardens *what the agent can do to the verifier's environment*.
+- In shared mode, the agent never gains root in its sandbox. A separate verifier sandbox drops this assumption for everything outside the workspace: only the frozen workspace reaches the verifier.
 
 Known residual risk:
 - An agent with sustained access can poison `__pycache__` for files that exist in the baseline (those caches aren't deleted because some tasks diff workspace against `/testbed_verify`). Mitigated by the workspace chown but not eliminated.

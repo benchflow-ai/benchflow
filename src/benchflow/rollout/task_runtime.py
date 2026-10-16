@@ -36,6 +36,7 @@ class TaskRuntimeConfig:
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     base_image_override: str | None = None
+    separate_verifier: bool = False
     pre_agent_hooks: list | None = None
     environment_manifest: EnvironmentManifest | None = None
     config_override: dict | None = None
@@ -69,6 +70,7 @@ class TaskRuntimeConfig:
             jobs_dir=self.jobs_dir,
             context_root=self.context_root,
             base_image_override=self.base_image_override,
+            separate_verifier=self.separate_verifier,
             pre_agent_hooks=self.pre_agent_hooks,
             environment_manifest=self.environment_manifest,
             config_override=self.config_override,

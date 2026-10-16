@@ -258,6 +258,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--context-root` | — | Repo/build-context root used to stage Dockerfile `COPY` sources for monorepo-authored local tasks |
 | `--base-image-override` | — | Rewrite task Dockerfile `FROM` images on the runtime task copy; use for reproducing runs whose base image moved namespaces |
+| `--separate-verifier` | off | Run each verifier in a fresh sandbox built from the task image that receives only the frozen workspace, as if every task set `[verifier].sandbox_mode = "separate"`; Docker and Daytona only (see [sandbox hardening](../sandbox-hardening.md#separate-verifier-sandbox)) |
 | `--skills-dir` | — | Advanced custom skills directory; valid only with `--skill-mode with-skill`. Omit it to use each task's `environment/skills`. |
 | `--skill-mode` | `no-skill` | Skill mode: `no-skill`, `with-skill`, or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |

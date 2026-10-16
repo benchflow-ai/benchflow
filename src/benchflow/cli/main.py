@@ -446,6 +446,17 @@ def eval_run(
             ),
         ),
     ] = None,
+    separate_verifier: Annotated[
+        bool,
+        typer.Option(
+            "--separate-verifier",
+            help=(
+                "Run each verifier in a fresh sandbox built from the task image "
+                "that receives only the frozen workspace, as if every task set "
+                "[verifier].sandbox_mode = 'separate'. Docker and Daytona only."
+            ),
+        ),
+    ] = False,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy"),
@@ -677,6 +688,7 @@ def eval_run(
         sandbox_setup_timeout=sandbox_setup_timeout,
         context_root=context_root,
         base_image_override=base_image_override,
+        separate_verifier=separate_verifier,
         skills_dir=skills_dir,
         skill_mode=skill_mode,
         skill_creator_dir=skill_creator_dir,
@@ -1019,6 +1031,10 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # run-config file was a no-op.
         if plan.eval_config_override is not None:
             j._config.config_override = plan.eval_config_override
+        # --separate-verifier only ever strengthens isolation, so it wins over
+        # a config file that leaves it off.
+        if plan.request.separate_verifier:
+            j._config.separate_verifier = True
     except subprocess.CalledProcessError as e:
         # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
         # as a raw traceback — it is not a config-parse error, so give it its own

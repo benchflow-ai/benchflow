@@ -501,6 +501,7 @@ class EvaluationConfig:
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
     base_image_override: str | None = None
+    separate_verifier: bool = False
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = SKILL_MODE_NO_SKILL
@@ -910,6 +911,7 @@ class Evaluation:
             ),
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
+            separate_verifier=bool(raw.get("separate_verifier", False)),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1007,6 +1009,7 @@ class Evaluation:
             ),
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
+            separate_verifier=bool(raw.get("separate_verifier", False)),
             include_tasks=include,
             exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1284,6 +1287,7 @@ class Evaluation:
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             base_image_override=cfg.base_image_override,
+            separate_verifier=cfg.separate_verifier,
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1345,6 +1349,7 @@ class Evaluation:
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             base_image_override=cfg.base_image_override,
+            separate_verifier=cfg.separate_verifier,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,

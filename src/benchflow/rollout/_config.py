@@ -166,6 +166,9 @@ class RolloutConfig:
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
     skip_verify: bool = False
+    # Run the verifier in a fresh sandbox that receives only the frozen
+    # workspace, whatever the task declares (``--separate-verifier``).
+    separate_verifier: bool = False
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     purpose: Literal["task", "reviewer"] = "task"
     parent_rollout: str | None = None
