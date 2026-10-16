@@ -80,11 +80,15 @@ def _computed_deadline_sec(cfg: RolloutConfig) -> float:
     ``timeout_sec`` overrides, user-loop rounds (each round runs one prompt
     plus a soft verify), and :func:`effective_install_timeout` — the single
     source of truth for the install budget — per distinct agent.
+
+    Task budgets are read after the run's ``config_override`` is merged in, as
+    ``Rollout.setup()`` does, so a budget the run raises raises the backstop.
     """
+    from benchflow._utils.config_override import apply_config_override
     from benchflow.agents.install import effective_install_timeout
     from benchflow.task import Task
 
-    tcfg = Task(cfg.task_path).config
+    tcfg = apply_config_override(Task(cfg.task_path).config, cfg.config_override)
     agent_default = float(cfg.timeout or tcfg.agent.timeout_sec or 900.0)
     verifier_sec = float(tcfg.verifier.timeout_sec or 900.0)
     build_sec = float(tcfg.sandbox.build_timeout_sec or 600.0)
