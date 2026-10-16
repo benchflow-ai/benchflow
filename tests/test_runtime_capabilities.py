@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from benchflow._utils.config_override import apply_config_override
 from benchflow.sandbox.setup import _create_environment
 from benchflow.task import (
     Task,
@@ -389,6 +390,52 @@ def test_sandbox_launch_accepts_absolute_workdir(tmp_path: Path) -> None:
 
     docker_sandbox.assert_called_once()
     assert result is docker_sandbox.return_value
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "overlay", "rejected_path"),
+    [
+        ("  gpus: 1", {"sandbox": {"gpus": 0}}, None),
+        ("", {"sandbox": {"gpus": 1}}, "sandbox.gpus"),
+        (
+            "",
+            # The helper's task is no-network, so lift allow_internet too.
+            {
+                "sandbox": {
+                    "network_mode": "allowlist",
+                    "allowed_hosts": ["example.com"],
+                    "allow_internet": True,
+                }
+            },
+            "sandbox.network_mode",
+        ),
+    ],
+    ids=["override-removes-gpus", "override-adds-gpus", "override-adds-allowlist"],
+)
+def test_sandbox_launch_checks_config_override(
+    tmp_path: Path, frontmatter: str, overlay: dict, rejected_path: str | None
+) -> None:
+    """The launch gate checks the config the run executes, after
+    ``Rollout.setup()`` merges ``--config-override`` into ``task.config``.
+
+    Guards the fix from PR #1162 against the gap between the launch gate (9d44ca19, #665),
+    which checked the config parsed from task.md, and ``--config-override``
+    (0a645223, #790), which only patches ``task.config``.
+    """
+    task_dir = tmp_path / "override-task"
+    _write_task_md(task_dir, frontmatter=frontmatter)
+    task = Task(task_dir)
+    task.config = apply_config_override(task.config, overlay)
+
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_sandbox:
+        if rejected_path is None:
+            _create_environment("docker", task, task_dir, "trial", MagicMock())
+            docker_sandbox.assert_called_once()
+        else:
+            with pytest.raises(UnsupportedTaskFeatureError) as exc_info:
+                _create_environment("docker", task, task_dir, "trial", MagicMock())
+            assert {f.path for f in exc_info.value.features} == {rejected_path}
+            assert docker_sandbox.call_count == 0
 
 
 def test_sandbox_launch_rejects_unsafe_workdir_before_backend_construction(

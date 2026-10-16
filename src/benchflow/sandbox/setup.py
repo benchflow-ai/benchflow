@@ -9,6 +9,7 @@ import shlex
 import shutil
 import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -867,6 +868,10 @@ def _validate_task_runtime_for_launch(
     config = getattr(task, "config", None)
     if isinstance(document, TaskDocument):
         runtime_task: TaskDocument | TaskConfig = document
+        # Rollout.setup() merges the run's config override into task.config
+        # only; check that config, not the one parsed from task.md.
+        if isinstance(config, TaskConfig) and config is not document.config:
+            runtime_task = replace(document, config=config)
     elif isinstance(config, TaskConfig):
         runtime_task = config
     else:
