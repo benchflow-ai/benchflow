@@ -134,6 +134,9 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@2.0.1"
+# pi-acp 0.0.34 requires Pi >=0.81.0 and the maintained package name.
+_PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent@0.81.1"
+_PI_ACP_PACKAGE = "pi-acp@0.0.34"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -644,8 +647,8 @@ AGENTS: dict[str, AgentConfig] = {
         description="Pi agent via ACP",
         skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
-            f"{_js_agent_install('pi', '@mariozechner/pi-coding-agent')} && "
-            f"{_js_agent_install('pi-acp', 'pi-acp')} && "
+            f"{_js_agent_install('pi', _PI_CODING_AGENT_PACKAGE)} && "
+            f"{_js_agent_install('pi-acp', _PI_ACP_PACKAGE)} && "
             # Deploy launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
             + _install_python_script(
                 f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher", _PI_LAUNCHER

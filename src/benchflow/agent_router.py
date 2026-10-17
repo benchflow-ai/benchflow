@@ -782,9 +782,8 @@ def run_verify_action(
     if report.passed:
         return
     if report.verdict == "insufficient-evidence":
-        # No parity data recorded yet — nothing diverged, so do not emit a
-        # "parity could not be closed" divergence issue draft. confidence_line
-        # above already told the author to run parity_test.py and record results.
+        # Evidence is absent or coverage is incomplete, so do not emit a
+        # divergence issue draft. confidence_line above explains the gap.
         raise typer.Exit(1)
     issue = render_divergence_issue(report)
     if issue_out is not None:
