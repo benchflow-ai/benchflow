@@ -119,7 +119,7 @@ Skill eval: my-skill (1 cases)
 
 `bench skills eval` runs real agents. The selected agent must have whatever
 provider credentials or subscription auth it normally needs, and LLM-judge
-cases also need a supported judge key available in the environment. Exact-match
+cases also need the API key for the provider of `judge_model`. Exact-match
 cases can avoid the judge model, but they still need a working agent.
 For Codex agents, that auth can be `OPENAI_API_KEY`, `CODEX_API_KEY`,
 `CODEX_ACCESS_TOKEN`, or a host `~/.codex/auth.json` login.
@@ -131,6 +131,22 @@ When a supported judge key is present on the host (`GOOGLE_API_KEY`,
 reference it through `[verifier.env]` template syntax such as
 `${GEMINI_API_KEY}`. Secret values are resolved at verifier runtime and are not
 written into generated task files.
+
+The judge scores with `judge_model` and nothing else. Its provider comes from
+the model id, using the same prefixes as `benchflow.rewards`:
+
+| `judge_model` | Provider | Key |
+|---|---|---|
+| `claude-*`, `anthropic/...` | Anthropic | `ANTHROPIC_API_KEY` |
+| `gpt-*`, `o1*`, `o3*`, `o4*`, `openai/...` | OpenAI | `OPENAI_API_KEY` |
+| `gemini*`, `google/...`, `gemini/...` | Google | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
+
+Any other id is rejected. If that provider's key or SDK is missing, its call
+fails, or its reply carries no verdict (no text, a stop other than a normal
+finish, not exactly one JSON verdict object, or a `score` that is not a number
+from 0 to 1), the case records a verifier error rather than a 0.0. No other
+provider or model is tried. `verifier/judge_result.json` names the
+`judge_provider` and `judge_model` that produced each score.
 
 The `oracle` agent is useful for generic task and sandbox smoke tests, but it is
 not a replacement for skill evaluation. Skill-eval tasks are generated from
