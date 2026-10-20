@@ -395,6 +395,30 @@ async def test_run_auth_failure_sets_provisional_error_before_cleanup(
     assert rollout._provider_auth_status_cached == 401
 
 
+@pytest.mark.asyncio
+async def test_run_missing_credential_error_is_clean_provider_auth(
+    tmp_path, monkeypatch, caplog
+):
+    """Guards the fix from PR #918 / Linear ENG-257: missing credentials avoid tracebacks."""
+    from benchflow._utils.scoring import PROVIDER_AUTH, classify_error
+    from benchflow.agents.env import MissingAgentCredentialError
+
+    rollout = _auth_rollout(tmp_path, usage_source="unavailable")
+    rollout._rollout_dir = None
+    missing = MissingAgentCredentialError(
+        "GEMINI_API_KEY required for model 'gemini/gemini-3.1-flash' but not set."
+    )
+
+    monkeypatch.setattr(rollout, "setup", AsyncMock(side_effect=missing))
+    caplog.set_level("ERROR", logger="benchflow.rollout")
+
+    result = await rollout.run()
+
+    assert result.error == f"Missing credential: {missing}"
+    assert classify_error(result.error) == PROVIDER_AUTH
+    assert "Run failed" not in caplog.text
+
+
 def test_enforcement_still_fires_when_no_error_and_usage_missing(tmp_path):
     """Negative control for FIX 1 (PR #564 / issue #546): on a clean run with no
     ACP error and no captured provider usage, the legitimate required-usage
