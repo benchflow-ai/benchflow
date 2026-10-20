@@ -627,6 +627,10 @@ VERIFIER_ENV: dict[str, str] = {
     # Prevent Django/Celery from importing an agent-controlled module at startup.
     "DJANGO_SETTINGS_MODULE": "",
     "CELERY_CONFIG_MODULE": "",
+    # Harbor-style test.sh scripts locate the tests folder through $TEST_DIR.
+    # Unset, `source $TEST_DIR/x.sh` resolves to /x.sh and `set -u` aborts.
+    # Not re-pinned in _build_verifier_env: a task's verifier env may override.
+    "TEST_DIR": "/tests",
 }
 
 _SAFE_VERIFIER_PATH = VERIFIER_ENV["PATH"]

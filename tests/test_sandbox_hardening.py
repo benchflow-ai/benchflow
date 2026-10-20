@@ -182,6 +182,21 @@ class TestHardenSequence:
         assert "-p no:cacheprovider" in addopts
 
     @pytest.mark.asyncio
+    async def test_test_dir_defaults_and_task_override(self, harness):
+        """TEST_DIR=/tests by default (#1179); a task's verifier env wins."""
+        sdk, env, task, tp = harness
+        mock_v = MagicMock()
+        mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
+        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+            await sdk._verify(env, task, tp, {})
+        assert task.config.verifier.env["TEST_DIR"] == "/tests"
+
+        task.config.verifier.env = {"TEST_DIR": "/custom/tests"}
+        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+            await sdk._verify(env, task, tp, {})
+        assert task.config.verifier.env["TEST_DIR"] == "/custom/tests"
+
+    @pytest.mark.asyncio
     async def test_task_env_overrides_win(self, harness):
         """Task-level verifier env vars override defaults except pinned invariants."""
         from benchflow.sandbox.lockdown import VERIFIER_ENV
@@ -892,6 +907,7 @@ class TestVerifierEnv:
             "COVERAGE_PROCESS_START",
             "DJANGO_SETTINGS_MODULE",
             "CELERY_CONFIG_MODULE",
+            "TEST_DIR",
         }
 
         assert "-c /dev/null" in addopts

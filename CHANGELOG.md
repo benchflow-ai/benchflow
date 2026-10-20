@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The verifier environment sets `TEST_DIR=/tests`.** Registry `test.sh`
+  scripts read `$TEST_DIR`; unset, DevEval's `source $TEST_DIR/setup-uv-pytest.sh`
+  resolved to `/setup-uv-pytest.sh` (no reward) and MLGym-Bench's
+  `$TEST_DIR/results.json` aborted under `set -u` (#1179). A task's
+  `[verifier.env]` can still override it.
+
 ## 0.7.11 — 2026-10-16
 
 ### Added
