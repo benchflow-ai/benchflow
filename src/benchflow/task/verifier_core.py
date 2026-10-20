@@ -26,9 +26,12 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from benchflow.rewards.validation import (
+    UNBOUNDED_REWARD_RANGE,
     apply_aggregate_policy,
     declared_reward_range,
     is_valid_reward_number,
+    move_non_numeric_extras_to_metadata,
+    record_out_of_range,
     reward_lenient_from_env,
     reward_range_phrase,
     validate_reward_map,
@@ -115,7 +118,22 @@ class Verifier:
         # (reward.txt / reward.json) — judge and ORS scores stay [0, 1].
         self._reward_range = declared_reward_range(task)
 
-    def _parse_reward_text(self) -> dict[str, float | int]:
+    def _flag_out_of_range(self, rewards: dict[str, Any]) -> dict[str, Any]:
+        # A task that declares ``[verifier] reward_range`` opted into enforcement;
+        # only undeclared tasks keep an out-of-range reward and flag it.
+        if self._reward_range is not None:
+            return rewards
+        flagged = record_out_of_range(rewards)
+        if flagged != rewards:
+            self._logger.warning(
+                "reward outside %s kept as written and recorded in "
+                "metadata.out_of_range: %s",
+                reward_range_phrase(None),
+                ", ".join(flagged["metadata"]["out_of_range"]),
+            )
+        return flagged
+
+    def _parse_reward_text(self) -> dict[str, Any]:
         if self._rollout_paths.reward_text_path.stat().st_size == 0:
             raise RewardFileEmptyError(
                 f"Reward file is empty at {self._rollout_paths.reward_text_path}"
@@ -126,18 +144,25 @@ class Verifier:
             raise VerifierOutputParseError(
                 f"Failed to parse rewards from text file {self._rollout_paths.reward_text_path}"
             ) from e
-        if not is_valid_reward_number(reward, reward_range=self._reward_range):
+        if not is_valid_reward_number(
+            reward, reward_range=self._reward_range or UNBOUNDED_REWARD_RANGE
+        ):
             raise VerifierOutputParseError(
                 f"Reward text file {self._rollout_paths.reward_text_path} "
-                "must contain a finite numeric reward "
-                f"{reward_range_phrase(self._reward_range)}"
+                "must contain a finite numeric reward"
+                + (
+                    f" {reward_range_phrase(self._reward_range)}"
+                    if self._reward_range
+                    else ""
+                )
             )
-        return {"reward": reward}
+        return self._flag_out_of_range({"reward": reward})
 
     def _parse_reward_json(
         self,
         *,
         aggregate_policy: dict[str, Any] | None = None,
+        text_reward: float | None = None,
     ) -> dict[str, Any]:
         if self._rollout_paths.reward_json_path.stat().st_size == 0:
             raise RewardFileEmptyError(
@@ -156,14 +181,28 @@ class Verifier:
                 "must contain an object with numeric rewards"
             )
 
+        if (
+            text_reward is not None
+            and "reward" not in rewards
+            and not _has_aggregate_declaration(rewards, aggregate_policy)
+        ):
+            # The score lives in reward.txt; the JSON only carries diagnostics.
+            rewards = {"reward": text_reward, **rewards}
+        rewards, moved = move_non_numeric_extras_to_metadata(rewards)
+        if moved:
+            self._logger.warning(
+                "reward JSON: kept non-numeric keys as metadata: %s",
+                ", ".join(moved),
+            )
         try:
-            return validate_reward_map(
+            parsed = validate_reward_map(
                 rewards,
                 source="reward JSON",
                 aggregate_policy=aggregate_policy,
                 lenient=reward_lenient_from_env(),
-                reward_range=self._reward_range,
+                reward_range=self._reward_range or UNBOUNDED_REWARD_RANGE,
             )
+            return self._flag_out_of_range(parsed)
         except ValueError as e:
             raise VerifierOutputParseError(
                 f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
@@ -175,7 +214,14 @@ class Verifier:
         aggregate_policy: dict[str, Any] | None = None,
         strict_aggregate: bool = False,
     ) -> dict[str, Any]:
-        rewards = self._parse_reward_json(aggregate_policy=aggregate_policy)
+        text_reward = (
+            self._parse_reward_text()["reward"]
+            if self._rollout_paths.reward_text_path.exists()
+            else None
+        )
+        rewards = self._parse_reward_json(
+            aggregate_policy=aggregate_policy, text_reward=text_reward
+        )
         if strict_aggregate:
             try:
                 rewards = apply_aggregate_policy(
@@ -239,7 +285,7 @@ class Verifier:
                     json.dumps(rewards, indent=2, allow_nan=False)
                 )
                 return rewards
-            return {"reward": text_reward, **rewards}
+            return self._flag_out_of_range({"reward": text_reward, **rewards})
         if not math.isclose(float(json_reward), float(text_reward), abs_tol=1e-9):
             raise VerifierOutputParseError(
                 f"Reward JSON file {self._rollout_paths.reward_json_path} "

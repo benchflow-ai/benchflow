@@ -702,7 +702,6 @@ class TestTestScriptStillDefault:
             ({"reward": float("nan")}, "missing numeric 'reward'"),
             ({"reward": float("inf")}, "missing numeric 'reward'"),
             ({"reward": True}, "missing numeric 'reward'"),
-            ({"reward": 1.2}, "missing numeric 'reward'"),
             ({"reward": 0.5, "extra": float("nan")}, "invalid reward value"),
         ],
     )

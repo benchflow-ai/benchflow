@@ -236,16 +236,16 @@ class TestVerifierRewardText:
         task = _task_with_config({"reward_range": [-1.0, 1.0]})
         assert _verifier(task, reward_txt)._parse_reward_text() == {"reward": -1.0}
 
-    def test_undeclared_task_still_rejects_negative_reward_txt(
+    def test_undeclared_task_keeps_and_flags_negative_reward_txt(
         self, tmp_path: Path
     ) -> None:
+        """Issue #1178: an undeclared task no longer discards an out-of-range reward."""
         reward_txt = tmp_path / "reward.txt"
         reward_txt.write_text("-1.0")
         # MagicMock task: no usable declaration -> canonical [0, 1].
-        with pytest.raises(
-            VerifierOutputParseError, match=re.escape("between 0.0 and 1.0")
-        ):
-            _verifier(MagicMock(), reward_txt)._parse_reward_text()
+        rewards = _verifier(MagicMock(), reward_txt)._parse_reward_text()
+        assert rewards["reward"] == -1.0
+        assert rewards["metadata"]["out_of_range"] == {"reward": -1.0}
 
     def test_declared_range_still_bounds_reward_txt(self, tmp_path: Path) -> None:
         reward_txt = tmp_path / "reward.txt"
