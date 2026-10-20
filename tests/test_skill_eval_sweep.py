@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -172,6 +175,62 @@ class TestJudgeResultCopy:
         assert "BENCHFLOW_REWARD_DETAILS_JSON" in test_sh
         assert "$VERIFIER_DIR/judge_result.json" in test_sh
         assert "/logs/verifier/judge_result.json" in test_sh
+
+
+# Issue #897 — exact-match judge delimiter handling
+
+
+class TestExactMatchJudgeDelimiters:
+    """Guards #897: exact-match judge handles code-like answer delimiters."""
+
+    @pytest.mark.parametrize(
+        ("content", "expected_reward"),
+        [
+            ("The method is getPageCount().\n", 1.0),
+            ("The method is getPageCount()Wrapper.\n", 0.0),
+        ],
+    )
+    def test_non_word_suffix_ground_truth_uses_word_char_delimiters(
+        self, tmp_path, content, expected_reward
+    ):
+        """Guards PR #900 / issue #897 against punctuated exact answers."""
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        ds = EvalDataset(
+            skill_name="method-skill",
+            skill_dir=skill_dir,
+            cases=[
+                EvalCase(
+                    id="case-001",
+                    question="Which method returns the page count?",
+                    ground_truth="getPageCount()",
+                )
+            ],
+        )
+        task = generate_tasks(ds, tmp_path / "tasks", with_skill=False)[0]
+        verifier_dir = TaskPaths(task).tests_dir
+
+        agent_log_dir = tmp_path / "logs" / "agent"
+        agent_log_dir.mkdir(parents=True)
+        (agent_log_dir / "answer.txt").write_text(content)
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        subprocess.run(
+            [sys.executable, str(verifier_dir / "judge.py")],
+            check=True,
+            env={
+                **os.environ,
+                "BENCHFLOW_VERIFIER_DIR": str(verifier_dir),
+                "BENCHFLOW_AGENT_LOG_DIR": str(agent_log_dir),
+                "BENCHFLOW_WORKSPACE": str(workspace),
+            },
+            text=True,
+            capture_output=True,
+        )
+
+        reward = json.loads((verifier_dir / "reward.json").read_text())
+        assert reward == {"reward": expected_reward}
 
 
 # Issue #424 — evals.json schema validation
