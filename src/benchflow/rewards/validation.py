@@ -137,6 +137,88 @@ def reward_lenient_from_env() -> bool:
     return os.environ.get(_REWARD_LENIENT_ENV, "").strip().lower() in _TRUTHY
 
 
+_SPECIAL_REWARD_KEYS = frozenset(
+    {"reward", "rubric", "metrics", "space", "granularity", "aggregate"}
+)
+
+
+# Finite-only bounds: used to accept an out-of-range reward so it can be kept
+# and flagged (see :func:`record_out_of_range`) instead of discarding the trial.
+UNBOUNDED_REWARD_RANGE: RewardRange = (-math.inf, math.inf)
+
+
+def move_non_numeric_extras_to_metadata(
+    rewards: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Move non-numeric, unrecognized top-level keys under ``metadata``.
+
+    Verifiers commonly emit diagnostics next to the score (``"merge_ok": true``,
+    ``"strategy": "union"``). Those are not rewards, so instead of failing the
+    whole map they are preserved as metadata. Numeric values stay put and are
+    read as reward values, and a non-mapping ``metadata`` value is left alone.
+    Returns the new map and the moved key names.
+    """
+    existing = rewards.get("metadata")
+    if "metadata" in rewards and not isinstance(existing, Mapping):
+        return dict(rewards), []
+    kept: dict[str, Any] = {}
+    moved: dict[str, Any] = {}
+    for key, value in rewards.items():
+        name = str(key)
+        is_number = isinstance(value, int | float) and not isinstance(value, bool)
+        if name in _SPECIAL_REWARD_KEYS or name in _STRUCTURED_REWARD_KEYS or is_number:
+            kept[name] = value
+        else:
+            moved[name] = value
+    if not moved:
+        return kept, []
+    kept["metadata"] = {**(existing or {}), **moved}
+    return kept, list(moved)
+
+
+def record_out_of_range(
+    rewards: Mapping[str, Any],
+    reward_range: RewardRange | None = None,
+) -> dict[str, Any]:
+    """Record finite reward values outside the range under ``metadata.out_of_range``.
+
+    Covers the scalar ``reward``, other numeric top-level keys, and ``metrics``
+    entries. Values are kept as written (not clamped); the map is returned
+    unchanged when everything is in range.
+    """
+    lo, hi = reward_range or DEFAULT_REWARD_RANGE
+
+    def outside(value: Any) -> bool:
+        return (
+            isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and not lo <= float(value) <= hi
+        )
+
+    flagged: dict[str, Any] = {}
+    for key, value in rewards.items():
+        name = str(key)
+        if name == "metrics" and isinstance(value, Mapping):
+            flagged.update({f"metrics.{k}": v for k, v in value.items() if outside(v)})
+        elif (
+            (name not in _SPECIAL_REWARD_KEYS and name not in _STRUCTURED_REWARD_KEYS)
+            or name == "reward"
+        ) and outside(value):
+            flagged[name] = value
+    if not flagged:
+        return dict(rewards)
+    metadata = rewards.get("metadata")
+    base = dict(metadata) if isinstance(metadata, Mapping) else {}
+    return {**rewards, "metadata": {**base, "out_of_range": flagged}}
+
+
+def has_out_of_range(rewards: Mapping[str, Any] | None) -> bool:
+    """Return True when ``rewards`` carries a :func:`record_out_of_range` flag."""
+    metadata = (rewards or {}).get("metadata")
+    return isinstance(metadata, Mapping) and bool(metadata.get("out_of_range"))
+
+
 def _lenient_reward_alias(
     rewards: Mapping[str, Any],
     *,

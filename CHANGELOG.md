@@ -29,6 +29,14 @@
 
 ### Fixed
 
+- **Extra `reward.json` fields and out-of-range rewards no longer discard the
+  trial.** Non-numeric extras (CooperBench's `merge_ok`, `strategy`; KUMO's
+  `answer`, `is_exact_match`) are kept under `metadata` with a warning, and
+  `reward.txt` supplies the reward when the JSON only carries diagnostics
+  (KUMO). On tasks that do not declare `[verifier] reward_range`, a finite
+  reward outside [0, 1] (AlgoTune speedups, KUMO's `seed`) is kept as written
+  and recorded in `metadata.out_of_range` instead of ending as a verifier
+  error; declared ranges are still enforced (#1178).
 - **The verifier ignores pip's and git's per-user config under `/root`.**
   The verifier runs as root with `HOME=/root`, the agent's workspace in many
   tasks, so `~/.config/pip/pip.conf` or `~/.gitconfig` there were whatever the
