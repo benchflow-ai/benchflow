@@ -1828,3 +1828,123 @@ class TestSandboxFailureModes:
         path = await _trusted_verifier_path(env, sandbox_user=None, workspace=None)
         # Malformed JSON ⇒ extras treated as empty ⇒ result equals safe PATH
         assert path == _SAFE_VERIFIER_PATH
+
+
+class TestTrustedPathWithoutPython:
+    """Images without python3 keep root-owned tool dirs on the verifier PATH (#1174)."""
+
+    def test_probe_parser_applies_ownership_policy(self):
+        from benchflow.sandbox.lockdown import _parse_trusted_path_probe
+
+        out = "\n".join(
+            [
+                "/usr/local/cargo/bin\t/usr/local/cargo/bin\t0 755",
+                "/opt/gw\t/opt/gw\t0 775",
+                "/opt/user\t/opt/user\t1000 755",
+                "/tmp/x\t/tmp/x\t0 755",
+                "/usr/local/bin\t/usr/local/bin\t0 755",
+                "/link\t/tmp/real\t0 755",
+                "garbage",
+            ]
+        )
+        assert _parse_trusted_path_probe(out, ("/tmp",)) == ["/usr/local/cargo/bin"]
+
+    def test_probe_cmd_skips_relative_and_quotes(self):
+        from benchflow.sandbox.lockdown import _trusted_path_probe_cmd
+
+        assert _trusted_path_probe_cmd("bin::") is None
+        cmd = _trusted_path_probe_cmd("/a b:rel:/c")
+        assert "'/a b'" in cmd and "rel" not in cmd.split(" sh ", 1)[1]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_sh_probe_when_python_missing(self):
+        from benchflow.sandbox.lockdown import _trusted_verifier_path
+
+        async def fake_exec(cmd, user=None, timeout_sec=None):
+            r = MagicMock()
+            r.stderr = ""
+            if cmd == "printenv PATH":
+                r.stdout, r.exit_code = "/usr/local/cargo/bin:/usr/bin", 0
+            elif cmd.startswith("python3"):
+                r.stdout, r.exit_code = "", 127
+            else:
+                r.stdout = "/usr/local/cargo/bin\t/usr/local/cargo/bin\t0 755\n"
+                r.exit_code = 0
+            return r
+
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=fake_exec)
+        path = await _trusted_verifier_path(env, sandbox_user=None, workspace=None)
+        assert path.split(":")[0] == "/usr/local/cargo/bin"
+
+
+class TestHardenWritablePathDirs:
+    """Root-owned but group/world-writable image tool dirs are hardened, not dropped.
+
+    rust:* images ship /usr/local/cargo/bin (and the binaries in it) at 777.
+    """
+
+    def test_harden_cmd_skips_safe_relative_and_quotes(self):
+        from benchflow.sandbox.lockdown import _harden_path_dirs_cmd
+
+        assert _harden_path_dirs_cmd("/usr/bin:/bin:rel::", ()) is None
+        cmd = _harden_path_dirs_cmd("/a b:/usr/bin:/c", ("/home/agent", "/work"))
+        tail = cmd.split(" sh ", 1)[1]
+        assert (
+            "/home/agent:/work" in tail and "'/a b'" in tail and "/usr/bin" not in tail
+        )
+
+    def test_log_reports_hardened_and_refused(self, caplog):
+        from benchflow.sandbox.lockdown import _log_path_hardening
+
+        with caplog.at_level("INFO", logger="benchflow.sandbox.lockdown"):
+            _log_path_hardening(
+                "hardened\t/usr/local/cargo/bin\t/usr/local/cargo/bin /usr/local/cargo\n"
+                "refused\t/opt/u/bin\t/opt/u/bin/x is not root-owned\n"
+                "junk\n"
+            )
+        levels = {r.levelname: r.getMessage() for r in caplog.records}
+        assert "/usr/local/cargo/bin" in levels["INFO"]
+        assert (
+            "/opt/u/bin" in levels["WARNING"] and "not root-owned" in levels["WARNING"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_hardening_runs_before_validation_with_blocked_prefixes(self):
+        from benchflow.sandbox.lockdown import _trusted_verifier_path
+
+        calls: list[str] = []
+
+        async def fake_exec(cmd, user=None, timeout_sec=None):
+            calls.append(cmd)
+            r = MagicMock()
+            r.stderr = ""
+            r.exit_code = 0
+            r.stdout = (
+                "/usr/local/cargo/bin:/usr/bin" if cmd == "printenv PATH" else "[]"
+            )
+            return r
+
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=fake_exec)
+        await _trusted_verifier_path(env, sandbox_user="agent", workspace="/work")
+        harden = next(i for i, c in enumerate(calls) if "chmod go-w" in c)
+        validate = next(i for i, c in enumerate(calls) if c.startswith("python3"))
+        assert harden < validate
+        assert "/home/agent" in calls[harden] and "/work" in calls[harden]
+
+    @pytest.mark.asyncio
+    async def test_hardening_failure_is_not_fatal(self):
+        from benchflow.sandbox.lockdown import _trusted_verifier_path
+
+        async def fake_exec(cmd, user=None, timeout_sec=None):
+            r = MagicMock()
+            r.stderr = "boom"
+            r.exit_code = 1 if "chmod go-w" in cmd else 0
+            r.stdout = "/opt/x/bin" if cmd == "printenv PATH" else "[]"
+            return r
+
+        env = MagicMock()
+        env.exec = AsyncMock(side_effect=fake_exec)
+        path = await _trusted_verifier_path(env, sandbox_user=None, workspace=None)
+        assert path.endswith("/bin")

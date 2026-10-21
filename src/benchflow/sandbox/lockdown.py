@@ -788,6 +788,155 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
     )
 
 
+def _under_path(path: str, prefix: str) -> bool:
+    prefix = prefix.rstrip("/")
+    return path == prefix or path.startswith(prefix + "/")
+
+
+# POSIX-sh probe for images without python3 (Rust, Java, Go-only). Prints
+# "<entry>\t<physical path>\t<uid> <octal mode>" per existing directory; the
+# policy decision is made host-side by _parse_trusted_path_probe.
+_TRUSTED_PATH_PROBE_SH = (
+    'for d in "$@"; do '
+    'r=$(cd -P -- "$d" 2>/dev/null && pwd -P) || continue; '
+    's=$(stat -c "%u %a" -- "$r" 2>/dev/null) || continue; '
+    'printf "%s\\t%s\\t%s\\n" "$d" "$r" "$s"; '
+    "done"
+)
+
+
+def _trusted_path_probe_cmd(raw_path: str) -> str | None:
+    """Build a python-free command that stats each candidate PATH entry."""
+    entries = [
+        e
+        for e in (p.strip() for p in raw_path.split(":"))
+        if e.startswith("/") and "\x00" not in e and "\n" not in e
+    ]
+    if not entries:
+        return None
+    args = " ".join(shlex.quote(e) for e in dict.fromkeys(entries))
+    return f"sh -c {shlex.quote(_TRUSTED_PATH_PROBE_SH)} sh {args}"
+
+
+def _parse_trusted_path_probe(
+    stdout: str, blocked_prefixes: tuple[str, ...]
+) -> list[str]:
+    """Apply the root-owned, not group/world-writable policy to probe output."""
+    trusted: list[str] = []
+    seen: set[str] = set(_SAFE_VERIFIER_PATH_PARTS)
+    for line in stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 3:
+            continue
+        entry, real, stat_out = fields
+        try:
+            uid_s, mode_s = stat_out.split()
+            uid, mode = int(uid_s), int(mode_s, 8)
+        except ValueError:
+            continue
+        if entry in seen or uid != 0 or mode & 0o022:
+            continue
+        if any(_under_path(real, prefix) for prefix in blocked_prefixes):
+            continue
+        seen.add(entry)
+        trusted.append(entry)
+    return trusted
+
+
+# POSIX-sh step run before PATH validation. Official language images ship tool
+# directories that are root-owned but group/world writable (rust:* has
+# /usr/local/cargo{,/bin} at 777). The agent could swap in a fake binary there,
+# so the trust rule rejects them and the verifier loses cargo. Instead of
+# dropping such a directory, strip group/world write from it, its ancestors and
+# the files inside (as root), and trust it only if nothing inside is owned by
+# someone other than root (rust:* ships the cargo binaries themselves at 777).
+# Prints "hardened|refused\t<entry>\t<detail>" per candidate directory.
+_HARDEN_PATH_DIRS_SH = r"""
+blocked=$1; shift
+for d in "$@"; do
+  r=$(cd -P -- "$d" 2>/dev/null && pwd -P) || continue
+  case "$r" in *"
+"*) continue;; esac
+  skip=0; oifs=$IFS; IFS=:
+  for b in $blocked; do
+    b=${b%/}
+    [ -n "$b" ] || continue
+    case "$r" in "$b"|"$b"/*) skip=1;; esac
+  done
+  IFS=$oifs
+  [ "$skip" = 0 ] || continue
+  need=""; why=""; p=$r
+  while :; do
+    s=$(stat -c "%u %a" -- "$p" 2>/dev/null) || { why="cannot stat $p"; break; }
+    u=${s% *}; m=${s#* }
+    if [ "$u" != 0 ]; then why="$p is not root-owned"; break; fi
+    if [ $((0$m & 18)) -ne 0 ] && { [ "$p" = "$r" ] || [ $((0$m & 512)) -eq 0 ]; }; then
+      need="$need $p"
+    fi
+    [ "$p" = / ] && break
+    p=$(dirname -- "$p")
+  done
+  if [ -z "$why" ] && [ -n "$need" ]; then
+    bad=$(find -L "$r" -mindepth 1 -maxdepth 1 ! -user root 2>/dev/null | head -n 1)
+    [ -z "$bad" ] || why="$bad is not root-owned"
+  fi
+  if [ -n "$why" ]; then
+    printf "refused\t%s\t%s\n" "$d" "$why"
+  elif [ -n "$need" ]; then
+    # shellcheck disable=SC2086
+    if chmod go-w $need 2>/dev/null &&
+      find -L "$r" -mindepth 1 -maxdepth 1 \( -perm -020 -o -perm -002 \) \
+        -exec chmod go-w {} \; 2>/dev/null; then
+      printf "hardened\t%s\t%s\n" "$d" "$need"
+    else
+      printf "refused\t%s\tchmod go-w failed on:%s\n" "$d" "$need"
+    fi
+  fi
+done
+""".strip()
+
+
+def _harden_path_dirs_cmd(
+    raw_path: str, blocked_prefixes: tuple[str, ...]
+) -> str | None:
+    """Build the root-run command that hardens writable image PATH dirs."""
+    entries = [
+        e
+        for e in (p.strip() for p in raw_path.split(":"))
+        if e.startswith("/")
+        and "\x00" not in e
+        and "\n" not in e
+        and e not in _SAFE_VERIFIER_PATH_PARTS
+    ]
+    if not entries:
+        return None
+    args = " ".join(shlex.quote(e) for e in dict.fromkeys(entries))
+    return (
+        f"sh -c {shlex.quote(_HARDEN_PATH_DIRS_SH)} sh "
+        f"{shlex.quote(':'.join(blocked_prefixes))} {args}"
+    )
+
+
+def _log_path_hardening(stdout: str) -> None:
+    for line in stdout.splitlines():
+        kind, _, rest = line.partition("\t")
+        entry, _, detail = rest.partition("\t")
+        if kind == "hardened":
+            logger.info(
+                "Verifier PATH dir %s was group/world writable; removed write "
+                "access from:%s",
+                entry,
+                detail,
+            )
+        elif kind == "refused":
+            logger.warning(
+                "Verifier PATH dir %s not trusted (%s); it will not be on the "
+                "verifier PATH.",
+                entry,
+                detail,
+            )
+
+
 async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     """Auto-discover pytest plugins from the interpreter's own packages.
 
@@ -918,16 +1067,42 @@ async def _trusted_verifier_path(
     raw_path = path_result.stdout or ""
     if not raw_path.strip():
         return _SAFE_VERIFIER_PATH
-    cmd = _trusted_path_extras_cmd(
-        raw_path, _blocked_verifier_path_prefixes(sandbox_user, workspace)
-    )
+    blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
+    harden = _harden_path_dirs_cmd(raw_path, blocked)
+    if harden is not None:
+        harden_result = await env.exec(
+            harden, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+        )
+        if _exec_return_code(harden_result) == 0:
+            _log_path_hardening(harden_result.stdout or "")
+        else:
+            logger.warning(
+                "Could not harden image PATH directories.%s",
+                _exec_failure_detail(harden_result),
+            )
+    cmd = _trusted_path_extras_cmd(raw_path, blocked)
     result = await env.exec(cmd, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC)
     if _exec_return_code(result) != 0:
-        logger.debug(
-            "Trusted verifier PATH extras unavailable; using safe PATH.%s",
+        # No usable python3 (Rust/Java/Go-only images): validate with sh+stat
+        # instead of dropping every image tool directory.
+        logger.info(
+            "python3 PATH validation unavailable; using sh fallback.%s",
             _exec_failure_detail(result),
         )
         extras = []
+        probe = _trusted_path_probe_cmd(raw_path)
+        if probe is not None:
+            probe_result = await env.exec(
+                probe, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+            )
+            if _exec_return_code(probe_result) == 0:
+                extras = _parse_trusted_path_probe(probe_result.stdout or "", blocked)
+            else:
+                logger.warning(
+                    "Trusted verifier PATH extras unavailable; using safe PATH."
+                    " Image tool directories will not be on the verifier PATH.%s",
+                    _exec_failure_detail(probe_result),
+                )
     else:
         try:
             extras = _json.loads(result.stdout or "[]")

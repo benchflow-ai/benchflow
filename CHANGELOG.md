@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Image tool directories survive on the verifier PATH on images without
+  `python3` and on `rust:*` images.** The image PATH was vetted by a `python3`
+  script, and when it failed the verifier fell back to the default PATH at
+  debug level, so Rust and Java images scored 0 with `cargo: command not
+  found` (CRUSTBench) or `mvnd: command not found` (SWE-bench Multilingual
+  gson). The same root-owned, not group/world-writable rule is now applied
+  with `sh` and `stat`. Official `rust:*` images ship `/usr/local/cargo/bin`,
+  its parent and the binaries in it at mode 777, which the rule rejected even
+  with Python available; such root-owned directories now have group/world
+  write removed (as root, before verification) and are kept when nothing
+  inside is owned by another user. Directories that stay untrusted are logged
+  at warning level.
+
 ## 0.7.11 — 2026-10-16
 
 ### Added
