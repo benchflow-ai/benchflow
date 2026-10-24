@@ -300,3 +300,90 @@ class TestSubscriptionAuthExemption:
         r._maybe_classify_api_error()
         assert r._rewards is None
         assert "suspected provider api error" in (r._error or "")
+
+
+class TestBareTimeoutReclassification:
+    """Guards issue #1071: zero-activity rollouts killed by a detail-less
+    TimeoutError were graded 'timeout' (reward 0, excluded from retry) with the
+    configured budget reported as measured time."""
+
+    def _rollout_double(self):
+        from datetime import datetime, timedelta
+
+        from benchflow.rollout import Rollout
+
+        r = Rollout.__new__(Rollout)
+        r._error = None
+        r._executed_prompts = ["p"]
+        r._agent_env = {"BENCHFLOW_PROVIDER_NAME": "litellm"}
+        r._config = SimpleNamespace(
+            agent="claude-agent-acp", model="claude-haiku-4-5-20251001"
+        )
+        r._usage_metrics = {}
+        r._n_tool_calls = 0
+        r._api_failure_summary_cached = None
+        # Post-verify shape of a timed-out run: verifier granted reward 0.0.
+        r._rewards = {"reward": 0.0}
+        r._diagnostics = SimpleNamespace(
+            set=lambda d: None, capture_idle=lambda e: None
+        )
+        r._timeout = 14400
+        r._started_at = datetime.now() - timedelta(seconds=303)
+        return r
+
+    def test_bare_timeout_with_zero_activity_is_reclassified(self):
+        r = self._rollout_double()
+        r._record_agent_timeout(TimeoutError(), agent_phase=True)
+        r._maybe_classify_api_error()
+        assert "suspected provider api error" in (r._error or "")
+        assert r._rewards is None
+
+    def test_reclassification_is_one_shot(self):
+        r = self._rollout_double()
+        r._record_agent_timeout(TimeoutError(), agent_phase=True)
+        r._maybe_classify_api_error()
+        r._rewards = {"reward": 1.0}  # e.g. terminal-review rubric grant
+        r._maybe_classify_api_error()
+        assert r._rewards == {"reward": 1.0}
+
+    def test_infra_phase_bare_timeout_is_not_reclassified(self):
+        r = self._rollout_double()
+        r._executed_prompts = []
+        r._record_agent_timeout(TimeoutError(), agent_phase=False)
+        recorded = r._error
+        r._maybe_classify_api_error()
+        assert r._error == recorded
+
+    def test_detailed_idle_timeout_stays_a_timeout(self):
+        r = self._rollout_double()
+        detail = "Agent idle for 600s with no new tool call (21 tool calls so far)"
+        r._record_agent_timeout(TimeoutError(detail), agent_phase=True)
+        r._maybe_classify_api_error()
+        assert r._error == detail
+        assert r._rewards == {"reward": 0.0}
+
+    def test_bare_timeout_with_activity_stays_a_timeout(self):
+        r = self._rollout_double()
+        r._usage_metrics = {"total_tokens": 20456}
+        r._n_tool_calls = 21
+        r._record_agent_timeout(TimeoutError(), agent_phase=True)
+        recorded = r._error
+        r._maybe_classify_api_error()
+        assert r._error == recorded
+        assert r._rewards == {"reward": 0.0}
+
+    def test_bare_timeout_reports_measured_elapsed_not_budget(self):
+        r = self._rollout_double()
+        r._record_agent_timeout(TimeoutError(), agent_phase=True)
+        assert "(budget 14400s)" in (r._error or "")
+        assert "after 14400s" not in (r._error or "")
+        assert classify_error(r._error) == "timeout"
+
+    def test_subscription_auth_bare_timeout_keeps_timeout(self):
+        r = self._rollout_double()
+        r._agent_env = {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}
+        r._record_agent_timeout(TimeoutError(), agent_phase=True)
+        recorded = r._error
+        r._maybe_classify_api_error()
+        assert r._error == recorded
+        assert r._rewards == {"reward": 0.0}
