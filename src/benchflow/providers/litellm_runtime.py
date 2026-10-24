@@ -720,13 +720,21 @@ def _docker_host_address() -> str:
                 "inspect",
                 "bridge",
                 "--format",
-                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+                "{{json .IPAM.Config}}",
             ],
             text=True,
             timeout=10,
         ).strip()
-        if out:
-            return out
+        configs = json.loads(out)
+        for config in configs if isinstance(configs, list) else []:
+            gateway = config.get("Gateway") if isinstance(config, dict) else None
+            if not isinstance(gateway, str):
+                continue
+            try:
+                socket.inet_aton(gateway)
+            except OSError:
+                continue
+            return gateway
     except Exception:
         logger.debug("Could not detect Docker bridge gateway", exc_info=True)
     return "host.docker.internal"
@@ -828,7 +836,10 @@ async def _poll_host_health(
                 "LiteLLM exited before becoming healthy.\n" + process.log_tail()
             )
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            # The bridge address is local control-plane traffic. Host proxy
+            # variables commonly omit Docker's gateway IP from NO_PROXY and
+            # otherwise send this readiness check to the corporate proxy.
+            async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
                 for path in ("/health/liveliness", "/health"):
                     response = await client.get(process.endpoint.local_base_url + path)
                     if response.status_code < 500:

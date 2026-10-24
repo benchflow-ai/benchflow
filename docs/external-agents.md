@@ -6,6 +6,21 @@ lives in the public **[benchflow-ai/agents](https://github.com/benchflow-ai/agen
 repo and loads into BenchFlow through one of four paths. For most users the
 first one is all there is to know.
 
+Two science-oriented harnesses are built into core rather than loaded from the
+external agents repository:
+
+- `openscience` runs pinned OpenScience `2.0.127` through its native
+  `openscience acp` server.
+- `deepseek-harness` (alias `dsh`) runs pinned official DeepSeek Harness
+  `0.1.6-alpha.2` through `dsh --profile acp`.
+
+Both use BenchFlow-owned launch configuration, isolated state, and only the
+skills selected for the rollout. Both support OpenAI Chat Completions and
+Anthropic Messages wire formats; their BenchFlow launchers reject OpenAI
+Responses explicitly. See
+[OpenScience and DeepSeek Harness](native-science-harnesses.md) for provider,
+skill, sandbox, and upgrade details.
+
 ## 1. Zero-config remote autoload (the default)
 
 Using an agent name BenchFlow doesn't recognize triggers a one-shot fetch of

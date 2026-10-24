@@ -65,8 +65,9 @@ sets from the diff. Tasks live under `docs/examples/task-md/real-skillsbench/`.
 | `nine` | `low-3` + `medium-3` + `high-3` |
 | `expanded` | `nine` + `citation-check` + affected-task(s) + parity cases |
 
-Seven roster agents = **5 DeepSeek agents** (`openhands`, `pi-acp`, `openclaw`,
-`opencode`, `mimo`) **+ 2 gated natives** (`codex-acp`, `claude-agent-acp`). The 5
+Nine roster agents = **7 DeepSeek agents** (`openhands`, `pi-acp`, `openclaw`,
+`opencode`, `mimo`, `openscience`, `deepseek-harness`) **+ 2 gated natives**
+(`codex-acp`, `claude-agent-acp`). The 7
 DeepSeek agents run `deepseek/deepseek-v4-flash` through the LiteLLM usage proxy
 (promoted to `deepseek/deepseek-v4-pro` on hard tasks via `deepseek_tiering`); they
 are the lane the broad fan exercises. The 2 gated natives speak protocols DeepSeek
@@ -87,11 +88,11 @@ derives the affected agent from a changed `src/benchflow/agents/<name>` path.
 | citation / evidence / schema docs | `citation` | Docker, no-skill, usage=required | L1 |
 | `src/benchflow/eval*`, rollout lifecycle, artifact schema | `nine` | Docker, no-skill, usage=required, judge | L2 |
 | a **specific** agent file (`agents/<name>*.py`, ACP shim) | `low-3` + one high (`weighted-gdp-calc`) | **affected agent** + baseline agent (`openhands`+`deepseek`); no-skill AND with-skill when relevant | L2 |
-| **agent runtime infra** affecting *every* agent (`agents/registry.py`, `protocol.py`, `install.py`, `credentials.py`, `env.py`, shared `acp/**`) | `low-3` | representative DeepSeek **SUBSET** (`openhands`+`pi-acp`+`opencode`) at L2; **full DeepSeek roster (5 agents) at L3 via `expanded`** — a registry/ACP change is breadth-probed across DeepSeek reps auto-on-push, then fanned across all 5 DeepSeek agents at the heavy L3 lane. The 2 gated natives (`codex-acp`, `claude-agent-acp`) are **blocked from this broad fan** and run only via affected-agent | L2 |
+| **agent runtime infra** affecting *every* agent (`agents/registry.py`, `protocol.py`, `install.py`, `credentials.py`, `env.py`, shared `acp/**`) | `low-3` | representative DeepSeek **SUBSET** (`openhands`+`pi-acp`+`opencode`) at L2; **full DeepSeek roster (7 agents) at L3 via `expanded`** — a registry/ACP change is breadth-probed across DeepSeek reps auto-on-push, then fanned across all 7 DeepSeek agents at the heavy L3 lane. The 2 gated natives (`codex-acp`, `claude-agent-acp`) are **blocked from this broad fan** and run only via affected-agent | L2 |
 | skill loading, `.agents/skills`, skill injection | `low-3` + `medium-3` | no-skill AND with-skill; run skill-catalog extraction | L2 |
 | Docker / Daytona / sandbox / root / path | `low-3` + `medium-3` | Docker + Daytona parity; reaper dry-run | L2 |
 | verifier, rewards, judge, anti-hack hardening | `citation` + `weighted-gdp-calc` + `shock-analysis-supply` | judge fail-closed, reward-hacking scan, verifier isolation | L3 |
-| network / package install / **LLM-proxy routing** (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | representative DeepSeek **SUBSET** (`openhands`+`pi-acp`+`opencode`) at L2; **full DeepSeek roster (5 agents) at L3 via `expanded`** (a proxy/routing change affects every DeepSeek agent's model calls, so it is breadth-probed across DeepSeek reps auto-on-push then fanned across all 5 at L3) + default network-off + the `citation-check` allowlist variant. The 2 gated natives (`codex-acp`, `claude-agent-acp`) are **blocked from this broad fan** and run only via affected-agent | L2 |
+| network / package install / **LLM-proxy routing** (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | representative DeepSeek **SUBSET** (`openhands`+`pi-acp`+`opencode`) at L2; **full DeepSeek roster (7 agents) at L3 via `expanded`** (a proxy/routing change affects every DeepSeek agent's model calls, so it is breadth-probed across DeepSeek reps auto-on-push then fanned across all 7 at L3) + default network-off + the `citation-check` allowlist variant. The 2 gated natives (`codex-acp`, `claude-agent-acp`) are **blocked from this broad fan** and run only via affected-agent | L2 |
 | release-critical refactor | `expanded` | all affected axes, concurrency reduced | L3 |
 
 ### 3.1 The Q3 network lane (scope-gated)
@@ -127,8 +128,9 @@ rules **agent runtime infra** (`agent-runtime-infra`) and **network / LLM-proxy
 routing** (`network-package`) in
 [`scope_map.yml`](../.github/integration/scope_map.yml) — now fan the **DeepSeek
 roster ONLY** (new config key `deepseek_roster` in
-[`scope_defaults.yml`](../.github/integration/scope_defaults.yml) = the 5 DeepSeek
-agents `openhands`, `pi-acp`, `openclaw`, `opencode`, `mimo`). The 2 gated natives
+[`scope_defaults.yml`](../.github/integration/scope_defaults.yml) = the 7 DeepSeek
+agents `openhands`, `pi-acp`, `openclaw`, `opencode`, `mimo`, `openscience`, and
+`deepseek-harness`). The 2 gated natives
 (`codex-acp`, `claude-agent-acp`) are **blocked from the default / broad fan
 "currently"** — the policy is to use other (non-DeepSeek) models only as needed to
 test that specific agent. This is a breadth-tiered *variant*, not a new level.
@@ -138,14 +140,14 @@ test that specific agent. This is a breadth-tiered *variant*, not a new level.
   [`scope_defaults.yml`](../.github/integration/scope_defaults.yml). One
   representative per DeepSeek sub-family: `openhands` (baseline / OpenHands),
   `pi-acp` (ACP launcher), `opencode` (opencode proxy family). This probes the
-  DeepSeek lane auto-on-push without spending the full 5×N fan-out on each push.
+  DeepSeek lane auto-on-push without spending the full 7×N fan-out on each push.
   (It was previously 4 and included `codex-acp` + `gemini` — both GONE from the
   subset.)
-- **L3 full roster (5 DeepSeek agents):** `nine` / `expanded` fan the full DeepSeek
+- **L3 full roster (7 DeepSeek agents):** `nine` / `expanded` fan the full DeepSeek
   roster via `_FULL_ROSTER_SCOPES` in
   [`integration_matrix.py`](../.github/scripts/integration_matrix.py), so no
-  separate rule is needed — the heavy L3 lane is where all 5 DeepSeek agents run.
-  There is no 9-agent fan anymore.
+  separate rule is needed — the heavy L3 lane is where all 7 DeepSeek agents run.
+  The full configured roster is nine agents including the two gated natives.
 - **Gated natives run only via affected-agent.** `codex-acp` and `claude-agent-acp`
   run **only** when a PR touches their own adapter file (`codex_config.py` →
   `codex-acp`; `claude*.py` → `claude-agent-acp`), paired with the DeepSeek baseline
@@ -163,7 +165,7 @@ uniformly:
 
 | Agent(s) | Model | Surface / credential | Why |
 |---|---|---|---|
-| `openhands`, `pi-acp`, `openclaw`, `opencode`, `mimo` | `deepseek/deepseek-v4-flash` (promoted to `deepseek/deepseek-v4-pro` on hard tasks via `deepseek_tiering`) | LiteLLM usage proxy; needs `DEEPSEEK_API_KEY` **+** `DEEPSEEK_BASE_URL` | These 5 are the openai-completions-family agents that proxy cleanly — the DeepSeek lane the broad fan exercises. `deepseek_tiering` promotes flash → pro on the hard tasks (`pro_tasks` = `lake-warming-attribution`, `weighted-gdp-calc`, `shock-analysis-supply`). `mimo`-on-deepseek **replaces** the old `xiaomi`/`mimo` id, closing the **XIAOMI gap**. |
+| `openhands`, `pi-acp`, `openclaw`, `opencode`, `mimo`, `openscience`, `deepseek-harness` | `deepseek/deepseek-v4-flash` (promoted to `deepseek/deepseek-v4-pro` on hard tasks via `deepseek_tiering`) | LiteLLM usage proxy; needs `DEEPSEEK_API_KEY` **+** `DEEPSEEK_BASE_URL` | These 7 are the openai-completions-family agents that proxy cleanly — the DeepSeek lane the broad fan exercises. OpenScience and DeepSeek Harness use their native ACP servers with BenchFlow-owned launch configuration. `deepseek_tiering` promotes flash → pro on the hard tasks (`pro_tasks` = `lake-warming-attribution`, `weighted-gdp-calc`, `shock-analysis-supply`). |
 | `codex-acp` | `gpt-5.4-nano` | native (`OPENAI_API_KEY`) | Codex CLI is openai-native; its `_create_adapter` OpenAI path uses the OpenAI **Responses API** (`client.responses.create`), which DeepSeek's chat-completions-only endpoint does not serve. **Gated native** — fanned only via affected-agent (§3.2). |
 | `claude-agent-acp` | `aws-bedrock/us.anthropic.claude-haiku-4-5-20251001` | Bedrock anthropic-messages surface; needs `AWS_BEARER_TOKEN_BEDROCK` (**+** `AWS_REGION`) | Bedrock serves Claude over the `anthropic-messages` protocol (`providers.py` `aws-bedrock` config). The bare `claude-haiku` native id is **not** used. `AWS_BEARER_TOKEN_BEDROCK` **+** `AWS_REGION` are **now present** in the `pypi-internal-preview` CI environment. **Gated native** — fanned only via affected-agent (§3.2); credential-aware emission (§3.4) is a safety net that would drop its cells as a documented skip if the keys were ever absent. |
 

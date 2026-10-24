@@ -318,12 +318,25 @@ Common choices:
 | Codex | `codex-acp` (alias: `codex`) | `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or host login |
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
 | Harvey LAB harness | `harvey-lab-harness` (alias: `harvey-lab`) | Provider key matching model |
+| OpenScience | `openscience` | Provider key matching model |
+| DeepSeek Harness | `deepseek-harness` (alias: `dsh`) | `DEEPSEEK_API_KEY` |
 
 The auth column shows each agent's native/default credentials. Provider-prefixed
 models can use provider-specific credentials instead; for example, Azure
 Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT` with prefixes such
 as `azure-foundry-openai/gpt-5.5` or
 `azure-foundry-anthropic/claude-opus-4-5`.
+
+`openscience` launches OpenScience's native `openscience acp` server with
+bundled skills, project configuration, nested sandboxing, and auxiliary network
+tools disabled. Its BenchFlow launcher supports OpenAI Chat Completions and
+Anthropic Messages provider surfaces and rejects OpenAI Responses explicitly.
+`deepseek-harness` launches the official DeepSeek Harness native
+ACP profile (`dsh --profile acp`) with isolated state, telemetry disabled, and
+only BenchFlow-deployed skills visible. DSH accepts OpenAI Chat Completions and
+Anthropic Messages provider surfaces; it does not accept OpenAI Responses. See
+[OpenScience and DeepSeek Harness](native-science-harnesses.md) for routing,
+security, skill-fidelity, and independent upgrade procedures.
 
 Any agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
 

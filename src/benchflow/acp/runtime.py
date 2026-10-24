@@ -374,6 +374,19 @@ def _model_selection_owned_by_env(
         if mapped_model_env and agent_env.get(mapped_model_env):
             return True
         return launch_config_owns_model
+    # Native ACP profiles may intentionally omit model mutation and build their
+    # initial route from a launch-owned environment variable.  Keep agents that
+    # advertise a model config option (for example Claude ACP) on the existing
+    # capability-driven path; this branch is for launch-only profiles such as
+    # the official DeepSeek Harness.
+    mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
+    if (
+        not agent_cfg.supports_acp_set_model
+        and not agent_cfg.acp_model_config_id
+        and mapped_model_env
+        and agent_env.get(mapped_model_env)
+    ):
+        return True
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return False
     provider = find_provider(model)

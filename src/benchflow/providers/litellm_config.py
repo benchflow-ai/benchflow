@@ -289,16 +289,26 @@ def _route_registered_provider(
             litellm_params=params,
         )
 
-    protocol = (
-        "openai-completions"
-        if "openai-completions" in provider_cfg.all_endpoints
-        else provider_cfg.api_protocol
-    )
-    explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
-    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
     zai_registry_base = (
         provider_name == "zai-coding" and env.get(ZAI_CODING_REGISTRY_BASE_ENV) == "1"
     )
+    requested_protocol = (env.get("BENCHFLOW_PROVIDER_PROTOCOL") or "").strip()
+    if requested_protocol and not zai_registry_base:
+        if requested_protocol not in provider_cfg.all_endpoints:
+            supported = ", ".join(sorted(provider_cfg.all_endpoints))
+            raise ValueError(
+                f"Provider {provider_name!r} does not support protocol "
+                f"{requested_protocol!r}; supported protocols: {supported}."
+            )
+        protocol = requested_protocol
+    else:
+        protocol = (
+            "openai-completions"
+            if "openai-completions" in provider_cfg.all_endpoints
+            else provider_cfg.api_protocol
+        )
+    explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
     explicit_route = explicit_api_base and explicit_api_key and not zai_registry_base
     if explicit_api_base and not zai_registry_base:
         api_base = explicit_api_base
