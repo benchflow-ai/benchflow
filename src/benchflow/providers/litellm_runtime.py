@@ -45,6 +45,8 @@ from benchflow.providers.litellm_config import (
     LITELLM_MODEL_ALIAS_ENV,
     LITELLM_MODEL_VIA_ENV,
     LiteLLMRoute,
+    litellm_proxy_auth_env,
+    litellm_proxy_callback_env,
     litellm_proxy_config,
     resolve_litellm_route,
     strip_provider_prefix,
@@ -1687,8 +1689,13 @@ async def ensure_litellm_runtime(
     if sandbox_local and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 
+    agent_cfg = AGENTS.get(agent)
     try:
-        route = resolve_litellm_route(model, agent_env)
+        route = resolve_litellm_route(
+            model,
+            agent_env,
+            protocol=(agent_cfg.api_protocol if agent_cfg else "") or None,
+        )
     except ValueError as exc:
         await _raise_litellm_unavailable(
             runtime=runtime,
@@ -1748,6 +1755,8 @@ async def ensure_litellm_runtime(
             agent_env=agent_env,
             required_skill_names=required_skill_names,
         )
+        proxy_env.update(litellm_proxy_auth_env(route, agent_env))
+        proxy_env.update(litellm_proxy_callback_env(route))
         if sandbox_local:
             server = await _start_sandbox_litellm(
                 sandbox=sandbox,

@@ -122,6 +122,149 @@ async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent", "backend", "api_base"),
+    [
+        (
+            "claude-agent-acp",
+            "anthropic/zai-org/GLM-5.3",
+            "https://inference.baseten.co",
+        ),
+        ("codex-acp", "openai/zai-org/GLM-5.3", "https://inference.baseten.co/v1"),
+    ],
+)
+async def test_litellm_route_follows_agent_protocol(
+    monkeypatch, agent, backend, api_base
+):
+    """The proxy reaches the provider over the agent's own protocol when the
+    provider serves it."""
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    _updated, provider_runtime = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env={"BASETEN_API_KEY": "sk-baseten"},
+        model="baseten/zai-org/GLM-5.3",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert provider_runtime.backend_model == backend
+    assert starts[0]["route"].litellm_params["api_base"] == api_base
+
+
+@pytest.mark.asyncio
+async def test_codex_on_baseten_uses_native_responses(monkeypatch):
+    """Codex is handed the plain model name, which the proxy serves on
+    Baseten's own Responses endpoint, not through the chat bridge."""
+    from benchflow.providers.litellm_config import litellm_proxy_config
+
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, _runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env={"BASETEN_API_KEY": "sk-baseten"},
+        model="baseten/zai-org/GLM-5.3",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    codex_model = json.loads(updated["CODEX_CONFIG"])["model"]
+    assert codex_model == "zai-org/GLM-5.3"
+    config = litellm_proxy_config(starts[0]["route"], master_key="sk-local")
+    served = {
+        e["model_name"]: e["litellm_params"]["model"] for e in config["model_list"]
+    }
+    assert served[codex_model] == "openai/zai-org/GLM-5.3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent", "moves"), [("codex-acp", True), ("claude-agent-acp", False)]
+)
+async def test_tool_image_move_reaches_proxy_env_only(monkeypatch, agent, moves):
+    """The switch that moves Responses tool-result images into a user message
+    reaches the proxy for Baseten's Responses route only, never the agent."""
+    from benchflow.providers.litellm_config import LITELLM_RESPONSES_TOOL_IMAGES_ENV
+
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, _runtime = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env={"BASETEN_API_KEY": "sk-baseten"},
+        model="baseten/zai-org/GLM-5.3",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    proxy_env = starts[0]["agent_env"]
+    assert (proxy_env.get(LITELLM_RESPONSES_TOOL_IMAGES_ENV) == "1") is moves
+    assert LITELLM_RESPONSES_TOOL_IMAGES_ENV not in updated
+
+
+@pytest.mark.asyncio
+async def test_bearer_value_reaches_proxy_env_only(monkeypatch):
+    from benchflow.agents.providers import PROVIDERS, ProviderConfig
+    from benchflow.providers.litellm_config import LITELLM_BEARER_AUTH_ENV
+
+    monkeypatch.setitem(
+        PROVIDERS,
+        "bearer-test",
+        ProviderConfig(
+            name="bearer-test",
+            base_url="https://llm.example.test/v1",
+            api_protocol="openai-completions",
+            auth_type="api_key",
+            auth_env="BEARER_TEST_API_KEY",
+            endpoints={"anthropic-messages": "https://llm.example.test"},
+            prefer_agent_protocol=True,
+            anthropic_auth_header="bearer",
+        ),
+    )
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, _runtime = await ensure_litellm_runtime(
+        agent="claude-agent-acp",
+        agent_env={"BEARER_TEST_API_KEY": "sk-secret"},
+        model="bearer-test/m-1",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert starts[0]["route"].upstream_model == "anthropic/m-1"
+    assert starts[0]["agent_env"][LITELLM_BEARER_AUTH_ENV] == "Bearer sk-secret"
+    assert LITELLM_BEARER_AUTH_ENV not in updated
+    assert "sk-secret" not in updated.values()
+
+
+@pytest.mark.asyncio
 async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypatch):
     async def fake_start(**kwargs):
         return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
