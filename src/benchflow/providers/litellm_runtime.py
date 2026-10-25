@@ -1058,12 +1058,13 @@ async def _ensure_sandbox_litellm(
     requirements = " ".join(
         shlex.quote(requirement)
         # Sandbox proxy environments are installed independently of this
-        # project's lock and may already contain older transitive packages.
+        # project's lock. Keep these security-sensitive versions aligned with
+        # the reviewed lock instead of selecting a new release on reprovision.
         for requirement in (
             LITELLM_VERSION_SPEC,
-            "certifi>=2026.10.19",
-            "aiohttp>=3.14.4",
-            "cryptography>=50",
+            "certifi==2026.10.23",
+            "aiohttp==3.14.5",
+            "cryptography==50.0.2",
             "boto3>=1.40",
             *extra_requirements,
         )
@@ -1084,7 +1085,7 @@ else
   PY="$(command -v python3 || command -v python)"
   if [ ! -x {vq}/bin/python ]; then
     "$PY" -m venv {vq} 2>/dev/null || (
-      "$PY" -m pip install --user -q 'virtualenv>=21.14.13' &&
+      "$PY" -m pip install --user -q 'virtualenv==21.14.13' &&
       "$PY" -m virtualenv {vq}
     )
   fi
