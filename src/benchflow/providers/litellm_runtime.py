@@ -1057,7 +1057,15 @@ async def _ensure_sandbox_litellm(
     # stdlib-venv fallback for images that have a working venv and lack uv.
     requirements = " ".join(
         shlex.quote(requirement)
-        for requirement in (LITELLM_VERSION_SPEC, "boto3>=1.40", *extra_requirements)
+        # Sandbox proxy environments are installed independently of this
+        # project's lock and may already contain older transitive packages.
+        for requirement in (
+            LITELLM_VERSION_SPEC,
+            "certifi>=2026.10.19",
+            "aiohttp>=3.14.4",
+            "boto3>=1.40",
+            *extra_requirements,
+        )
     )
     command = f"""
 set -eu
