@@ -1063,6 +1063,7 @@ async def _ensure_sandbox_litellm(
             LITELLM_VERSION_SPEC,
             "certifi>=2026.10.19",
             "aiohttp>=3.14.4",
+            "cryptography>=50",
             "boto3>=1.40",
             *extra_requirements,
         )

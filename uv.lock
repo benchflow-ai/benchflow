@@ -492,7 +492,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.40" },
     { name = "boto3", marker = "extra == 'sandbox-agentcore'", specifier = ">=1.43.31" },
     { name = "certifi", specifier = ">=2026.10.19" },
-    { name = "cryptography", specifier = ">=44" },
+    { name = "cryptography", specifier = ">=50" },
     { name = "datasets", marker = "extra == 'trl'", specifier = ">=2.19.0" },
     { name = "daytona", marker = "extra == 'sandbox-daytona'", specifier = ">=0.184.0" },
     { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.6" },

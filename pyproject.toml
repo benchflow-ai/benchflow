@@ -16,7 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",
     # Denylist egress mints TLS certificates on both Docker and Daytona.
-    "cryptography>=44",
+    "cryptography>=50",
     # Dataset registry bench_version checks (PEP 440 specifier sets).
     "packaging>=24",
     "litellm[proxy]==1.103.3",
