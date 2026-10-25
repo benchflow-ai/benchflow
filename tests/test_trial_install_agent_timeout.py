@@ -88,6 +88,9 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     assert args[1] == "agent"
     assert kwargs["timeout_sec"] == 41
     assert kwargs["workspace"] == "/workspace"
+    # The oracle runs nothing as the sandbox user, so it needs no
+    # sandbox-daemon guard; a model agent keeps it.
+    assert kwargs.get("guard_daemon", True) is (agent != "oracle")
 
     if agent == "oracle":
         install_agent_mock.assert_not_awaited()

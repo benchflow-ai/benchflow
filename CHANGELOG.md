@@ -2,6 +2,89 @@
 
 ## [Unreleased]
 
+## 0.7.11 — 2026-10-16
+
+### Added
+
+- **`--separate-verifier-include PATH` carries outputs outside the workspace
+  into a separate verifier sandbox.** Only the workspace (`sandbox.workdir`,
+  else the image's `WORKDIR`) crossed, so a task whose agent writes graded
+  files elsewhere scored 0 with no error: FrontierPhysics
+  `kinked-ladder-polymer-scattering` (workspace `/app`, outputs in `/root`)
+  went from 19/19 in shared mode to 0/19 with `--separate-verifier`, and 14
+  of its 56 tasks grade files outside the workspace. Each include path
+  (repeatable; SDK and config `separate_verifier_include`) is captured beside
+  the workspace into `evidence/artifacts/`, hash-checked, and laid over the
+  verifier image's copy at the same path; pseudo filesystems and roots such as
+  `/`, `/usr` and `/home` are refused before any sandbox starts.
+  `config.json` records `verifier_include`, and the transfer inventory lists
+  each path as captured, missing or already in the workspace.
+- **A separate verifier lists files the agent left outside everything that
+  crosses.** When the workspace is frozen, the regular files written during
+  the agent phase outside the workspace and include paths (skipping system,
+  scratch and provider trees, package caches and the agent's home) are logged
+  as a warning with a count per directory and examples, and recorded under
+  `outside_workspace_writes` in `verifier-sandbox/verifier-sandbox.json`.
+  Advisory: it never fails a rollout.
+
+### Fixed
+
+- **The verifier ignores pip's and git's per-user config under `/root`.**
+  The verifier runs as root with `HOME=/root`, the agent's workspace in many
+  tasks, so `~/.config/pip/pip.conf` or `~/.gitconfig` there were whatever the
+  agent left, in both modes (a separate verifier receives the `/root`
+  workspace too). `VERIFIER_ENV` now sets `PIP_CONFIG_FILE=/dev/null` and
+  `GIT_CONFIG_GLOBAL=/dev/null` (git 2.32+; `/etc/gitconfig` still applies),
+  and drops `PIP_NO_USER_CONFIG`, which is not a pip option and did nothing.
+  A task that needs either config back sets it in its verifier `env`.
+- **Package-manager caches stay out of workspace evidence.** `.cache/pip`,
+  `.cache/uv` and npm's `_cacache`, `_npx` and `_logs` below a captured root
+  are recorded as `package_cache` exclusions instead of captured. With a
+  `/root` workspace the harness's own installs fill them as root before the
+  agent starts: on a FrontierPhysics ion-trap-design run they were 97% of the
+  745 MB the separate verifier received, and of the rubric review's upload.
+- **`mcp` 1.30.0 in `uv.lock`** for CVE-2026-59951 (was 1.28.1), which failed
+  the `pip-audit` job and, through it, `main`'s release gate.
+
+## 0.7.10 — 2026-10-16
+
+### Added
+
+- **Separate verifier sandboxes run on Docker and Daytona.** A task that sets
+  `[verifier] sandbox_mode = "separate"` (Harbor `environment_mode`) or
+  declares `[verifier.sandbox]` was refused with "separate verifier
+  sandboxes are parsed but not executed". It now runs: after the agent stops,
+  the workspace is frozen into `evidence/`, and a fresh sandbox built from
+  the verifier image (`[verifier.sandbox].docker_image`, `[sandbox]
+  .docker_image`, `tests/Dockerfile`, then the task's own
+  `environment/Dockerfile`) receives only those hash-checked bytes before the
+  normal hardening and `test.sh` run there. Nothing else from the agent's
+  sandbox reaches the verifier. `bench eval run --separate-verifier` (SDK and
+  config `separate_verifier`) forces the mode for every task of a run without
+  editing them, so task digests do not change. A transfer or sandbox failure
+  is a verifier infrastructure error, never a score;
+  `verifier-sandbox/verifier-sandbox.json` records the image source, sandbox
+  id, transfer inventory and timing, and `config.json` records
+  `verifier_sandbox_mode`. Ported from release/0.8's separate verifier,
+  without its declared-artifact and `/logs/artifacts` transfer, which main
+  does not have.
+
+### Fixed
+
+- **Root helpers no longer import modules from the agent's workspace.** The
+  helpers BenchFlow runs as root after the agent stops (disk reclaim, the
+  verifier PATH check, pytest-plugin discovery, the external-symlink purge,
+  the workspace-restore fallback, workspace evidence capture and its
+  reviewer-side admission) ran plain `python3 -c` from the sandbox's default
+  working directory, which is the agent's workspace, so a `json.py` or
+  `glob.py` left there was imported as root before the verifier. They now run
+  `python3 -I`; the `.pth`/`sitecustomize.py` purge keeps its environment
+  but runs from `/`. Pytest-plugin discovery therefore scans only the
+  interpreter's site-packages: declare a plugin installed elsewhere in
+  `verifier.pytest_plugins`.
+
+## 0.7.9 — 2026-10-14
+
 ### Fixed
 
 - **Codex knows `gpt-6.1-sol`: the `codex-acp` pin moves from 1.13.1 to
@@ -57,6 +140,7 @@
 
 ### Added
 
+- **`bench skills validate`: static skill checks with NVIDIA SkillEvaluator 0.5.0 Tier 1 and NVIDIA SkillSpector 2.12.0.** Takes skill directories or any directory to search for `SKILL.md`, runs both external CLIs with `--no-llm`, and prints a per-skill table (Tier 1 status, quality grade and score, SkillSpector risk and verdict) or `--json`. It exits 1 on a schema, security or dependency finding (including known vulnerabilities pip-audit finds in pinned packages) at or above `--fail-on` (default `high`), when a checker fails to run, or when a given path holds no `SKILL.md`; `--no-security` skips SkillSpector. The tools are not on PyPI, so they stay external installs (`uv tool install` from their release tags, see `docs/skill-eval.md`); a missing tool gets an install hint and an older one a version warning.
 - **Native Google Antigravity CLI agent (`antigravity`, alias `agy`).** The
   Antigravity CLI replaced the hosted Gemini CLI in mid-2026 but ships no ACP
   mode, so BenchFlow bundles an ACP shim over its headless `stream-json`

@@ -282,7 +282,7 @@ class TestVerifierDirWipe:
                 stdout = "/usr/local/bin:/usr/bin"
             elif command.startswith("printenv PYTHONPATH"):
                 stdout = "/usr/local/lib/python3.12/site-packages"
-            elif command.startswith("python3 -c"):
+            elif "python3 -I -c" in command:
                 stdout = "[]"
             elif command.startswith("cat /etc/os-release"):
                 stdout = "ID=ubuntu\n"
@@ -807,7 +807,9 @@ class TestVerifierUserHarden:
 
         assert VERIFIER_ENV["PYTHONNOUSERSITE"] == "1"
         assert VERIFIER_ENV["PIP_USER"] == "0"
-        assert VERIFIER_ENV["PIP_NO_USER_CONFIG"] == "1"
+        assert VERIFIER_ENV["PIP_CONFIG_FILE"] == "/dev/null"
+        assert VERIFIER_ENV["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert "PIP_NO_USER_CONFIG" not in VERIFIER_ENV  # not a pip option
         assert VERIFIER_ENV["HOME"] == "/root"
 
     @pytest.mark.asyncio
@@ -882,7 +884,8 @@ class TestVerifierEnv:
             "LD_LIBRARY_PATH",
             "PYTHONNOUSERSITE",
             "PIP_USER",
-            "PIP_NO_USER_CONFIG",
+            "PIP_CONFIG_FILE",
+            "GIT_CONFIG_GLOBAL",
             "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",
@@ -982,7 +985,7 @@ class TestVerifierEnv:
                     stderr="",
                     exit_code=0,
                 )
-            if "python3 -c" in text:
+            if "python3 -c" in text or "python3 -I -c" in text:
                 return MagicMock(
                     stdout="",
                     stderr="/bin/sh: python3: not found",
@@ -1054,10 +1057,10 @@ class TestVerifierEnv:
         cmd = _trusted_path_extras_cmd("/root/.local/bin:/tmp/bin", ("/tmp",))
         parts = shlex.split(cmd)
 
-        assert parts[:2] == ["python3", "-c"]
-        assert json.loads(parts[3]) == "/root/.local/bin:/tmp/bin"
-        assert "/usr/local/bin" in json.loads(parts[4])
-        assert json.loads(parts[5]) == ["/tmp"]
+        assert parts[:3] == ["python3", "-I", "-c"]
+        assert json.loads(parts[4]) == "/root/.local/bin:/tmp/bin"
+        assert "/usr/local/bin" in json.loads(parts[5])
+        assert json.loads(parts[6]) == ["/tmp"]
 
     @pytest.mark.asyncio
     async def test_harden_preserves_trusted_container_path_extras(self):
@@ -1071,7 +1074,7 @@ class TestVerifierEnv:
                     stderr="",
                     exit_code=0,
                 )
-            if cmd.startswith("python3 -c"):
+            if cmd.startswith("python3 -I -c"):
                 return MagicMock(
                     stdout='["/root/.local/bin", "/opt/uv/bin"]',
                     stderr="",
@@ -1101,7 +1104,7 @@ class TestVerifierEnv:
                     stderr="",
                     exit_code=0,
                 )
-            if cmd.startswith("python3 -c"):
+            if cmd.startswith("python3 -I -c"):
                 return MagicMock(
                     stdout='["/root/.local/bin"]',
                     stderr="",

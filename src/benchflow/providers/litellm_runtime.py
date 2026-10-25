@@ -1075,7 +1075,7 @@ else
   PY="$(command -v python3 || command -v python)"
   if [ ! -x {vq}/bin/python ]; then
     "$PY" -m venv {vq} 2>/dev/null || (
-      "$PY" -m pip install --user -q virtualenv &&
+      "$PY" -m pip install --user -q 'virtualenv>=21.14.13' &&
       "$PY" -m virtualenv {vq}
     )
   fi
