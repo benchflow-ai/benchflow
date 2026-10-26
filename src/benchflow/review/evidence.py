@@ -225,9 +225,15 @@ def _link_target(member: tarfile.TarInfo, workspace: str) -> str:
             raise EvidenceError(
                 f"Evidence symlink escapes workspace: {member.name}"
             ) from exc
-        if str(target) != ".":
-            _relative_path(str(target))
-        return posixpath.relpath(str(target), str(PurePosixPath(member.name).parent))
+        # Normalise as the relative branch below does, so an in-workspace
+        # target spelled with ".." parts is kept (#1157) and one that climbs
+        # out of the workspace is still refused.
+        normalized = posixpath.normpath(str(target))
+        if normalized == ".." or normalized.startswith("../"):
+            raise EvidenceError(f"Evidence symlink escapes workspace: {member.name}")
+        if normalized != ".":
+            _relative_path(normalized)
+        return posixpath.relpath(normalized, str(PurePosixPath(member.name).parent))
     normalized = posixpath.normpath(
         posixpath.join(posixpath.dirname(member.name), str(target))
     )

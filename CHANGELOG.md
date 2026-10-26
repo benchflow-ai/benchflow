@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Evidence capture keeps an absolute in-workspace symlink spelled with
+  `..` (#1157).** `_link_target` checked an absolute target after stripping
+  the workspace but before normalising it, so a link such as
+  `/root/analysis/scripts/../figures` failed the whole capture with
+  `Unsafe evidence path` and the verified rollout was never reviewed. The
+  target is now normalised first, as relative targets already were; a target
+  that climbs out of the workspace after normalising is still refused.
+
 ## 0.7.11 — 2026-10-16
 
 ### Added

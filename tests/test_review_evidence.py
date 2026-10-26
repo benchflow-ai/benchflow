@@ -23,6 +23,7 @@ from benchflow.review.evidence import (
     EvidenceError,
     EvidenceManifest,
     _extract_archive,
+    _link_target,
     capture_task_evidence,
     capture_workspace,
     install_review_evidence,
@@ -150,6 +151,72 @@ async def test_external_symlink_never_imports_outside_files(tmp_path):
     secret = tmp_path / "credential"
     secret.write_text("do not export")
     (source / "credential-link").symlink_to(secret)
+
+    with pytest.raises(EvidenceError, match="symlink escapes"):
+        await capture_workspace(LocalTransport(), str(source), tmp_path / "evidence")
+
+    assert not (tmp_path / "evidence").exists()
+
+
+@pytest.mark.asyncio
+async def test_absolute_in_workspace_link_with_dotdot_is_kept(tmp_path):
+    """Guards #1157: an absolute link whose '..' parts stay inside the workspace."""
+    source = tmp_path / "source"
+    (source / "analysis" / "scripts").mkdir(parents=True)
+    (source / "analysis" / "figures").mkdir()
+    (source / "analysis" / "figures" / "fit.svg").write_text("<svg/>")
+    (source / "figs").symlink_to(
+        f"{source}/analysis/scripts/../figures", target_is_directory=True
+    )
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(transport, str(source), bundle)
+
+    assert os.readlink(bundle / "workspace" / "figs") == "analysis/figures"
+    assert (bundle / "workspace" / "figs" / "fit.svg").read_text() == "<svg/>"
+    archive = tmp_path / "upload.tar"
+    prepare_workspace_upload(bundle, archive)
+    receiving = tmp_path / "reviewer" / "workspace"
+    await install_uploaded_workspace(
+        transport, str(archive), str(receiving), str(bundle / "manifest.json")
+    )
+    validate_workspace(receiving, manifest)
+    assert (receiving / "figs" / "fit.svg").read_text() == "<svg/>"
+
+
+@pytest.mark.parametrize(
+    ("name", "linkname", "expected"),
+    [
+        ("figs", "/root/analysis/scripts/../figures", "analysis/figures"),
+        ("a/b/link", "/root/a/./c/../d", "../d"),
+        ("link", "/root/x/..", "."),
+        ("link", "/root/answer.txt", "answer.txt"),
+        ("link", "/root/a/../../etc/passwd", None),
+        ("link", "/root/..", None),
+    ],
+)
+def test_absolute_link_target_is_normalised_before_the_safety_check(
+    name, linkname, expected
+):
+    """Guards #1157 at the unit level: '..' inside the workspace is kept."""
+    member = tarfile.TarInfo(name)
+    member.type = tarfile.SYMTYPE
+    member.linkname = linkname
+    if expected is None:
+        with pytest.raises(EvidenceError, match="symlink escapes"):
+            _link_target(member, "/root")
+    else:
+        assert _link_target(member, "/root") == expected
+
+
+@pytest.mark.asyncio
+async def test_absolute_link_that_leaves_after_normalising_is_rejected(tmp_path):
+    """Guards #1157's fix: '..' that climbs out of the workspace still escapes."""
+    source = tmp_path / "source"
+    (source / "analysis").mkdir(parents=True)
+    (tmp_path / "outside").write_text("do not export")
+    (source / "escape").symlink_to(f"{source}/analysis/../../outside")
 
     with pytest.raises(EvidenceError, match="symlink escapes"):
         await capture_workspace(LocalTransport(), str(source), tmp_path / "evidence")
