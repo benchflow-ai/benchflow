@@ -250,7 +250,7 @@ class LiteLLMLiveForwarder:
 
         response = litellm.completion(**self.build_kwargs(request_body))
         dump = getattr(response, "model_dump", None)
-        return dump() if callable(dump) else dict(response)
+        return dump() if callable(dump) else dict(cast(Any, response))
 
 
 def stitched_trajectory_lines(

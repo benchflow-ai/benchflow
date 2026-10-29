@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-LITELLM_VERSION_SPEC = "litellm[proxy]==1.91.5"
+LITELLM_VERSION_SPEC = "litellm[proxy]==1.103.3"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
@@ -1057,7 +1057,17 @@ async def _ensure_sandbox_litellm(
     # stdlib-venv fallback for images that have a working venv and lack uv.
     requirements = " ".join(
         shlex.quote(requirement)
-        for requirement in (LITELLM_VERSION_SPEC, "boto3>=1.40", *extra_requirements)
+        # Sandbox proxy environments are installed independently of this
+        # project's lock. Keep these security-sensitive versions aligned with
+        # the reviewed lock instead of selecting a new release on reprovision.
+        for requirement in (
+            LITELLM_VERSION_SPEC,
+            "certifi==2026.10.23",
+            "aiohttp==3.14.5",
+            "cryptography==50.0.2",
+            "boto3>=1.40",
+            *extra_requirements,
+        )
     )
     command = f"""
 set -eu
@@ -1075,7 +1085,7 @@ else
   PY="$(command -v python3 || command -v python)"
   if [ ! -x {vq}/bin/python ]; then
     "$PY" -m venv {vq} 2>/dev/null || (
-      "$PY" -m pip install --user -q virtualenv &&
+      "$PY" -m pip install --user -q 'virtualenv==21.14.13' &&
       "$PY" -m virtualenv {vq}
     )
   fi
