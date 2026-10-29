@@ -17,6 +17,7 @@ from benchflow.providers.runtime import (
     ensure_litellm_runtime,
     stop_provider_runtime,
 )
+from benchflow.sandbox.egress_denylist import EgressGuard
 
 
 class FakeLiteLLMServer:
@@ -778,7 +779,7 @@ async def test_antigravity_uses_gemini_pass_through(monkeypatch):
         environment="docker",
         usage_tracking="required",
         sandbox=SimpleNamespace(),
-        force_sandbox_local=True,
+        egress_guard=EgressGuard(block_log=None),
     )
 
     assert provider_runtime is not None
@@ -818,7 +819,7 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
         environment="docker",
         usage_tracking="required",
         sandbox=sandbox,
-        force_sandbox_local=True,
+        egress_guard=EgressGuard(block_log=None),
     )
 
     assert starts[0]["sandbox"] is sandbox
@@ -851,3 +852,62 @@ async def test_oracle_does_not_start_litellm(monkeypatch):
 
     assert updated == env
     assert provider_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_guarded_gateway_runs_in_the_sandbox_with_the_guard(monkeypatch):
+    """Guards no-web and denylist egress (PR #1113): the agent's gateway is guarded."""
+    starts = []
+
+    async def fake_sandbox_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    async def unexpected_host_start(**_kwargs):
+        raise AssertionError("a guarded gateway must run inside the sandbox")
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", unexpected_host_start)
+    guard = EgressGuard(block_log="/opt/benchflow-egress/blocked.jsonl")
+
+    await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env={"OPENAI_API_KEY": "upstream-key"},
+        model="openai/gpt-5.4",
+        runtime=None,
+        environment="docker",
+        sandbox=SimpleNamespace(),
+        egress_guard=guard,
+    )
+
+    assert starts[0]["egress_guard"] == guard
+
+
+def test_runtime_modules_install_the_guard_first_only_when_guarded():
+    guarded = runtime_mod._runtime_modules(
+        EgressGuard(block_log="/opt/x/blocked.jsonl")
+    )
+    open_gateway = runtime_mod._runtime_modules()
+
+    assert guarded["sitecustomize.py"].splitlines()[:2] == [
+        "from benchflow.providers.litellm_egress_guard import install",
+        "install(block_log='/opt/x/blocked.jsonl')",
+    ]
+    assert {
+        "benchflow/providers/litellm_egress_guard.py",
+        "benchflow/sandbox/_egress_policy.py",
+    } <= set(guarded)
+    assert "egress_guard" not in open_gateway["sitecustomize.py"]
+    assert not any(path.startswith("benchflow/") for path in open_gateway)
+
+
+@pytest.mark.asyncio
+async def test_unguarded_gateway_fails_closed():
+    class Sandbox:
+        async def exec(self, command, timeout_sec):
+            return SimpleNamespace(return_code=1, stdout="", stderr="")
+
+    with pytest.raises(RuntimeError, match="egress guard is not active"):
+        await runtime_mod._verify_sandbox_egress_guard(
+            Sandbox(), python="python3", port=45678
+        )

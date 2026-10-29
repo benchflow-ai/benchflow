@@ -207,7 +207,11 @@ from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfi
 from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
-from benchflow.sandbox.egress_denylist import EgressDenylist, denylist_agent_env
+from benchflow.sandbox.egress_denylist import (
+    EgressDenylist,
+    denylist_agent_env,
+    egress_guard_for,
+)
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -1385,8 +1389,10 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=getattr(self, "_disallow_web_tools", False)
-            or egress_denylist is not None,
+            egress_guard=egress_guard_for(
+                no_web=getattr(self, "_disallow_web_tools", False),
+                denylist=egress_denylist,
+            ),
         )
         if egress_denylist is not None:
             self._agent_env = denylist_agent_env(self._agent_env)
@@ -2456,7 +2462,9 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=disallow_web_tools or disallow_hosted_search,
+            egress_guard=egress_guard_for(
+                no_web=disallow_web_tools, denylist=egress_denylist
+            ),
         )
         if egress_denylist is not None:
             agent_env = denylist_agent_env(agent_env)

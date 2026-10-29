@@ -462,6 +462,9 @@ class TestStartStop:
         assert set(uploaded) == {
             "/opt/benchflow-egress/policy.json",
             "/opt/benchflow-egress/proxy.py",
+            "/opt/benchflow-egress/benchflow/__init__.py",
+            "/opt/benchflow-egress/benchflow/sandbox/__init__.py",
+            "/opt/benchflow-egress/benchflow/sandbox/_egress_policy.py",
             "/opt/benchflow-egress/ca.crt",
             "/opt/benchflow-egress/ca.key",
             "/opt/benchflow-egress/certs/a.test.pem",

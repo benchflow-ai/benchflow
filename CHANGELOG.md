@@ -4,6 +4,34 @@
 
 ### Fixed
 
+- **No-web and denylist runs no longer let the provider fetch the web for the
+  agent.** Switching off each harness's hosted search left the agent's own
+  requests open: it can call the in-sandbox model gateway (its address and key
+  are in the agent's environment) or, on subscription routes, the provider
+  through the denylist proxy, and ask for a server tool such as Gemini
+  `url_context` or OpenAI `web_search`, or hand over a file by URL; the
+  provider then reads the page from its own servers, outside every sandbox
+  rule (the "universal offline sandbox escape"). On Daytona with Codex and
+  Azure GPT-5.6 Terra, a raw Responses request with `file_url` set to a blocked
+  arXiv PDF came back with the paper's title. In no-web and denylist runs a
+  guard now wraps the LiteLLM gateway: it serves only model-call routes,
+  refuses WebSocket sessions, provider pass-through, file and batch routes,
+  turns off LiteLLM's own image-URL downloads, and refuses hosted-fetch
+  requests and `extra_body` with `403`, whatever envelope wraps them.
+  benchflow checks the guard is active before the agent starts. The denylist proxy reads every request body that opens like JSON the
+  way a lenient server would and applies the same rule, refusing bodies it
+  cannot read or that exceed 64 MiB; other bodies still stream. Refusals are
+  logged in `trajectory/egress_denylist.jsonl`. Codex runs with request
+  compression off in these modes. `ensure_litellm_runtime`'s
+  `force_sandbox_local` is replaced by `egress_guard`.
+- **The denylist refuses a listed page named inside another URL.** A reader
+  service, web archive or redirector given the address
+  (`r.jina.ai/https://arxiv.org/abs/2401.12345`,
+  `web.archive.org/web/2026/https://...`, `?url=https%3A%2F%2F...`) fetched
+  the page from a host the task did not list. The proxy now matches listed
+  hosts and URL prefixes found in a request's path and query, read as a URL
+  parser would (percent-decoded, IDNA-ignored characters dropped, NFKC-folded,
+  fullwidth and ideographic dots, trailing dot).
 - **Evidence capture keeps an absolute in-workspace symlink spelled with
   `..` (#1157).** `_link_target` checked an absolute target after stripping
   the workspace but before normalising it, so a link such as

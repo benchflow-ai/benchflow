@@ -3,6 +3,9 @@
 HTTPS is intercepted so the CONNECT authority, TLS name and decrypted HTTP
 authority stay bound to the same destination. Leaf certificates are generated
 on demand with the per-rollout CA kept in the root-only runtime directory.
+What is refused is decided by ``benchflow.sandbox._egress_policy``, which
+benchflow ships next to this script at that package path: listed URLs, and
+request bodies that ask a model provider to fetch the web.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import argparse
 import contextlib
 import hashlib
 import ipaddress
+import itertools
 import json
 import os
 import re
@@ -23,145 +27,26 @@ import sys
 import tempfile
 import threading
 import urllib.parse
-from datetime import datetime, timezone
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
+
+from benchflow.sandbox._egress_policy import (
+    BODY_INSPECT_LIMIT,
+    Log,
+    Policy,
+    content_codings,
+    decoded_body,
+    host_key,
+    looks_like_address,
+    model_request_rule,
+)
 
 HEAD_LIMIT = 64 * 1024
 HEAD_TIMEOUT = 30
 IDLE_TIMEOUT = 900
 BLOCK_BODY = "Blocked by the task network policy: {url}\n"
 CERT_MINT_TIMEOUT = 15
-
-
-def host_key(host: str) -> str:
-    """Comparison form of a hostname: lowercase, no trailing dot, no leading www."""
-    host = host.strip().rstrip(".").lower()
-    return host[4:] if host.startswith("www.") else host
-
-
-def _path_key(path: str) -> str:
-    """Comparison form of a path: decoded, dot segments resolved, one slash between segments."""
-    path = path.split("?", 1)[0].split("#", 1)[0]
-    for _ in range(3):
-        decoded = urllib.parse.unquote(path)
-        if decoded == path:
-            break
-        path = decoded
-    path = path.replace("\\", "/")
-    segments: list[str] = []
-    for segment in path.split("/"):
-        segment = segment.split(";", 1)[0]
-        if segment in ("", "."):
-            continue
-        if segment == "..":
-            if segments:
-                segments.pop()
-            continue
-        segments.append(segment)
-    key = "/" + "/".join(segments)
-    if path.endswith(("/", "/.", "/..")) and key != "/":
-        key += "/"
-    return key.lower()
-
-
-_EMBEDDED_IPV4 = re.compile(r"(?:^|[.-])(?:\d{1,3}[.-]){3}\d{1,3}(?:[.-]|$)")
-_HEX_IPV4_LABEL = re.compile(r"^[0-9a-f]{8}$")
-_WILDCARD_DNS = (
-    "nip.io",
-    "sslip.io",
-    "xip.io",
-    "traefik.me",
-    "localtest.me",
-    "lvh.me",
-    "vcap.me",
-)
-
-
-def _looks_like_address(host: str) -> bool:
-    """True for anything that names an address rather than a site.
-
-    glibc accepts decimal, octal, hex and short dotted forms (``3232235777``,
-    ``0xc0a80101``, ``0300.0250.1.1``, ``127.1``), and wildcard DNS services
-    resolve an address embedded in the name (``1-2-3-4.sslip.io``).
-    """
-    try:
-        ipaddress.ip_address(host)
-        return True
-    except ValueError:
-        pass
-    labels = host.split(".")
-    if not any(c.isalpha() for c in host):
-        return True
-    if labels[-1].isdigit():
-        return True
-    if any(label.startswith("0x") or _HEX_IPV4_LABEL.match(label) for label in labels):
-        return True
-    if _EMBEDDED_IPV4.search(host):
-        return True
-    return any(host == d or host.endswith("." + d) for d in _WILDCARD_DNS)
-
-
-class Policy:
-    """Match hosts and URLs against the denylist; scheme, port and query are ignored."""
-
-    def __init__(
-        self,
-        blocked_urls: list[str],
-        blocked_hosts: list[str],
-        model_gateway_port: int | None = None,
-    ):
-        # Controller-supplied runtime state, never a task-authored allowlist.
-        if model_gateway_port is not None and (
-            type(model_gateway_port) is not int
-            or not 1024 <= model_gateway_port <= 65535
-        ):
-            raise ValueError("invalid model gateway port")
-        self.model_gateway_port = model_gateway_port
-        self.prefixes: list[tuple[str, str]] = []
-        for raw in blocked_urls:
-            url = raw if "://" in raw else "https://" + raw
-            parts = urllib.parse.urlsplit(url)
-            if not parts.hostname:
-                raise ValueError(f"blocked_urls entry has no host: {raw!r}")
-            prefix = _path_key(parts.path).rstrip("/") or "/"
-            self.prefixes.append((host_key(parts.hostname), prefix))
-        self.hosts = {h.strip().rstrip(".").lower() for h in blocked_hosts if h.strip()}
-        self.inspect_hosts = {host for host, _ in self.prefixes}
-
-    @classmethod
-    def load(cls, path: str) -> Policy:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return cls(
-            list(data.get("blocked_urls") or []),
-            list(data.get("blocked_hosts") or []),
-            data.get("model_gateway_port"),
-        )
-
-    def host_rule(self, host: str, port: int = 0) -> str | None:
-        if (host, port) == ("127.0.0.1", self.model_gateway_port):
-            return None
-        name = host.strip().rstrip(".").lower()
-        if _looks_like_address(name):
-            return "ip-literal"
-        for blocked in self.hosts:
-            if name == blocked or name.endswith("." + blocked):
-                return f"host:{blocked}"
-        return None
-
-    def url_rule(self, host: str, path: str, port: int = 0) -> str | None:
-        rule = self.host_rule(host, port)
-        if rule:
-            return rule
-        key, pkey = host_key(host), _path_key(path)
-        for bhost, bpath in self.prefixes:
-            if key == bhost and pkey.startswith(bpath):
-                return f"url:{bhost}{bpath}"
-        return None
-
-    def inspect(self, host: str) -> bool:
-        return host_key(host) in self.inspect_hosts
 
 
 class CertStore:
@@ -206,7 +91,7 @@ class CertStore:
             name = host_key(host).encode("idna").decode("ascii")
         except UnicodeError as exc:
             raise ValueError("invalid certificate hostname") from exc
-        if len(name) > 253 or _looks_like_address(name):
+        if len(name) > 253 or looks_like_address(name):
             raise ValueError("invalid certificate hostname")
         labels = name.split(".")
         if any(
@@ -317,22 +202,6 @@ class CertStore:
         return destination
 
 
-class Log:
-    def __init__(self, path: str | None):
-        self.path = path
-        self._lock = threading.Lock()
-
-    def write(self, **fields: object) -> None:
-        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
-        line = json.dumps({"ts": stamp, **fields}, sort_keys=True)
-        with self._lock:
-            if self.path:
-                with open(self.path, "a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-            else:
-                print(line, file=sys.stderr, flush=True)
-
-
 def _read_head(sock: socket.socket) -> bytes:
     buf = b""
     sock.settimeout(HEAD_TIMEOUT)
@@ -441,24 +310,13 @@ class _BodyReader:
         return line
 
 
-def _copy_request_body(
-    client: socket.socket,
-    upstream: socket.socket,
-    rest: bytes,
-    length: int,
-    chunked: bool,
-) -> None:
-    """Stream only this body. Canonicalize chunks and discard trailers/pipeline bytes."""
-    reader = _BodyReader(client, rest)
-
-    def copy(size: int) -> None:
-        while size:
-            data = reader.take(min(size, 65536))
-            upstream.sendall(data)
-            size -= len(data)
-
+def _body_pieces(reader: _BodyReader, length: int, chunked: bool) -> Iterator[bytes]:
+    """Yield only this request's body, de-chunked; trailers and pipelined bytes are discarded."""
     if not chunked:
-        copy(length)
+        while length:
+            data = reader.take(min(length, 65536))
+            length -= len(data)
+            yield data
         return
     while True:
         size_text = reader.line().split(b";", 1)[0]
@@ -471,13 +329,111 @@ def _copy_request_body(
                 trailer_size += len(line) + 2
                 if trailer_size > HEAD_LIMIT:
                     raise ConnectionError("trailers too large")
-            upstream.sendall(b"0\r\n\r\n")
             return
-        upstream.sendall(f"{size:x}\r\n".encode("ascii"))
-        copy(size)
+        while size:
+            data = reader.take(min(size, 65536))
+            size -= len(data)
+            yield data
         if reader.line() != b"":
             raise ConnectionError("invalid chunk terminator")
-        upstream.sendall(b"\r\n")
+
+
+_SIGNIFICANT = re.compile(rb"[^ \t\r\n]")
+# Bytes a JSON document can open with in any encoding ``json`` detects: the
+# document itself, whitespace, a NUL of UTF-16 or UTF-32, or a byte order mark.
+_JSON_OPENERS = b"{[ \t\r\n\x00\xef\xfe\xff"
+
+
+class _RequestBody:
+    """A request body: held and checked when it may carry a model request, else streamed.
+
+    A body that opens like a JSON document (or is content-coded) is read whole
+    before anything is forwarded, so a request that asks a model provider to
+    fetch the web never leaves the sandbox. Any other body streams through as
+    it arrives, once its first significant byte shows it is not JSON.
+    """
+
+    def __init__(
+        self,
+        sock: socket.socket,
+        headers: list[tuple[str, str]],
+        rest: bytes,
+        length: int,
+        chunked: bool,
+    ):
+        self.chunked = chunked
+        self.codings = content_codings(
+            v for n, v in headers if n.lower() == "content-encoding"
+        )
+        reader = _BodyReader(sock, _body_prefix(headers, rest))
+        self._unread = _body_pieces(reader, length, chunked)
+        self._read = b""
+
+    def check(self) -> str | None:
+        """Read as much of the body as the policy needs; the rule it breaks, if any."""
+        data = bytearray()
+        json_like: bool | None = True if self.codings else None
+        scanned = 0  # leading bytes already known to be whitespace
+        for piece in self._unread:
+            data += piece
+            if json_like is None:
+                json_like, scanned = _opens_json(data, scanned)
+                if json_like is False:
+                    break
+            if len(data) > BODY_INSPECT_LIMIT:
+                return "oversized-body"
+        self._read = bytes(data)
+        if not self.codings:
+            # Still undecided: whitespace, or a few bytes; no request fits in either.
+            return model_request_rule(self._read) if json_like else None
+        # A content-coded body is read whole: whether it is JSON shows once decoded.
+        try:
+            decoded = decoded_body(self._read, self.codings)
+        except ValueError:
+            return "uninspectable-body"
+        return (
+            model_request_rule(decoded)
+            if _opens_json(bytearray(decoded), 0)[0]
+            else None
+        )
+
+    def send(self, upstream: socket.socket) -> None:
+        """Send what was read, then stream the rest, keeping the request's own framing."""
+        pieces = itertools.chain((self._read,), self._unread)
+        if not self.chunked:
+            for piece in pieces:
+                upstream.sendall(piece)
+            return
+        for piece in pieces:
+            if piece:
+                upstream.sendall(
+                    f"{len(piece):x}\r\n".encode("ascii") + piece + b"\r\n"
+                )
+        upstream.sendall(b"0\r\n\r\n")
+
+
+def _opens_json(data: bytearray, scanned: int) -> tuple[bool | None, int]:
+    """Whether a body opens a JSON document, and how far that was read.
+
+    The first byte usually decides. A body that opens with whitespace, a NUL
+    or a byte order mark may be UTF-16 or UTF-32 text, which ``json`` and some
+    servers accept: that takes four bytes to tell, then the first significant
+    byte decides. Until then the answer is None. Scanning resumes at
+    ``scanned``, so a long run of leading whitespace is read once.
+    """
+    if not data or data[0] not in _JSON_OPENERS:
+        return False, len(data)
+    if data[0] in b"{[":
+        return True, len(data)
+    if len(data) < 4:
+        return None, 0
+    if json.detect_encoding(bytes(data[:4])) not in ("utf-8", "utf-8-sig"):
+        return True, len(data)
+    start = max(scanned, 3 if data.startswith(b"\xef\xbb\xbf") else 0)
+    first = _SIGNIFICANT.search(data, start)
+    if first is None:
+        return None, len(data)
+    return data[first.start()] in b"{[", len(data)
 
 
 class _PrivateDestination(Exception):
@@ -817,6 +773,15 @@ class Handler(socketserver.BaseRequestHandler):
         if rule:
             self._deny(sock, method, url, rule)
             return
+        # The body is checked before the origin is contacted.
+        sock.settimeout(IDLE_TIMEOUT)
+        if expectations:
+            sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+        body = _RequestBody(sock, headers, rest, length, chunked)
+        rule = body.check()
+        if rule:
+            self._deny(sock, method, url, rule)
+            return
         headers = [
             (n, v)
             for n, v in headers
@@ -842,14 +807,9 @@ class Handler(socketserver.BaseRequestHandler):
             )
             return
         try:
-            sock.settimeout(IDLE_TIMEOUT)
             upstream.settimeout(IDLE_TIMEOUT)
             upstream.sendall(_build_head(method, path, version, headers))
-            if expectations:
-                sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
-            _copy_request_body(
-                sock, upstream, _body_prefix(headers, rest), length, chunked
-            )
+            body.send(upstream)
             # Never relay additional client bytes: a later request could name
             # an unchecked virtual host or path on the same origin connection.
             _relay_response(sock, upstream)
