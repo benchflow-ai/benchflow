@@ -896,6 +896,7 @@ def test_runtime_modules_install_the_guard_first_only_when_guarded():
     assert {
         "benchflow/providers/litellm_egress_guard.py",
         "benchflow/sandbox/_egress_policy.py",
+        "benchflow/sandbox/_hosted_fetch.py",
     } <= set(guarded)
     assert "egress_guard" not in open_gateway["sitecustomize.py"]
     assert not any(path.startswith("benchflow/") for path in open_gateway)

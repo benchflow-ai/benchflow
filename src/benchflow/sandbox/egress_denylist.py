@@ -357,7 +357,11 @@ async def start_egress_denylist(
         "policy.json": json.dumps(policy, indent=2).encode("utf-8"),
         "proxy.py": _PROXY_SCRIPT.read_bytes(),
         # The proxy imports the policy as in-process, from next to itself.
-        **package_files("benchflow.sandbox._egress_policy"),
+        **package_files(
+            "benchflow.sandbox._egress_policy",
+            "benchflow.sandbox._hosted_fetch",
+            "benchflow.sandbox._egress_body",
+        ),
         "ca.crt": material["ca.crt"],
         "ca.key": material["ca.key"],
         **{

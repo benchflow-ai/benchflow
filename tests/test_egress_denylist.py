@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from benchflow.sandbox import _egress_body as body_mod
 from benchflow.sandbox import _egress_denylist_proxy as proxy_mod
 from benchflow.sandbox.egress_denylist import (
     CA_BUNDLE_PATH,
@@ -141,9 +142,9 @@ class TestPolicy:
 
     def test_body_prefix_drops_pipelined_requests(self):
         rest = b"abc" + b"GET /blocked HTTP/1.1\r\nHost: x\r\n\r\n"
-        assert proxy_mod._body_prefix([("Content-Length", "3")], rest) == b"abc"
-        assert proxy_mod._body_prefix([], rest) == b""
-        assert proxy_mod._body_prefix([("Transfer-Encoding", "chunked")], rest) == rest
+        assert body_mod.body_prefix([("Content-Length", "3")], rest) == b"abc"
+        assert body_mod.body_prefix([], rest) == b""
+        assert body_mod.body_prefix([("Transfer-Encoding", "chunked")], rest) == rest
 
     def test_host_rule_covers_subdomains_but_not_suffix_lookalikes(self):
         policy = proxy_mod.Policy([], ["example.org"])
@@ -465,6 +466,8 @@ class TestStartStop:
             "/opt/benchflow-egress/benchflow/__init__.py",
             "/opt/benchflow-egress/benchflow/sandbox/__init__.py",
             "/opt/benchflow-egress/benchflow/sandbox/_egress_policy.py",
+            "/opt/benchflow-egress/benchflow/sandbox/_hosted_fetch.py",
+            "/opt/benchflow-egress/benchflow/sandbox/_egress_body.py",
             "/opt/benchflow-egress/ca.crt",
             "/opt/benchflow-egress/ca.key",
             "/opt/benchflow-egress/certs/a.test.pem",

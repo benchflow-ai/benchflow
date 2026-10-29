@@ -16,22 +16,33 @@
   arXiv PDF came back with the paper's title. In no-web and denylist runs a
   guard now wraps the LiteLLM gateway: it serves only model-call routes,
   refuses WebSocket sessions, provider pass-through, file and batch routes,
-  turns off LiteLLM's own image-URL downloads, and refuses hosted-fetch
-  requests and `extra_body` with `403`, whatever envelope wraps them.
-  benchflow checks the guard is active before the agent starts. The denylist proxy reads every request body that opens like JSON the
-  way a lenient server would and applies the same rule, refusing bodies it
-  cannot read or that exceed 64 MiB; other bodies still stream. Refusals are
-  logged in `trajectory/egress_denylist.jsonl`. Codex runs with request
-  compression off in these modes. `ensure_litellm_runtime`'s
-  `force_sandbox_local` is replaced by `egress_guard`.
-- **The denylist refuses a listed page named inside another URL.** A reader
-  service, web archive or redirector given the address
+  turns off LiteLLM's own image-URL downloads, and refuses form bodies,
+  hosted-fetch requests and `extra_body` with `403`, whatever envelope wraps
+  them. benchflow checks the guard is active before the agent starts. The
+  denylist proxy reads every request body that opens like JSON and checks
+  other text bodies as they stream, applying the same rule. A body is judged
+  on every reading a provider might make of it: folded names (Azure-style
+  `Tools`, `web-search`), every value of a repeated name (Gemini merges
+  them), every JSON value and JSON Lines line, and addresses as a URL parser
+  reads them (Azure fetched a `file_url` written `https:host` or with a tab
+  in the scheme). Hosted containers with network access, browsing models and
+  agents are refused too. Bodies the proxy cannot read, or over 64 MiB, are
+  refused. Refusals are logged in `trajectory/egress_denylist.jsonl`. Codex
+  runs with request compression off in these modes.
+  `ensure_litellm_runtime`'s `force_sandbox_local` is replaced by
+  `egress_guard`.
+- **The denylist refuses a listed page handed to another service.** A reader
+  service, web archive, translation proxy or redirector given the address
   (`r.jina.ai/https://arxiv.org/abs/2401.12345`,
-  `web.archive.org/web/2026/https://...`, `?url=https%3A%2F%2F...`) fetched
-  the page from a host the task did not list. The proxy now matches listed
-  hosts and URL prefixes found in a request's path and query, read as a URL
-  parser would (percent-decoded, IDNA-ignored characters dropped, NFKC-folded,
-  fullwidth and ideographic dots, trailing dot).
+  `web.archive.org/web/2026/https://...`, `?url=https%3A%2F%2F...`, a form
+  field `url=...`, `arxiv-org.translate.goog/...`) fetched the page from a host
+  the task did not list. The proxy now matches listed hosts and URL prefixes
+  named in a request's path, query or body, read as a URL parser would
+  (percent-decoded, IDNA-ignored characters dropped, NFKC-folded, fullwidth and
+  ideographic dots, trailing dot, empty port). A listed GitHub or Hugging Face
+  repository is also refused on the services that serve it by name (jsDelivr,
+  Statically, githack, `raw.githubusercontent.com`, the GitHub API,
+  `hf-mirror.com`, the Hub API and its dataset viewer).
 - **Evidence capture keeps an absolute in-workspace symlink spelled with
   `..` (#1157).** `_link_target` checked an absolute target after stripping
   the workspace but before normalising it, so a link such as

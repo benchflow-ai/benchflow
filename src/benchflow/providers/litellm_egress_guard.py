@@ -8,13 +8,14 @@ sandbox rule. ``install()`` wraps LiteLLM's app so that only the model-call
 routes the harnesses use are served, every request body passes the egress
 policy, and each refusal is logged.
 
-benchflow ships this module and the egress policy into the LiteLLM runtime
-directory at their package paths, and the runtime's ``sitecustomize`` calls
+benchflow ships this module and the egress policy modules into the LiteLLM
+runtime directory at their package paths, and the runtime's ``sitecustomize`` calls
 ``install()`` first thing for a guarded gateway.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib.abc
 import importlib.util
@@ -27,9 +28,9 @@ from importlib.machinery import ModuleSpec
 from types import ModuleType
 from typing import Any
 
-from benchflow.sandbox._egress_policy import (
+from benchflow.sandbox._egress_policy import Log
+from benchflow.sandbox._hosted_fetch import (
     BODY_INSPECT_LIMIT,
-    Log,
     content_codings,
     model_request_rule,
 )
@@ -118,11 +119,16 @@ class ModelEndpointGuard:
             return
         if method == "POST":
             body, receive = await _buffered(receive)
-            rule = (
-                "oversized-body"
-                if body is None
-                else model_request_rule(body, _codings(scope))
-            )
+            if body is None:
+                rule = "oversized-body"
+            elif _is_form(scope):
+                # LiteLLM reads a form body field by field, not as the JSON judged here.
+                rule = "uninspectable-body"
+            else:
+                # A large body takes a while to read; keep LiteLLM's loop serving.
+                rule = await asyncio.to_thread(
+                    model_request_rule, body, _codings(scope)
+                )
             if rule:
                 await self._refuse(scope, send, rule)
                 return
@@ -158,6 +164,15 @@ class ModelEndpointGuard:
         # A refusal stands even when it cannot be logged.
         with contextlib.suppress(OSError):
             self.log.write(action="blocked", method=method, url=url, rule=rule)
+
+
+def _is_form(scope: _Message) -> bool:
+    return any(
+        name.lower() == b"content-type"
+        and value.split(b";", 1)[0].strip().lower()
+        in (b"application/x-www-form-urlencoded", b"multipart/form-data")
+        for name, value in scope.get("headers", ())
+    )
 
 
 def _codings(scope: _Message) -> list[str]:

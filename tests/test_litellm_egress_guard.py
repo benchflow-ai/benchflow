@@ -171,7 +171,7 @@ def test_hosted_fetch_requests_never_reach_litellm(gateway, path, body, rule):
 
 
 def test_content_coded_bodies_are_read_or_refused(gateway):
-    hosted = json.dumps({"tools": [{"type": "web_search"}]}).encode()
+    hosted = json.dumps({"model": "m", "tools": [{"type": "web_search"}]}).encode()
     coded = gateway.post(
         "/v1/responses",
         content=gzip.compress(hosted),
@@ -189,6 +189,22 @@ def test_content_coded_bodies_are_read_or_refused(gateway):
         "uninspectable-body",
     ]
     assert unknown.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["application/x-www-form-urlencoded", "multipart/form-data; boundary=x"],
+)
+def test_form_bodies_are_refused(gateway, content_type):
+    """LiteLLM reads a form body field by field, not as the JSON the guard judges."""
+    response = gateway.post(
+        "/v1/responses",
+        content=b"model=m&input=hi",
+        headers={"content-type": content_type},
+    )
+
+    assert response.status_code == 403
+    assert _logged(gateway)[-1]["rule"] == "uninspectable-body"
 
 
 def test_oversized_body_is_refused(gateway, monkeypatch):

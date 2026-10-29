@@ -332,3 +332,139 @@ def test_websocket_sessions_are_refused(gateway):
         status_line = sock.recv(4096).split(b"\r\n", 1)[0]
 
     assert b" 403 " in status_line + b" "
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "rule"),
+    [
+        # LiteLLM forwards each of these to the provider unchanged when unguarded.
+        (
+            "/v1/chat/completions",
+            {
+                "model": "fake",
+                "messages": _user("hi"),
+                "Tools": [{"type": "web_search"}],
+            },
+            "hosted-fetch:tool:web_search",
+        ),
+        (
+            "/v1/responses",
+            {
+                "model": "fake",
+                "input": _user([{"Type": "input_file", "file_url": _PAPER}]),
+            },
+            "hosted-fetch:input:input_file",
+        ),
+        (
+            "/v1/responses",
+            {
+                "model": "fake",
+                "input": _user(
+                    [
+                        {
+                            "type": "input_file",
+                            "file_url": "https:arxiv.org/pdf/2401.12345",
+                        }
+                    ]
+                ),
+            },
+            "hosted-fetch:input:input_file",
+        ),
+        (
+            "/v1/messages",
+            {
+                "model": "fake",
+                "max_tokens": 8,
+                "messages": _user("hi"),
+                "Tools": [{"type": "web_fetch_20250910", "name": "web_fetch"}],
+            },
+            "hosted-fetch:tool:web_fetch_20250910",
+        ),
+        (
+            _GEMINI,
+            {"contents": [{"parts": [{"FileData": {"fileUri": _PAPER}}]}]},
+            "hosted-fetch:input:file_data",
+        ),
+    ],
+    ids=[
+        "chat-Tools",
+        "responses-Type",
+        "responses-https-colon",
+        "messages-Tools",
+        "gemini-FileData",
+    ],
+)
+def test_spellings_never_reach_the_provider(gateway, path, body, rule):
+    before = len(gateway.paths)
+
+    status, text, _headers = _call(gateway, path, body)
+
+    assert (status, rule in text) == (403, True)
+    assert len(gateway.paths) == before
+
+
+class _Decoy(http.server.BaseHTTPRequestHandler):
+    """A caller-chosen address: any request here means LiteLLM was steered to it."""
+
+    def _record(self):
+        self.server.hits.append(self.path)
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    do_GET = do_POST = _record
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture(scope="module")
+def decoy():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Decoy)
+    server.hits = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield SimpleNamespace(
+        url=f"http://127.0.0.1:{server.server_address[1]}", hits=server.hits
+    )
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        lambda url: {"api_base": f"{url}/x#", "api_key": "k"},
+        lambda url: {"base_url": f"{url}/x#", "api_key": "k"},
+        lambda url: {
+            "user_config": {
+                "model_list": [
+                    {
+                        "model_name": "fake",
+                        "litellm_params": {
+                            "model": "openai/fake",
+                            "api_base": url,
+                            "api_key": "k",
+                        },
+                    }
+                ]
+            }
+        },
+        lambda url: {
+            "fallbacks": [{"model": "openai/fake", "api_base": url, "api_key": "k"}]
+        },
+        lambda url: {"metadata": {"api_base": url}},
+        lambda url: {"model": f"openai/{url}"},
+    ],
+    ids=["api_base", "base_url", "user_config", "fallbacks", "metadata", "model-url"],
+)
+def test_litellm_never_sends_a_request_to_a_caller_chosen_address(
+    gateway, decoy, extra
+):
+    """LiteLLM's own traffic skips the egress proxy, so it must not be retargetable."""
+    body = {"model": "fake", "messages": _user("hi"), **extra(decoy.url)}
+
+    status, _text, _headers = _call(gateway, "/v1/chat/completions", body)
+
+    assert status >= 400
+    assert decoy.hits == []

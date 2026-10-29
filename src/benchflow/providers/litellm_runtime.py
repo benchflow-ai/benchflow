@@ -787,6 +787,7 @@ def _runtime_modules(egress_guard: EgressGuard | None = None) -> dict[str, str]:
     if egress_guard is not None:
         shipped = package_files(
             "benchflow.sandbox._egress_policy",
+            "benchflow.sandbox._hosted_fetch",
             "benchflow.providers.litellm_egress_guard",
         )
         files.update((path, source.decode()) for path, source in shipped.items())
