@@ -5,6 +5,8 @@ import os
 import time
 from collections.abc import Callable
 from datetime import datetime
+from itertools import groupby
+from operator import itemgetter
 from typing import Any
 
 from benchflow.trajectories.metrics import is_skill_invocation_event
@@ -136,6 +138,24 @@ def _canonical_tool_kind(kind: object, title: object = "") -> str:
     if _is_skill_tool_call(kind, title):
         return "skill"
     return raw_kind
+
+
+def merge_text_runs(chunks: list[dict]) -> list[dict]:
+    """Merge consecutive same-type text chunks into one event per run.
+
+    Each run is joined once, so the cost is linear in the streamed text;
+    growing a run with ``+=`` would copy everything streamed so far on every
+    chunk. ``chunks`` is left untouched, and each event keeps the other keys
+    of its run's first chunk.
+    """
+    merged: list[dict] = []
+    for _type, group in groupby(chunks, key=itemgetter("type")):
+        run = list(group)
+        event = dict(run[0])
+        if len(run) > 1:
+            event["text"] = "".join(chunk["text"] for chunk in run)
+        merged.append(event)
+    return merged
 
 
 def _tool_display_title(title: str, kind: str) -> str:
@@ -275,6 +295,11 @@ class ACPSession:
         # Optional sink invoked after every public state mutation so callers
         # can stream a trajectory snapshot to disk without polling.
         self.on_change: Callable[[ACPSession], None] | None = None
+        # True when the latest change only grew an existing event: another
+        # chunk of the newest text run, or more output for a tool call whose
+        # status and kind did not change. A sink may coalesce these, but
+        # should publish any other change at once.
+        self.last_change_incremental = False
         # Console progress heartbeat. Without it a first-run user stares at
         # total silence between "Prompt 1/1: ..." and the verifier — observed
         # 18 minutes on a passing rollout (fresh-user dogfood 2026-08-09) with
@@ -284,8 +309,9 @@ class ACPSession:
         self._prompt_started_at: float | None = None
         self._last_progress_at = 0.0
 
-    def _notify_change(self) -> None:
+    def _notify_change(self, *, incremental: bool = False) -> None:
         self._maybe_log_progress()
+        self.last_change_incremental = incremental
         if self.on_change is None:
             return
         try:
@@ -412,14 +438,7 @@ class ACPSession:
         """Flush pending text events, merging consecutive same-type chunks."""
         if not self._pending_text:
             return
-        current = self._pending_text[0].copy()
-        for event in self._pending_text[1:]:
-            if event["type"] == current["type"]:
-                current["text"] += event["text"]
-            else:
-                self.events.append(current)
-                current = event.copy()
-        self.events.append(current)
+        self.events.extend(merge_text_runs(self._pending_text))
         self._pending_text.clear()
 
     def _record_tool_call(self, record: ToolCallRecord) -> None:
@@ -448,6 +467,9 @@ class ACPSession:
             "agent_thought_chunk",
         }
     )
+    _TEXT_UPDATE_TYPES = frozenset(
+        {"agent_message_chunk", "text_update", "agent_thought", "agent_thought_chunk"}
+    )
 
     def handle_update(self, update: dict) -> None:
         """Process a session/update notification."""
@@ -460,6 +482,8 @@ class ACPSession:
         # types.
         if update_type not in self._RECOGNIZED_UPDATE_TYPES:
             return
+        incremental = False
+        pending_type = self._pending_text[-1]["type"] if self._pending_text else None
 
         if update_type == "tool_call":
             self._flush_agent_text()
@@ -490,6 +514,7 @@ class ACPSession:
             self.tool_call_update_count += 1
             tc_id = update.get("toolCallId", "")
             record = self._tool_call_map.get(tc_id)
+            previous = (record.status, record.kind) if record else None
             if not record:
                 self._flush_agent_text()
                 record = ToolCallRecord(
@@ -528,6 +553,7 @@ class ACPSession:
                 self._seen_tool_titles.add(
                     _tool_display_title(record.title, record.kind)
                 )
+            incremental = previous == (record.status, record.kind)
 
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
@@ -557,7 +583,12 @@ class ACPSession:
                 self.thought_chunks.append(text)
                 self._pending_text.append({"type": "agent_thought", "text": text})
 
-        self._notify_change()
+        if update_type in self._TEXT_UPDATE_TYPES:
+            # Only the first chunk of a run starts an event.
+            incremental = (
+                not self._pending_text or self._pending_text[-1]["type"] == pending_type
+            )
+        self._notify_change(incremental=incremental)
 
     @property
     def full_message(self) -> str:

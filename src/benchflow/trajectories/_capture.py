@@ -3,19 +3,26 @@
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from benchflow.acp.session import ACPSession
+from benchflow.acp.session import ACPSession, merge_text_runs
 from benchflow.trajectories._snapshot import RedactedJSONLSnapshot
 
 logger = logging.getLogger(__name__)
+
+# Minimum spacing of live writes that only grow an existing event.
+_LIVE_WRITE_INTERVAL_SEC = 2.0
 
 
 def make_trajectory_sink(
     writer: "TrajectoryWriter",
     prior_trajectory: list[dict],
+    *,
+    min_interval_sec: float = _LIVE_WRITE_INTERVAL_SEC,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Callable[[ACPSession], None]:
     """Build an ``on_change`` sink that writes ``prior + current session`` to disk.
 
@@ -27,34 +34,32 @@ def make_trajectory_sink(
 
     Used across multi-scene rollouts so each scene's streaming writer
     sees prior scenes' events instead of overwriting them.
+
+    Every write serializes the whole trajectory, so writing on each streamed
+    chunk would make one long thought quadratic and leave the ACP read loop
+    behind the agent. A change that only grows an existing event
+    (``session.last_change_incremental``) is therefore written at most once
+    per ``min_interval_sec``; a new event, a tool status or kind change, or
+    the end of a prompt is written at once. A hard crash can thus lose what an
+    in-flight event grew since the last write, never a whole event.
     """
     prior_snapshot = list(prior_trajectory)
+    last_write: float | None = None
 
     def sink(session: ACPSession) -> None:
+        nonlocal last_write
+        now = clock()
+        # Steps-only sessions lack the flag; each of their changes adds a step.
+        if (
+            last_write is not None
+            and getattr(session, "last_change_incremental", False)
+            and now - last_write < min_interval_sec
+        ):
+            return
         writer.write_events(prior_snapshot + _snapshot_session_trajectory(session))
+        last_write = now
 
     return sink
-
-
-def _merge_pending_text(pending: list[dict]) -> list[dict]:
-    """Merge consecutive same-type pending text events without mutating `pending`.
-
-    Mirrors the merging done by ``ACPSession._flush_agent_text`` but is
-    side-effect-free so a live snapshot can include in-flight chunks while
-    leaving the session free to keep streaming.
-    """
-    if not pending:
-        return []
-    merged: list[dict] = []
-    current = dict(pending[0])
-    for event in pending[1:]:
-        if event["type"] == current["type"]:
-            current["text"] += event["text"]
-        else:
-            merged.append(current)
-            current = dict(event)
-    merged.append(current)
-    return merged
 
 
 def _events_to_trajectory(events: list[dict]) -> list[dict]:
@@ -124,7 +129,7 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.
         return _capture_session_trajectory(session)
-    return _events_to_trajectory(session.events) + _merge_pending_text(
+    return _events_to_trajectory(session.events) + merge_text_runs(
         session._pending_text
     )
 
