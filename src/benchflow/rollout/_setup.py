@@ -487,7 +487,7 @@ async def _verify_rollout(
                 )
                 break
             except TimeoutError:
-                # A verifier that times out having produced NO output never
+                # A timed-out verifier with NO output and no live process never
                 # actually started its tests — the exec-layer session wedged
                 # (observed on Daytona 2026-08-07/08: test.sh finishes in
                 # under a second when it runs, yet several rollouts burned the
@@ -528,23 +528,108 @@ async def _verify_rollout(
     return rewards, verifier_error, verifier_timeout
 
 
-async def _verifier_wedged_without_output(env: Any) -> bool:
-    """True when the timed-out verifier attempt left no test output behind.
+# POSIX sh that sets ``$held`` to the exec-layer shells around the timed-out
+# verifier command: the processes whose command line names the capture file
+# /logs/verifier/test-stdout.txt, which every verifier command redirects
+# into. It reads /proc because task images often lack procps. The ``[r]``
+# keeps the pattern from matching this script's own command line, and stderr
+# is dropped because Docker merges it into the stdout we parse.
+_VERIFIER_ROOTS_SH = r"""
+exec 2>/dev/null
+held=
+for f in $(grep -l '/logs/verifie[r]/test-stdout[.]txt' /proc/[0-9]*/cmdline); do
+  f=${f%/cmdline}
+  held="$held ${f#/proc/}"
+done
+# A shell that runs test.sh in place of itself (busybox sh -c with a single
+# redirected command) leaves no wrapper naming the capture file, so fall back
+# to a process that has test.sh itself as a whole argument.
+t='/verifie[r]/test[.]sh'; u='/test[s]/test[.]sh'
+[ -n "$held" ] || for f in $(grep -l -e "$t" -e "$u" /proc/[0-9]*/cmdline); do
+  tr '\0' '\n' < "$f" | grep -qx -e "$t" -e "$u" || continue
+  f=${f%/cmdline}
+  held="$held ${f#/proc/}"
+done
+"""
 
-    Zero bytes in ``/logs/verifier/test-stdout.txt`` (or no file at all) means
-    ``test.sh`` never started — the wedge signature. When even this probe
+_VERIFIER_PROBE_SH = (
+    _VERIFIER_ROOTS_SH
+    + r"""
+if [ -n "$held" ]; then echo running
+else cd /logs/verifier && wc -c < test-stdout.txt || echo 0
+fi
+"""
+)
+
+# Freeze the verifier tree, then kill it. ``grow`` adds every live
+# descendant of a held PID (test.sh, pytest and whatever those started) in
+# one awk pass over /proc; ``cat`` feeds it because awk gives up on the first
+# file that vanished. Parents come from ``status``, not ``stat``: ``stat``
+# prints the command name raw, so a name holding a newline could pass off a
+# fake record, while ``status`` escapes it. It never re-matches roots, so a
+# retry starting meanwhile is left alone. Each round stops what is held and
+# looks again, until no new child appears, so a process forked mid-scan
+# cannot escape.
+# Every PID ever stopped stays held: a child whose parent exits before the
+# stop lands is reparented out of the tree, but it is still killed rather
+# than left stopped.
+_KILL_VERIFIER_SH = (
+    _VERIFIER_ROOTS_SH
+    + r"""
+grow() {
+  grown=$(cat /proc/[0-9]*/status | awk -v held="$held" '
+    $1 == "Pid:" { p = $2 }
+    $1 == "PPid:" { parent[p] = $2 }
+    END {
+      out = held
+      n = split(held, h, " ")
+      for (i = 1; i <= n; i++) keep[h[i]] = 1
+      do {
+        more = 0
+        for (p in parent)
+          if (!(p in keep) && (parent[p] in keep)) {
+            keep[p] = 1; out = out " " p; more = 1
+          }
+      } while (more)
+      print out
+    }')
+  [ -z "$grown" ] || held=$grown
+}
+grow
+stopped=
+while [ "$held" != "$stopped" ]; do
+  stopped=$held
+  kill -s STOP $held
+  grow
+done
+[ -z "$held" ] || kill -s KILL $held
+"""
+)
+
+
+async def _verifier_wedged_without_output(env: Any) -> bool:
+    """True when the timed-out verifier attempt never got test.sh running.
+
+    A wedged exec layer leaves no verifier process behind and zero bytes in
+    ``/logs/verifier/test-stdout.txt``. Empty output alone does not show
+    that: some test scripts send pytest output to their own log and copy it
+    to stdout only at the end, so a verifier that is merely slow has empty
+    output too, but its processes are still alive. When even this probe
     fails, the control plane is still sick and a retry is the best remaining
     move, so failures count as wedged.
     """
     try:
         r = await asyncio.wait_for(
             env.exec(
-                "wc -c < /logs/verifier/test-stdout.txt 2>/dev/null || echo 0",
+                _VERIFIER_PROBE_SH,
+                user="root",
                 timeout_sec=10,
             ),
             timeout=30,
         )
-        return int((r.stdout or "0").strip() or 0) == 0
+        lines = (r.stdout or "").strip().splitlines()
+        out = lines[-1].strip() if lines else ""
+        return out != "running" and int(out or 0) == 0
     except Exception:
         return True
 
@@ -553,12 +638,14 @@ async def _kill_orphan_verifier(env: Any) -> None:
     """Best-effort kill of a possibly-orphaned first verifier attempt.
 
     The host-side timeout cancels only our await; if the in-sandbox test.sh
-    did start late it would race the retry's run, so clear it first.
+    did start late it would race the retry's run, so clear it first. That
+    means the whole process tree: killing test.sh alone leaves pytest and
+    its children running beside the retry.
     """
     with contextlib.suppress(Exception):
         await asyncio.wait_for(
             env.exec(
-                "pkill -f '/verifier/test.sh' 2>/dev/null || true",
+                _KILL_VERIFIER_SH,
                 user="root",
                 timeout_sec=10,
             ),
