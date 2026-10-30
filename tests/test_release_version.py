@@ -1,16 +1,41 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from tools.release_version import (
+    CitationRelease,
     InternalPreviewDecision,
     ReleaseVersionError,
     compute_internal_preview_version,
     main,
+    read_citation_release,
+    validate_public_release_citation,
     validate_public_release_version,
 )
+
+CITATION_TEMPLATE = """cff-version: 1.2.0
+message: "If you use benchflow in your research, please cite it as below."
+title: "BenchFlow"
+type: software
+authors:
+  - name: "BenchFlow team"
+license: Apache-2.0
+version: {version}
+date-released: {date_released}
+"""
+
+
+def _citation(
+    tmp_path: Path, *, version: str = "0.5.1", date_released: str = "2026-01-02"
+) -> Path:
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text(
+        CITATION_TEMPLATE.format(version=version, date_released=date_released)
+    )
+    return citation
 
 
 @pytest.mark.parametrize(
@@ -122,6 +147,8 @@ def test_public_release_cli_writes_github_outputs(
                 "public-release",
                 "--pyproject",
                 str(pyproject),
+                "--citation",
+                str(_citation(tmp_path)),
                 "--tag",
                 "v0.5.1",
             ]
@@ -130,3 +157,171 @@ def test_public_release_cli_writes_github_outputs(
     )
 
     assert output.read_text() == "version=0.5.1\n"
+
+
+def test_citation_release_reads_unquoted_scalars(tmp_path: Path) -> None:
+    """Guards the Zenodo archiving citation gate against YAML scalar surprises."""
+    citation = _citation(tmp_path, version="0.5.1", date_released="2026-01-02")
+
+    assert read_citation_release(citation) == CitationRelease(
+        version="0.5.1", date_released=date(2026, 1, 2)
+    )
+
+
+def test_citation_release_reads_quoted_scalars(tmp_path: Path) -> None:
+    """Guards the Zenodo archiving citation gate for quoted CITATION.cff values."""
+    citation = _citation(tmp_path, version='"1.0"', date_released='"2026-01-02"')
+
+    assert read_citation_release(citation) == CitationRelease(
+        version="1.0", date_released=date(2026, 1, 2)
+    )
+
+
+def test_citation_release_reads_float_shaped_version(tmp_path: Path) -> None:
+    """Guards the Zenodo archiving citation gate for a `1.0` release line.
+
+    YAML parses an unquoted `version: 1.0` as a float, so the reader must accept
+    that shape instead of rejecting a legitimate release.
+    """
+    citation = _citation(tmp_path, version="1.0")
+
+    assert read_citation_release(citation).version == "1.0"
+
+
+def test_citation_release_rejects_missing_file(tmp_path: Path) -> None:
+    """Guards the Zenodo archiving citation gate against a deleted citation file."""
+    with pytest.raises(ReleaseVersionError, match="is missing"):
+        read_citation_release(tmp_path / "CITATION.cff")
+
+
+def test_citation_release_rejects_malformed_yaml(tmp_path: Path) -> None:
+    """Guards the Zenodo archiving citation gate against unparsable YAML."""
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text("version: [0.5.1\n")
+
+    with pytest.raises(ReleaseVersionError, match="as YAML"):
+        read_citation_release(citation)
+
+
+def test_citation_release_rejects_non_mapping(tmp_path: Path) -> None:
+    """Guards the Zenodo archiving citation gate against a non-mapping document."""
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text("- 0.5.1\n")
+
+    with pytest.raises(ReleaseVersionError, match="YAML mapping"):
+        read_citation_release(citation)
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("date-released: 2026-01-02\n", "`version`"),
+        ("version: 0.5.1\n", "`date-released`"),
+        ("version: 0.5.1\ndate-released: not-a-date\n", "unparsable"),
+    ],
+)
+def test_citation_release_rejects_incomplete_metadata(
+    tmp_path: Path, body: str, match: str
+) -> None:
+    """Guards the Zenodo archiving citation gate against incomplete metadata."""
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text(body)
+
+    with pytest.raises(ReleaseVersionError, match=match):
+        read_citation_release(citation)
+
+
+def test_public_release_citation_accepts_matching_release() -> None:
+    """Guards the Zenodo archiving citation gate happy path."""
+    citation = CitationRelease(version="0.5.1", date_released=date(2026, 1, 2))
+
+    validate_public_release_citation("0.5.1", citation, date(2026, 1, 2))
+
+
+def test_public_release_citation_accepts_pep440_equivalent_version() -> None:
+    """Guards the Zenodo archiving citation gate against padding-only mismatches."""
+    citation = CitationRelease(version="0.5.1.0", date_released=date(2026, 1, 2))
+
+    validate_public_release_citation("0.5.1", citation, date(2026, 1, 2))
+
+
+def test_public_release_citation_rejects_stale_version() -> None:
+    """Guards the Zenodo archiving citation gate against archiving a stale version."""
+    citation = CitationRelease(version="0.5.0", date_released=date(2026, 1, 2))
+
+    with pytest.raises(ReleaseVersionError, match=r"CITATION\.cff records version"):
+        validate_public_release_citation("0.5.1", citation, date(2026, 1, 2))
+
+
+def test_public_release_citation_tolerates_releaser_timezone_ahead_of_utc() -> None:
+    """Guards the Zenodo archiving citation gate against a UTC+N false rejection.
+
+    A releaser east of UTC writes tomorrow's UTC date when tagging after local
+    midnight, so one day of skew must pass.
+    """
+    citation = CitationRelease(version="0.5.1", date_released=date(2026, 1, 3))
+
+    validate_public_release_citation("0.5.1", citation, date(2026, 1, 2))
+
+
+def test_public_release_citation_rejects_future_date() -> None:
+    """Guards the Zenodo archiving citation gate against fabricated release dates."""
+    citation = CitationRelease(version="0.5.1", date_released=date(2026, 2, 1))
+
+    with pytest.raises(ReleaseVersionError, match="in the future"):
+        validate_public_release_citation("0.5.1", citation, date(2026, 1, 2))
+
+
+def test_public_release_cli_rejects_stale_citation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards the Zenodo archiving citation gate at the workflow boundary."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nversion = "0.5.1"\n')
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "github-output"))
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "public-release",
+                "--pyproject",
+                str(pyproject),
+                "--citation",
+                str(_citation(tmp_path, version="0.5.0")),
+                "--tag",
+                "v0.5.1",
+            ]
+        )
+
+    assert excinfo.value.code == 1
+
+
+def test_internal_preview_ignores_citation_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards `main`'s .devN line against tag-time citation rules.
+
+    CITATION.cff names the last published release, so while main sits on a
+    `.devN` version the citation file is legitimately behind pyproject.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    output = tmp_path / "github-output"
+    pyproject.write_text('[project]\nversion = "0.5.2.dev0"\n')
+    _citation(tmp_path, version="0.5.1")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    assert (
+        main(
+            [
+                "internal-preview",
+                "--pyproject",
+                str(pyproject),
+                "--run-number",
+                "321",
+            ]
+        )
+        == 0
+    )
+
+    assert output.read_text() == "publish=true\nversion=0.5.2.dev321\n"
