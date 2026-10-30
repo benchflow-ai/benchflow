@@ -129,6 +129,157 @@ def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
     )
 
 
+#: Ports Daytona's sandbox daemon (process 1, running as root) answers on
+#: without credentials; its toolbox API runs commands as root. An agent user
+#: that reaches it reaches root (seen live: an agent installed packages as
+#: root through ``POST /process/session`` on 127.0.0.1:2280).
+SANDBOX_DAEMON_PORTS = (2280, 22220, 22222, 33333)
+
+# Prints the TCP ports process 1 listens on, one per line, when process 1 is
+# Daytona's daemon (its program's name says so); nothing otherwise, so a
+# task whose own server is process 1 keeps it. POSIX sh (dash included).
+# Root only reads another process's fds, so run it as root.
+_DAEMON_PORTS_SH = r"""bf_daemon_ports() {
+  exe=$(readlink "$P/1/exe" 2>/dev/null) || return 0
+  case "${exe##*/}" in *daytona*) ;; *) return 0;; esac
+  inodes=" "
+  for f in "$P"/1/fd/*; do
+    l=$(readlink "$f" 2>/dev/null) || continue
+    case $l in socket:\[*\]) inodes="$inodes$(printf '%s' "$l" | tr -cd 0-9) ";; esac
+  done
+  for f in "$P/net/tcp" "$P/net/tcp6"; do
+    [ -r "$f" ] || continue
+    awk -v want="$inodes" 'FNR > 1 && $4 == "0A" && index(want, " " $10 " ") { n = split($2, a, ":"); print a[n] }' "$f"
+  done | while read -r hex; do
+    case $hex in *[!0-9A-Fa-f]*|'') continue;; esac
+    printf '%d\n' "0x$hex"
+  done | sort -un
+}
+"""
+
+
+class SandboxDaemonGuardError(RuntimeError):
+    """The agent user could not be kept away from Daytona's root daemon.
+
+    The message starts with "sandbox startup refused", so the trial is
+    classified as a sandbox-setup failure (the task image's, see the
+    message) rather than run with an agent that can reach root.
+    """
+
+
+def _daemon_guard_cmd(sandbox_user: str, proc: str = "/proc") -> str:
+    """Drop every non-root uid's TCP connections to the sandbox daemon's
+    ports, on every interface (``-o lo`` is not relied on), and nothing else
+    (only the daemon and BenchFlow's own root processes use them, so a
+    service user the agent drives cannot relay to the daemon). The rules sit in the mangle table's OUTPUT chain, which the kernel
+    walks before the filter table's, so no ACCEPT there (the egress
+    firewall's loopback ACCEPT) can let a packet past them, not even for a
+    moment; running it again adds nothing. Uses ``iptables`` or, where that
+    does not work on the kernel, ``iptables-legacy`` (and the same for
+    ip6tables). Prints ``BF daemon-guard ports=... status=N``: 0 enforced,
+    1 a rule failed, 2 no iptables and no package manager to install it,
+    3 IPv6 without ip6tables, 4 no such user, 5 installing iptables failed
+    (then ``BF daemon-guard install: <its last lines>``).
+    """
+    user = shlex.quote(sandbox_user)
+    floor = " ".join(str(p) for p in SANDBOX_DAEMON_PORTS)
+    p = shlex.quote(proc)
+    return (
+        "( "
+        f"agent_uid=$(id -u {user} 2>/dev/null) || {{ echo 'BF daemon-guard ports= status=4'; exit 0; }}; "
+        f"P={p}; "
+        f"{_DAEMON_PORTS_SH}"
+        f"ports=$(printf '%s\\n' {floor} $(bf_daemon_ports) | sort -un | tr '\\n' ' '); "
+        'pick() { for c in "$1" "$1-legacy"; do '
+        'command -v "$c" >/dev/null 2>&1 && "$c" -w -t mangle -S OUTPUT >/dev/null 2>&1 && '
+        '{ echo "$c"; return 0; }; done; return 1; }; '
+        "guard() { for p in $ports; do "
+        # Every non-root uid: only the daemon and BenchFlow's own root
+        # processes use these ports, so a service user the agent drives
+        # (postgres, www-data) cannot relay to the daemon either.
+        'r="OUTPUT -p tcp --dport $p -m owner ! --uid-owner 0 -j DROP"; '
+        '"$1" -w -t mangle -C $r 2>/dev/null || '
+        '"$1" -w -t mangle -I $r || return 1; done; }; '
+        "status=0; out=; "
+        f"need6=; [ -e {p}/net/if_inet6 ] && ! command -v ip6tables >/dev/null 2>&1 && need6=1; "
+        'if ! command -v iptables >/dev/null 2>&1 || [ -n "$need6" ]; then '
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "out=$( { DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables || "
+        "{ apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables; }; } 2>&1 ); "
+        "elif command -v dnf >/dev/null 2>&1; then out=$(dnf -y install iptables 2>&1); "
+        "elif command -v apk >/dev/null 2>&1; then out=$(apk add --no-cache iptables ip6tables 2>&1); "
+        "elif ! command -v iptables >/dev/null 2>&1; then status=2; fi; "
+        "if [ $status = 0 ] && ! command -v iptables >/dev/null 2>&1; then status=5; "
+        """echo "BF daemon-guard install: $(printf '%s' "$out" | tail -n 3 | tr '\\n' ' ' | cut -c1-300)"; fi; fi; """
+        "if [ $status = 0 ]; then "
+        'fw4=$(pick iptables) && { guard "$fw4" || status=1; } || status=1; '
+        f"if [ -e {p}/net/if_inet6 ]; then "
+        "if command -v ip6tables >/dev/null 2>&1; then "
+        'fw6=$(pick ip6tables) && { guard "$fw6" || status=1; } || status=1; '
+        "elif [ $status = 0 ]; then status=3; fi; fi; fi; "
+        'echo "BF daemon-guard ports=$ports status=$status" '
+        ")"
+    )
+
+
+def _guard_needed_here(env: Any) -> bool:
+    """Whether the agent user shares a network namespace with Daytona's root
+    daemon: a single-container Daytona sandbox. (A compose task on Daytona
+    is guarded on its VM when it starts; other backends have no such
+    daemon, and get no iptables install either.)"""
+    return getattr(env, "sandbox_daemon_guard", None) == "container"
+
+
+async def guard_sandbox_daemon(env: Any, sandbox_user: str) -> None:
+    """Install the daemon guard for ``sandbox_user`` where it is needed,
+    or raise :class:`SandboxDaemonGuardError`: an agent that can reach the
+    daemon can rewrite its own grade, so the run is refused, never run
+    unguarded."""
+    if not _guard_needed_here(env):
+        return
+    result = await env.exec(
+        _daemon_guard_cmd(sandbox_user), user="root", timeout_sec=180
+    )
+    out = getattr(result, "stdout", "") or ""
+    line = next((ln for ln in out.splitlines() if "daemon-guard ports" in ln), "")
+    if _exec_return_code(result) == 0 and re.search(r"\bstatus=0\b", line):
+        return
+    install = next((ln for ln in out.splitlines() if "daemon-guard install:" in ln), "")
+    m = re.search(r"\bstatus=(\d)", line)
+    status = m.group(1) if m else ""
+    image = (
+        "The task's image needs iptables (or apt-get, dnf or apk to install "
+        "it), and ip6tables when IPv6 is on; or run the agent as root (no "
+        "sandbox user)."
+    )
+    reason, remedy = {
+        "1": (
+            "an iptables rule could not be added (no owner match or mangle "
+            "table on this kernel, or no permission)",
+            image,
+        ),
+        "2": (
+            "the image has no iptables and no package manager (apt-get, dnf "
+            "or apk) to install it",
+            image,
+        ),
+        "3": ("the image has IPv6 but no ip6tables", image),
+        "4": (f"the user {sandbox_user!r} does not exist", image),
+        "5": (
+            "installing iptables failed"
+            + (f" ({install.split('install:', 1)[1].strip()})" if install else ""),
+            "This may pass on a retry (a mirror or a lock); for a lasting fix, "
+            "put iptables in the task's image.",
+        ),
+    }.get(status, ("the guard did not report", image))
+    raise SandboxDaemonGuardError(
+        "sandbox startup refused: the agent user could not be kept away from "
+        f"Daytona's root toolbox daemon: {reason} ({line or 'no report'}). "
+        "Running anyway would let the agent reach root and rewrite its own "
+        f"grade. {remedy}{_exec_failure_detail(result)}"
+    )
+
+
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     """Build a shell command that drops to sandbox_user via setpriv or su.
 
@@ -224,7 +375,12 @@ def _legacy_root_tool_link_cmd(source: str, dest: str) -> str:
 
 
 async def setup_sandbox_user(
-    env, sandbox_user: str, workspace: str, *, timeout_sec: int = 120
+    env,
+    sandbox_user: str,
+    workspace: str,
+    *,
+    timeout_sec: int = 120,
+    guard_daemon: bool = True,
 ) -> str:
     """Create non-root sandbox user, grant workspace access. Return agent_cwd."""
     if not re.match(r"^[a-z_][a-z0-9_-]*$", sandbox_user):
@@ -250,6 +406,12 @@ async def setup_sandbox_user(
         f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
         timeout_sec=timeout_sec,
     )
+    # Daytona's daemon runs commands as root for anyone who reaches it;
+    # keep the agent user away from it in every network mode, or refuse.
+    # A run that executes nothing as the sandbox user (oracle, nop) passes
+    # guard_daemon=False: there is nobody to keep away.
+    if guard_daemon:
+        await guard_sandbox_daemon(env, sandbox_user)
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
 
@@ -441,15 +603,22 @@ VERIFIER_ENV: dict[str, str] = {
     # Prevent pip from writing to user site-packages during pip install -e .
     "PYTHONNOUSERSITE": "1",
     "PIP_USER": "0",
-    "PIP_NO_USER_CONFIG": "1",
+    # pip loads no configuration file at all when this is os.devnull: not
+    # ~/.config/pip/pip.conf or ~/.pip/pip.conf under the HOME below, not
+    # /etc/pip.conf.
+    "PIP_CONFIG_FILE": "/dev/null",
+    # git reads no ~/.gitconfig or ~/.config/git/config (git >= 2.32); the
+    # system file /etc/gitconfig still applies.
+    "GIT_CONFIG_GLOBAL": "/dev/null",
     # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
     # system-site without this flag. Verifier runs as root and system-site is
     # root-owned, so allowing it is safe; without it, tasks that pip-install
     # pytest in test.sh either fail outright or fall back to a user-site path
     # that PYTHONNOUSERSITE=1 hides at import time.
     "PIP_BREAK_SYSTEM_PACKAGES": "1",
-    # /root is root-owned; sandbox_user cannot pre-stage caches there. Pip
-    # config is already blocked by the PIP_* / PYTHONNOUSERSITE vars above.
+    # Often the agent's workspace (WORKDIR /root), so its per-user files are
+    # whatever the agent left: Python's user site, pip's and git's per-user
+    # config are switched off above; other tools that read HOME are not.
     "HOME": "/root",
     # Disable breakpoint() — any other value imports an arbitrary callable.
     "PYTHONBREAKPOINT": "0",
@@ -612,7 +781,7 @@ print(json.dumps(trusted))
 def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -> str:
     """Build the container-side command that validates verifier PATH extras."""
     return (
-        f"python3 -c {shlex.quote(_TRUSTED_PATH_EXTRAS_SCRIPT)} "
+        f"python3 -I -c {shlex.quote(_TRUSTED_PATH_EXTRAS_SCRIPT)} "
         f"{shlex.quote(_json.dumps(raw_path))} "
         f"{shlex.quote(_json.dumps(_SAFE_VERIFIER_PATH_PARTS))} "
         f"{shlex.quote(_json.dumps(blocked_prefixes))}"
@@ -620,12 +789,14 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
 
 
 async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
-    """Auto-discover pytest plugins from root-owned system packages.
+    """Auto-discover pytest plugins from the interpreter's own packages.
 
-    Runs a sandbox-side script that enumerates pytest11 entry points and
-    filters to only those whose dist-info is in a root-owned directory.
-    Falls back to task verifier pytest_plugins declarations if discovery fails.
-    Replaces the previous hand-curated whitelist mechanism.
+    Runs a sandbox-side script that enumerates pytest11 entry points. It runs
+    isolated (``python3 -I`` from ``/``), so only the image's site-packages
+    are scanned: a dist-info the agent left in the workspace, a user site or
+    a ``PYTHONPATH`` directory is never enabled. Falls back to task verifier
+    pytest_plugins declarations if discovery fails, so a plugin installed
+    outside site-packages must be declared there.
     """
     plugins: list[str] = []
 
@@ -637,7 +808,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     # Sandbox-side auto-discovery
     try:
         result = await env.exec(
-            f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
+            f"cd / && python3 -I -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
             user="root",
             timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
@@ -985,8 +1156,11 @@ def _build_cleanup_cmd(hardening: dict[str, bool] | None = None) -> str:
             "-delete 2>/dev/null"
         )
     parts.append("find /tmp /var/tmp -name '*.py' -delete 2>/dev/null")
+    # Not -I: the purge must see the PYTHONPATH and user-site directories a
+    # verifier interpreter would load. From / so the workspace (the default
+    # cwd) is not on its sys.path either.
     parts.append(
-        'python3 -c "'
+        'cd / && python3 -c "'
         "import sys,os;"
         "[os.remove(os.path.join(d,f)) "
         " for d in sys.path "
@@ -1026,7 +1200,7 @@ CLEANUP_CMD = _build_cleanup_cmd()
 _RESTORE_WORKSPACE_CMD_TEMPLATE = (
     "if [ -d /testbed_verify ]; then "
     "  rsync -a --delete /testbed_verify/ __WSQ__/ 2>/dev/null || "
-    "  python3 -c 'import shutil,sys; "
+    "  python3 -I -c 'import shutil,sys; "
     'shutil.copytree("/testbed_verify",sys.argv[1],dirs_exist_ok=True)\''
     "  __WSQ__; "
     "fi"
@@ -1073,7 +1247,7 @@ def _restore_workspace_cmd(workspace: str) -> str:
 def _purge_external_symlinks_cmd(workspace: str) -> str:
     """Render the external-symlink purge command for the workspace."""
     return (
-        f"python3 -c {shlex.quote(_PURGE_EXTERNAL_SYMLINKS_SCRIPT)} "
+        f"python3 -I -c {shlex.quote(_PURGE_EXTERNAL_SYMLINKS_SCRIPT)} "
         f"{shlex.quote(workspace)} 2>/dev/null; true"
     )
 

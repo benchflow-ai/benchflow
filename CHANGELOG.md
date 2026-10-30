@@ -4,6 +4,138 @@
 
 ### Fixed
 
+- **No-web and denylist runs no longer let the provider fetch the web for the
+  agent.** Switching off each harness's hosted search left the agent's own
+  requests open: it can call the in-sandbox model gateway (its address and key
+  are in the agent's environment) or, on subscription routes, the provider
+  through the denylist proxy, and ask for a server tool such as Gemini
+  `url_context` or OpenAI `web_search`, or hand over a file by URL; the
+  provider then reads the page from its own servers, outside every sandbox
+  rule (the "universal offline sandbox escape"). On Daytona with Codex and
+  Azure GPT-5.6 Terra, a raw Responses request with `file_url` set to a blocked
+  arXiv PDF came back with the paper's title. In no-web and denylist runs a
+  guard now wraps the LiteLLM gateway: it serves only model-call routes,
+  refuses WebSocket sessions, provider pass-through, file and batch routes,
+  turns off LiteLLM's own image-URL downloads, and refuses form bodies,
+  hosted-fetch requests and `extra_body` with `403`, whatever envelope wraps
+  them. benchflow checks the guard is active before the agent starts. The
+  denylist proxy reads every request body that opens like JSON and checks
+  other text bodies as they stream, applying the same rule. A body is judged
+  on every reading a provider might make of it: folded names (Azure-style
+  `Tools`, `web-search`), every value of a repeated name (Gemini merges
+  them), every JSON value and JSON Lines line, and addresses as a URL parser
+  reads them (Azure fetched a `file_url` written `https:host` or with a tab
+  in the scheme). Hosted containers with network access, browsing models and
+  agents are refused too. Bodies the proxy cannot read, or over 64 MiB, are
+  refused. Refusals are logged in `trajectory/egress_denylist.jsonl`. Codex
+  runs with request compression off in these modes.
+  `ensure_litellm_runtime`'s `force_sandbox_local` is replaced by
+  `egress_guard`.
+- **The denylist refuses a listed page handed to another service.** A reader
+  service, web archive, translation proxy or redirector given the address
+  (`r.jina.ai/https://arxiv.org/abs/2401.12345`,
+  `web.archive.org/web/2026/https://...`, `?url=https%3A%2F%2F...`, a form
+  field `url=...`, `arxiv-org.translate.goog/...`) fetched the page from a host
+  the task did not list. The proxy now matches listed hosts and URL prefixes
+  named in a request's path, query or body, read as a URL parser would
+  (percent-decoded, IDNA-ignored characters dropped, NFKC-folded, fullwidth and
+  ideographic dots, trailing dot, empty port). A listed GitHub or Hugging Face
+  repository is also refused on the services that serve it by name (jsDelivr,
+  Statically, githack, `raw.githubusercontent.com`, the GitHub API,
+  `hf-mirror.com`, the Hub API and its dataset viewer).
+- **Evidence capture keeps an absolute in-workspace symlink spelled with
+  `..` (#1157).** `_link_target` checked an absolute target after stripping
+  the workspace but before normalising it, so a link such as
+  `/root/analysis/scripts/../figures` failed the whole capture with
+  `Unsafe evidence path` and the verified rollout was never reviewed. The
+  target is now normalised first, as relative targets already were; a target
+  that climbs out of the workspace after normalising is still refused.
+
+## 0.7.11 — 2026-10-16
+
+### Added
+
+- **`--separate-verifier-include PATH` carries outputs outside the workspace
+  into a separate verifier sandbox.** Only the workspace (`sandbox.workdir`,
+  else the image's `WORKDIR`) crossed, so a task whose agent writes graded
+  files elsewhere scored 0 with no error: FrontierPhysics
+  `kinked-ladder-polymer-scattering` (workspace `/app`, outputs in `/root`)
+  went from 19/19 in shared mode to 0/19 with `--separate-verifier`, and 14
+  of its 56 tasks grade files outside the workspace. Each include path
+  (repeatable; SDK and config `separate_verifier_include`) is captured beside
+  the workspace into `evidence/artifacts/`, hash-checked, and laid over the
+  verifier image's copy at the same path; pseudo filesystems and roots such as
+  `/`, `/usr` and `/home` are refused before any sandbox starts.
+  `config.json` records `verifier_include`, and the transfer inventory lists
+  each path as captured, missing or already in the workspace.
+- **A separate verifier lists files the agent left outside everything that
+  crosses.** When the workspace is frozen, the regular files written during
+  the agent phase outside the workspace and include paths (skipping system,
+  scratch and provider trees, package caches and the agent's home) are logged
+  as a warning with a count per directory and examples, and recorded under
+  `outside_workspace_writes` in `verifier-sandbox/verifier-sandbox.json`.
+  Advisory: it never fails a rollout.
+
+### Fixed
+
+- **The verifier ignores pip's and git's per-user config under `/root`.**
+  The verifier runs as root with `HOME=/root`, the agent's workspace in many
+  tasks, so `~/.config/pip/pip.conf` or `~/.gitconfig` there were whatever the
+  agent left, in both modes (a separate verifier receives the `/root`
+  workspace too). `VERIFIER_ENV` now sets `PIP_CONFIG_FILE=/dev/null` and
+  `GIT_CONFIG_GLOBAL=/dev/null` (git 2.32+; `/etc/gitconfig` still applies),
+  and drops `PIP_NO_USER_CONFIG`, which is not a pip option and did nothing.
+  A task that needs either config back sets it in its verifier `env`.
+- **Package-manager caches stay out of workspace evidence.** `.cache/pip`,
+  `.cache/uv` and npm's `_cacache`, `_npx` and `_logs` below a captured root
+  are recorded as `package_cache` exclusions instead of captured. With a
+  `/root` workspace the harness's own installs fill them as root before the
+  agent starts: on a FrontierPhysics ion-trap-design run they were 97% of the
+  745 MB the separate verifier received, and of the rubric review's upload.
+- **`mcp` 1.30.0 in `uv.lock`** for CVE-2026-59951 (was 1.28.1), which failed
+  the `pip-audit` job and, through it, `main`'s release gate.
+
+## 0.7.10 — 2026-10-16
+
+### Added
+
+- **Separate verifier sandboxes run on Docker and Daytona.** A task that sets
+  `[verifier] sandbox_mode = "separate"` (Harbor `environment_mode`) or
+  declares `[verifier.sandbox]` was refused with "separate verifier
+  sandboxes are parsed but not executed". It now runs: after the agent stops,
+  the workspace is frozen into `evidence/`, and a fresh sandbox built from
+  the verifier image (`[verifier.sandbox].docker_image`, `[sandbox]
+  .docker_image`, `tests/Dockerfile`, then the task's own
+  `environment/Dockerfile`) receives only those hash-checked bytes before the
+  normal hardening and `test.sh` run there. Nothing else from the agent's
+  sandbox reaches the verifier. `bench eval run --separate-verifier` (SDK and
+  config `separate_verifier`) forces the mode for every task of a run without
+  editing them, so task digests do not change. A transfer or sandbox failure
+  is a verifier infrastructure error, never a score;
+  `verifier-sandbox/verifier-sandbox.json` records the image source, sandbox
+  id, transfer inventory and timing, and `config.json` records
+  `verifier_sandbox_mode`. Ported from release/0.8's separate verifier,
+  without its declared-artifact and `/logs/artifacts` transfer, which main
+  does not have.
+
+### Fixed
+
+- **Root helpers no longer import modules from the agent's workspace.** The
+  helpers BenchFlow runs as root after the agent stops (disk reclaim, the
+  verifier PATH check, pytest-plugin discovery, the external-symlink purge,
+  the workspace-restore fallback, workspace evidence capture and its
+  reviewer-side admission) ran plain `python3 -c` from the sandbox's default
+  working directory, which is the agent's workspace, so a `json.py` or
+  `glob.py` left there was imported as root before the verifier. They now run
+  `python3 -I`; the `.pth`/`sitecustomize.py` purge keeps its environment
+  but runs from `/`. Pytest-plugin discovery therefore scans only the
+  interpreter's site-packages: declare a plugin installed elsewhere in
+  `verifier.pytest_plugins`.
+
+## 0.7.9 — 2026-10-14
+
+### Fixed
+
 - **Codex knows `gpt-6.1-sol`: the `codex-acp` pin moves from 1.13.1 to
   2.0.1.** Codex takes a model's tool surface from the model catalog bundled
   with its `@openai/codex` dependency. codex 0.156.1 (behind 1.13.1) has no
@@ -57,6 +189,7 @@
 
 ### Added
 
+- **`bench skills validate`: static skill checks with NVIDIA SkillEvaluator 0.5.0 Tier 1 and NVIDIA SkillSpector 2.12.0.** Takes skill directories or any directory to search for `SKILL.md`, runs both external CLIs with `--no-llm`, and prints a per-skill table (Tier 1 status, quality grade and score, SkillSpector risk and verdict) or `--json`. It exits 1 on a schema, security or dependency finding (including known vulnerabilities pip-audit finds in pinned packages) at or above `--fail-on` (default `high`), when a checker fails to run, or when a given path holds no `SKILL.md`; `--no-security` skips SkillSpector. The tools are not on PyPI, so they stay external installs (`uv tool install` from their release tags, see `docs/skill-eval.md`); a missing tool gets an install hint and an older one a version warning.
 - **Native Google Antigravity CLI agent (`antigravity`, alias `agy`).** The
   Antigravity CLI replaced the hosted Gemini CLI in mid-2026 but ships no ACP
   mode, so BenchFlow bundles an ACP shim over its headless `stream-json`

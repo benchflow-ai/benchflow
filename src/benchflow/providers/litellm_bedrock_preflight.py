@@ -24,9 +24,10 @@ class BedrockPatchPreflightError(RuntimeError):
 BEDROCK_PATCH_PREFLIGHT_SOURCE = """\
 import sys
 
-# Probe with versioned/profile-shaped Bedrock IDs: stock litellm 1.89.0
-# resolves the Opus bare alias through its cost map, so only the versioned form
-# discriminates patched from stock (#602). Fable 5 is profile-shaped today.
+# Probe with versioned/profile-shaped Bedrock IDs (#602). Fable 5 is
+# profile-shaped today. Call the gate the way the Bedrock transforms do, with
+# the provider as the second argument, so a gate that cannot take that call
+# fails here rather than on the first proxied request.
 PROBES = [
     "us.anthropic.claude-opus-4-8-20251101-v1:0",
     "us.anthropic.claude-fable-5",
@@ -37,7 +38,7 @@ try:
     from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 
     for probe in PROBES:
-        if not AnthropicConfig._is_adaptive_thinking_model(probe):
+        if not AnthropicConfig._is_adaptive_thinking_model(probe, "bedrock"):
             failures.append(
                 "adaptive-thinking gate inactive: "
                 f"_is_adaptive_thinking_model({probe!r}) is False"

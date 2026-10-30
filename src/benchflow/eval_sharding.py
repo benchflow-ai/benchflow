@@ -134,6 +134,8 @@ def _config_payload(
         "agent_idle_timeout": config.agent_idle_timeout,
         "context_root": config.context_root,
         "base_image_override": config.base_image_override,
+        "separate_verifier": config.separate_verifier,
+        "separate_verifier_include": list(config.separate_verifier_include),
         "exclude_tasks": sorted(config.exclude_tasks),
         "include_tasks": sorted(shard.task_names),
         "skill_mode": config.skill_mode,

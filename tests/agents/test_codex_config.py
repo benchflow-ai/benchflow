@@ -90,9 +90,28 @@ def test_web_policy_overrides_search_without_clobbering_provider_config(policy):
     result, owns_model = apply_codex_launch_config(
         "codex-acp", env, model="custom/opaque-model", reasoning_effort=None
     )
-    assert json.loads(result["CODEX_CONFIG"]) == {**config, "web_search": "disabled"}
+    assert json.loads(result["CODEX_CONFIG"]) == {
+        **config,
+        "web_search": "disabled",
+        "features": {"enable_request_compression": False},
+    }
     assert json.loads(env["CODEX_CONFIG"])["web_search"] == "live"
     assert not owns_model
+
+
+def test_web_policy_turns_off_request_compression_and_keeps_other_features():
+    """Guards the denylist body check: Codex's zstd request bodies cannot be read by the proxy."""
+    config = {"features": {"multi_agent": True, "enable_request_compression": True}}
+    env = {"BENCHFLOW_EGRESS_DENYLIST": "1", "CODEX_CONFIG": json.dumps(config)}
+
+    result, _owns_model = apply_codex_launch_config(
+        "codex-acp", env, model="custom/opaque-model", reasoning_effort=None
+    )
+
+    assert json.loads(result["CODEX_CONFIG"])["features"] == {
+        "multi_agent": True,
+        "enable_request_compression": False,
+    }
 
 
 @pytest.mark.parametrize("config", ["{", "[]"])

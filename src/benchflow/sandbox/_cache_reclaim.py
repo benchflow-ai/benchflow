@@ -1,7 +1,7 @@
 """Pre-verifier cache reclaim command construction.
 
 The sandbox cannot import benchflow internals, so the reclaim implementation is
-an embedded Python snippet passed to ``python3 -c``. Keep it here instead of in
+an embedded Python snippet passed to ``python3 -I -c``. Keep it here instead of in
 ``lockdown.py`` so the hardening orchestrator stays readable.
 """
 
@@ -92,6 +92,4 @@ RECLAIM_CACHES_PY = dedent(
 def build_reclaim_caches_cmd(workspace: str | None) -> str:
     """Build the best-effort cache reclaim shell command."""
     workspace_arg = shlex.quote(workspace) if workspace else "/nonexistent"
-    return (
-        f"python3 -c {shlex.quote(RECLAIM_CACHES_PY)} {workspace_arg} 2>/dev/null; true"
-    )
+    return f"python3 -I -c {shlex.quote(RECLAIM_CACHES_PY)} {workspace_arg} 2>/dev/null; true"
