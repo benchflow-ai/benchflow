@@ -159,6 +159,69 @@ bench skills eval skills/citation-management \
   --concurrency 1
 ```
 
+## Static checks (NVIDIA SkillEvaluator and SkillSpector)
+
+`bench skills validate` checks skills without running an agent, a sandbox or a model:
+
+- [NVIDIA SkillEvaluator](https://github.com/NVIDIA/SkillEvaluator) Tier 1: schema, version, PII, license, code integrity, dependency audit, Unicode smuggling, quality score (0-100 with a letter grade) and script lint.
+- [NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector) static scan: security patterns such as prompt injection, data exfiltration, anti-refusal statements and undeclared capabilities, with a 0-100 risk score and a verdict (`SAFE`, `CAUTION` or `DO_NOT_INSTALL`).
+
+Both tools are Apache-2.0 and not on PyPI, so they are not BenchFlow dependencies. Install them once from their release tags:
+
+```bash
+uv tool install --python 3.13 "skillevaluator[all] @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.5.0"
+uv tool install "skillspector @ git+https://github.com/NVIDIA/SkillSpector.git@v2.12.0"
+```
+
+BenchFlow runs whichever tool is installed, and warns when its version is older than these. Set `BENCHFLOW_SKILLEVALUATOR_BIN` or `BENCHFLOW_SKILLSPECTOR_BIN` to use an executable that is not on `PATH`. SkillEvaluator's code-integrity check runs Bandit, and also Semgrep and Gitleaks when they are installed; without them it reports those scans as incomplete. The dependency audit runs pip-audit on the skill's top-level `requirements*.txt` files; pip-audit checks the pinned packages against an online vulnerability database, so the audit needs network access. When pip-audit gives no result for a file, for example because its pins cannot be installed together, SkillEvaluator 0.5.0 passes the audit without a warning; BenchFlow then lists `pip-audit` among the incomplete scans. SkillEvaluator makes this audit opt-in; BenchFlow runs it by default, and a `--checks` list without `dependency` leaves it out.
+
+Point the command at skills, or at any directory to search it for `SKILL.md`. Every path must exist and hold at least one skill; otherwise the command exits 1 before checking anything:
+
+```bash
+bench skills validate ./my-skill
+bench skills validate tasks/ --json > skill-checks.json
+bench skills validate tasks/citation-check --fail-on critical -o reports/
+```
+
+Output on three SkillsBench skills (SkillEvaluator 0.5.0, SkillSpector 2.12.0):
+
+```
+$ bench skills validate tasks/3d-scan-calc/environment/skills/mesh-analysis \
+    tasks/citation-check/environment/skills/citation-management \
+    tasks/crystallographic-wyckoff-position-analysis/environment/skills/pymatgen
+                   Skill checks (SkillEvaluator 0.5.0 + SkillSpector 2.12.0)
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
+┃ Skill               ┃ Tier 1     ┃ Quality ┃ Security                             ┃ Blocking ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
+│ mesh-analysis       │ incomplete │ C 79    │ LOW 0 SAFE                           │        1 │
+│ citation-management │ incomplete │ C 78.5  │ HIGH 65 DO_NOT_INSTALL (partial)     │        4 │
+│ pymatgen            │ incomplete │ B 80.5  │ CRITICAL 86 DO_NOT_INSTALL (partial) │        6 │
+└─────────────────────┴────────────┴─────────┴──────────────────────────────────────┴──────────┘
+mesh-analysis
+  HIGH     skillevaluator SCHEMA author_missing: Author not specified in metadata (SKILL.md)
+citation-management
+  HIGH     skillevaluator SCHEMA author_missing: Author not specified in metadata (SKILL.md)
+  HIGH     skillspector Anti-Refusal AR2: no warnings (assets/citation_checklist.md:203)
+  ...
+Incomplete SkillEvaluator scans (scanner missing or partial): gitleaks, semgrep
+3 skill(s) checked, 3 blocking (--fail-on high)
+```
+
+A skill blocks, and the command exits 1, when a schema, security or dependency finding is at or above `--fail-on` (`high` by default; also `critical`, `medium`, `low`, or `never` to only report), or when a checker fails to run. Security findings are SkillSpector's, plus SkillEvaluator's PII, secrets, Unicode-smuggling and code-risk (Bandit, Semgrep) findings. Dependency findings are the known vulnerabilities pip-audit finds in pinned packages, at the severity SkillEvaluator gives each one, and banned packages (high); SkillEvaluator 0.5.0 lists these only in each result's `legacy` errors and warnings, and BenchFlow reads them from there. A failed dependency audit with nothing BenchFlow can parse still blocks. Quality, lint, license, version and dead-link findings are advisory: they are in `--json` and in the raw reports that `-o DIR` keeps, one folder per skill. `(partial)` means SkillSpector could not fully inspect every file.
+
+SkillEvaluator's default policy makes a missing `metadata.author` a high schema finding, which is why mesh-analysis blocks; the other two also have high SkillSpector findings. `author` is a nested field under `metadata` in the frontmatter:
+
+```yaml
+metadata:
+  author: Name <email@example.com>
+```
+
+`--fail-on critical` relaxes the gate, and all three skills pass at that level: pymatgen's `CRITICAL` is SkillSpector's overall risk rating, not the severity of any one finding.
+
+Other options: `--no-security` skips SkillSpector, `--checks` picks SkillEvaluator checks, `--min-score` sets the quality score SkillEvaluator's own verdict needs (advisory: it changes SkillEvaluator's Tier 1 status, not the exit code), and `-j` sets how many skills are checked in parallel. SkillEvaluator's `security` check reruns SkillSpector and adds its own regex patterns for personal paths, emails and other PII, so BenchFlow, which runs SkillSpector once, directly, leaves `security` out of the default checks; adding it with `--checks` lists SkillSpector's findings twice. Bandit needs no extra check: code-integrity already runs it.
+
+Both tools run with `--no-llm`, so SkillEvaluator's LLM rubric and SkillSpector's LLM pass are off. SkillEvaluator Tier 2 (deduplication, which needs an embeddings provider) and Tier 3 (live agent runs) are not wired into this command; `bench skills eval` measures a skill's live lift.
+
 ## Multi-agent comparison
 
 Test your skill across multiple agents:

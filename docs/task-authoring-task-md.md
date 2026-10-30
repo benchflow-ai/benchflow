@@ -134,15 +134,23 @@ under the prefix is blocked, including the path itself (`/abs/2401.12345` also
 covers `/abs/2401.12345v2`). A trailing slash is dropped. An entry without a
 path blocks every path on that host (with or without a leading `www.`) but not
 its other subdomains; use `blocked_hosts` for that. `blocked_hosts` entries
-block the host and all of its subdomains. IP literals, wildcards, ports,
+block the host and all of its subdomains. A listed page is also refused when
+its address is written inside another URL or a request body, as for a reader
+service, web archive or translation proxy
+(`r.jina.ai/https://arxiv.org/abs/2401.12345`), so those services need no
+entries of their own. A listed GitHub repository (`github.com/<owner>/<repo>`)
+or Hugging Face repository also covers the services that serve it by name
+(jsDelivr, githack, `raw.githubusercontent.com`, the GitHub API,
+`hf-mirror.com`, the Hub API and its dataset viewer). IP literals, wildcards, ports,
 and userinfo are rejected. `denylist` requires at least one entry in either
 list, both lists are rejected under any other mode, and `denylist` is a
 sandbox-level policy: `agent.network_mode` and `verifier.network_mode` reject it.
 
 The mode needs a non-root `sandbox_user` and `python3` in the task image. It
-runs on `docker` and `daytona`; other backends refuse it at preflight. Blocked
-attempts are written to `trajectory/egress_denylist.jsonl` in the rollout
-directory. Read the
+runs on `docker` and `daytona`; other backends refuse it at preflight. Model
+requests that ask the provider to fetch or search the web are refused, so a
+provider cannot read a listed page for the agent. Blocked attempts are written
+to `trajectory/egress_denylist.jsonl` in the rollout directory. Read the
 [sandbox hardening notes](./sandbox-hardening.md#network-policy-denylist-egress)
 before relying on it: a blocklist hides pages, not knowledge.
 

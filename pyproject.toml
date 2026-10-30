@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.7.9.dev0"
+version = "0.7.12.dev0"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,15 +8,18 @@ keywords = ["benchmark", "llm-agents", "acp", "agent-evaluation", "multi-turn", 
 dependencies = [
     "agent-client-protocol>=0.10",
     "httpx>=0.27.0",
+    # Keep TLS clients and LiteLLM/Daytona on patched transitive releases.
+    "certifi>=2026.10.19",
+    "aiohttp>=3.14.4",
     "anyio>=4.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",
     # Denylist egress mints TLS certificates on both Docker and Daytona.
-    "cryptography>=44",
+    "cryptography>=50",
     # Dataset registry bench_version checks (PEP 440 specifier sets).
     "packaging>=24",
-    "litellm[proxy]==1.91.0",
+    "litellm[proxy]==1.103.3",
     "google-cloud-aiplatform>=1.133.0,<2.0",
     "tomli-w>=1.0",
     "typer>=0.9",
@@ -74,7 +77,7 @@ dev = [
 train = [
     # Used by the Prime-RL SFT wrapper for local token-window staging before
     # handing JSONL rows to Prime-RL.
-    "transformers==5.6.2",
+    "transformers==5.10.4",
 ]
 trl = [
     # Native tool-calling prompt/completion rows, assistant-only masks, and

@@ -62,10 +62,23 @@ from benchflow.agents.manifest import (
 )
 from benchflow.agents.registry import AgentConfig
 
-# The documented exception: the only core agent that ships without a manifest.
-# It is a session-factory agent wired through the #825 omnigent seam (a
-# "module:callable" entrypoint), not data expressible as an acp-only manifest.
-_CORE_ONLY_EXCEPTION = "omnigent-pi"
+# The documented exceptions: core agents that ship without a manifest.
+# * omnigent-pi is a session-factory agent wired through the #825 omnigent seam
+#   (a "module:callable" entrypoint), not data expressible as an acp-only manifest.
+# * antigravity depends on _SHIM_ONLY fields (the web-tool and hosted-search
+#   policy, the MCP config path, the ACP effort option) that a data-only manifest
+#   cannot carry. Released 0.7.x versions have no core entry for it and would
+#   auto-load a manifest from benchflow-ai/agents@main without that policy, so a
+#   "no web" run would keep agy's server-side web search.
+_CORE_ONLY_EXCEPTIONS = frozenset({"omnigent-pi", "antigravity"})
+
+# Core agents that must NOT get a manifest in benchflow-ai/agents, by name or by
+# alias. A manifest mirroring core would pass the parity checks above, but
+# released 0.7.x versions would auto-load it from agents@main without core's
+# _SHIM_ONLY web-tool and MCP policy (see antigravity above). Lift an entry only
+# once that policy can travel with the manifest.
+_MANIFEST_FORBIDDEN = frozenset({"antigravity"})
+_MANIFEST_FORBIDDEN_ALIASES = frozenset({"antigravity", "agy"})
 
 # Import roots so the child interpreter finds benchflow whether it is installed
 # (CI) or only on PYTHONPATH from a worktree (dev VM) — mirrors the approach in
@@ -168,8 +181,8 @@ def test_manifest_byte_identical_to_core(agent_name: str | None) -> None:
 
 
 @pytest.mark.skipif(not os.environ.get(MANIFEST_DIR_ENV), reason=_SKIP_REASON)
-def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
-    """omnigent-pi is the ONLY core agent without a manifest.
+def test_only_documented_core_agents_lack_a_manifest() -> None:
+    """omnigent-pi and antigravity are the ONLY core agents without a manifest.
 
     Computed dynamically (core names minus manifest names) rather than hardcoded,
     so adding a new core agent without shipping its manifest fails this gate
@@ -178,17 +191,41 @@ def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
     core = _pure_core_agents()
     loaded = _live_manifests()
     unmanifested = set(core) - set(loaded)
-    # SUBSET, not equality: omnigent-pi is the only *tolerated* unmanifested core
-    # agent, but its presence in AGENTS is import-side-effect dependent (the omnigent
-    # session-factory package may be unregistered in a lean env such as CI), so its
-    # absence is fine; a *new* unmanifested core agent still fails this gate.
-    assert unmanifested <= {_CORE_ONLY_EXCEPTION}, (
+    # SUBSET, not equality: the exceptions are the only *tolerated* unmanifested
+    # core agents, but omnigent-pi's presence in AGENTS is import-side-effect
+    # dependent (the omnigent session-factory package may be unregistered in a lean
+    # env such as CI), so its absence is fine; a *new* unmanifested core agent
+    # still fails this gate.
+    assert unmanifested <= _CORE_ONLY_EXCEPTIONS, (
         "unmanifested core agents mismatch: tolerated only "
-        f"{{{_CORE_ONLY_EXCEPTION!r}}}, got {sorted(unmanifested)}. "
-        f"{_CORE_ONLY_EXCEPTION!r} is the documented exception — a session-factory "
-        "agent registered via the #825 omnigent seam, not a manifest.toml. Every "
+        f"{sorted(_CORE_ONLY_EXCEPTIONS)}, got {sorted(unmanifested)}. "
+        "These are the documented exceptions (see _CORE_ONLY_EXCEPTIONS). Every "
         "other core agent must ship a manifest in benchflow-ai/agents; a new "
-        "unmanifested core agent must add one (or extend this exception on purpose)."
+        "unmanifested core agent must add one (or extend the exceptions on purpose)."
+    )
+
+
+@pytest.mark.skipif(not os.environ.get(MANIFEST_DIR_ENV), reason=_SKIP_REASON)
+def test_core_only_agents_have_no_manifest() -> None:
+    """No manifest may claim a forbidden core-only agent's name or alias.
+
+    The subset check above can only shrink when a manifest is added, so it would
+    stay green if someone mirrored antigravity into benchflow-ai/agents. This
+    check fails instead (see _MANIFEST_FORBIDDEN for why).
+    """
+    loaded = _live_manifests()
+    by_name = sorted(set(loaded) & _MANIFEST_FORBIDDEN)
+    by_alias = sorted(
+        (name, alias)
+        for name, m in loaded.items()
+        for alias in m.aliases
+        if alias in _MANIFEST_FORBIDDEN_ALIASES
+    )
+    assert not by_name and not by_alias, (
+        f"forbidden manifests in benchflow-ai/agents: names {by_name}, "
+        f"aliases {by_alias}. These agents stay core-only until their _SHIM_ONLY "
+        "web-tool and MCP policy can travel with a manifest; released 0.7.x would "
+        "auto-load the manifest without it (see _MANIFEST_FORBIDDEN)."
     )
 
 

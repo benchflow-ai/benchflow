@@ -124,6 +124,13 @@ def apply_codex_launch_config(
             # codex-acp 1.6.0 ignores CLI -c flags; its supported CODEX_CONFIG
             # is forwarded to the Codex app-server's thread configuration.
             config["web_search"] = "disabled"
+            # The denylist proxy reads model request bodies; Codex compresses
+            # them with zstd for ChatGPT sign-in, which it cannot decode.
+            features = config.get("features")
+            config["features"] = {
+                **(features if isinstance(features, dict) else {}),
+                "enable_request_compression": False,
+            }
         if owns_model and reasoning_effort:
             config["model_reasoning_effort"] = reasoning_effort
         updated_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))

@@ -270,7 +270,9 @@ class RetryConfig:
         if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
             return True
         if self.retry_on_infra and category in {INFRA_ERROR, SANDBOX_SETUP}:
-            return True
+            # An image that cannot keep the agent from Daytona's root daemon
+            # refuses the same way every time.
+            return not _image_cannot_guard_daemon(error)
         if category == API_ERROR:
             # Transient-only: rate limit / provider 5xx self-heal on backoff;
             # permanent (auth, quota, model_not_found, rejected_request) do not.
@@ -499,6 +501,8 @@ class EvaluationConfig:
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
     base_image_override: str | None = None
+    separate_verifier: bool = False
+    separate_verifier_include: tuple[str, ...] = ()
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = SKILL_MODE_NO_SKILL
@@ -908,6 +912,8 @@ class Evaluation:
             ),
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
+            separate_verifier=bool(raw.get("separate_verifier", False)),
+            separate_verifier_include=tuple(raw.get("separate_verifier_include") or ()),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1005,6 +1011,8 @@ class Evaluation:
             ),
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
+            separate_verifier=bool(raw.get("separate_verifier", False)),
+            separate_verifier_include=tuple(raw.get("separate_verifier_include") or ()),
             include_tasks=include,
             exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1282,6 +1290,8 @@ class Evaluation:
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             base_image_override=cfg.base_image_override,
+            separate_verifier=cfg.separate_verifier,
+            separate_verifier_include=cfg.separate_verifier_include,
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1343,6 +1353,8 @@ class Evaluation:
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             base_image_override=cfg.base_image_override,
+            separate_verifier=cfg.separate_verifier,
+            separate_verifier_include=cfg.separate_verifier_include,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -2025,3 +2037,12 @@ class Evaluation:
         )
 
         return job_result
+
+
+def _image_cannot_guard_daemon(error: str | None) -> bool:
+    """A sandbox-daemon guard refusal the task's image always gives."""
+    lower = (error or "").lower()
+    return "could not be kept away from daytona" in lower and (
+        "the image has no iptables and no package manager" in lower
+        or "the image has ipv6 but no ip6tables" in lower
+    )

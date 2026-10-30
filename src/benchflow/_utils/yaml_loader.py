@@ -125,6 +125,8 @@ def rollout_config_from_dict(
         ),
         context_root=raw.get("context_root"),
         base_image_override=raw.get("base_image_override"),
+        separate_verifier=bool(raw.get("separate_verifier", False)),
+        separate_verifier_include=tuple(raw.get("separate_verifier_include") or ()),
         agent=raw.get("agent", "claude-agent-acp"),
         model=raw.get("model"),
         reasoning_effort=raw.get("reasoning_effort"),

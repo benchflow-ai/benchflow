@@ -3,6 +3,10 @@
 HTTPS is intercepted so the CONNECT authority, TLS name and decrypted HTTP
 authority stay bound to the same destination. Leaf certificates are generated
 on demand with the per-rollout CA kept in the root-only runtime directory.
+What is refused is decided by ``benchflow.sandbox._egress_policy`` (listed
+URLs) and, for request bodies, ``benchflow.sandbox._egress_body`` and
+``benchflow.sandbox._hosted_fetch``, which benchflow ships next to this script
+at their package paths.
 """
 
 from __future__ import annotations
@@ -11,7 +15,6 @@ import argparse
 import contextlib
 import hashlib
 import ipaddress
-import json
 import os
 import re
 import secrets
@@ -23,145 +26,17 @@ import sys
 import tempfile
 import threading
 import urllib.parse
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
+
+from benchflow.sandbox._egress_body import Refused, RequestBody, request_framing
+from benchflow.sandbox._egress_policy import Log, Policy, host_key, looks_like_address
 
 HEAD_LIMIT = 64 * 1024
 HEAD_TIMEOUT = 30
 IDLE_TIMEOUT = 900
 BLOCK_BODY = "Blocked by the task network policy: {url}\n"
 CERT_MINT_TIMEOUT = 15
-
-
-def host_key(host: str) -> str:
-    """Comparison form of a hostname: lowercase, no trailing dot, no leading www."""
-    host = host.strip().rstrip(".").lower()
-    return host[4:] if host.startswith("www.") else host
-
-
-def _path_key(path: str) -> str:
-    """Comparison form of a path: decoded, dot segments resolved, one slash between segments."""
-    path = path.split("?", 1)[0].split("#", 1)[0]
-    for _ in range(3):
-        decoded = urllib.parse.unquote(path)
-        if decoded == path:
-            break
-        path = decoded
-    path = path.replace("\\", "/")
-    segments: list[str] = []
-    for segment in path.split("/"):
-        segment = segment.split(";", 1)[0]
-        if segment in ("", "."):
-            continue
-        if segment == "..":
-            if segments:
-                segments.pop()
-            continue
-        segments.append(segment)
-    key = "/" + "/".join(segments)
-    if path.endswith(("/", "/.", "/..")) and key != "/":
-        key += "/"
-    return key.lower()
-
-
-_EMBEDDED_IPV4 = re.compile(r"(?:^|[.-])(?:\d{1,3}[.-]){3}\d{1,3}(?:[.-]|$)")
-_HEX_IPV4_LABEL = re.compile(r"^[0-9a-f]{8}$")
-_WILDCARD_DNS = (
-    "nip.io",
-    "sslip.io",
-    "xip.io",
-    "traefik.me",
-    "localtest.me",
-    "lvh.me",
-    "vcap.me",
-)
-
-
-def _looks_like_address(host: str) -> bool:
-    """True for anything that names an address rather than a site.
-
-    glibc accepts decimal, octal, hex and short dotted forms (``3232235777``,
-    ``0xc0a80101``, ``0300.0250.1.1``, ``127.1``), and wildcard DNS services
-    resolve an address embedded in the name (``1-2-3-4.sslip.io``).
-    """
-    try:
-        ipaddress.ip_address(host)
-        return True
-    except ValueError:
-        pass
-    labels = host.split(".")
-    if not any(c.isalpha() for c in host):
-        return True
-    if labels[-1].isdigit():
-        return True
-    if any(label.startswith("0x") or _HEX_IPV4_LABEL.match(label) for label in labels):
-        return True
-    if _EMBEDDED_IPV4.search(host):
-        return True
-    return any(host == d or host.endswith("." + d) for d in _WILDCARD_DNS)
-
-
-class Policy:
-    """Match hosts and URLs against the denylist; scheme, port and query are ignored."""
-
-    def __init__(
-        self,
-        blocked_urls: list[str],
-        blocked_hosts: list[str],
-        model_gateway_port: int | None = None,
-    ):
-        # Controller-supplied runtime state, never a task-authored allowlist.
-        if model_gateway_port is not None and (
-            type(model_gateway_port) is not int
-            or not 1024 <= model_gateway_port <= 65535
-        ):
-            raise ValueError("invalid model gateway port")
-        self.model_gateway_port = model_gateway_port
-        self.prefixes: list[tuple[str, str]] = []
-        for raw in blocked_urls:
-            url = raw if "://" in raw else "https://" + raw
-            parts = urllib.parse.urlsplit(url)
-            if not parts.hostname:
-                raise ValueError(f"blocked_urls entry has no host: {raw!r}")
-            prefix = _path_key(parts.path).rstrip("/") or "/"
-            self.prefixes.append((host_key(parts.hostname), prefix))
-        self.hosts = {h.strip().rstrip(".").lower() for h in blocked_hosts if h.strip()}
-        self.inspect_hosts = {host for host, _ in self.prefixes}
-
-    @classmethod
-    def load(cls, path: str) -> Policy:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return cls(
-            list(data.get("blocked_urls") or []),
-            list(data.get("blocked_hosts") or []),
-            data.get("model_gateway_port"),
-        )
-
-    def host_rule(self, host: str, port: int = 0) -> str | None:
-        if (host, port) == ("127.0.0.1", self.model_gateway_port):
-            return None
-        name = host.strip().rstrip(".").lower()
-        if _looks_like_address(name):
-            return "ip-literal"
-        for blocked in self.hosts:
-            if name == blocked or name.endswith("." + blocked):
-                return f"host:{blocked}"
-        return None
-
-    def url_rule(self, host: str, path: str, port: int = 0) -> str | None:
-        rule = self.host_rule(host, port)
-        if rule:
-            return rule
-        key, pkey = host_key(host), _path_key(path)
-        for bhost, bpath in self.prefixes:
-            if key == bhost and pkey.startswith(bpath):
-                return f"url:{bhost}{bpath}"
-        return None
-
-    def inspect(self, host: str) -> bool:
-        return host_key(host) in self.inspect_hosts
 
 
 class CertStore:
@@ -206,7 +81,7 @@ class CertStore:
             name = host_key(host).encode("idna").decode("ascii")
         except UnicodeError as exc:
             raise ValueError("invalid certificate hostname") from exc
-        if len(name) > 253 or _looks_like_address(name):
+        if len(name) > 253 or looks_like_address(name):
             raise ValueError("invalid certificate hostname")
         labels = name.split(".")
         if any(
@@ -317,22 +192,6 @@ class CertStore:
         return destination
 
 
-class Log:
-    def __init__(self, path: str | None):
-        self.path = path
-        self._lock = threading.Lock()
-
-    def write(self, **fields: object) -> None:
-        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
-        line = json.dumps({"ts": stamp, **fields}, sort_keys=True)
-        with self._lock:
-            if self.path:
-                with open(self.path, "a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-            else:
-                print(line, file=sys.stderr, flush=True)
-
-
 def _read_head(sock: socket.socket) -> bytes:
     buf = b""
     sock.settimeout(HEAD_TIMEOUT)
@@ -400,86 +259,6 @@ def _check_sni(
     return None
 
 
-def _request_framing(headers: list[tuple[str, str]]) -> tuple[int, bool]:
-    """Accept one unambiguous HTTP request body, never a following request."""
-    lengths = [v for n, v in headers if n.lower() == "content-length"]
-    encodings = [v for n, v in headers if n.lower() == "transfer-encoding"]
-    if len(lengths) > 1 or len(encodings) > 1 or (lengths and encodings):
-        raise ValueError("ambiguous request framing")
-    if encodings:
-        if encodings[0].lower() != "chunked":
-            raise ValueError("unsupported transfer encoding")
-        return 0, True
-    if lengths and not re.fullmatch(r"[0-9]+", lengths[0]):
-        raise ValueError("invalid content length")
-    return int(lengths[0]) if lengths else 0, False
-
-
-class _BodyReader:
-    def __init__(self, sock: socket.socket, initial: bytes):
-        self.sock, self.buffer = sock, initial
-
-    def take(self, size: int) -> bytes:
-        if not self.buffer:
-            self.buffer = self.sock.recv(min(size, 65536))
-            if not self.buffer:
-                raise ConnectionError("incomplete request body")
-        data, self.buffer = self.buffer[:size], self.buffer[size:]
-        return data
-
-    def line(self) -> bytes:
-        while b"\r\n" not in self.buffer:
-            if len(self.buffer) > HEAD_LIMIT:
-                raise ConnectionError("body line too large")
-            data = self.sock.recv(4096)
-            if not data:
-                raise ConnectionError("incomplete chunked body")
-            self.buffer += data
-        line, self.buffer = self.buffer.split(b"\r\n", 1)
-        if len(line) > HEAD_LIMIT:
-            raise ConnectionError("body line too large")
-        return line
-
-
-def _copy_request_body(
-    client: socket.socket,
-    upstream: socket.socket,
-    rest: bytes,
-    length: int,
-    chunked: bool,
-) -> None:
-    """Stream only this body. Canonicalize chunks and discard trailers/pipeline bytes."""
-    reader = _BodyReader(client, rest)
-
-    def copy(size: int) -> None:
-        while size:
-            data = reader.take(min(size, 65536))
-            upstream.sendall(data)
-            size -= len(data)
-
-    if not chunked:
-        copy(length)
-        return
-    while True:
-        size_text = reader.line().split(b";", 1)[0]
-        if not re.fullmatch(rb"[0-9a-fA-F]+", size_text):
-            raise ConnectionError("invalid chunk size")
-        size = int(size_text, 16)
-        if size == 0:
-            trailer_size = 0
-            while line := reader.line():
-                trailer_size += len(line) + 2
-                if trailer_size > HEAD_LIMIT:
-                    raise ConnectionError("trailers too large")
-            upstream.sendall(b"0\r\n\r\n")
-            return
-        upstream.sendall(f"{size:x}\r\n".encode("ascii"))
-        copy(size)
-        if reader.line() != b"":
-            raise ConnectionError("invalid chunk terminator")
-        upstream.sendall(b"\r\n")
-
-
 class _PrivateDestination(Exception):
     """The destination resolves to a loopback, private or otherwise non-global address."""
 
@@ -519,17 +298,6 @@ def _connect_upstream(
         except OSError as exc:
             error = exc
     raise error or OSError(f"cannot connect to {host}:{port}")
-
-
-def _body_prefix(headers: list[tuple[str, str]], rest: bytes) -> bytes:
-    """Bytes after the head that belong to this request's body; a pipelined request is dropped."""
-    names = {n.lower(): v for n, v in headers}
-    if "transfer-encoding" in names:
-        return rest
-    try:
-        return rest[: int(names.get("content-length", "0"))]
-    except ValueError:
-        return b""
 
 
 def _build_head(
@@ -803,7 +571,7 @@ class Handler(socketserver.BaseRequestHandler):
             )
             return
         try:
-            length, chunked = _request_framing(headers)
+            length, chunked = request_framing(headers)
         except ValueError as exc:
             sock.sendall(_response("400 Bad Request", str(exc) + "\n"))
             return
@@ -814,6 +582,15 @@ class Handler(socketserver.BaseRequestHandler):
             )
             return
         rule = self.proxy.policy.url_rule(host, path, port)
+        if rule:
+            self._deny(sock, method, url, rule)
+            return
+        # The body is checked before the origin is contacted.
+        sock.settimeout(IDLE_TIMEOUT)
+        if expectations:
+            sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+        body = RequestBody(sock, headers, rest, length, chunked, self.proxy.policy)
+        rule = body.check()
         if rule:
             self._deny(sock, method, url, rule)
             return
@@ -842,14 +619,16 @@ class Handler(socketserver.BaseRequestHandler):
             )
             return
         try:
-            sock.settimeout(IDLE_TIMEOUT)
             upstream.settimeout(IDLE_TIMEOUT)
             upstream.sendall(_build_head(method, path, version, headers))
-            if expectations:
-                sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
-            _copy_request_body(
-                sock, upstream, _body_prefix(headers, rest), length, chunked
-            )
+            try:
+                body.send(upstream)
+            except Refused as refused:
+                # The origin never received a whole request; drop it unanswered.
+                with contextlib.suppress(OSError):
+                    socket.socket.shutdown(upstream, socket.SHUT_RDWR)
+                self._deny(sock, method, url, refused.rule)
+                return
             # Never relay additional client bytes: a later request could name
             # an unchecked virtual host or path on the same origin connection.
             _relay_response(sock, upstream)
