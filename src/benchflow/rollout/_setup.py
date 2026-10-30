@@ -37,7 +37,9 @@ from benchflow.contracts import RolloutPlanes, default_rollout_planes
 from benchflow.diagnostics import VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.rewards.validation import (
+    UNBOUNDED_REWARD_RANGE,
     declared_reward_range,
+    has_out_of_range,
     reward_lenient_from_env,
     validate_reward_map,
 )
@@ -571,11 +573,18 @@ def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict
     # ``[verifier] reward_range`` (BF-8) as the reward.json parse path so the
     # final canonicalization gate stays consistent with how the verifier
     # accepted the map (no-op unless the operator/task opts in).
+    # A reward the verifier parse flagged as out of range was kept on purpose
+    # (metadata.out_of_range), so don't re-reject it here.
+    reward_range = (
+        UNBOUNDED_REWARD_RANGE
+        if has_out_of_range(rewards)
+        else declared_reward_range(task)
+    )
     return validate_reward_map(
         rewards,
         source="verifier",
         lenient=reward_lenient_from_env(),
-        reward_range=declared_reward_range(task),
+        reward_range=reward_range,
     )
 
 
