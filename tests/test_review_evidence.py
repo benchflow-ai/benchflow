@@ -23,6 +23,7 @@ from benchflow.review.evidence import (
     EvidenceError,
     EvidenceManifest,
     _extract_archive,
+    _link_target,
     capture_task_evidence,
     capture_workspace,
     install_review_evidence,
@@ -158,6 +159,72 @@ async def test_external_symlink_never_imports_outside_files(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_absolute_in_workspace_link_with_dotdot_is_kept(tmp_path):
+    """Guards #1157: an absolute link whose '..' parts stay inside the workspace."""
+    source = tmp_path / "source"
+    (source / "analysis" / "scripts").mkdir(parents=True)
+    (source / "analysis" / "figures").mkdir()
+    (source / "analysis" / "figures" / "fit.svg").write_text("<svg/>")
+    (source / "figs").symlink_to(
+        f"{source}/analysis/scripts/../figures", target_is_directory=True
+    )
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(transport, str(source), bundle)
+
+    assert os.readlink(bundle / "workspace" / "figs") == "analysis/figures"
+    assert (bundle / "workspace" / "figs" / "fit.svg").read_text() == "<svg/>"
+    archive = tmp_path / "upload.tar"
+    prepare_workspace_upload(bundle, archive)
+    receiving = tmp_path / "reviewer" / "workspace"
+    await install_uploaded_workspace(
+        transport, str(archive), str(receiving), str(bundle / "manifest.json")
+    )
+    validate_workspace(receiving, manifest)
+    assert (receiving / "figs" / "fit.svg").read_text() == "<svg/>"
+
+
+@pytest.mark.parametrize(
+    ("name", "linkname", "expected"),
+    [
+        ("figs", "/root/analysis/scripts/../figures", "analysis/figures"),
+        ("a/b/link", "/root/a/./c/../d", "../d"),
+        ("link", "/root/x/..", "."),
+        ("link", "/root/answer.txt", "answer.txt"),
+        ("link", "/root/a/../../etc/passwd", None),
+        ("link", "/root/..", None),
+    ],
+)
+def test_absolute_link_target_is_normalised_before_the_safety_check(
+    name, linkname, expected
+):
+    """Guards #1157 at the unit level: '..' inside the workspace is kept."""
+    member = tarfile.TarInfo(name)
+    member.type = tarfile.SYMTYPE
+    member.linkname = linkname
+    if expected is None:
+        with pytest.raises(EvidenceError, match="symlink escapes"):
+            _link_target(member, "/root")
+    else:
+        assert _link_target(member, "/root") == expected
+
+
+@pytest.mark.asyncio
+async def test_absolute_link_that_leaves_after_normalising_is_rejected(tmp_path):
+    """Guards #1157's fix: '..' that climbs out of the workspace still escapes."""
+    source = tmp_path / "source"
+    (source / "analysis").mkdir(parents=True)
+    (tmp_path / "outside").write_text("do not export")
+    (source / "escape").symlink_to(f"{source}/analysis/../../outside")
+
+    with pytest.raises(EvidenceError, match="symlink escapes"):
+        await capture_workspace(LocalTransport(), str(source), tmp_path / "evidence")
+
+    assert not (tmp_path / "evidence").exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["fifo", "socket"])
 async def test_special_files_are_recorded_not_silently_omitted(
     tmp_path, monkeypatch, kind
@@ -234,6 +301,55 @@ async def test_daytona_session_state_never_blocks_or_enters_evidence(tmp_path):
         "daytona/notes.md",
         "paper.pdf",
     }
+    validate_workspace(bundle / "workspace", manifest)
+
+
+@pytest.mark.asyncio
+async def test_package_manager_caches_stay_out_of_evidence(tmp_path):
+    """Guards the capture size of /root workspaces (verifier-followups PR).
+
+    On a 2026-10-16 ion-trap-design run the harness's npm and uv caches under
+    /root were 97% of the 745 MB the separate verifier received. Caches are
+    recorded as exclusions; look-alikes that could be solver output stay.
+    """
+    source = tmp_path / "root"
+    for cache in (
+        ".cache/uv/archive-v0/abc/pkg.py",
+        ".cache/pip/http-v2/0/1",
+        ".npm/_cacache/content-v2/sha512/aa",
+        ".npm/_logs/debug-0.log",
+        ".npm/_npx/f1/package.json",
+        "project/.cache/uv/wheel",
+    ):
+        (source / cache).parent.mkdir(parents=True, exist_ok=True)
+        (source / cache).write_text("cache")
+    kept = (
+        ".cache/matplotlib/fontlist.json",
+        ".npmrc",
+        ".local/bin/tool",
+        "results/cache/uv/table.csv",
+        "uv.lock",
+    )
+    for path in kept:
+        (source / path).parent.mkdir(parents=True, exist_ok=True)
+        (source / path).write_text("solver")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert sorted((e.original_path, e.reason) for e in manifest.exclusions) == sorted(
+        (str(source / path), "package_cache")
+        for path in (
+            ".cache/pip",
+            ".cache/uv",
+            ".npm/_cacache",
+            ".npm/_logs",
+            ".npm/_npx",
+            "project/.cache/uv",
+        )
+    )
+    files = {e.path for e in manifest.entries if e.kind == "file"}
+    assert files == set(kept)
     validate_workspace(bundle / "workspace", manifest)
 
 

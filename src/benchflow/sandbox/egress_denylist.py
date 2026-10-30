@@ -21,7 +21,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from benchflow.sandbox._egress_denylist_proxy import host_key
+from benchflow._utils.shipped_modules import package_files
+from benchflow.sandbox._egress_policy import host_key
 from benchflow.sandbox.lockdown import (
     EGRESS_DENYLIST_ENV,
     _exec_failure_detail,
@@ -29,15 +30,18 @@ from benchflow.sandbox.lockdown import (
 )
 
 __all__ = [
+    "BLOCK_LOG_PATH",
     "CA_BUNDLE_PATH",
     "CA_CERT_PATH",
     "EGRESS_DENYLIST_ENV",
     "EGRESS_PORT",
     "TRAJECTORY_LOG_NAME",
     "EgressDenylist",
+    "EgressGuard",
     "certificate_material",
     "denylist_agent_env",
     "egress_denylist_for",
+    "egress_guard_for",
     "start_egress_denylist",
     "stop_egress_denylist",
 ]
@@ -52,7 +56,7 @@ PROXY_URL = f"http://127.0.0.1:{EGRESS_PORT}"
 NO_PROXY = "127.0.0.1,localhost,::1"
 
 _PROXY_SCRIPT = Path(__file__).with_name("_egress_denylist_proxy.py")
-_LOG_PATH = f"{RUNTIME_DIR}/blocked.jsonl"
+BLOCK_LOG_PATH = f"{RUNTIME_DIR}/blocked.jsonl"
 _PID_PATH = f"{RUNTIME_DIR}/proxy.pid"
 _STDERR_PATH = f"{RUNTIME_DIR}/stderr.log"
 _CERT_DAYS = 30
@@ -75,6 +79,28 @@ class EgressDenylist:
             if parts.hostname:
                 hosts.setdefault(host_key(parts.hostname))
         return tuple(hosts)
+
+
+@dataclass(frozen=True)
+class EgressGuard:
+    """The model gateway's share of a no-web or denylist policy.
+
+    The agent can call the in-sandbox gateway directly, so in these runs it
+    serves model calls only and refuses requests for provider-side fetches.
+    ``block_log`` is where it records refusals: the denylist proxy's log, or
+    None in a no-web run, which has no proxy.
+    """
+
+    block_log: str | None
+
+
+def egress_guard_for(
+    *, no_web: bool, denylist: EgressDenylist | None
+) -> EgressGuard | None:
+    """The gateway guard a rollout's network policy calls for, or None on an open network."""
+    if denylist is not None:
+        return EgressGuard(block_log=BLOCK_LOG_PATH)
+    return EgressGuard(block_log=None) if no_web else None
 
 
 def egress_denylist_for(sandbox_config: Any) -> EgressDenylist | None:
@@ -330,6 +356,12 @@ async def start_egress_denylist(
     files = {
         "policy.json": json.dumps(policy, indent=2).encode("utf-8"),
         "proxy.py": _PROXY_SCRIPT.read_bytes(),
+        # The proxy imports the policy as in-process, from next to itself.
+        **package_files(
+            "benchflow.sandbox._egress_policy",
+            "benchflow.sandbox._hosted_fetch",
+            "benchflow.sandbox._egress_body",
+        ),
         "ca.crt": material["ca.crt"],
         "ca.key": material["ca.key"],
         **{
@@ -340,7 +372,8 @@ async def start_egress_denylist(
     }
     await _run(
         env,
-        f"mkdir -p {shlex.quote(RUNTIME_DIR + '/certs')} && chmod 700 {shlex.quote(RUNTIME_DIR)}",
+        f"mkdir -p {shlex.quote(RUNTIME_DIR + '/certs')} "
+        f"{shlex.quote(RUNTIME_DIR + '/benchflow/sandbox')} && chmod 700 {shlex.quote(RUNTIME_DIR)}",
         "egress runtime dir",
         timeout_sec=30,
     )
@@ -356,11 +389,11 @@ async def stop_egress_denylist(env: Any, rollout_dir: Path) -> None:
     target = Path(rollout_dir) / "trajectory" / TRAJECTORY_LOG_NAME
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        await env.download_file(_LOG_PATH, target)
+        await env.download_file(BLOCK_LOG_PATH, target)
     except Exception:
         try:
             result = await env.exec(
-                f"cat {shlex.quote(_LOG_PATH)}", user="root", timeout_sec=30
+                f"cat {shlex.quote(BLOCK_LOG_PATH)}", user="root", timeout_sec=30
             )
             if _exec_return_code(result) == 0:
                 target.write_text(getattr(result, "stdout", "") or "", encoding="utf-8")

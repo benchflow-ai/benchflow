@@ -30,8 +30,16 @@ from benchflow.agents.registry import (
 )
 from benchflow.rollout import Role, Rollout, RolloutConfig, Scene
 from benchflow.rollout_planes import DefaultRolloutPlanes
-from benchflow.sandbox.egress_denylist import EGRESS_DENYLIST_ENV, EgressDenylist
+from benchflow.sandbox.egress_denylist import (
+    BLOCK_LOG_PATH,
+    EGRESS_DENYLIST_ENV,
+    EgressDenylist,
+    EgressGuard,
+)
 from benchflow.task import RolloutPaths
+
+# The gateway guard a denylist rollout runs with.
+_DENYLIST_GUARD = EgressGuard(block_log=BLOCK_LOG_PATH)
 
 _USAGE_UNAVAILABLE = {
     "n_input_tokens": None,
@@ -509,7 +517,7 @@ async def test_denylist_wiring_does_not_depend_on_harness_or_model(
 
         assert planes.connect_acp.await_count == 2
         for call in planes.ensure_litellm_runtime.await_args_list:
-            assert call.kwargs["force_sandbox_local"] is True
+            assert call.kwargs["egress_guard"] == _DENYLIST_GUARD
             assert (call.kwargs["agent"], call.kwargs["model"]) == (agent, model)
         for call in planes.start_egress_denylist.await_args_list:
             assert call.args == (env, "agent", _DENYLIST)
@@ -635,7 +643,7 @@ async def test_connect_starts_proxy_before_acp_and_cleanup_stops_it(
     await rollout.connect()
 
     litellm_kwargs = planes.ensure_litellm_runtime.await_args.kwargs
-    assert litellm_kwargs["force_sandbox_local"] is True
+    assert litellm_kwargs["egress_guard"] == _DENYLIST_GUARD
     assert "SSL_CERT_FILE" not in litellm_kwargs["agent_env"]
     assert "HTTPS_PROXY" not in litellm_kwargs["agent_env"]
     planes.start_egress_denylist.assert_awaited_once_with(
@@ -746,9 +754,8 @@ async def test_connect_as_applies_denylist_to_role_env(tmp_path):
     planes.agent_launch.assert_called_once_with(
         "gemini", disallow_web_tools=False, disallow_hosted_search=True
     )
-    assert (
-        planes.ensure_litellm_runtime.await_args.kwargs["force_sandbox_local"] is True
-    )
+    guard = planes.ensure_litellm_runtime.await_args.kwargs["egress_guard"]
+    assert guard == _DENYLIST_GUARD
     assert planes.apply_web_tool_policy.await_args.kwargs == {
         "disallow": False,
         "disallow_hosted_search": True,

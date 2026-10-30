@@ -1,8 +1,8 @@
 name: manifest-parity
 
 # Parity gate for the agent-decoupling source-of-truth flip (the future "step 6"):
-# every core agent's manifest in benchflow-ai/agents must merge back to a
-# byte-identical AgentConfig. Runs in its own cheap, no-secrets lane — it clones
+# every manifest in benchflow-ai/agents that mirrors a core agent must merge back
+# to a byte-identical AgentConfig. Runs in its own cheap, no-secrets lane — it clones
 # the PUBLIC benchflow-ai/agents repo (no credentials) and runs only the parity
 # test, with BENCHFLOW_AGENTS_DIR pointed at the clone so the live checks turn on.
 # Standalone (not a step in test.yml) to keep the change strictly additive.

@@ -75,6 +75,7 @@ from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_pla
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.sandbox.providers import providers_phrase
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
+from benchflow.task.verifier_sandbox import normalize_include_paths
 
 if TYPE_CHECKING:
     from benchflow.eval_plan import EvalPlan
@@ -446,6 +447,29 @@ def eval_run(
             ),
         ),
     ] = None,
+    separate_verifier: Annotated[
+        bool,
+        typer.Option(
+            "--separate-verifier",
+            help=(
+                "Run each verifier in a fresh sandbox built from the task image "
+                "that receives only the frozen workspace, as if every task set "
+                "\\[verifier].sandbox_mode = 'separate'. Docker and Daytona only."
+            ),
+        ),
+    ] = False,
+    separate_verifier_include: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--separate-verifier-include",
+            help=(
+                "A path outside the workspace that a separate verifier sandbox "
+                "receives too, at the same path, for tasks whose agent writes "
+                "graded files there (e.g. /root when the workspace is /app). "
+                "Repeatable."
+            ),
+        ),
+    ] = None,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy"),
@@ -652,6 +676,12 @@ def eval_run(
         # the TTY Rich dashboard (see cli._live_progress.progress_enabled).
         os.environ["BENCHFLOW_NO_PROGRESS"] = "1"
 
+    try:
+        include_paths = normalize_include_paths(separate_verifier_include or ())
+    except ValueError as exc:
+        print_error(f"{exc}")
+        raise typer.Exit(1) from None
+
     request = EvalCreateRequest(
         config_file=config_file,
         tasks_dir=tasks_dir,
@@ -677,6 +707,8 @@ def eval_run(
         sandbox_setup_timeout=sandbox_setup_timeout,
         context_root=context_root,
         base_image_override=base_image_override,
+        separate_verifier=separate_verifier,
+        separate_verifier_include=include_paths,
         skills_dir=skills_dir,
         skill_mode=skill_mode,
         skill_creator_dir=skill_creator_dir,
@@ -1019,6 +1051,17 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # run-config file was a no-op.
         if plan.eval_config_override is not None:
             j._config.config_override = plan.eval_config_override
+        # --separate-verifier only ever strengthens isolation, so it wins over
+        # a config file that leaves it off.
+        if plan.request.separate_verifier:
+            j._config.separate_verifier = True
+        if plan.request.separate_verifier_include:
+            j._config.separate_verifier_include = normalize_include_paths(
+                [
+                    *j._config.separate_verifier_include,
+                    *plan.request.separate_verifier_include,
+                ]
+            )
     except subprocess.CalledProcessError as e:
         # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
         # as a raw traceback — it is not a config-parse error, so give it its own

@@ -138,12 +138,14 @@ class DefaultRolloutPlanes:
         *,
         workspace: str,
         timeout_sec: int = 120,
+        guard_daemon: bool = True,
     ) -> str:
         return await setup_sandbox_user(
             env,
             sandbox_user,
             workspace=workspace,
             timeout_sec=timeout_sec,
+            guard_daemon=guard_daemon,
         )
 
     async def snapshot_build_config(self, env: Any, *, workspace: str) -> None:

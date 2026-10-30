@@ -124,8 +124,10 @@ from benchflow.rollout._results import (
 from benchflow.rollout._review import (
     capture_terminal_workspace,
     finish_terminal_review,
+    mark_agent_phase_start,
     prepare_terminal_review,
 )
+from benchflow.rollout._separate_verifier import run_separate_verifier
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
@@ -205,7 +207,11 @@ from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfi
 from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
-from benchflow.sandbox.egress_denylist import EgressDenylist, denylist_agent_env
+from benchflow.sandbox.egress_denylist import (
+    EgressDenylist,
+    denylist_agent_env,
+    egress_guard_for,
+)
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -219,6 +225,10 @@ from benchflow.skill_policy import (
     task_bundled_skills_dir,
 )
 from benchflow.skill_policy import SKILL_MODE_WITH_SKILL as SKILL_MODE_WITH_SKILL
+from benchflow.task.verifier_sandbox import (
+    apply_separate_verifier_flag,
+    separate_verifier_requested,
+)
 from benchflow.trajectories._capture import (
     TrajectoryWriter,
     _capture_session_trajectory,
@@ -770,6 +780,10 @@ class Rollout:
         # an export-time infra failure ("connection lost") as the agent's own
         # infra_failure category in dashboards.
         self._export_error: str | None = None
+        # Separate verifier only: the sandbox clock as the agent phase began,
+        # and the files written outside everything that crosses since then.
+        self._agent_phase_started: float | None = None
+        self._outside_workspace_writes: dict | None = None
         # Single bag for the four parallel diagnostic fields the old code
         # carried as separate attrs (issue #503). Each callsite that used
         # to assign to one of those slots now calls ``self._diagnostics.set(...)``
@@ -967,6 +981,23 @@ class Rollout:
                 self._task.config, cfg.config_override
             )
 
+        if cfg.separate_verifier:
+            # --separate-verifier: this run's verifier gets its own sandbox,
+            # the task's files (and digest) stay as they are. Refused here,
+            # before any sandbox exists, where that sandbox cannot run.
+            self._task.config = apply_separate_verifier_flag(
+                self._task.config, sandbox=cfg.environment, task_dir=cfg.task_path
+            )
+
+        if cfg.separate_verifier_include and not separate_verifier_requested(
+            self._task.config
+        ):
+            logger.warning(
+                "--separate-verifier-include has no effect for %s: its verifier "
+                "runs in the agent's sandbox",
+                self._task.name,
+            )
+
         prepare_terminal_review(self)
 
         self._disallow_web_tools = (
@@ -1106,6 +1137,16 @@ class Rollout:
             started_at=self._started_at,
             agent_env=self._agent_env,
             base_image_override=cfg.base_image_override,
+            verifier_sandbox_mode=(
+                "separate"
+                if separate_verifier_requested(getattr(self._task, "config", None))
+                else "shared"
+            ),
+            verifier_include=(
+                cfg.separate_verifier_include
+                if separate_verifier_requested(getattr(self._task, "config", None))
+                else ()
+            ),
             usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
             agent_idle_timeout=cfg.agent_idle_timeout,
@@ -1195,11 +1236,14 @@ class Rollout:
 
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
+                # Nothing runs as the sandbox user (the oracle runs as root),
+                # so the sandbox-daemon guard has nobody to keep away.
                 await self._planes.setup_sandbox_user(
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
                     timeout_sec=cfg.sandbox_setup_timeout,
+                    guard_daemon=False,
                 )
             await self._planes.snapshot_build_config(
                 self._env, workspace=self._agent_cwd
@@ -1221,6 +1265,7 @@ class Rollout:
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
+            await mark_agent_phase_start(self)
             self._phase = "installed"
             return
 
@@ -1288,6 +1333,7 @@ class Rollout:
                 self._env, cfg.generated_skills_root, cfg.sandbox_user
             )
         await self._planes.lockdown_paths(self._env, self._effective_locked)
+        await mark_agent_phase_start(self)
 
         self._phase = "installed"
 
@@ -1343,8 +1389,10 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=getattr(self, "_disallow_web_tools", False)
-            or egress_denylist is not None,
+            egress_guard=egress_guard_for(
+                no_web=getattr(self, "_disallow_web_tools", False),
+                denylist=egress_denylist,
+            ),
         )
         if egress_denylist is not None:
             self._agent_env = denylist_agent_env(self._agent_env)
@@ -1902,6 +1950,13 @@ class Rollout:
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
 
+        if separate_verifier_requested(getattr(self._task, "config", None)):
+            # The verifier never runs in the agent's sandbox: a fresh one gets
+            # only the frozen workspace.
+            self._rewards, self._verifier_error = await run_separate_verifier(self)
+            self._phase = "verified"
+            return self._rewards
+
         await _publish_trajectory_for_verifier(
             self._env, self._trajectory, self._rollout_paths.agent_dir
         )
@@ -1936,6 +1991,14 @@ class Rollout:
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
+        if separate_verifier_requested(getattr(self._task, "config", None)):
+            # Soft verification would upload tests/ into the agent's sandbox.
+            return (
+                None,
+                None,
+                "soft_verify is unavailable: the task uses a separate verifier "
+                "sandbox, so tests never enter the agent's sandbox",
+            )
         self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
@@ -2224,6 +2287,9 @@ class Rollout:
                     user="root",
                     timeout_sec=10,
                 )
+                # That harness step writes /root/.gitconfig: restart the agent
+                # phase clock so it is not listed as the solver's output.
+                await mark_agent_phase_start(self)
                 self._trajectory, self._agent_name = await _run_oracle(
                     self._env, cfg.task_path, self._timeout, sandbox_user=None
                 )
@@ -2402,7 +2468,9 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=disallow_web_tools or disallow_hosted_search,
+            egress_guard=egress_guard_for(
+                no_web=disallow_web_tools, denylist=egress_denylist
+            ),
         )
         if egress_denylist is not None:
             agent_env = denylist_agent_env(agent_env)

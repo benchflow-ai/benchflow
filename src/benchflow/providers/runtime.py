@@ -15,6 +15,7 @@ from benchflow.usage_tracking import UsageTrackingConfig
 
 if TYPE_CHECKING:
     from benchflow.providers.litellm_runtime import LiteLLMProcess
+    from benchflow.sandbox.egress_denylist import EgressGuard
 
 
 @dataclass
@@ -54,7 +55,7 @@ async def ensure_litellm_runtime(
     sandbox_setup_timeout: int = 120,
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
-    force_sandbox_local: bool = False,
+    egress_guard: EgressGuard | None = None,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     from benchflow.providers.litellm_runtime import (
         ensure_litellm_runtime as _ensure_litellm_runtime,
@@ -72,7 +73,7 @@ async def ensure_litellm_runtime(
         sandbox_setup_timeout=sandbox_setup_timeout,
         required_skill_names=required_skill_names,
         live_trajectory_path=live_trajectory_path,
-        force_sandbox_local=force_sandbox_local,
+        egress_guard=egress_guard,
     )
 
 

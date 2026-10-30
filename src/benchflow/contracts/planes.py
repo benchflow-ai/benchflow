@@ -89,6 +89,7 @@ class RolloutPlanes(Protocol):
         *,
         workspace: str,
         timeout_sec: int = 120,
+        guard_daemon: bool = True,
     ) -> str: ...
 
     async def snapshot_build_config(self, env: Any, *, workspace: str) -> None: ...

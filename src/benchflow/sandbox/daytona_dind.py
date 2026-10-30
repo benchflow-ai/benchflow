@@ -199,6 +199,72 @@ class _DaytonaDinD(_DaytonaStrategy):
             cleanup_session=cleanup_session,
         )
 
+    @staticmethod
+    def _guard_daemon_command(ports: str, proc: str = "/proc") -> str:
+        """The VM shell command for :meth:`_guard_daemon_from_containers`.
+
+        ``proc`` is ``/proc`` in production; a test points it elsewhere to
+        exercise the IPv6 path without the host's interfaces.
+        dockerd-entrypoint.sh falls back to iptables-legacy (on its own
+        PATH) where nf_tables does not work; pick the same way here.
+        """
+        return (
+            "status=0; "
+            'pick() { for c in "$1" "$1-legacy"; do '
+            'command -v "$c" >/dev/null 2>&1 && "$c" -w -nL >/dev/null 2>&1 && '
+            '"$c" -w -t mangle -S OUTPUT >/dev/null 2>&1 && { echo "$c"; return 0; }; '
+            "done; return 1; }; "
+            "for fam in iptables ip6tables; do "
+            'if ! fw=$(pick "$fam"); then '
+            '[ "$fam" = iptables ] && status=2; '
+            # IPv6 is up but ip6tables does not work: do not pass silently.
+            f'[ "$fam" = ip6tables ] && [ -e {proc}/net/if_inet6 ] && '
+            '[ "$status" = 0 ] && status=3; '
+            "continue; fi; "
+            "for i in docker0 br-+; do "
+            f"for p in {ports}; do "
+            '"$fw" -w -C INPUT -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset 2>/dev/null || '
+            '"$fw" -w -I INPUT 1 -i "$i" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset || status=1; '
+            "done; done; "
+            f"for p in {ports}; do "
+            '"$fw" -w -t mangle -C OUTPUT -p tcp --dport "$p" -m owner ! --uid-owner 0 -j DROP 2>/dev/null || '
+            '"$fw" -w -t mangle -I OUTPUT 1 -p tcp --dport "$p" -m owner ! --uid-owner 0 -j DROP || status=1; '
+            "done; done; "
+            'echo "BF dind-daemon-guard status=$status"'
+        )
+
+    async def _guard_daemon_from_containers(self) -> None:
+        """Refuse connections from the compose containers to the daemon.
+
+        Daytona's toolbox daemon (root on this VM) listens on every address,
+        so a compose container reaches it through its bridge gateway, and
+        the daemon can ``docker exec`` into ``main`` as root. Traffic from
+        the containers arrives on ``docker0`` or a ``br-*`` bridge; the
+        runner's own reaches the VM elsewhere and is untouched. A container
+        on the host network shares the VM's namespace, so it crosses no
+        bridge: the VM also drops every non-root uid's own connections to
+        those ports (the daemon and dockerd run as root, and Docker does not
+        remap uids, so the agent keeps its uid there). Raises when the rules
+        cannot be installed, so the run is refused.
+        """
+        from benchflow.sandbox.lockdown import (
+            SANDBOX_DAEMON_PORTS,
+            SandboxDaemonGuardError,
+        )
+
+        ports = " ".join(str(p) for p in SANDBOX_DAEMON_PORTS)
+        command = self._guard_daemon_command(ports)
+        result = await self._vm_exec(command, timeout_sec=60)
+        out = result.stdout or ""
+        if result.return_code == 0 and "BF dind-daemon-guard status=0" in out:
+            return
+        raise SandboxDaemonGuardError(
+            "sandbox startup refused: the compose containers could not be kept "
+            "away from Daytona's root toolbox daemon on the DinD VM "
+            f"({out.strip() or 'no report'}; {(result.stderr or '').strip()[:300]}), so "
+            "the agent could reach root through the bridge gateway."
+        )
+
     def _compose_env_vars(self) -> dict[str, str]:
         env_vars: dict[str, str] = {
             "CONTEXT_DIR": self._ENVIRONMENT_DIR,
@@ -399,6 +465,7 @@ class _DaytonaDinD(_DaytonaStrategy):
             )
 
             await self._wait_for_docker_daemon()
+            await self._guard_daemon_from_containers()
 
             # Upload BenchFlow compose files to the sandbox
             for path in (

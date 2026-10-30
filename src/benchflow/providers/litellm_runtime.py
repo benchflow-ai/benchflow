@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import os
+import posixpath
 import secrets
 import shlex
 import shutil
@@ -25,6 +26,7 @@ from uuid import uuid4
 import httpx
 import yaml
 
+from benchflow._utils.shipped_modules import package_files
 from benchflow._utils.text import describe_exception
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
@@ -54,6 +56,7 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.egress_denylist import EgressGuard
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
@@ -64,7 +67,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-LITELLM_VERSION_SPEC = "litellm[proxy]==1.91.0"
+LITELLM_VERSION_SPEC = "litellm[proxy]==1.103.3"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
@@ -765,28 +768,44 @@ def _agent_endpoint_for_environment(
     )
 
 
-def _write_runtime_files(
-    runtime_dir: Path,
-    *,
-    config: dict[str, object],
-) -> tuple[Path, Path, Path]:
+def _runtime_modules(egress_guard: EgressGuard | None = None) -> dict[str, str]:
+    """Files the LiteLLM process imports from its runtime dir (on ``PYTHONPATH``), by path.
+
+    A guarded gateway also gets the egress guard and the policy it imports,
+    at their package paths, and ``sitecustomize`` installs the guard before
+    anything else can import LiteLLM.
+    """
+    providers = Path(__file__).parent
+    files = {
+        f"{_CALLBACK_MODULE}.py": callback_module_source(),
+        f"{_PATCH_MODULE}.py": (providers / "litellm_bedrock_patch.py").read_text(),
+        f"{_GEMINI_PATCH_MODULE}.py": (
+            providers / "litellm_gemini_passthrough_patch.py"
+        ).read_text(),
+    }
+    startup = [f"import {_PATCH_MODULE}", f"import {_GEMINI_PATCH_MODULE}"]
+    if egress_guard is not None:
+        shipped = package_files(
+            "benchflow.sandbox._egress_policy",
+            "benchflow.sandbox._hosted_fetch",
+            "benchflow.providers.litellm_egress_guard",
+        )
+        files.update((path, source.decode()) for path, source in shipped.items())
+        startup[:0] = [
+            "from benchflow.providers.litellm_egress_guard import install",
+            f"install(block_log={egress_guard.block_log!r})",
+        ]
+    files["sitecustomize.py"] = "\n".join(startup) + "\n"
+    return files
+
+
+def _write_runtime_files(runtime_dir: Path, *, config: dict[str, object]) -> Path:
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
-    patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
-    gemini_patch_path = runtime_dir / f"{_GEMINI_PATCH_MODULE}.py"
-    sitecustomize_path = runtime_dir / "sitecustomize.py"
+    for name, source in _runtime_modules().items():
+        (runtime_dir / name).write_text(source)
     config_path = runtime_dir / "config.yaml"
-    callback_path.write_text(callback_module_source())
-    patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
-    patch_path.write_text(patch_source)
-    gemini_patch_path.write_text(
-        Path(__file__).with_name("litellm_gemini_passthrough_patch.py").read_text()
-    )
-    sitecustomize_path.write_text(
-        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n"
-    )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-    return config_path, callback_path, patch_path
+    return config_path
 
 
 # How long to wait for the *host* per-run LiteLLM proxy to become healthy.
@@ -858,7 +877,7 @@ async def _start_host_litellm(
     port = _find_free_port()
     bind = await asyncio.to_thread(_host_bind_address, environment)
     config = litellm_proxy_config(route, master_key=master_key)
-    config_path, _, _ = _write_runtime_files(runtime_dir, config=config)
+    config_path = _write_runtime_files(runtime_dir, config=config)
     env = dict(os.environ)
     env.update(agent_env)
     env.update(
@@ -993,13 +1012,10 @@ async def _upload_runtime_files_to_sandbox(
     *,
     runtime_dir: str,
     config: dict[str, object],
+    egress_guard: EgressGuard | None = None,
 ) -> dict[str, str]:
     paths = {
         "config": f"{runtime_dir}/config.yaml",
-        "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
-        "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
-        "gemini_patch": f"{runtime_dir}/{_GEMINI_PATCH_MODULE}.py",
-        "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
         "stdout": f"{runtime_dir}/stdout.log",
         "stderr": f"{runtime_dir}/stderr.log",
@@ -1010,31 +1026,21 @@ async def _upload_runtime_files_to_sandbox(
         "launch_config": f"{runtime_dir}/launch_config.json",
         "preflight": f"{runtime_dir}/bedrock_patch_preflight.py",
     }
-    result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
+    modules = {
+        f"{runtime_dir}/{name}": source
+        for name, source in _runtime_modules(egress_guard).items()
+    }
+    directories = sorted({runtime_dir, *(posixpath.dirname(path) for path in modules)})
+    result = await sandbox.exec(
+        "mkdir -p " + " ".join(shlex.quote(d) for d in directories), timeout_sec=20
+    )
     if result.return_code != 0:
         raise RuntimeError(_exec_details("prepare LiteLLM runtime directory", result))
     await _upload_text(
         sandbox, yaml.safe_dump(config, sort_keys=False), paths["config"], ".yaml"
     )
-    await _upload_text(sandbox, callback_module_source(), paths["callback"], ".py")
-    await _upload_text(
-        sandbox,
-        Path(__file__).with_name("litellm_bedrock_patch.py").read_text(),
-        paths["patch"],
-        ".py",
-    )
-    await _upload_text(
-        sandbox,
-        Path(__file__).with_name("litellm_gemini_passthrough_patch.py").read_text(),
-        paths["gemini_patch"],
-        ".py",
-    )
-    await _upload_text(
-        sandbox,
-        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n",
-        paths["sitecustomize"],
-        ".py",
-    )
+    for path, source in modules.items():
+        await _upload_text(sandbox, source, path, ".py")
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     await _upload_text(
         sandbox, BEDROCK_PATCH_PREFLIGHT_SOURCE, paths["preflight"], ".py"
@@ -1057,7 +1063,17 @@ async def _ensure_sandbox_litellm(
     # stdlib-venv fallback for images that have a working venv and lack uv.
     requirements = " ".join(
         shlex.quote(requirement)
-        for requirement in (LITELLM_VERSION_SPEC, "boto3>=1.40", *extra_requirements)
+        # Sandbox proxy environments are installed independently of this
+        # project's lock. Keep these security-sensitive versions aligned with
+        # the reviewed lock instead of selecting a new release on reprovision.
+        for requirement in (
+            LITELLM_VERSION_SPEC,
+            "certifi==2026.10.23",
+            "aiohttp==3.14.5",
+            "cryptography==50.0.2",
+            "boto3>=1.40",
+            *extra_requirements,
+        )
     )
     command = f"""
 set -eu
@@ -1075,7 +1091,7 @@ else
   PY="$(command -v python3 || command -v python)"
   if [ ! -x {vq}/bin/python ]; then
     "$PY" -m venv {vq} 2>/dev/null || (
-      "$PY" -m pip install --user -q virtualenv &&
+      "$PY" -m pip install --user -q 'virtualenv==21.14.13' &&
       "$PY" -m virtualenv {vq}
     )
   fi
@@ -1165,6 +1181,25 @@ async def _poll_sandbox_health(
     raise RuntimeError(f"sandbox LiteLLM did not become healthy: {stderr.stdout or ''}")
 
 
+async def _verify_sandbox_egress_guard(sandbox: Any, *, python: str, port: int) -> None:
+    """Fail closed before the agent launches unless the egress guard wraps the gateway."""
+    probe = (
+        f"{shlex.quote(python)} - <<'PY'\n"
+        "import sys, urllib.request\n"
+        f"url = 'http://127.0.0.1:{port}/health/liveliness'\n"
+        "with urllib.request.urlopen(url, timeout=10) as response:\n"
+        "    sys.exit(0 if response.headers.get('x-benchflow-egress-guard') == '1' else 1)\n"
+        "PY"
+    )
+    result = await sandbox.exec(probe, timeout_sec=30)
+    if result.return_code != 0:
+        raise RuntimeError(
+            "sandbox LiteLLM egress guard is not active; refusing to run a "
+            "no-web or denylist rollout through an unguarded model gateway"
+            + _exec_details("", result)
+        )
+
+
 async def _terminate_sandbox_litellm(
     sandbox: Any, *, pid_path: str, runtime_dir: str
 ) -> None:
@@ -1187,6 +1222,7 @@ async def _start_sandbox_litellm(
     session_id: str,
     agent_name: str,
     install_timeout_sec: int = 600,
+    egress_guard: EgressGuard | None = None,
 ) -> SandboxLiteLLMProcess:
     token = uuid4().hex[:16]
     runtime_dir = f"{LITELLM_SANDBOX_ROOT}/{token}"
@@ -1203,6 +1239,7 @@ async def _start_sandbox_litellm(
             sandbox,
             runtime_dir=runtime_dir,
             config=config,
+            egress_guard=egress_guard,
         )
         python = await _ensure_sandbox_litellm(
             sandbox,
@@ -1271,6 +1308,8 @@ async def _start_sandbox_litellm(
                 runtime_dir=runtime_dir,
                 preflight_path=paths["preflight"],
             )
+        if egress_guard is not None:
+            await _verify_sandbox_egress_guard(sandbox, python=python, port=port)
     except BaseException:
         # Never leak a half-started proxy (provider keys + master_key on disk).
         await _terminate_sandbox_litellm(
@@ -1639,7 +1678,7 @@ async def ensure_litellm_runtime(
     sandbox_setup_timeout: int = 120,
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
-    force_sandbox_local: bool = False,
+    egress_guard: EgressGuard | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1651,6 +1690,10 @@ async def ensure_litellm_runtime(
     The only agents that skip the proxy are those that physically cannot be
     routed through it: ``oracle`` (no model) and native-subscription auth (no
     API key to proxy). Gemini uses LiteLLM's native GenerateContent endpoints.
+
+    An ``egress_guard`` (a no-web or denylist rollout) runs the proxy inside
+    the sandbox and limits what the agent can ask of it: model-call routes
+    only, and no request that has the provider fetch or search the web.
     """
     # Re-entrant connects pass back proxy-owned env, which cannot reconstruct
     # upstream routing or credentials. Restore controller-held source config.
@@ -1683,7 +1726,9 @@ async def ensure_litellm_runtime(
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
 
-    sandbox_local = force_sandbox_local or environment in _SANDBOX_LOCAL_ENVIRONMENTS
+    sandbox_local = (
+        egress_guard is not None or environment in _SANDBOX_LOCAL_ENVIRONMENTS
+    )
     if sandbox_local and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 
@@ -1721,7 +1766,8 @@ async def ensure_litellm_runtime(
     proxy_location = "sandbox" if sandbox_local else "host"
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
-        f"{session_id}:{skill_gate_key}"
+        f"{session_id}:{skill_gate_key}:"
+        f"{'open' if egress_guard is None else f'guarded:{egress_guard.block_log}'}"
     )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
@@ -1757,6 +1803,7 @@ async def ensure_litellm_runtime(
                 session_id=session_id,
                 agent_name=agent,
                 install_timeout_sec=max(600, int(sandbox_setup_timeout)),
+                egress_guard=egress_guard,
             )
         else:
             server = await _start_host_litellm(

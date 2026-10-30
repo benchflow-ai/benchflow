@@ -158,6 +158,7 @@ class _FakePlanes:
         *,
         workspace: str,
         timeout_sec: int = 120,
+        guard_daemon: bool = True,
     ) -> str:
         return workspace
 

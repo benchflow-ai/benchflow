@@ -225,6 +225,10 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     if not verifier_error:
         return None
     lower = verifier_error.lower()
+    if lower.startswith("separate verifier "):
+        # The verifier sandbox never received the agent's outputs (or never
+        # started): nothing was assessed.
+        return VERIFIER_INFRA
     if "verifier crashed" in verifier_error:
         if contains_verifier_dep_install_marker(lower):
             return VERIFIER_DEP_INSTALL

@@ -166,6 +166,12 @@ class RolloutConfig:
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
     skip_verify: bool = False
+    # Run the verifier in a fresh sandbox that receives only the frozen
+    # workspace, whatever the task declares (``--separate-verifier``).
+    separate_verifier: bool = False
+    # Paths outside the workspace that a separate verifier sandbox receives
+    # too, at the same path (``--separate-verifier-include``).
+    separate_verifier_include: tuple[str, ...] = ()
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     purpose: Literal["task", "reviewer"] = "task"
     parent_rollout: str | None = None
@@ -183,6 +189,7 @@ class RolloutConfig:
 
     def __post_init__(self) -> None:
         from benchflow._utils.config import normalize_agent_idle_timeout
+        from benchflow.task.verifier_sandbox import normalize_include_paths
 
         if not isinstance(self.task_path, Path):
             self.task_path = Path(self.task_path)
@@ -197,6 +204,9 @@ class RolloutConfig:
             self.base_image_override = base_image
         if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
             self.skills_dir = Path(self.skills_dir)
+        self.separate_verifier_include = normalize_include_paths(
+            self.separate_verifier_include or ()
+        )
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if self.artifact_skill_mode is not None:
             self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)
