@@ -687,15 +687,19 @@ def test_shipped_parity_files_are_discovered() -> None:
     "parity_file", _SHIPPED_PARITY_FILES, ids=lambda p: p.parent.name
 )
 def test_shipped_parity_file_yields_real_verdict(parity_file: Path) -> None:
-    """Each in-repo benchmark's recorded parity must parse to a real verdict.
+    """Completed in-repo parity must parse to a real verdict.
 
     A newly-adopted benchmark shipping a schema the verify gate can't read would
     report ``insufficient-evidence`` here — telling its maintainer their
     genuinely-validated benchmark has 'no recorded parity comparisons'. Globbing
-    (not a hardcoded list) makes a stale-schema benchmark fail CI on add.
+    (not a hardcoded list) makes a stale-schema benchmark fail CI on add. An
+    explicit template must remain insufficient until evidence is complete.
     """
     data = json.loads(parity_file.read_text())
     report = build_verify_report(parity_file.parent.name, data)
+    if isinstance(data, dict) and data.get("status") == "template":
+        assert report.verdict == "insufficient-evidence"
+        return
     assert report.verdict != "insufficient-evidence", (
         f"{parity_file.parent.name} parity_experiment.json parsed to no "
         f"comparisons or samples (schema unsupported by the verify gate)"

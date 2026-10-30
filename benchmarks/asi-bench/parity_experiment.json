@@ -1,0 +1,139 @@
+{
+  "experiment": "asi-bench-side-by-side-parity",
+  "benchmark": "asi-bench",
+  "status": "template",
+  "scope": {
+    "seed": 31415,
+    "official": false,
+    "asi_revision": "f13175a89dc9b4873f6306a3d31e46927c38f1a9",
+    "hf_revision": "0fa14219cafdbab634d8b3cfbce238a8735a214f"
+  },
+  "coverage": {
+    "status": "incomplete",
+    "source_task_count": 60,
+    "included_task_ids": [
+      "astronomy.nbody_close_encounters",
+      "astronomy.planet_activity_sep",
+      "astronomy.white_dwarf_sparse_inference",
+      "biology.gene_network_timeseries",
+      "biology.gillespie_ssssa_michaelis_menten",
+      "biology.scrna_seq_analysis",
+      "biostat.perturbation_convergence_testing",
+      "chemistry.implicit_solvent_pb_gb",
+      "chemistry.marcus_et_reorganization_energy",
+      "chemistry.reaction_path_bifurcation_vri",
+      "computer_science.affinity_subset_bound_audit",
+      "computer_science.bci_forensics",
+      "computer_science.causal_attention",
+      "computer_science.deployment_prediction_sets",
+      "computer_science.dp_accountant_forensics",
+      "computer_science.euclidean_tsp_tour_optimization",
+      "computer_science.hmc_neal_funnel",
+      "computer_science.max3sat_assignment_optimization",
+      "computer_science.stable_latent_state_fitting",
+      "earth_science.farquhar_ballberry_photosynthesis",
+      "earth_science.richards_topmodel_hydrology",
+      "earth_science.snow_3layer_compaction",
+      "electrical_engineering.lossy_tline_skin",
+      "materials.relaxation_mode_recovery",
+      "math.homotopy_poly_roots",
+      "math.levin_context_grid_search",
+      "math.mpsc_safety_filter",
+      "math.multiply_connected_conformal_mapping",
+      "math.nnls_modulus_deblur",
+      "math.sigma_linear_diophantine",
+      "math.sparse_hyperbolic_recovery_2d",
+      "math.sparse_nonlinear_interaction_recovery",
+      "math.symplectic_integrators",
+      "math.ucb_q_learning_regret",
+      "physics.dp_contact_process",
+      "physics.kt_phase_transition_2d_xy_model",
+      "physics.lbm_square_wake",
+      "physics.lid_driven_cavity_flow",
+      "physics.vpfm_leapfrog",
+      "robotics.lidar_imu_time_offset_yaw_calibration",
+      "robotics.multiregime_icp_degeneracy",
+      "robotics.occupancy_grid_mapping_correlated_clutter",
+      "robotics.particle_filter",
+      "robotics.rnea_inverse_dynamics_dh",
+      "robotics.robust_pose_graph_false_loops",
+      "robotics.ukf_bearing_only_tracking"
+    ],
+    "excluded_tasks": [
+      {
+        "task_id": "biology.calcium_ip3_dyk_oscillations",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "biology.contextual_dna_regime_mapping",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "biology.protein_folding_go_model",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "chemistry.metadynamics_for_dipeptide_in_vacuum",
+        "reason": "requires_network=true; network allowlist not yet configured"
+      },
+      {
+        "task_id": "chemistry.sapt_water_dimer",
+        "reason": "requires_network=true; network allowlist not yet configured"
+      },
+      {
+        "task_id": "chemistry.vtst_tunneling_corrections",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "earth_science.2_e_soil_carbon_nitrogen_cycling",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "electrical_engineering.cmos_opamp_design",
+        "reason": "unsupported scorer: llm_judge"
+      },
+      {
+        "task_id": "materials.ising_domain_growth",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "math.ill_posed_inverse_problem",
+        "reason": "requires_network=true; network allowlist not yet configured"
+      },
+      {
+        "task_id": "math.manifold_pde_meshfree",
+        "reason": "requires_network=true; network allowlist not yet configured"
+      },
+      {
+        "task_id": "physics.ag_strip_dielectric_inference",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "physics.ks_2d_anisotropic",
+        "reason": "unsupported scorer: multimodal"
+      },
+      {
+        "task_id": "physics.paired_nanorod_negative_index_retrieval",
+        "reason": "unsupported scorer: multimodal"
+      }
+    ],
+    "required_prompt_levels": [
+      "B1",
+      "B2",
+      "B3",
+      "B4"
+    ],
+    "required_harnesses": [
+      "opencode",
+      "pi-acp"
+    ]
+  },
+  "conversion_parity": {
+    "description": "ASI-Bench and converted per-criterion verdicts on identical prediction artifacts.",
+    "tasks": []
+  },
+  "agent_parity": {
+    "description": "ASI-Bench and BenchFlow rewards for identical agent prediction artifacts.",
+    "results": []
+  }
+}

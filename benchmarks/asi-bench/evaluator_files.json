@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repo": "apexin-ai/ASI-Bench",
+    "revision": "f13175a89dc9b4873f6306a3d31e46927c38f1a9"
+  },
+  "files": [
+    {
+      "path": "ai4sci_bench/__init__.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/__init__.py",
+      "source_sha256": "0a7a1883524111026e0c3543471a635b9cdca088b447bf459f0f4b34f1b2158f"
+    },
+    {
+      "path": "ai4sci_bench/branding.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/branding.py",
+      "source_sha256": "963477d80bab15e1a781da5b03c8eb2ea2fd35354ce2d0970d0038f862e2f990"
+    },
+    {
+      "path": "ai4sci_bench/core/__init__.py",
+      "kind": "initializer"
+    },
+    {
+      "path": "ai4sci_bench/core/types.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/core/types.py",
+      "source_sha256": "4f1111d859c8bfb5a63b15ab02e98e31da6e5d771368fb04a08c85406c36d160"
+    },
+    {
+      "path": "ai4sci_bench/core/scorer.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/core/scorer.py",
+      "source_sha256": "26d1a5e0e4ef8a34f6594a4a5d5be21236bdb28b6b3dc750222a525b4ec13fc3"
+    },
+    {
+      "path": "ai4sci_bench/core/scoring.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/core/scoring.py",
+      "source_sha256": "91feffd409bebfcdcbf98900a2781b55f1c0c4d08a6b5d6dd597709f237f375e"
+    },
+    {
+      "path": "ai4sci_bench/core/logger.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/core/logger.py",
+      "source_sha256": "ed86ad13814d7401358b42a994b0744d44fa60bbf97630aa374b8b418d06d1a4"
+    },
+    {
+      "path": "ai4sci_bench/core/task.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/core/task.py",
+      "source_sha256": "9418656108a7c9007f52f1255bbdbab68a4ad889c260086aa62eec340d62e62b"
+    },
+    {
+      "path": "ai4sci_bench/scorers/__init__.py",
+      "kind": "initializer"
+    },
+    {
+      "path": "ai4sci_bench/scorers/file_match.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/scorers/file_match.py",
+      "source_sha256": "26a530bb0d27a0e7cf05fba8e1e7520634ff8905e57f2db420e11daea30d5500"
+    },
+    {
+      "path": "ai4sci_bench/scorers/custom.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/scorers/custom.py",
+      "source_sha256": "a62a740716f549449bf2305646aff952587f2e54a52bf5511c8395a8eb8eb742"
+    },
+    {
+      "path": "ai4sci_bench/scorers/code_analysis.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/scorers/code_analysis.py",
+      "source_sha256": "86f909fa99bdf693775d31a986ec884fb6b41b2f98e0592394ef7ad0279f0eba"
+    },
+    {
+      "path": "ai4sci_bench/scorers/numerical.py",
+      "kind": "copy",
+      "source": "ai4sci_bench/scorers/numerical.py",
+      "source_sha256": "43c793497d0b2a9b435394285c023e303ad3ad27f196965bea65938932910b38"
+    }
+  ],
+  "task_helper_files": {
+    "computer_science.euclidean_tsp_tour_optimization": [
+      {"path": "tsp_common.py", "source_sha256": "c92237892248424da4fc7926eeef6b17995f859fb0afe21742beb2560d88d931"}
+    ],
+    "math.levin_context_grid_search": [
+      {"path": "lts_eval_runtime.py", "source_sha256": "a39c9fc70f1517d77e6946e4d961a9b36f5d5efb7fc54f593ff0e5b2ddef8d23"}
+    ],
+    "math.mpsc_safety_filter": [
+      {"path": "mpsc_eval_runtime.py", "source_sha256": "7e9065041f233e7eaa04532591f92174c47be3c0a100a67ad8b5534576339e12"}
+    ],
+    "math.ucb_q_learning_regret": [
+      {"path": "ucb_eval_runtime.py", "source_sha256": "7121404fdef4a5e91927d1413f442ba49d524caf12bfec6766011b541fa52d72"}
+    ],
+    "electrical_engineering.cmos_opamp_design": [
+      {"path": "cmos_eval_runtime.py", "source_sha256": "2c68e7bc69dcc40164c28117517f87ac73c50754b878fc59d82468e0dc8f1561"}
+    ]
+  }
+}

@@ -16,6 +16,8 @@ silently confirm parity.
 
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -378,10 +380,118 @@ class VerifyReport:
     reward: RewardDistributionParity | None
     verdict: Verdict
     tolerance: float = DEFAULT_REWARD_TOLERANCE
+    coverage_gap: str | None = None
 
     @property
     def passed(self) -> bool:
         return self.verdict == "parity-confirmed"
+
+
+def _unique_strings(value: Any) -> set[str] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        return None
+    names = set(value)
+    return names if len(names) == len(value) else None
+
+
+def _valid_coverage_sample(record: Mapping[str, Any]) -> bool:
+    """Count only completed, nonempty same-artifact scoring comparisons."""
+    artifacts = record.get("artifact_sha256")
+    if not isinstance(artifacts, Mapping) or not artifacts:
+        return False
+    if any(
+        not isinstance(path, str)
+        or not path
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        for path, digest in artifacts.items()
+    ):
+        return False
+    for field in ("legacy_reward", "converted_reward"):
+        value = record.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= 1
+        ):
+            return False
+    return (
+        record.get("same_artifacts") is True
+        and record.get("details_match") is True
+        and record.get("attempt_status") == "completed"
+        and record.get("evaluation_status") == "completed"
+    )
+
+
+def _coverage_gap(data: Any) -> str | None:
+    """Validate an opt-in coverage matrix before confirming parity."""
+    if not isinstance(data, Mapping):
+        return None
+    if data.get("status") == "template":
+        return "parity record is still a template"
+    if "coverage" not in data:
+        return None
+    coverage = data["coverage"]
+    if not isinstance(coverage, Mapping) or coverage.get("status") != "complete":
+        return "coverage inventory is incomplete"
+
+    included = _unique_strings(coverage.get("included_task_ids"))
+    levels = _unique_strings(coverage.get("required_prompt_levels"))
+    harnesses = _unique_strings(coverage.get("required_harnesses"))
+    source_count = _as_int(coverage.get("source_task_count"))
+    excluded = coverage.get("excluded_tasks")
+    if (
+        included is None
+        or levels is None
+        or harnesses is None
+        or source_count is None
+        or not isinstance(excluded, list)
+    ):
+        return "coverage inventory has missing or invalid fields"
+    excluded_ids: set[str] = set()
+    for item in excluded:
+        if not isinstance(item, Mapping):
+            return "coverage exclusion lacks a reason"
+        task_id, reason = item.get("task_id"), item.get("reason")
+        if (
+            not isinstance(task_id, str)
+            or not task_id
+            or not isinstance(reason, str)
+            or not reason.strip()
+            or task_id in excluded_ids
+            or task_id in included
+        ):
+            return "coverage exclusion lacks a distinct task and reason"
+        excluded_ids.add(task_id)
+    if source_count != len(included) + len(excluded_ids):
+        return "coverage inventory count disagrees with included and excluded tasks"
+
+    agent = data.get("agent_parity")
+    records = agent.get("results") if isinstance(agent, Mapping) else None
+    if not isinstance(records, list):
+        return "coverage has no agent parity records"
+    observed: set[tuple[str, str, str]] = set()
+    for record in records:
+        if not isinstance(record, Mapping) or not _valid_coverage_sample(record):
+            continue
+        task_id = record.get("task_id")
+        level = record.get("prompt_level")
+        harness = record.get("harness")
+        if all(isinstance(value, str) for value in (task_id, level, harness)):
+            observed.add((task_id, level, harness))
+    required = {
+        (task_id, level, harness)
+        for task_id in included
+        for level in levels
+        for harness in harnesses
+    }
+    missing = required - observed
+    if missing:
+        return f"coverage is missing {len(missing)} task/level/harness cells"
+    return None
 
 
 def build_verify_report(
@@ -400,25 +510,27 @@ def build_verify_report(
       ``tolerance``.
 
     A layer that has no data does not block the verdict. With no data at all the
-    verdict is ``insufficient-evidence`` (the support path). The gate never
+    verdict is ``insufficient-evidence`` (the support path). A template or an
+    explicitly incomplete coverage matrix also withholds confirmation. The gate never
     "improves" the source: a faithful conversion reproduces the original's
     behavior, including any reward-hackability it has.
     """
     conversion = ConversionParity(extract_criterion_comparisons(data))
     samples = extract_reward_samples(data)
     reward = RewardDistributionParity(samples, tolerance=tolerance) if samples else None
+    coverage_gap = _coverage_gap(data)
 
     has_conversion = conversion.compared > 0
     has_reward = reward is not None
 
-    if not has_conversion and not has_reward:
-        verdict: Verdict = "insufficient-evidence"
+    conversion_ok = (not has_conversion) or conversion.all_agree
+    reward_ok = (reward is None) or reward.within_tolerance
+    if not conversion_ok or not reward_ok:
+        verdict: Verdict = "parity-divergent"
+    elif (not has_conversion and not has_reward) or coverage_gap is not None:
+        verdict = "insufficient-evidence"
     else:
-        conversion_ok = (not has_conversion) or conversion.all_agree
-        reward_ok = (reward is None) or reward.within_tolerance
-        verdict = (
-            "parity-confirmed" if conversion_ok and reward_ok else ("parity-divergent")
-        )
+        verdict = "parity-confirmed"
 
     return VerifyReport(
         name=name,
@@ -426,6 +538,7 @@ def build_verify_report(
         reward=reward,
         verdict=verdict,
         tolerance=tolerance,
+        coverage_gap=coverage_gap,
     )
 
 
@@ -447,6 +560,13 @@ def confidence_line(report: VerifyReport) -> str:
             "Divergence found: the conversion does not yet reproduce the "
             "original's behavior — iterate, then open an issue for support."
         )
+    if report.coverage_gap is not None:
+        if report.conversion.compared == 0 and report.reward is None:
+            return (
+                f"Insufficient evidence: {report.coverage_gap}. Run parity_test.py "
+                "and record results before trusting the conversion."
+            )
+        return f"Insufficient evidence: {report.coverage_gap}."
     return (
         "Insufficient evidence: no recorded parity comparisons. Run "
         "parity_test.py and record results before trusting the conversion."
