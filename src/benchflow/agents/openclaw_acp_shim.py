@@ -296,7 +296,10 @@ def setup_custom_provider(
         "baseUrl": base_url,
         "api": api_protocol,
         "apiKey": api_key,
-        "models": models or [],
+        # maxImages is BenchFlow metadata, not an openclaw model field.
+        "models": [
+            {k: v for k, v in m.items() if k != "maxImages"} for m in models or []
+        ],
     }
 
     config_path.write_text(json.dumps(existing, indent=2))

@@ -41,6 +41,8 @@ VALID_API_PROTOCOLS = {
 }
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
 VALID_AUTH_TYPES = {"api_key", "adc", "aws", "none"}
+VALID_ANTHROPIC_AUTH_HEADERS = {"x-api-key", "bearer"}
+VALID_MODEL_INPUTS = {"text", "image"}
 VALID_ACP_MODEL_FORMATS = {
     "bare",
     "provider/model",
@@ -415,6 +417,28 @@ def test_provider_field_shapes(name, cfg):
         assert cfg.auth_env is None, (
             f"{cfg.auth_type} provider {name!r} should not set auth_env"
         )
+    assert cfg.anthropic_auth_header in VALID_ANTHROPIC_AUTH_HEADERS, (
+        f"anthropic_auth_header={cfg.anthropic_auth_header!r} not in "
+        f"{sorted(VALID_ANTHROPIC_AUTH_HEADERS)}"
+    )
+    assert isinstance(cfg.prefer_agent_protocol, bool)
+    assert isinstance(cfg.responses_tool_images_in_user_message, bool)
+    if cfg.responses_tool_images_in_user_message:
+        assert "openai-responses" in cfg.all_endpoints, (
+            f"{name!r}: responses_tool_images_in_user_message needs an "
+            "openai-responses endpoint"
+        )
+    if cfg.anthropic_auth_header == "bearer":
+        assert "anthropic-messages" in cfg.all_endpoints, (
+            f"{name!r}: bearer auth needs an anthropic-messages endpoint"
+        )
+        assert cfg.prefer_agent_protocol, (
+            f"{name!r}: bearer auth applies only when the proxy reaches the "
+            "anthropic-messages endpoint (prefer_agent_protocol)"
+        )
+        assert cfg.auth_type == "api_key", (
+            f"{name!r}: bearer auth needs an api_key provider"
+        )
 
 
 @pytest.mark.parametrize("name,cfg", PROVIDERS.items(), ids=list(PROVIDERS.keys()))
@@ -452,6 +476,30 @@ def test_provider_models_and_credentials(name, cfg):
     for cf in cfg.credential_files:
         assert cf.get("path"), f"credential_files entry missing path: {cf}"
         assert cf.get("env_source"), f"credential_files entry missing env_source: {cf}"
+
+
+@pytest.mark.parametrize("name,cfg", PROVIDERS.items(), ids=list(PROVIDERS.keys()))
+def test_provider_model_input_and_max_images(name, cfg):
+    """``input`` lists known modalities; ``maxImages`` is a positive int cap.
+
+    Callers read ``maxImages`` through ``max_images()`` to decide how many
+    images a request may carry, so it only makes sense on image-input models.
+    """
+    for m in cfg.models:
+        inputs = m.get("input", ["text"])
+        assert isinstance(inputs, list) and set(inputs) <= VALID_MODEL_INPUTS, (
+            f"{name!r}/{m.get('id')!r}: input {inputs!r} not a subset of "
+            f"{sorted(VALID_MODEL_INPUTS)}"
+        )
+        if "maxImages" in m:
+            cap = m["maxImages"]
+            assert isinstance(cap, int) and not isinstance(cap, bool) and cap > 0, (
+                f"{name!r}/{m.get('id')!r}: maxImages must be a positive int"
+            )
+            assert "image" in inputs, (
+                f"{name!r}/{m.get('id')!r}: maxImages set on a model without "
+                "image input"
+            )
 
 
 @pytest.mark.parametrize("name,cfg", PROVIDERS.items(), ids=list(PROVIDERS.keys()))
@@ -508,6 +556,7 @@ def test_provider_model_prefixes_unique_and_resolvable():
         ("azure-foundry-anthropic/claude-opus-4-5", "azure-foundry-anthropic"),
         ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
         ("github-models/openai/gpt-4.1-mini", "github-models"),
+        ("baseten/zai-org/GLM-5.3", "baseten"),
         ("zai/glm-5", "zai"),
         ("zai-coding/glm-5.4-flash", "zai-coding"),
         ("vllm/local-model", "vllm"),

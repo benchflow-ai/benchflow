@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from benchflow.agents.env import resolve_agent_env, resolve_provider_env
+from benchflow.agents.providers import PROVIDERS, ProviderConfig
 from benchflow.providers.litellm_config import (
+    LITELLM_BEARER_AUTH_ENV,
+    LITELLM_RESPONSES_TOOL_IMAGES_ENV,
+    litellm_proxy_auth_env,
+    litellm_proxy_callback_env,
     litellm_proxy_config,
     resolve_litellm_route,
 )
@@ -179,6 +185,187 @@ def test_zai_coding_preserves_explicit_proxy_route():
     assert route.litellm_params["api_base"] == "https://proxy.example.test/v1"
     assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+
+
+BASETEN_ENV = {"BASETEN_API_KEY": "sk-baseten-test"}
+
+
+def test_route_uses_agent_protocol_when_provider_prefers_it():
+    """An Anthropic Messages agent reaches a provider that serves Messages over
+    Messages: translating to chat completions turns tool_result images into
+    text."""
+    route = resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3", BASETEN_ENV, protocol="anthropic-messages"
+    )
+
+    assert route.upstream_model == "anthropic/zai-org/GLM-5.3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co"
+    assert route.litellm_params["api_key"] == "os.environ/BASETEN_API_KEY"
+    assert route.required_env == ("BASETEN_API_KEY",)
+
+
+def test_route_keeps_chat_for_providers_that_do_not_opt_in():
+    """Z.AI serves Messages too, but its routes stay on chat completions."""
+    env = resolve_agent_env(
+        "claude-agent-acp", "zai-coding/glm-5.3", {"ZAI_API_KEY": "k"}
+    )
+    route = resolve_litellm_route(
+        "zai-coding/glm-5.3", env, protocol="anthropic-messages"
+    )
+
+    assert route.upstream_model == "openai/glm-5.3"
+    assert route.litellm_params["api_base"] == "https://api.z.ai/api/coding/paas/v4"
+
+
+@pytest.mark.parametrize("protocol", [None, "openai-completions", "openai-responses"])
+def test_route_keeps_openai_upstream_for_openai_protocols(protocol):
+    route = resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3", BASETEN_ENV, protocol=protocol
+    )
+
+    assert route.upstream_model == "openai/zai-org/GLM-5.3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
+
+
+def test_route_falls_back_to_chat_when_protocol_not_served():
+    """OpenRouter serves only chat completions; a Messages agent still gets it."""
+    route = resolve_litellm_route(
+        "openrouter/qwen/qwen3.5-397b-a17b",
+        {"OPENROUTER_API_KEY": "k"},
+        protocol="anthropic-messages",
+    )
+
+    assert route.upstream_model == "openai/qwen/qwen3.5-397b-a17b"
+    assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
+
+
+@pytest.fixture
+def bearer_provider(monkeypatch):
+    """A provider whose Anthropic-compatible endpoint wants a Bearer token."""
+    cfg = ProviderConfig(
+        name="bearer-test",
+        base_url="https://llm.example.test/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="BEARER_TEST_API_KEY",
+        endpoints={"anthropic-messages": "https://llm.example.test"},
+        prefer_agent_protocol=True,
+        anthropic_auth_header="bearer",
+    )
+    monkeypatch.setitem(PROVIDERS, "bearer-test", cfg)
+    return cfg
+
+
+def test_bearer_route_references_key_from_proxy_env(bearer_provider):
+    env = {"BEARER_TEST_API_KEY": "sk-secret-value"}
+    route = resolve_litellm_route("bearer-test/m-1", env, protocol="anthropic-messages")
+
+    assert route.upstream_model == "anthropic/m-1"
+    assert route.litellm_params["api_base"] == "https://llm.example.test"
+    assert route.litellm_params["extra_headers"] == {
+        "Authorization": f"os.environ/{LITELLM_BEARER_AUTH_ENV}"
+    }
+    assert route.bearer_key_env == "BEARER_TEST_API_KEY"
+    assert litellm_proxy_auth_env(route, env) == {
+        LITELLM_BEARER_AUTH_ENV: "Bearer sk-secret-value"
+    }
+    # The key never lands in the proxy config file.
+    config = litellm_proxy_config(route, master_key="sk-local")
+    assert "sk-secret-value" not in yaml.safe_dump(config)
+
+
+def test_bearer_route_without_key_adds_no_proxy_env(bearer_provider):
+    route = resolve_litellm_route("bearer-test/m-1", {}, protocol="anthropic-messages")
+
+    assert litellm_proxy_auth_env(route, {}) == {}
+
+
+@pytest.mark.parametrize("protocol", [None, "openai-completions"])
+def test_bearer_setting_leaves_chat_route_alone(bearer_provider, protocol):
+    env = {"BEARER_TEST_API_KEY": "sk-secret-value"}
+    route = resolve_litellm_route("bearer-test/m-1", env, protocol=protocol)
+
+    assert route.upstream_model == "openai/m-1"
+    assert "extra_headers" not in route.litellm_params
+    assert route.bearer_key_env is None
+    assert litellm_proxy_auth_env(route, env) == {}
+
+
+def test_x_api_key_provider_gets_no_bearer_header():
+    route = resolve_litellm_route(
+        "zai/glm-5.1", {"ZAI_API_KEY": "k"}, protocol="anthropic-messages"
+    )
+
+    assert "extra_headers" not in route.litellm_params
+    assert litellm_proxy_auth_env(route, {"ZAI_API_KEY": "k"}) == {}
+
+
+def test_baseten_claude_agent_reaches_messages_endpoint_with_bearer():
+    env = resolve_agent_env("claude-agent-acp", "baseten/zai-org/GLM-5.3", BASETEN_ENV)
+    route = resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3", env, protocol="anthropic-messages"
+    )
+
+    assert route.upstream_model == "anthropic/zai-org/GLM-5.3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co"
+    assert route.litellm_params["api_base"] == env["BENCHFLOW_PROVIDER_BASE_URL"]
+    # The agent env carries the key as BENCHFLOW_PROVIDER_API_KEY too, which
+    # the route prefers; the Bearer value follows whichever key it uses.
+    assert route.litellm_params["api_key"] == "os.environ/BENCHFLOW_PROVIDER_API_KEY"
+    assert route.litellm_params["extra_headers"] == {
+        "Authorization": f"os.environ/{LITELLM_BEARER_AUTH_ENV}"
+    }
+    assert litellm_proxy_auth_env(route, env) == {
+        LITELLM_BEARER_AUTH_ENV: "Bearer sk-baseten-test"
+    }
+    assert "sk-baseten-test" not in yaml.safe_dump(
+        litellm_proxy_config(route, master_key="sk-local")
+    )
+
+
+def test_baseten_codex_uses_native_responses_route():
+    """Codex reaches Baseten's own Responses endpoint, and the proxy callback
+    gets the switch that moves tool-result images into a user message."""
+    route = resolve_litellm_route(
+        "baseten/moonshotai/Kimi-K3", BASETEN_ENV, protocol="openai-responses"
+    )
+
+    assert route.upstream_model == "openai/moonshotai/Kimi-K3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
+    assert "extra_headers" not in route.litellm_params
+    assert route.responses_tool_images_in_user_message is True
+    assert litellm_proxy_callback_env(route) == {LITELLM_RESPONSES_TOOL_IMAGES_ENV: "1"}
+    by_name = {
+        e["model_name"]: e
+        for e in litellm_proxy_config(route, master_key="sk-local")["model_list"]
+    }
+    # The bare slug Codex is handed (#1145) and the alias: native, no bridge.
+    for name in ("moonshotai/Kimi-K3", route.model_alias):
+        assert by_name[name]["litellm_params"]["model"] == "openai/moonshotai/Kimi-K3"
+
+
+def test_tool_image_move_needs_capability_and_a_responses_upstream():
+    """Baseten's Anthropic upstream never receives a Responses body, and a
+    provider without the capability keeps its requests as sent."""
+    messages_route = resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3", BASETEN_ENV, protocol="anthropic-messages"
+    )
+    zai_route = resolve_litellm_route(
+        "zai/glm-5.1", {"ZAI_API_KEY": "k"}, protocol="openai-responses"
+    )
+
+    for route in (messages_route, zai_route):
+        assert route.responses_tool_images_in_user_message is False
+        assert litellm_proxy_callback_env(route) == {}
+
+
+def test_baseten_chat_route_is_plain_openai_compatible():
+    route = resolve_litellm_route("baseten/zai-org/GLM-5.3", BASETEN_ENV)
+
+    assert route.upstream_model == "openai/zai-org/GLM-5.3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
+    assert route.litellm_params["api_key"] == "os.environ/BASETEN_API_KEY"
+    assert "extra_headers" not in route.litellm_params
 
 
 @pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])
