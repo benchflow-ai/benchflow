@@ -285,6 +285,14 @@ def test_js_agent_install_respects_explicit_npm_package_specs():
     assert "some-agent@latest" in default_cmd
 
 
+def test_pi_acp_install_uses_compatible_pinned_pi():
+    """Guards the Pi ACP startup regression found after 1876ac23."""
+    install = AGENTS["pi-acp"].install_cmd
+    assert "@earendil-works/pi-coding-agent@0.81.1" in install
+    assert "pi-acp@0.0.34" in install
+    assert "@mariozechner/pi-coding-agent" not in install
+
+
 def test_opencode_install_is_pinned_for_reproducible_harness_runs():
     """Guards PR #931 against silently changing OpenCode between eval stages.
 
