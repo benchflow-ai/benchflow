@@ -132,6 +132,35 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+def test_deepseek_route_honors_anthropic_messages_protocol():
+    """Guards PR #1133 against mixing DeepSeek URL and wire semantics."""
+    route = resolve_litellm_route(
+        "deepseek/deepseek-v4-pro",
+        {
+            "BENCHFLOW_PROVIDER_PROTOCOL": "anthropic-messages",
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://api.deepseek.com/anthropic",
+            "BENCHFLOW_PROVIDER_API_KEY": "test-only",
+        },
+    )
+
+    assert route.upstream_model == "anthropic/deepseek-v4-pro"
+    assert route.litellm_params["api_base"] == "https://api.deepseek.com/anthropic"
+    assert route.litellm_params["api_key"] == "os.environ/BENCHFLOW_PROVIDER_API_KEY"
+
+
+def test_registered_provider_rejects_unsupported_explicit_protocol():
+    """Guards PR #1133 against silently ignoring an invalid protocol override."""
+    with pytest.raises(ValueError, match="does not support protocol"):
+        resolve_litellm_route(
+            "deepseek/deepseek-v4-pro",
+            {
+                "BENCHFLOW_PROVIDER_PROTOCOL": "openai-responses",
+                "BENCHFLOW_PROVIDER_BASE_URL": "https://proxy.example.test/v1",
+                "BENCHFLOW_PROVIDER_API_KEY": "test-only",
+            },
+        )
+
+
 @pytest.mark.parametrize(
     ("agent", "agent_base"),
     [

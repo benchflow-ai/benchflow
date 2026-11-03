@@ -274,6 +274,8 @@ result = await bf.run(config)
 | `openhands` | ACP | LLM_API_KEY | `oh` |
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
 | `openclaw` | ACP | inferred from model | — |
+| `openscience` | ACP | inferred from model/provider | — |
+| `deepseek-harness` | ACP | DEEPSEEK_API_KEY | `dsh` |
 
 The Auth column shows each agent's native/default credentials. Provider-prefixed
 models can use provider-specific credentials instead; for example, Azure

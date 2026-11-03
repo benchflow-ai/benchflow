@@ -14,6 +14,7 @@ from .types import (
     AuthCapabilities,
     ClientCapabilities,
     ClientInfo,
+    ContentBlock,
     FsCapabilities,
     InitializeParams,
     InitializeResult,
@@ -354,6 +355,56 @@ class ACPClient:
             )
         return self._session
 
+    def _activate_session(self, session_id: str, result: dict[str, Any]) -> ACPSession:
+        """Install a loaded/resumed session as the client's active session."""
+        self._session = ACPSession(result.get("sessionId", session_id))
+        self._session.model_state = result.get("models")
+        self._session.config_options = result.get("configOptions") or []
+        if self._initialize_result:
+            self._session.agent_info = self._initialize_result.agent_info
+            self._session.agent_capabilities = (
+                self._initialize_result.agent_capabilities
+            )
+        return self._session
+
+    async def session_resume(
+        self,
+        session_id: str,
+        cwd: str = "/app",
+        mcp_servers: list[McpServerSpec] | None = None,
+    ) -> ACPSession:
+        """Resume a persisted session using the ACP ``session/resume`` method."""
+        server_params = [spec.to_new_session_param() for spec in mcp_servers or []]
+        params = {"sessionId": session_id, "cwd": cwd, "mcpServers": server_params}
+        result = await self._send_request("session/resume", params)
+        return self._activate_session(session_id, result)
+
+    async def session_recover(
+        self,
+        session_id: str,
+        cwd: str = "/app",
+        mcp_servers: list[McpServerSpec] | None = None,
+    ) -> ACPSession:
+        """Recover a session through the lifecycle method advertised by the agent.
+
+        Modern ACP agents advertise ``sessionCapabilities.resume``. Older agents
+        advertise the top-level ``loadSession`` flag. Prefer resume when both are
+        present, while keeping :meth:`session_load` as an explicit compatibility
+        API for callers that already know the server contract.
+        """
+        if self._initialize_result is None:
+            raise RuntimeError("Agent capabilities unknown — call initialize() first")
+        capabilities = self._initialize_result.agent_capabilities
+        session_capabilities = getattr(capabilities, "session_capabilities", None)
+        if (
+            session_capabilities is not None
+            and getattr(session_capabilities, "resume", None) is not None
+        ):
+            return await self.session_resume(session_id, cwd, mcp_servers)
+        if bool(getattr(capabilities, "load_session", False)):
+            return await self.session_load(session_id, cwd, mcp_servers)
+        raise RuntimeError("Agent does not advertise session recovery")
+
     async def authenticate(self, method_id: str) -> dict:
         """Authenticate with the agent using one of its advertised auth methods.
 
@@ -393,13 +444,30 @@ class ACPClient:
             self._session.config_options = result.get("configOptions") or []
         return result
 
-    async def prompt(self, text: str) -> PromptResult:
-        """Send a prompt to the agent and wait for completion."""
+    async def prompt(
+        self,
+        text: str | None = None,
+        *,
+        content: list[ContentBlock] | None = None,
+    ) -> PromptResult:
+        """Send text and/or SDK-backed ACP content blocks to the agent.
+
+        ``prompt("text")`` remains fully compatible. Multimodal callers can pass
+        validated blocks such as :class:`ImageContent` through ``content``; when
+        both arguments are supplied, the text block is sent first.
+        """
         if not self._session:
             raise RuntimeError("No active session — call session_new() first")
+        blocks: list[ContentBlock] = []
+        if text is not None:
+            blocks.append(TextContent(type="text", text=text))
+        if content:
+            blocks.extend(content)
+        if not blocks:
+            raise ValueError("prompt requires text or at least one content block")
         params = PromptParams(
             session_id=self._session.session_id,
-            prompt=[TextContent(type="text", text=text)],
+            prompt=blocks,
         )
         result = await self._send_request(
             "session/prompt", params.model_dump(by_alias=True, exclude_none=True)

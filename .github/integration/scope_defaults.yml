@@ -18,12 +18,12 @@ schema_version: "1"
 # ------------------------------------------------------------------
 caps:
   # Sized to hold the largest legitimate lane: the `expanded` release-critical
-  # matrix = 10 tasks * 5 DeepSeek agents (broad fan) + per-task baseline
+  # matrix = 10 tasks * 7 DeepSeek agents (broad fan) + per-task baseline
   # axis-coverage cells across the extra (sandbox, skill_mode) combos + cheat,
-  # with headroom. The floor (max_agents * max_tasks = 63) is comfortably held.
+  # with headroom. The floor (max_agents * max_tasks = 81) is comfortably held.
   # The ceiling still fail-closes a runaway custom override (rejected_overflow).
   max_cells: 140
-  max_agents: 7
+  max_agents: 9
   max_tasks: 9
   # Per-agent rollout concurrency. Lowered automatically by the planner as the
   # distinct daytona-agent count rises so aggregate stays under the ceiling.
@@ -65,7 +65,8 @@ default_model: deepseek/deepseek-v4-flash
 # Per-agent default models (mirror release axes + run.sh model_for_agent).
 #
 # Empirically-grounded model policy — DeepSeek-first, native only when forced:
-#  - DeepSeek lane (openhands, openclaw, opencode, pi-acp, mimo) runs on
+#  - DeepSeek lane (openhands, openclaw, opencode, pi-acp, mimo, openscience,
+#    deepseek-harness) runs on
 #    deepseek/deepseek-v4-flash (needs DEEPSEEK_API_KEY + DEEPSEEK_BASE_URL, both
 #    in CI), promoted to deepseek-v4-pro on hard tasks via deepseek_tiering.
 #    mimo-on-deepseek REPLACES the old xiaomi/mimo id (closes the XIAOMI gap).
@@ -84,6 +85,8 @@ agent_models:
   opencode: deepseek/deepseek-v4-flash
   openhands: deepseek/deepseek-v4-flash
   mimo: deepseek/deepseek-v4-flash
+  openscience: deepseek/deepseek-v4-flash
+  deepseek-harness: deepseek/deepseek-v4-flash
 
 # DeepSeek roster — the agents fanned in the BROAD lanes (all-agents at
 # L3/expanded, and the all-agents-subset breadth tier at L2). The gated native
@@ -96,6 +99,8 @@ deepseek_roster:
   - openclaw
   - opencode
   - mimo
+  - openscience
+  - deepseek-harness
 
 # Breadth-tiered roster SUBSET emitted at L2 (auto-on-push) for changes that
 # affect EVERY agent. A representative DeepSeek subset (one per launcher family:
