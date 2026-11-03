@@ -467,3 +467,27 @@ def test_missing_evaluator_exits_nonzero_no_reward(tmp_path):
     logs = tmp_path / "logs" / "verifier"
     assert not (logs / "reward.txt").exists()
     assert not (logs / "reward.json").exists()
+
+
+def test_collect_extra_files_preserves_solver_helpers_without_input_overwrite(tmp_path):
+    """Guards PR #1191's sync of ASI max3sat collect_extra_files semantics."""
+    mod = _load_score_entry()
+    workspace = tmp_path / "workspace"
+    staging = tmp_path / "staging"
+    workspace.mkdir()
+    staging.mkdir()
+    (workspace / "solver.py").write_text("import helper")
+    (workspace / "helper.py").write_text("answer = 42")
+    (workspace / "data").mkdir()
+    (workspace / "data" / "input.json").write_text("tampered")
+    (staging / "data").mkdir()
+    (staging / "data" / "input.json").write_text("trusted")
+    (workspace / "link.py").symlink_to(workspace / "helper.py")
+    specs = [{"name": "solver.py"}]
+    assert set(mod._stage_outputs(workspace, specs, staging)) == {"solver.py"}
+    (staging / "solver.py").unlink()
+    artifacts = mod._stage_outputs(workspace, specs, staging, collect_extra_files=True)
+    assert set(artifacts) == {"solver.py", "helper.py"}
+    assert (staging / "helper.py").read_text() == "answer = 42"
+    assert (staging / "data" / "input.json").read_text() == "trusted"
+    assert not (staging / "link.py").exists()

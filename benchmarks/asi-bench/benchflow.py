@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # ── pinned revisions ─────────────────────────────────────────────────────────
 # Both must be immutable commit IDs; update the pair when source material changes.
-ASI_REVISION = "f13175a89dc9b4873f6306a3d31e46927c38f1a9"
+ASI_REVISION = "a88dd2bc174b8fbd604d5a23456d4af7fd354423"
 HF_REVISION = "0fa14219cafdbab634d8b3cfbce238a8735a214f"
 
 SUPPORTED_SEED = 31415
@@ -753,6 +753,8 @@ def _generate_task_dir(
     if eval_yaml_src.is_file():
         shutil.copy2(eval_yaml_src, evaluator_dir / "task_eval.yaml")
 
+    shutil.copy2(bundle_dir / "task_meta.yaml", evaluator_dir / "task_meta.yaml")
+
     custom_scorer_src = bundle_dir / "custom_scorer.py"
     if custom_scorer_src.is_file():
         shutil.copy2(custom_scorer_src, evaluator_dir / "custom_scorer.py")
@@ -791,6 +793,7 @@ def _generate_task_dir(
         "hf_revision": hf_revision,
         "parameters": params,
         "requires_instance_data": bool(input_files),
+        "collect_extra_files": bool((task_meta.get("output") or {}).get("collect_extra_files")),
     }
     (verifier_dir / "instance.json").write_text(
         json.dumps(instance_json, indent=2, ensure_ascii=False) + "\n",

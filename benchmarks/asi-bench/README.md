@@ -49,7 +49,7 @@ The download retry tests cover interrupted HF instances and GitHub task bundles;
 they do not make network requests.
 
 The converter pins ASI-Bench source commit
-`f13175a89dc9b4873f6306a3d31e46927c38f1a9` and Hugging Face seed31415
+`a88dd2bc174b8fbd604d5a23456d4af7fd354423` and Hugging Face seed31415
 dataset commit `0fa14219cafdbab634d8b3cfbce238a8735a214f`. Both revision
 constants must be full commit IDs; branches and tags are rejected before any
 download or task output is written. When either source changes, update both
@@ -94,3 +94,15 @@ jobs. A valid zero reward remains in the average. Evaluator failures count in
 contain only ASI-Bench job directories; each scored job must include both
 `result.json` and `verifier/reward.json`. The report records source revisions
 and rejects a directory mixing different ASI or HF revisions.
+
+## Source sync (2026-11-03)
+
+ASI source is now pinned to `a88dd2bc174b8fbd604d5a23456d4af7fd354423`.
+HF remains at the existing immutable dataset revision. This brings in the TSP
+and Max3SAT scorer updates and the UCB task's NumPy runtime declaration.
+The converter now includes `task_meta.yaml` beside custom scorers and honors
+`output.collect_extra_files`: safe additional workspace files are staged,
+archived and hashed without replacing verifier-owned `data/` inputs.
+Regenerate existing task directories to use these changes. The 184 structural
+checks reported above were performed with the previous ASI pin; they are not
+new scoring or conversion evidence for this revision. Parity remains pending.

@@ -329,11 +329,13 @@ def test_converter_copies_complete_data_to_agent_and_verifier(tmp_path, monkeypa
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "task_eval.yaml").write_text("evaluation: {}\n")
+    (bundle / "task_meta.yaml").write_text("output: {collect_extra_files: true}\n")
     staging = tmp_path / "task"
     staging.mkdir()
     adapter._generate_task_dir(
         staging=staging, task_id="math.demo", instance_id="math.demo__seed31415",
-        prompt_level="B1", task_meta={"input": {"files": [{"name": "system.json"}]}},
+        prompt_level="B1", task_meta={"input": {"files": [{"name": "system.json"}]},
+                   "output": {"collect_extra_files": True}},
         task_eval={"evaluation": {}}, prompt_text="solve", instance_dir=instance,
         bundle_dir=bundle, reference_dir=reference,
         asi_revision="a" * 40, hf_revision="b" * 40,
@@ -370,7 +372,8 @@ def test_converter_rejects_missing_declared_data_root(tmp_path, monkeypatch) -> 
     with pytest.raises(ValueError, match="data"):
         adapter._generate_task_dir(
             staging=staging, task_id="math.demo", instance_id="math.demo__seed31415",
-            prompt_level="B1", task_meta={"input": {"files": [{"name": "system.json"}]}},
+            prompt_level="B1", task_meta={"input": {"files": [{"name": "system.json"}]},
+                   "output": {"collect_extra_files": True}},
             task_eval={"evaluation": {}}, prompt_text="solve", instance_dir=instance,
             bundle_dir=bundle, reference_dir=reference,
             asi_revision="a" * 40, hf_revision="b" * 40,

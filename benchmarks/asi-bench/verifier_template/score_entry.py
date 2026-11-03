@@ -78,6 +78,8 @@ def _stage_outputs(
     workspace: Path,
     output_specs: list[dict],
     staging: Path,
+    *,
+    collect_extra_files: bool = False,
 ) -> dict[str, str]:
     """Copy declared output files from workspace into staging/.
 
@@ -85,6 +87,21 @@ def _stage_outputs(
     Missing files are noted in the return value with None-like absence
     (they are not copied) and will be caught by gates/scorers.
     """
+    if collect_extra_files:
+        names = {spec.get("name") for spec in output_specs}
+        output_specs = list(output_specs)
+        for directory, dirs, files in os.walk(workspace, followlinks=False):
+            base = Path(directory)
+            dirs[:] = [
+                name for name in dirs
+                if not (base / name).is_symlink()
+                and (base / name).relative_to(workspace).parts[0] != "data"
+            ]
+            for name in files:
+                relative = (base / name).relative_to(workspace).as_posix()
+                if relative != "data" and relative not in names:
+                    output_specs.append({"name": relative})
+                    names.add(relative)
     present: dict[str, str] = {}
     for spec in output_specs:
         rel_str = spec.get("name", "")
@@ -464,7 +481,10 @@ def main() -> int:
             VERIFIER_DIR / "instance_data" / "data", staging,
             required=bool(instance.get("requires_instance_data")),
         )
-        artifact_shas = _stage_outputs(WORKSPACE_DIR, output_specs, staging)
+        artifact_shas = _stage_outputs(
+            WORKSPACE_DIR, output_specs, staging,
+            collect_extra_files=bool(instance.get("collect_extra_files")),
+        )
 
         # 5. Run scoring
         try:

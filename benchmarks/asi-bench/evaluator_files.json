@@ -2,14 +2,14 @@
   "schema_version": 1,
   "upstream": {
     "repo": "apexin-ai/ASI-Bench",
-    "revision": "f13175a89dc9b4873f6306a3d31e46927c38f1a9"
+    "revision": "a88dd2bc174b8fbd604d5a23456d4af7fd354423"
   },
   "files": [
     {
       "path": "ai4sci_bench/__init__.py",
       "kind": "copy",
       "source": "ai4sci_bench/__init__.py",
-      "source_sha256": "0a7a1883524111026e0c3543471a635b9cdca088b447bf459f0f4b34f1b2158f"
+      "source_sha256": "72ac1844f72b5e40d137666d5bb159954e512c9a880c122e312510f9a35302f8"
     },
     {
       "path": "ai4sci_bench/branding.py",
@@ -25,7 +25,7 @@
       "path": "ai4sci_bench/core/types.py",
       "kind": "copy",
       "source": "ai4sci_bench/core/types.py",
-      "source_sha256": "4f1111d859c8bfb5a63b15ab02e98e31da6e5d771368fb04a08c85406c36d160"
+      "source_sha256": "d3dfb2e1b5f8f0f50da636fad1e6ab8258716884e71f4e816c44661b8d8b3a50"
     },
     {
       "path": "ai4sci_bench/core/scorer.py",
@@ -82,19 +82,34 @@
   ],
   "task_helper_files": {
     "computer_science.euclidean_tsp_tour_optimization": [
-      {"path": "tsp_common.py", "source_sha256": "c92237892248424da4fc7926eeef6b17995f859fb0afe21742beb2560d88d931"}
+      {
+        "path": "tsp_common.py",
+        "source_sha256": "c92237892248424da4fc7926eeef6b17995f859fb0afe21742beb2560d88d931"
+      }
     ],
     "math.levin_context_grid_search": [
-      {"path": "lts_eval_runtime.py", "source_sha256": "a39c9fc70f1517d77e6946e4d961a9b36f5d5efb7fc54f593ff0e5b2ddef8d23"}
+      {
+        "path": "lts_eval_runtime.py",
+        "source_sha256": "a39c9fc70f1517d77e6946e4d961a9b36f5d5efb7fc54f593ff0e5b2ddef8d23"
+      }
     ],
     "math.mpsc_safety_filter": [
-      {"path": "mpsc_eval_runtime.py", "source_sha256": "7e9065041f233e7eaa04532591f92174c47be3c0a100a67ad8b5534576339e12"}
+      {
+        "path": "mpsc_eval_runtime.py",
+        "source_sha256": "7e9065041f233e7eaa04532591f92174c47be3c0a100a67ad8b5534576339e12"
+      }
     ],
     "math.ucb_q_learning_regret": [
-      {"path": "ucb_eval_runtime.py", "source_sha256": "7121404fdef4a5e91927d1413f442ba49d524caf12bfec6766011b541fa52d72"}
+      {
+        "path": "ucb_eval_runtime.py",
+        "source_sha256": "7121404fdef4a5e91927d1413f442ba49d524caf12bfec6766011b541fa52d72"
+      }
     ],
     "electrical_engineering.cmos_opamp_design": [
-      {"path": "cmos_eval_runtime.py", "source_sha256": "2c68e7bc69dcc40164c28117517f87ac73c50754b878fc59d82468e0dc8f1561"}
+      {
+        "path": "cmos_eval_runtime.py",
+        "source_sha256": "2c68e7bc69dcc40164c28117517f87ac73c50754b878fc59d82468e0dc8f1561"
+      }
     ]
   }
 }

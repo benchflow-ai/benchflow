@@ -71,7 +71,7 @@ def test_shipped_asi_template_is_insufficient() -> None:
 
 
 def test_pinned_asi_source_inventory_is_accounted_for() -> None:
-    """Guards ASI source commit f13175a against silent task loss."""
+    """Guards PR #1191 source sync to a88dd2bc against silent task loss."""
     data = json.loads(PARITY.read_text())
     coverage = data["coverage"]
     included = coverage["included_task_ids"]
@@ -83,7 +83,7 @@ def test_pinned_asi_source_inventory_is_accounted_for() -> None:
     assert len({item["task_id"] for item in excluded}) == len(excluded)
     assert not set(included) & {item["task_id"] for item in excluded}
     assert all(item["reason"] for item in excluded)
-    assert data["scope"]["asi_revision"] == "f13175a89dc9b4873f6306a3d31e46927c38f1a9"
+    assert data["scope"]["asi_revision"] == "a88dd2bc174b8fbd604d5a23456d4af7fd354423"
     assert data["scope"]["hf_revision"] == "0fa14219cafdbab634d8b3cfbce238a8735a214f"
 
 
