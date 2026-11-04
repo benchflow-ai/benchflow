@@ -33,6 +33,7 @@ def test_registry_is_the_single_source_of_truth() -> None:
     # deliberate edit here + a test update, never a silent scatter.
     assert SANDBOX_PROVIDERS == (
         "docker",
+        "apptainer",
         "daytona",
         "modal",
         "apple-container",
@@ -44,9 +45,11 @@ def test_registry_is_the_single_source_of_truth() -> None:
 def test_providers_phrase_is_byte_identical() -> None:
     # The refactor must be behavior-preserving for every help/error string that
     # used to hand-write this phrase.
-    assert providers_phrase() == "docker, daytona, modal, apple-container, or agentcore"
+    assert providers_phrase() == (
+        "docker, apptainer, daytona, modal, apple-container, or agentcore"
+    )
     assert providers_phrase(quote=True) == (
-        "'docker', 'daytona', 'modal', 'apple-container', or 'agentcore'"
+        "'docker', 'apptainer', 'daytona', 'modal', 'apple-container', or 'agentcore'"
     )
 
 
@@ -54,6 +57,8 @@ def test_model_proxy_placement_is_explicit_for_every_provider() -> None:
     """Guards PR #936 against routing host loopback into an Apple VM."""
 
     assert PROVIDERS_BY_NAME["docker"].model_proxy is ModelProxyLocation.HOST
+    assert PROVIDERS_BY_NAME["apptainer"].model_proxy is ModelProxyLocation.HOST
+    assert PROVIDERS_BY_NAME["apptainer"].enforces_no_network
     for provider in ("daytona", "modal", "apple-container", "agentcore"):
         assert PROVIDERS_BY_NAME[provider].model_proxy is ModelProxyLocation.SANDBOX
     assert (
