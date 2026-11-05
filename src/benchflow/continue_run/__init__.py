@@ -23,13 +23,21 @@ on is wired for openhands via ``LLM_BASE_URL``).
 """
 
 from benchflow.continue_run.run_folder import (
+    CONTINUE_SUPPORTED_AGENTS,
+    ContinueUnsupportedError,
+    MissingRecordingError,
     RunFolder,
     RunFolderError,
+    UnsupportedAgentError,
     load_run_folder,
 )
 
 __all__ = [
+    "CONTINUE_SUPPORTED_AGENTS",
+    "ContinueUnsupportedError",
+    "MissingRecordingError",
     "RunFolder",
     "RunFolderError",
+    "UnsupportedAgentError",
     "load_run_folder",
 ]
