@@ -1,6 +1,6 @@
 # Publishing a release
 
-This page is for maintainers. To install a stable or preview release, see [Install](../getting-started/install.md).
+This page is for maintainers. To install a stable or preview release, see [Install](../start/install.md).
 
 BenchFlow publishes two kinds of release to PyPI, both under the name `benchflow`:
 
@@ -109,5 +109,5 @@ The workflows build with `uv build --no-sources`, check distributions with `twin
 
 ## Next steps
 
-- [Install](../getting-started/install.md): the stable and preview install commands.
-- [What's new in 0.9](../whats-new-0.9.md): the changes in this release line.
+- [Install](../start/install.md): the stable and preview install commands.
+- [What's new in 0.9](../versions/upgrade-from-0.7.md): the changes in this release line.

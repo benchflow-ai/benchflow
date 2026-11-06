@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Judge pairs</title>
+<style>
+:root { --bg: #e6e6e4; --bar: #f3f3f1; --ink: #1d1d1d; --mute: #686868; --line: #cbcbc8; --paper: #fff; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+#bar { position: fixed; inset: 0 0 auto 0; height: 32px; display: flex; align-items: center; gap: 18px;
+  padding: 0 12px; background: var(--bar); border-bottom: 1px solid var(--line); white-space: nowrap; outline: none; }
+#showing { font-weight: 600; }
+#status { color: var(--mute); overflow: hidden; text-overflow: ellipsis; }
+#bar .keys { margin-left: auto; color: var(--mute); }
+#main { position: fixed; inset: 32px 0 0 0; }
+.side { position: absolute; inset: 6px; display: flex; flex-direction: column; }
+.side.off { visibility: hidden; }
+.label { display: none; height: 22px; font-weight: 600; }
+body.wide .side { width: calc(50% - 9px); }
+body.wide #sideB { left: auto; }
+body.wide .side.off { visibility: visible; }
+body.wide .label { display: block; }
+.pane { position: relative; flex: 1; overflow: hidden; }
+.pane.phone { overflow: auto; }
+iframe { position: absolute; top: 0; border: 0; background: var(--paper); transform-origin: 0 0; }
+.pane.phone iframe { outline: 1px solid var(--line); }
+aside { position: fixed; z-index: 2; background: var(--paper); border: 1px solid var(--line);
+  box-shadow: 0 2px 14px rgba(0, 0, 0, .14); }
+#brief { top: 40px; left: 12px; width: min(620px, calc(100vw - 24px)); max-height: 70vh; overflow: auto; padding: 14px 16px; }
+#brief p { white-space: pre-wrap; margin: 6px 0 10px; }
+#tray { left: 50%; bottom: 14px; transform: translateX(-50%); width: min(720px, calc(100vw - 24px)); padding: 12px 16px; }
+#reasons { list-style: none; margin: 10px 0; padding: 0; columns: 2; column-gap: 24px; }
+#reasons li { padding: 2px 0; break-inside: avoid; cursor: pointer; }
+#reasons li::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 8px; border: 1px solid var(--mute); }
+#reasons li.on::before { background: var(--ink); border-color: var(--ink); }
+#note { width: 100%; margin-bottom: 6px; padding: 5px 7px; font: inherit; border: 1px solid var(--line); }
+.mute { color: var(--mute); }
+#done { position: fixed; inset: 32px 0 0 0; display: grid; place-items: center; text-align: center; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="bar" tabindex="-1">
+  <span id="progress">loading</span>
+  <span id="showing"></span>
+  <span id="device"></span>
+  <span id="status" role="status"></span>
+  <span class="keys">A B T vote &nbsp; U undo &nbsp; I brief &nbsp; X flip &nbsp; D P desktop or phone</span>
+</div>
+<div id="main">
+  <section class="side" id="sideA"><div class="label">A</div><div class="pane">
+    <iframe id="fA" title="Output A" sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer"></iframe>
+  </div></section>
+  <section class="side off" id="sideB"><div class="label">B</div><div class="pane">
+    <iframe id="fB" title="Output B" sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer"></iframe>
+  </div></section>
+</div>
+<div id="done" hidden><div><p id="doneText"></p><p class="mute">U undoes the last vote.</p></div></div>
+<aside id="brief" hidden><b>The brief</b><p id="briefText"></p><span class="mute">I or Esc closes it.</span></aside>
+<aside id="tray" hidden>
+  <div><b id="pick"></b> &nbsp;<span class="mute" id="hint"></span></div>
+  <ul id="reasons"></ul>
+  <input id="note" placeholder="Note, if you want one (Tab to type here)" autocomplete="off" spellcheck="false">
+  <div class="mute">1 to 8 mark reasons &nbsp; Enter saves &nbsp; Esc cancels</div>
+</aside>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const SIZE = { desktop: [1440, 900], phone: [390, 844] };
+const CHOICE = { A: "left", B: "right", T: "tie" };
+let C = null, votes = [], at = 0, current = null, device = "desktop", shown = "A", choice = null;
+const marked = new Set();
+
+function say(text) { $("status").textContent = text; }
+function hasVote(id) { return votes.some((v) => v.pair_id === id); }
+function firstOpen(from) {
+  for (let k = 0; k < C.pairs.length; k++) {
+    const j = (from + k) % C.pairs.length;
+    if (!hasVote(C.pairs[j].pair_id)) return j;
+  }
+  return -1;
+}
+
+function show() {
+  const n = C.pairs.length, done = at < 0;
+  $("progress").textContent = done ? `${n} of ${n} pairs voted` : `pair ${at + 1} of ${n}`;
+  $("done").hidden = !done;
+  $("main").hidden = done;
+  if (done) {
+    $("doneText").textContent = `Every pair has a vote: ${votes.length} saved to the votes file.`;
+    return;
+  }
+  const p = C.pairs[at];
+  if (current !== p.pair_id) {
+    current = p.pair_id;
+    shown = "A";
+    $("fA").src = p.a;
+    $("fB").src = p.b;
+  }
+  layout();
+}
+
+// Desktop: a 1440 px wide window scaled to fit its pane. Phone: 390 x 844 at 1:1.
+function layout() {
+  const wide = innerWidth >= 2000;
+  document.body.classList.toggle("wide", wide);
+  $("sideA").classList.toggle("off", !wide && shown !== "A");
+  $("sideB").classList.toggle("off", !wide && shown !== "B");
+  $("showing").textContent = wide ? "A left, B right" : `showing ${shown} (X shows ${shown === "A" ? "B" : "A"})`;
+  $("device").textContent = device === "desktop" ? "desktop, 1440 wide" : "phone, 390 x 844";
+  const [w, h] = SIZE[device];
+  for (const f of [$("fA"), $("fB")]) {
+    const pane = f.parentElement;
+    pane.classList.toggle("phone", device === "phone");
+    const pw = pane.clientWidth, ph = pane.clientHeight;
+    const s = device === "desktop" ? Math.min(1, pw / w) : 1;
+    f.style.width = `${w}px`;
+    f.style.height = `${device === "desktop" ? ph / s : h}px`;
+    f.style.transform = s < 1 ? `scale(${s})` : "none";
+    f.style.left = `${Math.max(0, (pw - w * s) / 2)}px`;
+  }
+}
+
+function openTray(key) {
+  choice = key;
+  $("pick").textContent = key === "T" ? "Tie" : `${key} is better`;
+  $("tray").hidden = false;
+}
+function closeTray() {
+  $("tray").hidden = true;
+  choice = null;
+  marked.clear();
+  $("note").value = "";
+  for (const li of $("reasons").children) li.classList.remove("on");
+  $("bar").focus();
+}
+function mark(key) {
+  const li = [...$("reasons").children].find((x) => x.dataset.key === key);
+  if (!li) return;
+  if (marked.has(key)) marked.delete(key); else marked.add(key);
+  li.classList.toggle("on", marked.has(key));
+}
+
+async function post(list) {
+  try {
+    const r = await fetch("/votes", { method: "POST", body: JSON.stringify(list),
+      headers: { "Content-Type": "application/json", "X-Judge-Token": C.token } });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return true;
+  } catch (err) {
+    say(`not saved: ${err.message}`);
+    return false;
+  }
+}
+
+async function save() {
+  if (!choice || at < 0) return;
+  const keys = [...marked].sort(), note = $("note").value.trim();
+  const reason = [keys.length ? `keys: ${keys.join(",")}` : "", note ? `note: ${note}` : ""].filter(Boolean).join("; ");
+  const vote = { pair_id: C.pairs[at].pair_id, choice: CHOICE[choice], rater: C.rater,
+    rated_at: new Date().toISOString(), source: "judge.html" };
+  if (reason) vote.reason = reason;
+  const next = votes.concat([vote]);
+  if (!(await post(next))) return;
+  votes = next;
+  say(`saved: pair ${at + 1}, ${choice === "T" ? "tie" : choice}`);
+  closeTray();
+  at = firstOpen(at + 1);
+  show();
+}
+
+async function undo() {
+  if (!votes.length) return say("no vote to undo");
+  const last = votes[votes.length - 1], next = votes.slice(0, -1);
+  if (!(await post(next))) return;
+  votes = next;
+  at = C.pairs.findIndex((p) => p.pair_id === last.pair_id);
+  closeTray();
+  show();
+  say(`undid the vote on pair ${at + 1}`);
+}
+
+function flip() {
+  shown = shown === "A" ? "B" : "A";
+  layout();
+}
+
+addEventListener("keydown", (e) => {
+  if (!C || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target === $("note")) {
+    if (e.key === "Enter") { e.preventDefault(); save(); }
+    if (e.key === "Escape") $("bar").focus();
+    return;
+  }
+  const k = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+  const tray = !$("tray").hidden;
+  if (k === "Escape") {
+    if (tray) closeTray(); else $("brief").hidden = true;
+  } else if (k === "I") {
+    $("brief").hidden = !$("brief").hidden;
+  } else if (k === "U" && !e.repeat) {
+    undo();
+  } else if (at < 0) {
+    return;
+  } else if (k in CHOICE && !e.repeat) {
+    openTray(k);
+  } else if (tray && /^[1-8]$/.test(k)) {
+    mark(k);
+  } else if (tray && k === "Enter") {
+    save();
+  } else if (tray && k === "Tab") {
+    $("note").focus();
+  } else if (k === "X") {
+    flip();
+  } else if (k === "D" || k === "P") {
+    device = k === "D" ? "desktop" : "phone";
+    layout();
+  } else {
+    return;
+  }
+  e.preventDefault();
+});
+
+// Keys typed while an output has focus go to that page; leaving it with the pointer gives them back.
+for (const f of [$("fA"), $("fB")]) {
+  f.addEventListener("mouseleave", () => { if (document.activeElement === f) $("bar").focus(); });
+}
+addEventListener("blur", () => setTimeout(() => {
+  if (document.activeElement && document.activeElement.tagName === "IFRAME") {
+    say("keys now go to the page: move the pointer off it, or click this bar");
+  }
+}));
+addEventListener("focus", () => say(""));
+$("bar").addEventListener("click", () => $("bar").focus());
+addEventListener("resize", () => { if (C && at >= 0) layout(); });
+
+fetch("/config.json", { cache: "no-store" }).then((r) => r.json()).then((config) => {
+  C = config;
+  votes = config.votes || [];
+  $("briefText").textContent = config.brief;
+  $("hint").textContent = config.hint || "";
+  for (const r of config.reasons) {
+    const li = document.createElement("li");
+    li.dataset.key = r.key;
+    li.textContent = `${r.key}  ${r.text}`;
+    li.addEventListener("click", () => mark(r.key));
+    $("reasons").append(li);
+  }
+  at = firstOpen(0);
+  show();
+  $("bar").focus();
+}).catch((err) => say(`could not load the pairs: ${err.message}`));
+</script>
+</body>
+</html>

@@ -1,3 +1,3 @@
 # Train with TRL GRPO
 
-This page moved to [Training: GRPO recipe](../training/grpo-recipe.md).
+This page moved to [Training: GRPO recipe](../train/environment.md).

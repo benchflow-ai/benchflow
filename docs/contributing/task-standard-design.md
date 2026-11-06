@@ -1,6 +1,6 @@
 # Task standard: design notes
 
-These are the design goals and the roadmap behind the [task package reference](../reference/task-package.md). **Nothing on this page runs unless the reference says so.** It is for contributors deciding where a new field belongs.
+These are the design goals and the roadmap behind the [task package reference](../tasks/task-format.md). **Nothing on this page runs unless the reference says so.** It is for contributors deciding where a new field belongs.
 
 ## Goals
 
@@ -352,5 +352,5 @@ no-op exports.
 
 ## Next steps
 
-- [Task package reference](../reference/task-package.md): what runs today.
-- [Tasks](../tasks/overview.md): the user chapter.
+- [Task package reference](../tasks/task-format.md): what runs today.
+- [Tasks](../tasks/task-format.md): the user chapter.

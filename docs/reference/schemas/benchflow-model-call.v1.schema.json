@@ -1,0 +1,183 @@
+{
+  "$id": "https://benchflow.ai/schemas/benchflow-model-call.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cache_read_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cache_write_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cost_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "duration_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "effort": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "finish_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "http_status": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "index": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "input_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_output_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "model_requested": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model_served": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "output_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "purpose": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reasoning_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "refused": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "route": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema": {
+      "const": "benchflow.model-call.v1"
+    },
+    "source": {
+      "enum": [
+        "proxy",
+        "claude-code-otel",
+        "claude-code-session-log",
+        "codex-session-log"
+      ]
+    },
+    "started_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "subagent": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "temperature": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "thinking": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "top_p": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "truncated": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "source",
+    "index",
+    "started_at",
+    "duration_ms",
+    "http_status",
+    "purpose",
+    "model_requested",
+    "model_served",
+    "route",
+    "effort",
+    "thinking",
+    "temperature",
+    "top_p",
+    "max_output_tokens",
+    "finish_reason",
+    "truncated",
+    "refused",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "cost_usd",
+    "subagent"
+  ],
+  "title": "One model call (trajectory/model-calls.jsonl)",
+  "type": "object"
+}

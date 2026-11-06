@@ -1,6 +1,6 @@
 # Native harness internals
 
-How the [native harness](../agents/harness.md) runs a turn, how its CLI pins move, and how its parity with the ACP harness is tested. This page is for maintainers.
+How the [native harness](../evaluate/agents.md#run-claude-code-or-codex-through-their-own-cli) runs a turn, how its CLI pins move, and how its parity with the ACP harness is tested. This page is for maintainers.
 
 ## How a native turn runs
 
@@ -15,11 +15,14 @@ Each prompt runs the CLI once, as the sandbox user. It uses the same live-proces
 
 ```sh
 claude -p --output-format stream-json --verbose --include-partial-messages \
-  --forward-subagent-text --permission-mode bypassPermissions \
+  --forward-subagent-text --thinking-display summarized \
+  --permission-mode bypassPermissions \
   --session-id <uuid>        # first turn; later turns use --resume <uuid>
 ```
 
 `--model` and `--effort` are added when the run sets them. With BenchFlow's proxy the model rides `ANTHROPIC_MODEL`, as over ACP.
+
+`--thinking-display summarized` asks for the thinking the ACP session asks for (it passes the same setting to the adapter's SDK). Print mode's own default is `updates`, which sends the model a different request and returns different thinking.
 
 The parser is a port of `claude-agent-acp` 0.81.2's own mapping: tool titles and kinds, tool results, and the Edit and Write diffs. So both harnesses record the same trajectory.
 
@@ -75,7 +78,7 @@ The deterministic tier checks two things:
 | Claude Code | `@anthropic-ai/claude-code@2.1.280` | `_CLAUDE_CODE_PACKAGE`. It is the same binary `claude-agent-acp` runs (`CLAUDE_CODE_EXECUTABLE`), so the two harnesses cannot drift apart on the CLI. |
 | Codex | `@openai/codex@0.159.3` | `_CODEX_CLI_PACKAGE`. It is the release `codex-acp` 2.0.1 resolves its `^0.159.1` dependency to, so both harnesses run one Codex core. It is installed next to `codex-acp` for native runs only; `codex-acp` still runs its own nested copy. |
 
-Each native connect checks the CLI's `--version` against the pin and refuses another build. The [Codex Apps](../agents/codex-apps.md) policy checks and probes the native CLI when the harness is native.
+Each native connect checks the CLI's `--version` against the pin and refuses another build. The [Codex Apps](../evaluate/agents.md#codex-apps) policy checks and probes the native CLI when the harness is native.
 
 ### When a pin moves
 
@@ -110,10 +113,22 @@ Expected request differences (`WIRE_EXPECTED_DIFFERENCES` in the tier):
 |---|---|---|
 | Claude Code | `User-Agent`, and the billing line that opens the system prompt (`cc_entrypoint`) | Claude Code names its entrypoint: `sdk-ts` and the Agent SDK version inside the adapter, or `sdk-cli` in print mode. |
 | Claude Code | `tools` | The ACP session starts in the default permission mode and offers `EnterPlanMode` and `ExitPlanMode`, which bypassPermissions does not. The other 24 tool definitions are identical and in the same order. |
-| Claude Code | the first tool result | The adapter hands the SDK the session directory as an extra working directory. That adds a system reminder: "Environment update: Additional working directories added: /app". |
+| Claude Code | the first tool result | The adapter hands the SDK the session directory as an extra working directory. That adds a system reminder: "Environment update: Additional working directories added: /app". On `claude-opus-5-5` it is a system message of its own after that tool result. |
+| Claude Code | the environment message and the `Bash` tool, on `claude-opus-5-5` | Each permission mode adds its own guidance. Print mode's bypassPermissions adds "While bypass permissions mode is active: You can do much of your work through the Bash tool …". The ACP session's default mode keeps "IMPORTANT: Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` …" in `Bash`. The `claude-haiku-4-5` prompt has neither. |
 | Codex | `originator`, `User-Agent` | `codex-acp` names the ACP client (`benchflow` and its version); `codex exec` names itself (`codex_exec`). |
 
 Everything else is identical. For Claude Code that includes the system prompt, the messages, the model, thinking and limits. For Codex it includes the instructions, tools, input items, reasoning settings and `store`. Session, thread, turn and installation ids, and Claude Code's `metadata.user_id`, are normalized away.
+
+### Model, effort and the sub-agent tool
+
+Each pair also runs one passing task at a model and effort set with `--model` and `--reasoning-effort`, on both harnesses: Claude Code on `claude-opus-5-5` at `max`, Codex on `gpt-5.5` at `max`. The tier checks four things:
+
+- Every request names the run's model; for Claude Code that is the proxy's alias for it. The one other model a request may name is the one `codex-acp` hard-wires for its session title (`gpt-5.6-luna`, a turn without tools).
+- Every agent-loop request carries the effort. Claude Code 2.1.316 sends `output_config.effort` with adaptive thinking; Codex 0.159.3 sends `reasoning.effort` and names the effort in its turn metadata. The fake provider receives the same effort after the proxy, and the trial's `model-calls.jsonl` records it.
+- The sub-agent tool is offered. For Claude Code that is `Agent`. For Codex 0.159.3 on `gpt-5.5` it is the multi-agent tools, which it defers behind `tool_search`, and `apply_patch` is there too. The Claude Code task hands its file to a general-purpose sub-agent, whose own requests name the same model and effort.
+- The two harnesses' requests match, bar the written differences above.
+
+Claude Code applies an effort only to a model it knows takes one. `claude-haiku-4-5` takes none. The CLI ignores `--effort`, so a native run goes on with no effort on the wire. Over ACP the adapter offers no effort option, so BenchFlow refuses the run.
 
 ### The harness contract
 
@@ -145,5 +160,5 @@ Gemini CLI (`gemini -p --output-format stream-json`, in 0.62.0) and OpenCode (`o
 
 ## Next steps
 
-- [Native harness](../agents/harness.md): the user guide.
-- [Codex Apps](../agents/codex-apps.md): the Codex Apps policy and its checks.
+- [Native harness](../evaluate/agents.md#run-claude-code-or-codex-through-their-own-cli): the user guide.
+- [Codex Apps](../evaluate/agents.md#codex-apps): the Codex Apps policy and its checks.

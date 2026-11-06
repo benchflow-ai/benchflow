@@ -1134,7 +1134,7 @@
             }
           ],
           "default": null,
-          "description": "provider_response, agent_native_acp or unavailable",
+          "description": "provider_response, agent_native_acp or unavailable; for an agent that routes its own model calls, agent-reported or none (never metered)",
           "title": "Usage Source"
         }
       },

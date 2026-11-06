@@ -1,0 +1,13 @@
+{
+  "hint": "1 to 5 are strengths of the page you chose, 6 and 7 faults of the other; mark any that decided it.",
+  "reasons": [
+    {"key": "1", "text": "What, when and where are clear at a glance"},
+    {"key": "2", "text": "Plain, specific words"},
+    {"key": "3", "text": "Works well on a phone"},
+    {"key": "4", "text": "Looks finished"},
+    {"key": "5", "text": "States every fact in the brief"},
+    {"key": "6", "text": "The other has something broken"},
+    {"key": "7", "text": "The other is hard to read"},
+    {"key": "8", "text": "Something else: say it in the note"}
+  ]
+}
