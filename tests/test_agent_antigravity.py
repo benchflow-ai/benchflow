@@ -31,10 +31,10 @@ from benchflow.agents.registry import (
     routes_gemini_natively,
 )
 from benchflow.evaluation import effective_model
+from tests._package_files import package_path
+from tests._policy_setup import run_policy_setup
 
-_SHIM = (
-    Path(__file__).resolve().parents[1] / "src/benchflow/agents/antigravity_acp_shim.py"
-)
+_SHIM = package_path("agents", "antigravity_acp_shim.py")
 
 # ── registry shape ───────────────────────────────────────────────────────────
 
@@ -103,7 +103,7 @@ class TestRegistryEntry:
         for _arch, (url, sha) in cfgmod.AGY_RELEASES.items():
             assert url in cfg.install_cmd
             assert sha in cfg.install_cmd
-            assert "1.2.7-6731160148115456" in url
+            assert "1.3.5-6164039479459840" in url
         assert "sha512sum -c" in cfg.install_cmd
         # The download stage proves the binary runs on the task image before
         # the shim is deployed after it.
@@ -114,7 +114,12 @@ class TestRegistryEntry:
         # No Node.js: the CLI is a native binary and the shim is stdlib Python.
         assert "npm install" not in cfg.install_cmd
         assert "/opt/benchflow/bin/antigravity-acp-shim" in cfg.install_cmd
-        assert cfg.launch_cmd == "/opt/benchflow/bin/antigravity-acp-shim"
+        assert "bf_shim_python=/usr/bin/python3" in cfg.launch_cmd
+        assert "bf_shim_python=/usr/local/bin/python3" in cfg.launch_cmd
+        assert (
+            'exec "$bf_shim_python" -I -S /opt/benchflow/bin/antigravity-acp-shim'
+            in cfg.launch_cmd
+        )
 
     def test_install_cmd_is_idempotent_on_matching_version(self, tmp_path):
         """A binary already reporting AGY_VERSION short-circuits the download."""
@@ -160,6 +165,42 @@ def test_shim_splits_catalog_ids_into_model_and_effort(model, expected):
     assert _load_shim_module().split_model_effort(model) == expected
 
 
+def _fake_agy_listing(tmp_path):
+    agy = tmp_path / "agy"
+    agy.write_text(
+        "#!/bin/sh\n"
+        "echo 'Fetching available models...'\n"
+        "printf 'gemini-3.8-flash-high\\tGemini 3.8 Flash (High)\\n'\n"
+        "printf 'gemini-3.1-pro-low\\tGemini 3.1 Pro (Low)\\n'\n"
+    )
+    agy.chmod(0o755)
+    return agy
+
+
+@pytest.mark.parametrize(
+    "bare, expected",
+    [
+        ("gemini-3.8-flash", "gemini-3.8-flash"),
+        ("gemini-3.1-pro", "gemini-3.1-pro"),
+        ("gemini-4-argon", "gemini-api://gemini-4-argon"),
+    ],
+)
+def test_shim_runs_models_agy_does_not_list_as_custom_models(
+    bare, expected, tmp_path, monkeypatch
+):
+    """agy rejects ids outside its built-in list; those run through its
+    ``gemini-api://`` custom-model form, while listed models keep their id."""
+    shim = _load_shim_module()
+    monkeypatch.setenv(shim.AGY_BIN_ENV, str(_fake_agy_listing(tmp_path)))
+    assert shim.agy_model_arg(bare) == expected
+
+
+def test_shim_keeps_the_id_when_agy_cannot_list_models(tmp_path, monkeypatch):
+    shim = _load_shim_module()
+    monkeypatch.setenv(shim.AGY_BIN_ENV, str(tmp_path / "missing-agy"))
+    assert shim.agy_model_arg("gemini-4-argon") == "gemini-4-argon"
+
+
 @pytest.mark.parametrize(
     "value, expected",
     [
@@ -187,13 +228,7 @@ def test_shim_rejects_unknown_effort_labels():
 
 
 def _run_policy_cmd(cmd: str, home: Path) -> dict:
-    result = subprocess.run(
-        ["bash", "-c", cmd],
-        env={"BENCHFLOW_AGENT_HOME": str(home), "PATH": "/usr/bin:/bin"},
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    result = run_policy_setup(cmd, home)
     assert result.returncode == 0, result.stderr
     return json.loads((home / ".gemini/antigravity-cli/hooks.json").read_text())
 
@@ -243,12 +278,20 @@ def test_policy_hooks_merge_with_existing_hooks(tmp_path):
 _FAKE_AGY = textwrap.dedent(
     r"""
     #!/usr/bin/env python3
-    import json, os, sys
+    import json, os, stat, sys
     args = sys.argv[1:]
     log = open(os.environ["FAKE_AGY_LOG"], "a")
     log.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\n"); log.flush()
     if "--version" in args:
         print("9.9.9"); sys.exit(0)
+    if args[:1] == ["models"]:
+        st, null = os.fstat(0), os.stat(os.devnull)
+        devnull = stat.S_ISCHR(st.st_mode) and st.st_rdev == null.st_rdev
+        log.write(json.dumps({"models_stdin_devnull": devnull}) + "\n"); log.flush()
+        print("Fetching available models...")
+        print("gemini-3.8-flash-high\tGemini 3.8 Flash (High)")
+        print("gemini-3.1-pro-high\tGemini 3.1 Pro (High)")
+        sys.exit(0)
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n"); sys.stdout.flush()
     conv = "conv-1234-5678"
@@ -381,6 +424,29 @@ def _handshake(shim: _ShimClient, cwd: str) -> str:
     session_id = new["result"]["sessionId"]
     assert [o["id"] for o in new["result"]["configOptions"]] == ["thinking"]
     return session_id
+
+
+def test_shim_lists_models_without_the_acp_pipe_as_stdin(shim, tmp_path):
+    """``agy models`` (the custom-model check before agy starts) runs with
+    /dev/null as stdin. The shim's own stdin is the ACP pipe: a child that
+    inherited it could read the client's next request, or wait on it until the
+    listing timed out (this fake waited 120 s per session before the fix).
+    Guards PY8 AG's fix to the 0.7.9 side branch's agy_catalog (949283c5)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    session_id = _handshake(shim, str(workspace))
+    shim.request(
+        "session/set_model", {"sessionId": session_id, "modelId": "gemini-3.8-flash"}
+    )
+    reply = shim.request(
+        "session/prompt",
+        {"sessionId": session_id, "prompt": [{"type": "text", "text": "hi"}]},
+    )
+    assert reply["result"]["stopReason"] == "end_turn"
+    checks = [e for e in shim.agy_log() if "models_stdin_devnull" in e]
+    assert checks == [{"models_stdin_devnull": True}]
+    launches = [e["args"] for e in shim.agy_log() if "args" in e]
+    assert "--model=gemini-3.8-flash" in launches[-1]
 
 
 def test_shim_streams_tool_calls_message_and_usage(shim, tmp_path):

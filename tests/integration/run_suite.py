@@ -4,9 +4,8 @@
 Most lanes are still plan-only. The adapter-release-set lane has an executable
 evidence checker because the v0.4 release audit already produces parity/smoke
 artifacts for adapters and open adapter PRs. The trace-to-task-e2e lane is also
-executable so ENG-93 evidence can be regenerated from the release manifest. The
-hosted-env lane can validate env_uid/hub_url metadata and regenerate Harbor
-inventory evidence.
+executable so its evidence can be regenerated from the release manifest. The
+hosted-env lane can validate env_uid/hub_url metadata.
 """
 
 from __future__ import annotations
@@ -88,7 +87,7 @@ def load_suite(path: Path) -> dict[str, Any]:
 
 
 def _check_config_consistency(suite: Mapping[str, Any], suite_path: Path) -> None:
-    """Enforce config<->manifest single source of truth (ENG-265 slice 3).
+    """Enforce config<->manifest single source of truth.
 
     The per-agent ``configs/*.yaml`` files must agree with the manifest on agent
     membership, model pins, and task-set includes (see ``_consistency``). A
@@ -429,11 +428,6 @@ def _render_value(value: Any) -> str:
             if evidence_dir:
                 parts.append(f"evidence={evidence_dir}")
             return "; ".join(parts)
-        if value.get("kind") == "harbor_skillsbench_baseline":
-            repo = value.get("repo")
-            ref = value.get("ref")
-            path = value.get("path")
-            return f"harbor-skillsbench:{repo}/{path}@{ref}"
         if value.get("kind") == "benchflow_results":
             path = value.get("path")
             return f"benchflow-results:{path}"
@@ -499,17 +493,6 @@ def _run_hosted_env_evidence_checker(argv: list[str]) -> int:
         from tests.integration.check_hosted_env_evidence import main as evidence_main
     except ModuleNotFoundError:
         from check_hosted_env_evidence import main as evidence_main
-
-    return evidence_main(argv)
-
-
-def _run_skillsbench_harbor_parity_checker(argv: list[str]) -> int:
-    try:
-        from tests.integration.check_skillsbench_harbor_parity import (
-            main as evidence_main,
-        )
-    except ModuleNotFoundError:
-        from check_skillsbench_harbor_parity import main as evidence_main
 
     return evidence_main(argv)
 
@@ -588,74 +571,8 @@ def run_hosted_env_evidence(
     checker_args = ["--suite", str(args.suite)]
     if args.hosted_env_evidence_dir:
         checker_args.extend(["--evidence-dir", str(args.hosted_env_evidence_dir)])
-    if args.harbor_inventory_limit is not None:
-        checker_args.extend(
-            ["--harbor-inventory-limit", str(args.harbor_inventory_limit)]
-        )
 
     return _run_hosted_env_evidence_checker(checker_args)
-
-
-def run_skillsbench_harbor_parity(
-    lanes: list[Mapping[str, Any]], args: argparse.Namespace
-) -> int:
-    """Run SkillsBench-vs-Harbor parity validation."""
-    lane_ids = [lane["id"] for lane in lanes]
-    unsupported = [
-        lane_id for lane_id in lane_ids if lane_id != "skillsbench-harbor-parity"
-    ]
-    if unsupported:
-        raise SuiteError(
-            "--execute-skillsbench-harbor-parity only supports "
-            "skillsbench-harbor-parity; unsupported selected lane(s): "
-            f"{', '.join(unsupported)}"
-        )
-    if "skillsbench-harbor-parity" not in lane_ids:
-        raise SuiteError(
-            "--execute-skillsbench-harbor-parity requires lane "
-            "skillsbench-harbor-parity"
-        )
-    if args.skillsbench_harbor_benchflow_root is None:
-        raise SuiteError("--skillsbench-harbor-benchflow-root is required")
-    if args.skillsbench_harbor_baseline_root is None:
-        raise SuiteError("--skillsbench-harbor-baseline-root is required")
-
-    checker_args = [
-        "--benchflow-root",
-        str(args.skillsbench_harbor_benchflow_root),
-        "--harbor-baseline-root",
-        str(args.skillsbench_harbor_baseline_root),
-        "--harbor-baseline-ref",
-        args.skillsbench_harbor_baseline_ref,
-        "--max-outcome-rate-delta",
-        str(args.skillsbench_harbor_max_outcome_rate_delta),
-        "--max-mean-reward-delta",
-        str(args.skillsbench_harbor_max_mean_reward_delta),
-        "--max-task-reward-delta",
-        str(args.skillsbench_harbor_max_task_reward_delta),
-        "--expected-benchflow-source-repo",
-        args.skillsbench_harbor_expected_source_repo,
-        "--expected-benchflow-source-path-prefix",
-        args.skillsbench_harbor_expected_source_path_prefix,
-        "--expected-benchflow-task-entrypoint",
-        args.skillsbench_harbor_expected_task_entrypoint,
-        "--expected-skill-mode",
-        args.skillsbench_harbor_expected_skill_mode,
-        "--expected-skill-source",
-        args.skillsbench_harbor_expected_skill_source,
-    ]
-    if args.skillsbench_harbor_expected_source_sha:
-        checker_args.extend(
-            [
-                "--expected-benchflow-source-sha",
-                args.skillsbench_harbor_expected_source_sha,
-            ]
-        )
-    for task in args.skillsbench_harbor_task or []:
-        checker_args.extend(["--task", task])
-    if args.skillsbench_harbor_no_require_trajectories:
-        checker_args.append("--no-require-trajectories")
-    return _run_skillsbench_harbor_parity_checker(checker_args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -717,11 +634,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execute hosted-env compatibility-board evidence validation.",
     )
     parser.add_argument(
-        "--execute-skillsbench-harbor-parity",
-        action="store_true",
-        help="Execute SkillsBench-vs-Harbor parity validation.",
-    )
-    parser.add_argument(
         "--adapter-evidence-repo-root",
         type=Path,
         default=Path.cwd(),
@@ -770,85 +682,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory for hosted-env evidence artifacts.",
     )
-    parser.add_argument(
-        "--harbor-inventory-limit",
-        type=int,
-        default=2,
-        help="Number of Harbor registry task refs to inventory.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-benchflow-root",
-        type=Path,
-        help="BenchFlow result root to compare against the Harbor baseline.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-baseline-root",
-        type=Path,
-        help="Local pinned benchflow-ai/skillsbench-trajectories baseline root.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-baseline-ref",
-        default="2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c",
-        help="Pinned skillsbench-trajectories ref expected at the baseline root.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-task",
-        action="append",
-        default=[],
-        help="SkillsBench task to compare. May be repeated.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-no-require-trajectories",
-        action="store_true",
-        help="Do not require trajectory artifacts during Harbor parity.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-max-outcome-rate-delta",
-        type=float,
-        default=0.25,
-        help="Allowed outcome-rate drift for SkillsBench-vs-Harbor parity.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-max-mean-reward-delta",
-        type=float,
-        default=0.25,
-        help="Allowed mean-reward drift for SkillsBench-vs-Harbor parity.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-max-task-reward-delta",
-        type=float,
-        default=0.0,
-        help="Allowed per-task reward movement outside Harbor observed range.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-expected-source-repo",
-        default="benchflow-ai/skillsbench",
-        help="Expected BenchFlow source.repo for SkillsBench parity artifacts.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-expected-source-path-prefix",
-        default="tasks",
-        help="Expected prefix for BenchFlow source.path values.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-expected-task-entrypoint",
-        default="task.md",
-        help="Required native task entrypoint in BenchFlow source.file_hashes.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-expected-source-sha",
-        help="Optional exact BenchFlow source.resolved_sha for all compared results.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-expected-skill-mode",
-        default="no-skill",
-        help="Expected canonical BenchFlow skill_mode for the Harbor parity lane.",
-    )
-    parser.add_argument(
-        "--skillsbench-harbor-expected-skill-source",
-        default="none",
-        help="Expected canonical BenchFlow skill_source for the Harbor parity lane.",
-    )
     return parser
 
 
@@ -872,7 +705,6 @@ def main(argv: list[str] | None = None) -> int:
             args.execute_adapter_evidence,
             args.execute_trace_evidence,
             args.execute_hosted_env_evidence,
-            args.execute_skillsbench_harbor_parity,
         ]
         if args.dry_run and any(execution_modes):
             parser.error("use either --dry-run or an execution mode, not both")
@@ -910,14 +742,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.execute_hosted_env_evidence:
             return run_hosted_env_evidence(lanes, args)
 
-        if args.execute_skillsbench_harbor_parity:
-            return run_skillsbench_harbor_parity(lanes, args)
-
         parser.error(
             "execution is not implemented yet; pass --dry-run or "
             "--execute-adapter-evidence, --execute-trace-evidence, or "
-            "--execute-hosted-env-evidence, or "
-            "--execute-skillsbench-harbor-parity"
+            "--execute-hosted-env-evidence"
         )
     except SuiteError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

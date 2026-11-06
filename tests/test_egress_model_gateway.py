@@ -113,12 +113,13 @@ def test_only_controller_gateway_is_reachable(gateway_stack, tunnel):
 )
 async def test_invalid_runtime_gateway_fails_before_upload(url):
     """Guards the PR #1113 repair's controller/runtime boundary."""
-    env = MagicMock(upload_file=AsyncMock(), exec=AsyncMock())
+    env = MagicMock(upload_file=AsyncMock(), upload_dir=AsyncMock(), exec=AsyncMock())
     with pytest.raises(ValueError, match="model gateway"):
         await start_egress_denylist(
             env, "agent", EgressDenylist((), ()), model_gateway_url=url
         )
     env.upload_file.assert_not_called()
+    env.upload_dir.assert_not_called()
     env.exec.assert_not_called()
 
 
@@ -126,13 +127,12 @@ async def test_gateway_is_written_to_root_owned_policy():
     """Guards PR #1113 by carrying the actual runtime port across the sandbox boundary."""
     policies = []
 
-    async def upload(local, remote, **kwargs):
-        if remote.endswith("/policy.json"):
-            assert kwargs["mode"] == "600"
-            policies.append(proxy.Policy.load(local))
+    async def upload_dir(source, target, **kwargs):
+        assert target == "/opt/benchflow-egress"
+        policies.append(proxy.Policy.load(Path(source) / "policy.json"))
 
     env = MagicMock()
-    env.upload_file = AsyncMock(side_effect=upload)
+    env.upload_dir = AsyncMock(side_effect=upload_dir)
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="", stderr=""))
     env.exec_transient = env.exec
     await start_egress_denylist(

@@ -16,8 +16,14 @@ from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     _parse_agent_env,
     console,
+    exit_if_missing,
+    print_error,
 )
-from benchflow.sandbox.providers import providers_phrase
+from benchflow.sandbox.providers import is_known_provider, providers_phrase
+
+# The model `bench review` gives its default agent, opencode, which has no
+# registry default: a gateway model id.
+DEFAULT_REVIEW_MODEL = "gemini/gemini-3.5-flash-lite"
 
 _REVIEW_OUTCOME_STYLES = {
     "pass": "green",
@@ -150,7 +156,14 @@ def _review_command(
     ] = "opencode",
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Reviewer model (default: agent registry)"),
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                f"Reviewer model (default: {DEFAULT_REVIEW_MODEL} with opencode, "
+                "else the agent's registry default)"
+            ),
+        ),
     ] = None,
     environment: Annotated[
         str,
@@ -220,6 +233,7 @@ def _review_command(
     read-only copy, and results land in ``review_report.json``. The reviewed
     rollouts' rewards and ``result.json`` are never modified.
     """
+    from benchflow._utils.config import normalize_agent_name
     from benchflow.review import run_reviews
     from benchflow.review.wrapper import REVIEWER_IMAGE
 
@@ -229,11 +243,60 @@ def _review_command(
             "(--allow-open-network).[/yellow]"
         )
     if passing and failing:
-        console.print("[red]Use either --passing or --failing, not both.[/red]")
-        raise typer.Exit(1)
+        print_error(
+            "--passing and --failing cannot be used together",
+            next_step="pass one of them, or neither to review every rollout",
+        )
+        raise typer.Exit(2)
     filter_passing = True if passing else (False if failing else None)
-
+    if not path.exists():
+        print_error(
+            f"✗ {path} is not there",
+            next_step="pass a finished rollout directory or a job directory",
+        )
+        raise typer.Exit(2)
+    for flag, input_path in (
+        ("--rubric", rubric),
+        ("--prompt", prompt),
+        ("--tasks-root", tasks_root),
+    ):
+        exit_if_missing(input_path, next_step=f"pass an existing path to {flag}")
+    # The local environment can select the agent manifest catalog as well as
+    # credentials, so load it before resolving the reviewer's name.
     _apply_dotenv_to_process_env()
+    try:
+        agent = normalize_agent_name(agent)
+    except (KeyError, ValueError) as exc:
+        print_error(str(exc), next_step="pass -a with a name `bench agents` lists")
+        raise typer.Exit(2) from None
+    if not is_known_provider(environment):
+        print_error(
+            f"Unknown sandbox: {environment!r}",
+            next_step=f"pass --sandbox with one of: {providers_phrase()}",
+        )
+        raise typer.Exit(2)
+    if model is None and agent == "opencode":
+        # opencode has no registry default model, and the default reviewer
+        # must run with no flag (dogfood p5-18).
+        model = DEFAULT_REVIEW_MODEL
+
+    parsed_env = _parse_agent_env(agent_env)
+    # A missing reviewer key is one error line before any review starts, not
+    # a traceback from inside the runner.
+    from types import SimpleNamespace
+
+    from benchflow.cli._errors import expected_error_parts
+    from benchflow.errors import MissingCredentialError
+    from benchflow.runtime import check_credentials
+
+    try:
+        check_credentials(
+            [SimpleNamespace(agent=agent, model=model, agent_env=parsed_env)]
+        )
+    except MissingCredentialError as exc:
+        text, hint = expected_error_parts(exc)
+        print_error(f"✗ {text}", next_step=hint)
+        raise typer.Exit(1) from None
     console.print("\n[blue]Reviewing rollout(s)...[/blue]")
     try:
         report, report_path = asyncio.run(
@@ -244,7 +307,7 @@ def _review_command(
                 environment=environment,
                 rubric_path=rubric,
                 prompt_path=prompt,
-                agent_env=_parse_agent_env(agent_env),
+                agent_env=parsed_env,
                 concurrency=concurrency,
                 timeout_sec=timeout_sec,
                 image=image if image is not None else REVIEWER_IMAGE,
@@ -255,7 +318,10 @@ def _review_command(
             )
         )
     except (ValueError, FileNotFoundError) as exc:
-        console.print(f"[red]✗ {escape(str(exc))}[/red]")
+        print_error(
+            f"✗ {exc}",
+            next_step="`bench review --help` describes the rollout path and --rubric",
+        )
         raise typer.Exit(1) from None
 
     if len(report.trials) == 1:

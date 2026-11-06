@@ -20,14 +20,14 @@ sandbox:
 
 ## prompt
 
-Write a Python function `parse_email_addresses(text: str) -> list[dict]` that extracts all email addresses from a block of text and returns structured data. For each email, return: `{'local': str, 'domain': str, 'full': str}`. Handle edge cases: emails in angle brackets `<user@domain.com>`, emails with dots and hyphens in local part, emails with subdomains.
+Write a Python function `parse_email_addresses(text: str) -> list[dict]` that extracts all email addresses from a block of text and returns structured data. For each email, return: `{'local': str, 'domain': str, 'full': str}`. Handle edge cases: emails in angle brackets `<user@example.net>`, emails with dots and hyphens in local part, emails with subdomains.
 
 Do NOT match: strings without @ signs, emails with spaces, or emails ending with dots.
 
 Example:
 ```python
-text = 'Contact us at support@example.com or <sales@sub.domain.co.uk>'
+text = 'Contact us at support@example.com or <sales@sub.example.org>'
 parse_email_addresses(text)
 # [{'local': 'support', 'domain': 'example.com', 'full': 'support@example.com'},
-#  {'local': 'sales', 'domain': 'sub.domain.co.uk', 'full': 'sales@sub.domain.co.uk'}]
+#  {'local': 'sales', 'domain': 'sub.example.org', 'full': 'sales@sub.example.org'}]
 ```

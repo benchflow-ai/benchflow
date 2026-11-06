@@ -1,0 +1,26 @@
+# Base for the remote-docker provider: docker-compose-base.yaml without the
+# host bind mounts. A remote daemon cannot see the caller's rollout folders;
+# logs, verifier output and artifacts are copied back instead.
+services:
+  main:
+    # no-new-privileges is not set here: a task that sets it too would
+    # make a list Compose 2.40 refuses ("security_opt items at 0 and 1
+    # are equal"). docker-compose-no-new-privileges.yaml sets it when the
+    # task has no Compose file; on a task's project BenchFlow sets it on
+    # every service after Compose resolves it (_compose_runtime.py).
+    labels:
+      # "process": the leftover sweep removes it only once the BenchFlow
+      # process named below is gone (_docker_sweep.py). Not "true", which
+      # BenchFlow before 0.8 prunes daemon-wide, live containers included.
+      benchflow.owned: "process"
+      benchflow.process: "${BENCHFLOW_PROCESS:-}"
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPUS}
+          memory: ${MEMORY}
+networks:
+  default:
+    labels:
+      benchflow.owned: "process"
+      benchflow.process: "${BENCHFLOW_PROCESS:-}"

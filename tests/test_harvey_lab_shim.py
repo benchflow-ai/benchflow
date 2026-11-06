@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from benchflow.agents.harvey_lab_acp_shim import (
@@ -6,8 +9,37 @@ from benchflow.agents.harvey_lab_acp_shim import (
 )
 
 
+def test_parse_doc_uses_the_shims_python_not_the_images(tmp_path, monkeypatch):
+    """Guards fix 7cdcfed0 (U4-C2): the helper must use the pinned venv."""
+    import benchflow.agents.harvey_lab_acp_shim as shim
+
+    # Stand in for the pinned venv interpreter. A PATH python3 would be the
+    # image's interpreter and must never be selected by the helper's shebang.
+    interpreter = tmp_path / "pinned-python"
+    interpreter.write_text("#!/bin/sh\nprintf 'pinned-parser\\n'\n")
+    interpreter.chmod(0o755)
+    image_bin = tmp_path / "image-bin"
+    image_bin.mkdir()
+    image_python = image_bin / "python3"
+    image_python.write_text("#!/bin/sh\necho image-python >&2\nexit 73\n")
+    image_python.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(interpreter))
+    monkeypatch.setenv("BENCHFLOW_HARVEY_TOOLS_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("PATH", str(image_bin))
+    shim._install_parse_doc_helper()
+    done = subprocess.run(
+        ["parse-doc", "xlsx", "/tmp/example.xlsx"],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "pinned-parser\n"
+
+
 def test_mirror_workspace_outputs_collects_root_deliverable(tmp_path: Path):
-    """Guards ENG-79: workspace-root deliverables are collected for verifier."""
+    """Workspace-root deliverables are collected for verifier."""
     workspace = tmp_path / "workspace"
     output = tmp_path / "output"
     workspace.mkdir()
@@ -30,7 +62,7 @@ def test_mirror_workspace_outputs_collects_root_deliverable(tmp_path: Path):
 
 
 def test_direct_sandbox_rewrites_harvey_absolute_paths(tmp_path: Path):
-    """Guards ENG-79: Harvey read-tool parser paths map into BenchFlow /app."""
+    """Harvey read-tool parser paths map into BenchFlow /app."""
     documents = tmp_path / "documents"
     output = tmp_path / "output"
     workspace = tmp_path / "app"

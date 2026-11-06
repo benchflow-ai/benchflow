@@ -17,18 +17,26 @@ Architecture:
 
 from __future__ import annotations
 
+import contextvars
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from benchflow.agents.registry import AgentConfig, resolve_agent
+from benchflow.agents.registry import (
+    AgentConfig,
+    is_explicit_raw_agent_command,
+    resolve_agent,
+)
+from benchflow.models import RolloutResult
 from benchflow.review.options import ReviewerConfig
+from benchflow.sandbox._task_route import as_task_command
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
+from benchflow.trust.state import IngressKind, admit
 
 if TYPE_CHECKING:
-    from benchflow.models import RolloutResult as RunResult
     from benchflow.review.outcome import ScoringResult
     from benchflow.rollout import RolloutConfig as TrialConfig
 
@@ -64,8 +72,16 @@ class Environment:
         sandbox: str = "daytona",
         rollout_name: str | None = None,
         planes: Any | None = None,
+        *,
+        jobs_dir: str | Path = "jobs",
     ) -> Environment:
-        """Create an environment from a task directory."""
+        """Create an environment and allocate its trial's artifact paths.
+
+        Runs in this environment share its artifact directory, including
+        ``result.json`` and verifier rewards. Choose ``jobs_dir`` here:
+        a later ``RuntimeConfig.jobs_dir`` cannot relocate a live sandbox's
+        bind mounts.
+        """
         from uuid import uuid4
 
         from benchflow.contracts import default_rollout_planes
@@ -75,8 +91,7 @@ class Environment:
         task = Task(task_path)
         rollout_name = rollout_name or task_path.name
         rollout_paths = RolloutPaths(
-            rollout_dir=Path.cwd()
-            / "jobs"
+            rollout_dir=Path(jobs_dir).resolve()
             / "environment"
             / f"{rollout_name}__{uuid4().hex[:8]}"
         )
@@ -91,6 +106,11 @@ class Environment:
                 rollout_paths=rollout_paths,
                 preserve_agent_network=False,
                 environment_manifest=None,
+                # The agent and its user are not known yet, so main gets no
+                # NET_ADMIN here: Runtime.execute arms the cloud metadata
+                # block on this sandbox before it starts, only when the run's
+                # plan is armed (a non-root agent under an open network).
+                block_cloud_metadata=False,
             )
         except Exception:
             # create_environment failed (e.g. a missing optional sandbox SDK) —
@@ -104,44 +124,66 @@ class Environment:
 
     @property
     def inner(self) -> Any:
-        """The underlying harbor environment (Docker/Daytona). Use for Scene-based shared sandbox access."""
+        """The underlying sandbox environment (Docker/Daytona). Use for Scene-based shared sandbox access."""
         return self._inner
 
     @property
     def task(self) -> Any:
+        """The task this environment runs (a :class:`benchflow.Task`)."""
         from benchflow.task import Task
 
         return Task(self.task_path)
 
+    def prepare_kept_services(
+        self, agent: str, *, sandbox_user: str | None = "agent"
+    ) -> None:
+        """Tell the sandbox, before :meth:`start`, what will run in it, so a
+        task that keeps services (``x-keep-services``) gets the kept-service
+        freezer it needs: the oracle, or an agent run as the non-root
+        ``sandbox_user``. ``Runtime.execute`` does this for an environment
+        it starts; call it yourself for one you start (K1-R14-1)."""
+        from benchflow.task import keep_services
+
+        keep_services.assign_runner_intent(self._inner, self.task, agent, sandbox_user)
+
     async def start(self, force_build: bool = False) -> None:
+        """Start the sandbox (``force_build=True`` rebuilds its image first)."""
         await self._inner.start(force_build=force_build)
         self._started = True
 
     async def stop(self, delete: bool = True) -> None:
+        """Stop the sandbox if it was started (``delete=False`` keeps it)."""
         if self._started:
             await self._inner.stop(delete=delete)
             self._started = False
 
-    async def exec(self, cmd: str, **kwargs) -> Any:
+    async def exec(self, cmd: str, **kwargs: Any) -> Any:
         """Run a command in the sandbox.
 
         Pass ``service="<name>"`` to target an additional compose service
         (a vulhub-style target container) instead of the default agent
         container ``"main"`` — see #248.
         """
-        return await self._inner.exec(cmd, **kwargs)
+        admit(self._inner, kwargs.get("service") or "main", IngressKind.SDK_EXEC)
+        # An SDK caller's command is the task's own (C8's task route).
+        with as_task_command(self._inner):
+            return await self._inner.exec(cmd, **kwargs)
 
-    async def exec_in_service(self, service: str, cmd: str, **kwargs) -> Any:
+    async def exec_in_service(self, service: str, cmd: str, **kwargs: Any) -> Any:
         """Run a command in a named compose service container (#248).
 
         Ergonomic wrapper for ``exec(cmd, service=service)``. Useful for
         injecting flags into, or verifying state of, a multi-container
         task's target container.
         """
-        return await self._inner.exec(cmd, service=service, **kwargs)
+        admit(self._inner, service, IngressKind.SDK_EXEC)
+        with as_task_command(self._inner):
+            return await self._inner.exec(cmd, service=service, **kwargs)
 
     async def upload_file(self, src: str | Path, dst: str) -> None:
-        await self._inner.upload_file(src, dst)
+        """Copy a host file into the sandbox at ``dst``."""
+        admission = admit(self._inner, "main", IngressKind.SDK_UPLOAD)
+        await self._inner.upload_file(src, dst, admission=admission)
 
     async def upload_dir(
         self, src: str | Path, dst: str, service: str = "main"
@@ -151,9 +193,11 @@ class Environment:
         Pass ``service="<name>"`` to target a non-``main`` compose service
         (a vulhub-style target container) — see #248.
         """
-        await self._inner.upload_dir(src, dst, service=service)
+        admission = admit(self._inner, service, IngressKind.SDK_UPLOAD)
+        await self._inner.upload_dir(src, dst, service=service, admission=admission)
 
     async def download_file(self, src: str, dst: str | Path) -> None:
+        """Copy the sandbox file ``src`` to the host path ``dst``."""
         await self._inner.download_file(src, dst)
 
     async def download_dir(
@@ -187,6 +231,7 @@ class Agent:
 
     @property
     def config(self) -> AgentConfig | None:
+        """The registry entry for this agent, or None for a raw command."""
         try:
             return resolve_agent(self.name)
         except KeyError:
@@ -194,25 +239,64 @@ class Agent:
 
     @property
     def launch_cmd(self) -> str:
+        """The command that starts the agent; raises KeyError for an unknown agent."""
         config = self.config
         if config is None:
-            return self.name
+            if is_explicit_raw_agent_command(self.name):
+                return self.name
+            raise KeyError(f"Unknown agent: {self.name!r}")
         return config.launch_cmd
 
     def __repr__(self) -> str:
         return f"Agent({self.name!r}, model={self.model!r})"
 
 
+# The agent timeout RuntimeConfig applied in earlier releases when none was set.
+_OLD_DEFAULT_RUNTIME_TIMEOUT = 900
+
+
+# RuntimeConfig fields that nothing reads, with their defaults. Kept so
+# existing callers do not break; setting one to another value warns.
+class _UnsetStr(str):
+    """A default nobody passed: ``replace()`` and ``asdict`` carry it as is."""
+
+
+class _UnsetInt(int):
+    """See :class:`_UnsetStr`."""
+
+
+_UNSET_MAX_ROUNDS = _UnsetInt(10)
+_UNSET_SNAPSHOT_POLICY = _UnsetStr("none")
+_UNSET_TYPES = (_UnsetStr, _UnsetInt)
+
+# Warned whenever passed. reward_stream stays a real ``True`` (a bool cannot
+# carry a sentinel), so it warns only when it is not True.
+_UNUSED_RUNTIME_CONFIG_FIELDS: tuple[str, ...] = ("max_rounds", "snapshot_policy")
+
+
 @dataclass
 class RuntimeConfig:
-    """Configuration for a Runtime execution."""
+    """Configuration for ``bf.run(agent, env, config)`` and ``bf.run("agent", ...)``.
 
+    ``timeout`` overrides the task's agent timeout (``[agent] timeout_sec``) in
+    seconds; ``None`` (the default) keeps the task's own. ``rollout_name``
+    names the rollout directory, and ``jobs_dir`` is where artifacts go.
+    A caller-supplied ``Environment`` already owns its artifact paths; set
+    ``jobs_dir`` on ``Environment.from_task`` to choose their location. The
+    remaining fields mirror :class:`~benchflow.RolloutConfig`. ``max_rounds``,
+    ``snapshot_policy`` and ``reward_stream`` are not used; setting them emits a
+    ``DeprecationWarning``. Use ``RolloutConfig.max_user_rounds`` for user loops.
+    """
+
+    codex_apps_policy: Literal["disabled", "inherit"] | None = field(
+        default=None, kw_only=True
+    )
     sandbox_user: str | None = "agent"
     sandbox_setup_timeout: int = 120
-    max_rounds: int = 10
-    snapshot_policy: str = "none"
+    max_rounds: int = _UNSET_MAX_ROUNDS
+    snapshot_policy: str = _UNSET_SNAPSHOT_POLICY
     reward_stream: bool = True
-    timeout: int = 900
+    timeout: int | None = None
     jobs_dir: str | Path = "jobs"
     rollout_name: str | None = None
     skills_dir: str | Path | None = None
@@ -225,11 +309,36 @@ class RuntimeConfig:
     sandbox_locked_paths: list[str] | None = None
     usage_tracking: Any = None
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
+    allow_cloud_metadata: bool = False
+
+    def __post_init__(self) -> None:
+        import warnings
+
+        # Whenever the caller passed one, at its default too
+        # (RuntimeConfig(snapshot_policy="none"), DF-p4-upgrader-6); a copy
+        # made by dataclasses.replace() keeps the unset default and is silent.
+        unused = [
+            name
+            for name in _UNUSED_RUNTIME_CONFIG_FIELDS
+            if not isinstance(getattr(self, name), _UNSET_TYPES)
+        ]
+        if self.reward_stream is not True:
+            unused.append("reward_stream")
+        for name in unused:
+            warnings.warn(
+                f"RuntimeConfig.{name} is not used and will be removed; "
+                "it has no effect on the run.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
 
 
 @dataclass
 class RuntimeResult:
-    """Canonical output from Runtime.execute().
+    """Deprecated: ``Runtime.execute()`` and every ``bf.run`` form return
+    :class:`~benchflow.RolloutResult`. Constructing this class warns.
+
+    The former output of Runtime.execute().
 
     Artifact-oriented: exposes paths and structured summaries,
     not only in-memory objects.
@@ -261,8 +370,19 @@ class RuntimeResult:
     finished_at: datetime | None = None
     scoring: ScoringResult | None = None
 
+    def __post_init__(self) -> None:
+        import warnings
+
+        warnings.warn(
+            "RuntimeResult is deprecated; Runtime.execute() and bf.run() return "
+            "benchflow.RolloutResult, which has reward, passed and rollout_dir.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
     @property
     def passed(self) -> bool:
+        """Whether the scoring outcome is a pass."""
         from benchflow._utils.scoring import classify_result_outcome
 
         return (
@@ -281,6 +401,7 @@ class RuntimeResult:
 
     @property
     def verified(self) -> bool:
+        """Deprecated: whether the run was scored (passed or failed)."""
         from benchflow._utils.scoring import classify_result_outcome
 
         return classify_result_outcome(
@@ -291,6 +412,28 @@ class RuntimeResult:
                 "verifier_error": self.verifier_error,
             }
         ) in {"passed", "failed"}
+
+
+def _warn_if_old_default_timeout_mattered(task_path: Path) -> None:
+    """Warn when dropping the old 900 s default changes this run's timeout."""
+    import warnings
+
+    from benchflow.task import Task
+
+    try:
+        task_timeout = Task(task_path).config.agent.timeout_sec
+    except Exception:
+        return
+    if task_timeout is None or int(task_timeout) == _OLD_DEFAULT_RUNTIME_TIMEOUT:
+        return
+    warnings.warn(
+        f"RuntimeConfig no longer applies a {_OLD_DEFAULT_RUNTIME_TIMEOUT} s agent "
+        f"timeout by default; this run uses the task's own timeout of "
+        f"{int(task_timeout)} s. Pass RuntimeConfig(timeout="
+        f"{_OLD_DEFAULT_RUNTIME_TIMEOUT}) to keep the old limit.",
+        FutureWarning,
+        stacklevel=3,
+    )
 
 
 class Runtime:
@@ -318,7 +461,7 @@ class Runtime:
         self.agent = agent
         self.config = config or RuntimeConfig()
 
-    async def execute(self) -> RuntimeResult:
+    async def execute(self) -> RolloutResult:
         """Run the full execution loop via Trial.
 
         Runtime is the stable user-facing surface. Trial owns the
@@ -329,6 +472,11 @@ class Runtime:
         (fixes #388). If the caller has not yet called ``env.start()``
         we start it now so ``env`` stays in a consistent state and the
         underlying sandbox is brought up exactly once.
+
+        Identity-switch admission precedes that start. A refusal raises
+        ``UnsupportedTaskFeatureError`` and leaves the Environment as it
+        was: an unstarted one stays unstarted; one the caller already
+        started stays running and the caller remains responsible for stop.
         """
         from benchflow._types import Scene
         from benchflow.rollout import Rollout, RolloutConfig
@@ -343,6 +491,7 @@ class Runtime:
                 )
             ],
             environment=self.env.sandbox,
+            codex_apps_policy=config.codex_apps_policy,
             sandbox_user=config.sandbox_user,
             sandbox_locked_paths=config.sandbox_locked_paths,
             sandbox_setup_timeout=config.sandbox_setup_timeout,
@@ -361,9 +510,39 @@ class Runtime:
             skill_mode=config.skill_mode,
             usage_tracking=config.usage_tracking,
             reviewer=config.reviewer,
+            allow_cloud_metadata=config.allow_cloud_metadata,
         )
 
+        if config.timeout is None:
+            _warn_if_old_default_timeout_mattered(self.env.task_path)
+
         rollout = await Rollout.create(trial_config)
+
+        # An SDK plane may bypass the launch gate. Admit identity-switch
+        # tasks before start, using both the named plan and the supplied
+        # sandbox's actual capability (K1-R15-2 B1). Leave caller-owned
+        # state untouched on refusal, including an already started sandbox.
+        from benchflow.task import identity_switch
+
+        task = self.env.task
+        if identity_switch.declared(task.config):
+            import asyncio
+
+            from benchflow.task.plan_validation import validate_task_plan
+
+            await asyncio.to_thread(
+                validate_task_plan,
+                self.env.task_path,
+                sandbox=self.env.sandbox,
+                agent=self.agent.name,
+                model=self.agent.model,
+                harness=trial_config.harness,
+                sandbox_user=config.sandbox_user,
+                agent_env=self.agent.env,
+                task=task,
+                custom_backend=True,
+                sandbox_instance=self.env.inner,
+            )
 
         # If the caller has not started the Environment yet, do it now so
         # the Environment's _started flag stays accurate and the caller's
@@ -371,31 +550,398 @@ class Runtime:
         # this is what makes Runtime honour the input Environment instead
         # of silently building a second one. #388.
         if not self.env._started:
+            self._ready_for_cloud_metadata_block()
+            # The same runner intent rollout setup gives a sandbox it makes,
+            # before this one starts (K1-R14-1).
+            self.env.prepare_kept_services(
+                self.agent.name, sandbox_user=self.config.sandbox_user
+            )
             await self.env.start()
         rollout.use_prebuilt_env(self.env.inner)
 
         run_result = await rollout.run()
 
-        reward = (run_result.rewards or {}).get("reward")
-        # The Rollout owns the on-disk artifact directory; lift it into the
-        # RuntimeResult so callers can locate result.json / trajectory/ etc.
-        # without scanning jobs_dir. Required because RuntimeResult's
-        # docstring promises an artifact-oriented surface (#378).
-        rollout_dir = getattr(rollout, "_rollout_dir", None)
-        return RuntimeResult(
-            task_name=run_result.task_name,
-            rollout_name=run_result.rollout_name,
-            reward=reward,
-            rewards=run_result.rewards,
-            n_tool_calls=run_result.n_tool_calls,
-            error=run_result.error,
-            verifier_error=run_result.verifier_error,
-            trajectory=run_result.trajectory,
-            rollout_dir=rollout_dir,
-            started_at=run_result.started_at,
-            finished_at=run_result.finished_at,
-            scoring=run_result.scoring,
+        # The Rollout owns the on-disk artifact directory; make sure the
+        # result points at it so callers can find result.json (#378).
+        if run_result.rollout_dir is None:
+            run_result.rollout_dir = rollout._rollout_dir
+        return run_result
+
+    def _ready_for_cloud_metadata_block(self) -> None:
+        """Give the not-yet-started sandbox's ``main`` the NET_ADMIN the
+        cloud metadata block needs, when this run arms it.
+
+        The rollout decides the same way (``cloud_metadata_plan``, from the
+        task, the sandbox user and the agent), and the factory gives the
+        capability for a sandbox it makes itself; ``Environment.from_task``
+        makes this one before the agent is known, so it has none. An oracle,
+        an opt-out or ``main`` on the host's network leave it without; for a
+        root agent the rules refuse root too. An environment the caller
+        started already keeps what it has (none from ``from_task``): the
+        block then holds only where BenchFlow's helper adds the rules (Docker),
+        and the trial stops before the agent otherwise.
+        """
+        from benchflow.agents.registry import is_scripted_agent
+        from benchflow.sandbox.cloud_metadata import cloud_metadata_plan
+
+        name = self.agent.name
+        task = self.env.task
+        environment_dir = self.env.task_path / "environment"
+        if not environment_dir.exists():
+            environment_dir = task.paths.environment_dir
+        plan = cloud_metadata_plan(
+            task.config,
+            sandbox_user=self.config.sandbox_user,
+            launches_agent=not (is_scripted_agent(name) or name == "task-runtime"),
+            environment_dir=environment_dir,
+            allow_cloud_metadata=self.config.allow_cloud_metadata,
         )
+        sandbox_config = getattr(self.env.inner, "task_env_config", None)
+        if plan is None or not plan.armed or sandbox_config is None:
+            return
+        armed = sandbox_config.model_copy(deep=True)
+        armed.arm_cloud_metadata_block(root_agent=plan.root_agent)
+        self.env.inner.task_env_config = armed
+
+
+def _suggest(name: str, choices: list[str]) -> str | None:
+    import difflib
+
+    close = difflib.get_close_matches(name, choices, n=1, cutoff=0.85)
+    return close[0] if close else None
+
+
+def _transposition_of(name: str, choices: list[str]) -> str | None:
+    """The choice that ``name`` equals up to one swap of adjacent letters."""
+    for choice in choices:
+        if len(choice) != len(name) or choice == name:
+            continue
+        diff = [i for i, (a, b) in enumerate(zip(name, choice, strict=True)) if a != b]
+        if (
+            len(diff) == 2
+            and diff[1] == diff[0] + 1
+            and name[diff[0]] == choice[diff[1]]
+            and name[diff[1]] == choice[diff[0]]
+        ):
+            return choice
+    return None
+
+
+def check_sandbox_name(sandbox: str) -> None:
+    """Raise ``ValueError`` (with a suggestion) for an unknown sandbox name."""
+    from benchflow.sandbox.providers import SANDBOX_PROVIDER_SET, providers_phrase
+
+    if sandbox not in SANDBOX_PROVIDER_SET:
+        hint = _suggest(sandbox, sorted(SANDBOX_PROVIDER_SET))
+        raise ValueError(
+            f"Unknown sandbox {sandbox!r}"
+            + (f"; did you mean {hint!r}?" if hint else "")
+            + f" Use {providers_phrase()}."
+        )
+
+
+def check_agent_names(names: Iterable[str | None]) -> None:
+    """Raise ``ValueError`` for an agent name that closely misspells a registered one.
+
+    Raw commands (a space or ``/``), namespaced specs (``acp:pi``) and names
+    unrelated to any registered agent pass, as the registry allows them.
+    """
+    from benchflow.agents.registry import AGENT_ALIASES, AGENTS
+
+    known = sorted({*AGENTS, *AGENT_ALIASES, "oracle", "nop"})
+    for name in sorted({n for n in names if n}):
+        if name in known or any(c in name for c in " /:\t"):
+            continue
+        # Two swapped neighbouring letters in a short name ("oracel") score
+        # under the similarity cutoff, so they are matched exactly.
+        hint = _suggest(name, known) or _transposition_of(name, known)
+        if hint is not None:
+            raise ValueError(
+                f"Unknown agent {name!r}; did you mean {hint!r}? "
+                "`bench agents` shows the registered agents."
+            )
+
+
+class NotRunnableTaskError(ValueError):
+    """A task folder that ``bench run`` would refuse: its issues stop any run.
+
+    ``issues`` lists them; the message lists them one per line and names
+    ``bench check <folder>``. ``bf.run_batch`` records such an item as a
+    refused result and runs the others.
+    """
+
+    def __init__(self, task_path: Path, issues: list[str]) -> None:
+        from benchflow._utils.task_authoring import not_runnable_message
+
+        self.task_path = task_path
+        self.issues = list(issues)
+        super().__init__(
+            f"{not_runnable_message(task_path, self.issues)}\n"
+            f"`bench check {task_path}` explains each issue."
+        )
+
+
+def check_runnable_task(task_path: Path, *, image_supplied: bool = False) -> None:
+    """Raise :class:`NotRunnableTaskError` for a folder ``bench run`` refuses.
+
+    One list for both front doors (``runnable_task_issues``, which ``bench
+    run`` discovery uses): only issues that stop a run, never ``bench
+    check``'s authoring issues. ``image_supplied``: the run's
+    environment manifest names the image. A folder in another registered task
+    format is converted at run time and passes here unchanged, and so does one
+    with no task file at all: the rollout's own task load reports that, as it
+    always has. Links inside the task are warned about, as ``bench run`` does.
+    """
+    from benchflow._utils.task_authoring import (
+        runnable_task_issues,
+        task_symlink_issues,
+    )
+    from benchflow.task.formats import detect_task_format
+
+    if not ((task_path / "task.md").is_file() or (task_path / "task.toml").is_file()):
+        return
+    if detect_task_format(task_path) is not None:
+        return
+    issues = runnable_task_issues(task_path, image_supplied=image_supplied)
+    if issues:
+        raise NotRunnableTaskError(task_path, issues)
+    linked = task_symlink_issues(task_path)
+    if linked:
+        logger.warning("Task %r: %s", task_path.name, linked[0])
+
+
+def check_rollout_config(config: TrialConfig) -> None:
+    """Refuse caller mistakes before a sandbox starts.
+
+    Raises ``FileNotFoundError`` for a missing task directory, ``ValueError``
+    for a folder ``bench run`` would refuse as not a runnable task (the same
+    rule, :func:`check_runnable_task`), for an unknown sandbox, for an
+    agent/model pair no provider route serves,
+    and for an agent name that is a close misspelling of a registered agent
+    (``"claud-agent-acp"``). Agent specs that are raw
+    commands (a space or ``/``), namespaced (``acp:pi``) or unrelated to any
+    registered name pass unchanged, as the registry allows them.
+    """
+    task_path = Path(config.task_path)
+    if not task_path.is_dir():
+        raise FileNotFoundError(
+            f"Task directory not found: {task_path} (resolved against "
+            f"{Path.cwd()}); pass the folder that holds task.md or task.toml."
+        )
+    check_runnable_task(
+        task_path, image_supplied=config.environment_manifest is not None
+    )
+    check_sandbox_name(config.environment)
+    check_agent_names(
+        [config.agent, *(role.agent for scene in config.scenes for role in scene.roles)]
+    )
+    check_agent_routes([config])
+
+
+def check_agent_routes(configs: Sequence[Any]) -> None:
+    """Raise ``ValueError`` now for an agent/model pair no provider route serves.
+
+    ``--agent claude --model xiaomi/...`` used to create the job and fail
+    each trial on the provider's protocol (REPORT B11). Checks the same
+    targets as :func:`check_credentials`: each scene role's agent and model,
+    or ``agent`` and ``model`` (the agent's own ``default_model`` when
+    unset). Scripted agents (oracle, nop) call no model and pass.
+    """
+    from benchflow.agents.env import unroutable_agent_model
+    from benchflow.agents.registry import AGENTS
+
+    for config in configs:
+        scenes = getattr(config, "scenes", None) or []
+        if scenes:
+            targets = [
+                (role.agent, role.model) for scene in scenes for role in scene.roles
+            ]
+        else:
+            targets = [(config.agent, config.model)]
+        for agent, model in targets:
+            if not agent or agent in ("oracle", "nop"):
+                continue
+            if not model:
+                agent_cfg = AGENTS.get(agent)
+                model = agent_cfg.default_model if agent_cfg else None
+            reason = unroutable_agent_model(agent, model)
+            if reason is not None:
+                raise ValueError(reason)
+
+
+# Set while a batch runs, so each rollout does not repeat the batch's
+# host checks (and warnings).
+_HOST_CHECKED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "benchflow_host_checked", default=False
+)
+
+
+def check_credentials(configs: Sequence[Any]) -> None:
+    """Raise ``MissingCredentialError`` now for an agent whose login is missing.
+
+    The same resolution each trial makes at setup (``resolve_agent_env``), made
+    once before a job exists, so a missing login is one clear error rather
+    than a traceback in every trial. It checks exactly what the rollout will
+    use: with ``scenes``, each role's agent and model with the config's
+    ``agent_env`` plus the role's ``env`` (the legacy ``agent``/``model``
+    fields are then unused); otherwise ``agent``, ``model`` and ``agent_env``
+    as given. A target with no model is checked against the agent's own
+    ``default_model`` (never the global default, which would demand another
+    provider's key, #343), since that is what the agent falls back to; an
+    agent with neither is not checked. Only a missing credential is raised
+    here; anything else the resolution rejects still surfaces in the trial.
+    """
+    from benchflow.agents.env import resolve_agent_env
+    from benchflow.agents.muse_config import validate_muse_roles
+    from benchflow.agents.registry import AGENTS
+    from benchflow.errors import MissingCredentialError
+
+    def checked_model(agent: str, model: str | None) -> str | None:
+        if model:
+            return model
+        agent_cfg = AGENTS.get(agent)
+        return agent_cfg.default_model if agent_cfg else None
+
+    # Validate all Muse selections first, before even an earlier role can
+    # discover a provider credential. These plan errors are not swallowed by
+    # the credential-only exception handling below.
+    for config in configs:
+        scenes = getattr(config, "scenes", None) or []
+        targets = (
+            [(role.agent, role.model) for scene in scenes for role in scene.roles]
+            if scenes
+            else [(config.agent, config.model)]
+        )
+        validate_muse_roles(
+            targets, sandbox_user=getattr(config, "sandbox_user", "agent")
+        )
+    seen: set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
+    for config in configs:
+        base_env = dict(getattr(config, "agent_env", None) or {})
+        scenes = getattr(config, "scenes", None) or []
+        if scenes:
+            targets = [
+                (role.agent, role.model, {**base_env, **(role.env or {})})
+                for scene in scenes
+                for role in scene.roles
+            ]
+        else:
+            targets = [(config.agent, config.model, base_env)]
+        for agent, raw_model, env in targets:
+            from benchflow.agents.registry import is_scripted_agent
+
+            if not agent or is_scripted_agent(agent):
+                continue
+            model = checked_model(agent, raw_model)
+            key = (agent, model, tuple(sorted(env.items())))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                resolve_agent_env(agent, model, env)
+            except MissingCredentialError:
+                raise
+            except Exception:
+                continue
+
+
+def check_host(configs: Sequence[Any]) -> None:
+    """The host checks ``bench eval run`` makes before a job, for SDK callers.
+
+    Reuses ``bench doctor``'s checks: a ``RuntimeError`` naming doctor's fix
+    when a config uses the Docker sandbox and Docker is not ready, and a
+    ``UserWarning`` with doctor's fix when a Claude agent would fall back to a
+    login file whose access token has expired (a warning, since Claude can
+    refresh it when the refresh token still works). ``BENCHFLOW_SKIP_PREFLIGHT=1``
+    skips both. ``configs`` are ``RolloutConfig`` or ``EvaluationConfig``
+    objects (anything with ``environment``, ``agent``, ``model`` and
+    ``agent_env``; ``scenes`` when present).
+    """
+    import os
+    import warnings
+
+    if os.environ.get("BENCHFLOW_SKIP_PREFLIGHT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    from benchflow import doctor as doctor_mod
+    from benchflow._utils.config import normalize_agent_name
+    from benchflow.cli.doctor import _expired_claude_login
+
+    check_credentials(configs)
+    probes = doctor_mod.DoctorProbes.from_host()
+    if any(c.environment == "docker" for c in configs):
+        failed = [
+            c
+            for c in doctor_mod.check_docker(probes, required=True)
+            if c.status == "fail"
+        ]
+        if failed:
+            lines = "\n".join(
+                f"  {c.name}: {c.summary}" + (f" (fix: {c.fix})" if c.fix else "")
+                for c in failed
+            )
+            raise RuntimeError(
+                "Docker is not ready for environment='docker'; nothing was "
+                f"started.\n{lines}\nRun `bench doctor` for the full report, or "
+                "set BENCHFLOW_SKIP_PREFLIGHT=1 to skip this check."
+            )
+    if any(c.environment == "remote-docker" for c in configs):
+        from benchflow.sandbox.remote_docker import (
+            probe_remote_docker,
+            resolve_remote_docker_host,
+        )
+
+        try:
+            probe_remote_docker(resolve_remote_docker_host())
+        except (ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                "The remote Docker host is not ready for "
+                f"environment='remote-docker'; nothing was started.\n  {exc}\n"
+                "Set BENCHFLOW_SKIP_PREFLIGHT=1 to skip this check."
+            ) from exc
+    if any(c.environment == "daytona" for c in configs):
+        daytona = doctor_mod.check_daytona(
+            probes, required=True, offline=False, for_run=True
+        )
+        if daytona.status == "fail":
+            raise RuntimeError(
+                "Daytona is not ready for environment='daytona'; nothing was "
+                f"started.\n  {daytona.name}: {daytona.summary}"
+                + (f" (fix: {daytona.fix})" if daytona.fix else "")
+                + "\nRun `bench doctor --sandbox daytona` for the full report, or "
+                "set BENCHFLOW_SKIP_PREFLIGHT=1 to skip this check."
+            )
+    warned: set[tuple[str, str | None]] = set()
+    for config in configs:
+        pairs: list[tuple[str, str | None]] = [(config.agent, config.model)] + [
+            (role.agent, role.model)
+            for scene in getattr(config, "scenes", None) or []
+            for role in scene.roles
+        ]
+        for agent, model in pairs:
+            if not agent or (agent, model) in warned:
+                continue
+            check = _expired_claude_login(
+                probes,
+                agent=normalize_agent_name(agent),
+                model=model,
+                agent_env=config.agent_env or {},
+            )
+            if check is None:
+                continue
+            warned.add((agent, model))
+            warnings.warn(
+                f"{agent} will use a Claude login file whose access token has "
+                f"expired ({check.summary}); if it cannot be refreshed, the run "
+                "fails after the sandbox starts. "
+                + (f"Fix: {check.fix}" if check.fix else ""),
+                UserWarning,
+                stacklevel=4,
+            )
 
 
 async def run(
@@ -405,7 +951,7 @@ async def run(
     *,
     task_path: str | Path | None = None,
     model: str | None = None,
-) -> RuntimeResult | RunResult:
+) -> RolloutResult:
     """Primary user-facing API — multiple calling conventions.
 
     Usage::
@@ -421,10 +967,31 @@ async def run(
         # 3. Agent name string (simplest)
         result = await bf.run("gemini", task_path="tasks/X")
     """
+    from benchflow.task.staging import remove_released
+
+    try:
+        return await _run(subject, env, config, task_path=task_path, model=model)
+    finally:
+        # As at a job's end (Evaluation.run): a task copy a collected
+        # sandbox's finalizer had to queue is removed now.
+        remove_released()
+
+
+async def _run(
+    subject: Agent | TrialConfig | str,
+    env: Environment | str | None,
+    config: RuntimeConfig | None,
+    *,
+    task_path: str | Path | None,
+    model: str | None,
+) -> RolloutResult:
     from benchflow._types import Scene
     from benchflow.rollout import SKILL_MODE_SELF_GEN, Rollout, RolloutConfig
 
     if isinstance(subject, RolloutConfig):
+        check_rollout_config(subject)
+        if not _HOST_CHECKED.get():
+            check_host([subject])
         if subject.skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
 
@@ -442,17 +1009,36 @@ async def run(
         return await runtime.execute()
 
     if isinstance(subject, str):
+        if task_path is None and Path(subject).is_dir():
+            raise TypeError(
+                f"bf.run's first argument is the agent, got the directory "
+                f"{subject!r}. Use bf.run(bf.RolloutConfig(task_path={subject!r}, "
+                "agent=...)) or bf.run('oracle', task_path=...)."
+            )
         if task_path is None:
-            raise ValueError("task_path required when passing agent name as string")
+            raise ValueError(
+                "task_path required when passing agent name as string, e.g. "
+                f"bf.run({subject!r}, task_path='tasks/my-task')"
+            )
+        if env is not None and not isinstance(env, str):
+            raise TypeError(
+                f"With an agent name, env must be a sandbox name such as "
+                f"'docker' or 'daytona', got {type(env).__name__}. To run in an "
+                f"Environment you created, pass an Agent: "
+                f"bf.run(bf.Agent({subject!r}, model=...), env)."
+            )
         rc = config or RuntimeConfig()
         rollout_config = RolloutConfig(
             task_path=Path(task_path),
             scenes=[Scene.single(agent=subject, model=model)],
             environment=env if isinstance(env, str) else "docker",
+            codex_apps_policy=rc.codex_apps_policy,
             sandbox_user=rc.sandbox_user,
             sandbox_locked_paths=rc.sandbox_locked_paths,
             sandbox_setup_timeout=rc.sandbox_setup_timeout,
             jobs_dir=rc.jobs_dir,
+            rollout_name=rc.rollout_name,
+            timeout=rc.timeout,
             context_root=rc.context_root,
             base_image_override=rc.base_image_override,
             separate_verifier=rc.separate_verifier,
@@ -465,7 +1051,32 @@ async def run(
             usage_tracking=rc.usage_tracking,
             reviewer=rc.reviewer,
         )
+        check_rollout_config(rollout_config)
+        if not _HOST_CHECKED.get():
+            check_host([rollout_config])
         rollout = await Rollout.create(rollout_config)
         return await rollout.run()
 
     raise TypeError(f"Unsupported subject type: {type(subject).__name__}")
+
+
+# Every bf.run form returns RolloutResult, so code that checks
+# isinstance(result, RuntimeResult) silently reads False. The name warns on
+# every lookup, not only when the class is built (DF-p4-upgrader-6).
+_RuntimeResult = RuntimeResult
+del RuntimeResult
+
+RUNTIME_RESULT_DEPRECATION = (
+    "benchflow.RuntimeResult is deprecated: bf.run() and Runtime.execute() "
+    "return benchflow.RolloutResult, so isinstance(result, RuntimeResult) is "
+    "False; check RolloutResult (it has reward, passed and rollout_dir)."
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "RuntimeResult":
+        import warnings
+
+        warnings.warn(RUNTIME_RESULT_DEPRECATION, DeprecationWarning, stacklevel=2)
+        return _RuntimeResult
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -34,7 +35,8 @@ class TestEnvMappingField:
         assert cfg.supports_acp_set_model is False
         assert cfg.acp_model_config_id == "model"
         assert cfg.acp_effort_config_id == "effort"
-        assert "@agentclientprotocol/claude-agent-acp@0.73.0" in cfg.install_cmd
+        assert "@agentclientprotocol/claude-agent-acp@0.81.2" in cfg.install_cmd
+        assert "@anthropic-ai/claude-code@2.1.280" in cfg.install_cmd
 
     def test_pi_acp_no_static_mapping(self):
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
@@ -146,8 +148,8 @@ class TestOpenHandsConfig:
             in cfg.install_cmd
         )
         assert (
-            "uv tool install --force --refresh "
-            "--overrides /tmp/oh-sdk-overrides.txt "
+            "uv tool install --force "
+            "--overrides /opt/benchflow/agents/oh-sdk-overrides.txt "
             "--from "
             "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
             "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
@@ -165,7 +167,9 @@ class TestOpenHandsConfig:
         assert "openhands-sdk==1.28.1" in cfg.install_cmd
         assert "openhands-tools==1.28.1" in cfg.install_cmd
         assert "openhands-sdk>=1.22.0" not in cfg.install_cmd
-        assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
+        assert (
+            "--overrides /opt/benchflow/agents/oh-sdk-overrides.txt" in cfg.install_cmd
+        )
 
     def test_openhands_install_cmd_does_not_deploy_bedrock_shim(self):
         """Guards the LiteLLM runtime refactor: Bedrock patches live with LiteLLM."""
@@ -282,7 +286,23 @@ class TestOpenHandsConfig:
         cfg = AGENTS["openhands"]
         settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
         tool_root = tmp_path / "tools"
-        package_root = tool_root / "openhands" / "site-packages"
+        tool_env = tool_root / "openhands"
+        subprocess.run(
+            [sys.executable, "-I", "-m", "venv", "--without-pip", str(tool_env)],
+            check=True,
+        )
+        bin_dir = tool_env / "bin"
+        package_root = Path(
+            subprocess.check_output(
+                [
+                    str(bin_dir / "python"),
+                    "-I",
+                    "-c",
+                    "import sysconfig; print(sysconfig.get_path('purelib'))",
+                ],
+                text=True,
+            ).strip()
+        )
         package_dir = package_root / "openhands_cli"
         package_dir.mkdir(parents=True)
         (package_dir / "__init__.py").write_text("")
@@ -293,13 +313,6 @@ class TestOpenHandsConfig:
             "        Tool(name=task_tool_name),\n"
             "    ]\n"
         )
-        bin_dir = tool_root / "openhands" / "bin"
-        bin_dir.mkdir(parents=True)
-        python_wrapper = bin_dir / "python"
-        python_wrapper.write_text(
-            f'#!/bin/sh\nPYTHONPATH={package_root} exec {sys.executable} "$@"\n'
-        )
-        python_wrapper.chmod(0o755)
         openhands = bin_dir / "openhands"
         openhands.write_text("#!/bin/sh\nexit 0\n")
         openhands.chmod(0o755)
@@ -344,15 +357,18 @@ class TestOpenHandsConfig:
     def test_harvey_lab_installs_python_deps_in_venv(self):
         """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
         cfg = AGENTS["harvey-lab-harness"]
-        assert "python3 -m venv /opt/benchflow/harvey-lab-venv" in cfg.install_cmd
         assert (
-            "/opt/benchflow/harvey-lab-venv/bin/python -m pip install"
+            "uv venv -q --clear --python 3.12.15 /opt/benchflow/agents/harvey-lab-venv"
+            in cfg.install_cmd
+        )
+        assert (
+            "uv pip install -q --require-hashes --python /opt/benchflow/agents/harvey-lab-venv/bin/python"
             in cfg.install_cmd
         )
         assert "pip3 install -q anthropic" not in cfg.install_cmd
         assert cfg.launch_cmd.startswith(
-            "HARVEY_LABS_ROOT=/opt/harvey-labs "
-            "/opt/benchflow/harvey-lab-venv/bin/python "
+            "HARVEY_LABS_ROOT=/opt/benchflow/agents/harvey-labs "
+            "/opt/benchflow/agents/harvey-lab-venv/bin/python "
         )
 
 

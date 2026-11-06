@@ -12,6 +12,8 @@ from benchflow.agents.registry import (
     SubscriptionAuth,
     get_sandbox_home_dirs,
 )
+from benchflow.task.config import SandboxConfig
+from tests.reachable_fixture import directory
 
 
 class TestSandboxDirs:
@@ -28,12 +30,6 @@ class TestSandboxDirs:
         # codex-acp has credential_file at {home}/.codex/auth.json
         assert ".codex" in dirs
 
-    def test_home_dirs_included(self):
-        """Explicit home_dirs from AgentConfig are included."""
-        dirs = get_sandbox_home_dirs()
-        # openclaw has home_dirs=[".openclaw"]
-        assert ".openclaw" in dirs
-
     def test_does_not_include_legacy_local_tool_dir(self):
         """.local is not included unless an agent registry path derives it."""
         dirs = get_sandbox_home_dirs()
@@ -47,7 +43,7 @@ class TestSandboxDirs:
     def test_dirs_represent_registry_backed_home_config_or_auth(self):
         """Returned dirs are registry-derived user home config/auth roots."""
         dirs = get_sandbox_home_dirs()
-        assert {".claude", ".codex", ".gemini", ".openclaw"}.issubset(dirs)
+        assert {".claude", ".codex", ".gemini"}.issubset(dirs)
         assert ".agents" not in dirs
         assert ".pi" not in dirs
 
@@ -91,7 +87,6 @@ class TestSandboxDirs:
     def test_workspace_paths_excluded(self):
         """$WORKSPACE paths are not included (only $HOME paths)."""
         dirs = get_sandbox_home_dirs()
-        # openclaw has $WORKSPACE/skills — should NOT produce a dir entry
         assert "skills" not in dirs
 
     def test_returns_set_of_strings(self):
@@ -113,7 +108,9 @@ class TestDockerVerifierLogMountProbe:
         from benchflow.sandbox.docker import DockerSandbox
 
         sandbox = DockerSandbox.__new__(DockerSandbox)
-        sandbox.rollout_paths = SimpleNamespace(verifier_dir=tmp_path / "verifier")
+        sandbox.rollout_paths = SimpleNamespace(
+            verifier_dir=directory(tmp_path / "verifier")
+        )
         sandbox._logs_are_mounted = True
         sandbox.logger = docker_module.logger
         sandbox.exec = AsyncMock(
@@ -137,7 +134,9 @@ class TestDockerVerifierLogMountProbe:
         from benchflow.sandbox.docker import DockerSandbox
 
         sandbox = DockerSandbox.__new__(DockerSandbox)
-        sandbox.rollout_paths = SimpleNamespace(verifier_dir=tmp_path / "verifier")
+        sandbox.rollout_paths = SimpleNamespace(
+            verifier_dir=directory(tmp_path / "verifier")
+        )
         sandbox._logs_are_mounted = True
         sandbox.logger = docker_module.logger
         sandbox.exec = AsyncMock(
@@ -149,6 +148,76 @@ class TestDockerVerifierLogMountProbe:
         assert sandbox.is_mounted is True
         assert not list(sandbox.rollout_paths.verifier_dir.iterdir())
 
+    @staticmethod
+    def _unmounted_sandbox(verifier_dir):
+        from unittest.mock import AsyncMock
+
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.rollout_paths = SimpleNamespace(verifier_dir=directory(verifier_dir))
+        sandbox._logs_are_mounted = True
+        sandbox.logger = docker_module.logger
+        sandbox.exec = AsyncMock(
+            return_value=ExecResult(stdout="", stderr="", return_code=1)
+        )
+        return sandbox
+
+    @pytest.mark.asyncio
+    async def test_colima_gap_outside_home_is_debug_only(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Regression test: on a Mac,
+        Colima shares only $HOME with its VM, so a rollout directory elsewhere
+        (e.g. /tmp) is never visible in the container. That is the expected
+        case, the verifier copies its outputs back, and it must not print a
+        warning on every run."""
+        import logging
+
+        from benchflow.sandbox import docker as docker_module
+
+        monkeypatch.setattr(docker_module, "_DOCKER_RUNS_IN_VM", True)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        sandbox = self._unmounted_sandbox(tmp_path / "jobs" / "verifier")
+
+        with caplog.at_level(logging.DEBUG, logger="benchflow"):
+            await sandbox._probe_verifier_log_mount()
+
+        assert sandbox.is_mounted is False
+        mount_logs = [r for r in caplog.records if "copied back" in r.message]
+        assert [r.levelno for r in mount_logs] == [logging.DEBUG]
+        assert "$HOME" in mount_logs[0].message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("in_vm", [True, False])
+    async def test_unexpected_gap_stays_a_warning(
+        self, tmp_path, monkeypatch, caplog, in_vm
+    ):
+        """Regression test: the gap stays loud where the daemon
+        should see the path (under $HOME on a Mac, or any path on a host
+        without a Docker VM), since it then means a remote daemon or a
+        socket that bypasses path translation (PR #1040)."""
+        import logging
+
+        from benchflow.sandbox import docker as docker_module
+
+        home = tmp_path / "home"
+        monkeypatch.setattr(docker_module, "_DOCKER_RUNS_IN_VM", in_vm)
+        monkeypatch.setenv("HOME", str(home))
+        verifier_dir = (home if in_vm else tmp_path) / "jobs" / "verifier"
+        sandbox = self._unmounted_sandbox(verifier_dir)
+
+        with caplog.at_level(logging.DEBUG, logger="benchflow"):
+            await sandbox._probe_verifier_log_mount()
+
+        assert sandbox.is_mounted is False
+        mount_logs = [r for r in caplog.records if "copied back" in r.message]
+        assert [r.levelno for r in mount_logs] == [logging.WARNING]
+        assert "bind mount is not visible" in mount_logs[0].message
+        assert "DOCKER_HOST" in mount_logs[0].message
+
 
 class TestDockerExecEnvSecrecy:
     """DockerSandbox.exec must not leak env vars via `-e KEY=VALUE` flags.
@@ -158,26 +227,37 @@ class TestDockerExecEnvSecrecy:
     through a sourced container file instead — matching DockerProcess.
     """
 
-    def test_wrap_command_does_not_inline_secret_values(self):
+    @pytest.mark.asyncio
+    async def test_wrap_command_does_not_inline_secret_values(self, monkeypatch):
+        from benchflow.sandbox._base import ENV_FROM_STDIN, ExecResult
         from benchflow.sandbox.docker import DockerSandbox
 
-        env = {"OPENAI_API_KEY": "sk-secret-value", "FOO": "bar"}
-        wrapped = DockerSandbox._wrap_command_with_env_file(env, "run-verifier")
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox._persistent_env = {}
+        sandbox.default_user = None
+        sandbox._main_container = "main-container"
+        seen: dict = {}
 
-        # The raw secret value must not appear verbatim in the command
-        # string (it would otherwise show up in `ps aux`).
-        assert "sk-secret-value" not in wrapped
-        assert "bar" not in wrapped or "base64" in wrapped
-        # The command sources a file and cleans it up.
-        assert "base64 -d" in wrapped
-        assert "rm -f" in wrapped
-        assert wrapped.endswith("run-verifier")
-        # Restrictive perms on the env file.
-        assert "umask 077" in wrapped
-        # Cleanup is via `trap ... EXIT`, so the env file is removed even if
-        # the decode/source step fails and short-circuits the `&&` chain.
-        assert wrapped.startswith("trap 'rm -f ")
-        assert "EXIT" in wrapped
+        async def run(argv, check=False, timeout_sec=None, **kwargs):
+            seen["argv"], seen["stdin"] = argv, kwargs.get("stdin_data")
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        monkeypatch.setattr(sandbox, "_run_docker_container_command", run)
+        env = {"OPENAI_API_KEY": "sk-secret-value", "FOO": "bar"}
+        await sandbox.exec("run-verifier", env=env)
+
+        # The raw secret value must not appear in any argument (it would
+        # otherwise show up in `ps aux`, on the host or in the container): the
+        # env is the exec's stdin, read by the shell's own `.` (b156).
+        argv = seen["argv"]
+        assert "sk-secret-value" not in " ".join(argv) and "bar" not in argv[-1]
+        assert argv[:2] == ["exec", "-i"]
+        # PT's route may pin root's PATH first (C8); the stdin wrapper and the
+        # command come last.
+        assert argv[-1].endswith(ENV_FROM_STDIN + "run-verifier")
+        assert "base64" not in argv[-1] and "/tmp/" not in argv[-1]
+        assert "rm " not in argv[-1] and "trap" not in argv[-1]
+        assert b"export OPENAI_API_KEY=sk-secret-value\n" in seen["stdin"]
 
     @pytest.mark.asyncio
     async def test_exec_passes_no_dash_e_flags(self, monkeypatch):
@@ -188,11 +268,16 @@ class TestDockerExecEnvSecrecy:
 
         sandbox = DockerSandbox.__new__(DockerSandbox)
         monkeypatch.setattr(sandbox, "_resolve_user", lambda u: u, raising=False)
-        monkeypatch.setattr(sandbox, "_merge_env", lambda e: e or {}, raising=False)
+        monkeypatch.setattr(
+            sandbox,
+            "_merge_env",
+            lambda e, user=None, plumbing=False, explicit_root=None: e or {},
+            raising=False,
+        )
 
         captured: dict = {}
 
-        async def fake_run(command, check=True, timeout_sec=None):
+        async def fake_run(command, check=True, timeout_sec=None, stdin_data=None):
             captured["command"] = command
             return ExecResult(stdout="", stderr="", return_code=0)
 
@@ -203,15 +288,19 @@ class TestDockerExecEnvSecrecy:
         await sandbox.exec("verify", env={"API_KEY": "sk-leak"})
 
         cmd = captured["command"]
-        # No `-e KEY=VALUE` argument anywhere.
-        assert "-e" not in cmd
+        # No `-e KEY=VALUE` argument anywhere: only the empty loader values
+        # of root's plumbing (C8).
+        assert all(cmd[i + 1].endswith("=") for i, a in enumerate(cmd) if a == "-e")
         for arg in cmd:
             assert "sk-leak" not in arg
 
     @pytest.mark.asyncio
-    async def test_pre_compose_hook_runs_with_compose_env(self, tmp_path):
-        """Task environments can prepare local Docker state before compose starts."""
+    async def test_pre_compose_hook_runs_with_compose_env(self, tmp_path, monkeypatch):
+        """Task environments can prepare local Docker state before compose
+        starts, once the operator lets the task run code on this machine."""
         from benchflow.sandbox.docker import DockerSandbox
+
+        monkeypatch.setenv("BENCHFLOW_ALLOW_TASK_HOST_ACCESS", "1")
 
         sandbox = DockerSandbox.__new__(DockerSandbox)
         sandbox.environment_dir = tmp_path
@@ -236,8 +325,10 @@ class TestDockerExecEnvSecrecy:
         assert (tmp_path / "hook.out").read_text() == f"{tmp_path}:1:2:3\n"
 
     @pytest.mark.asyncio
-    async def test_pre_compose_hook_failure_is_reported(self, tmp_path):
+    async def test_pre_compose_hook_failure_is_reported(self, tmp_path, monkeypatch):
         from benchflow.sandbox.docker import DockerSandbox
+
+        monkeypatch.setenv("BENCHFLOW_ALLOW_TASK_HOST_ACCESS", "1")
 
         sandbox = DockerSandbox.__new__(DockerSandbox)
         sandbox.environment_dir = tmp_path
@@ -265,11 +356,12 @@ class TestDockerExecEnvSecrecy:
         sandbox = DockerSandbox.__new__(DockerSandbox)
         sandbox.environment_name = "apt-flake"
         sandbox.logger = docker_module.logger
+        sandbox.task_env_config = SandboxConfig()
 
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        async def fake_run(command):
+        async def fake_run(command, timeout_sec=None):
             calls.append(command)
             if len(calls) == 1:
                 raise RuntimeError(
@@ -301,11 +393,12 @@ class TestDockerExecEnvSecrecy:
         sandbox = DockerSandbox.__new__(DockerSandbox)
         sandbox.environment_name = "pip-flake"
         sandbox.logger = docker_module.logger
+        sandbox.task_env_config = SandboxConfig()
 
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        async def fake_run(command):
+        async def fake_run(command, timeout_sec=None):
             calls.append(command)
             if len(calls) == 1:
                 raise RuntimeError(
@@ -336,11 +429,12 @@ class TestDockerExecEnvSecrecy:
         sandbox = DockerSandbox.__new__(DockerSandbox)
         sandbox.environment_name = "real-build-bug"
         sandbox.logger = docker_module.logger
+        sandbox.task_env_config = SandboxConfig()
 
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        async def fake_run(command):
+        async def fake_run(command, timeout_sec=None):
             calls.append(command)
             raise RuntimeError("Docker compose command failed. Stdout: syntax error")
 
@@ -357,29 +451,17 @@ class TestDockerExecEnvSecrecy:
         assert sleeps == []
 
     def test_umask_scoped_to_env_file_write(self):
-        """Guards bug I from PR #323: `umask 077` must not leak into the command.
+        """Guards bug I from PR #323: no wrapper umask reaches the command.
 
-        The restrictive umask that protects the temp env file is wrapped in a
-        subshell `(umask 077 && ...)`, so the user's command runs under the
-        default umask. Before the fix, `umask 077` ran at the top of the chain
-        and persisted, making files the command created mode-0600.
+        The wrapper once set ``umask 077`` for its temp env file; leaked, it
+        made files the command created mode-0600. It writes no file now.
         """
-        from benchflow.sandbox.docker import DockerSandbox
+        from benchflow.sandbox._base import wrap_command_with_env_stdin
 
-        wrapped = DockerSandbox._wrap_command_with_env_file(
-            {"FOO": "bar"}, "the-user-command"
-        )
-        # The umask is scoped to a `( ... )` subshell containing the env-file
-        # write — it is not a bare top-level statement that bleeds through.
-        assert "(umask 077 &&" in wrapped
-        # `umask 077` only ever appears immediately inside the `(` subshell.
-        assert wrapped.count("umask 077") == 1
-        assert "(umask 077" in wrapped
-        # The subshell closes before `set -a`/source/user command run, so the
-        # umask does not affect anything after it.
-        post_subshell = wrapped.split(")", 1)[1]
-        assert "umask" not in post_subshell
-        assert post_subshell.lstrip().startswith("&& set -a")
+        wrapped = wrap_command_with_env_stdin("the-user-command")
+        # No env file is written any more (b143), so no umask is set at all:
+        # the command runs under the caller's umask.
+        assert "umask" not in wrapped
         assert wrapped.endswith("the-user-command")
 
     def test_non_identifier_env_keys_do_not_break_exec(self):
@@ -391,21 +473,17 @@ class TestDockerExecEnvSecrecy:
         user command would never run, so they are skipped — valid keys still
         flow through and the wrapped command stays intact.
         """
-        import base64
 
-        from benchflow.sandbox.docker import DockerSandbox
+        from benchflow.sandbox._base import env_stdin_body
 
         env = {
             "VALID_KEY": "keep-me",
             "dotted.key": "drop-me",
             "dashed-key": "drop-me-too",
         }
-        wrapped = DockerSandbox._wrap_command_with_env_file(env, "run-it")
-
-        # Decode the base64 env body that gets sourced inside the container.
-        token = wrapped.split("printf %s ", 1)[1].split(" |", 1)[0]
-        encoded = token.strip("'")
-        body = base64.b64decode(encoded).decode()
+        # The env body the container's own shell sources from its stdin.
+        body = env_stdin_body(env).decode()
+        wrapped = "run-it"
 
         # The valid identifier is exported; non-identifier keys are skipped so
         # sourcing the file cannot fail.
@@ -417,17 +495,27 @@ class TestDockerExecEnvSecrecy:
 
 
 class TestDockerComposeUpNetworkRaceRetry:
-    """`compose up` retries the daemon-side network create/attach race.
+    """`compose up --wait` retries the daemon-side network create/attach race.
 
     On Docker 29.x the daemon can report "Network ... Created" yet fail the
     container create/start that immediately follows with "network
     <project>_default not found". Only that signature retries — every other
     compose up failure must surface unchanged.
+
+    The sandboxes here have a task compose file, so start() goes straight to
+    ``up --detach --wait`` (a Dockerfile-only sandbox first tries
+    ``up --detach`` without the wait: tests/test_docker_direct_exec.py).
     """
+
+    @staticmethod
+    def _with_task_compose_file(sandbox, tmp_path):
+        (tmp_path / "docker-compose.yaml").write_text("services: {}\n")
+        sandbox.environment_dir = tmp_path
+        return sandbox
 
     @pytest.mark.asyncio
     async def test_compose_up_retries_network_create_attach_race(
-        self, monkeypatch, caplog
+        self, monkeypatch, caplog, tmp_path
     ):
         """A 'network ... not found' failure right after compose up is retried."""
         import logging
@@ -436,7 +524,9 @@ class TestDockerComposeUpNetworkRaceRetry:
         from benchflow.sandbox._base import ExecResult
         from benchflow.sandbox.docker import DockerSandbox
 
-        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox = self._with_task_compose_file(
+            DockerSandbox.__new__(DockerSandbox), tmp_path
+        )
         sandbox.environment_name = "network-race"
         sandbox.logger = docker_module.logger
 
@@ -463,7 +553,7 @@ class TestDockerComposeUpNetworkRaceRetry:
         with caplog.at_level(logging.WARNING, logger="benchflow"):
             await sandbox._run_docker_compose_up()
 
-        assert calls == [["up", "--detach", "--wait"]] * 2
+        assert calls == [["up", "--detach", "--wait", "--no-build"]] * 2
         assert sleeps == [2.0]
         retry_logs = [r for r in caplog.records if "compose up" in r.message]
         assert len(retry_logs) == 1
@@ -471,13 +561,17 @@ class TestDockerComposeUpNetworkRaceRetry:
         assert "network create/attach race" in retry_logs[0].message
 
     @pytest.mark.asyncio
-    async def test_compose_up_retries_unwrapped_network_not_found(self, monkeypatch):
+    async def test_compose_up_retries_unwrapped_network_not_found(
+        self, monkeypatch, tmp_path
+    ):
         """Older daemons emit the race without the container-networking prefix."""
         from benchflow.sandbox import docker as docker_module
         from benchflow.sandbox._base import ExecResult
         from benchflow.sandbox.docker import DockerSandbox
 
-        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox = self._with_task_compose_file(
+            DockerSandbox.__new__(DockerSandbox), tmp_path
+        )
         sandbox.environment_name = "network-race-old"
         sandbox.logger = docker_module.logger
 
@@ -502,16 +596,20 @@ class TestDockerComposeUpNetworkRaceRetry:
 
         await sandbox._run_docker_compose_up()
 
-        assert calls == [["up", "--detach", "--wait"]] * 2
+        assert calls == [["up", "--detach", "--wait", "--no-build"]] * 2
         assert sleeps == [2.0]
 
     @pytest.mark.asyncio
-    async def test_compose_up_does_not_retry_non_race_failures(self, monkeypatch):
+    async def test_compose_up_does_not_retry_non_race_failures(
+        self, monkeypatch, tmp_path
+    ):
         """Only the network-race signature retries — not every compose up error."""
         from benchflow.sandbox import docker as docker_module
         from benchflow.sandbox.docker import DockerSandbox
 
-        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox = self._with_task_compose_file(
+            DockerSandbox.__new__(DockerSandbox), tmp_path
+        )
         sandbox.environment_name = "real-up-bug"
         sandbox.logger = docker_module.logger
 
@@ -534,17 +632,19 @@ class TestDockerComposeUpNetworkRaceRetry:
         with pytest.raises(RuntimeError, match="before becoming healthy"):
             await sandbox._run_docker_compose_up()
 
-        assert calls == [["up", "--detach", "--wait"]]
+        assert calls == [["up", "--detach", "--wait", "--no-build"]]
         assert sleeps == []
 
     @pytest.mark.asyncio
-    async def test_compose_up_retry_is_bounded(self, monkeypatch):
+    async def test_compose_up_retry_is_bounded(self, monkeypatch, tmp_path):
         """A persistent network-race signature re-raises after exactly the configured backoffs (bounded, not infinite)."""
         from benchflow.sandbox import docker as docker_module
         from benchflow.sandbox._compose import COMPOSE_UP_RETRY_DELAYS_SEC
         from benchflow.sandbox.docker import DockerSandbox
 
-        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox = self._with_task_compose_file(
+            DockerSandbox.__new__(DockerSandbox), tmp_path
+        )
         sandbox.environment_name = "network-race-persistent"
         sandbox.logger = docker_module.logger
 
@@ -568,7 +668,7 @@ class TestDockerComposeUpNetworkRaceRetry:
         with pytest.raises(RuntimeError, match="not found"):
             await sandbox._run_docker_compose_up()
 
-        assert calls == [["up", "--detach", "--wait"]] * (
+        assert calls == [["up", "--detach", "--wait", "--no-build"]] * (
             len(COMPOSE_UP_RETRY_DELAYS_SEC) + 1
         )
         assert sleeps == list(COMPOSE_UP_RETRY_DELAYS_SEC)

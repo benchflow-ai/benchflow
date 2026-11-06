@@ -53,7 +53,7 @@ class FakeClient:
     def list(self):
         return iter(self._sandboxes)
 
-    def delete(self, sb):
+    def delete(self, sb, timeout=60, wait=False):
         if sb.id in self._fail_ids:
             raise RuntimeError("api error")
         self.deleted.append(sb.id)
@@ -306,7 +306,7 @@ class TestIsBenchflowOwned:
 
     def test_scoped_owner_matches_only_current_operator(self, monkeypatch):
         """Guards PR #921 against cross-operator Daytona cleanup."""
-        monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "gpt56 max / openhands")
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "gpt56-max-openhands")
         labels = _benchflow_owned_labels()
 
         assert labels == {
@@ -391,6 +391,22 @@ class TestIsBenchflowLabelOrphan:
                     "benchflow.owner": "their-experiment",
                 }
             )
+        )
+
+
+class TestUnscopedOwnerIsForeignToAScopedRun:
+    def test_unscoped_managed_label_is_not_an_orphan(self, monkeypatch):
+        """With BENCHFLOW_DAYTONA_OWNER set, every live
+        sandbox another operator started without an owner (benchflow.managed=1)
+        was reported as a "possible orphan leak ... remove it manually" at each
+        eval start. It is a valid ownership
+        marker, so it is foreign, like a different scoped owner."""
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")
+        assert not _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.managed": "1"})
+        )
+        assert _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.managed": "0"})
         )
 
 

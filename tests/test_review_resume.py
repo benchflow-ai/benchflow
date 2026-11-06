@@ -6,6 +6,7 @@ PR #1126: a reviewer failure must never spend on a second solver trajectory.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,11 @@ import pytest
 from typer.testing import CliRunner
 
 from benchflow._utils.task_authoring import task_digest
+from benchflow.diagnostics import (
+    IdleTimeoutDiagnostic,
+    ProviderApiErrorDiagnostic,
+    RolloutDiagnostics,
+)
 from benchflow.review import automatic, persistence
 from benchflow.review.options import ReviewerConfig
 from benchflow.review.outcome import ScoringResult, scoring_error
@@ -22,6 +28,10 @@ from benchflow.review.resume import (
     ReviewResumeError,
     resume_pending_reviews,
     resume_review,
+)
+from benchflow.trajectories.results import (
+    _record_to_redacted_json_line,
+    _structured_diagnostics_info,
 )
 
 
@@ -202,7 +212,9 @@ async def test_batch_retries_saved_solver_even_without_final_result(
         reviewer=config,
         task_names={"physics"},
     )
-    retry.assert_awaited_once_with(rollout, tasks_root=task.parent, reviewer=config)
+    retry.assert_awaited_once_with(
+        rollout, tasks_root=task.parent, reviewer=config, budget_guard=None
+    )
 
 
 @pytest.mark.asyncio
@@ -226,6 +238,227 @@ async def test_batch_completed_result_wins_over_incomplete_retry(
         task_names={"physics"},
     )
     retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_batch_resumes_a_reviewed_trial_whose_result_has_no_scoring(
+    saved_trial, monkeypatch
+):
+    """Guards main's completeness rule for reviewed trials: a result.json with
+    rewards but no scoring block holds the unreviewed verifier reward (earlier
+    builds wrote one before the review ran), so the review is still pending."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    _write(rollout / "result.json", json.loads((rollout / "solver.json").read_text()))
+    retry = AsyncMock()
+    monkeypatch.setattr(resume, "resume_review", retry)
+
+    config = ReviewerConfig()
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=config,
+        task_names={"physics"},
+    )
+    retry.assert_awaited_once_with(
+        rollout, tasks_root=task.parent, reviewer=config, budget_guard=None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("verifier_error", "resumed"),
+    [(None, False), ("verifier_wedge: no receipt", True)],
+)
+async def test_batch_keeps_a_recovery_verdict_without_review_as_final(
+    saved_trial, monkeypatch, verifier_error, resumed
+):
+    """Guards verifier recovery without a review, which commits no scoring
+    block: its result.json is final once it has rewards and no verifier error,
+    and a verifier error that needs recovery is still resumed."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    config = json.loads((rollout / "config.json").read_text())
+    del config["review"]
+    config["verifier_recovery"] = {"eligible": True, "reason": None}
+    _write(rollout / "config.json", config)
+    source = json.loads((rollout / "solver.json").read_text())
+    _write(
+        rollout / "result.json",
+        {
+            **source,
+            "rewards": None if verifier_error else source["rewards"],
+            "verifier_error": verifier_error,
+        },
+    )
+    retry = AsyncMock()
+    monkeypatch.setattr(resume, "resume_review", retry)
+
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics"},
+    )
+    assert retry.await_count == int(resumed)
+
+
+def test_pending_review_keeps_its_solver_when_resume_cannot_finish_it(saved_trial):
+    """Guards #1134's "a dead review must not cost the solver result" now that
+    a reviewed trial has no result.json until its scoring commits. A review
+    that resume_pending_reviews could not finish leaves solver.json alone;
+    evaluation resume keeps that solver, unscored, instead of replaying it."""
+    from benchflow._utils.scoring import classify_score_outcome
+    from benchflow.evaluation import Evaluation, RetryConfig
+    from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+
+    rollout, task = saved_trial
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+
+    kept = job._get_completed_tasks()["physics"]
+    assert kept["rewards"] is None
+    assert PRESERVED_SOLVER in kept["verifier_error"]
+    assert not RetryConfig().should_retry_verifier_error(kept["verifier_error"])
+    assert classify_score_outcome(kept) == "verifier_errored"
+    assert kept["agent_result"] == {"total_tokens": 123}
+    assert not (rollout / "result.json").exists()
+
+
+INFRA_FAILURE = "Sandbox startup failed: daytona returned 503"
+
+
+@pytest.mark.parametrize(
+    ("error", "verifier_reward", "rerun"),
+    [
+        (INFRA_FAILURE, None, True),
+        # The verifier judged the output: the scoring error is the verdict.
+        (INFRA_FAILURE, 1.0, False),
+        # A solver error that is not retryable infrastructure.
+        ("the agent gave up", None, False),
+    ],
+)
+def test_resume_reruns_a_rubric_solver_that_failed_on_infrastructure(
+    saved_trial, error, verifier_reward, rerun
+):
+    """Guards #1059 for rubric tasks. A rubric trial commits a scoring block
+    even when its sandbox or transport failed (a scoring error with no
+    verifier reward), and any result with a scoring block was reused on
+    resume, so a solver that failed on infrastructure never ran again."""
+    from benchflow.evaluation import Evaluation, EvaluationConfig
+
+    rollout, task = saved_trial
+    result = _parent(
+        rollout,
+        scoring_error(
+            "Deterministic verifier produced no reward",
+            tests_pass=None if verifier_reward is None else True,
+            verifier_reward=verifier_reward,
+        ),
+    )
+    result.update(error=error, rewards=None)
+    _write(rollout / "result.json", result)
+
+    def completed(**config):
+        return Evaluation(
+            tasks_dir=task.parent,
+            jobs_dir=rollout.parent.parent,
+            job_name=rollout.parent.name,
+            config=EvaluationConfig(**config),
+        )._get_completed_tasks()
+
+    assert ("physics" not in completed()) is rerun
+    # A sequential-shared job reuses errored results, as before.
+    assert "physics" in completed(job_mode="sequential-shared")
+
+
+def test_a_pending_review_whose_solver_failed_on_infrastructure_reruns(saved_trial):
+    """The solver.json-only case of the test above: nothing to review."""
+    from benchflow.evaluation import Evaluation
+
+    rollout, task = saved_trial
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(rollout / "solver.json", {**solver, "rewards": None, "error": INFRA_FAILURE})
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" not in job._get_completed_tasks()
+
+
+@pytest.mark.asyncio
+async def test_in_run_retry_reruns_a_rubric_solver_that_failed_on_infrastructure(
+    job_factory,
+):
+    """The in-run half of #1059 for rubric tasks: a scoring block stopped the
+    retry loop even when the solver failed on infrastructure unjudged."""
+    from benchflow.models import RolloutResult
+
+    job, tasks_dir = job_factory(n_tasks=1, max_retries=1)
+    job._config.retry.min_wait_sec = 0.0
+    job._prune_docker = lambda: None  # never touch a real Docker daemon
+    unjudged = RolloutResult(
+        task_name="task-0",
+        rollout_name="task-0__a",
+        error=INFRA_FAILURE,
+        scoring=scoring_error("Deterministic verifier produced no reward"),
+    )
+    judged = RolloutResult(
+        task_name="task-0",
+        rollout_name="task-0__a",
+        error=INFRA_FAILURE,
+        scoring=scoring_error(
+            "reviewer timed out", tests_pass=True, verifier_reward=1.0
+        ),
+    )
+    ok = RolloutResult(task_name="task-0", rewards={"reward": 1.0})
+
+    job._run_single_task = AsyncMock(side_effect=[unjudged, ok])
+    assert await job._run_task(tasks_dir / "task-0") is ok
+    job._run_single_task = AsyncMock(side_effect=[judged, ok])
+    assert await job._run_task(tasks_dir / "task-0") is judged
+
+
+@pytest.mark.asyncio
+async def test_batch_isolates_a_failing_resumed_review(
+    saved_trial, monkeypatch, caplog
+):
+    """Guards the #1134 fix on top of PR #1126: one trial's resume failure
+    used to escape the TaskGroup as an ExceptionGroup, cancel every sibling
+    review and abort the evaluation. It is now logged and skipped."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    other = rollout.parent / "chemistry__a"
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(other / "solver.json", {**solver, "task_name": "chemistry"})
+    _write(other / "config.json", json.loads((rollout / "config.json").read_text()))
+    reviewed: list[Path] = []
+
+    async def retry(path, **_):
+        if path == rollout:
+            raise ReviewResumeError(
+                "Task digest mismatch: restore the exact solver task"
+            )
+        await asyncio.sleep(0.05)  # still reviewing when the sibling fails
+        reviewed.append(path)
+
+    monkeypatch.setattr(resume, "resume_review", retry)
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics", "chemistry"},
+    )
+    assert reviewed == [other]
+    assert rollout.name in caplog.text
+    assert "Task digest mismatch" in caplog.text
 
 
 def test_eval_score_cli_uses_shared_reviewer_options(saved_trial, monkeypatch):
@@ -391,3 +624,226 @@ async def test_concurrent_scoring_is_rejected_before_second_reviewer(
     # Releasing an earlier attempt leaves no stale lock to clean up.
     with persistence.scoring_lock(rollout):
         pass
+
+
+def test_scoring_commit_preserves_safe_diagnostics_from_solver(saved_trial):
+    """Guards PR #1038 adaptation: scoring publication retains typed evidence."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(
+        error="idle timeout",
+        error_category="idle_timeout",
+        verifier_error=None,
+        idle_timeout_info={
+            "idle_timeout_sec": 120,
+            "idle_duration_sec": 121,
+            "last_activity_at": "private timestamp",
+            "future_field": "private future value",
+        },
+        unknown_diagnostic_info={"secret": "private unknown event"},
+    )
+    _write(rollout / "solver.json", source)
+    persistence.commit_scoring_result(rollout, _complete())
+    row = json.loads((rollout / "results.jsonl").read_text())
+    block = row["info"]["diagnostics"]
+    assert block["error_category"] == "idle_timeout"
+    assert "verifier_error_category" not in block
+    assert set(block["events"]) == {"idle_timeout_info"}
+    assert block["events"]["idle_timeout_info"]["details"]["idle_duration_sec"] == 121
+    assert "n_tool_calls" not in block["events"]["idle_timeout_info"]["details"]
+    assert "private" not in json.dumps(block)
+    assert json.loads((rollout / "solver.json").read_text()) == source
+
+
+@pytest.mark.parametrize(
+    "field,details",
+    [
+        (
+            "transport_error_info",
+            {"transport_diagnosis": [], "raw_message": "private secret"},
+        ),
+        ("api_error_info", {"subcategory": {}, "status_counts": {"inf": 2}}),
+        ("verifier_timeout_info", {"elapsed_sec": 10**1000}),
+        ("agent_timeout_info", {"pending_tool_call_ids": None}),
+    ],
+)
+def test_scoring_commit_omits_malformed_saved_diagnostic_details(
+    saved_trial, field, details
+):
+    """Guards PR #1038 adaptation: historical malformed details cannot break scoring."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(verifier_error=None)
+    source[field] = details
+    _write(rollout / "solver.json", source)
+    result = persistence.commit_scoring_result(rollout, _complete())
+    assert result["scoring"]["status"] == "complete"
+    row = json.loads((rollout / "results.jsonl").read_text())
+    block = row["info"].get("diagnostics", {})
+    assert "private secret" not in json.dumps(block)
+    event = block["events"][field]
+    assert "elapsed_sec" not in event.get("details", {})
+    assert "pending_tool_call_count" not in event.get("details", {})
+
+
+def test_completed_verification_clears_category_but_retains_observed_event(saved_trial):
+    """Guards PR #1038 adaptation: recovered status differs from historical evidence."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(
+        rewards=None,
+        verifier_error="verifier timed out",
+        verifier_error_category="verifier_timeout",
+        verifier_timeout_info={"timeout_budget_sec": 60, "elapsed_sec": 61},
+    )
+    _write(rollout / "solver.json", source)
+    attempt = "verifier-recovery/abc123"
+    _write(rollout / "verification.json", {"attempt": attempt})
+    _write(
+        rollout / attempt / "recovery.json",
+        {
+            "task_digest": source["task_digest"],
+            "status": "complete",
+            "rewards": {"reward": 1.0},
+            "timing": {"verifier": 2},
+        },
+    )
+    result = persistence.commit_scoring_result(rollout, _complete())
+    assert result["verifier_error"] is None
+    assert result["verifier_error_category"] is None
+    block = json.loads((rollout / "results.jsonl").read_text())["info"]["diagnostics"]
+    assert "verifier_error_category" not in block
+    event = block["events"]["verifier_timeout_info"]
+    assert event["category"] == "verifier_timeout"
+    assert event["details"]["elapsed_sec"] == 61
+    assert json.loads((rollout / "solver.json").read_text()) == source
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        {"path": "/private/other"},
+        ["private submission"],
+        "private freeform category",
+    ],
+)
+def test_scoring_publication_omits_invalid_saved_categories(saved_trial, category):
+    """Guards PR #1038 review: category fields are fixed labels, not arbitrary data."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(
+        verifier_error=None, error_category=category, verifier_error_category=category
+    )
+    _write(rollout / "solver.json", source)
+    persistence.commit_scoring_result(rollout, _complete())
+    row = json.loads((rollout / "results.jsonl").read_text())
+    assert "diagnostics" not in row["info"]
+
+
+def test_huge_programmatic_diagnostic_numbers_are_omitted(tmp_path):
+    """Guards PR #1038 review: finite interchange bounds avoid JSON integer failure."""
+    diagnostics = RolloutDiagnostics()
+    diagnostics.set(
+        IdleTimeoutDiagnostic(n_tool_calls=10**5000, idle_duration_sec=2**64)
+    )
+    diagnostics.set(ProviderApiErrorDiagnostic(status_counts={"429": 10**5000}))
+    info = _structured_diagnostics_info(
+        error_category="idle_timeout",
+        verifier_error_category=None,
+        diagnostics=diagnostics,
+    )
+    events = json.loads(_record_to_redacted_json_line(info))["diagnostics"]["events"]
+    details = events["idle_timeout_info"]["details"]
+    assert "n_tool_calls" not in details
+    # Retained exactly, never float-rounded.
+    assert details["idle_duration_sec"] == 2**64
+    assert "status_counts" not in events["api_error_info"]["details"]
+
+
+@pytest.mark.asyncio
+async def test_an_expected_resume_refusal_logs_one_line_without_a_traceback(
+    saved_trial, monkeypatch, caplog
+):
+    """Guards the #1134 isolation above: a task edited since the solver ran is
+    an expected refusal (ReviewResumeError), so resuming the job logs one
+    warning naming the reason instead of a full Python traceback."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+
+    async def refuse(path, **_):
+        raise ReviewResumeError("Task digest mismatch: restore the exact solver task")
+
+    monkeypatch.setattr(resume, "resume_review", refuse)
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics"},
+    )
+    [record] = [r for r in caplog.records if rollout.name in r.getMessage()]
+    assert "Task digest mismatch" in record.getMessage()
+    assert record.exc_info is None
+
+
+USAGE_LIMIT_FAILURE = (
+    "usage limit reached on login CLAUDE_CODE_OAUTH_TOKEN (environment): 7-day "
+    "window, resets 2026-10-03 19:00 UTC (You've hit your weekly limit · resets "
+    "Oct 3, 7pm (UTC))"
+)
+
+
+def test_resume_reruns_a_rubric_solver_that_hit_a_usage_limit(saved_trial):
+    """dx/errors: a trial that ended on its login's usage limit is never retried
+    within the run (the same login would hit it again), but resuming the job,
+    on another login or after the reset, must run it again. A rubric trial
+    commits an unjudged scoring block for it, which resume kept as final."""
+    from benchflow.evaluation import Evaluation, RetryConfig
+
+    rollout, task = saved_trial
+    scoring = scoring_error(
+        "Deterministic verifier produced no reward",
+        tests_pass=None,
+        verifier_reward=None,
+    )
+    result = _parent(rollout, scoring)
+    result.update(error=USAGE_LIMIT_FAILURE, error_category="usage_limit", rewards=None)
+    _write(rollout / "result.json", result)
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" not in job._get_completed_tasks()
+    # Within the run it still does not rerun.
+    retry = RetryConfig()
+    assert not retry.reruns_unjudged_solver(
+        scoring, USAGE_LIMIT_FAILURE, category="usage_limit"
+    )
+    assert retry.reruns_unjudged_solver(
+        scoring, USAGE_LIMIT_FAILURE, category="usage_limit", on_resume=True
+    )
+
+
+def test_a_pending_review_whose_solver_hit_a_usage_limit_reruns(saved_trial):
+    """The solver.json-only case of the test above: it was kept as a solver to
+    finish with `bench eval score`, but there is nothing to review."""
+    from benchflow.evaluation import Evaluation
+
+    rollout, task = saved_trial
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(
+        rollout / "solver.json",
+        {
+            **solver,
+            "rewards": None,
+            "error": USAGE_LIMIT_FAILURE,
+            "error_category": "usage_limit",
+        },
+    )
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" not in job._get_completed_tasks()

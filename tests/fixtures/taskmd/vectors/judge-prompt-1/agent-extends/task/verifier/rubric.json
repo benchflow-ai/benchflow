@@ -1,0 +1,57 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "2.1.0",
+  "extends": [
+    "https://task.md/rubrics/code-change@1"
+  ],
+  "criteria": [
+    {
+      "id": "minimal-diff",
+      "points": 2,
+      "judge": "agent",
+      "evidence": [
+        "diff:src/http/"
+      ],
+      "text": "The change touches only files under src/http/.",
+      "stated": "Keep the change inside `src/http/`"
+    },
+    {
+      "id": "docs-updated",
+      "remove": true
+    },
+    {
+      "id": "backoff-with-jitter",
+      "points": 3,
+      "judge": "agent",
+      "evidence": [
+        "diff:src/http/client.py",
+        "trajectory:reasoning"
+      ],
+      "text": "Delays double between attempts and include bounded jitter.",
+      "stated": "exponential backoff (0.5 s, 1 s, 2 s, each with up to 20% jitter)",
+      "levels": {
+        "0": "Fixed delay or none.",
+        "2": "Doubling without jitter.",
+        "3": "Doubling from 0.5 s with at most 20% jitter."
+      }
+    },
+    {
+      "id": "retry-tests-pass",
+      "gate": true,
+      "judge": "test",
+      "check": "tests/test_retry.py",
+      "text": "The retry tests pass, including the hidden ones.",
+      "implicit": "Hidden tests check the same behavior."
+    },
+    {
+      "id": "changelog",
+      "points": 1,
+      "judge": "llm",
+      "evidence": [
+        "CHANGELOG.md"
+      ],
+      "text": "CHANGELOG.md has an entry for the fix.",
+      "stated": "note it in `CHANGELOG.md`"
+    }
+  ]
+}

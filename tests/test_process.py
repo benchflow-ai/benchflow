@@ -1,6 +1,7 @@
 """Tests for process.py env handling (no Docker required)."""
 
 import asyncio
+import base64
 import os
 import shlex
 import subprocess
@@ -9,12 +10,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from benchflow.sandbox._base import SYSTEM_SHELL_EMPTY_VARS
 from benchflow.sandbox.process import (
     AppleContainerProcess,
     DaytonaProcess,
     DaytonaPtyProcess,
     DockerProcess,
 )
+
+# Daytona's root commands get the loader variables empty unless the caller
+# sets them (C8); the caller's values are the rest.
+_EMPTY_LOADER = {name: "" for name in SYSTEM_SHELL_EMPTY_VARS}
 
 
 @pytest.mark.asyncio
@@ -218,7 +224,7 @@ class TestDockerProcessEnv:
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
             mock_proc.returncode = 0
-            mock_proc.stdin = AsyncMock()
+            mock_proc.stdin = MagicMock(drain=AsyncMock())
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
             mock_proc.communicate = AsyncMock(return_value=(b"", b""))
@@ -239,16 +245,16 @@ class TestDockerProcessEnv:
                 env={"SECRET_KEY": "hunter2", "OTHER": "value"},
             )
 
-        # Two calls: one to write env file, one for the main command
-        assert len(calls) == 2
-        main_cmd_str = " ".join(calls[1])
+        # One private pipe carries the header and then ACP; no file writer.
+        assert len(calls) == 1
+        main_cmd_str = " ".join(calls[0])
         assert "hunter2" not in main_cmd_str
         assert "-e SECRET_KEY" not in main_cmd_str
         assert "--env-file" not in main_cmd_str
 
     @pytest.mark.asyncio
     async def test_env_written_to_container(self):
-        """Env vars are written to a file inside the container via stdin."""
+        """Env vars enter the live pipe as one framed line, before ACP."""
         calls = []
         communicate_inputs = []
 
@@ -257,16 +263,11 @@ class TestDockerProcessEnv:
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
             mock_proc.returncode = 0
-            mock_proc.stdin = AsyncMock()
+            mock_proc.stdin = MagicMock(drain=AsyncMock())
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
 
-            async def capture_communicate(data=None):
-                if data:
-                    communicate_inputs.append(data)
-                return (b"", b"")
-
-            mock_proc.communicate = capture_communicate
+            mock_proc.stdin.write = communicate_inputs.append
             return mock_proc
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -276,20 +277,19 @@ class TestDockerProcessEnv:
                 env={"API_KEY": "secret123"},
             )
 
-        # First call writes the env file
-        write_cmd_str = " ".join(calls[0])
-        assert "cat >" in write_cmd_str
-        assert "chmod 600" in write_cmd_str
+        # No credential file or extra Docker exec exists.
+        assert len(calls) == 1
+        assert "IFS= read -r" in calls[0][-1]
 
         # Env content was piped to stdin
         assert len(communicate_inputs) == 1
-        content = communicate_inputs[0].decode()
+        content = base64.b64decode(communicate_inputs[0]).decode()
         assert "export API_KEY=" in content
         assert "secret123" in content
 
     @pytest.mark.asyncio
-    async def test_main_cmd_sources_and_deletes_env(self):
-        """Main command sources the env file and then removes it."""
+    async def test_main_cmd_consumes_and_discards_env_header(self):
+        """Main command consumes its single private header before running ACP."""
         calls = []
         with patch(
             "asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)
@@ -300,14 +300,17 @@ class TestDockerProcessEnv:
                 env={"KEY": "val"},
             )
 
-        main_bash_cmd = calls[1][-1]  # last arg is the bash -c string
-        assert "source /tmp/.benchflow_env" in main_bash_cmd
-        assert "rm -f /tmp/.benchflow_env" in main_bash_cmd
+        main_bash_cmd = calls[0][-1]
+        assert "IFS= read -r" in main_bash_cmd
+        assert "unset __bf_live_env" in main_bash_cmd
         assert "codex-acp" in main_bash_cmd
 
     @pytest.mark.asyncio
-    async def test_no_env_single_call(self):
+    async def test_no_env_single_call(self, monkeypatch):
         """When no env is passed, only the main exec runs (no env write step)."""
+        # The exact command, without the #1138 line filter around it
+        # (tests/test_acp_line_limit.py covers that).
+        monkeypatch.setenv("BENCHFLOW_ACP_LINE_LIMIT", "0")
         calls = []
         with patch(
             "asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)
@@ -316,33 +319,24 @@ class TestDockerProcessEnv:
             await proc.start(command="echo hello")
 
         assert len(calls) == 1
-        assert calls[0][-1] == "echo hello"
+        # Root's /bin/bash (no profile or rc, -p as integ's bootstrap), then
+        # the command with the task's environment back (C8).
+        assert calls[0][-6:-1] == ["/bin/bash", "--noprofile", "--norc", "-p", "-c"]
+        assert calls[0][-1].endswith("; exec /bin/bash -c 'echo hello'")
 
     @pytest.mark.asyncio
-    async def test_staged_env_is_removed_when_main_launch_fails(self):
-        """Guards the 0.6.6 cleanup after commit 69f589d7 launch failure."""
-        calls = []
-
-        async def fake_exec(*args, **kwargs):
-            calls.append(list(args))
-            if len(calls) == 2:
-                raise OSError("docker exec launch failed")
-            return _FakeProcess(
-                communicate=AsyncMock(return_value=(b"", b"")),
-            )
-
+    async def test_no_staged_env_exists_when_main_launch_fails(self):
+        """Guards CONF-1 at 5bb84a1b: failure cannot leave a staged file."""
+        spawn = AsyncMock(side_effect=OSError("docker exec launch failed"))
         proc = self._make_process()
         with (
             patch.object(proc, "_host_env", return_value={}),
-            patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch("asyncio.create_subprocess_exec", spawn),
             pytest.raises(OSError, match="launch failed"),
         ):
-            await proc.start("codex-acp", env={"API_KEY": "secret"})
-
-        assert len(calls) == 3
-        cleanup = " ".join(calls[2])
-        assert "rm -f /tmp/.benchflow_env" in cleanup
-        assert "secret" not in cleanup
+            await proc.start("codex-acp", env={"API_KEY": "dummy-login"})
+        assert spawn.await_count == 1
+        assert "dummy-login" not in str(spawn.await_args.args)
 
     @pytest.mark.asyncio
     async def test_env_values_shell_quoted(self):
@@ -353,16 +347,11 @@ class TestDockerProcessEnv:
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
             mock_proc.returncode = 0
-            mock_proc.stdin = AsyncMock()
+            mock_proc.stdin = MagicMock(drain=AsyncMock())
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
 
-            async def capture_communicate(data=None):
-                if data:
-                    communicate_inputs.append(data)
-                return (b"", b"")
-
-            mock_proc.communicate = capture_communicate
+            mock_proc.stdin.write = communicate_inputs.append
             return mock_proc
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -372,7 +361,7 @@ class TestDockerProcessEnv:
                 env={"KEY": "val with spaces & special; chars"},
             )
 
-        content = communicate_inputs[0].decode()
+        content = base64.b64decode(communicate_inputs[0]).decode()
         # Value must be quoted so bash interprets it correctly
         assert "'" in content or '"' in content
 
@@ -385,16 +374,11 @@ class TestDockerProcessEnv:
             mock_proc = AsyncMock()
             mock_proc.pid = 12345
             mock_proc.returncode = 0
-            mock_proc.stdin = AsyncMock()
+            mock_proc.stdin = MagicMock(drain=AsyncMock())
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
 
-            async def capture_communicate(data=None):
-                if data:
-                    communicate_inputs.append(data)
-                return (b"", b"")
-
-            mock_proc.communicate = capture_communicate
+            mock_proc.stdin.write = communicate_inputs.append
             return mock_proc
 
         dangerous_env = {
@@ -408,7 +392,7 @@ class TestDockerProcessEnv:
             proc = self._make_process()
             await proc.start(command="echo hello", env=dangerous_env)
 
-        content = communicate_inputs[0].decode()
+        content = base64.b64decode(communicate_inputs[0]).decode()
         # Each value must be shell-quoted — shlex.quote wraps in single quotes
         for key in dangerous_env:
             assert f"export {key}=" in content
@@ -458,17 +442,15 @@ class TestAppleContainerProcess:
             await proc.start("codex-acp", cwd="/root")
 
         assert len(calls) == 1
-        assert calls[0][0] == (
-            "container",
-            "exec",
-            "--interactive",
+        args = calls[0][0]
+        assert args[:3] == ("container", "exec", "--interactive")
+        assert args[args.index("--workdir") : args.index("--workdir") + 3] == (
             "--workdir",
             "/root",
             "bf_run",
-            "bash",
-            "-c",
-            "codex-acp",
         )
+        assert args[-5:-1] == ("/bin/bash", "--noprofile", "--norc", "-c")
+        assert args[-1].endswith("; exec /bin/bash -c codex-acp")
         assert calls[0][1]["stdin"] is asyncio.subprocess.PIPE
         assert calls[0][1]["stdout"] is asyncio.subprocess.PIPE
 
@@ -504,7 +486,7 @@ class TestAppleContainerProcess:
         main_command = calls[1][0][-1]
         assert ". /tmp/.benchflow_agent_env_" in main_command
         assert "rm -f /tmp/.benchflow_agent_env_" in main_command
-        assert main_command.endswith("&& codex-acp")
+        assert main_command.endswith("; exec /bin/bash -c codex-acp")
 
     @pytest.mark.asyncio
     async def test_staged_env_is_removed_when_main_launch_fails(self):
@@ -575,7 +557,10 @@ class TestDaytonaProcessEnvFilePath:
         # no shell variable), while env values travel through Daytona's env map.
         assert "$$" not in bootstrap_cmd
         assert "/tmp/benchflow_env_" in bootstrap_cmd
-        assert sandbox.process.exec.await_args.kwargs["env"] == {"FOO": "bar"}
+        assert sandbox.process.exec.await_args.kwargs["env"] == {
+            **_EMPTY_LOADER,
+            "FOO": "bar",
+        }
         assert "--env FOO" in live_cmd
         assert "--env-file" not in live_cmd
         assert "bar" not in live_cmd
@@ -600,7 +585,10 @@ class TestDaytonaProcessEnvFilePath:
 
         assert "$$" not in bootstrap_cmd
         assert "/tmp/benchflow_env_" in bootstrap_cmd
-        assert sandbox.process.exec.await_args.kwargs["env"] == {"FOO": "bar"}
+        assert sandbox.process.exec.await_args.kwargs["env"] == {
+            **_EMPTY_LOADER,
+            "FOO": "bar",
+        }
         assert "rm -f /tmp/benchflow_env_" in live_cmd
 
     def test_direct_bootstrap_env_file_sources_single_quote_values(self, tmp_path):
@@ -673,7 +661,8 @@ class TestDaytonaProcessSecretArgv:
         bootstrap_cmd = sandbox.process.exec.await_args.args[0]
         assert secret not in bootstrap_cmd
         assert sandbox.process.exec.await_args.kwargs["env"] == {
-            "OPENAI_API_KEY": secret
+            **_EMPTY_LOADER,
+            "OPENAI_API_KEY": secret,
         }
         ssh_config_path = harness.calls[0][2]
         assert harness.calls[0][:2] == ["ssh", "-F"]
@@ -712,7 +701,8 @@ class TestDaytonaProcessSecretArgv:
         bootstrap_cmd = sandbox.process.exec.await_args.args[0]
         assert secret not in bootstrap_cmd
         assert sandbox.process.exec.await_args.kwargs["env"] == {
-            "ANTHROPIC_API_KEY": secret
+            **_EMPTY_LOADER,
+            "ANTHROPIC_API_KEY": secret,
         }
         ssh_config_path = harness.calls[0][2]
         assert harness.calls[0][:2] == ["ssh", "-F"]
@@ -772,7 +762,7 @@ class TestDaytonaProcessSecretArgv:
         bootstrap_cmd = calls[0].args[0]
         cleanup_cmd = calls[1].args[0]
         assert "/tmp/benchflow_env_" in bootstrap_cmd
-        assert cleanup_cmd.startswith("rm -f /tmp/benchflow_env_")
+        assert cleanup_cmd.startswith("/bin/rm -f /tmp/benchflow_env_")
         assert "secret" not in cleanup_cmd
         assert proc._ssh_config_path is None
 
@@ -790,7 +780,9 @@ class TestDaytonaProcessSecretArgv:
 
     @pytest.mark.asyncio
     async def test_ssh_access_outlives_max_agent_timeout(self):
-        """Guards PR #921 against Daytona's 60-minute SSH token default."""
+        """Guards PR #921 against Daytona's 60-minute SSH token default, and the
+        fix for #1208: Daytona refuses more than 1440 minutes, so a 2880-minute
+        ask failed every ssh-transport launch before the agent started."""
         sandbox = _make_daytona_sandbox()
         proc = DaytonaProcess(sandbox=sandbox, is_dind=False)
         process = _FakeProcess(stdin=_FakeStdin())
@@ -802,7 +794,7 @@ class TestDaytonaProcessSecretArgv:
         ):
             await proc.start(command="openhands acp")
 
-        sandbox.create_ssh_access.assert_awaited_once_with(expires_in_minutes=2880)
+        sandbox.create_ssh_access.assert_awaited_once_with(expires_in_minutes=1440)
         await proc.close()
 
     @pytest.mark.asyncio
@@ -832,8 +824,8 @@ class TestDaytonaProcessSecretArgv:
 
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 2
-        assert calls[0].args[0].startswith("sh -c ")
-        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert calls[0].args[0].startswith("/bin/sh -c ")
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
         assert proc._ssh_config_path is None
 
     @pytest.mark.asyncio
@@ -854,8 +846,8 @@ class TestDaytonaProcessSecretArgv:
 
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 2
-        assert calls[0].args[0].startswith("sh -c ")
-        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert calls[0].args[0].startswith("/bin/sh -c ")
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
         assert proc._ssh_config_path is None
 
 
@@ -880,12 +872,15 @@ class TestDaytonaPtyProcessSecretTransport:
         assert "echo '__BENCHFLOW_ACP_" in ptys[0].inputs[0]
         assert "stty raw -echo" in ptys[0].inputs[0]
         assert "docker compose -p test exec" not in ptys[0].inputs[0]
-        assert ptys[0].inputs[1].startswith("exec sh /tmp/benchflow_pty_exec_")
+        assert ptys[0].inputs[1].startswith("exec /bin/sh /tmp/benchflow_pty_exec_")
         assert "docker compose -p test exec" not in ptys[0].inputs[1]
         sent_payload = "\n".join(ptys[0].inputs)
         assert secret not in sent_payload
         bootstrap_call = sandbox.process.exec.await_args_list[0]
-        assert bootstrap_call.kwargs["env"] == {"GEMINI_API_KEY": secret}
+        assert bootstrap_call.kwargs["env"] == {
+            **_EMPTY_LOADER,
+            "GEMINI_API_KEY": secret,
+        }
         assert secret not in bootstrap_call.args[0]
         script_call = sandbox.process.exec.await_args_list[1]
         assert secret not in script_call.args[0]
@@ -900,8 +895,10 @@ class TestDaytonaPtyProcessSecretTransport:
         await proc.close()
 
         cleanup_calls = sandbox.process.exec.await_args_list[-2:]
-        assert cleanup_calls[0].args[0].startswith("rm -f /tmp/benchflow_env_")
-        assert cleanup_calls[1].args[0].startswith("rm -f /tmp/benchflow_pty_exec_")
+        assert cleanup_calls[0].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert (
+            cleanup_calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_pty_exec_")
+        )
         assert secret not in cleanup_calls[0].args[0]
         assert secret not in cleanup_calls[1].args[0]
 
@@ -930,11 +927,15 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ". /tmp/benchflow_env_" not in sent_payload
         assert "rm -f /tmp/benchflow_env_" not in sent_payload
         assert "exec bash -lc 'openhands acp --always-approve'" not in sent_payload
-        assert ptys[0].inputs[1].startswith("exec sh /tmp/benchflow_pty_exec_")
+        # Root's terminal: keep and pin with builtins, then /bin/sh (C8).
+        assert "; exec /bin/sh /tmp/benchflow_pty_exec_" in ptys[0].inputs[1]
         assert "--env OPENAI_API_KEY" not in sent_payload
         assert secret not in sent_payload
         bootstrap_call = sandbox.process.exec.await_args_list[0]
-        assert bootstrap_call.kwargs["env"] == {"OPENAI_API_KEY": secret}
+        assert bootstrap_call.kwargs["env"] == {
+            **_EMPTY_LOADER,
+            "OPENAI_API_KEY": secret,
+        }
         assert secret not in bootstrap_call.args[0]
 
         await proc.close()
@@ -959,11 +960,11 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ptys[0].disconnected
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 4
-        assert calls[0].args[0].startswith("sh -c ")
-        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
+        assert calls[0].args[0].startswith("/bin/sh -c ")
+        assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
         assert "docker compose -p test exec" in calls[1].args[0]
-        assert calls[2].args[0].startswith("rm -f /tmp/benchflow_env_")
-        assert calls[3].args[0].startswith("rm -f /tmp/benchflow_pty_exec_")
+        assert calls[2].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert calls[3].args[0].startswith("/bin/rm -f /tmp/benchflow_pty_exec_")
         assert "secret" not in calls[2].args[0]
         assert "secret" not in calls[3].args[0]
 
@@ -989,11 +990,11 @@ class TestDaytonaPtyProcessSecretTransport:
         assert exc_info.value.diagnostic.transport_diagnosis == "pty_startup_timeout"
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 4
-        assert calls[0].args[0].startswith("sh -c ")
-        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
+        assert calls[0].args[0].startswith("/bin/sh -c ")
+        assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
         assert "docker compose -p test exec" in calls[1].args[0]
-        assert calls[2].args[0].startswith("rm -f /tmp/benchflow_env_")
-        assert calls[3].args[0].startswith("rm -f /tmp/benchflow_pty_exec_")
+        assert calls[2].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert calls[3].args[0].startswith("/bin/rm -f /tmp/benchflow_pty_exec_")
         assert "secret" not in calls[2].args[0]
         assert "secret" not in calls[3].args[0]
 
@@ -1067,9 +1068,9 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ptys[0].disconnected
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 2
-        assert calls[0].args[0].startswith("sh -c ")
-        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
-        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert calls[0].args[0].startswith("/bin/sh -c ")
+        assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
         assert "secret" not in calls[1].args[0]
 
     @pytest.mark.asyncio
@@ -1090,7 +1091,7 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ptys[0].disconnected
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 2
-        assert calls[0].args[0].startswith("sh -c ")
-        assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
-        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert calls[0].args[0].startswith("/bin/sh -c ")
+        assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
         assert "secret" not in calls[1].args[0]

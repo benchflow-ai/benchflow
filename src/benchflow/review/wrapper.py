@@ -312,7 +312,6 @@ def assemble_review_task(
     image: str = REVIEWER_IMAGE,
     agent_timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
     open_network: bool = False,
-    net_admin_overlay: bool = False,
     workspace_bundle: Path | None = None,
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
@@ -386,17 +385,9 @@ def assemble_review_task(
     )
     (dest / "task.md").write_text(frontmatter + instruction, encoding="utf-8")
 
-    if net_admin_overlay:
-        # Docker only: the agent-UID egress firewall programs iptables inside
-        # the container, which needs NET_ADMIN. The docker backend stacks
-        # this overlay on top of its generated compose files; other backends
-        # must not receive it (a task compose file changes their strategy).
-        environment_dir = dest / "environment"
-        environment_dir.mkdir()
-        (environment_dir / "docker-compose.yaml").write_text(
-            "services:\n  main:\n    cap_add:\n      - NET_ADMIN\n",
-            encoding="utf-8",
-        )
+    # No task compose file: it would flip Daytona and other backends into
+    # compose strategies. The agent-UID egress firewall's NET_ADMIN comes from
+    # the backend's no-web rule (``compose_needs_net_admin`` on Docker).
 
     tests_dir = dest / "tests"
     tests_dir.mkdir()

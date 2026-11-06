@@ -5,20 +5,18 @@ process argv or command string. ``ps``, shell history, and provider-side
 command audit logs all see argv, so a leak there is equivalent to publishing
 the secret.
 
-DockerSandbox.exec already routes env through a base64-encoded file decoded
-inside the container (covered by ``tests/test_sandbox.py``). This module
+DockerSandbox.exec already routes env through octal escapes the container's
+own shell turns back into ``export`` lines (printf, eval) (covered by ``tests/test_sandbox.py``). This module
 covers the Daytona path, where ``_sandbox_exec`` previously emitted
 ``env KEY=value`` argv.
 """
 
 from __future__ import annotations
 
-import base64
-import re
-
 import pytest
 
 from benchflow.sandbox.daytona import _wrap_daytona_command_with_env_file
+from tests._env_wrapper import INLINE_START, wrapped_env_body
 
 
 class TestDaytonaExecEnvSecrecy:
@@ -34,24 +32,22 @@ class TestDaytonaExecEnvSecrecy:
 
         # No raw value appears in the wrapper text — ``ps aux`` on the
         # Daytona worker would otherwise reveal them. The values live only
-        # inside a base64 blob.
+        # inside octal escapes.
         assert "sk-very-secret" not in wrapped
         assert "hunter2" not in wrapped
-        # The ordinary value is *also* base64-encoded; this is a side effect
+        # The ordinary value is *also* escaped; this is a side effect
         # of putting the whole env dict into one file, and is the desired
         # behavior because it makes the wrapper indifferent to whether a
         # given key is sensitive.
         assert "ordinary-value" not in wrapped
 
-        # The command sources a file and cleans up on EXIT.
-        assert wrapped.startswith("trap 'rm -f ")
-        assert "EXIT" in wrapped
-        assert "base64 -d" in wrapped
-        assert "(umask 077 &&" in wrapped
+        # The shell's own printf and eval set it: no program, no file (b143).
+        assert wrapped.startswith(INLINE_START)
+        assert "base64" not in wrapped and "/tmp/" not in wrapped
         assert wrapped.endswith("run-verifier")
 
     def test_wrap_decoded_env_contains_all_values(self) -> None:
-        """The base64 payload sourced inside the sandbox must carry the env.
+        """The escaped payload the sandbox shell evaluates must carry the env.
 
         We decode the blob the same way the remote shell does and assert the
         sourceable script exports each key/value pair.
@@ -62,9 +58,7 @@ class TestDaytonaExecEnvSecrecy:
         }
         wrapped = _wrap_daytona_command_with_env_file(env, "tool")
 
-        token = wrapped.split("printf %s ", 1)[1].split(" |", 1)[0]
-        encoded = token.strip("'")
-        body = base64.b64decode(encoded).decode()
+        body = wrapped_env_body(wrapped)
 
         assert "export OPENAI_API_KEY=" in body
         assert "sk-very-secret" in body
@@ -85,9 +79,7 @@ class TestDaytonaExecEnvSecrecy:
         }
         wrapped = _wrap_daytona_command_with_env_file(env, "tool")
 
-        token = wrapped.split("printf %s ", 1)[1].split(" |", 1)[0]
-        encoded = token.strip("'")
-        body = base64.b64decode(encoded).decode()
+        body = wrapped_env_body(wrapped)
 
         assert "export VALID_KEY=" in body
         assert "dotted.key" not in body
@@ -111,6 +103,7 @@ class TestDaytonaExecEnvSecrecy:
         # the same lazy-load explicitly.
         _load_daytona_sdk()
         sandbox = DaytonaSandbox.__new__(DaytonaSandbox)
+        from benchflow.sandbox._base import ExecRoute
 
         captured: dict[str, str] = {}
 
@@ -142,6 +135,7 @@ class TestDaytonaExecEnvSecrecy:
         await sandbox._sandbox_exec(
             "verify-now",
             env={"OPENAI_API_KEY": "sk-leak", "AUTHORIZATION": "Bearer leak"},
+            route=ExecRoute(pin=None, task_root=False),
         )
 
         cmd = captured["command"]
@@ -166,7 +160,7 @@ class TestDaytonaExecEnvSecrecy:
         multi-service task. Regression for the #412 follow-up.
         """
         pytest.importorskip("daytona")  # sandbox-daytona optional dependency
-        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox._base import ExecResult, ExecRoute
         from benchflow.sandbox.daytona import _DaytonaDinD
 
         strategy = _DaytonaDinD.__new__(_DaytonaDinD)
@@ -182,6 +176,7 @@ class TestDaytonaExecEnvSecrecy:
             "run-verifier",
             env={"OPENAI_API_KEY": "sk-dind-leak", "AUTHORIZATION": "Bearer dind"},
             service="main",
+            route=ExecRoute(pin=None, task_root=False, root=False),
         )
 
         sub = captured[0]
@@ -198,11 +193,12 @@ class TestDaytonaExecEnvSecrecy:
         )
         # The wrapped command is still routed to the target container via
         # ``sh -c <wrapper>`` and the wrapper sources an env file inside it.
-        assert sub[-3] == "sh"
+        assert sub[-3] == "/bin/sh"
         assert sub[-2] == "-c"
         wrapped = sub[-1]
-        assert wrapped.startswith("trap 'rm -f ")
-        assert "base64 -d" in wrapped
+        # The shell's own printf and eval set it: no program, no file (b143).
+        assert wrapped.startswith(INLINE_START)
+        assert "sk-dind-leak" in wrapped_env_body(wrapped)
         assert wrapped.endswith("run-verifier")
 
     @pytest.mark.asyncio
@@ -213,7 +209,7 @@ class TestDaytonaExecEnvSecrecy:
         would change behavior unnecessarily and complicate debugging).
         """
         pytest.importorskip("daytona")
-        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox._base import ExecResult, ExecRoute
         from benchflow.sandbox.daytona import _DaytonaDinD
 
         strategy = _DaytonaDinD.__new__(_DaytonaDinD)
@@ -225,7 +221,11 @@ class TestDaytonaExecEnvSecrecy:
 
         strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
 
-        await strategy.exec("echo hi", service="main")
+        await strategy.exec(
+            "echo hi",
+            service="main",
+            route=ExecRoute(pin=None, task_root=False, root=False),
+        )
 
         sub = captured[0]
         assert sub[-1] == "echo hi"
@@ -233,28 +233,16 @@ class TestDaytonaExecEnvSecrecy:
 
 
 class TestCrossBackendRedactionParity:
-    """Docker and Daytona must redact secrets identically (de-fork guard).
+    """Docker and Daytona must carry the same env, redacted (de-fork guard).
 
-    The env-file/secret-redaction logic was previously a near-verbatim fork
-    across ``DockerSandbox._wrap_command_with_env_file`` and
-    ``_wrap_daytona_command_with_env_file`` — two copies free to drift apart.
-    They now both delegate to the single canonical
-    ``benchflow.sandbox._base.wrap_command_with_env_file``. This test pins them
-    together: for the same secret env, both backends must emit a byte-identical
-    redacted command, modulo the one intentional difference — the temp env-file
-    path prefix (plus its random per-call suffix).
+    Docker feeds it on the exec's stdin (``env_stdin_body``), Daytona writes
+    it into the command (``wrap_command_with_env_file``) when it fits; both
+    are built from the one canonical body in ``benchflow.sandbox._base``, so
+    for the same secret env the shell applies byte-identical lines.
     """
 
-    # The two backends deliberately use distinct env-file path prefixes; the
-    # 16-hex suffix is random per call. Normalizing both to a placeholder lets
-    # us assert the *rest* of the command (the redaction + shape) is identical.
-    _ENV_PATH_RE = re.compile(r"/tmp/\.benchflow_(?:exec|daytona)_env_[0-9a-f]{16}")
-
-    def _normalize(self, wrapped: str) -> str:
-        return self._ENV_PATH_RE.sub("<ENV_PATH>", wrapped)
-
     def test_identical_redaction_for_same_secret_env(self) -> None:
-        from benchflow.sandbox.docker import DockerSandbox
+        from benchflow.sandbox._base import env_stdin_body
 
         env = {
             "OPENAI_API_KEY": "sk-very-secret",
@@ -265,27 +253,17 @@ class TestCrossBackendRedactionParity:
         }
         command = "run-verifier --flag"
 
-        docker_wrapped = DockerSandbox._wrap_command_with_env_file(env, command)
+        docker_body = env_stdin_body(env).decode()
         daytona_wrapped = _wrap_daytona_command_with_env_file(env, command)
 
-        # The only legitimate difference is the env-file path prefix/suffix.
-        assert self._normalize(docker_wrapped) == self._normalize(daytona_wrapped)
+        # Raw secrets never appear in Daytona's command, and the user command
+        # is reached after the env.
+        assert "sk-very-secret" not in daytona_wrapped
+        assert "hunter2" not in daytona_wrapped
+        assert daytona_wrapped.endswith(command)
 
-        # And the shared, normalized command carries the same redacted payload:
-        # raw secrets never appear, the base64 blob is byte-identical, and the
-        # user command is reached the same way.
-        normalized = self._normalize(docker_wrapped)
-        assert "sk-very-secret" not in normalized
-        assert "hunter2" not in normalized
-        assert normalized.endswith(command)
-
-        # Same base64 env body on both sides (the heart of the redaction).
-        docker_body = base64.b64decode(
-            docker_wrapped.split("printf %s ", 1)[1].split(" |", 1)[0].strip("'")
-        ).decode()
-        daytona_body = base64.b64decode(
-            daytona_wrapped.split("printf %s ", 1)[1].split(" |", 1)[0].strip("'")
-        ).decode()
+        # Same env body on both sides (the heart of the redaction).
+        daytona_body = wrapped_env_body(daytona_wrapped)
         assert docker_body == daytona_body
         assert "export OPENAI_API_KEY=" in docker_body
         assert "export SAFE_VAR=" in docker_body
@@ -293,14 +271,8 @@ class TestCrossBackendRedactionParity:
         assert "dotted.key" not in docker_body
 
     def test_both_backends_share_canonical_helper(self) -> None:
-        """Guards against re-forking: both wrappers must route through one home.
-
-        If a future edit reintroduces a private copy of the redaction logic in
-        either backend, this byte-for-byte equality (after path normalization)
-        with the canonical helper's own output would break.
-        """
+        """Guards against re-forking: both wrappers must route through one home."""
         from benchflow.sandbox._base import wrap_command_with_env_file
-        from benchflow.sandbox.docker import DockerSandbox
 
         env = {"API_KEY": "sk-leak", "AUTHORIZATION": "Bearer leak"}
         command = "tool"
@@ -308,9 +280,65 @@ class TestCrossBackendRedactionParity:
         canonical = wrap_command_with_env_file(
             env, command, env_path_prefix="/tmp/canonical_"
         )
-        docker_wrapped = DockerSandbox._wrap_command_with_env_file(env, command)
-        daytona_wrapped = _wrap_daytona_command_with_env_file(env, command)
+        assert _wrap_daytona_command_with_env_file(env, command) == canonical
 
-        canonical_norm = re.sub(r"/tmp/canonical_[0-9a-f]{16}", "<ENV_PATH>", canonical)
-        assert self._normalize(docker_wrapped) == canonical_norm
-        assert self._normalize(daytona_wrapped) == canonical_norm
+
+class TestEnvWrapperBackgroundCommands:
+    """A backgrounded command must stay a single background job once wrapped.
+
+    Guards the Environment-plane manifest service start on Daytona: every
+    manifest run adds ``BENCHFLOW_TASK_ID`` to the sandbox's persistent env, so
+    ``ManifestEnvironment`` service starts (``nohup CMD </dev/null >log 2>&1 &``)
+    go through this wrapper. Joined with ``&&``, the trailing ``&`` backgrounded
+    the whole list, including a subshell that kept the caller's stdout open, so
+    the Daytona session command never finished and every manifest rollout
+    failed with ``Command timed out after 15 seconds``.
+    """
+
+    @staticmethod
+    def _run(wrapped: str, timeout: float) -> None:
+        import subprocess
+
+        subprocess.run(
+            ["bash", "-c", wrapped],
+            # Pipes, like a Daytona session: a background job that inherits
+            # them keeps run() waiting until the timeout.
+            capture_output=True,
+            timeout=timeout,
+            check=True,
+        )
+
+    def test_detached_background_command_does_not_hold_the_output_pipe(
+        self, tmp_path
+    ) -> None:
+        wrapped = _wrap_daytona_command_with_env_file(
+            {"BENCHFLOW_TASK_ID": "demo"},
+            "nohup sleep 30 </dev/null >/dev/null 2>&1 &",
+        )
+        self._run(wrapped, timeout=10)
+
+    def test_background_command_still_sees_the_env(self, tmp_path) -> None:
+        import time
+
+        out = tmp_path / "seen.txt"
+        wrapped = _wrap_daytona_command_with_env_file(
+            {"BENCHFLOW_TASK_ID": "demo"},
+            f"nohup sh -c 'echo $BENCHFLOW_TASK_ID > {out}' </dev/null >/dev/null 2>&1 &",
+        )
+        self._run(wrapped, timeout=10)
+        for _ in range(50):
+            if out.exists() and out.read_text().strip():
+                break
+            time.sleep(0.1)
+        assert out.read_text().strip() == "demo"
+
+    def test_failed_env_source_does_not_run_the_command(self, tmp_path) -> None:
+        import subprocess
+
+        marker = tmp_path / "ran"
+        wrapped = _wrap_daytona_command_with_env_file(
+            {"X": "1"}, f"touch {marker}"
+        ).replace("$(printf ", "$(false ")
+        proc = subprocess.run(["bash", "-c", wrapped], capture_output=True)
+        assert proc.returncode != 0
+        assert not marker.exists()

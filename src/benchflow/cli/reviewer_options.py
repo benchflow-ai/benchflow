@@ -1,10 +1,16 @@
-"""Reviewer flags for evaluation and scoring commands."""
+"""Reviewer flags for evaluation and scoring commands.
 
-from typing import Annotated
+The flags are defined at import, so `bench eval run` can declare them; what
+they are checked against (the reviewer config model) is imported only when a
+command reads them, which keeps `bench --help` from loading the review stack.
+"""
+
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
-from benchflow.review.options import ReviewerConfig
+if TYPE_CHECKING:
+    from benchflow.review.options import ReviewerConfig
 
 ReviewerAgentOption = Annotated[
     str | None, typer.Option("--reviewer-agent", help="Rubric reviewer harness")
@@ -26,6 +32,17 @@ ReviewerTimeoutOption = Annotated[
     int | None,
     typer.Option(
         "--reviewer-timeout-sec", min=1, help="Reviewer execution budget in seconds"
+    ),
+]
+ReviewerIdleTimeoutOption = Annotated[
+    str | None,
+    typer.Option(
+        "--reviewer-idle-timeout",
+        help=(
+            "Abort a reviewer prompt after this many idle seconds (default: 600). "
+            "Pass 0 or 'none' to disable the idle watchdog and leave "
+            "--reviewer-timeout-sec in charge."
+        ),
     ),
 ]
 ReviewerConcurrencyOption = Annotated[
@@ -51,8 +68,25 @@ ReviewerNetworkOption = Annotated[
 ]
 
 
-def reviewer_from_cli(**options: object) -> ReviewerConfig | None:
+def reviewer_idle_timeout(value: str | None) -> int | None:
+    """``--reviewer-idle-timeout`` as ReviewerConfig.idle_timeout_sec: None when
+    the flag is absent, 0 when it disables the watchdog."""
+    from benchflow._utils.config import normalize_agent_idle_timeout
+
+    if value is None:
+        return None
+    try:
+        return normalize_agent_idle_timeout(value) or 0
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "expected whole seconds, 0 or 'none'", param_hint="--reviewer-idle-timeout"
+        ) from exc
+
+
+def reviewer_from_cli(**options: object) -> "ReviewerConfig | None":
     """Retain only explicit overrides, preserving a YAML reviewer's other fields."""
+    from benchflow.review.options import ReviewerConfig
+
     supplied = {key: value for key, value in options.items() if value is not None}
     if not supplied:
         return None

@@ -1,0 +1,261 @@
+{
+  "source": "engine-bench-1015 raw/trials/trials-jobs.tar.gz: jobs/pre-r0-043-py-0.8-oracle-sidecar/2026-10-16__04-22-27",
+  "arm": "py-0.8",
+  "agent": "oracle",
+  "task": "sidecar",
+  "job_name": "2026-10-16__04-22-27",
+  "files": {
+    "summary.json": {
+      "job_name": "2026-10-16__04-22-27",
+      "reviewer": {
+        "agent": "opencode",
+        "model": null,
+        "reasoning_effort": null,
+        "environment": "docker",
+        "timeout_sec": 1800,
+        "idle_timeout_sec": 600,
+        "concurrency": 4,
+        "image": "python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91",
+        "open_network": false,
+        "agent_env": {},
+        "agent_env_keys": [],
+        "ran": false
+      },
+      "agent": "oracle",
+      "codex_apps_policy": null,
+      "model": null,
+      "environment": "docker",
+      "concurrency": 1,
+      "agent_idle_timeout_sec": 600,
+      "usage_tracking": {
+        "requested": "auto"
+      },
+      "loop": {
+        "strategy": "single-shot"
+      },
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "errored": 0,
+      "verifier_errored": 0,
+      "unscored": 0,
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "idle_timeout": 0,
+      "error_categories": null,
+      "verifier_error_categories": null,
+      "integration_failures": {
+        "total": 0,
+        "by_cause": {}
+      },
+      "score": "100.0%",
+      "score_ratio": 1,
+      "score_excl_errors": "100.0%",
+      "score_excl_errors_ratio": 1,
+      "mean_reward": 1,
+      "elapsed_sec": 19.923937559127808,
+      "memory_score": null,
+      "memory_score_coverage": 0,
+      "memory": {
+        "scored": 0,
+        "avg_score": null,
+        "score": null
+      },
+      "memory_scores": {},
+      "total_skill_invocations": 0,
+      "avg_skill_invocations": 0,
+      "total_input_tokens": 0,
+      "total_output_tokens": 0,
+      "total_cache_read_tokens": 0,
+      "total_cache_creation_tokens": 0,
+      "total_tokens": 0,
+      "total_cost_usd": null,
+      "avg_cost_per_trial_usd": null,
+      "telemetry_coverage": 0,
+      "solve_rates": {
+        "success_rule": "passed (reward = 1)",
+        "solve_threshold": null,
+        "tasks": 1,
+        "trials": 1,
+        "unscored": 0,
+        "controls_excluded": 0,
+        "min_trials_per_task": 1,
+        "max_trials_per_task": 1,
+        "solve_rate": 1,
+        "solve_rate_interval": [
+          0.20654329147389294,
+          1
+        ],
+        "solve_rate_interval_method": "wilson",
+        "nonbinary_rewards": 0,
+        "ks": [
+          1
+        ],
+        "pass_at_k": {
+          "1": 1
+        },
+        "pass_hat_k": {
+          "1": 1
+        },
+        "tasks_at_k": {
+          "1": 1
+        },
+        "tasks_short_at_k": {
+          "1": 0
+        },
+        "caveats": []
+      },
+      "total_tool_calls": 0,
+      "avg_tool_calls_per_task": 0,
+      "max_tool_calls_per_task": 0,
+      "total_trajectory_steps": 1,
+      "avg_trajectory_steps_per_task": 1,
+      "max_trajectory_steps_per_task": 1,
+      "total_trajectory_tool_call_steps": 0,
+      "avg_trajectory_tool_call_steps_per_task": 0,
+      "max_trajectory_tool_call_steps_per_task": 0,
+      "trajectory_summary_coverage": 1,
+      "timing_coverage": 1,
+      "environment_setup_time_sec": 3.3,
+      "avg_environment_setup_time_sec": 3.3,
+      "max_environment_setup_time_sec": 3.3,
+      "agent_setup_time_sec": 0,
+      "avg_agent_setup_time_sec": null,
+      "max_agent_setup_time_sec": null,
+      "agent_execution_time_sec": 0.4,
+      "avg_agent_execution_time_sec": 0.4,
+      "max_agent_execution_time_sec": 0.4,
+      "verifier_time_sec": 3.8,
+      "avg_verifier_time_sec": 3.8,
+      "max_verifier_time_sec": 3.8,
+      "total_time_sec": 19.9,
+      "avg_total_time_sec": 19.9,
+      "max_total_time_sec": 19.9
+    },
+    "sidecar__5c6e77a9/result.json": {
+      "task_name": "sidecar",
+      "rollout_name": "sidecar__5c6e77a9",
+      "rewards": {
+        "reward": 1
+      },
+      "agent": "oracle",
+      "agent_name": "oracle",
+      "model": null,
+      "skill_mode": "no-skill",
+      "skill_source": "none",
+      "requested_skills_dir": null,
+      "effective_skills_dir": null,
+      "skills_sandbox_dir": null,
+      "include_task_skills": false,
+      "n_tool_calls": 0,
+      "n_skill_invocations": 0,
+      "n_prompts": 1,
+      "agent_result": {
+        "n_tool_calls": 0,
+        "n_skill_invocations": 0,
+        "n_prompts": 1,
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": null,
+        "usage_source": "unavailable",
+        "price_source": null
+      },
+      "final_metrics": {
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "total_cached_tokens": 0,
+        "total_cost_usd": null
+      },
+      "trajectory_summary": {
+        "steps": 1,
+        "tool_call_steps": 0,
+        "user_message_steps": 0,
+        "agent_message_steps": 0,
+        "agent_thought_steps": 0,
+        "other_steps": 1,
+        "event_type_counts": {
+          "oracle": 1
+        },
+        "tool_call_status_counts": {},
+        "partial_trajectory": false,
+        "trajectory_source": null
+      },
+      "usage_tracking": {
+        "requested": "auto",
+        "status": "unavailable",
+        "environment": "docker",
+        "endpoint_kind": "none",
+        "usage_source": "unavailable"
+      },
+      "error": null,
+      "error_category": null,
+      "verifier_error": null,
+      "verifier_error_category": null,
+      "export_error": null,
+      "usage_limit_info": null,
+      "integration_failure_info": null,
+      "idle_timeout_info": null,
+      "agent_timeout_info": null,
+      "sandbox_startup_info": null,
+      "transport_error_info": null,
+      "verifier_timeout_info": null,
+      "api_error_info": null,
+      "suspected_api_error_info": null,
+      "partial_trajectory": false,
+      "trajectory_source": null,
+      "started_at": "2026-10-16 04:22:27.580027",
+      "finished_at": "2026-10-16 04:22:47.459286",
+      "timing": {
+        "environment_setup": 3.3,
+        "agent_execution": 0.4,
+        "verifier": 3.8,
+        "total": 19.9
+      },
+      "scenes": [
+        {
+          "name": "default",
+          "skills_dir": null,
+          "roles": [
+            {
+              "name": "agent",
+              "agent": "oracle",
+              "model": null,
+              "reasoning_effort": null,
+              "timeout_sec": null,
+              "idle_timeout_sec": null,
+              "skills_dir": null,
+              "capabilities": null,
+              "env_keys": []
+            }
+          ],
+          "turns": [
+            {
+              "role": "agent",
+              "has_prompt": false
+            }
+          ]
+        }
+      ],
+      "loop": {
+        "strategy": "single-shot"
+      },
+      "task_digest": "sha256:7c79252011d76b50e93690027c7070562bee26ef547c36d4fe800bb5a8b9b50e",
+      "sandbox_id": null
+    },
+    "sidecar__5c6e77a9/timing.json": {
+      "environment_setup": 3.3,
+      "agent_execution": 0.4,
+      "verifier": 3.8,
+      "total": 19.9
+    },
+    "sidecar__5c6e77a9/prompts.json": [
+      "A service named `api` answers HTTP on port 8000 beside your container. Fetch `http://api:8000/token` and write the response body, exactly, to `/app/token.txt`."
+    ],
+    "sidecar__5c6e77a9/verifier/reward.txt": "1\n",
+    "sidecar__5c6e77a9/verifier/test-stdout.txt": ""
+  }
+}

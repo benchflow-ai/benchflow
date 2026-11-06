@@ -11,7 +11,6 @@ import pytest
 from benchflow.evaluation import (
     Evaluation,
     EvaluationConfig,
-    ResumeMismatchError,
     RetryConfig,
 )
 from benchflow.models import RunResult
@@ -125,10 +124,14 @@ class TestRetryConfig:
             "Sandbox startup failed: Sandbox disappeared during Daytona DinD startup"
         )
 
-    def test_should_retry_verifier_timeout(self):
-        """Guards retry parity for verifier timeout infra failures."""
+    def test_a_verifier_timeout_is_not_retried_within_the_run(self):
+        """DX-a (DF-p5-cli-craft-17): a verifier timeout never
+        re-runs the trial, in the run or on resume, since that is a second
+        agent attempt; a preserved trial gets one verifier-only re-run through
+        verifier recovery. A verifier that never started is still retried."""
         cfg = RetryConfig()
-        assert cfg.should_retry_verifier_error("verifier timed out after 60s")
+        assert not cfg.should_retry_verifier_error("verifier timed out after 60s")
+        assert not cfg.reruns_verifier_error_on_resume("verifier timed out after 60s")
 
     def test_should_retry_verifier_download_failure(self):
         """Guards retry parity for verifier transport/download failures."""
@@ -239,16 +242,15 @@ class TestRunTaskLoop:
 
     @pytest.mark.asyncio
     async def test_exhausts_retries(self, job_factory):
-        """SDK called 1 + max_retries times when all attempts fail with retryable error."""
+        """The rollout runs 1 + max_retries times when every attempt fails retryably."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
         fail_result = RunResult(
             task_name="task-0", error="Agent install failed (rc=1): boom"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(return_value=fail_result)
+        job._run_single_task = AsyncMock(return_value=fail_result)
 
         result = await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 3  # 1 + 2 retries
+        assert job._run_single_task.call_count == 3  # 1 + 2 retries
         assert result.error == "Agent install failed (rc=1): boom"
 
     @pytest.mark.asyncio
@@ -258,11 +260,10 @@ class TestRunTaskLoop:
         timeout_result = RunResult(
             task_name="task-0", error="Agent timed out after 900.0s"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(return_value=timeout_result)
+        job._run_single_task = AsyncMock(return_value=timeout_result)
 
         result = await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 1
+        assert job._run_single_task.call_count == 1
         assert result.error == "Agent timed out after 900.0s"
 
     @pytest.mark.asyncio
@@ -275,44 +276,42 @@ class TestRunTaskLoop:
             rewards={"reward": 0.0},
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[idle_result, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[idle_result, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
 
-        assert job._sdk.run.call_count == 2
+        assert job._run_single_task.call_count == 2
         assert result.rewards == {"reward": 1.0}
 
     @pytest.mark.asyncio
-    async def test_verifier_timeout_retries_then_succeeds(self, job_factory):
-        """Guards verifier timeout infra retry before marking task terminal."""
+    async def test_a_verifier_timeout_runs_once(self, job_factory):
+        """DX-a (DF-p5-cli-craft-17): a verifier timeout ends the task's
+        attempts; it is the task's, and another attempt times out again."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
         timeout_result = RunResult(
             task_name="task-0",
             verifier_error="verifier timed out after 60s",
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[timeout_result, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[timeout_result, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
 
-        assert job._sdk.run.call_count == 2
-        assert result.rewards == {"reward": 1.0}
+        assert job._run_single_task.call_count == 1
+        assert result.verifier_error == "verifier timed out after 60s"
 
     @pytest.mark.asyncio
     async def test_succeeds_on_retry(self, job_factory):
-        """SDK fails once then succeeds — returns success result."""
+        """The rollout fails once then succeeds — returns success result."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
         fail_result = RunResult(
             task_name="task-0", error="Agent install failed (rc=1): boom"
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[fail_result, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[fail_result, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 2
+        assert job._run_single_task.call_count == 2
         assert result.rewards == {"reward": 1.0}
 
     @pytest.mark.asyncio
@@ -325,19 +324,18 @@ class TestRunTaskLoop:
             error_category="pipe_closed",
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[marker_timeout, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[marker_timeout, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
 
-        assert job._sdk.run.call_count == 2
+        assert job._run_single_task.call_count == 2
         assert result.rewards == {"reward": 1.0}
 
 
 class TestJobResumeScoped:
     """Tests for Evaluation._get_completed_tasks scoped to job directory.
 
-    Guards ENG-160: orphan retry artifacts and cross-job contamination.
+    Orphan retry artifacts and cross-job contamination.
     """
 
     def _setup_job(self, tmp_path, job_name="my-job"):
@@ -362,6 +360,7 @@ class TestJobResumeScoped:
         rollout_dir.mkdir(parents=True, exist_ok=True)
         data = {
             "task_name": task_name,
+            "rollout_name": rollout_dir.name,
             "rewards": rewards,
             "error": error,
             "verifier_error": verifier_error,
@@ -373,7 +372,7 @@ class TestJobResumeScoped:
     def test_resume_scoped_to_job_dir(self, tmp_path):
         """_get_completed_tasks only finds results inside the current job directory.
 
-        Guards ENG-160: prevents cross-job contamination on resume.
+        Prevents cross-job contamination on resume.
         """
         jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path, "run-1")
         self._write_result(job_dir, "task-a", rewards={"reward": 1.0})
@@ -393,7 +392,7 @@ class TestJobResumeScoped:
     def test_retry_dedup_picks_latest(self, tmp_path):
         """When retries create multiple result.json for the same task, newest wins.
 
-        Guards ENG-160: orphan retry artifacts deduped by mtime.
+        Orphan retry artifacts deduped by mtime.
         """
         jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path)
         # First attempt — errored (no reward).
@@ -434,11 +433,12 @@ class TestJobResumeScoped:
         assert len(completed) == 0
 
     @pytest.mark.asyncio
-    async def test_config_mismatch_refuses_scoped(self, tmp_path):
+    async def test_config_mismatch_sets_aside_scoped(self, tmp_path):
         """Resume detects an agent mismatch from config.json inside the current
-        job dir and refuses, rather than blending a different agent's scores.
+        job dir and sets that trial aside, rather than blending a different
+        agent's scores (P2: before, it refused the run).
 
-        Guards ENG-160: config check scoped to job dir, not jobs_dir root.
+        Config check scoped to job dir, not jobs_dir root.
         Guards PR #789 (CLI error-handling hardening).
         """
         jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path, "my-job")
@@ -452,18 +452,24 @@ class TestJobResumeScoped:
                 'version = "1.0"\n[verifier]\ntimeout_sec = 60\n'
                 "[agent]\ntimeout_sec = 60\n[environment]\n"
             )
-        cfg = EvaluationConfig(agent="new-agent")
+        cfg = EvaluationConfig(agent="new-agent --run")
         job = Evaluation(
             tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="my-job"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
-            return_value=RunResult(task_name="task-b", rewards={"reward": 1.0})
+        job._run_single_task = AsyncMock(
+            side_effect=lambda task_path, _cfg: RunResult(
+                task_name=task_path.name, rewards={"reward": 1.0}
+            )
         )
         # The recorded agent ("old-agent") is named, proving detection is scoped
-        # to this job dir, and the run refuses instead of mixing results.
-        with pytest.raises(ResumeMismatchError, match="old-agent"):
-            await job.run()
+        # to this job dir; its trial is kept aside, not reused, and both tasks
+        # run with this agent.
+        result = await job.run()
+        assert (result.reused, result.ran) == (0, 2)
+        (dest,) = (job_dir / ".set-aside").iterdir()
+        assert (dest / result_file.parent.name / "result.json").is_file()
+        reason = json.loads((dest / "set-aside.json").read_text())["reason"]
+        assert "old-agent" in reason
 
     def test_empty_job_dir_returns_empty(self, tmp_path):
         """Non-existent job directory returns empty completed dict."""
@@ -478,7 +484,7 @@ class TestJobResumeScoped:
 class TestResolveJobName:
     """Tests for Evaluation._resolve_job_name — auto-detect job_name for resume.
 
-    Guards ENG-160: auto-generated job_name must be stable across resume calls.
+    Auto-generated job_name must be stable across resume calls.
     """
 
     def test_no_existing_dirs_generates_timestamp(self, tmp_path):
@@ -498,7 +504,7 @@ class TestResolveJobName:
     def test_single_job_dir_reuses_it(self, tmp_path):
         """Exactly one existing job dir → reuse it for stable resume.
 
-        Guards ENG-160: second Evaluation call resumes into same directory.
+        Second Evaluation call resumes into same directory.
         """
         jobs_dir = tmp_path / "jobs"
         (jobs_dir / "2026-05-23__12-00-00").mkdir(parents=True)
@@ -508,7 +514,7 @@ class TestResolveJobName:
     def test_multiple_job_dirs_picks_latest(self, tmp_path):
         """Multiple job dirs → pick the most recent (alphabetically last).
 
-        Guards ENG-160: consistent resume target when multiple runs exist.
+        Consistent resume target when multiple runs exist.
         """
         jobs_dir = tmp_path / "jobs"
         (jobs_dir / "2026-05-23__10-00-00").mkdir(parents=True)
@@ -525,7 +531,7 @@ class TestResolveJobName:
 
 
 class TestSummaryInJobDir:
-    """Guards ENG-160: summary.json written inside job directory.
+    """summary.json written inside job directory.
 
     Verifies summary.json is written to both jobs_dir/job_name/summary.json
     (self-contained) and jobs_dir/summary.json (backward compat).
@@ -545,8 +551,7 @@ class TestSummaryInJobDir:
         job = Evaluation(
             tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="test-run"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             return_value=RunResult(task_name="task-0", rewards={"reward": 1.0})
         )
         await job.run()
@@ -591,7 +596,7 @@ class TestJobRunOrchestration:
         lock = asyncio.Lock()
         enough_in_flight = asyncio.Event()
 
-        async def fake_sdk_run(*args, **kwargs):
+        async def fake_run_single_task(*_args):
             nonlocal counter, max_in_flight
             async with lock:
                 counter += 1
@@ -606,8 +611,7 @@ class TestJobRunOrchestration:
                 counter -= 1
             return RunResult(task_name="task", rewards={"reward": 1.0})
 
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=fake_sdk_run)
+        job._run_single_task = AsyncMock(side_effect=fake_run_single_task)
 
         await job.run()
         assert max_in_flight == concurrency
@@ -620,12 +624,11 @@ class TestJobRunOrchestration:
         catches a non-classified exception, increments ``errored``, and logs.
 
         The synthesized RunResult(error="Unexpected: ...") is built in-Python
-        and never written to result.json (SDK._build_result never runs when
-        SDK.run raises), so we assert via EvaluationResult and caplog, not disk.
+        and never written to result.json (the rollout never builds a result
+        when it raises), so we assert via EvaluationResult and caplog, not disk.
         """
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=RuntimeError("boom"))
+        job._run_single_task = AsyncMock(side_effect=RuntimeError("boom"))
 
         with caplog.at_level(logging.ERROR):
             result = await job.run()
@@ -654,11 +657,10 @@ class TestJobRunOrchestration:
             "task-2": RunResult(task_name="task-2", error="agent crashed"),
         }
 
-        async def fake_run(*, task_path, **kwargs):
+        async def fake_run(task_path, _cfg):
             return outcomes[task_path.name]
 
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=fake_run)
+        job._run_single_task = AsyncMock(side_effect=fake_run)
 
         result = await job.run()
 
@@ -678,8 +680,9 @@ class TestJobRunOrchestration:
         self, tmp_path, caplog
     ):
         """Partial credit must survive the binarized pass/fail view: run()
-        computes mean_reward over scored rollouts (errors excluded, not
-        zeroed), the per-task lines carry reward=, error lines don't, and the
+        computes mean_reward over every rollout (an errored one counts 0, as
+        PY8 P4 counts every trial) and mean_reward_scored_only over the scored
+        ones, the per-task lines carry reward=, error lines don't, and the
         job-complete line carries mean_reward=.
         """
         job = self._make_job(tmp_path, n_tasks=3, concurrency=1)
@@ -689,40 +692,43 @@ class TestJobRunOrchestration:
             "task-2": RunResult(task_name="task-2", error="agent crashed"),
         }
 
-        async def fake_run(*, task_path, **kwargs):
+        async def fake_run(task_path, _cfg):
             return outcomes[task_path.name]
 
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=fake_run)
+        job._run_single_task = AsyncMock(side_effect=fake_run)
 
         with caplog.at_level(logging.INFO, logger="benchflow.evaluation"):
             result = await job.run()
 
-        assert result.mean_reward == pytest.approx(0.65)
+        assert result.mean_reward == pytest.approx(1.3 / 3)
+        assert result.mean_reward_scored_only == pytest.approx(0.65)
         assert "[PASS] task-0 (reward=1.00, tools=0)" in caplog.text
         assert "[FAIL] task-1 (reward=0.30, tools=0)" in caplog.text
         assert "[ERR] task-2 (tools=0)" in caplog.text
-        assert "mean_reward=0.65" in caplog.text
+        assert "mean_reward=0.43" in caplog.text
         # The machine-readable surface must agree with the console.
         summary = json.loads((job._jobs_dir / "summary.json").read_text())
-        assert summary["mean_reward"] == pytest.approx(0.65)
+        assert summary["mean_reward"] == pytest.approx(1.3 / 3)
+        assert summary["mean_reward_n"] == 3
+        assert summary["mean_reward_scored_only"] == pytest.approx(0.65)
+        assert summary["mean_reward_scored_only_n"] == 2
 
     @pytest.mark.asyncio
-    async def test_run_mean_reward_none_when_nothing_scored(self, tmp_path, caplog):
-        """An all-error job has no scored rollouts: mean_reward must be None
-        and the job-complete line must omit the field (a fabricated 0.00 would
-        read as a real capability result)."""
+    async def test_run_mean_reward_when_nothing_scored(self, tmp_path, caplog):
+        """An all-error job has no scored rollouts: every rollout counts 0, so
+        mean_reward is 0.0 (as its score is 0/1), and mean_reward_scored_only
+        is None, never a fabricated 0 (PY8 P4)."""
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             return_value=RunResult(task_name="task-0", error="agent crashed")
         )
 
         with caplog.at_level(logging.INFO, logger="benchflow.evaluation"):
             result = await job.run()
 
-        assert result.mean_reward is None
-        assert "mean_reward=" not in caplog.text
+        assert result.mean_reward == 0.0
+        assert result.mean_reward_scored_only is None
+        assert "mean_reward=0.00" in caplog.text
 
     @pytest.mark.asyncio
     async def test_error_and_verifier_error_does_not_crash_invariant(self, tmp_path):
@@ -733,8 +739,7 @@ class TestJobRunOrchestration:
         Guards the fix from PR #320 for audit Finding 6.
         """
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             return_value=RunResult(
                 task_name="task-0",
                 rewards=None,
@@ -758,8 +763,7 @@ class TestJobRunOrchestration:
     @pytest.mark.asyncio
     async def test_summary_json_includes_usage_aggregation(self, tmp_path):
         job = self._make_job(tmp_path, n_tasks=3, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             side_effect=[
                 RunResult(
                     task_name="task-0",
@@ -862,7 +866,10 @@ class TestJobRunOrchestration:
             rdir = job_dir / entry["task_name"]
             rdir.mkdir(parents=True, exist_ok=True)
             (rdir / "result.json").write_text(
-                json.dumps({**entry, "rewards": {"reward": 1.0}}, indent=2)
+                json.dumps(
+                    {**entry, "rollout_name": rdir.name, "rewards": {"reward": 1.0}},
+                    indent=2,
+                )
             )
 
         await job.run()
@@ -872,7 +879,7 @@ class TestJobRunOrchestration:
         assert summary["total_tool_calls"] == 12
         assert summary["avg_tool_calls_per_task"] == pytest.approx(4.0)
         assert summary["max_tool_calls_per_task"] == 6
-        # Harbor-style trajectory aggregates track every ACP event and the
+        # Trajectory aggregates track every ACP event and the
         # subset of events that carried tool calls.
         assert summary["total_trajectory_steps"] == 27
         assert summary["avg_trajectory_steps_per_task"] == pytest.approx(9.0)
@@ -901,8 +908,7 @@ class TestJobRunOrchestration:
         while tool-call aggregation still works.
         """
         job = self._make_job(tmp_path, n_tasks=2, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             side_effect=[
                 RunResult(
                     task_name="task-0",
@@ -928,3 +934,79 @@ class TestJobRunOrchestration:
         assert summary["agent_execution_time_sec"] == 0.0
         assert summary["avg_agent_execution_time_sec"] is None
         assert summary["max_agent_execution_time_sec"] is None
+
+
+class TestResolveJobNameSkipsOtherRuns:
+    """A plain run resumes only its own kind of job.
+
+    Guards the dx/sdk fix of two first-run findings (dx/first-run, 2026-09-30):
+    ``bench eval run`` after ``bench eval smoke`` resumed into ``jobs/smoke``
+    (a folder of jobs, picked as the alphabetically last folder) and blended
+    a hello-world pass into a citation-check score; and the documented
+    oracle-then-nop pair refused its second command, having auto-resumed the
+    oracle job.
+    """
+
+    @staticmethod
+    def _job(jobs_dir, name, *, agent="oracle", model=None, tasks_dir="tasks"):
+        folder = jobs_dir / name
+        folder.mkdir(parents=True)
+        (folder / "evaluation.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "tasks_dir": str(tasks_dir),
+                    "job_name": name,
+                    "config": {"agent": agent, "model": model},
+                }
+            )
+        )
+        return folder
+
+    def test_a_folder_of_jobs_is_never_resumed(self, tmp_path):
+        jobs_dir = tmp_path / "jobs"
+        (jobs_dir / "smoke" / "2026-09-30__05-00-00").mkdir(parents=True)
+        self._job(jobs_dir, "2026-09-30__04-00-00", tasks_dir=tmp_path / "tasks")
+        name = Evaluation._resolve_job_name(
+            jobs_dir, EvaluationConfig(agent="oracle"), tmp_path / "tasks"
+        )
+        assert name == "2026-09-30__04-00-00"
+        only_smoke = tmp_path / "only"
+        (only_smoke / "smoke" / "2026-09-30__05-00-00").mkdir(parents=True)
+        assert Evaluation._resolve_job_name(only_smoke) != "smoke"
+
+    def test_another_agent_starts_a_new_job(self, tmp_path, caplog):
+        jobs_dir = tmp_path / "jobs"
+        self._job(jobs_dir, "2026-09-30__05-21-59", tasks_dir=tmp_path / "tasks")
+        with caplog.at_level("WARNING"):
+            name = Evaluation._resolve_job_name(
+                jobs_dir, EvaluationConfig(agent="nop"), tmp_path / "tasks"
+            )
+        assert name != "2026-09-30__05-21-59" and "__" in name
+        assert "agent='oracle' (this run: 'nop')" in caplog.text
+        assert "2026-09-30__05-21-59" in caplog.text
+
+    def test_other_tasks_start_a_new_job(self, tmp_path):
+        jobs_dir = tmp_path / "jobs"
+        self._job(jobs_dir, "2026-09-30__05-21-59", tasks_dir=tmp_path / "a")
+        name = Evaluation._resolve_job_name(
+            jobs_dir, EvaluationConfig(agent="oracle"), tmp_path / "b"
+        )
+        assert name != "2026-09-30__05-21-59"
+
+    def test_a_named_job_with_trials_still_resumes(self, tmp_path):
+        """A folder with BenchFlow trial folders is a job, whatever its name."""
+        jobs_dir = tmp_path / "jobs"
+        (jobs_dir / "old-run" / "task-a__1").mkdir(parents=True)
+        (jobs_dir / "old-run" / "task-a__1" / "result.json").write_text(
+            '{"rollout_name": "task-a__1"}'
+        )
+        assert Evaluation._resolve_job_name(jobs_dir) == "old-run"
+
+    def test_the_same_run_resumes(self, tmp_path):
+        jobs_dir = tmp_path / "jobs"
+        self._job(jobs_dir, "2026-09-30__05-21-59", tasks_dir=tmp_path / "tasks")
+        name = Evaluation._resolve_job_name(
+            jobs_dir, EvaluationConfig(agent="oracle"), tmp_path / "tasks"
+        )
+        assert name == "2026-09-30__05-21-59"

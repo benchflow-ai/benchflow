@@ -1,7 +1,7 @@
 """Workspace-attachment behavior for ``bench traj upload``.
 
 The feature zips the session's workspace folder into the capture as
-``workspace/<name>.zip``: auto-detected from the session's recorded cwd,
+``workspace/<name>.zip``: explicitly selected by the contributor,
 optional and skippable, capped at 1 GiB before compression, archived without
 content redaction but with VCS/dependency/secret-shaped names excluded, and
 always cleaned up with the staging directory.
@@ -67,7 +67,7 @@ def _worktree_workspace(tmp_path: Path) -> Path:
     """A linked git worktree: ``.git`` is a pointer FILE, not a directory."""
     folder = tmp_path / "linked-worktree"
     folder.mkdir()
-    (folder / ".git").write_text("gitdir: /Users/someone/repo/.git/worktrees/x\n")
+    (folder / ".git").write_text("gitdir: /Users/user/repo/.git/worktrees/x\n")
     (folder / "code.py").write_text("print('hi')\n")
     return folder
 
@@ -283,10 +283,10 @@ def test_validator_zip_magic_rejects_non_zip_bytes(tmp_path: Path) -> None:
     _validate_zip_magic(real, "workspace/real.zip")
 
 
-def test_cli_attaches_detected_workspace_end_to_end(
+def test_cli_attaches_selected_workspace_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Claude-style cwd detection feeds the zip through the whole client flow."""
+    """An explicit folder selection feeds the zip through the whole client flow."""
     folder = _workspace(tmp_path)
     session = _session(tmp_path, cwd=folder)
     monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
@@ -305,7 +305,12 @@ def test_cli_attaches_detected_workspace_end_to_end(
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: client)
-    result = runner.invoke(app, _upload_command(session, "--no-repo", "--no-wait"))
+    result = runner.invoke(
+        app,
+        _upload_command(
+            session, "--no-repo", "--no-wait", "--workspace-dir", str(folder)
+        ),
+    )
 
     assert result.exit_code == 0, result.output
     assert "Workspace attached: workspace/demo-workspace.zip" in result.output.replace(
@@ -341,7 +346,12 @@ def test_cli_no_workspace_flag_skips_attachment(
 def test_cli_dry_run_lists_workspace_archive(tmp_path: Path) -> None:
     folder = _workspace(tmp_path)
     session = _session(tmp_path, cwd=folder)
-    result = runner.invoke(app, _upload_command(session, "--no-repo", "--dry-run"))
+    result = runner.invoke(
+        app,
+        _upload_command(
+            session, "--no-repo", "--dry-run", "--workspace-dir", str(folder)
+        ),
+    )
 
     assert result.exit_code == 0, result.output
     flattened = result.output.replace("\n", "")
@@ -355,7 +365,12 @@ def test_cli_oversized_workspace_prints_skip_and_uploads_trajectory(
     folder = _workspace(tmp_path)
     session = _session(tmp_path, cwd=folder)
     monkeypatch.setattr(capture_module, "MAX_ATTACHMENT_BYTES", 4)
-    result = runner.invoke(app, _upload_command(session, "--no-repo", "--dry-run"))
+    result = runner.invoke(
+        app,
+        _upload_command(
+            session, "--no-repo", "--dry-run", "--workspace-dir", str(folder)
+        ),
+    )
 
     assert result.exit_code == 0, result.output
     flattened = result.output.replace("\n", "")

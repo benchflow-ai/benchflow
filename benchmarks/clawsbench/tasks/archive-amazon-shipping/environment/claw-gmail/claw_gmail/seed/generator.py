@@ -420,11 +420,11 @@ SCENARIOS = {
 import os
 import pathlib
 
-_harbor_dir = pathlib.Path(os.environ["TASKS_DIR"]) if "TASKS_DIR" in os.environ else pathlib.Path(__file__).resolve().parents[5] / "tasks"
+_tasks_dir = pathlib.Path(os.environ["TASKS_DIR"]) if "TASKS_DIR" in os.environ else pathlib.Path(__file__).resolve().parents[5] / "tasks"
 
 
 def _make_task_scenario(task_dir_name: str):
-    """Create a scenario function that seeds data for a specific harbor task."""
+    """Create a scenario function that seeds data for a specific task."""
     def _scenario(db, fake, user, personas, *, db_path=None, seed_val=42):
         return seed_task_scenario(db, fake, user, personas, task_dir_name,
                                   db_path=db_path, seed_val=seed_val)
@@ -433,8 +433,8 @@ def _make_task_scenario(task_dir_name: str):
     return _scenario
 
 
-if _harbor_dir.is_dir():
-    for _task_dir in sorted(_harbor_dir.iterdir()):
+if _tasks_dir.is_dir():
+    for _task_dir in sorted(_tasks_dir.iterdir()):
         if _task_dir.is_dir() and (_task_dir / "data" / "needles.py").exists():
             SCENARIOS[f"task:{_task_dir.name}"] = _make_task_scenario(_task_dir.name)
 

@@ -14,6 +14,7 @@ import yaml
 from benchflow._utils.benchmark_repos import ResolvedSource
 from benchflow.adapters.source import adapt_resolved_source_if_needed
 from benchflow.task import Task
+from tests._package_files import package_path
 
 
 def _resolved(
@@ -185,7 +186,7 @@ params:
     assert "rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/" in dockerfile
     assert "global_configs_example.py" in dockerfile
     assert "global_configs.py" in dockerfile
-    assert 'cp "$(command -v uv)" /usr/local/bin/uv' in dockerfile
+    assert "cp /opt/benchflow/uv/0.13.4/uv /usr/local/bin/uv" in dockerfile
     assert "chmod -R a+rwX /workspace/utils/local_servers" in dockerfile
     assert "chmod -R a+rwX /workspace/agent_workspace" in task_toml
     assert 'chmod -R go-rwx "$private"' in setup_command
@@ -350,30 +351,30 @@ def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
             "plain",
         )
         msg["From"] = "Customer Support Team"
-        msg["To"] = "tyler_perez28@mcp.com"
+        msg["To"] = "recipient@example.com"
         msg["Subject"] = "Survey"
 
         smtp = smtplib.SMTP("127.0.0.1", 12587, timeout=10)
-        smtp.send_message(msg, from_addr="jason_cruz@mcp.com")
+        smtp.send_message(msg, from_addr="sender@example.com")
         smtp.quit()
 
         imap = imaplib.IMAP4("127.0.0.1", 11143, timeout=10)
-        imap.login("jason_cruz@mcp.com", "anything")
+        imap.login("sender@example.com", "anything")
         assert imap.select("Sent")[0] == "OK"
         status, nums = imap.search(None, "ALL")
         assert status == "OK"
         assert nums and nums[0] == b"1"
         status, data = imap.fetch(b"1", "(RFC822)")
         assert status == "OK"
-        assert b"tyler_perez28@mcp.com" in data[0][1]
+        assert b"recipient@example.com" in data[0][1]
         assert b"docs.google.com/forms" in data[0][1]
         status, _ = imap.append(
             "Sent",
             None,
             None,
             (
-                b"From: jason_cruz@mcp.com\r\n"
-                b"To: followup@mcp.com\r\n"
+                b"From: sender@example.com\r\n"
+                b"To: followup@example.com\r\n"
                 b"Subject: Follow-up\r\n\r\n"
                 b"Thanks"
             ),
@@ -384,7 +385,7 @@ def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
         assert nums and nums[0] == b"1 2"
         status, data = imap.fetch(b"2", "(RFC822)")
         assert status == "OK"
-        assert b"followup@mcp.com" in data[0][1]
+        assert b"followup@example.com" in data[0][1]
         imap.logout()
     finally:
         proc.terminate()
@@ -397,13 +398,8 @@ def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
 
 def test_compose_build_tags_main_image_for_sidecar_reuse() -> None:
     """Compose sidecars can reference ${MAIN_IMAGE_NAME} without registry pulls."""
-    compose_path = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "benchflow"
-        / "sandbox"
-        / "_compose_files"
-        / "docker-compose-build.yaml"
+    compose_path = package_path(
+        "sandbox", "_compose_files", "docker-compose-build.yaml"
     )
     compose = yaml.safe_load(compose_path.read_text())
     assert compose["services"]["main"]["image"] == "${MAIN_IMAGE_NAME}"
@@ -866,13 +862,7 @@ params:
 def _run_container_helper(
     workspace: Path, argv: list[str], env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
-    module = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "benchflow"
-        / "adapters"
-        / "_toolathlon_container.py"
-    )
+    module = package_path("adapters", "_toolathlon_container.py")
     full_env = {"PATH": os.environ["PATH"], "TOOLATHLON_WORKSPACE": str(workspace)}
     full_env.update(env or {})
     return subprocess.run(

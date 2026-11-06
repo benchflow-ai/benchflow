@@ -1,4 +1,9 @@
-"""network_mode='denylist': a root-owned loopback proxy keeps listed URLs out of the agent's reach.
+"""network_mode='denylist' and 'allowlist': a root-owned loopback proxy filters the agent's egress.
+
+Denylist: listed URLs and hosts are unreachable, everything else is open.
+Allowlist: only listed hosts, IPs and CIDR ranges (plus the controller's model
+gateway, and the native Claude model endpoint when that client runs without a
+gateway) are reachable, and the agent's DNS is answered only for listed names.
 
 The sandbox user can only reach loopback (the uid firewall in ``lockdown``),
 so every HTTP(S) request goes through the proxy, which refuses the denylist
@@ -12,36 +17,51 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
+import logging
 import shlex
 import tempfile
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from benchflow._utils.shipped_modules import package_files
-from benchflow.sandbox._egress_policy import host_key
+from benchflow._root_python import FLAGS, root_python_pick_sh, root_python_sh
+from benchflow.sandbox._egress_denylist_proxy import host_key
+from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox.lockdown import (
+    EGRESS_ALLOW_NETWORKS_ENV,
+    EGRESS_ALLOWLIST_ENV,
     EGRESS_DENYLIST_ENV,
     _exec_failure_detail,
     _exec_return_code,
 )
+from benchflow.sandbox.lockdown import (
+    EGRESS_DNS_PORT as DNS_PORT,
+)
+from benchflow.trust.state import TRUSTED_TRANSFER, admit
+
+if TYPE_CHECKING:
+    from benchflow._utils.reachable_write import ReachablePath
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
-    "BLOCK_LOG_PATH",
     "CA_BUNDLE_PATH",
     "CA_CERT_PATH",
+    "DNS_PORT",
+    "EGRESS_ALLOWLIST_ENV",
+    "EGRESS_ALLOW_NETWORKS_ENV",
     "EGRESS_DENYLIST_ENV",
     "EGRESS_PORT",
     "TRAJECTORY_LOG_NAME",
     "EgressDenylist",
-    "EgressGuard",
+    "agent_network_sandbox_config",
     "certificate_material",
     "denylist_agent_env",
     "egress_denylist_for",
-    "egress_guard_for",
     "start_egress_denylist",
     "stop_egress_denylist",
 ]
@@ -56,7 +76,7 @@ PROXY_URL = f"http://127.0.0.1:{EGRESS_PORT}"
 NO_PROXY = "127.0.0.1,localhost,::1"
 
 _PROXY_SCRIPT = Path(__file__).with_name("_egress_denylist_proxy.py")
-BLOCK_LOG_PATH = f"{RUNTIME_DIR}/blocked.jsonl"
+_LOG_PATH = f"{RUNTIME_DIR}/blocked.jsonl"
 _PID_PATH = f"{RUNTIME_DIR}/proxy.pid"
 _STDERR_PATH = f"{RUNTIME_DIR}/stderr.log"
 _CERT_DAYS = 30
@@ -65,15 +85,52 @@ _HEALTH_POLL_SEC = 0.5
 
 @dataclass(frozen=True)
 class EgressDenylist:
-    """URL prefixes and hosts a denylist task keeps out of reach."""
+    """The agent egress policy the loopback proxy enforces.
+
+    Deny mode keeps ``blocked_urls``/``blocked_hosts`` out of reach. Allow mode
+    (``allowed_hosts`` is not None) admits only the listed entries.
+    """
 
     blocked_urls: tuple[str, ...]
     blocked_hosts: tuple[str, ...]
+    # Controller-only transport restriction; never populated from task config.
+    native_claude_model_only: bool = False
+    allowed_hosts: tuple[str, ...] | None = None
+    # Controller-only: admit the native Claude model endpoint (POST
+    # /v1/messages on api.anthropic.com) alongside an allowlist.
+    native_claude_model_origin: bool = False
+    # Controller-only values used solely to scrub proxy diagnostics. The
+    # runtime policy is root-only; these never appear in repr or block logs.
+    diagnostic_secrets: tuple[str, ...] = field(default=(), repr=False)
+
+    @property
+    def allow_mode(self) -> bool:
+        return self.allowed_hosts is not None
+
+    @property
+    def mode(self) -> str:
+        """The ``network_mode`` literal this policy enforces (for messages)."""
+        return "allowlist" if self.allow_mode else "denylist"
+
+    @property
+    def allow_networks(self) -> tuple[str, ...]:
+        """IP and CIDR entries of the allowlist, canonical, as ranges."""
+        networks: list[str] = []
+        for entry in self.allowed_hosts or ():
+            try:
+                networks.append(ipaddress.ip_network(entry, strict=False).compressed)
+            except ValueError:
+                continue
+        return tuple(networks)
 
     @property
     def inspect_hosts(self) -> tuple[str, ...]:
         """Hosts that must be TLS-intercepted so their paths are visible."""
-        hosts: dict[str, None] = {}
+        hosts: dict[str, None] = (
+            {"api.anthropic.com": None}
+            if self.native_claude_model_only or self.native_claude_model_origin
+            else {}
+        )
         for url in self.blocked_urls:
             parts = urllib.parse.urlsplit(url if "://" in url else f"https://{url}")
             if parts.hostname:
@@ -81,31 +138,16 @@ class EgressDenylist:
         return tuple(hosts)
 
 
-@dataclass(frozen=True)
-class EgressGuard:
-    """The model gateway's share of a no-web or denylist policy.
-
-    The agent can call the in-sandbox gateway directly, so in these runs it
-    serves model calls only and refuses requests for provider-side fetches.
-    ``block_log`` is where it records refusals: the denylist proxy's log, or
-    None in a no-web run, which has no proxy.
-    """
-
-    block_log: str | None
-
-
-def egress_guard_for(
-    *, no_web: bool, denylist: EgressDenylist | None
-) -> EgressGuard | None:
-    """The gateway guard a rollout's network policy calls for, or None on an open network."""
-    if denylist is not None:
-        return EgressGuard(block_log=BLOCK_LOG_PATH)
-    return EgressGuard(block_log=None) if no_web else None
-
-
 def egress_denylist_for(sandbox_config: Any) -> EgressDenylist | None:
-    """The denylist a sandbox config declares, or None for every other network mode."""
-    if getattr(sandbox_config, "network_mode", None) != "denylist":
+    """The egress policy a sandbox config declares (denylist or allowlist), else None."""
+    mode = getattr(sandbox_config, "network_mode", None)
+    if mode == "allowlist":
+        return EgressDenylist(
+            (),
+            (),
+            allowed_hosts=tuple(getattr(sandbox_config, "allowed_hosts", None) or ()),
+        )
+    if mode != "denylist":
         return None
     return EgressDenylist(
         tuple(getattr(sandbox_config, "blocked_urls", None) or ()),
@@ -113,10 +155,51 @@ def egress_denylist_for(sandbox_config: Any) -> EgressDenylist | None:
     )
 
 
-def denylist_agent_env(agent_env: dict[str, str]) -> dict[str, str]:
-    """A copy of ``agent_env`` routed through the proxy and trusting its CA."""
+def agent_network_sandbox_config(task_config: Any) -> Any:
+    """The sandbox config with the agent's network override folded in.
+
+    BenchFlow applies a sandbox network policy to the agent's uid only: agent
+    install runs before the firewall and the verifier runs as root. So an
+    ``agent.network_mode = "allowlist"`` override means the same as a
+    sandbox allowlist. An offline agent instead gets no egress proxy and a
+    loopback-only uid firewall. Keep ``allow_internet`` unchanged so setup and
+    the root verifier retain the sandbox's network. The
+    returned copy is what providers and the egress policy read; the task's own
+    config object is not modified. Returns the original object when there is
+    no override.
+    """
+    sandbox = getattr(task_config, "sandbox", None)
+    agent = getattr(task_config, "agent", None)
+    mode = getattr(agent, "network_mode", None)
+    if sandbox is None or mode not in ("allowlist", "no-network"):
+        return sandbox
+    folded = sandbox.model_copy(deep=True)
+    folded.network_mode = mode
+    folded.allowed_hosts = (
+        list(getattr(agent, "allowed_hosts", None) or []) if mode == "allowlist" else []
+    )
+    folded.blocked_urls = []
+    folded.blocked_hosts = []
+    return folded
+
+
+def denylist_agent_env(
+    agent_env: dict[str, str], policy: EgressDenylist | None = None
+) -> dict[str, str]:
+    """A copy of ``agent_env`` routed through the proxy and trusting its CA.
+
+    For an allowlist, also carries the markers that make the uid firewall
+    redirect DNS to the filter and admit the listed IP ranges directly.
+    """
+    allow: dict[str, str] = {}
+    if policy is not None and policy.allow_mode:
+        allow = {
+            EGRESS_ALLOWLIST_ENV: "1",
+            EGRESS_ALLOW_NETWORKS_ENV: ",".join(policy.allow_networks),
+        }
     return {
         **agent_env,
+        **allow,
         EGRESS_DENYLIST_ENV: "1",
         "HTTP_PROXY": PROXY_URL,
         "HTTPS_PROXY": PROXY_URL,
@@ -235,28 +318,52 @@ def certificate_material(
     return files
 
 
-def _setup_cmd(*, runtime_dir: str = RUNTIME_DIR, ca_dir: str = CA_DIR) -> str:
+# The same proxy carries native Claude OAuth on no-web tasks (native_oauth.py).
+_RUNTIME_OWNER = (
+    "The egress proxy (network_mode=denylist, or native Claude OAuth on a no-web task)"
+)
+
+
+def _setup_cmd(
+    *, runtime_dir: str = RUNTIME_DIR, ca_dir: str = CA_DIR, dns_port: int | None = None
+) -> str:
     """Root shell: validate dependencies, install the CA, and start the proxy."""
     q = shlex.quote
     ca_cert, bundle = f"{ca_dir}/ca.crt", f"{ca_dir}/ca-bundle.crt"
     log, pid = f"{runtime_dir}/blocked.jsonl", f"{runtime_dir}/proxy.pid"
     proxy = (
-        f'"$PY" {q(runtime_dir + "/proxy.py")} --port {EGRESS_PORT} '
+        f'"$PY" {" ".join(FLAGS)} {q(runtime_dir + "/proxy.py")} --port {EGRESS_PORT} '
         f"--policy {q(runtime_dir + '/policy.json')} --cert-dir {q(runtime_dir + '/certs')} "
         f"--ca-cert {q(runtime_dir + '/ca.crt')} --ca-key {q(runtime_dir + '/ca.key')} "
         f'--openssl "$OPENSSL" --log {q(log)}'
+        + (f" --dns-port {int(dns_port)}" if dns_port is not None else "")
+    )
+    # PT-C8-CONF-2: the proxy and the CA probe run on root's protected
+    # Python once the sandbox has its kit (this setup runs again on every
+    # connection, after the agent's turn too), never the image's python3
+    # from root's route; the image's is found only before the kit exists.
+    image_py = (
+        'PY="$(command -v python3 || command -v python || true)"; '
+        f'[ -n "$PY" ] || {{ echo "{_RUNTIME_OWNER} needs python3 in the task image" >&2; exit 87; }}'
+    )
+    no_kit_py = (
+        f'echo "{_RUNTIME_OWNER} needs python3 in the protected runtime" >&2; exit 87'
+    )
+    ssl_probe = root_python_sh(
+        'import ssl; print(ssl.get_default_verify_paths().cafile or "")',
+        fallback='"$PY"',
     )
     return (
-        "set -e; "
-        'PY="$(command -v python3 || command -v python || true)"; '
-        '[ -n "$PY" ] || { echo "network_mode=denylist needs python3 in the task image" >&2; exit 87; }; '
+        "set -e; cd /; "
+        + root_python_pick_sh("PY", fallback="", refuse=no_kit_py)
+        + f'; [ -n "$PY" ] || {{ {image_py}; }}; '
         'OPENSSL="$(command -v openssl || true)"; '
-        '[ -n "$OPENSSL" ] || { echo "network_mode=denylist needs openssl in the task image" >&2; exit 87; }; '
+        f'[ -n "$OPENSSL" ] || {{ echo "{_RUNTIME_OWNER} needs openssl in the task image" >&2; exit 87; }}; '
         f"mkdir -p {q(ca_dir)} && chmod 755 {q(ca_dir)}; "
         f"cp {q(runtime_dir + '/ca.crt')} {q(ca_cert)} && chmod 644 {q(ca_cert)}; "
         'SYS=""; for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do '
         'if [ -s "$f" ]; then SYS="$f"; break; fi; done; '
-        '[ -n "$SYS" ] || SYS="$("$PY" -c \'import ssl; print(ssl.get_default_verify_paths().cafile or "")\')"; '
+        f'[ -n "$SYS" ] || SYS="$( {ssl_probe} )"; '
         f'if [ -n "$SYS" ] && [ -s "$SYS" ]; then cat "$SYS" {q(ca_cert)} > {q(bundle)}; '
         f"else cp {q(ca_cert)} {q(bundle)}; fi; chmod 644 {q(bundle)}; "
         "if command -v update-ca-certificates >/dev/null 2>&1; then "
@@ -277,11 +384,15 @@ def _health_cmd() -> str:
         "opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); "
         f'sys.exit(0 if opener.open("{PROXY_URL}/healthz", timeout=2).status == 200 else 1)'
     )
-    return f'PY="$(command -v python3 || command -v python)"; "$PY" -c {shlex.quote(probe)}'
+    # Root's protected Python (PT-C8-CONF-2): this probe also runs when a
+    # connection after the agent's turn restarts the proxy.
+    return root_python_sh(
+        probe, fallback='"$(command -v python3 || command -v python)"'
+    )
 
 
 async def _run(env: Any, command: str, label: str, *, timeout_sec: int) -> None:
-    result = await env.exec(command, user="root", timeout_sec=timeout_sec)
+    result = await exec_raw(env.exec, command, user="root", timeout_sec=timeout_sec)
     rc = _exec_return_code(result)
     if rc != 0:
         raise RuntimeError(
@@ -290,32 +401,49 @@ async def _run(env: Any, command: str, label: str, *, timeout_sec: int) -> None:
 
 
 async def _upload(env: Any, files: dict[str, bytes]) -> None:
+    """Every file in one transfer, then one ``chmod 600`` over exactly those files.
+
+    A file at a time cost an upload and a chmod exec each: with one certificate
+    per inspected host that was dozens of round trips on Daytona (17-78 s per
+    oracle on denylist tasks). ``upload_dir`` is one archive there. The files
+    land in ``RUNTIME_DIR``, which the caller made root's alone (700) first, so
+    no other user can open them before the chmod.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         for name, data in files.items():
             local = Path(tmp) / name
             local.parent.mkdir(parents=True, exist_ok=True)
             local.write_bytes(data)
-            await env.upload_file(local, f"{RUNTIME_DIR}/{name}", mode="600")
+        await env.upload_dir(
+            tmp,
+            RUNTIME_DIR,
+            admission=admit(
+                env, "main", TRUSTED_TRANSFER, reason="BenchFlow's egress proxy"
+            ),
+        )
+    paths = " ".join(shlex.quote(f"{RUNTIME_DIR}/{name}") for name in files)
+    await _run(env, f"chmod 600 {paths}", "egress runtime file modes", timeout_sec=30)
 
 
 async def _wait_healthy(env: Any, timeout_sec: int) -> None:
     deadline = asyncio.get_running_loop().time() + timeout_sec
     probe = getattr(env, "exec_transient", None) or env.exec
     while True:
-        result = await probe(_health_cmd(), user="root", timeout_sec=10)
+        result = await exec_raw(probe, _health_cmd(), user="root", timeout_sec=10)
         if _exec_return_code(result) == 0:
             return
         if asyncio.get_running_loop().time() >= deadline:
             break
         await asyncio.sleep(_HEALTH_POLL_SEC)
-    tail = await env.exec(
+    tail = await exec_raw(
+        env.exec,
         f"tail -c 2000 {shlex.quote(_STDERR_PATH)} 2>/dev/null",
         user="root",
         timeout_sec=10,
     )
     raise RuntimeError(
         f"egress denylist proxy did not become healthy within {timeout_sec}s: "
-        f"{(getattr(tail, 'stdout', '') or '').strip()[-2000:]}"
+        f"{(diagnostic_result(tail).stdout.render() or '').strip()[-2000:]}"
     )
 
 
@@ -329,7 +457,7 @@ async def start_egress_denylist(
 ) -> None:
     """Upload policy, certificates and the proxy script, then start the proxy as root."""
     if not sandbox_user:
-        raise RuntimeError("network_mode='denylist' requires a sandbox_user")
+        raise RuntimeError(f"network_mode={denylist.mode!r} requires a sandbox_user")
     gateway_port = None
     if model_gateway_url is not None:
         gateway = urllib.parse.urlsplit(model_gateway_url)
@@ -352,16 +480,15 @@ async def start_egress_denylist(
         "blocked_urls": list(denylist.blocked_urls),
         "blocked_hosts": list(denylist.blocked_hosts),
         "model_gateway_port": gateway_port,
+        "native_claude_model_only": denylist.native_claude_model_only,
+        "diagnostic_secrets": list(denylist.diagnostic_secrets),
     }
+    if denylist.allow_mode:
+        policy["allowed_hosts"] = list(denylist.allowed_hosts or ())
+        policy["native_claude_model_origin"] = denylist.native_claude_model_origin
     files = {
         "policy.json": json.dumps(policy, indent=2).encode("utf-8"),
         "proxy.py": _PROXY_SCRIPT.read_bytes(),
-        # The proxy imports the policy as in-process, from next to itself.
-        **package_files(
-            "benchflow.sandbox._egress_policy",
-            "benchflow.sandbox._hosted_fetch",
-            "benchflow.sandbox._egress_body",
-        ),
         "ca.crt": material["ca.crt"],
         "ca.key": material["ca.key"],
         **{
@@ -372,35 +499,55 @@ async def start_egress_denylist(
     }
     await _run(
         env,
-        f"mkdir -p {shlex.quote(RUNTIME_DIR + '/certs')} "
-        f"{shlex.quote(RUNTIME_DIR + '/benchflow/sandbox')} && chmod 700 {shlex.quote(RUNTIME_DIR)}",
+        f"mkdir -p {shlex.quote(RUNTIME_DIR + '/certs')} && chmod 700 {shlex.quote(RUNTIME_DIR)}",
         "egress runtime dir",
         timeout_sec=30,
     )
     await _upload(env, files)
     await _run(
-        env, _setup_cmd(), "egress denylist proxy setup", timeout_sec=timeout_sec
+        env,
+        _setup_cmd(dns_port=DNS_PORT if denylist.allow_mode else None),
+        "egress proxy setup",
+        timeout_sec=timeout_sec,
     )
     await _wait_healthy(env, timeout_sec)
 
 
-async def stop_egress_denylist(env: Any, rollout_dir: Path) -> None:
+async def stop_egress_denylist(env: Any, rollout_dir: Path | ReachablePath) -> None:
     """Pull the block log into the rollout trajectory dir, then stop the proxy; never raises."""
-    target = Path(rollout_dir) / "trajectory" / TRAJECTORY_LOG_NAME
+    from benchflow._utils.reachable_write import ReachablePath, destination
+
+    # TASKMD-R14 P-H1: never open a new root after the agent ran. A plain
+    # rollout folder selects the root pinned before launch (the rollout's
+    # own, from RolloutPaths.mkdir) and trajectory/ is opened beneath its
+    # held handle, never through a link; a swapped ancestor is
+    # refused, not followed.
     try:
+        relative = Path("trajectory", TRAJECTORY_LOG_NAME)
+        if isinstance(rollout_dir, ReachablePath):
+            target = rollout_dir / relative
+        else:
+            target = destination(Path(rollout_dir) / relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        await env.download_file(BLOCK_LOG_PATH, target)
+    except Exception as exc:
+        logger.warning("Egress block log not collected: %s", exc)
+        target = None
+    try:
+        if target is None:
+            raise RuntimeError("no held destination")
+        await env.download_file(_LOG_PATH, target)
     except Exception:
         try:
-            result = await env.exec(
-                f"cat {shlex.quote(BLOCK_LOG_PATH)}", user="root", timeout_sec=30
+            result = await exec_raw(
+                env.exec, f"cat {shlex.quote(_LOG_PATH)}", user="root", timeout_sec=30
             )
-            if _exec_return_code(result) == 0:
+            if target is not None and _exec_return_code(result) == 0:
                 target.write_text(getattr(result, "stdout", "") or "", encoding="utf-8")
         except Exception:
             pass
     with contextlib.suppress(Exception):
-        await env.exec(
+        await exec_raw(
+            env.exec,
             f"kill -TERM $(cat {shlex.quote(_PID_PATH)}) 2>/dev/null; "
             f"rm -rf {shlex.quote(RUNTIME_DIR)} {shlex.quote(CA_DIR)}",
             user="root",

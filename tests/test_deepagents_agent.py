@@ -17,7 +17,7 @@ from pathlib import Path
 
 from benchflow.agents import deepagents_acp_shim as shim
 from benchflow.agents.registry import (
-    _BENCHFLOW_BIN_PREFIX,
+    _AGENT_UV_BIN,
     AGENT_ALIASES,
     AGENTS,
     resolve_agent,
@@ -47,31 +47,41 @@ def test_deepagents_install_deploys_shim_and_isolated_venv():
     # Isolated venv on a uv-pinned interpreter (deepagents needs Python >=3.11,
     # but task base images ship Python as old as 3.6/3.8, so a system-python venv
     # would make pip report "No matching distribution found for deepagents").
-    assert "uv venv --python 3.12 /opt/benchflow/deepagents-venv" in install
+    assert (
+        "uv venv -q --clear --python 3.12.15 /opt/benchflow/agents/deepagents-venv"
+        in install
+    )
     # Packages are installed into that pinned venv via uv pip.
     assert (
-        "uv pip install -q --python /opt/benchflow/deepagents-venv/bin/python"
+        "uv pip install -q --require-hashes --python /opt/benchflow/agents/deepagents-venv/bin/python"
         in install
     )
     # Both required pip packages: deepagents pulls langchain*, but langchain-openai
     # is the explicit dep for the OpenAI-compatible deepseek-v4-pro chat model.
     assert "deepagents" in install
-    assert "langchain-openai" in install
+    from benchflow.agents._python_agent_pins import DEEPAGENTS_REQUIREMENTS
+
+    assert any(
+        line.startswith("langchain-openai==1.7.2 ") for line in DEEPAGENTS_REQUIREMENTS
+    )
     # Shim deployed into the shared bin prefix via _install_python_script's
     # base64 transport (so the shim source can't collide with shell tokens).
-    assert f"{_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim" in install
+    assert f"{_AGENT_UV_BIN}/deepagents-acp-shim" in install
     assert "base64 -d" in install
     # Install verifies deepagents imports through the pinned venv, so a failed
     # `uv pip install` surfaces as rc!=0 instead of being masked by the
     # non-fatal chmod / shim-deploy's trailing `chmod +x`.
-    assert "/opt/benchflow/deepagents-venv/bin/python -c 'import deepagents'" in install
+    assert (
+        "cd / && /opt/benchflow/agents/deepagents-venv/bin/python -I -c "
+        "'from deepagents import create_deep_agent; " in install
+    )
 
 
 def test_deepagents_launch_runs_shim_with_venv_python():
     """Launch invokes the shim through the isolated venv interpreter."""
     launch = AGENTS["deepagents"].launch_cmd
-    assert launch.startswith("/opt/benchflow/deepagents-venv/bin/python ")
-    assert launch.endswith(f"{_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim")
+    assert launch.startswith("/opt/benchflow/agents/deepagents-venv/bin/python ")
+    assert launch.endswith(f"{_AGENT_UV_BIN}/deepagents-acp-shim")
 
 
 def test_deepagents_infers_provider_from_model_at_runtime():

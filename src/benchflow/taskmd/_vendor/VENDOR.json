@@ -1,0 +1,19 @@
+{
+  "repository": "task.md",
+  "branch": "draft2",
+  "commit": "99052af827073133a7af47c3dfa16af1022ff4f3",
+  "files_last_changed_in": "89a40940ff7182c91945e0d22148968de9cfc78b",
+  "files": {
+    "taskmd.py": {
+      "source": "tools/taskmd.py",
+      "sha256": "a8fdfca30d3e191e66cd610368eec292d0bfb89a9b219e343a5040e8d1ecc66e",
+      "source_sha256": "65ee759d3ba952c849d5ca6f8eaf47da6a02e3a125f30cc0ff5816d5015b2880",
+      "local_changes": "Neutral diagnostic wording and identifiers; imported metadata uses import.toml and model_judges. A verifier's model use is read from the task's declared configuration only (models = true, provider keys in its env, recorded judge files), never from command names in test.sh. Grammar and other grading rules unchanged."
+    },
+    "judgeprompt.py": {
+      "source": "tools/judgeprompt.py",
+      "sha256": "9f6b6300d719e0d55e363b002539bb32a0865ad36ce11c1da551a0a64af04bfc"
+    }
+  },
+  "note": "Reference tools from the pinned task.md repository. Files with local_changes retain their source_sha256 and record the installed sha256; other files remain exact copies. Review local changes when updating the source pin."
+}

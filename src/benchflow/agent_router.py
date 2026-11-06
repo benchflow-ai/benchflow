@@ -118,7 +118,9 @@ def default_benchmarks_dir() -> Path:
 
 
 def _default_codex_auth_file() -> Path:
-    return Path.home() / ".codex" / "auth.json"
+    from benchflow.agents.login_dirs import login_path
+
+    return login_path("~/.codex/auth.json")
 
 
 # ── Name validation ───────────────────────────────────────────────────
@@ -601,7 +603,7 @@ def roundtrip_conformance_status(
 ) -> tuple[str, list[str]]:
     """Surface the structural round-trip conformance harness for one task.
 
-    Thin wiring to ``benchflow.task.build_harbor_roundtrip_conformance_report``
+    Thin wiring to ``benchflow.task.build_task_toml_roundtrip_conformance_report``
     (the existing parity utility). Returns ``(status, mismatch_reasons)``.
 
     ``verify`` runs this only when ``--roundtrip-task`` names a task directory;
@@ -610,9 +612,9 @@ def roundtrip_conformance_status(
     task tree, which the benchmark-level verdict does not require).
     """
     if report_fn is None:
-        from benchflow.task import build_harbor_roundtrip_conformance_report
+        from benchflow.task import build_task_toml_roundtrip_conformance_report
 
-        report_fn = build_harbor_roundtrip_conformance_report
+        report_fn = build_task_toml_roundtrip_conformance_report
     report = report_fn(task_dir)
     reasons = [m.reason for m in getattr(report, "mismatches", [])]
     return report.status, reasons

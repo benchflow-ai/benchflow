@@ -77,9 +77,8 @@ claim against the deterministic artifacts.
 - **Network policy.** Default is no-network. Allowlist is permitted only with a
   non-empty `allowed_hosts`. `public` requires explicit human sign-off. A
   hardening regression (no-network task that reached the network) is a blocker.
-- **Before/after equivalence.** Compare against the pinned baseline band in
-  `parity_summary.json`: outcome-rate, mean-reward, and per-task reward deltas
-  must stay inside the band. Compare **schema and semantics, not exact model
+- **Before/after equivalence.** Compare the Docker and Daytona pairs in
+  `parity_summary.json`. Compare **schema and semantics, not exact model
   wording.** A wording change is fine; a schema/lifecycle/reward-band break is a
   downgrade.
 

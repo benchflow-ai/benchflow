@@ -7,6 +7,8 @@ from pathlib import Path
 
 import httpx
 
+from benchflow.publish._snapshot import staged_folder
+
 
 @dataclass(frozen=True)
 class HfPublishResult:
@@ -67,15 +69,16 @@ def publish_folder_to_hf(
     if not folder.is_dir():
         raise ValueError(f"publish source folder not found: {folder}")
     api = _require_hf_api()
-    api.create_repo(repo_id, repo_type=repo_type, exist_ok=True)
-    commit = api.upload_folder(
-        repo_id=repo_id,
-        repo_type=repo_type,
-        folder_path=str(folder),
-        path_in_repo=path_in_repo.strip("/"),
-        commit_message=commit_message
-        or f"Upload BenchFlow artifacts to {path_in_repo}",
-    )
+    with staged_folder(folder) as snapshot:
+        api.create_repo(repo_id, repo_type=repo_type, exist_ok=True)
+        commit = api.upload_folder(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            folder_path=str(snapshot),
+            path_in_repo=path_in_repo.strip("/"),
+            commit_message=commit_message
+            or f"Upload BenchFlow artifacts to {path_in_repo}",
+        )
     if public_read_check:
         _check_public_files(repo_id, repo_type, path_in_repo)
     return HfPublishResult(
@@ -104,16 +107,17 @@ def publish_folder_to_bucket(
             "huggingface_hub with bucket support (create_bucket/sync_bucket) is "
             "required for --publish-bucket; upgrade huggingface_hub"
         ) from exc
-    try:
-        create_bucket(bucket_id, private=private)
-    except HfHubHTTPError as exc:
-        if exc.response is None or exc.response.status_code != 409:
-            raise
     prefix = path_in_repo.strip("/")
     remote = (
         f"hf://buckets/{bucket_id}/{prefix}" if prefix else f"hf://buckets/{bucket_id}"
     )
-    sync_bucket(str(folder), remote)
+    with staged_folder(folder) as snapshot:
+        try:
+            create_bucket(bucket_id, private=private)
+        except HfHubHTTPError as exc:
+            if exc.response is None or exc.response.status_code != 409:
+                raise
+        sync_bucket(str(snapshot), remote)
     return HfPublishResult(
         repo_id=bucket_id,
         repo_type="bucket",

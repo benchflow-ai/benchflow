@@ -21,6 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from benchflow.rewards.validation import (
+    RewardOutOfRange,
     apply_aggregate_policy,
     declared_reward_range,
     validate_declared_reward_range,
@@ -127,8 +128,11 @@ class TestVerifierConfigParse:
 
 class TestValidateRewardMapRange:
     def test_undeclared_still_rejects_negative_reward(self) -> None:
-        # The pre-BF-8 strict contract, byte-for-byte (message included).
-        with pytest.raises(ValueError, match=re.escape("between 0.0 and 1.0")):
+        # The strict [0, 1] contract; since #1178 the refusal names the raw
+        # value (RewardOutOfRange, a ValueError) instead of a missing reward.
+        with pytest.raises(
+            RewardOutOfRange, match=re.escape("reward = -1.0 is outside [0.0, 1.0]")
+        ):
             validate_reward_map({"reward": -1.0}, source="reward JSON")
 
     def test_declared_range_accepts_safety_floor(self) -> None:
@@ -138,13 +142,16 @@ class TestValidateRewardMapRange:
         assert parsed == {"reward": -1.0}
 
     def test_declared_range_still_rejects_below_floor(self) -> None:
-        with pytest.raises(ValueError, match=re.escape("between -1.0 and 1.0")):
+        with pytest.raises(
+            RewardOutOfRange,
+            match=re.escape("outside [-1.0, 1.0] (the task's reward_range)"),
+        ):
             validate_reward_map(
                 {"reward": -1.5}, source="reward JSON", reward_range=(-1.0, 1.0)
             )
 
     def test_declared_range_widens_metrics(self) -> None:
-        with pytest.raises(ValueError, match="invalid metric value"):
+        with pytest.raises(RewardOutOfRange, match=r"metrics\.safety_floor = -1\.0"):
             validate_reward_map(
                 {"reward": 1.0, "metrics": {"safety_floor": -1.0}},
                 source="reward JSON",
@@ -157,33 +164,31 @@ class TestValidateRewardMapRange:
         assert parsed["metrics"] == {"safety_floor": -1.0}
 
     def test_lenient_alone_still_rejects_negative_reward(self) -> None:
-        # BF-3 lenient drops the out-of-range reward, then fails on the
-        # missing scalar — no silent contract erosion via lenient mode.
-        with pytest.raises(ValueError, match="missing numeric 'reward'"):
+        # Lenient mode never widens the range: the out-of-range reward is
+        # refused by name, as in strict mode — no silent contract erosion.
+        with pytest.raises(RewardOutOfRange, match=r"reward = -1\.0 is outside"):
             validate_reward_map({"reward": -1.0}, source="reward JSON", lenient=True)
 
     def test_range_composes_with_lenient(self) -> None:
         # skillsgym-shaped payload: floored reward plus a string safety
-        # verdict. Lenient drops the string key (warned, BF-3 semantics);
-        # the declared range keeps the -1.0 reward usable.
-        with pytest.warns(UserWarning, match="safety_gate"):
-            parsed = validate_reward_map(
-                {"reward": -1.0, "safety_gate": "blocked"},
-                source="reward JSON",
-                lenient=True,
-                reward_range=(-1.0, 1.0),
-            )
-        assert parsed == {"reward": -1.0}
+        # verdict. The string is kept beside the reward (#1178); the declared
+        # range keeps the -1.0 reward usable.
+        parsed = validate_reward_map(
+            {"reward": -1.0, "safety_gate": "blocked"},
+            source="reward JSON",
+            lenient=True,
+            reward_range=(-1.0, 1.0),
+        )
+        assert parsed == {"reward": -1.0, "safety_gate": "blocked"}
 
     def test_range_composes_with_lenient_alias_rehoming(self) -> None:
-        with pytest.warns(UserWarning, match="lenient mode"):
-            parsed = validate_reward_map(
-                {"score": -0.5, "done": True},
-                source="reward JSON",
-                lenient=True,
-                reward_range=(-1.0, 1.0),
-            )
-        assert parsed == {"reward": -0.5}
+        parsed = validate_reward_map(
+            {"score": -0.5, "done": True},
+            source="reward JSON",
+            lenient=True,
+            reward_range=(-1.0, 1.0),
+        )
+        assert parsed == {"reward": -0.5, "done": True}
 
     def test_string_safety_verdicts_survive_under_structured_keys(self) -> None:
         # The strict-mode escape hatch for non-numeric verdicts: structured
@@ -243,7 +248,8 @@ class TestVerifierRewardText:
         reward_txt.write_text("-1.0")
         # MagicMock task: no usable declaration -> canonical [0, 1].
         with pytest.raises(
-            VerifierOutputParseError, match=re.escape("between 0.0 and 1.0")
+            VerifierOutputParseError,
+            match=re.escape("verifier/reward.txt: reward = -1.0 is outside [0.0, 1.0]"),
         ):
             _verifier(MagicMock(), reward_txt)._parse_reward_text()
 
@@ -252,7 +258,7 @@ class TestVerifierRewardText:
         reward_txt.write_text("-1.5")
         task = _task_with_config({"reward_range": [-1.0, 1.0]})
         with pytest.raises(
-            VerifierOutputParseError, match=re.escape("between -1.0 and 1.0")
+            VerifierOutputParseError, match=re.escape("outside [-1.0, 1.0]")
         ):
             _verifier(task, reward_txt)._parse_reward_text()
 
@@ -280,5 +286,7 @@ class TestRolloutFinalGate:
         }
 
     def test_final_gate_default_stays_strict(self) -> None:
-        with pytest.raises(ValueError, match=re.escape("between 0.0 and 1.0")):
+        with pytest.raises(
+            RewardOutOfRange, match=re.escape("reward = -1.0 is outside [0.0, 1.0]")
+        ):
             _ensure_canonical_rewards({"reward": -1.0})

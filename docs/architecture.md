@@ -1,145 +1,111 @@
-# BenchFlow — Architecture
+# Architecture
 
-*The whole architecture, as one coherent picture — every concept we need, no build-order tiering. Release scoping and milestones are tracked separately (Linear). This document is derived from the sources that count — Han Lee's writing and conversation, our project notes, and the agentic-RL literature — not from the current doc or the current code, both of which are snapshots that follow this, not the other way round.*
+This page shows how BenchFlow is built: the four planes, the contracts between them, and what happens during a rollout. For the reasoning behind the design, see [Design rationale](./contributing/design-rationale.md).
 
----
+```bash
+bench run tests/examples/hello-world-task --agent claude-agent-acp --model claude-sonnet-5
+```
+
+That one command walks through every part of this page. It creates a sandbox, starts the agent, records each step, scores the result and writes the trajectory.
 
 ## What BenchFlow is
 
-BenchFlow is the **environment-and-rollout engine for agentic RL** — it turns a stateful environment into evaluated, training-ready trajectory data, for any model and any trainer. **It stops where the gradient starts.**
+BenchFlow runs agents on tasks inside sandboxes, scores the result, and saves the trajectory. The same scored rollout serves evaluation and RL training data. BenchFlow stops where the gradient starts: it does not hold weights or run optimizers.
 
-**One engine, three modes.** There is one thing — a *scored rollout*. **Eval** = score it and stop. **Train** = score it and hand the trajectory to a trainer. **Monitor** = score it in production. (Han Lee: *"evaluation, reward and monitoring … it's really all the same thing under different circumstances."*)
+One scored rollout serves each mode:
 
-**The bet.** A complete RL environment is **E = `{T, H, V, S, C}`** — Tasks, Harness, Verifier, **State**, Config (Han Lee, *RL Environments for LLM Agents*). BenchFlow targets the complete E. **State management** — stateful, multi-service environments that can **roll out, roll back, and branch** — is the frontier of agentic RL and the surface BenchFlow is built around.
+| Mode | What happens to the scored rollout |
+|---|---|
+| Eval | BenchFlow scores it and reports the score. |
+| Train | BenchFlow scores it and hands the trajectory to a trainer. |
+| Monitor | Planned, not built. `benchflow.Monitor` raises `MonitorNotImplementedError`. |
 
-**The boundary.** BenchFlow owns **environment + rollout + reward**. Trainers own **weights + gradients + optimizer**. The **trajectory is the seam** — every RL trainer can consume BenchFlow output without coupling.
-
-## Grounding
-
-This architecture rests on three sources, kept honest against each other.
-
-**Han's `{T,H,V,S,C}`** (blog, *RL Environments for LLM Agents*) — the environment decomposition. Verbatim: T = "problems the agent tries to solve"; H = the agent harness, "scaffolding that … controls *how* the model interacts, but does not improve what it knows"; V = the verifier, "V: (task prompt, completion, info) → [0,1]"; S = state, "stateless (fresh starts) … or stateful (persistent across actions/episodes)"; C = configuration, "turn limits, context budgets, sampling temperature, curriculum scheduling."
-
-**Han's conversation** (advisory call) — the dynamics the blog's static set does not capture:
-- *"Environment 总是要 roll out, roll back"* — **roll-out and roll-back are definitional** for an environment. Roll-back = *"snapshot environment and go back to its different stage."*
-- Branching: an `ask_user`-type interaction *"literally is a checkpoint … to different type of rollout"*, and from it — *"From reward function to a value function … of the current state."* Branching is *"very important for large horizon tasks."*
-- *"eval = monitoring = reward"* — one activity, observed across **five spaces** (output, action, reasoning, memory, latent).
-- *"The harness is not meant to be intelligent"* — self-improvement targets the **model and skills**, never the harness; *"skill 是属于 memory"* (skills are memory).
-- ACP is the mechanism for modelling human interaction inside a rollout.
-
-**The agentic-RL literature** — agentic RL is a *"temporally extended, partially observable MDP"* (*The Landscape of Agentic RL*, 2509.02547) — definitionally a branching structure. Tree-structured rollouts give *"step-wise process supervised signals even using only the outcome reward"* and *"more rollouts within a fixed budget of tokens or tool calls"* (*Tree Search for LLM Agent RL* / Tree-GRPO, ICLR 2026). A scan of 13 RL libraries (verifiers, prime-rl, SkyRL, verl, NeMo-RL, Tinker, OpenEnv, Harbor, Terminal-Bench, Inspect, ORS, Gymnasium, agent-lightning) found **all model rollouts linearly** — so a tree-native rollout with environment snapshot/restore is genuine, defensible novelty, and the load-bearing hard part is snapshot/restore of *heavy* environment state (see "The hard part").
+BenchFlow splits an RL environment into five parts: Tasks, Harness, Verifier, State and Config. The split follows Han Lee's *RL Environments for LLM Agents*. The table under [Planes](#planes) shows where each part lives.
 
 ## Design principles
 
-1. **The kernel depends only on contracts.** The call graph is the source of truth; anything exported with no live caller is wired in or deleted.
-2. **Four planes, each swappable, each managed + BYO** — Sandbox, Agent, Environment, Reward.
-3. **The Rollout is a tree.** An RL episode is a tree of states; a linear rollout is the degenerate degree-1 case. Branch, snapshot, and restore are first-class — they are how a reward function becomes a value function.
-4. **Roll-back is definitional.** An environment that cannot snapshot and restore its state is incomplete (Han). `snapshot`/`restore` are real methods, not stubs.
-5. **Zero-modification adoption.** A benchmark brings a self-describing package + a manifest; it never subclasses BenchFlow or touches private APIs.
-6. **Eval = monitoring = reward** — one activity, scored on the same trajectory, across five spaces.
-7. **The environment is a stateful state machine** the framework provisions, snapshots, restores, and tears down.
-8. **BenchFlow is the ACP Client** — the "user" is a pluggable policy, not a special actor.
-9. **The harness is not intelligent** — its only job is to extract the most from the model; self-improvement targets the model and skills.
-10. **Readiness and teardown are framework guarantees** — never the benchmark's burden.
-11. **Ship beats design** — a better design that doesn't run loses to an adequate one that does.
+1. **The rollout kernel reaches planes through contracts.** `benchflow.rollout` never imports the concrete sandbox, ACP, provider or environment modules. `benchflow/rollout_planes.py` binds them, and `tests/test_rollout_architecture.py` enforces it.
+2. **Four swappable planes:** Sandbox, Agent, Environment and Reward. Each has built-in providers and accepts your own.
+3. **A rollout is a tree.** A plain run is a tree with one child per node. Branching forks a node into several children.
+4. **Benchmarks don't change BenchFlow.** A benchmark ships a task package and, for a stateful world, an environment manifest.
+5. **BenchFlow owns readiness and teardown.** The agent never starts before the environment reports healthy.
 
-## The conceptual model — the planes
+## Planes
 
-```
-        bench CLI · bf.run() · the environment manifest
-                          │
-        ┌─────────────────▼───────────────────┐
-        │  KERNEL                               │
-        │  Rollout lifecycle · reward · trajectory │
-        │  depends ONLY on contracts/           │
-        └──┬──────────┬───────────┬──────────┬──┘
-           ▼          ▼           ▼          ▼
-       Sandbox      Agent     Environment   Reward
-       (where)     (who)      (the world)  (how scored)
+```mermaid
+flowchart TD
+  IN["bench run / bf.run() / environment manifest"] --> K["benchflow.rollout (the kernel)"]
+  K --> C["benchflow.contracts: Sandbox, Agent, Session, Environment, Reward, RolloutPlanes"]
+  C --> RP["rollout_planes.py (DefaultRolloutPlanes)"]
+  C --> RW["Reward: tests/ verifier, Rubric, PathReward"]
+  RP --> SB["Sandbox: docker, remote-docker, apple-container, daytona, modal, agentcore"]
+  RP --> AG["Agent: ACP agents, native harness"]
+  RP --> PR["Model provider: LiteLLM proxy"]
+  RP --> EN["Environment: ManifestEnvironment"]
 ```
 
-The kernel is **three subsystems** — Rollout lifecycle, reward, trajectory — importing only `contracts/` (four `Protocol`s). Concrete providers (Docker, ACP, `ManifestEnvironment`, `RewardFunc`s) join via a registry. The four planes map onto Han's **E**:
+The kernel is the `benchflow.rollout` package. It runs the rollout lifecycle and records the trajectory and reward.
 
-| Han's component | BenchFlow | Plane |
+The kernel reaches the planes through `benchflow.contracts`. That package holds the `Sandbox`, `Agent`, `Session`, `Environment` and `Reward` protocols. It also holds `RolloutPlanes`, the protocol for the concrete operations the kernel needs.
+
+`benchflow/rollout_planes.py` implements `RolloutPlanes` with the concrete ACP, provider, sandbox and manifest code. A test checks that the kernel imports none of eight concrete modules, such as `benchflow.acp.runtime` and `benchflow.sandbox.lockdown`.
+
+| Part | In BenchFlow | Plane |
 |---|---|---|
-| **T** — Tasks | Native `task.md` package | kernel concept |
-| **H** — Harness | the agent + the kernel scaffolding around it | **Agent plane** |
-| **V** — Verifier | `RewardFunc` / `Rubric` / verifier | **Reward plane** |
-| **S** — State | the stateful world | **Environment plane** |
-| **C** — Config | `RolloutConfig` | kernel concept |
+| T, Tasks | a task folder (`task.md`, or legacy `task.toml` + `instruction.md`) | input |
+| H, Harness | the agent, run over ACP or its native CLI (`--harness acp` or `native`) | Agent |
+| V, Verifier | the task's `tests/`, a `Reward`, a `RewardFunc`, a `Rubric` | Reward |
+| S, State | the environment manifest and the services it starts | Environment |
+| C, Config | `RolloutConfig` (one rollout), `EvaluationConfig` (a job) | input |
 
-T and C are kernel concepts (the inputs); H, V, S are the planes that *do* the work; Sandbox is the substrate all three run on. Four planes, one kernel, two kernel-level inputs — that is the whole conceptual surface.
+Tasks and Config are inputs. The Agent, Reward and Environment planes do the work, and all three run on the Sandbox plane.
 
-## The execution model — tree-native
+**Sandbox: where the rollout runs.** Choose it with `--sandbox`: `docker` (the default), `remote-docker` or `apple-container`. With an extra installed, you can also use `daytona`, `modal` or `agentcore`, for example `pip install 'benchflow[sandbox-daytona]'`. To plug in your own, implement the `Sandbox` protocol. See [Sandbox capabilities](#sandbox-capabilities), [Sandbox hardening](./sandboxes/security.md) and [Remote Docker](./sandboxes/remote-docker.md).
 
-**A Rollout is one RL episode, and it is a tree.** Han's trajectory is a chain of *state → action → next-state*; a `Branch` makes that chain a tree; classical RL is defined over exactly this tree (a POMDP), and the value function `V(s)` is *defined* as the expected return over the continuations from a state. Modelling the Rollout as a tree is therefore the RL-native choice.
+**Agent: who acts.** This is the agent under test, or the policy being trained. BenchFlow drives it over ACP by default, or through its own CLI with `--harness native`. Built-in agents live in `benchflow/agents/registry.py`. Others load from `manifest.toml` files, or from a directory set in `BENCHFLOW_AGENTS_DIR`. From Python, call `benchflow.register_agent()`. `bench agents` lists them all. See [External agents](./agents/external-agents.md).
 
-The execution model has **three primitives, one derived view, and one authoring form** — all defined on the one tree, not a Russian-doll hierarchy:
+**Environment: the world the agent changes.** These are the databases and services the agent reads and writes. BenchFlow starts them, waits for readiness, snapshots and restores them, and stops them. Declare one with an [environment manifest](#environment-manifest). See [Environment plane](./environment-plane.md).
 
-```
-Job         — a set of Rollouts run together (an eval sweep · a GRPO group · a CL sequence)
-Rollout     — one RL episode = a TREE of states (sₜ)                          PRIMITIVE
-  • Step    — one edge of the tree: (reason → act) → (tool-in → tool-out)      PRIMITIVE
-  • Branch  — the snapshot-and-fork operation; a node with >1 child            PRIMITIVE
-Trajectory  — one root-to-leaf path. Computed from the tree, never declared    DERIVED VIEW
-Scene       — a declared span carrying a role/skill configuration             AUTHORING SUGAR
-```
-
-- **The primitives are irreducible.** The tree (`Rollout`), its edges (`Step` — Han's atomic unit; one `Step` is one "turn"), and the `Branch` operation (snapshot + fork). `Branch` is the credit-assignment engine: it evaluates *one state across N continuations* — averaging the children's returns estimates `V(s)`. That is Han's *"from reward function to a value function of the current state"* and Tree-GRPO's peer-reviewed result that a tree yields process supervision from a single outcome reward. A GRPO group run as a shared-prefix tree beats N independent rollouts (more rollouts per token/tool budget). Callers create branches explicitly at GRPO group or value-estimation points; `ask_user` currently resolves one answer and does not fork automatically.
-- **`Trajectory` is a derived view** — a pure function of the tree (a path), never declared. It is what serialises out: a linear `prompt / completion / reward / metrics / info` record, the Verifiers/ORS training unit.
-- **`Scene` is authoring sugar** — the *declaration* form for multi-phase / multi-agent rollouts (`RolloutConfig.scenes`). It desugars completely to per-`Step` role/skill attribution plus config that changes along the tree, and adds no expressive power. It has no runtime object and no lifecycle of its own — `RolloutConfig.scenes` is a desugaring pass that lowers to per-`Step` config. Kept only as a convenient authoring affordance. (The original RFC's instinct — "a phase is just state" — was correct.)
-
-**Tree-native is free for the mental model, not for the engine.** A linear rollout genuinely *is* a degree-1 tree, so the *data model* costs nothing extra for the common case. But the *engine* — checkpoint/fork, three-layer snapshot composition, node-addressed scoring, child scheduling — is paid for on day one even by users who only run linear rollouts. That is an accepted cost, not a hidden one: the tree is the correct foundation, and the linear path inherits its machinery.
-
-## Lifecycles
-
-Every lifecycle the framework owns, as ordered phases.
-
-**Job lifecycle.** `plan` (resolve tasks × agents × repeats) → `schedule` (parallel-independent, or sequential-shared for continual learning) → `run Rollouts` → `aggregate` → `report`.
-
-**Rollout lifecycle.** `setup` (resolve config, build the environment object) → `start` (sandbox up) → `provision environment` (Environment plane starts services) → `readiness gate` (framework-guaranteed; the agent never runs before the world is healthy) → `connect agent` (ACP) → `execute` (the tree grows: Steps and Branches) → `verify` (Reward plane scores) → `teardown`.
-
-**Branch lifecycle.** `quiesce` (disconnect the active agent) → `checkpoint` (snapshot Environment state) → `fork` (N children) → for each child, `restore` the Environment and start a fresh agent session → `score / aggregate` (per-child return → `V(parent)`) → restore the parent's linear rollout state. Agent-session snapshotting is not implemented. Callers that set `require_sandbox_snapshot=True` also require a sandbox with snapshot capability, but the current branch engine still uses the Environment snapshot as its restore point.
-
-**Environment lifecycle** (Han's roll-out / roll-back). `provision` → `readiness` → `query` (expose state to the verifier) → `snapshot` → `restore` → `reset` → `teardown`. `snapshot`/`restore` are definitional — the substrate every `Branch` runs on.
-
-**Sandbox lifecycle.** configure `expose_ports` → `start` → `exec` / `upload_file` / `upload_dir` / `download_file` / `download_dir` → optional `snapshot` / `restore` → `stop`.
-
-A Rollout branch currently rolls back Environment state and starts a fresh agent session for every child. Container and agent-session checkpoint composition remain future work. The one store that deliberately does **not** roll back with a `Branch` is the continual-learning learner store (capability 5).
-
-## The four planes
-
-**Sandbox — where it runs.** Compute substrate. Built-in providers are `Docker` and `Apple Container`; optional providers are `Daytona`, `Modal`, and `AgentCore`. BYO implementations can satisfy the `Sandbox` protocol. Hardening (`lockdown`) is a capability flag. Framework-guaranteed readiness gate + teardown. An environment is declared once and runs on any provider that supports its required capabilities.
-
-**Agent — who acts.** The agent under test (eval) or the policy under training — Han's harness, "not intelligent." Protocol: **ACP** (the official `agent-client-protocol`). BYO via `--agent-import-path`. The registry stores agent *declarations* as data, not install code in the kernel. A trainer-served policy endpoint (OpenAI-compatible, hot-swappable) is one agent provider type. The plane's real surface is the `Session` (below) — not just `connect`.
+**Reward: how the rollout is scored.** The task's verifier writes `/logs/verifier/reward.txt` or `reward.json`. BenchFlow turns it into a `VerifyResult`. In Python, a `Reward` scores any tree node, so it can grade the final state or the path to it. See [Evaluation spaces](#evaluation-spaces).
 
 ### Skill loading
 
-BenchFlow treats mounted skills as agent-native memory, not prompt text. Skills
-are controlled by one run mode: `no-skill`, `with-skill`, or `self-gen`.
-`no-skill` hides any task-local `environment/skills` from the agent and strips
-that directory from copied build contexts. `with-skill` mounts the task's
-`environment/skills` directory through the selected agent's native skill paths.
-`self-gen` gives the creator scene only `skill-creator`; the solver scene sees
-only the generated skills root, never task-bundled skills. Advanced callers can
-provide a custom `--skills-dir` only in `with-skill` mode.
+```bash
+bench run path/to/task --agent claude-agent-acp --task-skills
+```
 
-Claude Code reads each skill's frontmatter name and description for native
-discovery. The full `SKILL.md` body and bundled resources are loaded by the
-agent when it invokes or reads the skill; BenchFlow never inlines mounted
-skill bodies into the task prompt.
+Skills are mounted where the agent looks for them natively. BenchFlow never pastes skill bodies into the prompt.
 
-**Environment — the world (Han's S).** The stateful world the agent acts in. Owns the world's lifecycle: `provision / readiness / query / snapshot / restore / reset / teardown`. See "The Environment plane & the manifest."
+| Mode | How to choose it | What the agent sees |
+|---|---|---|
+| no skill | the default | nothing: the task's `environment/skills` is hidden |
+| with skill | `--task-skills` | the task's `environment/skills`, or your own folder with `--skills-dir` |
+| self-generated | `--skill-mode self-gen` | a creator scene writes skills; the solver sees only those |
 
-**Reward — how it's scored (Han's V).** `RewardFunc` / `Rubric` / verifier. `V: (task, completion, info) → [0,1]`, generalised to a graded, multi-space, multi-granularity signal over the trajectory tree. See "Evaluation."
+`--skills-dir` needs task skills on. Claude Code reads each skill's name and description from its frontmatter. It opens the full `SKILL.md` only when it uses the skill. See [Skill evals](./judging/skill-evals.md).
 
-## The four contracts
+### Sandbox capabilities
 
-The kernel imports only these.
+| Provider | Compose services | `no-network` | Denylist | Allowlist | Live ACP process | Container snapshot | Install extra |
+|---|---|---|---|---|---|---|---|
+| `docker` | yes | yes | yes | yes | yes | yes | none |
+| `remote-docker` | yes | yes | yes | yes | yes | yes | none |
+| `daytona` | yes | yes | yes | yes | yes | direct strategy only | `sandbox-daytona` |
+| `modal` | no | yes | no | no | no | no | `sandbox-modal` |
+| `apple-container` | no | no | no | no | yes | no | none |
+| `agentcore` | no | no | no | no | yes | no | `sandbox-agentcore` |
+
+The first five columns come from `benchflow/_utils/sandbox_providers.py`. The snapshot column comes from each sandbox's `supports_snapshot` property.
+
+<a id="the-four-contracts"></a>
+
+## Contracts
+
+Each plane is a Python protocol. Import them with `from benchflow.contracts import Sandbox, Agent, Session, Environment, Reward`. Implement one to bring your own sandbox, agent, environment or scorer.
 
 ```python
-class Sandbox(Protocol):            # where it runs — container level
-    async def exec(cmd, *, user, timeout_sec) -> ExecResult: ...
+class Sandbox(Protocol):            # where it runs
+    async def exec(cmd, *, user="root", timeout_sec=30) -> ExecResult: ...
     async def upload_file(src, dst, *, mode=None) -> None: ...
     async def upload_dir(src, dst, service="main") -> None: ...
     async def download_file(src, dst) -> None: ...
@@ -151,165 +117,249 @@ class Sandbox(Protocol):            # where it runs — container level
     @property
     def supports_snapshot() -> bool: ...
     @property
+    def host() -> str: ...
+    @property
     def expose_ports() -> list[int]: ...
 
-class Agent(Protocol):              # who acts — Han's harness
+class Agent(Protocol):              # who acts
     async def connect(sandbox, role) -> Session: ...
     def capabilities() -> AgentCapabilities: ...
 
-class Session(Protocol):            # a LIVE agent session — the Agent plane's real surface
-    async def prompt(text: str) -> StopReason: ...   # the task instruction, or a nudge
+class Session(Protocol):            # one live agent session
+    async def prompt(text: str) -> StopReason: ...
     async def cancel() -> None: ...
-    def on_ask_user(handler: AskUserHandler) -> None: ...  # agent-initiated; the branch hook
+    def on_ask_user(handler: AskUserHandler) -> None: ...
     @property
-    def steps(self) -> list[Step]: ...               # the session's contribution to the tree
+    def steps(self) -> list[Any]: ...
 
-class Environment(Protocol):        # the world — Han's S
+class Environment(Protocol):        # the world
     async def provision(ctx) -> EnvHandle: ...
     async def readiness() -> ReadinessProbe: ...
-    async def query() -> EnvState: ...               # for the verifier
-    async def snapshot() -> StateSnapshot: ...       # roll-back: definitional
+    async def query() -> EnvState: ...
+    async def teardown() -> None: ...
+    async def snapshot() -> StateSnapshot: ...
     async def restore(snap: StateSnapshot) -> None: ...
     async def reset() -> None: ...
-    async def teardown() -> None: ...
 
-class Reward(Protocol):             # how it's scored — Han's V
+class Reward(Protocol):             # how it's scored
     async def score(node: RolloutNode) -> VerifyResult: ...
 ```
 
-`Session` is part of the contract, not an untyped return — the entire ACP interaction (prompt, nudge, the `ask_user` branch hook) is the Agent plane's seam, so it must be specified to BYO an agent.
+`Agent.connect()` returns a `Session`. The session carries the whole ACP exchange: the prompt, follow-up nudges, and the `ask_user` callback.
 
-`Reward.score` takes a `RolloutNode`, and a node **carries its tree context**: `node.path` (root → node), `node.subtree`, `node.state`. One `score` method therefore expresses both outcome reward (read the leaf) and process reward (walk `node.path` across the Action and Reasoning spaces) — there is no per-step-in-isolation scoring. `VerifyResult` = `{reward: float, items: dict[str, float], events: list[RewardEvent], space, granularity}`.
+`Reward.score(node)` gets a `RolloutNode` with `id`, `parent`, `children`, `step_in` and `state`. Read the leaf for an outcome reward. Call `trajectory(node)` from `benchflow.trajectories.tree` to get the steps from the root to the node, and score the process.
 
-## The Environment plane & the manifest
+`score` returns `VerifyResult(reward, items, events, space, granularity)`. An older `RewardFunc` scores a rollout folder and returns a float. It still works: wrap it in `PathReward`.
 
-What a benchmark *author* writes is the **manifest** — the entire integration surface. *Write a manifest; your stateful environment runs anywhere and trains anything, with zero framework modification.* The default adapter `ManifestEnvironment` reads it.
+## Rollouts are trees
+
+A rollout is one episode. Each state is a node and each agent turn is an edge, so a plain run is a chain. A branch adds more children to a node, which turns the chain into a tree. The data model is in `benchflow/trajectories/tree.py`.
+
+| Term | What it is | Code |
+|---|---|---|
+| Job | Many rollouts run together: an eval sweep, a GRPO group, a continual-learning sequence | `benchflow.Evaluation` |
+| Rollout | One episode on one task; owns a tree of states | `benchflow.rollout.Rollout`, `RolloutTree` |
+| Step | One edge: the agent reasons, acts, and gets the tool result | `trajectories.tree.Step` |
+| Branch | Snapshot a node and run N children from it | `Rollout.branch()`, `bench branch` |
+| Trajectory | One root-to-leaf path, computed from the tree | `trajectories.tree.trajectory(leaf)` |
+| Scene | A declared phase (roles, prompts, skills) that compiles to steps | `benchflow.scenes.compile_scenes_to_steps` |
+
+A rollout is what some other harnesses call a trial.
+
+A branch scores one state across N continuations. Each child's reward is stored on the child node, and their mean is stored as the parent's value, `parent.state["value"]`. You create branches yourself, with `bench branch` or `Rollout.branch()`. An `ask_user` question does not fork the rollout.
+
+A trajectory is computed from the tree, never stored on it. At the end of a job, BenchFlow writes each rollout's path to `<job>/verifiers.jsonl`. Each line is a Verifiers-style record: `prompt`, `completion`, `reward`, `metrics` and `info`.
+
+A scene declares a multi-phase or multi-agent rollout (`RolloutConfig.scenes`). `compile_scenes_to_steps` turns scenes into per-step prompts and roles before the run. Scenes have no lifecycle of their own. See [Concepts: Scenes, roles and turns](./core-concepts.md#scenes-roles-and-turns).
+
+## Lifecycles
+
+The diagram shows one rollout from task to trajectory, with the `Rollout` method for each phase and the files it writes.
+
+```mermaid
+flowchart LR
+  T["Task folder: task.md, environment/, tests/"] --> A["create, setup"]
+  A --> B["start"]
+  B --> C["install_agent"]
+  C --> D["connect"]
+  D --> E["execute"]
+  E --> F["verify"]
+  F --> G["cleanup"]
+  A -.-> A1[/"config.json"/]
+  B -.-> B1["sandbox up, environment provisioned, readiness gate"]
+  D -.-> D1[/"trajectory/acp_trajectory.jsonl opened"/]
+  E -.-> E1["steps grow the tree"]
+  F -.-> F1["reward.txt or reward.json read into VerifyResult"]
+  G -.-> G1[/"result.json, rewards.jsonl, timing.json"/]
+  G1 --> J[/"job: verifiers.jsonl, for trainers"/]
+```
+
+**Rollout** (`benchflow.rollout.Rollout`). `Rollout.run()` runs every phase in order:
+
+| Phase | What it does |
+|---|---|
+| `create`, `setup` | resolve the config, stage the task, write `config.json` |
+| `start` | bring the sandbox up; the environment provisions its services; BenchFlow waits for readiness |
+| `install_agent` | install the agent in the sandbox |
+| `connect` | open the ACP or native session and the trajectory file |
+| `execute` | run the prompts; each step grows the tree |
+| `verify` | run the verifier; the Reward plane scores |
+| `cleanup` | stop the sandbox; `run()` (or `finalize()`) then writes `result.json`, `rewards.jsonl` and `timing.json` |
+
+<a id="the-eight-capabilities--how-each-fits"></a>
+
+**Job** (`benchflow.Evaluation`). A job plans tasks × agents × repeats, runs the rollouts, aggregates and writes results. Rollouts run in parallel by default (`job_mode: parallel-independent`).
+
+For continual learning, set `job_mode: sequential-shared` in a `--config` file. Rollouts then run in order over one learner store of memory and skills. The store never rolls back with a branch. See [Design rationale: capabilities](./contributing/design-rationale.md#capabilities).
+
+**Branch** (`Rollout.branch()`, `bench branch`). The diagram shows one fork with two children.
+
+```mermaid
+flowchart LR
+  Q["quiesce: disconnect the agent"] --> CE["checkpoint environment (sqlite3 .backup)"]
+  CE --> CS["checkpoint sandbox (container snapshot)"]
+  CS --> C1["child 1: restore sandbox, then environment"]
+  CS --> C2["child 2: restore sandbox, then environment"]
+  C1 --> R1["new or resumed session, execute, verify: reward r1"]
+  C2 --> R2["new or resumed session, execute, verify: reward r2"]
+  R1 --> V["parent value = mean of child rewards"]
+  R2 --> V
+  V --> P["restore the parent"]
+  P --> D["delete the sandbox snapshot unless --retain-snapshots"]
+```
+
+A branch checkpoints only the layers you ask for. The default differs by entry point:
+
+| Entry point | Default `snapshot_layers` | Choose with |
+|---|---|---|
+| `bench branch` | `sandbox` | `--snapshot-layers` |
+| `bf.branch()` | `sandbox` | `snapshot_layers=` |
+| `Rollout.branch()` | `environment` (needs a manifest) | `snapshot_layers=` |
+
+```bash
+bench branch --tasks-dir tests/examples/hello-world-task \
+  --agent claude-agent-acp --model claude-sonnet-5 --sandbox docker \
+  --prompt "Create draft.txt containing: Hello world" --prompt @instruction \
+  --checkpoint-after-prompt 1 \
+  --child label=baseline \
+  --child "label=hint,prompt=Rename draft.txt to hello.txt, then stop." \
+  --snapshot-layers sandbox
+```
+
+Each child normally starts a new agent session. With `--resume-session` (`resume_session=True`), the child resumes the parent's conversation through ACP `session/load`. That needs an agent that advertises `loadSession` and keeps its session on disk, as Claude Code does. See [Branching](./jobs/branching.md) and [Composed checkpoints](./jobs/branching-reference.md).
+
+**Environment** (`Environment` protocol). `provision` → `readiness` → `query` → `snapshot` / `restore` / `reset` → `teardown`. `snapshot` and `restore` work only when the manifest declares `[environment.state]`.
+
+**Sandbox** (`Sandbox` protocol). Configure `expose_ports` → `start` → `exec` / `upload_file` / `upload_dir` / `download_file` / `download_dir` → optional `snapshot` / `restore` → `stop`.
+
+<a id="the-environment-plane--the-manifest"></a>
+
+## Environment manifest
+
+```bash
+bench run path/to/tasks --agent claude-agent-acp \
+  --environment-manifest path/to/environment.toml
+```
+
+A stateful benchmark adds one file, `environment.toml`, next to its tasks. `ManifestEnvironment` reads it. Pass a path, or a registry name such as `--environment-manifest env0@prod`.
 
 ```toml
 [environment]
 name           = "chi-bench"
-image          = "chi-bench:latest"   # OR base_image + [[services]] (framework-started)
+image          = "chi-bench:latest"   # or base_image + [[environment.services]]
 owns_lifecycle = true                 # the image's entrypoint starts the services
-isolation      = "per_task"           # OR "persistent" (cross-episode state)
+isolation      = "per_task"           # or "persistent" (state kept across episodes)
 
 [environment.task_selection]
-mechanism   = "env_var"               # OR "image" (per-task images, smolclaws-style)
+mechanism   = "env_var"               # or "image" (one image per task)
 key         = "CHI_BENCH_TASK_ID"
-inject_into = "entrypoint"            # reaches PID 1, not just exec()
+inject_into = "entrypoint"            # reaches PID 1, not only exec()
 
-[environment.readiness]               # the framework gates on this before the agent runs
+[environment.readiness]               # BenchFlow waits on these before the agent runs
 http        = ["http://localhost:8023/health"]
 timeout_sec = 120
 
+[environment.state]                   # what snapshot/restore copy; omit it for a stateless world
+kind  = "sqlite"
+paths = ["/data/*.db"]
 ```
 
-Verifier isolation is configured by the task package and runtime, not by an
-`[verifier]` table in this environment manifest. Unknown top-level manifest
-tables are not an enforcement boundary.
+Every table rejects unknown keys, so a typo fails at load time. A working example ships with BenchFlow: `benchflow/environment/_registry/env0@prod.toml`.
 
-**State is a real database**; tools are read-write ops over the schema — which is what makes state snapshot-able, diffable, and verifiable. Two topologies behind one contract: **in-sandbox** (the environment runs in the rollout's own sandbox — the default) and **shared-fleet / sidecar** (a long-lived service fleet + a `TaskDatabase` + `AccountBroker` for multi-tenant per-task accounts — the scale path).
+Verifier isolation is set in the task, not the manifest. See [Separate verifier](./tasks/separate-verifier.md).
 
-**The Stateful Multi-Service Benchmark (SMSB).** ClawsBench and chi-bench are structurally the same machine; the plane hosts both. ClawsBench is the internal dogfood (the manifest's design partner); chi-bench is the external proof — a ~25k-LOC heavy simulator with a thin MCP transport, onboarded via a ~25-line manifest with its environment **untouched**, its ~920 LOC of Harbor coupling collapsing into the manifest.
+Keep the world's state in a database the tools read and write. That lets BenchFlow snapshot, diff and restore it. Today it copies SQLite files with `sqlite3 .backup`. The environment runs inside the rollout's own sandbox.
 
-## Evaluation — the five spaces
+<a id="evaluation--the-five-spaces"></a>
 
-eval = monitoring = reward. The same scoring runs at train time, at eval time, and in production — only the context differs. A reward signal is read from the trajectory across **five spaces** (Han):
+## Evaluation spaces
+
+Every reward record says which part of the agent's behaviour it judges, its *space*. It also says whether it covers the whole run or one step, its *granularity*.
 
 | Space | What it checks |
 |---|---|
-| **Output** | did it finish the job? (the terminal/verifiable reward) |
-| **Action** | right actions, no reward-hacking, no out-of-distribution tool use; *did it ask when it should have?* |
-| **Reasoning** | is the chain-of-thought sound and connected to the action and answer? (CoT monitoring) |
-| **Memory** | did it update its memory / skills correctly? (diff the store) |
-| **Latent** *(future)* | with interpretability access — SAEs over post-attention embeddings. No benchmark needs it yet; named so it isn't reinvented later, not built. |
+| `output` | Did the agent finish the job? This is the verifier's reward. |
+| `action` | Were the actions right, with no reward hacking? Did the agent ask when it should have? |
+| `reasoning` | Is the reasoning sound and connected to the actions and answer? |
+| `memory` | Did the agent update its memory or skills correctly? |
+| `latent` | Reserved for model internals. Nothing scores it yet. |
 
-Every reward record is tagged **`(space, granularity, value)`**. Granularity is **terminal** (the whole trajectory) or **step** (one edge) — an episode-level scalar alone is inadequate beyond ~50 steps; the tree's structure supplies finer credit. **Process reward** is read by walking a node's `path` across the Action and Reasoning spaces — *not* by scoring each step in isolation (process supervision "hard to judge" per-step — Han). The wire formats `reward.txt` / `reward.json` cross the sandbox boundary; the in-kernel model is `VerifyResult` + `RewardEvent`.
+Granularity is `terminal` (the whole run) or `step` (one edge). Process rewards walk the path to a node instead of scoring each step alone.
 
-## The interaction model — ACP
+## User interaction
 
-Human interaction is modelled through ACP's role split: **BenchFlow is the ACP Client; the "user" is a pluggable User Model inside the Client role.** Two channels carry everything:
-- `session/prompt` (Client → Agent) — the task instruction and every **nudge** (user-initiated follow-up).
-- `request_permission` / `ask_user` (Agent → Client, with enumerated options) — agent-initiated, surfaced through `Session.on_ask_user`.
+BenchFlow is the ACP client, and a user model plays the human. Two channels carry the exchange:
 
-`ask_user` with enumerated options is a **branchable interaction seam**, but the current runtime invokes one registered handler and returns one selected answer. It does not automatically turn every option into a `Branch` child. Callers can use the explicit Branch API to evaluate multiple continuations. The interaction tool is never hard-coded as "step one"; the agent chooses to use it, and the **Action space** can score *whether it asked*. User Model modes are scripted / simulated (LLM persona) / real-human / auto; branching is a separate Rollout operation.
+- `session/prompt` (BenchFlow → agent): the task, then any follow-up nudges.
+- `request_permission` / `ask_user` (agent → BenchFlow): a question with options, handled by `Session.on_ask_user`.
 
-## The edges — adapters & trainers
+The handler returns one answer, and BenchFlow does not fork on the options. To try several answers, branch explicitly. The agent decides when to ask, and an action-space scorer can grade whether it asked.
 
-The manifest is BenchFlow's native format; **adapters translate every other format to it.**
+User models live in `benchflow.contracts`: `PassthroughUser`, `FunctionUser` (your callback), `DocumentNudgeUser` and `ModelDocumentNudgeUser` (an LLM plays the user). See [Simulated user](./tasks/scenes.md#simulated-user).
 
-**Inbound env adapters** — Harbor, Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench tasks run through the Harbor adapter** (Harbor is itself terminal-bench-derived).
+## Adapters and trainers
 
-**Outbound — the trainer seam.** A scored trajectory exports as a **Verifiers / ORS JSONL record** (`prompt / completion / reward / metrics / info`). Being a Verifiers/ORS-compatible producer yields a trainer — prime-rl — with zero trainer code. BenchFlow is a rollout *service*; trainers (Tinker, verl, NeMo-RL) stay external. The trajectory is the seam.
+BenchFlow's native task format is `task.md`. Adapters translate other formats in and out.
 
-## How a Task flows through the architecture
-
-A **Task** (Han's T) is the problem spec — one `task.md` plus the environment package and verifier. It is a kernel concept, and it is what wires the planes together for one run:
-
-```
-Task ─┬─→ selects the Environment package + manifest  ───→ Environment plane provisions S
-      ├─→ carries the instruction / prompt            ───→ Agent plane (H) receives it
-      ├─→ names the verifier + hidden fixtures         ───→ Reward plane (V) scores
-      └─→ carries config (turn limits, budgets)        ───→ RolloutConfig (C)
-                                   │
-                                   ▼
-              one Rollout (a tree) runs in a Sandbox
-                                   │
-                                   ▼
-          Trajectory(s) + reward  ───→  export  ───→  trainer
-```
-
-One Task → one Rollout tree → one or more Trajectories. A Job is many Tasks (or one Task × many repeats). `{T,H,V,S,C}` is not an abstraction layered on top — it *is* the wiring diagram of a single run.
-
-## The eight capabilities — how each fits
-
-The architecture is one shape; these are the eight things it must carry. Capabilities 1–6 and 8 are benchmark-forced — "done" = that benchmark runs clean. Capability 7 is the substrate the others ride on, not a benchmark.
-
-| # | Capability | How it fits the architecture |
+| Direction | What | How |
 |---|---|---|
-| 1 | **SkillsBench** | An Environment-plane benchmark package (skills + skill-eval tasks). Skills are **memory** (Han); the Reward plane's **Memory space** scores skill use and skill updates. Skills are installed as per-`Step` config (the `Scene` desugaring) and deployed into the sandbox. |
-| 2 | **ClawsBench** | The SMSB on the Environment plane — `base_image` + `[[services]]`, framework-started, `image` task-selection. The internal dogfood; the manifest's design partner. |
-| 3 | **chi-bench** | The same SMSB archetype — `image` + `owns_lifecycle = true` + `env_var` task-selection. The external proof: onboarded by a ~25-line manifest, environment untouched. |
-| 4 | **followupbench (NudgeBench)** | The **ACP interaction model** (`session/prompt` nudges + `ask_user` via `Session.on_ask_user`) + the **tree-native Rollout** — every interaction checkpoint is a `Branch` — + the **Action space** reward scoring *whether the agent followed up / asked*. |
-| 5 | **Continual learning** | A **Job run in `sequential-shared` mode**: Rollouts run in order over a persistent **learner store** (memory + skills). The store is versioned (a generation stamped per rollout) and rollback-capable; the **Memory space** tracks improvement, drift, and adoption. Skills stay useful *only if continuously evolved* (Han). The learner store is the one snapshot layer that does not roll back with a `Branch`. |
-| 6 | **RL-native** | The whole execution model: the Rollout is a tree, the Trajectory is a path, the Reward contract scores any node, and the trajectory exports as a trainer-ready record. Agentic RL is a temporally-extended POMDP — and the architecture is shaped like one. |
-| 7 | **Branching, rollback, Han's framework** | *Not a benchmark — the RL-native substrate itself.* First-class `Branch`; `Environment.snapshot`/`restore` as definitional roll-back; the value-function purpose of the tree; the five spaces; eval = monitoring = reward; the non-intelligent harness. Capabilities 4–6 ride on it. |
-| 8 | **Env adapters — Harbor / PrimeIntellect / OpenReward** | The **edges**: inbound adapters translate foreign formats to the manifest; **Terminal-Bench backward compatibility** rides the Harbor adapter; outbound, the trajectory exports to Verifiers/ORS. |
+| In | task folders in the task.toml format (`task.toml`), such as Terminal-Bench | `bench run` reads them as they are; `bench import` converts them to `task.md` |
+| In | PrimeIntellect Verifiers environments | `--source-env`, on their own runtime |
+| Out | Inspect AI | `InspectAdapter` |
+| Out | OpenReward (ORS) | `ORSAdapter` |
+| Out | RL trainers | `<job>/verifiers.jsonl`, one record per rollout |
 
-All eight land on one architecture — four planes, a tree-native Rollout, an adapter edge. None requires a new top-level concept.
+Other trajectory exports (ATIF, ADP, TRL SFT, Prime SFT) live in `benchflow/trajectories/`. Trainers such as Tinker, verl and NeMo-RL stay outside BenchFlow.
 
-## The hard part — honest risk
+## How a task flows through the planes
 
-The library scan is unambiguous: **no agentic-RL library ships environment snapshot/restore.** Tree-GRPO branches a *token prefix*; Inspect's `fork()` deep-copies *conversation* state, not the sandbox; its checkpoint system is resume-only — its design note says *"reality doesn't have a fork command."* BenchFlow's bet is to branch a **heavy stateful environment** — a mock-Gmail SQLite database, a healthcare simulator, eventually a K8s cluster. The `Branch` checkpoint is genuinely three unsolved problems, not one:
+A task is one `task.md` (or legacy `task.toml` + `instruction.md`) with its `environment/` and `tests/` folders. It feeds every plane:
 
-1. **Environment-state snapshot** — DB dump/restore, copy-on-write volumes, fork-able service processes. Designed deliberately, environment-class by environment-class — not one generic call.
-2. **Agent-session snapshot** — freezing and restoring a *live ACP session* (and the running agent process and its context behind it) is the same class of hard problem. Inspect can only deep-copy conversation state precisely because it cannot snapshot the process. The architecture does not get this for free.
-3. **Cross-layer consistency** — the three snapshot layers (container / environment-state / agent-session) have different consistency models; a naïve capture can produce a container snapshot and a DB snapshot that disagree about a write in flight. The `Branch` lifecycle therefore **quiesces the agent first**, then snapshots environment → container → session in order.
+| The task carries | Which goes to |
+|---|---|
+| the environment package and manifest | the Environment plane, which provisions the state |
+| the instruction | the Agent plane |
+| the verifier and its hidden fixtures | the Reward plane |
+| turn limits and budgets | `RolloutConfig` |
 
-Tree-native rollout *structure* is proven and safe to commit to. The `Branch` *checkpoint* — all three layers — is the frontier: it is where the engineering risk concentrates and where the moat is, and it must be designed deliberately, not hand-waved as one call.
+One task gives one rollout tree, and one trajectory per leaf. A job runs many tasks, or one task many times.
 
-## Adaptations — the decision log
+<a id="the-hard-part--honest-risk"></a>
 
-So decisions are not re-litigated.
+## Limits
 
-| Adaptation | From → To | Why |
-|---|---|---|
-| **One picture, no build-order tiering** | a core/deferred two-altitude split → the whole architecture as one coherent overview | The overview describes *what we need*; sequencing is a roadmap concern (Linear), not a property of the concepts. |
-| **The Rollout is a tree** | a linear Rollout with optional, deferred branching → a tree-native Rollout; linear = degree-1 | Agentic RL is a POMDP; `V(s)` is defined over a tree; Tree-GRPO shows the tree manufactures credit assignment. Branching is the engine, not a feature. |
-| **`snapshot`/`restore` are real** | platform-layer `NotImplementedError` stubs → definitional methods on the Environment contract | Han: *"Environment 总是要 roll out, roll back."* |
-| **Branching's purpose is the value function** | a user-feedback feature → credit assignment / `V(s)` estimation; `ask_user` and GRPO groups are two cases of it | Han: *"from reward function to a value function."* Tree-GRPO confirms it. |
-| **`Session` is in the contract** | the Agent plane returned an untyped `Session` → `Session` is a specified `Protocol` | The whole ACP interaction is the Agent seam; a shallow `connect`-only contract can't carry BYO agents. |
-| **Scene fully desugars** | a runtime object with its own lifecycle → pure authoring sugar; `RolloutConfig.scenes` lowers to per-`Step` config | Scene adds no expressive power; a phase is just state (the RFC's original instinct). |
-| **Renamed `Batch` → `Job`** | `Batch` for a set of Rollouts → `Job` | "Batch" means the gradient minibatch in every trainer — a collision at the trainer seam. |
-| **Manifest as the only seam** | benchmarks subclass framework internals → a declarative manifest, zero framework modification | A benchmark must never modify the framework. |
-| **eval = monitoring = reward** | three framings → one engine, three modes | Han's single biggest complexity reducer. |
+- Sandbox snapshots work on `docker`, `remote-docker` and Daytona's direct strategy. Other providers raise `SandboxSnapshotNotSupported`; check `sandbox.supports_snapshot` first.
+- Environment snapshots copy SQLite files only (`kind = "sqlite"`).
+- BenchFlow does not snapshot a live agent process. A child either starts fresh or resumes the conversation with `--resume-session`.
+- Mounted volumes and external services are not captured by any snapshot layer.
+- Monitor mode is not built.
 
-## Appendix — research validation
+The reasons behind these limits are in [Design rationale: the hard part](./contributing/design-rationale.md#the-hard-part).
 
-Checked against the recent agentic-RL literature; the field's shape matches.
-- Agentic RL = a temporally-extended POMDP — definitionally a branching structure. *(The Landscape of Agentic RL, 2509.02547)*
-- Tree-structured rollouts yield process supervision from a single outcome reward and more rollouts per token/tool budget. *(Tree Search for LLM Agent RL / Tree-GRPO, ICLR 2026, 2509.21240)*
-- All 13 surveyed RL libraries model rollouts linearly with no environment snapshot/restore — tree-native + heavy-environment snapshot is real novelty, not a reinvention.
-- Rollout-as-a-service decoupled from training; the trajectory is the seam. *(ProRL Agent; PrimeIntellect Environments Hub)*
-- Continual learning = a base policy + a persistent, evolving skill library; version and roll back the store. *(MetaClaw, MemSkill, SkillLearnBench)*
+## Next steps
 
-**Verdict:** the architecture is consensus-correct on shape and deliberately ahead of the field on one primitive — the `Branch` checkpoint (environment + agent-session + container snapshot) for stateful branching. The risk is execution of that primitive, not the design.
+- [Concepts](./core-concepts.md): the terms on this page, with examples.
+- [Branching](./jobs/branching.md): fork a run and compare children.
+- [Environment plane](./environment-plane.md): write and register a manifest.
+- [External agents](./agents/external-agents.md): bring your own agent.
+- [Design rationale](./contributing/design-rationale.md): why BenchFlow is built this way.

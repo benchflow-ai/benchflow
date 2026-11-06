@@ -149,10 +149,12 @@ async def test_run_oracle_no_solution_env_only_has_debian_frontend(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_oracle_solution_env_resolves_host_vars(tmp_path, monkeypatch):
-    """${VAR} references in solution.env are resolved from the host environment."""
+    """${VAR} references in solution.env are resolved from the host environment
+    for a variable the operator named (--allow-task-env)."""
     from benchflow.sdk import SDK
 
     monkeypatch.setenv("HOST_SECRET", "resolved_value")
+    monkeypatch.setenv("BENCHFLOW_ALLOW_TASK_ENV", "HOST_SECRET")
     _scaffold_task(tmp_path, solution_env={"TOKEN": "${HOST_SECRET}"})
     env = _oracle_env()
 

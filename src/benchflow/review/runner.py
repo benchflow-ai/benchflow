@@ -25,10 +25,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from benchflow.errors import UserError
 from benchflow.review.config import (
     REVIEW_RESULT_FILENAME,
     ReviewRubricError,
@@ -38,6 +39,7 @@ from benchflow.review.config import (
     load_rubric,
 )
 from benchflow.review.options import ReviewerConfig
+from benchflow.review.outcome import REVIEWER_TRANSPORT
 from benchflow.review.outcome import deterministic_pass as source_deterministic_pass
 from benchflow.review.scoring import ReviewScoring, score_weighted_review
 from benchflow.review.wrapper import (
@@ -47,6 +49,7 @@ from benchflow.review.wrapper import (
     assemble_review_task,
     remove_review_task,
 )
+from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +82,9 @@ class TrialReview:
     rubric_contract: str | None = None
     criterion_metadata: list[dict[str, str | int | None]] = field(default_factory=list)
     scoring: ReviewScoring | None = None
+    # "reviewer_transport" when every reviewer attempt lost its transport
+    # before a verdict (#1144); None for any other outcome.
+    error_category: Literal["reviewer_transport"] | None = None
 
     def outcome_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {key: 0 for key in _OUTCOME_KEYS}
@@ -104,6 +110,7 @@ class ReviewReport:
     trials: list[TrialReview] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """The report as ``review_report.json``'s mapping."""
         return {
             "path": self.path,
             "rubric": {
@@ -138,6 +145,11 @@ class ReviewReport:
                     "criteria": trial.criteria,
                     "criterion_metadata": trial.criterion_metadata,
                     "scoring": trial.scoring.to_dict() if trial.scoring else None,
+                    **(
+                        {"error_category": trial.error_category}
+                        if trial.error_category
+                        else {}
+                    ),
                     "notes": trial.notes,
                 }
                 for trial in self.trials
@@ -415,6 +427,30 @@ def _reviewer_completion_error(leaf: Path) -> str | None:
     return None
 
 
+def _reviewer_transport_loss(leaf: Path) -> str | None:
+    """The transport failure that ended a reviewer run, if a retry could help.
+
+    #1144: a Daytona PTY reset (websocket close 1006/1008, a closed peer) is a
+    transport blip; the solver evidence and verifier output are already on
+    disk, so a fresh reviewer can finish the review. A read timeout means the
+    reviewer was silent past its budget and would be silent again.
+    """
+    result = _read_json(leaf / "result.json")
+    if result is None:
+        return None
+    info = result.get("transport_error_info")
+    if not isinstance(info, dict):
+        return None
+    raw = str(info.get("raw_message") or result.get("error") or "transport closed")
+    if "readline timeout" in raw.lower():
+        return None
+    return raw[:300]
+
+
+# One retry after a lost reviewer transport (#1144).
+_REVIEWER_TRANSPORT_ATTEMPTS = 2
+
+
 # Review orchestration and aggregation
 
 
@@ -513,9 +549,6 @@ async def run_review(
             image=config.image,
             agent_timeout_sec=config.timeout_sec,
             open_network=config.open_network,
-            net_admin_overlay=(
-                config.environment == "docker" and not config.open_network
-            ),
             workspace_bundle=workspace_bundle,
         )
         from benchflow.review.persistence import write_json_atomic
@@ -546,22 +579,42 @@ async def run_review(
                 (workspace_bundle / "manifest.json").read_text()
             )
             hooks.insert(0, partial(install_review_evidence, manifest=manifest))
-        rollout_config = RolloutConfig(
-            task_path=wrapper_dir,
-            agent=config.agent,
-            model=config.model,
-            agent_env=dict(config.agent_env),
-            environment=config.environment,
-            reasoning_effort=config.reasoning_effort,
-            purpose="reviewer",
-            parent_rollout=rollout_dir.name,
-            jobs_dir=runtime_dir,
-            timeout=config.timeout_sec,
-            uploads=uploads,
-            pre_agent_hooks=hooks,
-        )
-        result = await run_rollout(rollout_config)
-        leaf = _reviewer_rollout_leaf(runtime_dir)
+        attempt_dir = runtime_dir
+        for attempt in range(1, _REVIEWER_TRANSPORT_ATTEMPTS + 1):
+            rollout_config = RolloutConfig(
+                task_path=wrapper_dir,
+                agent=config.agent,
+                model=config.model,
+                agent_env=dict(config.agent_env),
+                environment=config.environment,
+                reasoning_effort=config.reasoning_effort,
+                purpose="reviewer",
+                parent_rollout=rollout_dir.name,
+                jobs_dir=attempt_dir,
+                timeout=config.timeout_sec,
+                # 0 disables the watchdog; the transport's read guard follows
+                # the idle budget (acp/runtime.py, #1143).
+                agent_idle_timeout=config.idle_timeout_sec,
+                uploads=uploads,
+                pre_agent_hooks=hooks,
+            )
+            result = await run_rollout(rollout_config)
+            leaf = _reviewer_rollout_leaf(attempt_dir)
+            lost = _reviewer_transport_loss(leaf) if leaf else None
+            if lost is None or leaf is None or _leaf_review_result(leaf) is not None:
+                break
+            trial.notes.append(
+                f"reviewer attempt {attempt} lost its transport before a verdict "
+                f"({lost})"
+                + (
+                    "; retried once with a fresh reviewer sandbox"
+                    if attempt < _REVIEWER_TRANSPORT_ATTEMPTS
+                    else ""
+                )
+            )
+            # A fresh directory keeps the failed attempt's leaf as evidence and
+            # out of the next attempt's single-leaf lookup.
+            attempt_dir = runtime_dir / f"transport-retry-{attempt}"
         trial.reviewer_rollout = str(leaf) if leaf else None
         reward = _leaf_reward(leaf) if leaf else None
         completion_error = _reviewer_completion_error(leaf) if leaf else None
@@ -569,6 +622,8 @@ async def run_review(
             completion_error = f"reviewer error: {result.error}"
         trial.review_valid = reward == 1.0 and completion_error is None
         review = _leaf_review_result(leaf) if leaf else None
+        if review is None and lost is not None:
+            trial.error_category = REVIEWER_TRANSPORT
         if review is None:
             trial.error = (
                 f"reviewer did not produce a readable {REVIEW_RESULT_FILENAME} "
@@ -615,7 +670,13 @@ async def run_review(
             trial.review_valid,
         )
     except Exception as exc:
-        logger.error("Review failed for %s", rollout_dir.name, exc_info=True)
+        # An error the user can fix (a missing key) is its message alone.
+        logger.error(
+            "Review failed for %s: %s",
+            rollout_dir.name,
+            exc,
+            exc_info=not isinstance(exc, UserError),
+        )
         trial.error = str(exc)
         leaf = _reviewer_rollout_leaf(runtime_dir)
         if leaf is not None:
@@ -628,7 +689,8 @@ async def run_review(
 async def _lock_review_evidence(sandbox: Any) -> None:
     """Make uploaded evidence readable but immutable before the agent starts."""
 
-    result = await sandbox.exec(
+    result = await exec_raw(
+        sandbox.exec,
         "chown -R 0:0 /evidence && chmod -R a-w,a+rX /evidence",
         user="root",
         timeout_sec=120,
@@ -636,7 +698,7 @@ async def _lock_review_evidence(sandbox: Any) -> None:
     if result.return_code != 0:
         raise RuntimeError(
             "failed to lock reviewer evidence read-only: "
-            f"{(result.stderr or result.stdout or '')[:300]}"
+            f"{(diagnostic_result(result).stderr.render() or diagnostic_result(result).stdout.render() or '')[:300]}"
         )
 
 

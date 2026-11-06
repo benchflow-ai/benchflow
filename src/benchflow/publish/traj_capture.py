@@ -344,6 +344,7 @@ def _collect_workspace_files(
     runaway workspace never costs a full scan, let alone a zip.
     """
     import os
+    import stat
 
     included: list[Path] = []
     total_bytes = 0
@@ -362,7 +363,11 @@ def _collect_workspace_files(
                 excluded += 1
                 continue
             try:
-                size = candidate.stat().st_size
+                info = candidate.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    excluded += 1
+                    continue
+                size = info.st_size
             except OSError:
                 excluded += 1
                 continue
@@ -394,6 +399,8 @@ def attach_workspace_archive(
     import dataclasses
     import zipfile
 
+    from benchflow.publish._snapshot import regular_files
+
     if max_bytes is None:
         max_bytes = MAX_ATTACHMENT_BYTES
 
@@ -409,7 +416,6 @@ def attach_workspace_archive(
     resolved = folder.expanduser()
     if resolved.is_symlink() or not resolved.is_dir():
         return skipped(f"workspace folder not found: {resolved}")
-    resolved = resolved.resolve()
     collected = _collect_workspace_files(resolved, max_bytes=max_bytes)
     if isinstance(collected, str):
         return skipped(collected)
@@ -419,9 +425,26 @@ def attach_workspace_archive(
     target = artifacts._staging_dir / relname
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
+        allowed = {source.relative_to(resolved) for source in included}
+        allowed_dirs = {parent for path in allowed for parent in path.parents}
+        written = 0
+        file_count = 0
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-            for source in sorted(included):
-                archive.write(source, arcname=str(source.relative_to(resolved)))
+            for relative, stream in regular_files(
+                resolved,
+                exclude=lambda path, directory: (
+                    path not in (allowed_dirs if directory else allowed)
+                ),
+            ):
+                with archive.open(relative.as_posix(), "w") as output:
+                    while chunk := stream.read(
+                        min(1024 * 1024, max_bytes - written + 1)
+                    ):
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise ValueError("workspace grew beyond the byte limit")
+                        output.write(chunk)
+                file_count += 1
     except (OSError, ValueError) as exc:
         target.unlink(missing_ok=True)
         return skipped(f"could not archive workspace folder: {exc}")
@@ -439,7 +462,7 @@ def attach_workspace_archive(
     return WorkspaceAttachResult(
         artifacts=updated,
         attached=attached,
-        file_count=len(included),
+        file_count=file_count,
         excluded_count=excluded,
         skipped_reason=None,
     )

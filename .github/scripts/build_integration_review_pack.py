@@ -11,8 +11,7 @@ directory of produced rollouts, this:
   :func:`tests.integration.rubric_checks.grade_rollout`
   -> ``agent_judge_summary`` + ``metrics``;
 * summarises skill loading per cell -> ``skill_catalog_summary``;
-* compares docker/daytona within-PR parity AND, when a baseline root is given,
-  the pinned-baseline reward-BAND parity -> ``parity_summary``;
+* compares docker/daytona within-PR parity -> ``parity_summary``;
 * writes ``hardening_summary.md`` (network / verifier / root / path),
   ``red_flags.md`` (reward-hacking / leakage / infra), and the authoritative
   ``verdict.md`` (user-facing ``mergeable | mergeable with quarantines |
@@ -433,14 +432,14 @@ def _classify_one(slot: Slot, expected_source_sha: str | None) -> None:
 
 
 # ------------------------------------------------------------------
-# Parity: within-PR docker/daytona pairs + pinned-baseline reward band.
+# Parity: within-PR docker/daytona pairs.
 # ------------------------------------------------------------------
 
 
 @dataclass
 class ParityResult:
     pair_id: str
-    kind: str  # "within-pr" | "pinned-baseline"
+    kind: str  # "within-pr"
     status: str
     detail: str
 
@@ -483,24 +482,6 @@ def within_pr_parity(slots: list[Slot]) -> list[ParityResult]:
     return results
 
 
-def baseline_parity(
-    artifacts: Path, baseline_root: Path, cells: list[Cell]
-) -> ParityResult | None:
-    """Pinned-baseline reward-BAND parity over the SkillsBench tasks in scope.
-
-    Lazy/subprocess wrapper via :func:`rubric_checks.parity_baseline_band`. Only
-    runs over the tasks the matrix actually covers (so a non-SkillsBench PR with
-    no overlapping baseline tasks is reported NA rather than fabricated).
-    """
-    tasks = sorted({c.task for c in cells if c.task})
-    if not tasks:
-        return ParityResult(
-            "pinned-baseline", "pinned-baseline", "na", "no SkillsBench tasks in matrix"
-        )
-    band = rubric_checks.parity_baseline_band(artifacts, baseline_root, tasks)
-    return ParityResult("pinned-baseline", "pinned-baseline", band.status, band.detail)
-
-
 # ------------------------------------------------------------------
 # Verdict (CONTRACT Q2 deterministic gate, FAIL-CLOSED).
 # ------------------------------------------------------------------
@@ -540,18 +521,7 @@ def compute_verdict(slots: list[Slot], parity: list[ParityResult]) -> Verdict:
             )
 
     for pr in parity:
-        if pr.status == "fail" and pr.kind == "pinned-baseline":
-            # The pinned-baseline reward-band gate currently feeds a NATIVE HF
-            # leaderboard baseline to the Harbor-schema + git-pinned checker, which
-            # structurally false-fails (missing Harbor fields / pin mismatch) — NOT
-            # a real reward regression. Quarantine it (visible, non-blocking) until
-            # check_skillsbench_harbor_parity gains a native-vs-native baseline mode
-            # (tracked follow-up). Within-PR docker/daytona parity still hard-blocks.
-            quarantines.append(
-                f"parity {pr.kind} (advisory — gate needs native-baseline mode): "
-                f"{pr.pair_id} — {pr.detail}"
-            )
-        elif pr.status == "fail":
+        if pr.status == "fail":
             blockers.append(f"parity {pr.kind} fail: {pr.pair_id} — {pr.detail}")
         elif pr.status == "quarantine":
             quarantines.append(f"parity {pr.kind}: {pr.pair_id} — {pr.detail}")
@@ -568,9 +538,7 @@ def compute_verdict(slots: list[Slot], parity: list[ParityResult]) -> Verdict:
 # ------------------------------------------------------------------
 
 
-def build_manifest(
-    plan: dict[str, Any], artifacts: Path, baseline_root: Path | None
-) -> dict[str, Any]:
+def build_manifest(plan: dict[str, Any], artifacts: Path) -> dict[str, Any]:
     return {
         "schema_version": "1",
         "pr": plan.get("pr") or plan.get("pr_number"),
@@ -580,9 +548,8 @@ def build_manifest(
         "buckets": plan.get("buckets") or [],
         "trust_boundary": plan.get("trust_boundary"),
         "network_lane": plan.get("network_lane"),
-        "baseline": plan.get("baseline") or ("pinned" if baseline_root else None),
+        "baseline": plan.get("baseline"),
         "artifacts_root": str(artifacts),
-        "baseline_root": str(baseline_root) if baseline_root else None,
         "source_refs": {
             "grader": "origin/main (trusted)",
             "code_under_test": plan.get("head_sha"),
@@ -739,11 +706,6 @@ def parity_summary(parity: list[ParityResult]) -> dict[str, Any]:
             {"pair": p.pair_id, "status": p.status, "detail": p.detail}
             for p in parity
             if p.kind == "within-pr"
-        ],
-        "pinned_baseline": [
-            {"pair": p.pair_id, "status": p.status, "detail": p.detail}
-            for p in parity
-            if p.kind == "pinned-baseline"
         ],
     }
 
@@ -941,9 +903,7 @@ def verdict_md(
 # ------------------------------------------------------------------
 
 
-def build_review(
-    plan: dict[str, Any], artifacts: Path, baseline_root: Path | None
-) -> dict[str, Any]:
+def build_review(plan: dict[str, Any], artifacts: Path) -> dict[str, Any]:
     """Classify, grade, parity, and compute the verdict for one artifacts root."""
     cells = _matrix_cells(plan)
     # Staleness is about the TASK SOURCE the rollout ran against, NOT the
@@ -956,10 +916,6 @@ def build_review(
     expected_source_sha = plan.get("source_sha")
     slots, unattributed = classify_slots(cells, artifacts, expected_source_sha)
     parity = within_pr_parity(slots)
-    if baseline_root is not None:
-        base_parity = baseline_parity(artifacts, baseline_root, cells)
-        if base_parity is not None:
-            parity.append(base_parity)
     verdict = compute_verdict(slots, parity)
     return {
         "cells": cells,
@@ -979,7 +935,6 @@ def write_pack(
     out: Path,
     plan: dict[str, Any],
     artifacts: Path,
-    baseline_root: Path | None,
     review: dict[str, Any],
 ) -> None:
     """Write the full review-pack/ layout to ``out``."""
@@ -994,7 +949,7 @@ def write_pack(
     def _dump(name: str, obj: Any) -> None:
         (out / name).write_text(json.dumps(obj, indent=2), encoding="utf-8")
 
-    _dump("manifest.json", build_manifest(plan, artifacts, baseline_root))
+    _dump("manifest.json", build_manifest(plan, artifacts))
     _dump("matrix_expected.json", matrix_expected(cells))
     _dump("matrix_observed.json", matrix_observed(slots, unattributed))
     _dump("metrics.json", metrics_summary(slots))
@@ -1059,12 +1014,6 @@ def main(argv: list[str] | None = None) -> int:
         "--artifacts", type=Path, required=True, help="Produced rollouts root."
     )
     parser.add_argument(
-        "--baseline-root",
-        type=Path,
-        default=None,
-        help="Optional pinned Harbor baseline root (enables band parity).",
-    )
-    parser.add_argument(
         "--out", type=Path, default=Path("review-pack"), help="review-pack output dir."
     )
     args = parser.parse_args(argv)
@@ -1082,8 +1031,8 @@ def main(argv: list[str] | None = None) -> int:
         _emit_github_output(VERDICT_NOT_MERGEABLE)
         return 1
 
-    review = build_review(plan, args.artifacts, args.baseline_root)
-    write_pack(args.out, plan, args.artifacts, args.baseline_root, review)
+    review = build_review(plan, args.artifacts)
+    write_pack(args.out, plan, args.artifacts, review)
 
     verdict: Verdict = review["verdict"]
     print(f"verdict={verdict.verdict}")

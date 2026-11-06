@@ -94,3 +94,74 @@ After deployment, run:
 The smoke test verifies compute provisioning, image parity, storage hardening,
 private containers, and the live health response without printing the internal
 service endpoint.
+
+## What the service does with an upload
+
+This section moved here from the user page `docs/results/share-a-trajectory.md`; it describes the server side of `bench traj upload`.
+
+Public uploads first enter a private, versioned Azure Blob quarantine prefix.
+The broker issues short-lived user-delegation SAS URLs scoped to create one
+expected blob at a time; they do not grant list, read, or delete access.
+
+An Event Grid-triggered validator independently checks:
+
+- the manifest contract;
+- the 8 MiB per-record JSONL bound and structural complexity limits;
+- allowlisted object names, byte sizes and SHA-256 hashes;
+- strict JSONL syntax;
+- final secret scans of the JSONL artifacts and the manifest.
+
+The server recognizes the exact local replacement marker
+(`<XXX-benchflow-key-values-XXX>`) but fails closed if any raw secret-like
+value survives. A workspace archive (`workspace/*.zip`) is opaque to the
+validator: it checks only the hash binding and the zip magic
+(`validation.py`), not the contents.
+
+Only then does the validator copy artifacts into the content-addressed
+`sources/community/<digest>/` namespace, with `manifest.json` as the commit
+marker. Failed captures are removed from the live quarantine namespace and
+are never promoted. Blob versioning and the lifecycle policy provide recovery
+and bound retention for attempted overwrites; the deployment does not
+configure an immutable-storage policy.
+
+The digest excludes contributor labels, timestamps, and transport details, so
+the same redacted bytes are idempotent across machines.
+
+The uploaded `manifest.json` keeps the complete redacted report under
+`trajectory_report`: primary file, detected format, JSONL file and byte totals,
+the step counts, creation time and its source, the masked-value total, and
+every preview row. The server validates those values against the declared
+artifacts with a closed schema and an exact recompute, and rejects
+inconsistent report metadata. The per-kind masked counts the CLI shows are
+display-only and are not uploaded.
+
+### CLI environment variables for operators
+
+| Variable | Effect |
+|---|---|
+| `BENCHFLOW_TRAJ_BROKER_URL` | Overrides the broker URL built into the CLI, for development or disaster recovery. |
+| `BENCHFLOW_TRAJ_UPLOADED_BY` | Adds a non-secret contributor label to the manifest. |
+| `BENCHFLOW_TRAJ_WAIT_SECONDS` | The post-upload wait budget (default 240; `0` disables waiting). |
+| `BENCHFLOW_AZURE_CONTAINER_URL` | The container for `--direct` when `--container-url` is not given. |
+
+## Trusted direct upload
+
+Operators with Azure RBAC can bypass the public broker while keeping the same
+staging and manifest contract:
+
+```bash
+uv tool install 'benchflow[azure]'
+az login
+bench traj upload path/to/trial --direct \
+  --github-id YOUR_GITHUB_ID \
+  --email YOU@example.com \
+  --container-url https://ACCOUNT.blob.core.windows.net/bronze
+```
+
+`BENCHFLOW_AZURE_CONTAINER_URL` can replace `--container-url`. Direct mode uses
+`DefaultAzureCredential` and create-only blob calls, and skips the
+post-upload status wait. The identity needs a custom role with blob
+create/write data actions on the target container, for example a custom
+`Blob Data Creator` role. Azure's broader `Storage Blob Data Contributor` role
+also works but grants more than direct upload needs. For routine community
+contributions, use the default broker mode.

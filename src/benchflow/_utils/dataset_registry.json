@@ -1,0 +1,632 @@
+[
+  {
+    "name": "terminal-bench",
+    "version": "2.0",
+    "description": "Terminal-Bench 2.0: 89 tasks in a terminal, pinned by BenchFlow to commit 69671fba with a content digest per task.",
+    "tasks": [
+      {
+        "name": "adaptive-rejection-sampler",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "adaptive-rejection-sampler",
+        "digest": "sha256:c04e2b9c8a3c4f1a000562a48bb2b79ad15ec84bbecb3873f7e4e80cf0c9b761"
+      },
+      {
+        "name": "bn-fit-modify",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "bn-fit-modify",
+        "digest": "sha256:e9864a39a4a5fad65f0e9db2fabeb9d58c7e8c7b0bbdd8190153d2995b0d7d03"
+      },
+      {
+        "name": "break-filter-js-from-html",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "break-filter-js-from-html",
+        "digest": "sha256:38f4d1a815e4d9e906dbabf169a24c34f151b44535c4335c9ea8e0edfce24f3a"
+      },
+      {
+        "name": "build-cython-ext",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "build-cython-ext",
+        "digest": "sha256:bcf3647beb4da3b2cfb64a69d5708350d0f81f6f4362e2b1f90c99be7ffd204c"
+      },
+      {
+        "name": "build-pmars",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "build-pmars",
+        "digest": "sha256:702db0678d8ce8ed92608ef5917ec1e5fa6133d1740a7bccc83cb94481acc7ab"
+      },
+      {
+        "name": "build-pov-ray",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "build-pov-ray",
+        "digest": "sha256:ecfda23f084ffeb46ea447724941da84359564b31ef3d9fd423b700b082e9b31"
+      },
+      {
+        "name": "caffe-cifar-10",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "caffe-cifar-10",
+        "digest": "sha256:5d309059972bb13204acac737d7794723d97c7b64e8992e9f96c13c3ad00b26e"
+      },
+      {
+        "name": "cancel-async-tasks",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "cancel-async-tasks",
+        "digest": "sha256:cb7ee0245455089b655a4787a12a1cc23c3307048ab844a7608769988d6729df"
+      },
+      {
+        "name": "chess-best-move",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "chess-best-move",
+        "digest": "sha256:3f0b111cc45292e43dc71f037e04e356cc7e9d7a5a0fb033e28395cb3763792c"
+      },
+      {
+        "name": "circuit-fibsqrt",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "circuit-fibsqrt",
+        "digest": "sha256:59b00f89a58b1c671dcb4c410a2d95681ee479c2982de44bfd9b5e63ba499bff"
+      },
+      {
+        "name": "cobol-modernization",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "cobol-modernization",
+        "digest": "sha256:d6c02ae821e9eeac864fb3d8d1d85c06a172671ecc37a2bf77f1bf73da26d5b6"
+      },
+      {
+        "name": "code-from-image",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "code-from-image",
+        "digest": "sha256:51e57e7cca2ad79ff2b20fcfba74a04ec8f7eeb1b4918d0db5bf2df04c964032"
+      },
+      {
+        "name": "compile-compcert",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "compile-compcert",
+        "digest": "sha256:94d3d79986751772f4edd0a8070409b5d0465f2e7048c41dd216f1c460c3ca20"
+      },
+      {
+        "name": "configure-git-webserver",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "configure-git-webserver",
+        "digest": "sha256:7f8555501bdeeee5c63494883320177fac9b46423d895f4b61eae0338d6ee862"
+      },
+      {
+        "name": "constraints-scheduling",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "constraints-scheduling",
+        "digest": "sha256:12fedf27bc0ad2970e65182074c10b47d4e625fb8c1762ac6fa8ae843f4c8b6a"
+      },
+      {
+        "name": "count-dataset-tokens",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "count-dataset-tokens",
+        "digest": "sha256:ad6ffc59c87e158e9b9403a093149d2af44b6db478769d02060e6f7f76f310be"
+      },
+      {
+        "name": "crack-7z-hash",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "crack-7z-hash",
+        "digest": "sha256:5fad795c73b00934a59845122f694a867130bbdaae26776e61afa6c107895fe0"
+      },
+      {
+        "name": "custom-memory-heap-crash",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "custom-memory-heap-crash",
+        "digest": "sha256:994dac52fbf8bdbdad0b32ea9842a882a36321bcf471d6399a5d2e1d34ec0efd"
+      },
+      {
+        "name": "db-wal-recovery",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "db-wal-recovery",
+        "digest": "sha256:a7f159fd464361b5faa543f7859582488c976274eb27c3b462fd41537e3968df"
+      },
+      {
+        "name": "distribution-search",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "distribution-search",
+        "digest": "sha256:690f1371bbb1f8f0286484e1717fd0090aba12ce7fcd42a2271cb5863c0ed9b0"
+      },
+      {
+        "name": "dna-assembly",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "dna-assembly",
+        "digest": "sha256:cd4d13deb72c243bba237662b3a3f8062905309d65b0ee356b00b4d2c11dc4e6"
+      },
+      {
+        "name": "dna-insert",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "dna-insert",
+        "digest": "sha256:a4c6ff26910defdb31a821e17f25894fb87d5a9acae6d7ff65cdc11106e463af"
+      },
+      {
+        "name": "extract-elf",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "extract-elf",
+        "digest": "sha256:70cf5665d538617e8a65c4189df785dad03a8c1cad3e2413070900680c304b05"
+      },
+      {
+        "name": "extract-moves-from-video",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "extract-moves-from-video",
+        "digest": "sha256:6578b1467b99202429dba83be1f8991d746bae8bc38e4ea001e8a24bc9acf5ff"
+      },
+      {
+        "name": "feal-differential-cryptanalysis",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "feal-differential-cryptanalysis",
+        "digest": "sha256:ef395a445218d03c8c07ffcddd4df3cc840a79b1ce8d83a1dfae6bff29e13cbc"
+      },
+      {
+        "name": "feal-linear-cryptanalysis",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "feal-linear-cryptanalysis",
+        "digest": "sha256:c77e63ea7e77ad15c15dd2336c8d2b11265ec16ca94fee41e423a60963a2bd40"
+      },
+      {
+        "name": "filter-js-from-html",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "filter-js-from-html",
+        "digest": "sha256:94b3158d7b3c4defdfa50260791fb9e7b8dbac703f27783bd2c302b7cc8d655a"
+      },
+      {
+        "name": "financial-document-processor",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "financial-document-processor",
+        "digest": "sha256:36acf64d20290abdd5b3c95f8af7d9a62902c34bcdae1a24bb2fbb58264cb2ce"
+      },
+      {
+        "name": "fix-code-vulnerability",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "fix-code-vulnerability",
+        "digest": "sha256:ce5f9cb6d630b802c6a5aba66db013840eea6b53a347fb32f378a87bf7b65cfc"
+      },
+      {
+        "name": "fix-git",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "fix-git",
+        "digest": "sha256:945e3d8717c66b441197cf86e7301098b6b843dd87ebe57fd935b2b2246242a1"
+      },
+      {
+        "name": "fix-ocaml-gc",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "fix-ocaml-gc",
+        "digest": "sha256:c24b4ac2547cb517f162aabb6bbdd2a09b443b2816b06d0119b5eafbba6688f6"
+      },
+      {
+        "name": "gcode-to-text",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "gcode-to-text",
+        "digest": "sha256:a89191d2820611fb6b4dbf947163061a253f59bc6104bcb3971b17736966573e"
+      },
+      {
+        "name": "git-leak-recovery",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "git-leak-recovery",
+        "digest": "sha256:b3c4601fd34c9d75582302f5ac44ed773cfd9fbfc12e5bdea3737ae510312f47"
+      },
+      {
+        "name": "git-multibranch",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "git-multibranch",
+        "digest": "sha256:9e2fe61190fb08ecfdd6226eff1a9aa12823d0876079a5ea144452937ff6299c"
+      },
+      {
+        "name": "gpt2-codegolf",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "gpt2-codegolf",
+        "digest": "sha256:fc1bab77badedd35fd59e12d64fef106e1701e35a52004f43ec87f120533675d"
+      },
+      {
+        "name": "headless-terminal",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "headless-terminal",
+        "digest": "sha256:eb73e457eac4ca250ffd064acf112efe180674af9f1e97b22fcf99d9b582bb98"
+      },
+      {
+        "name": "hf-model-inference",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "hf-model-inference",
+        "digest": "sha256:35a3e30c5ce6b1b63ebded1df4c4732ccc3161615cfc4c153006359a1d800a2d"
+      },
+      {
+        "name": "install-windows-3.11",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "install-windows-3.11",
+        "digest": "sha256:4056cd6d2a239b1c0a5b478d87d41e902da041f900f0f1ffdb5138fdb148b6d2"
+      },
+      {
+        "name": "kv-store-grpc",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "kv-store-grpc",
+        "digest": "sha256:3e767442dc99c1a35fcab5b10611a8a15c6d89890cc923964055519ac8b3dfb3"
+      },
+      {
+        "name": "large-scale-text-editing",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "large-scale-text-editing",
+        "digest": "sha256:8a111e3d7aba9e289d8764638f00477964559d8427b3cfa3b5666c79b9df9f72"
+      },
+      {
+        "name": "largest-eigenval",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "largest-eigenval",
+        "digest": "sha256:82a41b6d71a7259fee28ee861de5507dc932a9efcae5ebf5f6a0d0fd8e99b714"
+      },
+      {
+        "name": "llm-inference-batching-scheduler",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "llm-inference-batching-scheduler",
+        "digest": "sha256:07a069d4b120dadcd1e916b24c5f6b99a816e5c1dbf44075652053c0a6b693e4"
+      },
+      {
+        "name": "log-summary-date-ranges",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "log-summary-date-ranges",
+        "digest": "sha256:c5bbd63c5053412c858da9bbba8bf20ca8ed51365a9b362275ee28c6caf36628"
+      },
+      {
+        "name": "mailman",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "mailman",
+        "digest": "sha256:5a1c894722bbd8d4dced0c37abb59dfd1240a27c09da6e6e339c35789faac0ee"
+      },
+      {
+        "name": "make-doom-for-mips",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "make-doom-for-mips",
+        "digest": "sha256:74f8306d6ad8851a603cc9bb7a810fd38e1d88a482e3a8465d56fe0917defc5f"
+      },
+      {
+        "name": "make-mips-interpreter",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "make-mips-interpreter",
+        "digest": "sha256:bfaaea83e18af8aed1b54a296e253b819e9c5d6503c7cefec31dbe6aa32aac6c"
+      },
+      {
+        "name": "mcmc-sampling-stan",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "mcmc-sampling-stan",
+        "digest": "sha256:c5823fb5157f4f386b2ae484ec516f2227f0414e878b5a9f07ef032f04095602"
+      },
+      {
+        "name": "merge-diff-arc-agi-task",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "merge-diff-arc-agi-task",
+        "digest": "sha256:4e873e22ba69953abc37939ab26bd87e9d3cbefc56030f742160b9404850455e"
+      },
+      {
+        "name": "model-extraction-relu-logits",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "model-extraction-relu-logits",
+        "digest": "sha256:1e5e5b7fd83fff4e3c2831f9b71868f7ce7e764b4774802d946d834c76885d87"
+      },
+      {
+        "name": "modernize-scientific-stack",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "modernize-scientific-stack",
+        "digest": "sha256:100d99b524e118aa59dfd1af74c77133db71bc04d3afd8b8105eae562058e3cf"
+      },
+      {
+        "name": "mteb-leaderboard",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "mteb-leaderboard",
+        "digest": "sha256:0d27ecec2836d2599738cde961aa7e7c5e635637c90fec729644e26bee0cb2a3"
+      },
+      {
+        "name": "mteb-retrieve",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "mteb-retrieve",
+        "digest": "sha256:e1ce9179f24c78fc61547cccf69b823202348fb49744860a3bc47f1919647fb2"
+      },
+      {
+        "name": "multi-source-data-merger",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "multi-source-data-merger",
+        "digest": "sha256:3ff4c9e705d5ec205ce0cdc625d45b4dc3cdc016fd03cf6cd479843ee46de367"
+      },
+      {
+        "name": "nginx-request-logging",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "nginx-request-logging",
+        "digest": "sha256:65e9a219da81f97d67799e891ac5cc4608afd7cdb7a79c41113b638ceffc45a4"
+      },
+      {
+        "name": "openssl-selfsigned-cert",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "openssl-selfsigned-cert",
+        "digest": "sha256:96d7317da1cb825084b5d0f48900b2c1c5d81d8cbb838a57e2d64dfc4e033ca7"
+      },
+      {
+        "name": "overfull-hbox",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "overfull-hbox",
+        "digest": "sha256:f8b8c1f09ce9c67450070aa6243debc17fb0ebe9d6b814b1723f39f4dac1c3be"
+      },
+      {
+        "name": "password-recovery",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "password-recovery",
+        "digest": "sha256:6bee8637e0d880262f93456554ae811802abfd2badc558cdeba9db16ee7c6f19"
+      },
+      {
+        "name": "path-tracing",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "path-tracing",
+        "digest": "sha256:a025a5d8800dc53581e2b28ec452fecb879e89c4ce9b88a0881af6697b2e5709"
+      },
+      {
+        "name": "path-tracing-reverse",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "path-tracing-reverse",
+        "digest": "sha256:0379f466143da64dad7dd4b15789ad7d3e68fc702d4b153e5a1bf678c6019626"
+      },
+      {
+        "name": "polyglot-c-py",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "polyglot-c-py",
+        "digest": "sha256:d488966719cab170e8e7094223c40ec018b2fa0d4e5f851da3e3f317d60a4c7e"
+      },
+      {
+        "name": "polyglot-rust-c",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "polyglot-rust-c",
+        "digest": "sha256:6f645c6f5f80b866b25cc7a5c14eee8d987fc65c1c283e788936f0616f191510"
+      },
+      {
+        "name": "portfolio-optimization",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "portfolio-optimization",
+        "digest": "sha256:5ad9bc3e585448fa89db2d5a49a26b2847a1a05d33e885a8de3580bbc68943ae"
+      },
+      {
+        "name": "protein-assembly",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "protein-assembly",
+        "digest": "sha256:64762f79560bb6b48a921ee2335bf4a996a21c53e9089a7ba0e456e76ab64963"
+      },
+      {
+        "name": "prove-plus-comm",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "prove-plus-comm",
+        "digest": "sha256:8bdfcacc6ea5dd989352aeb2701003311d72d323c006cf64f2fd715ebeae09d0"
+      },
+      {
+        "name": "pypi-server",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "pypi-server",
+        "digest": "sha256:9b262ccb40a05b83e1fc9f15133da6e89416963d0992d7a3a5a8029e21f3fd1e"
+      },
+      {
+        "name": "pytorch-model-cli",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "pytorch-model-cli",
+        "digest": "sha256:4a9d9af42b8389cd6f8d756dc362cdc76a0bc723d40445bdad45974b8c11b5ed"
+      },
+      {
+        "name": "pytorch-model-recovery",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "pytorch-model-recovery",
+        "digest": "sha256:1b64668a2fd11e467d8ffc9e667acd89d4effa6996b1ef04a74bdaa59f260484"
+      },
+      {
+        "name": "qemu-alpine-ssh",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "qemu-alpine-ssh",
+        "digest": "sha256:06a49d582153be41ae80081431d5e2c926b6c4b14add330e86450b51c84bd623"
+      },
+      {
+        "name": "qemu-startup",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "qemu-startup",
+        "digest": "sha256:61bc2fe4c1683b41dc0d6cdeadcf6162da5394425effdb39324b8f1dad75747a"
+      },
+      {
+        "name": "query-optimize",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "query-optimize",
+        "digest": "sha256:5c083f8e103ae4606bafe1b58f5010a568d1bf451788431a9cd94adf4209962c"
+      },
+      {
+        "name": "raman-fitting",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "raman-fitting",
+        "digest": "sha256:8b86b43545e7a9592474a9a6a4d914ba383fc6ca516d939de441bcf866ab2715"
+      },
+      {
+        "name": "regex-chess",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "regex-chess",
+        "digest": "sha256:e8cfea76b29a6a14bc29fcb641cf95a260eb8bdea89df2b3b1efdadd2a3fbff5"
+      },
+      {
+        "name": "regex-log",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "regex-log",
+        "digest": "sha256:975e71d4433ed1ccfa4ec7ec1305dd26dd75d6d1420f87d778fbcd2937dd5c9d"
+      },
+      {
+        "name": "reshard-c4-data",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "reshard-c4-data",
+        "digest": "sha256:bd7c6642681cc0132e8954c36abb565a12299f19bd5ec385896bf36491f5c3e3"
+      },
+      {
+        "name": "rstan-to-pystan",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "rstan-to-pystan",
+        "digest": "sha256:c29a4f0522c92302b8bae29505f944885e92b5d96202c9c7050a0916bb5e49a3"
+      },
+      {
+        "name": "sam-cell-seg",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "sam-cell-seg",
+        "digest": "sha256:d7940edab3bc888a9da911ee569cee842c04658f9d23bfb973ebfb3ff9a87b36"
+      },
+      {
+        "name": "sanitize-git-repo",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "sanitize-git-repo",
+        "digest": "sha256:6e8e4208e9587295624f399ffecf4a509527b0d89b62ce8b5af842f1e937d197"
+      },
+      {
+        "name": "schemelike-metacircular-eval",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "schemelike-metacircular-eval",
+        "digest": "sha256:c2d1551c0ae4adc02c315f547105ce8951879519cfa5e3b254af0019d4517463"
+      },
+      {
+        "name": "sparql-university",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "sparql-university",
+        "digest": "sha256:97c4d2f5870e2e6cd2fed637677648361d37dc5836dac47ec5ae8331884a3796"
+      },
+      {
+        "name": "sqlite-db-truncate",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "sqlite-db-truncate",
+        "digest": "sha256:c2f59d7f68f1fa6951e90ee1e40c5ee39bc099c13118cdec00388804325b7188"
+      },
+      {
+        "name": "sqlite-with-gcov",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "sqlite-with-gcov",
+        "digest": "sha256:5fc66a18be506062cb2aeecb574892eff6b90b1c4dcbc0dea41864c58c7fe2f3"
+      },
+      {
+        "name": "torch-pipeline-parallelism",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "torch-pipeline-parallelism",
+        "digest": "sha256:5e686bcdada81d5cec389d4b9a1b2a9189036a6469cebafa8079f54307fc781e"
+      },
+      {
+        "name": "torch-tensor-parallelism",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "torch-tensor-parallelism",
+        "digest": "sha256:7bcd439b6556693f430c9342bcf567f4a244684e2cac91da939bd392524fa2c9"
+      },
+      {
+        "name": "train-fasttext",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "train-fasttext",
+        "digest": "sha256:51c147764ce22c8d9d3bd48bff12d955b6db68bd5ccb89ca530ac6af66fc9526"
+      },
+      {
+        "name": "tune-mjcf",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "tune-mjcf",
+        "digest": "sha256:7e91d8619d1393035ca0f5d6b35291ebadcebb3ecc32cf932ec792002e6c78bd"
+      },
+      {
+        "name": "video-processing",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "video-processing",
+        "digest": "sha256:bf58b0e017a17866bceca0551254554c18c667ded47971b12b4d0e4e7ae3ae14"
+      },
+      {
+        "name": "vulnerable-secret",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "vulnerable-secret",
+        "digest": "sha256:eb88a5dbe59cbd27d14cb6cfe7057c780729a4d65dd65ddfb10bd4a792c9a180"
+      },
+      {
+        "name": "winning-avg-corewars",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "winning-avg-corewars",
+        "digest": "sha256:b730b0e377914f51bfee804e92d5574807aa60c4b9117e1269f431cb26d3e883"
+      },
+      {
+        "name": "write-compressor",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "write-compressor",
+        "digest": "sha256:65c597455ad17a4e6ee94aaf4d52c148ae2a896e68d18db873a199c2b9909900"
+      }
+    ]
+  }
+]

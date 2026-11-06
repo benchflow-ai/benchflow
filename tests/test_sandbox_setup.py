@@ -15,12 +15,20 @@ async def _run_setup_sandbox_user(
     *, sandbox_user: str = "agent", workspace: str = "/app"
 ):
     env = MagicMock()
+    env.supports_system_shell = True
     env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
 
     await setup_sandbox_user(env, sandbox_user, workspace)
 
-    env.exec.assert_awaited_once()
-    return env.exec.call_args.args[0], env.exec.call_args.kwargs
+    # The workspace's physical path, the user's setup, then the lock of the
+    # folders on PATH.
+    assert env.exec.await_count == 3
+    # Read from a receipt.
+    assert (
+        f"cd {shlex.quote(workspace)} && pwd -P" in env.exec.await_args_list[0].args[0]
+    )
+    setup = env.exec.await_args_list[1]
+    return setup.args[0], setup.kwargs
 
 
 def _assert_conditional_legacy_symlink(cmd: str, *, source: str, dest: str) -> None:
@@ -84,7 +92,8 @@ class TestSetupSandboxUser:
         """The non-copy setup contract still creates the user and grants access."""
         cmd, _ = await _run_setup_sandbox_user()
 
-        assert "id -u agent >/dev/null 2>&1 || useradd -m -s /bin/bash agent" in cmd
+        assert "id -u agent >/dev/null 2>&1 || {" in cmd
+        assert 'useradd -m -u "$bf_uid" -g "$bf_uid" -s /bin/bash agent' in cmd
         assert "mkdir -p /home/agent/.local/bin" not in cmd
         assert "chown -R agent:agent /home/agent" in cmd
         assert f"chown -R agent:agent {shlex.quote('/app')}" in cmd

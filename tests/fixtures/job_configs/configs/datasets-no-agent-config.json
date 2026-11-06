@@ -1,0 +1,8 @@
+{
+    "job_name": "hb-datasets",
+    "datasets": [
+        {
+            "path": "tasks"
+        }
+    ]
+}

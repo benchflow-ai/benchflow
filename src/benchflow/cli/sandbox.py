@@ -15,6 +15,8 @@ logic without a fork. The Daytona client + reaper deliberately resolve through
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -23,8 +25,19 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
+from benchflow._utils.sandbox_providers import extra_install_hint
 from benchflow.cli._options import SandboxOption
 from benchflow.cli._shared import console, print_error
+
+# `bench sandbox`'s help (cli/main.py's layout copies it). Only Daytona's
+# sandboxes outlive a run; Docker's are made and removed per trial.
+SANDBOX_HELP = (
+    "Daytona sandboxes: create, list and clean up (cleanup also removes "
+    "leftover Docker containers)."
+)
+
+# What `bench sandbox create` takes.
+_TASK_DIR_NEXT = "pass a task folder (it holds task.md or task.toml)"
 
 
 def sandbox_create(task_dir: Path, sandbox: str) -> None:
@@ -32,8 +45,8 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
     from benchflow.runtime import Environment
 
     if not task_dir.is_dir():
-        print_error(f"Not a directory: {task_dir}")
-        raise typer.Exit(1)
+        print_error(f"Not a directory: {task_dir}", next_step=_TASK_DIR_NEXT)
+        raise typer.Exit(2)
     try:
         env = Environment.from_task(task_dir, sandbox=sandbox)
     except (OSError, ValueError) as e:
@@ -41,20 +54,24 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
         # is itself a directory — reaches Task's unguarded read_text(), raising
         # FileNotFoundError / IsADirectoryError (both OSError). Surface a clean
         # error instead of a raw traceback.
-        print_error(f"Not a valid task directory {task_dir}: {e}")
+        print_error(
+            f"Not a valid task directory {task_dir}: {e}", next_step=_TASK_DIR_NEXT
+        )
         raise typer.Exit(1) from None
     except RuntimeError as e:
         # An unknown --sandbox backend (UnsupportedTaskFeatureError, a RuntimeError
         # subclass) and a missing optional sandbox dependency both raise a
         # RuntimeError carrying a clean, user-facing message. Surface it without a
         # traceback, matching how `sandbox list`/`cleanup` handle the same cases.
-        print_error(str(e))
+        print_error(
+            str(e), next_step="`bench doctor --sandbox <name>` checks a sandbox"
+        )
         raise typer.Exit(1) from None
     console.print(f"[green]Environment created:[/green] {escape(str(env))}")
     console.print(f"  Task:    {env.task_path}")
     console.print(f"  Sandbox: {env.sandbox}")
     console.print(
-        "  Use [cyan]bench eval run[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
+        "  Use [cyan]bench run[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
     )
 
 
@@ -82,46 +99,83 @@ def _daytona_sdk_available() -> bool:
         return False
 
 
-def sandbox_list_local() -> None:
+def sandbox_list_local(*, show_all: bool = False, as_json: bool = False) -> None:
     """List active off-box sandboxes (Daytona).
 
     Daytona is the only backend with persistent, listable sandboxes; Docker
     sandboxes are ephemeral (built and torn down per run). When the optional
     Daytona SDK is not installed there is nothing to list — an empty result, not
     an error (mirroring how ``sandbox create`` degrades on a missing extra).
+    With ``BENCHFLOW_DAYTONA_OWNER`` set, only that owner's sandboxes are listed
+    unless ``show_all`` (the shared-key case).
     """
     if not _daytona_sdk_available():
+        if as_json:
+            typer.echo("[]")
+            return
         console.print(
             "No active sandboxes. Daytona is the only backend with persistent, "
             "listable sandboxes, and its SDK is not installed "
-            "([cyan]uv sync --extra sandbox-daytona[/cyan]). Docker sandboxes are "
-            "ephemeral and created per run."
+            f"([cyan]{escape(extra_install_hint('sandbox-daytona'))}[/cyan]). "
+            "Docker sandboxes are "
+            "ephemeral and created per run; [cyan]bench sandbox cleanup[/cyan] "
+            "removes those a killed run left behind."
         )
         return
+    import json
+
     from benchflow.cli import main as cli_main
+    from benchflow.sandbox.daytona_reaper import (
+        _BENCHFLOW_OWNER_LABEL,
+        _benchflow_owner_scope,
+    )
 
     d = cli_main._daytona_client_or_exit()
-    table = Table(title="Active Sandboxes")
-    table.add_column("ID", style="cyan")
-    table.add_column("State", style="green")
-    table.add_column("Age")
-    table.add_column("Target")
-
+    owner = None if show_all else _benchflow_owner_scope()
     now = datetime.now(UTC)
-    total = 0
+    rows = []
     # daytona SDK >=0.18: ``list()`` yields an auto-paginating Iterator[Sandbox].
     for sb in d.list():
-        total += 1
-        age = ""
+        labels = getattr(sb, "labels", None)
+        sb_owner = (
+            labels.get(_BENCHFLOW_OWNER_LABEL) if isinstance(labels, dict) else None
+        )
+        if owner is not None and sb_owner != owner:
+            continue
+        age = None
         if sb.created_at:
             created = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
-            mins = (now - created).total_seconds() / 60
-            age = f"{mins:.0f}m"
-        target = getattr(sb, "target", "") or ""
-        table.add_row(sb.id[:12] + "…", str(sb.state), age, str(target)[:40])
-
+            age = round((now - created).total_seconds() / 60, 1)
+        rows.append(
+            {
+                "id": sb.id,
+                "state": str(sb.state).rsplit(".", 1)[-1],
+                "age_minutes": age,
+                "owner": sb_owner,
+                "target": str(getattr(sb, "target", "") or ""),
+            }
+        )
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    title = f"Sandboxes of owner {owner}" if owner else "Active Sandboxes"
+    table = Table(title=title)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("State", style="green")
+    table.add_column("Age")
+    table.add_column("Owner")
+    table.add_column("Target")
+    for row in rows:
+        table.add_row(
+            row["id"],
+            row["state"],
+            "" if row["age_minutes"] is None else f"{row['age_minutes']:.0f}m",
+            row["owner"] or "",
+            row["target"][:40],
+        )
     console.print(table)
-    console.print(f"\n[bold]{total} sandbox(es)[/bold]")
+    note = f" (owner {owner}; --all for every sandbox on the account)" if owner else ""
+    console.print(f"\n[bold]{len(rows)} sandbox(es)[/bold]{note}", soft_wrap=True)
 
 
 def _cleanup_agentcore_runtimes(*, dry_run: bool, max_age_minutes: int) -> bool:
@@ -156,7 +210,11 @@ def _cleanup_agentcore_runtimes(*, dry_run: bool, max_age_minutes: int) -> bool:
     except Exception as exc:
         # Missing/expired credentials are a "nothing to do here", not a crash
         # in the middle of a cleanup that may still have Daytona work to do.
-        print_error(f"Skipping AgentCore cleanup: {exc}")
+        print_error(
+            f"Skipping AgentCore cleanup: {exc}",
+            next_step="check this machine's AWS credentials and "
+            "BENCHFLOW_AGENTCORE_REGION",
+        )
         return False
 
     verb = "Would delete" if dry_run else "Deleted"
@@ -166,45 +224,184 @@ def _cleanup_agentcore_runtimes(*, dry_run: bool, max_age_minutes: int) -> bool:
     return True
 
 
-def sandbox_cleanup(*, dry_run: bool, max_age_minutes: int) -> None:
-    """Clean up orphaned Daytona sandboxes and stale AgentCore runtimes.
+def cleanup_docker_snapshots(
+    *, dry_run: bool, max_age_minutes: int
+) -> dict[str, int] | None:
+    """Remove ``bf-snap-*`` images (branch snapshots and automatic
+    checkpoints) older than ``max_age_minutes``; None without a Docker CLI
+    or daemon. An image a container still uses is refused by ``docker rmi``
+    and counted as failed."""
+    if shutil.which("docker") is None:
+        return None
+    try:
+        listing = subprocess.run(
+            [
+                "docker",
+                "images",
+                "--filter",
+                "reference=bf-snap-*",
+                "--format",
+                "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listing.returncode != 0:
+        return None
+    counts = {"found": 0, "deleted": 0, "skipped": 0, "failed": 0}
+    now = datetime.now(UTC)
+    for line in listing.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        _, name, created = parts
+        try:
+            stamp = datetime.strptime(
+                " ".join(created.split()[:3]), "%Y-%m-%d %H:%M:%S %z"
+            )
+        except ValueError:
+            continue
+        counts["found"] += 1
+        age = (now - stamp).total_seconds() / 60
+        if age < max_age_minutes:
+            counts["skipped"] += 1
+            continue
+        if dry_run:
+            console.print(
+                f"  [dim]{escape(name)}[/dim] age={age:.0f}m [red](delete)[/red]"
+            )
+            counts["deleted"] += 1
+            continue
+        removed = subprocess.run(
+            ["docker", "rmi", "--no-prune", name],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        counts["deleted" if removed.returncode == 0 else "failed"] += 1
+    return counts
 
-    Both are opt-in extras, so a missing SDK is a no-op rather than an error;
-    only these two backends leave anything behind between runs. Docker
-    sandboxes are torn down per run.
+
+def cleanup_docker_leftovers(*, dry_run: bool) -> bool:
+    """Remove (or list) the Docker containers and networks of BenchFlow
+    processes that died without tearing them down: a ``kill -9``, an OOM
+    kill, a preempted VM (DF-p3-eval-runner-9). The rule is the one every
+    Docker job sweeps with when it starts and ends
+    (:func:`benchflow.sandbox._docker_sweep.sweep_leftovers`): only resources
+    labelled with a process of this host that is provably gone; a live run's,
+    another host's or an unlabelled one is never touched. False without a
+    Docker CLI."""
+    if shutil.which("docker") is None:
+        return False
+    from benchflow.sandbox._docker_sweep import sweep_leftovers
+
+    result = sweep_leftovers(dry_run=dry_run)
+    verb = "would remove" if dry_run else "removed"
+    # A dry run counts what it would ask for; a real one what Docker removed.
+    containers = result.containers if dry_run else result.removed_containers
+    networks = result.networks if dry_run else result.removed_networks
+    running = f" ({len(result.running)} running)" if result.running else ""
+    projects = f": {', '.join(result.projects)}" if result.projects else ""
+    console.print(
+        "Docker leftovers of exited BenchFlow processes: "
+        f"{len(containers)} container(s){running}, "
+        f"{len(networks)} network(s) {verb}{escape(projects)}"
+    )
+    if result.orphans:
+        console.print(
+            "Still running, not removed: "
+            f"{escape(', '.join(result.orphans))} (`docker rm -f` removes them)"
+        )
+    return True
+
+
+def sandbox_cleanup(
+    *,
+    dry_run: bool,
+    max_age_minutes: int,
+    all_mine: bool = False,
+    names: tuple[str, ...] | list[str] = (),
+) -> None:
+    """Clean up orphaned Daytona sandboxes, stale AgentCore runtimes, and
+    the Docker leftovers of BenchFlow processes that died.
+
+    Daytona and AgentCore are opt-in extras, so a missing SDK is a no-op
+    rather than an error. Docker sandboxes are torn down per run; a run that
+    was killed leaves its containers behind, and those are removed here
+    whatever their age (their process is gone). ``all_mine`` deletes every sandbox of
+    this ``BENCHFLOW_DAYTONA_OWNER`` whatever its age or activity, except a
+    STARTED one or one held by a live run lease; ``names`` (``--id``) deletes those sandboxes of
+    this owner scope whatever their lease. Exits 1
+    when an installed backend could not be listed or cleaned.
     """
+    from benchflow.sandbox.daytona_reaper import _benchflow_owner_scope
+
+    if all_mine and _benchflow_owner_scope() is None:
+        print_error(
+            "--all deletes every sandbox of one owner, and no owner is set",
+            next_step="set BENCHFLOW_DAYTONA_OWNER (cleanup never touches "
+            "sandboxes without your owner label)",
+        )
+        raise typer.Exit(2)
     cleaned_any = False
+    backend_failed = False
 
     if _daytona_sdk_available():
         from benchflow.cli import main as cli_main
 
         try:
             cli_main._cleanup_daytona_sandboxes(
-                dry_run=dry_run, max_age_minutes=max_age_minutes
+                dry_run=dry_run,
+                max_age_minutes=max_age_minutes,
+                all_mine=all_mine,
+                names=frozenset(names),
             )
             cleaned_any = True
         except (Exception, typer.Exit) as exc:
-            # The Daytona SDK is installed but unusable (typically no
+            # The Daytona SDK is installed but unusable (typically no or a bad
             # DAYTONA_API_KEY). Report and continue: a second backend may still
-            # have resources to reclaim, and aborting here would silently leave
-            # them behind — AgentCore runtimes consume a 100-per-account quota.
-            print_error(f"Skipping Daytona cleanup: {exc}")
+            # have resources to reclaim — AgentCore runtimes consume a
+            # 100-per-account quota — then exit 1 so a teardown step fails.
+            print_error(
+                f"Daytona cleanup failed: {exc}",
+                next_step="`bench doctor --sandbox daytona` checks the Daytona key",
+            )
+            backend_failed = True
 
     if _cleanup_agentcore_runtimes(dry_run=dry_run, max_age_minutes=max_age_minutes):
         cleaned_any = True
 
+    docker = cleanup_docker_snapshots(dry_run=dry_run, max_age_minutes=max_age_minutes)
+    if docker is not None:
+        cleaned_any = True
+        verb = "would delete" if dry_run else "deleted"
+        console.print(
+            f"Docker bf-snap images: {docker['found']} found, {docker['deleted']} "
+            f"{verb}, {docker['skipped']} younger than {max_age_minutes}m"
+            + (f", {docker['failed']} still in use" if docker["failed"] else "")
+        )
+
+    if cleanup_docker_leftovers(dry_run=dry_run):
+        cleaned_any = True
+
+    if backend_failed:
+        raise typer.Exit(1)
     if not cleaned_any:
         console.print(
             "Nothing to clean up. Neither the Daytona SDK "
-            "([cyan]uv sync --extra sandbox-daytona[/cyan]) nor the AgentCore "
-            "extra ([cyan]uv sync --extra sandbox-agentcore[/cyan]) is "
-            "installed; only those backends leave resources between runs."
+            f"([cyan]{escape(extra_install_hint('sandbox-daytona'))}[/cyan]) "
+            "nor the AgentCore extra "
+            f"([cyan]{escape(extra_install_hint('sandbox-agentcore'))}[/cyan]) "
+            "is installed; only those backends leave resources between runs."
         )
 
 
 def register_sandbox(app: typer.Typer) -> None:
     """Attach the ``sandbox`` command group to the top-level benchflow app."""
-    sandbox_app = typer.Typer(help="Local sandbox lifecycle (create / list / cleanup).")
+    sandbox_app = typer.Typer(help=SANDBOX_HELP)
     app.add_typer(sandbox_app, name="sandbox", rich_help_panel="Environments")
 
     @sandbox_app.command("create")
@@ -221,9 +418,20 @@ def register_sandbox(app: typer.Typer) -> None:
         sandbox_create(task_dir, sandbox)
 
     @sandbox_app.command("list")
-    def sandbox_list_cmd() -> None:
+    def sandbox_list_cmd(
+        show_all: Annotated[
+            bool,
+            typer.Option(
+                "--all",
+                help="Every sandbox on the account, not only BENCHFLOW_DAYTONA_OWNER's",
+            ),
+        ] = False,
+        as_json: Annotated[
+            bool, typer.Option("--json", help="Print the sandboxes as JSON")
+        ] = False,
+    ) -> None:
         """List active sandboxes (Daytona; Docker sandboxes are ephemeral)."""
-        sandbox_list_local()
+        sandbox_list_local(show_all=show_all, as_json=as_json)
 
     @sandbox_app.command("cleanup")
     def sandbox_cleanup_cmd(
@@ -238,6 +446,28 @@ def register_sandbox(app: typer.Typer) -> None:
                 help="Delete sandboxes older than N minutes",
             ),
         ] = 1440,
+        all_mine: Annotated[
+            bool,
+            typer.Option(
+                "--all",
+                help="Delete every sandbox of BENCHFLOW_DAYTONA_OWNER, whatever its "
+                "age or activity, except a STARTED one or one a live run still "
+                "holds (a CI teardown step); others are never touched",
+            ),
+        ] = False,
+        names: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--id",
+                help="Delete this Daytona sandbox (repeatable), even when a live "
+                "run lease holds it; only sandboxes of your owner scope",
+            ),
+        ] = None,
     ) -> None:
         """Clean up orphaned sandboxes and stale shared runtimes."""
-        sandbox_cleanup(dry_run=dry_run, max_age_minutes=max_age_minutes)
+        sandbox_cleanup(
+            dry_run=dry_run,
+            max_age_minutes=max_age_minutes,
+            all_mine=all_mine,
+            names=tuple(names or ()),
+        )

@@ -151,7 +151,7 @@ class TestTasksDigestCli:
 
     def test_missing_path_fails(self, tmp_path):
         result = CliRunner().invoke(app, ["tasks", "digest", str(tmp_path / "nope")])
-        assert result.exit_code == 1
+        assert result.exit_code == 2
 
     def test_directory_without_tasks_fails(self):
         result = CliRunner().invoke(

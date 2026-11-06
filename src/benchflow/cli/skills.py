@@ -20,7 +20,7 @@ from benchflow.cli._options import (
     JobsDirOption,
     SandboxOption,
 )
-from benchflow.cli._shared import console, print_error
+from benchflow.cli._shared import command_arg, console, exit_if_missing, print_error
 from benchflow.sandbox.providers import is_known_provider, providers_phrase
 
 
@@ -39,6 +39,12 @@ def register_skills(app: typer.Typer) -> None:
         """List discovered skills."""
         from benchflow.skills import DEFAULT_SKILLS_DIR, discover_skills
 
+        if directory is not None and not directory.is_dir():
+            print_error(
+                f"Not a directory: {directory}",
+                next_step="pass an existing skills directory to --dir",
+            )
+            raise typer.Exit(2)
         search_dirs = (
             [directory]
             if directory
@@ -102,31 +108,35 @@ def register_skills(app: typer.Typer) -> None:
         with and without the skill installed, and reports the lift.
 
         Examples:
-            benchflow skills eval ./my-skill/ --agent claude-agent-acp
-            benchflow skills eval ./my-skill/ --agent claude-agent-acp --agent codex-acp --sandbox daytona --concurrency 4
-            benchflow skills eval ./my-skill/ --agent claude-agent-acp --no-baseline --export-gepa
+            bench skills eval ./my-skill/ --agent claude-agent-acp
+            bench skills eval ./my-skill/ --agent claude-agent-acp --agent codex-acp --sandbox daytona --concurrency 4
+            bench skills eval ./my-skill/ --agent claude-agent-acp --no-baseline --export-gepa
         """
         from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
+        exit_if_missing(skill_dir, next_step="pass a skill folder (it holds SKILL.md)")
         if not is_known_provider(environment):
             print_error(
-                f"Invalid --sandbox {environment!r}: choose {providers_phrase()}"
+                f"Invalid --sandbox {environment!r}",
+                next_step=f"pass --sandbox {providers_phrase()}",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         if agent is None:
             agent = ["claude-agent-acp"]
         if model is not None and len(model) not in {1, len(agent)}:
             print_error(
-                "--model may be provided once for all agents or once per --agent; "
-                f"got {len(model)} models for {len(agent)} agents"
+                f"got {len(model)} models for {len(agent)} agents",
+                next_step="--model may be provided once for all agents or once per "
+                "--agent",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         if not (skill_dir / "evals" / "evals.json").is_file():
             # is_file (not exists): a directory named evals.json otherwise passes
             # this guard, then read_text() raises a raw IsADirectoryError.
             print_error(
-                f"No evals/evals.json found in {skill_dir}\n"
-                "Create one with test cases. See: benchflow skills eval --help"
+                f"No evals/evals.json found in {skill_dir}",
+                next_step="create one with test cases; `bench skills eval --help` "
+                "shows its form",
             )
             raise typer.Exit(1)
 
@@ -138,7 +148,11 @@ def register_skills(app: typer.Typer) -> None:
             FileNotFoundError,
             NotADirectoryError,
         ) as e:
-            print_error(f"{e}")
+            print_error(
+                f"{e}",
+                next_step=f"fix {command_arg(skill_dir / 'evals' / 'evals.json', '<evals file>')}; "
+                "`bench skills eval --help` shows its form",
+            )
             raise typer.Exit(1) from None
         console.print(
             f"[bold]Skill eval:[/bold] {escape(str(evaluator.dataset.skill_name))} "
@@ -166,7 +180,9 @@ def register_skills(app: typer.Typer) -> None:
             FileNotFoundError,
             NotADirectoryError,
         ) as e:
-            print_error(f"{e}")
+            print_error(
+                f"{e}", next_step="`bench doctor` checks this machine and its logins"
+            )
             raise typer.Exit(1) from None
 
         # Display results
@@ -201,7 +217,10 @@ def register_skills(app: typer.Typer) -> None:
         if errored:
             print_error(
                 f"{errored}/{len(result.case_results)} eval case(s) errored — "
-                "the eval did not complete cleanly."
+                "the eval did not complete cleanly.",
+                next_step=f"the cases' trials are under "
+                f"{command_arg(Path(jobs_dir) / 'skill-eval' / result.skill_name, '<job dir>')}; "
+                "`bench doctor` checks the logins they need",
             )
             raise typer.Exit(1)
 
@@ -305,6 +324,7 @@ def register_skills(app: typer.Typer) -> None:
             SKILLSPECTOR,
             check_skill,
             install_hint,
+            install_step,
             iter_skill_dirs,
             locate_tool,
         )
@@ -312,9 +332,10 @@ def register_skills(app: typer.Typer) -> None:
         fail_on = fail_on.lower()
         if fail_on not in FAIL_ON_CHOICES:
             print_error(
-                f"Invalid --fail-on {fail_on!r}: choose {', '.join(FAIL_ON_CHOICES)}"
+                f"Invalid --fail-on {fail_on!r}",
+                next_step=f"pass --fail-on {' or '.join(FAIL_ON_CHOICES)}",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         # Every path must hold a skill: a typo in a CI list must not pass
         # because another path matched.
         bad_paths = [
@@ -324,16 +345,26 @@ def register_skills(app: typer.Typer) -> None:
         ]
         if bad_paths:
             for message in bad_paths:
-                print_error(message)
+                print_error(
+                    message,
+                    next_step="pass a skill folder (it holds SKILL.md) or a folder "
+                    "of skills",
+                )
             raise typer.Exit(1)
         skill_dirs = list(iter_skill_dirs(paths))
 
         evaluator = locate_tool(SKILLEVALUATOR)
         spector = None if no_security else locate_tool(SKILLSPECTOR)
         if evaluator is None and spector is None:
-            print_error(install_hint(SKILLEVALUATOR))
+            print_error(
+                f"{SKILLEVALUATOR} is not installed",
+                next_step=install_step(SKILLEVALUATOR),
+            )
             if not no_security:
-                print_error(install_hint(SKILLSPECTOR))
+                print_error(
+                    f"{SKILLSPECTOR} is not installed",
+                    next_step=install_step(SKILLSPECTOR),
+                )
             raise typer.Exit(1)
         if evaluator is None:
             err_console.print(

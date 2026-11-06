@@ -40,7 +40,9 @@ class _StatefulTargetSandbox:
         self.remote_target_reward: str | None = "1.0"
         self.fail_on_mountpoint_delete = fail_on_mountpoint_delete
 
-    async def upload_dir(self, source_dir, target_dir, service: str = "main") -> None:
+    async def upload_dir(
+        self, source_dir, target_dir, service: str = "main", **_kwargs
+    ) -> None:
         del source_dir, target_dir, service
 
     async def download_dir(self, source_dir, target_dir, service: str = "main") -> None:

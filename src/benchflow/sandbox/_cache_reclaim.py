@@ -1,12 +1,14 @@
 """Pre-verifier cache reclaim command construction.
 
 The sandbox cannot import benchflow internals, so the reclaim implementation is
-an embedded Python snippet passed to ``python3 -I -c``. Keep it here instead of in
+an embedded Python snippet passed to ``python3 -c``. Keep it here instead of in
 ``lockdown.py`` so the hardening orchestrator stays readable.
 """
 
 import shlex
 from textwrap import dedent
+
+from benchflow.sandbox._hardening_python import hardening_python_cmd
 
 # Symlink- and workspace-safe cache reclaim for #601.
 #
@@ -22,7 +24,9 @@ from textwrap import dedent
 #    one, so agent-controlled parents can no longer redirect the delete;
 #  - resolves protected roots (workspace + /logs, covering /logs/artifacts and
 #    /logs/verifier) via realpath and skips candidates overlapping in either
-#    direction, applied uniformly to per-user caches, /tmp globs, and apt;
+#    direction, applied uniformly to per-user caches and apt;
+#  - selects only cache locations, never temporary paths by a name prefix;
+#    /tmp/uv-* and /tmp/.uv-* can be task outputs outside the workspace;
 #  - deletes with shutil.rmtree, which removes child symlinks without following
 #    them.
 #
@@ -30,8 +34,9 @@ from textwrap import dedent
 # prefix, "" in production; tests pass a temp root so the exact production code
 # runs hermetically against a fake filesystem.
 #
-# Fail-safe by construction: if python3 is unavailable the reclaim simply does
-# not run (the trailing `true` swallows it). Losing best-effort ENOSPC mitigation
+# Fail-safe by construction: with no judged interpreter (the
+# root route's $__bf_root_python) the reclaim simply does not run, and the
+# trailing `true` swallows a failure. Losing best-effort ENOSPC mitigation
 # is strictly better than deleting the wrong state.
 RECLAIM_CACHES_PY = dedent(
     """
@@ -67,8 +72,6 @@ RECLAIM_CACHES_PY = dedent(
         for u in [px + '/root'] + sorted(glob.glob(px + '/home/*'))
         for name in ('uv', 'pip', 'uv_build')
     ]
-    cands += sorted(glob.glob(px + '/tmp/uv-*'))
-    cands += sorted(glob.glob(px + '/tmp/.uv-*'))
     cands += sorted(glob.glob(px + '/var/cache/apt/archives/*.deb'))
     for c in cands:
         try:
@@ -92,4 +95,9 @@ RECLAIM_CACHES_PY = dedent(
 def build_reclaim_caches_cmd(workspace: str | None) -> str:
     """Build the best-effort cache reclaim shell command."""
     workspace_arg = shlex.quote(workspace) if workspace else "/nonexistent"
-    return f"python3 -I -c {shlex.quote(RECLAIM_CACHES_PY)} {workspace_arg} 2>/dev/null; true"
+    # The kit's Python, else the interpreter V3 judged; never a python3 found
+    # by name.
+    return (
+        hardening_python_cmd(RECLAIM_CACHES_PY, workspace_arg, workspace)
+        + " 2>/dev/null; true"
+    )

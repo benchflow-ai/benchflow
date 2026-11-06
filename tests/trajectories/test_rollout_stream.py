@@ -1,0 +1,596 @@
+"""Streaming finished rollouts of a running job (``benchflow.rollout-stream.v1``).
+
+``stream_rollouts`` / ``astream_rollouts`` and ``bench train stream`` yield
+each rollout as its ``result.json`` appears, with reward, group id and the
+gateway's token ids and logprobs, so a trainer can consume a job while it
+runs. Before this, token data could only be read after the job, one
+``llm_trajectory.jsonl`` at a time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import jsonschema
+import pytest
+from typer.testing import CliRunner
+
+import benchflow as bf
+from benchflow.trajectories import rollout_stream as rs
+from benchflow.trajectories.token_capture import TOKEN_CAPTURE_SCHEMA_VERSION
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _capture(prompt: list[int], sampled: list[int], provider: str = "vllm") -> dict:
+    return {
+        "metadata": {
+            "token_capture": {
+                "schema_version": TOKEN_CAPTURE_SCHEMA_VERSION,
+                "wire": "openai-chat",
+                "provider": provider,
+                "requested": {
+                    "logprobs": True,
+                    "top_logprobs": None,
+                    "token_ids": True,
+                },
+                "prompt_token_ids": prompt,
+                "completions": [
+                    {
+                        "index": 0,
+                        "token_ids": sampled,
+                        "tokens": [str(t) for t in sampled],
+                        "logprobs": [-0.5] * len(sampled),
+                        "top_logprobs": None,
+                    }
+                ],
+                "unavailable": {},
+            }
+        }
+    }
+
+
+# Two calls, token-in/token-out: the second prompt is the first prompt, the
+# sampled tokens, then a tool result [7, 8].
+TITO_CALLS = [_capture([1, 2, 3], [10, 11]), _capture([1, 2, 3, 10, 11, 7, 8], [12])]
+
+
+def write_rollout(
+    job: Path,
+    name: str,
+    *,
+    task: str = "hello",
+    reward: float | None = 1.0,
+    calls: list[dict] | None = None,
+    error: str | None = None,
+    model: str = "vllm/policy",
+) -> Path:
+    root = job / name
+    (root / "trajectory").mkdir(parents=True, exist_ok=True)
+    if calls is not None:
+        (root / "trajectory" / "llm_trajectory.jsonl").write_text(
+            "".join(json.dumps(c) + "\n" for c in calls)
+        )
+    result = {
+        "task_name": task,
+        "rollout_name": name,
+        "agent": "claude-agent-acp",
+        "model": model,
+        "rewards": None if reward is None else {"reward": reward},
+        "error": error,
+        "verifier_error": None,
+        "finished_at": "2026-01-01T10:00:00",
+    }
+    (root / "result.json").write_text(json.dumps(result))
+    return root
+
+
+def start_job(job: Path, pid: int | None = None) -> None:
+    job.mkdir(parents=True, exist_ok=True)
+    (job / "evaluation.json").write_text("{}")
+    (job / rs.JOB_LOCK).write_text(
+        json.dumps(
+            {"pid": pid or __import__("os").getpid(), "host": socket.gethostname()}
+        )
+    )
+
+
+def finish_job(job: Path) -> None:
+    (job / "summary.json").write_text("{}")
+    (job / rs.JOB_LOCK).unlink()
+
+
+def test_finished_job_streams_every_rollout_with_reward_group_and_tokens(tmp_path):
+    job = tmp_path / "job"
+    start_job(job)
+    write_rollout(job, "hello__a", calls=TITO_CALLS)
+    write_rollout(job, "hello__b", reward=None, error="agent timed out", calls=[])
+    write_rollout(job, "other__c", task="other", reward=0.0)
+    finish_job(job)
+
+    records = {r.rollout: r for r in bf.stream_rollouts(job, follow=False)}
+
+    assert set(records) == {"hello__a", "hello__b", "other__c"}
+    a = records["hello__a"]
+    assert a.job == "job"
+    assert a.reward == 1.0 and a.scored and a.outcome == "passed"
+    assert a.group_id == "task=hello|agent=claude-agent-acp|model=vllm/policy|job=job"
+    assert a.token_capture["training_grade"] is True
+    assert a.token_capture["path"] == "vllm"
+    assert [c["prompt_token_ids"] for c in a.calls] == [
+        [1, 2, 3],
+        [1, 2, 3, 10, 11, 7, 8],
+    ]
+    assert a.sequences == [
+        {
+            "thread": 0,
+            "kind": "chat",
+            "calls": [0, 1],
+            "prompt_ids": [1, 2, 3],
+            "completion_ids": [10, 11, 7, 8, 12],
+            "completion_mask": [1, 1, 0, 0, 1],
+            "completion_logprobs": [-0.5, -0.5, 0.0, 0.0, -0.5],
+        }
+    ]
+    b = records["hello__b"]
+    assert b.reward is None and not b.scored and b.outcome == "errored"
+    assert b.group_id == a.group_id
+    assert b.token_capture["status"] == "capture_off" and b.sequences == []
+    c = records["other__c"]
+    assert c.token_capture["status"] == "no_gateway_capture"
+    assert c.calls == [] and c.sequences == [] and c.outcome == "failed"
+
+
+def test_prefix_break_gives_calls_but_no_merged_sequence(tmp_path):
+    job = tmp_path / "job"
+    calls = [_capture([1, 2, 3], [10]), _capture([9, 9, 9, 10], [11])]
+    write_rollout(job, "t__a", calls=calls)
+
+    [record] = rs.stream_rollouts(job, follow=False)
+
+    assert record.token_capture["training_grade"] is False
+    assert record.token_capture["prefix"]["breaks"] == [1]
+    assert len(record.calls) == 2
+    assert record.sequences == []
+
+
+def test_merged_sequence_refuses_mismatched_logprobs():
+    bad = _capture([1], [5, 6])
+    bad["metadata"]["token_capture"]["completions"][0]["logprobs"] = [-1.0]
+    calls = rs._calls([bad])
+    assert rs.merged_sequence(calls) is None
+    assert rs.merged_sequence([]) is None
+
+
+def test_running_job_yields_rollouts_as_they_finish(tmp_path):
+    """A trainer gets the first rollout while the job is still running."""
+    job = tmp_path / "job"
+    start_job(job)
+    got: list[tuple[str, bool]] = []
+
+    def run_job() -> None:
+        for name in ("t__1", "t__2", "t__3"):
+            time.sleep(0.3)
+            write_rollout(job, name, calls=TITO_CALLS)
+        time.sleep(0.3)
+        finish_job(job)
+
+    writer = threading.Thread(target=run_job)
+    writer.start()
+    for record in rs.stream_rollouts(job, poll_interval=0.05, timeout=30):
+        got.append((record.rollout, (job / "summary.json").exists()))
+    writer.join()
+
+    assert [name for name, _ in got] == ["t__1", "t__2", "t__3"]
+    assert got[0][1] is False  # streamed before the job finished
+
+
+def test_stream_waits_for_a_job_folder_that_does_not_exist_yet(tmp_path):
+    jobs = tmp_path / "jobs"
+
+    def run_job() -> None:
+        time.sleep(0.3)
+        job = jobs / "2026-01-01__10-00-00"
+        start_job(job)
+        write_rollout(job, "t__1")
+        finish_job(job)
+
+    writer = threading.Thread(target=run_job)
+    writer.start()
+    records = list(rs.stream_rollouts(jobs, poll_interval=0.05, timeout=30))
+    writer.join()
+
+    assert [r.rollout for r in records] == ["t__1"]
+    assert records[0].job == "2026-01-01__10-00-00"
+
+
+def test_missing_job_without_follow_raises(tmp_path):
+    with pytest.raises(rs.JobNotFound):
+        list(rs.stream_rollouts(tmp_path / "nope", follow=False))
+
+
+def test_dead_job_process_ends_the_stream_after_what_finished(tmp_path):
+    proc = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.getpid())"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    dead_pid = int(proc.stdout)
+    job = tmp_path / "job"
+    start_job(job, pid=dead_pid)
+    write_rollout(job, "t__1")
+    got = []
+
+    with pytest.raises(rs.JobProcessGone, match=str(dead_pid)):
+        for record in rs.stream_rollouts(job, poll_interval=0.05, timeout=10):
+            got.append(record.rollout)
+    assert got == ["t__1"]
+
+
+def test_timeout_ends_the_stream(tmp_path):
+    job = tmp_path / "job"
+    start_job(job)
+    with pytest.raises(rs.StreamTimeout, match="0 rollouts streamed"):
+        list(rs.stream_rollouts(job, poll_interval=0.05, timeout=0.2))
+
+
+def test_unreadable_result_is_skipped_with_one_warning(tmp_path):
+    job = tmp_path / "job"
+    write_rollout(job, "t__good")
+    (job / "t__bad").mkdir()
+    (job / "t__bad" / "result.json").write_text("{not json")
+    warnings: list[str] = []
+
+    records = list(rs.stream_rollouts(job, follow=False, on_warning=warnings.append))
+
+    assert [r.rollout for r in records] == ["t__good"]
+    assert len(warnings) == 1 and "t__bad" in warnings[0]
+
+
+def test_group_size_holds_records_until_the_group_fills(tmp_path):
+    job = tmp_path / "job"
+    for name, reward in (("t__1", 1.0), ("t__2", 0.0), ("t__3", 1.0)):
+        write_rollout(job, name, reward=reward)
+    write_rollout(job, "u__1", task="u", reward=1.0)
+
+    records = list(rs.stream_rollouts(job, follow=False, group_size=3))
+
+    by_name = {r.rollout: r for r in records}
+    assert [r.rollout for r in records][-1] == "u__1"  # short group flushed last
+    assert by_name["u__1"].group_complete is False
+    assert by_name["u__1"].advantage is None
+    assert by_name["t__1"].group_complete is True
+    assert by_name["t__1"].advantage == pytest.approx(0.5773, abs=1e-3)
+    assert by_name["t__2"].advantage == pytest.approx(-1.1546, abs=1e-3)
+
+
+def test_group_size_must_be_positive(tmp_path):
+    with pytest.raises(ValueError, match="group_size"):
+        list(rs.stream_rollouts(tmp_path, follow=False, group_size=0))
+
+
+def test_records_match_the_committed_schema(tmp_path):
+    job = tmp_path / "job"
+    write_rollout(job, "hello__a", calls=TITO_CALLS)
+    write_rollout(job, "hello__b", reward=None, error="boom", calls=[])
+    write_rollout(job, "other__c", task="other", reward=0.0)
+    committed = json.loads(
+        (REPO / "docs/reference/schemas" / rs.SCHEMA_FILE).read_text()
+    )
+    assert committed == rs.SCHEMA, (
+        "regenerate with python -m benchflow.trajectories.rollout_stream "
+        "docs/reference/schemas"
+    )
+    validator = jsonschema.Draft202012Validator(rs.SCHEMA)
+    for record in rs.stream_rollouts(job, follow=False, group_size=2):
+        document = json.loads(record.to_json())
+        assert list(validator.iter_errors(document)) == []
+
+
+def test_async_stream_yields_the_same_records(tmp_path):
+    job = tmp_path / "job"
+    start_job(job)
+    write_rollout(job, "t__1", calls=TITO_CALLS)
+    finish_job(job)
+
+    async def collect() -> list[str]:
+        return [r.rollout async for r in bf.astream_rollouts(job, poll_interval=0.01)]
+
+    assert asyncio.run(collect()) == ["t__1"]
+
+
+def test_evaluation_exposes_its_job_dir_before_running(tmp_path):
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    evaluation = bf.Evaluation(
+        tasks,
+        tmp_path / "jobs",
+        config=bf.EvaluationConfig(agent="oracle"),
+        job_name="my-job",
+    )
+    assert evaluation.job_dir == tmp_path / "jobs" / "my-job"
+
+
+# --- CLI ------------------------------------------------------------------
+
+
+def _cli(*args: str):
+    from benchflow.cli.main import app
+
+    return CliRunner().invoke(app, ["train", "stream", *args])
+
+
+def test_cli_prints_one_json_line_per_rollout(tmp_path):
+    job = tmp_path / "job"
+    start_job(job)
+    write_rollout(job, "t__1", calls=TITO_CALLS)
+    write_rollout(job, "t__2", reward=0.0)
+    finish_job(job)
+
+    result = _cli(str(job), "--format", "jsonl", "--poll-interval", "0.05")
+
+    assert result.exit_code == 0, result.output
+    lines = [json.loads(line) for line in result.stdout.splitlines() if line]
+    assert [line["rollout"] for line in lines] == ["t__1", "t__2"]
+    assert lines[0]["schema_version"] == rs.ROLLOUT_STREAM_SCHEMA_VERSION
+    assert lines[0]["sequences"][0]["completion_mask"] == [1, 1, 0, 0, 1]
+
+
+@pytest.mark.parametrize(
+    ("setup", "args", "code"),
+    [
+        ("missing", ["--no-follow"], 2),
+        ("running", ["--timeout", "0.2"], 3),
+        ("dead", [], 1),
+    ],
+)
+def test_cli_exit_codes(tmp_path, setup, args, code):
+    job = tmp_path / "job"
+    if setup == "running":
+        start_job(job)
+    elif setup == "dead":
+        proc = subprocess.run(
+            [sys.executable, "-c", "import os; print(os.getpid())"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        start_job(job, pid=int(proc.stdout))
+
+    result = _cli(str(job), "--poll-interval", "0.05", *args)
+
+    assert result.exit_code == code, result.output
+
+
+def test_cli_rejects_unknown_format(tmp_path):
+    result = _cli(str(tmp_path), "--format", "csv")
+    assert result.exit_code == 2
+
+
+def test_agent_loop_and_helper_call_get_one_sequence_each(tmp_path):
+    """A real agent run: the tool loop is one token stream, the tool-less
+    helper call another (``conversation_threads``)."""
+    tools = {"tools": [{"type": "function", "function": {"name": "Bash"}}]}
+    loop = [dict(c, request={"body": tools}) for c in TITO_CALLS]
+    helper = _capture([40, 41], [42])
+    write_rollout(tmp_path / "job", "t__a", calls=[loop[0], loop[1], helper])
+
+    [record] = rs.stream_rollouts(tmp_path / "job", follow=False)
+
+    assert record.training_grade
+    assert [(s["kind"], s["calls"]) for s in record.sequences] == [
+        ("agent", [0, 1]),
+        ("helper", [2]),
+    ]
+    assert record.sequences[1]["completion_ids"] == [42]
+
+
+def _evaluation_job(job: Path, max_retries: int = 2) -> None:
+    job.mkdir(parents=True, exist_ok=True)
+    (job / "evaluation.json").write_text(
+        json.dumps({"config": {"retry": {"max_retries": max_retries}}})
+    )
+
+
+def test_a_retried_attempt_does_not_fill_a_group(tmp_path):
+    """The stream's group size counts final rollouts, not retried attempts.
+
+    Guards the dx/sdk fix of the stream from bf6e8412 (SDK update): an
+    Evaluation's retried attempt counted toward ``group_size`` and entered
+    the baseline, so a group of 3 closed on (failed attempt, u, v) and the
+    retry that replaced the failed attempt fell into a short group.
+    """
+    job = tmp_path / "job"
+    _evaluation_job(job)
+    first = write_rollout(job, "t__1", task="t", reward=None, error="ACP error -32603")
+    result = json.loads((first / "result.json").read_text())
+    result["error_category"] = "acp_error"
+    (first / "result.json").write_text(json.dumps(result))
+    write_rollout(job, "u__1", task="u", reward=1.0)
+    write_rollout(job, "v__1", task="v", reward=0.0)
+    write_rollout(job, "t__2", task="t", reward=1.0)
+    for i, name in enumerate(["t__1", "u__1", "v__1", "t__2"]):
+        stamp = 1_800_000_000 + i
+        __import__("os").utime(job / name / "result.json", (stamp, stamp))
+
+    records = {
+        r.rollout: r
+        for r in rs.stream_rollouts(
+            job, follow=False, group_by="agent,model", group_size=3
+        )
+    }
+
+    assert records["t__1"].retried is True and records["t__1"].advantage is None
+    assert records["t__2"].replaces == "t__1"
+    complete = {n for n, r in records.items() if r.group_complete}
+    assert complete == {"u__1", "v__1", "t__2"}
+    assert records["t__2"].advantage == pytest.approx(0.5773, abs=1e-3)
+
+
+def test_groups_do_not_span_jobs_by_default(tmp_path):
+    """Two jobs may have run different policy checkpoints under one model
+    name, so a group stays inside its job unless group_by leaves job out."""
+    root = tmp_path / "jobs"
+    write_rollout(root / "step-1", "hello__a", reward=1.0)
+    write_rollout(root / "step-2", "hello__b", reward=0.0)
+
+    split = list(rs.stream_rollouts(root, follow=False, group_size=2))
+    assert {r.group_complete for r in split} == {False}
+    assert {r.group["job"] for r in split} == {"step-1", "step-2"}
+
+    pooled = list(
+        rs.stream_rollouts(
+            root, follow=False, group_size=2, group_by="task,agent,model"
+        )
+    )
+    assert {r.group_complete for r in pooled} == {True}
+
+
+def _dead_pid() -> int:
+    proc = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.getpid())"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return int(proc.stdout)
+
+
+def _resume_command(stderr: str) -> list[str]:
+    """The words of the `bench eval resume ...` command the next step names."""
+    import shlex
+
+    step = next(line for line in stderr.splitlines() if "next:" in line)
+    return shlex.split(step.split("`")[1])
+
+
+@pytest.mark.parametrize("name", ["run; echo D2B_INJECTED", "run with spaces", "-run"])
+def test_the_resume_step_is_one_command_with_the_job_folder(tmp_path, name):
+    # The folder went into the command unquoted: copied, `run; echo X` ran a
+    # second command and a space split the path (D2b-C1).
+    job = tmp_path / name
+    start_job(job, pid=_dead_pid())
+
+    result = _cli(str(job), "--poll-interval", "0.05")
+
+    assert result.exit_code == 1, result.output
+    words = _resume_command(result.stderr)
+    assert words[:3] == ["bench", "eval", "resume"]
+    assert len(words) == 4 and Path(words[3]) == job
+
+
+def test_the_resume_step_names_the_child_job_a_parent_folder_streamed(tmp_path):
+    # `bench train stream jobs` follows jobs/run-a, the only job there; the
+    # step said `bench eval resume jobs`, which has no evaluation.json
+    # (D2b-C2).
+    jobs = tmp_path / "jobs"
+    start_job(jobs / "run-a", pid=_dead_pid())
+
+    result = _cli(str(jobs), "--poll-interval", "0.05")
+
+    assert result.exit_code == 1, result.output
+    assert _resume_command(result.stderr)[3:] == [str(jobs / "run-a")]
+
+
+@pytest.mark.parametrize("brk", ["\u2028", "\u2029", "\x85"])
+def test_a_job_folder_with_a_unicode_line_break_is_the_placeholder(tmp_path, brk):
+    # command_arg let U+2028 and its kin through (they are not ASCII
+    # controls), then the next: line was flattened onto one line, where the
+    # break became a space: the step named jobs/run a, another folder
+    # (FF-CLI-C2).
+    job = tmp_path / f"run{brk}a"
+    start_job(job, pid=_dead_pid())
+
+    result = _cli(str(job), "--poll-interval", "0.05")
+
+    assert result.exit_code == 1, result.output
+    step = next(line for line in result.stderr.splitlines() if "next:" in line)
+    assert "`bench eval resume <job folder>`" in step
+
+
+def test_a_command_arg_with_a_line_break_is_the_placeholder():
+    from benchflow.cli._shared import command_arg
+
+    assert command_arg("/tmp/a\nb", "<job folder>") == "<job folder>"
+    assert command_arg("/tmp/a\tb", "<job folder>") == "<job folder>"
+    for brk in ("\u2028", "\u2029", "\x85", "\x1c"):
+        assert command_arg(f"/tmp/a{brk}b", "<job folder>") == "<job folder>"
+    assert command_arg("/tmp/plain", "<job folder>") == "/tmp/plain"
+    assert command_arg("-x", "<job folder>") == "./-x"
+    assert command_arg("/tmp/a b", "<job folder>") == "'/tmp/a b'"
+
+
+# --- a stopped job (FIX-49 r3 M1) --------------------------------------------
+
+
+def stop_job(job: Path) -> None:
+    """What Ctrl-C or SIGTERM leaves: a partial summary, then no lock."""
+    (job / "summary.json").write_text(
+        json.dumps({"stopped": True, "total": 1, "planned": 2, "interrupted": 1})
+    )
+    (job / rs.JOB_LOCK).unlink()
+
+
+def test_a_stopped_summary_reads_as_stopped_not_finished(tmp_path):
+    # 6c7426dcb: "finished", so the stream ended as if the job had.
+    job = tmp_path / "job"
+    start_job(job)
+    stop_job(job)
+    state, detail = rs.job_state(job)
+    assert state == "stopped"
+    assert "stopped before it finished" in detail
+
+
+@pytest.mark.parametrize(
+    "summary", ["{}", '{"stopped": false}', '{"stopped": "yes"}', "{", "[]"]
+)
+def test_any_other_summary_still_reads_as_finished(tmp_path, summary):
+    job = tmp_path / "job"
+    start_job(job)
+    (job / "summary.json").write_text(summary)
+    (job / rs.JOB_LOCK).unlink()
+    assert rs.job_state(job)[0] == "finished"
+
+
+def test_a_stopped_job_ends_the_stream_after_what_finished(tmp_path):
+    job = tmp_path / "job"
+    start_job(job)
+    write_rollout(job, "t__1")
+    stop_job(job)
+    got = []
+    with pytest.raises(rs.JobProcessGone, match="stopped before it finished"):
+        for record in rs.stream_rollouts(job, poll_interval=0.05, timeout=10):
+            got.append(record.rollout)
+    assert got == ["t__1"]
+
+
+def test_cli_exits_1_with_the_resume_step_for_a_stopped_job(tmp_path):
+    # 6c7426dcb: exit 0, "bench train stream: 1 rollouts streamed".
+    job = tmp_path / "job"
+    start_job(job)
+    write_rollout(job, "t__1")
+    stop_job(job)
+
+    result = _cli(str(job), "--poll-interval", "0.05", "--timeout", "10")
+
+    assert result.exit_code == 1, result.output
+    assert len(result.stdout.splitlines()) == 1
+    assert "1 rollouts streamed" in result.stderr
+    words = _resume_command(result.stderr)
+    assert words[:3] == ["bench", "eval", "resume"] and Path(words[3]) == job
+
+
+def test_the_docs_exit_code_table_has_the_stopped_row():
+    doc = Path(__file__).resolve().parents[2] / "docs/reference/rollout-stream.md"
+    rows = [line for line in doc.read_text().splitlines() if line.startswith("| Job ")]
+    (stopped,) = [r for r in rows if r.startswith("| Job was stopped")]
+    assert '`"stopped": true`' in stopped and "exit 1" in stopped
+    assert "`bench eval resume <job>`" in stopped and "`JobProcessGone`" in stopped

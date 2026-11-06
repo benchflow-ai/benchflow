@@ -235,7 +235,7 @@ def _render_dockerfile() -> str:
     """Generate Dockerfile for the evaluation environment.
 
     Test files (test.sh, evaluate.py, ground_truth.json) are uploaded
-    at runtime by BenchFlow/Harbor — they are NOT copied during the
+    at runtime by BenchFlow — they are NOT copied during the
     Docker build. The build context is ``environment/`` which does not
     include the sibling ``tests/`` directory.
     """

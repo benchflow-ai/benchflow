@@ -16,6 +16,14 @@ BF.core = (() => {
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
 
+  function scoreStatus(outcome, reward) {
+    if (outcome === "passed") return "pass";
+    if (outcome === "failed") return "fail";
+    if (outcome) return "unscored";
+    if (reward === null || reward === undefined) return "unscored";
+    return reward === 1 ? "pass" : "fail";
+  }
+
   function requirePayload(value) {
     if (!isRecord(value)) throw new TypeError("payload must be a JSON object");
     if (value.steps !== undefined && !Array.isArray(value.steps)) {
@@ -36,6 +44,11 @@ BF.core = (() => {
     });
   }
 
+  // "1 run", "2 runs"; irregular nouns pass their plural form.
+  function plural(count, noun, nouns = noun + "s") {
+    return count + " " + (count === 1 ? noun : nouns);
+  }
+
   function fmtTokens(value) {
     if (value === null || value === undefined) return null;
     return value >= 10000 ? (value / 1000).toFixed(1) + "k" : String(value);
@@ -49,6 +62,9 @@ BF.core = (() => {
     return minutes ? minutes + "m " + remainder + "s" : remainder + "s";
   }
 
+  // Display labels for the payload's execution status vocabulary.
+  const EXECUTION_LABELS = new Map([["completed", "completed"], ["errored", "errored"], ["timed_out", "timed out"]]);
+
   function showDetailShell(isBrowse) {
     document.getElementById("view-index").classList.add("hidden");
     document.getElementById("content").classList.remove("hidden");
@@ -56,11 +72,14 @@ BF.core = (() => {
   }
 
   return {
+    EXECUTION_LABELS,
     el,
     fmtDuration,
     fmtTokens,
     isRecord,
+    plural,
     requirePayload,
+    scoreStatus,
     showDetailShell,
     textWithRedaction,
   };

@@ -137,32 +137,3 @@ timeout_minutes:
   expanded: 330
   custom: 90
 
-# ------------------------------------------------------------------
-# Before/after reward-band baseline (golden truth) — Q2b.
-# The SkillsBench leaderboard submissions are native BenchFlow result.json
-# (rewards.reward), referenced at the latest leaderboard `main`. The L3 review
-# job fetches the openhands deepseek-v4-flash run to a local root and passes it
-# to build_integration_review_pack.py --baseline-root, which band-compares
-# per-task reward via check_skillsbench_harbor_parity. Apples-to-apples with our
-# openhands + deepseek-v4-flash lane. No protected env is created — the golden
-# truth is simply this HF `main` run plus the latest benchflow main.
-#
-# Coverage: the flash run covers 6 of the 9 integration tasks (data-to-d3,
-# grid-dispatch-operator, jax-computing-basics, jpg-ocr-stat,
-# lake-warming-attribution, threejs-to-obj). The other 3 (python-scala-
-# translation, shock-analysis-supply, weighted-gdp-calc) are absent from the
-# leaderboard's deepseek runs, so they band-compare NA and fall back to oracle
-# determinism + the codex equivalence verdict. High tasks run the pro model
-# (tiering), so their flash-baseline comparison is advisory.
-# ------------------------------------------------------------------
-baseline:
-  source: huggingface
-  hf_repo: benchflow/skillsbench-leaderboard
-  hf_revision: main
-  submission_root: submissions/skillsbench/v1.1
-  config_no_skill: openhands-no-skills
-  config_with_skill: openhands-with-skills
-  band_model: deepseek-v4-flash
-  max_task_reward_delta: 0.0
-  max_mean_reward_delta: 0.25
-  max_outcome_rate_delta: 0.25

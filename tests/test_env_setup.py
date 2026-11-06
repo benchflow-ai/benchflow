@@ -257,7 +257,10 @@ class TestCreateEnvironment:
         with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
             _create_environment("docker", task, effective_task, "trial", MagicMock())
 
-        assert docker_env.call_args.kwargs["environment_dir"] == effective_env_dir
+        # The sandbox gets a private copy of that folder.
+        staged = docker_env.call_args.kwargs["environment_dir"]
+        assert staged != effective_env_dir
+        assert str(staged).endswith(str(effective_env_dir.resolve()))
 
     def test_modal_preflights_and_constructs_environment(self, tmp_path):
         env_config = MagicMock()
@@ -276,8 +279,11 @@ class TestCreateEnvironment:
             )
 
         modal_env.preflight.assert_called_once_with()
+        staged = modal_env.call_args.kwargs["environment_dir"]
+        # A private copy of the task's environment folder.
+        assert str(staged).endswith(str((tmp_path / "environment").resolve()))
         modal_env.assert_called_once_with(
-            environment_dir=tmp_path / "environment",
+            environment_dir=staged,
             environment_name=tmp_path.name,
             session_id="trial",
             rollout_paths=rollout_paths,
@@ -333,7 +339,7 @@ class TestCreateEnvironment:
     def test_missing_optional_sandbox_dependency_has_install_hint(
         self, sandbox_type, extra
     ):
-        """Guards ENG-77: optional backends raise actionable install guidance."""
+        """Optional backends raise actionable install guidance."""
         with pytest.raises(RuntimeError) as exc_info:
             _raise_missing_optional_sandbox_dependency(
                 sandbox_type,
@@ -386,16 +392,20 @@ class TestCreateEnvironment:
         class FakeApp:
             lookup = FakeLookup
 
-        class FakeMkdir:
+        class FakeMakeDirectory:
             async def aio(self, *args, **kwargs):
-                calls.setdefault("mkdir", []).append((args, kwargs))
+                calls.setdefault("make_directory", []).append((args, kwargs))
 
         class FakeSandbox:
-            mkdir = FakeMkdir()
+            # Sandbox.filesystem only: Modal refuses the legacy Sandbox.mkdir.
+            filesystem = SimpleNamespace(make_directory=FakeMakeDirectory())
 
         monkeypatch.setattr("modal.Image", FakeImage)
         monkeypatch.setattr("modal.App", FakeApp)
         env._create_sandbox = AsyncMock(return_value=FakeSandbox())
+        # The image's start environment is read before any shell (its own
+        # cases: tests/test_exec_transport_contract.py).
+        env._refuse_startup_names = AsyncMock()
         env.exec = AsyncMock()
 
         await env.start(force_build=True)

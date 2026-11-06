@@ -111,7 +111,7 @@ def test_agent_collection_invariants(name, cfg):
 def test_agent_hosted_search_switches_are_well_formed(name, cfg):
     """Hosted-search switches target $BENCHFLOW_AGENT_HOME and append cleanly.
 
-    Guards the denylist egress mode, benchflow-ai/FrontierPhysics#365: the
+    Guards the denylist egress mode: the
     setup command runs with BENCHFLOW_AGENT_HOME exported, and the launch
     suffix is concatenated onto launch_cmd without a separator.
     """
@@ -151,13 +151,12 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     launch_cmd = AGENTS[name].launch_cmd
 
     assert "/opt/benchflow/node" in install_cmd
-    # Node >=22.19 is required by current openclaw (JS agents install @latest);
-    # assert the floor, not a brittle exact pin (BF-10).
+    # Assert shared runtime floor, not a brittle exact pin (BF-10).
     pin = re.search(r"BF_NODE_VERSION=(\d+)\.(\d+)\.\d+", install_cmd)
     assert pin, "BF_NODE_VERSION pin missing from JS agent bootstrap"
     major, minor = int(pin.group(1)), int(pin.group(2))
     assert (major, minor) >= (22, 19), (
-        f"pinned node {pin.group(0)} is below openclaw's >=22.19 floor"
+        f"pinned node {pin.group(0)} is below supported >=22.19 floor"
     )
     assert "/opt/benchflow/js-agents" in install_cmd
     if name in DIRECT_JS_ACP_AGENTS:
@@ -179,9 +178,22 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
             in install_cmd
         )
         # The launched program is the isolated bin — directly, or (codex-acp) after a
-        # self-config-writing prefix ending in `; exec <bin>` (writes ~/.codex/auth.json).
-        launched = launch_cmd.rsplit("; exec ", 1)[-1]
-        assert launched.split()[0].startswith("/opt/benchflow/bin/")
+        # self-config-writing prefix. 092eb18ad uses `&& exec` after the private
+        # writer subshell; both forms must still exec the same isolated binary.
+        launched = re.split(r"(?:;|&&)\s+exec\s+", launch_cmd)[-1]
+        if name == "pi-acp":
+            # Guards 1fe89bb: only the installer's fixed interpreters may launch
+            # the shim; the agent still cannot select Python through PATH.
+            assert "bf_shim_python=/usr/bin/python3;" in launch_cmd
+            assert (
+                '[ -x "$bf_shim_python" ] || bf_shim_python=/usr/local/bin/python3;'
+                in launch_cmd
+            )
+            assert (
+                launched == '"$bf_shim_python" -I -S /opt/benchflow/bin/pi-acp-launcher'
+            )
+        else:
+            assert launched.split()[0].startswith("/opt/benchflow/bin/")
         assert launched.split()[0] not in {"export", "env"}
         assert not launched.startswith("PATH=")
 
@@ -198,18 +210,12 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         "/usr/local/bin/npm",
         "/usr/local/bin/npx",
         "/usr/local/bin/pi-acp-launcher",
-        "/usr/local/bin/openclaw-acp-shim",
         "command -v node",
     ]
     for fragment in forbidden_fragments:
         assert fragment not in install_cmd, (
             f"{name!r} JS agent install must not mutate task Node/npm via {fragment!r}"
         )
-
-
-def test_openclaw_is_pinned_to_node_22_20_compatibility():
-    """Guards PR #704's Node 22.20.0 pin against floating OpenClaw releases."""
-    assert "openclaw@2026.6.9" in AGENTS["openclaw"].install_cmd
 
 
 # Bash-isms not supported by dash (Ubuntu/Debian's /bin/sh). The sandbox
@@ -305,6 +311,17 @@ def test_gemini_cli_install_is_pinned():
     assert "[ -x /opt/benchflow/js-agents/bin/gemini ] ||" not in install_cmd
 
 
+def test_pi_acp_installs_the_pi_its_adapter_needs():
+    """pi-acp 0.0.34 needs pi 0.81.0 or later. The unpinned install took
+    @mariozechner/pi-coding-agent, deprecated at 0.73.1, whose session/new
+    never answered, so every pi-acp trial failed at connect (#1191)."""
+    install_cmd = AGENTS["pi-acp"].install_cmd
+    assert "@earendil-works/pi-coding-agent@0.81.1" in install_cmd
+    assert "pi-acp@0.0.34" in install_cmd
+    assert "@mariozechner/pi-coding-agent" not in install_cmd
+    assert "@latest" not in install_cmd
+
+
 @pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS - DIRECT_JS_ACP_AGENTS))
 def test_js_acp_agent_npm_failures_are_visible(name):
     """Npm stderr should reach agent/install-stdout.txt on install failure."""
@@ -351,16 +368,17 @@ def test_agent_derived_dicts_in_sync():
 def test_agent_negative_config_invariants():
     """Specific agents must NOT have certain features configured.
 
-    Tripwire for accidental config bleed (e.g. openclaw silently gaining
-    credential_files because someone copy-pasted from codex). Positive
+    Tripwire for accidental config bleed from copy-pasted fields. Positive
     per-agent assertions live in test_agent_registry.py /
     test_subscription_auth.py; this is the dedicated negative side.
     """
-    no_credential_files = {"claude-agent-acp", "openclaw", "antigravity"}
+    no_credential_files = {"claude-agent-acp", "antigravity"}
     # antigravity: Google sign-in lives in the OS keyring, so there is no host
     # login file to copy — only GEMINI_API_KEY mode works inside a sandbox.
-    no_subscription_auth = {"openclaw", "pi-acp", "antigravity"}
-    no_env_mapping = {"openclaw", "pi-acp"}
+    # muse-code: its login travels as MUSE_AUTH_JSON (a credential file), never
+    # as a host login file BenchFlow detects and copies.
+    no_subscription_auth = {"pi-acp", "antigravity", "muse-code"}
+    no_env_mapping = {"pi-acp"}
 
     for name in no_credential_files:
         assert AGENTS[name].credential_files == [], (
@@ -429,11 +447,23 @@ def test_provider_url_params_and_endpoints(name, cfg):
     all_urls = " ".join([cfg.base_url, *cfg.endpoints.values()])
     placeholders_in_urls = set(re.findall(r"\{(\w+)\}", all_urls))
     for ph in placeholders_in_urls:
-        assert ph in cfg.url_params, (
+        assert ph in cfg.url_params or ph in cfg.url_param_strip_suffix, (
             f"{name!r}: url has {{{ph}}} but no url_params entry"
         )
+    derived_sources = {src for src, _ in cfg.url_param_strip_suffix.values()}
+    for derived, (src, suffix) in cfg.url_param_strip_suffix.items():
+        assert derived not in cfg.url_params, (
+            f"{name!r}: {derived!r} is both a url_param and derived"
+        )
+        assert src in cfg.url_params, (
+            f"{name!r}: derived {{{derived}}} reads {src!r}, not a url_params entry"
+        )
+        assert suffix.startswith("/"), f"{name!r}: suffix {suffix!r} is not a path"
+        assert derived in placeholders_in_urls, (
+            f"{name!r}: derived {{{derived}}} is not referenced in any URL"
+        )
     for key in cfg.url_params:
-        assert key in placeholders_in_urls, (
+        assert key in placeholders_in_urls or key in derived_sources, (
             f"{name!r}: url_params[{key!r}] is not referenced in any URL"
         )
     for proto in cfg.endpoints:
@@ -511,6 +541,7 @@ def test_provider_model_prefixes_unique_and_resolvable():
         ("zai/glm-5", "zai"),
         ("zai-coding/glm-5.4-flash", "zai-coding"),
         ("vllm/local-model", "vllm"),
+        ("sglang/local-model", "sglang"),
         ("kimi/kimi-k2.6", "kimi"),
         ("qwen-dashscope/qwen3.6-max-preview", "qwen-dashscope"),
         ("doubao-seed-2-pro/ep-test", "doubao-seed-2-pro"),

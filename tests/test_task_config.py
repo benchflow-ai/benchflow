@@ -12,7 +12,7 @@ from benchflow.task.config import (
 
 
 def test_task_config_reads_expected_skills_from_verifier_memory():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     cfg = TaskConfig.model_validate_toml(
         'version = "1.0"\n[verifier.memory]\nexpected_skills = ["git-bisect", "rg"]\n'
     )
@@ -34,7 +34,7 @@ def test_task_config_public_toml_dump_omits_expected_skills_fixture():
 
 
 def test_task_config_preserves_empty_expected_skills_fixture():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     cfg = TaskConfig.model_validate_toml(
         'version = "1.0"\n[verifier.memory]\nexpected_skills = []\n'
     )
@@ -42,13 +42,13 @@ def test_task_config_preserves_empty_expected_skills_fixture():
 
 
 def test_task_config_absent_expected_skills_fixture_is_none():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     cfg = TaskConfig.model_validate_toml('version = "1.0"\n')
     assert cfg.expected_skills is None
 
 
 def test_task_config_rejects_malformed_expected_skills():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     with pytest.raises(ValueError, match="expected_skills"):
         TaskConfig.model_validate_toml(
             'version = "1.0"\n[verifier.memory]\nexpected_skills = "git-bisect"\n'
@@ -78,10 +78,10 @@ def test_verifier_timeout_sec_rejects_unusable_budgets(value):
         )
 
 
-def test_task_config_accepts_current_harbor_task_toml_surface():
+def test_task_config_accepts_current_task_toml_surface():
     """Guards commit 67378ddd's 2026-06-04 parity pass against schema shrinkage.
 
-    Harbor task.toml spells the sandbox spec ``[environment]`` (and
+    A task.toml spells the sandbox spec ``[environment]`` (and
     ``[verifier.environment]``); the toml import path converts both to the
     native ``sandbox`` key, so the assertions below read ``cfg.sandbox`` /
     ``cfg.verifier.sandbox``.
@@ -89,14 +89,14 @@ def test_task_config_accepts_current_harbor_task_toml_surface():
     cfg = TaskConfig.model_validate_toml(
         """
 schema_version = "1.3"
-source = "harbor/parity"
+source = "benchflow/parity"
 multi_step_reward_strategy = "final"
 artifacts = [{ source = "/logs/artifacts", destination = "artifacts" }]
 
 [task]
-name = "benchflow/harbor-parity"
+name = "benchflow/task-toml-parity"
 version = "1.0.0"
-description = "Exercises Harbor-compatible task.toml fields"
+description = "Exercises task.toml fields"
 authors = [{ name = "BenchFlow", email = "benchflow@example.com" }]
 keywords = ["parity", "task-md"]
 
@@ -173,9 +173,9 @@ env = { STEP = "scaffold" }
 
     assert cfg.schema_version == "1.3"
     assert cfg.task is not None
-    assert cfg.task.name == "benchflow/harbor-parity"
-    # Harbor 1.3 [task] version — informational, recorded verbatim. Its absence
-    # made every govbench/frontier-bench curated task unloadable (2026-08-09).
+    assert cfg.task.name == "benchflow/task-toml-parity"
+    # task.toml 1.3 [task] version — informational, recorded verbatim. Its absence
+    # used to make such tasks unloadable.
     assert cfg.task.version == "1.0.0"
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
@@ -197,11 +197,11 @@ env = { STEP = "scaffold" }
     assert cfg.steps[0].artifacts[0].source == "/app/scaffold.txt"
 
 
-def test_task_config_rejects_unknown_harbor_fields():
+def test_task_config_rejects_unknown_vendor_fields():
     """Guards commit 67378ddd's 2026-06-04 parity pass against lossy parsing."""
-    with pytest.raises(ValueError, match="unknown_harbor_field"):
+    with pytest.raises(ValueError, match="unknown_vendor_field"):
         TaskConfig.model_validate_toml(
-            'schema_version = "1.3"\n[environment]\nunknown_harbor_field = true\n'
+            'schema_version = "1.3"\n[environment]\nunknown_vendor_field = true\n'
         )
 
 
@@ -400,7 +400,7 @@ def test_task_config_rejects_renamed_verifier_environment_key():
 
 
 def test_task_config_toml_converts_legacy_environment_table():
-    """task.toml is the legacy/Harbor surface: '[environment]' converts."""
+    """task.toml is the legacy surface: '[environment]' converts."""
     cfg = TaskConfig.model_validate_toml('version = "1.0"\n[environment]\ncpus = 2\n')
     assert cfg.sandbox.cpus == 2
 

@@ -46,7 +46,7 @@
       "tests/test_outputs.py": "sha256:d305382c273132476fa8f3a74f701d397d926c91bed20a2f78d38734ebde1fca"
     },
     "suricata-custom-exfil": {
-      "environment/Dockerfile": "sha256:b9f0875297b06c460c8df9acf49a2fbb4aaba8d8291239887f9a0a35fc99d322",
+      "environment/Dockerfile": "sha256:6e8037f061f6400e89d1b9b738d3f71f475b339d14317b9513a170803fcd7c0d",
       "environment/generate_training_pcaps.py": "sha256:9b5a8b1ec007def24c94ee3914fd13ab3c7385f0f89de521f83303d21bcda335",
       "environment/local.rules": "sha256:fabe6756452be9293e375cb8235c9043c5edeaf8a86afb9598e576c5d757096e",
       "environment/skills/pcap-triage-tshark/SKILL.md": "sha256:1070842f53661264a2e881666d586710a91e8ca463d703af1012645bde1b7e28",

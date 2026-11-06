@@ -1,6 +1,6 @@
 """Denylist egress mode: proxy policy, in-process proxy, agent env, start/stop, firewall gate.
 
-Guards the denylist egress mode added for benchflow-ai/FrontierPhysics#365.
+Guards the denylist egress mode.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import socket
 import ssl
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -19,7 +20,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow.sandbox import _egress_body as body_mod
 from benchflow.sandbox import _egress_denylist_proxy as proxy_mod
 from benchflow.sandbox.egress_denylist import (
     CA_BUNDLE_PATH,
@@ -73,7 +73,7 @@ class TestPolicy:
         ],
     )
     def test_path_normalization_defeats_traversal_variants(self, path):
-        """Guards the traversal bypass found in review of the denylist mode (FrontierPhysics#365)."""
+        """Guards the traversal bypass found in review of the denylist mode."""
         policy = proxy_mod.Policy(["https://arxiv.org/abs/2401.12345"], [])
         assert policy.url_rule("arxiv.org", path) == "url:arxiv.org/abs/2401.12345"
 
@@ -109,7 +109,7 @@ class TestPolicy:
         ],
     )
     def test_wildcard_dns_names_count_as_addresses(self, host):
-        """Guards the wildcard-DNS route around the address rule (FrontierPhysics#365)."""
+        """Guards the wildcard-DNS route around the address rule."""
         assert proxy_mod.Policy([], []).host_rule(host) == "ip-literal"
 
     @pytest.mark.parametrize(
@@ -142,9 +142,9 @@ class TestPolicy:
 
     def test_body_prefix_drops_pipelined_requests(self):
         rest = b"abc" + b"GET /blocked HTTP/1.1\r\nHost: x\r\n\r\n"
-        assert body_mod.body_prefix([("Content-Length", "3")], rest) == b"abc"
-        assert body_mod.body_prefix([], rest) == b""
-        assert body_mod.body_prefix([("Transfer-Encoding", "chunked")], rest) == rest
+        assert proxy_mod._body_prefix([("Content-Length", "3")], rest) == b"abc"
+        assert proxy_mod._body_prefix([], rest) == b""
+        assert proxy_mod._body_prefix([("Transfer-Encoding", "chunked")], rest) == rest
 
     def test_host_rule_covers_subdomains_but_not_suffix_lookalikes(self):
         policy = proxy_mod.Policy([], ["example.org"])
@@ -167,7 +167,7 @@ class TestPolicy:
         ],
     )
     def test_addresses_in_every_resolver_notation_are_refused(self, host):
-        """Guards the non-canonical IPv4 bypass found in review (FrontierPhysics#365)."""
+        """Guards the non-canonical IPv4 bypass found in review."""
         assert proxy_mod.Policy([], []).host_rule(host) == "ip-literal"
 
     def test_names_with_numeric_labels_are_still_names(self):
@@ -201,6 +201,17 @@ def _free_port() -> int:
 
 class _Upstream(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith("/slow/"):
+            # /slow/<chunks>/<seconds between chunks>: a streaming response
+            # (HTTP/1.0, ends at close) while the client only reads.
+            _, _, chunks, gap = self.path.split("/")
+            self.send_response(200)
+            self.end_headers()
+            for i in range(int(chunks)):
+                time.sleep(float(gap))
+                self.wfile.write(f"chunk {i}\n".encode())
+                self.wfile.flush()
+            return
         body = f"hello {self.path}".encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
@@ -443,6 +454,17 @@ def _fake_env(health_rc: int = 0):
     env.exec = AsyncMock(side_effect=exec_)
     env.exec_transient = env.exec
     env.upload_file = AsyncMock()
+    env.uploaded = {}
+
+    async def upload_dir(source, target, **kwargs):
+        # The staging folder is gone after the call: keep what it held.
+        for path in Path(source).rglob("*"):
+            if path.is_file():
+                env.uploaded[f"{target}/{path.relative_to(source).as_posix()}"] = (
+                    path.read_bytes()
+                )
+
+    env.upload_dir = AsyncMock(side_effect=upload_dir)
     env.download_file = AsyncMock()
     return env
 
@@ -455,29 +477,34 @@ class TestStartStop:
             )
 
     async def test_start_uploads_policy_certs_and_script_then_probes_health(self):
+        """Guards the single-transfer upload against the per-file uploads it
+        replaced: an upload and a chmod exec per certificate cost 17-78 s of
+        Daytona round trips per oracle on denylist tasks."""
         env = _fake_env()
         await start_egress_denylist(
             env, "agent", EgressDenylist(("https://a.test/x",), ("b.test",))
         )
-        uploaded = {call.args[1]: call for call in env.upload_file.await_args_list}
-        assert set(uploaded) == {
+        expected = {
             "/opt/benchflow-egress/policy.json",
             "/opt/benchflow-egress/proxy.py",
-            "/opt/benchflow-egress/benchflow/__init__.py",
-            "/opt/benchflow-egress/benchflow/sandbox/__init__.py",
-            "/opt/benchflow-egress/benchflow/sandbox/_egress_policy.py",
-            "/opt/benchflow-egress/benchflow/sandbox/_hosted_fetch.py",
-            "/opt/benchflow-egress/benchflow/sandbox/_egress_body.py",
             "/opt/benchflow-egress/ca.crt",
             "/opt/benchflow-egress/ca.key",
             "/opt/benchflow-egress/certs/a.test.pem",
         }
-        assert all(call.kwargs == {"mode": "600"} for call in uploaded.values())
+        # One admitted transfer into the root-only runtime folder, not one per file.
+        assert set(env.uploaded) == expected
+        env.upload_file.assert_not_awaited()
+        (call,) = env.upload_dir.await_args_list
+        assert call.args[1] == "/opt/benchflow-egress"
+        assert set(call.kwargs) == {"admission"}
         commands = [call.args[0] for call in env.exec.await_args_list]
         assert all(call.kwargs["user"] == "root" for call in env.exec.await_args_list)
         assert commands[0].startswith("mkdir -p /opt/benchflow-egress/certs")
-        assert commands[1] == _setup_cmd()
-        assert "healthz" in commands[2]
+        # Every uploaded file is made private before the proxy starts.
+        assert commands[1].startswith("chmod 600 ")
+        assert set(commands[1].split()[2:]) == expected
+        assert commands[2] == _setup_cmd()
+        assert "healthz" in commands[3]
 
     async def test_start_raises_with_stderr_when_unhealthy(self):
         env = _fake_env(health_rc=1)
@@ -487,9 +514,14 @@ class TestStartStop:
             )
 
     async def test_stop_downloads_log_and_kills_proxy(self, tmp_path: Path):
+        from benchflow._utils.reachable_write import pin_destination
+
         env = _fake_env()
+        # The rollout root is pinned before launch; collection publishes
+        # through it and never opens a new root (TASKMD-R14 P-H1).
+        rollout = pin_destination(tmp_path)
         await stop_egress_denylist(env, tmp_path)
-        target = tmp_path / "trajectory" / TRAJECTORY_LOG_NAME
+        target = rollout / "trajectory" / TRAJECTORY_LOG_NAME
         env.download_file.assert_awaited_once_with(
             "/opt/benchflow-egress/blocked.jsonl", target
         )
@@ -577,10 +609,14 @@ class TestFirewallGate:
                 {EGRESS_DENYLIST_ENV: "1", "HTTPS_PROXY": "http://127.0.0.1:1"},
             )
 
-    async def test_no_web_without_sandbox_user_still_skips(self):
+    async def test_no_web_without_sandbox_user_is_held_or_refused(self):
+        # A uid-0 agent under no-web is no longer skipped. With
+        # no loopback model route it cannot be held, so it is refused before
+        # anything runs (tests/test_no_web_root_agent.py has the held case).
         env = MagicMock()
         env.exec = AsyncMock()
-        await enforce_agent_egress_firewall(
-            env, None, {"BENCHFLOW_DISALLOW_WEB_TOOLS": "1"}
-        )
+        with pytest.raises(RuntimeError, match="loopback provider base URL"):
+            await enforce_agent_egress_firewall(
+                env, None, {"BENCHFLOW_DISALLOW_WEB_TOOLS": "1"}
+            )
         env.exec.assert_not_called()

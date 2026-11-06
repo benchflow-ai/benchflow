@@ -5,9 +5,9 @@ These are the *declarative* types — they describe what a trial *will* do.
 ``Step`` objects before execution.
 
 Merged from the duplicate definitions that lived in ``trial.py`` and
-``_scene.py`` prior to ENG-47.
+``_scene.py``.
 
-.. rubric:: Capability boundary (ENG-50)
+.. rubric:: Capability boundary
 
 BenchFlow provides **sandbox + instruction + observation** infrastructure.
 It does **not** orchestrate agent-internal loops, tool protocols, or

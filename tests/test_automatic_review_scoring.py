@@ -296,4 +296,5 @@ def test_rescored_summary_uses_gate_passes_and_quality_mean():
     assert summary["verifier_errored"] == 1
     assert summary["score_ratio"] == 0.5
     assert summary["score_excl_errors_ratio"] == pytest.approx(2 / 3)
-    assert summary["mean_reward"] == pytest.approx(0.8 / 3)
+    assert summary["mean_reward"] == pytest.approx(0.8 / 4)
+    assert summary["mean_reward_scored_only"] == pytest.approx(0.8 / 3)

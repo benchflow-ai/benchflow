@@ -21,8 +21,7 @@ from benchflow.cli._hosted_env import (
     hosted_env_list,
     hosted_env_show,
 )
-from benchflow.cli._shared import console, print_error
-from benchflow.hub.harbor_registry import DEFAULT_HARBOR_REGISTRY_URL
+from benchflow.cli._shared import console, exit_if_missing, print_error
 
 
 def register_hub(app: typer.Typer) -> None:
@@ -30,7 +29,7 @@ def register_hub(app: typer.Typer) -> None:
     hub_app = typer.Typer(
         help=(
             "External environment hubs: browse a hub's environments "
-            "(list/show/inspect) and check Harbor compatibility (check)."
+            "(list/show/inspect) and check registry tasks (check)."
         )
     )
     app.add_typer(hub_app, name="hub", rich_help_panel="Environments")
@@ -50,12 +49,12 @@ def register_hub(app: typer.Typer) -> None:
     @hub_app.command("check")
     def hub_check(
         registry: Annotated[
-            str,
+            str | None,
             typer.Option(
                 "--registry",
-                help="Harbor registry JSON URL or local file.",
+                help="Registry JSON URL or local file (default: BenchFlow's registry).",
             ),
-        ] = DEFAULT_HARBOR_REGISTRY_URL,
+        ] = None,
         tasks_per_dataset: Annotated[
             int,
             typer.Option(
@@ -78,20 +77,24 @@ def register_hub(app: typer.Typer) -> None:
         cache_dir: Annotated[
             Path,
             typer.Option("--cache-dir", help="Cache directory for sparse clones."),
-        ] = Path(".cache/hub/harbor"),
+        ] = Path(".cache/hub/registry"),
         limit: Annotated[
             int | None,
             typer.Option("--limit", help="Optional cap on selected task refs.", min=1),
         ] = None,
     ) -> None:
-        """Inventory or structurally check representative Harbor registry tasks."""
-        from benchflow.hub.harbor_registry import (
-            check_harbor_registry,
-            records_summary,
-        )
+        """Inventory or structurally check representative registry tasks."""
+        from benchflow.hub.registry import check_registry_tasks, records_summary
 
+        shown = registry or "BenchFlow's registry"
+        where = f"--registry {registry}" if registry else shown
+        if registry and not registry.startswith(("http://", "https://")):
+            exit_if_missing(
+                Path(registry).expanduser(),
+                next_step="pass an existing registry JSON file or URL to --registry",
+            )
         try:
-            records = check_harbor_registry(
+            records = check_registry_tasks(
                 registry,
                 tasks_per_dataset=tasks_per_dataset,
                 level=level,
@@ -104,18 +107,34 @@ def register_hub(app: typer.Typer) -> None:
         # (JSONDecodeError) or `[Errno 2] ...` (OSError). print_error escapes the
         # path + routes to stderr.
         except json.JSONDecodeError:
-            print_error(f"--registry {registry} is not valid JSON")
+            print_error(
+                f"{where} is not valid JSON",
+                next_step="pass a registry JSON file or URL to --registry",
+            )
             raise typer.Exit(1) from None
         except OSError as exc:
-            print_error(f"--registry {registry}: {exc.strerror or exc}")
+            from urllib.error import HTTPError, URLError
+
+            offline = isinstance(exc, URLError) and not isinstance(exc, HTTPError)
+            print_error(
+                f"{where}: {exc.strerror or exc}",
+                next_step="check this machine's network (or its proxy), then run "
+                "the command again"
+                if offline
+                else "pass a registry JSON file or URL to --registry",
+            )
             raise typer.Exit(1) from None
         except Exception as exc:
-            print_error(f"Harbor compatibility check failed: {exc}")
+            print_error(
+                f"Registry check failed: {exc}",
+                next_step="check --registry and this machine's network, then run "
+                "the check again",
+            )
             raise typer.Exit(1) from exc
 
         summary = records_summary(records)
         console.print(
-            "[bold]Harbor compatibility:[/bold] "
+            f"[bold]Registry check ({escape(shown)}):[/bold] "
             f"{summary['total']} task refs, "
             f"{summary['pass']} pass, {summary['fail']} fail, "
             f"{summary['blocked']} blocked"
@@ -137,10 +156,10 @@ def _register_env_verbs(target: typer.Typer) -> None:
             str,
             typer.Option(
                 "--provider",
-                help="Hub to browse: 'primeintellect' (hosted envs) or "
-                "'harbor' (benchmark registry)",
+                help="Hub to browse: 'benchflow' (BenchFlow's dataset registry) "
+                "or 'primeintellect' (hosted envs; needs the `prime` CLI)",
             ),
-        ] = "primeintellect",
+        ] = "benchflow",
         owner: Annotated[
             str | None,
             typer.Option("--owner", help="Owner/namespace filter (primeintellect)"),
@@ -155,7 +174,7 @@ def _register_env_verbs(target: typer.Typer) -> None:
             bool, typer.Option("--json", help="Emit raw JSON")
         ] = False,
     ) -> None:
-        """List a hub's environments (primeintellect or harbor)."""
+        """List a hub's datasets or environments (benchflow or primeintellect)."""
         hosted_env_list(
             provider=provider,
             owner=owner,
@@ -169,15 +188,40 @@ def _register_env_verbs(target: typer.Typer) -> None:
         source_env: Annotated[
             str,
             typer.Argument(
-                help="Hosted environment (e.g. primeintellect/general-agent)"
+                help=(
+                    "A dataset of BenchFlow's registry as name@version (e.g. "
+                    "terminal-bench@2.0), or a hosted environment (e.g. "
+                    "primeintellect/general-agent)"
+                )
             ),
         ],
         version: Annotated[
-            str | None, typer.Option("--version", help="Hosted environment version")
+            str | None,
+            typer.Option(
+                "--version", help="Version (of the dataset or hosted environment)"
+            ),
         ] = None,
+        provider: Annotated[
+            str | None,
+            typer.Option(
+                "--provider",
+                help="Hub: 'benchflow' (lists the dataset's tasks) or "
+                "'primeintellect' (default: benchflow for name@version, "
+                "primeintellect for owner/name)",
+            ),
+        ] = None,
+        output_json: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the dataset's registry entry as JSON"),
+        ] = False,
     ) -> None:
-        """Show a hub environment's metadata."""
-        hosted_env_show(source_env=source_env, version=version)
+        """Show a dataset's tasks, or a hosted environment's metadata."""
+        hosted_env_show(
+            source_env=source_env,
+            version=version,
+            provider=provider,
+            output_json=output_json,
+        )
 
     @target.command("inspect")
     def hub_inspect(

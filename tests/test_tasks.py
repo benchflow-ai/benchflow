@@ -64,7 +64,10 @@ class TestCheckTask:
         task = self._make_valid_task(tmp_path)
         (task / "environment" / "Dockerfile").unlink()
         issues = check_task(task)
-        assert "Missing environment/Dockerfile" in issues
+        assert (
+            "Missing environment/Dockerfile (or name a prebuilt image in "
+            "sandbox.docker_image)"
+        ) in issues
 
     def test_missing_tests_dir(self, tmp_path):
         """A missing legacy tests/ verifier dir is still reported.
@@ -352,7 +355,7 @@ class TestLegacyScaffoldCompatibility:
 
 
 class TestCtrfPathLint:
-    """_check_ctrf_path detects non-standard CTRF output paths (ENG-153).
+    """_check_ctrf_path detects non-standard CTRF output paths.
 
     Guards PR #356 — ensures `bench tasks check` catches inconsistent
     CTRF paths before they reach production evals.

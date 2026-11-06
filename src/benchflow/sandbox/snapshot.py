@@ -23,13 +23,16 @@ import logging
 import re as _re
 import shlex
 from pathlib import PurePosixPath
+from typing import Any
+
+from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 
 logger = logging.getLogger(__name__)
 
 _SNAP_DIR = "/tmp/.benchflow_snapshots"
 
 
-async def workspace_snapshot(env, name: str, workspace: str = "/app") -> str:
+async def workspace_snapshot(env: Any, name: str, workspace: str = "/app") -> str:
     """Create a named *workspace-only* snapshot — tar of ``workspace``.
 
     Returns a reference string suitable for ``workspace_restore()`` and for
@@ -40,20 +43,23 @@ async def workspace_snapshot(env, name: str, workspace: str = "/app") -> str:
         raise ValueError(
             f"Snapshot name must be alphanumeric/dash/underscore, got: {name!r}"
         )
-    await env.exec(f"mkdir -p {_SNAP_DIR}")
+    await exec_raw(env.exec, f"mkdir -p {_SNAP_DIR}")
     snap_path = f"{_SNAP_DIR}/{name}.tar.gz"
-    result = await env.exec(
+    result = await exec_raw(
+        env.exec,
         f"tar czf {shlex.quote(snap_path)} -C {shlex.quote(workspace)} .",
         timeout_sec=120,
     )
     if result.return_code != 0:
-        raise RuntimeError(f"snapshot failed: {(result.stderr or '')}")
+        raise RuntimeError(
+            f"snapshot failed: {(diagnostic_result(result).stderr.render() or '')}"
+        )
     ref = f"fs:{name}:{snap_path}"
     logger.info(f"Snapshot created: {ref}")
     return ref
 
 
-async def workspace_restore(env, ref: str, workspace: str = "/app") -> None:
+async def workspace_restore(env: Any, ref: str, workspace: str = "/app") -> None:
     """Restore ``workspace`` to a named workspace snapshot.
 
     ref: the string returned by ``workspace_snapshot()`` — format is
@@ -69,24 +75,30 @@ async def workspace_restore(env, ref: str, workspace: str = "/app") -> None:
         raise ValueError(f"invalid snapshot ref: path must be under {_SNAP_DIR}")
     if ".." in snap_path.split("/"):
         raise ValueError("invalid snapshot ref: path traversal not allowed")
-    check = await env.exec(
-        f"test -f {shlex.quote(snap_path)} && echo ok || echo missing"
+    from benchflow.trust.state import IngressKind, admit
+
+    admit(env, "main", IngressKind.SNAPSHOT_RESTORE)
+    check = await exec_raw(
+        env.exec, f"test -f {shlex.quote(snap_path)} && echo ok || echo missing"
     )
     if "missing" in (check.stdout or ""):
         raise FileNotFoundError(f"snapshot not found: {snap_path}")
-    result = await env.exec(
+    result = await exec_raw(
+        env.exec,
         f"rm -rf {shlex.quote(workspace)}/* {shlex.quote(workspace)}/.[!.]* 2>/dev/null; "
         f"tar xzf {shlex.quote(snap_path)} -C {shlex.quote(workspace)}",
         timeout_sec=120,
     )
     if result.return_code != 0:
-        raise RuntimeError(f"restore failed: {(result.stderr or '')}")
+        raise RuntimeError(
+            f"restore failed: {(diagnostic_result(result).stderr.render() or '')}"
+        )
     logger.info(f"Snapshot restored: {ref}")
 
 
-async def list_workspace_snapshots(env) -> list[str]:
+async def list_workspace_snapshots(env: Any) -> list[str]:
     """List available *workspace* snapshot names."""
-    result = await env.exec(f"ls {_SNAP_DIR}/*.tar.gz 2>/dev/null || true")
+    result = await exec_raw(env.exec, f"ls {_SNAP_DIR}/*.tar.gz 2>/dev/null || true")
     if not (result.stdout or "").strip():
         return []
     return [

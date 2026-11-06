@@ -9,6 +9,7 @@ sandbox lifecycle, verifier execution, and artifacts; TRL owns optimization.
 from __future__ import annotations
 
 import asyncio
+import math
 import shlex
 import threading
 from collections.abc import Callable, Coroutine, Sequence
@@ -150,6 +151,7 @@ class BenchFlowRuntimeEnvironment:
         self.reward: float = 0.0
         self.rollout_dir: Path | None = None
         self.last_returncode: int | None = None
+        self._verification_failure: str | None = None
 
     def reset(self, **kwargs: Any) -> str | None:
         """Start a fresh BenchFlow runtime for one training rollout."""
@@ -171,6 +173,7 @@ class BenchFlowRuntimeEnvironment:
         )
         self._runtime = _run_blocking(TaskRuntime.create(runtime_config))
         self.reward = 0.0
+        self._verification_failure = None
         self.rollout_dir = self._runtime.rollout_dir
         return self._harness.reset_message
 
@@ -217,15 +220,26 @@ class BenchFlowRuntimeEnvironment:
         return f"submission recorded; reward={self.reward:g}"
 
     def _finalize(self) -> None:
+        if self._verification_failure is not None:
+            raise RuntimeError(self._verification_failure)
         runtime = self._runtime
         if runtime is None:
             return
         try:
             result = _run_blocking(runtime.verify())
-            self.reward = (
-                float(result.reward) if isinstance(result.reward, int | float) else 0.0
-            )
             self.rollout_dir = result.rollout_dir
+            if (
+                getattr(result, "error", None)
+                or getattr(result, "verifier_error", None)
+                or isinstance(result.reward, bool)
+                or not isinstance(result.reward, int | float)
+                or not math.isfinite(result.reward)
+            ):
+                raise RuntimeError("BenchFlow TRL sample has no valid verifier reward")
+            self.reward = float(result.reward)
+        except Exception as exc:
+            self._verification_failure = f"BenchFlow TRL verification failed: {exc}"
+            raise RuntimeError(self._verification_failure) from exc
         finally:
             self._runtime = None
             _run_blocking(runtime.close())
@@ -424,6 +438,11 @@ def _rows_for_package(package: TaskPackage) -> list[_TaskRow]:
     turns = prompt_plan.turns if prompt_plan is not None else ()
     if not turns:
         return []
+    if len(turns) != 1:
+        raise ValueError(
+            f"BenchFlow TRL supports single-turn tasks only; {package.task_dir.name} "
+            "is multi-turn and requires a persistent conversation runtime"
+        )
 
     task_config = package.view.config.task
     task_name = task_config.name if task_config is not None else package.task_dir.name

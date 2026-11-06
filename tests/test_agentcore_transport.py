@@ -280,11 +280,15 @@ class TestEnvHandling:
             await proc.start("agent --serve", env={"API_KEY": "hunter2"}, cwd="/work")
 
         launch = shell.sent[1]
-        assert launch.startswith("( ") and launch.endswith(" )\n")
-        assert launch.index("trap 'rm -f") < launch.index("cd /work")
+        assert launch.startswith("( ") and launch.endswith(" ); exit $?\n")
+        # The trap is armed before root's /bin/bash starts; the bootstrap
+        # sources and removes the file before it changes folder (C8).
+        assert launch.index("trap '/bin/rm -f") < launch.index(
+            "exec /bin/bash --noprofile"
+        )
         source = launch.index(". /tmp/.benchflow_agent_env_")
         remove_after_source = launch.index("rm -f", source)
-        assert source < remove_after_source < launch.index("trap - EXIT")
+        assert source < remove_after_source < launch.index("cd /work")
         assert "hunter2" not in launch
         await proc.close()
 
@@ -328,7 +332,7 @@ class TestEnvHandling:
             await proc._write_env_file({"API_KEY": "hunter2"})
 
         cleanup = proc._sandbox.exec.call_args.args[0]
-        assert cleanup.startswith("rm -f /tmp/.benchflow_agent_env_")
+        assert cleanup.startswith("/bin/rm -f /tmp/.benchflow_agent_env_")
         assert "hunter2" not in cleanup
 
     @pytest.mark.asyncio
@@ -346,7 +350,7 @@ class TestEnvHandling:
             await proc.start("agent --serve", env={"API_KEY": "hunter2"})
 
         cleanup = proc._sandbox.exec.call_args.args[0]
-        assert cleanup.startswith("rm -f /tmp/.benchflow_agent_env_")
+        assert cleanup.startswith("/bin/rm -f /tmp/.benchflow_agent_env_")
         assert "hunter2" not in cleanup
 
 

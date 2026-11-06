@@ -1,0 +1,110 @@
+{
+  "path": "sql-family/task.md",
+  "mode": "blocks",
+  "instruction": "The SQLite database at `/data/shop.db` has three tables: `customers(id, name, country)`, `orders(id, customer_id, placed_at, status)`, and `order_items(order_id, product, quantity, unit_price)`. `placed_at` is a date written as `YYYY-MM-DD`.\n\nWrite one SQL query that returns the top {{k}} customers by {{metric}} for completed orders placed in {{year}}. Revenue is the sum of `quantity * unit_price` over a customer's order items, order_count is the number of the customer's orders, and items_bought is the sum of `quantity`. Count only orders whose `status` is `completed`, and leave out customers with no such orders. Return two columns, `customer_id` and `{{metric}}`, highest first, breaking ties by customer id, lowest first.\n\nSave the query to `/work/answer.sql`. It will be run against another database with the same tables, so it must not depend on this database's rows.",
+  "blocks": [
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/sql-family\"\ntitle = \"Top-k customers, a seeded task family\"\nversion = \"3.1.0\"\nkeywords = [\"sql\", \"rl\", \"task-family\"]\n\n[agent]\ntimeout = \"10m\"\nbudget = { tool_calls = 20, tokens = \"400K\" }\n\n[sandbox]\ncpus = 1\nmemory = \"1 GB\"\nnetwork = \"none\"\nworkdir = \"/work\"\n\n[verifier]\ntimeout = \"1m\"\n\n[family]\ngenerator = \"family/generate.py\"\nparams = { k = [3, 5, 10], metric = [\"revenue\", \"order_count\", \"items_bought\"], year = [2023, 2024, 2025] }\n\n[family.splits]\ntrain = { role = \"train\", rule = \"seed % 10 < 8\" }\nvalidation = { role = \"validation\", rule = \"seed % 10 == 8\" }\ntest = { role = \"test\", rule = \"seed % 10 == 9\" }\n\n[training]\nreward = \"strict\"\ndifficulty = \"evidence/difficulty.json\"",
+      "line": 7
+    }
+  ],
+  "config": {
+    "name": "examples/sql-family",
+    "title": "Top-k customers, a seeded task family",
+    "version": "3.1.0",
+    "keywords": [
+      "sql",
+      "rl",
+      "task-family"
+    ],
+    "agent": {
+      "timeout": "10m",
+      "budget": {
+        "tool_calls": 20,
+        "tokens": "400K"
+      }
+    },
+    "sandbox": {
+      "cpus": 1,
+      "memory": "1 GB",
+      "network": "none",
+      "workdir": "/work"
+    },
+    "verifier": {
+      "timeout": "1m"
+    },
+    "family": {
+      "generator": "family/generate.py",
+      "params": {
+        "k": [
+          3,
+          5,
+          10
+        ],
+        "metric": [
+          "revenue",
+          "order_count",
+          "items_bought"
+        ],
+        "year": [
+          2023,
+          2024,
+          2025
+        ]
+      },
+      "splits": {
+        "train": {
+          "role": "train",
+          "rule": "seed % 10 < 8"
+        },
+        "validation": {
+          "role": "validation",
+          "rule": "seed % 10 == 8"
+        },
+        "test": {
+          "role": "test",
+          "rule": "seed % 10 == 9"
+        }
+      }
+    },
+    "training": {
+      "reward": "strict",
+      "difficulty": "evidence/difficulty.json"
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "3.0.0",
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "runs",
+        "gate": true,
+        "text": "answer.sql holds one query that runs against this instance's hidden database without errors, within 10 seconds.",
+        "stated": "Save the query to `/work/answer.sql`. It will be run against another database with the same tables",
+        "judge": "test",
+        "check": "test_runs"
+      },
+      {
+        "id": "rows",
+        "gate": true,
+        "text": "The query's rows match the reference rows exactly, in order: the right customers, the right metric values, highest first, ties broken by the lower customer id.",
+        "stated": "Return two columns, `customer_id` and `{{metric}}`, highest first, breaking ties by customer id, lowest first.",
+        "judge": "test",
+        "check": "test_rows"
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "The SQLite database at `/data/shop.db` has three tables: `customers(id, name, country)`, `orders(id, customer_id, placed_at, status)`, and `order_items(order_id, product, quantity, unit_price)`. `placed_at` is a date written as `YYYY-MM-DD`.\n\nWrite one SQL query that returns the top {{k}} customers by {{metric}} for completed orders placed in {{year}}. Revenue is the sum of `quantity * unit_price` over a customer's order items, order_count is the number of the customer's orders, and items_bought is the sum of `quantity`. Count only orders whose `status` is `completed`, and leave out customers with no such orders. Return two columns, `customer_id` and `{{metric}}`, highest first, breaking ties by customer id, lowest first.\n\nSave the query to `/work/answer.sql`. It will be run against another database with the same tables, so it must not depend on this database's rows.",
+  "title": "Top-k customers, a seeded task family",
+  "ok": true
+}

@@ -5,7 +5,7 @@ from github.com/benchflow-ai/skillsbench at the commit pinned in
 ``manifest.json``, so the parity claim is reproducible from the public repo:
 re-fetch the pinned commit and the per-file digests must match. Each runner
 case feeds a real task through the migrate/export conversion path
-(``build_harbor_roundtrip_conformance_report``: split -> task.md -> split) and
+(``build_task_toml_roundtrip_conformance_report``: split -> task.md -> split) and
 asserts every compared surface — canonical config, normalized prompt, and the
 environment/solution/tests file-hash maps — survives with zero mismatches.
 """
@@ -20,8 +20,8 @@ import pytest
 
 from benchflow.task import export as task_export
 from benchflow.task.export import (
-    HarborRoundTripMismatch,
-    build_harbor_roundtrip_conformance_report,
+    TaskTomlRoundTripMismatch,
+    build_task_toml_roundtrip_conformance_report,
 )
 
 SLICE_DIR = Path(__file__).parent / "fixtures" / "skillsbench_slice"
@@ -69,8 +69,8 @@ def test_vendored_slice_stays_small_and_text_only() -> None:
 
 
 @pytest.mark.parametrize("task_name", TASK_NAMES)
-def test_harbor_roundtrip_is_lossless_for_vendored_task(task_name: str) -> None:
-    report = build_harbor_roundtrip_conformance_report(SLICE_DIR / task_name)
+def test_task_toml_roundtrip_is_lossless_for_vendored_task(task_name: str) -> None:
+    report = build_task_toml_roundtrip_conformance_report(SLICE_DIR / task_name)
 
     assert [(m.path, m.reason) for m in report.mismatches] == []
     assert report.status == "lossless"
@@ -82,7 +82,7 @@ def test_harbor_roundtrip_is_lossless_for_vendored_task(task_name: str) -> None:
     assert report.restored_extension_paths == []
 
 
-def test_harbor_roundtrip_reports_tampered_environment_as_drift(
+def test_task_toml_roundtrip_reports_tampered_environment_as_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A silently disabled environment comparator must fail this test."""
@@ -100,12 +100,12 @@ def test_harbor_roundtrip_reports_tampered_environment_as_drift(
 
     monkeypatch.setattr(task_export, "export_task_to_split_layout", tampering_export)
 
-    report = build_harbor_roundtrip_conformance_report(SLICE_DIR / TASK_NAMES[0])
+    report = build_task_toml_roundtrip_conformance_report(SLICE_DIR / TASK_NAMES[0])
 
     assert report.status == "drift"
     assert report.environment_file_map_equal is False
     assert report.mismatches == [
-        HarborRoundTripMismatch(
+        TaskTomlRoundTripMismatch(
             path="environment/",
             reason="environment file hashes differ after migrate/export",
         )

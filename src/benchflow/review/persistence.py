@@ -14,7 +14,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow.review.outcome import ScoringResult
+from benchflow.review.outcome import ScoringResult, keeps_verifier_result
+
+#: The scoring lock's file in a trial folder; it exists only while scoring runs.
+SCORING_LOCK_NAME = ".scoring.lock"
 
 
 @contextmanager
@@ -22,17 +25,44 @@ def scoring_lock(rollout_dir: Path) -> Iterator[None]:
     """Reject simultaneous scoring of one trial without blocking the event loop.
 
     The advisory lock is released by the OS on process exit, so an interrupted
-    reviewer never leaves a stale lock requiring manual cleanup.
+    reviewer never leaves a stale lock requiring manual cleanup. The holder
+    removes the lock file before it lets go, so a finished trial keeps no
+    empty ``.scoring.lock`` (REPORT B17). A process that opened the file just
+    before that removal can still lock the removed file; it notices the name
+    no longer points at what it locked and takes the lock again on a fresh
+    file, so two scorers never hold locks on different files at once.
     """
-    with (rollout_dir / ".scoring.lock").open("a+") as stream:
+    path = rollout_dir / SCORING_LOCK_NAME
+    while True:
+        stream = path.open("a+")
         try:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
+            stream.close()
             raise ValueError(f"Scoring is already running for {rollout_dir}") from exc
+        if _names_locked_file(path, stream):
+            break
+        # The last holder removed the file between our open and our lock.
+        stream.close()
+    try:
+        yield
+    finally:
         try:
-            yield
+            if _names_locked_file(path, stream):
+                path.unlink(missing_ok=True)
         finally:
             fcntl.flock(stream, fcntl.LOCK_UN)
+            stream.close()
+
+
+def _names_locked_file(path: Path, stream: Any) -> bool:
+    """Whether ``path`` still names the file ``stream`` holds open."""
+    try:
+        named = os.stat(path)
+    except FileNotFoundError:
+        return False
+    held = os.fstat(stream.fileno())
+    return (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino)
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
@@ -135,7 +165,9 @@ def _snapshot_scoring_artifacts(
         os.replace(stage, destination)
 
 
-def commit_scoring_result(rollout_dir: Path, scoring: ScoringResult) -> dict[str, Any]:
+def commit_scoring_result(
+    rollout_dir: Path, scoring: ScoringResult | None
+) -> dict[str, Any]:
     """Regenerate score exports, then atomically publish the parent result.
 
     solver.json is immutable across review retries. The parent result is the
@@ -143,22 +175,30 @@ def commit_scoring_result(rollout_dir: Path, scoring: ScoringResult) -> dict[str
     files are not a multi-file transaction and can be rebuilt after a crash.
     This operation is shared by initial scoring and resume.
     """
+    from benchflow.diagnostics import RolloutDiagnostics
     from benchflow.rollout._results import _write_rewards_jsonl, _write_trainer_artifact
+    from benchflow.rollout._verifier_recovery import verification_source
     from benchflow.trajectories.results import write_rollout_results_jsonl
 
-    source = json.loads((rollout_dir / "solver.json").read_text())
+    source = verification_source(rollout_dir)
     result = dict(source)
-    result["scoring"] = scoring.to_dict()
-    result["rewards"] = scoring.numeric_rewards()
-    result["verifier_error"] = scoring.error or source.get("verifier_error")
-    if scoring.error:
-        result["verifier_error_category"] = "infra_failure"
+    if scoring is not None:
+        result["scoring"] = scoring.to_dict()
+        if not keeps_verifier_result(source, scoring):
+            result["rewards"] = scoring.numeric_rewards()
+            result["verifier_error"] = scoring.error or source.get("verifier_error")
+            if scoring.error:
+                result["verifier_error_category"] = "infra_failure"
     finished = datetime.now()
     result["solver_started_at"] = source.get("started_at")
     result["solver_finished_at"] = source.get("finished_at")
     result["scoring_finished_at"] = str(finished)
     result["finished_at"] = str(finished)
-    timing = _scoring_timing(rollout_dir, source, scoring)
+    timing = (
+        _scoring_timing(rollout_dir, source, scoring)
+        if scoring is not None
+        else source.get("timing", {})
+    )
     result["timing"] = timing
     trajectory = [
         json.loads(line)
@@ -169,8 +209,13 @@ def commit_scoring_result(rollout_dir: Path, scoring: ScoringResult) -> dict[str
     ]
     prompts = json.loads((rollout_dir / "prompts.json").read_text())
     agent_result = source.get("agent_result") or {}
-    _write_rewards_jsonl(rollout_dir, result["rewards"], finished)
-    if result["rewards"] is None:
+    # Keep the solver's original verifier evidence in result.json, but only
+    # export the completed assessment as a reward for downstream consumers.
+    export_rewards = (
+        scoring.numeric_rewards() if scoring is not None else result["rewards"]
+    )
+    _write_rewards_jsonl(rollout_dir, export_rewards, finished)
+    if export_rewards is None:
         (rollout_dir / "rewards.jsonl").unlink(missing_ok=True)
     _write_trainer_artifact(
         rollout_dir,
@@ -179,7 +224,7 @@ def commit_scoring_result(rollout_dir: Path, scoring: ScoringResult) -> dict[str
         agent_name=source.get("agent_name") or source["agent"],
         prompts=prompts,
         trajectory=trajectory,
-        rewards=result["rewards"],
+        rewards=export_rewards,
         model=source.get("model"),
         verifier_error=result["verifier_error"],
         total_prompt_tokens=agent_result.get("n_input_tokens"),
@@ -202,6 +247,9 @@ def commit_scoring_result(rollout_dir: Path, scoring: ScoringResult) -> dict[str
         rewards=result["rewards"],
         error=source.get("error"),
         verifier_error=result["verifier_error"],
+        error_category=result.get("error_category"),
+        verifier_error_category=result.get("verifier_error_category"),
+        diagnostics=RolloutDiagnostics.from_result_fields(source),
         export_error=source.get("export_error"),
         timing=timing,
         agent_result=agent_result,
@@ -210,6 +258,7 @@ def commit_scoring_result(rollout_dir: Path, scoring: ScoringResult) -> dict[str
         parent_rollout=source.get("parent_rollout"),
     )
     write_json_atomic(rollout_dir / "timing.json", timing)
-    _snapshot_scoring_artifacts(rollout_dir, result, scoring)
+    if scoring is not None:
+        _snapshot_scoring_artifacts(rollout_dir, result, scoring)
     write_json_atomic(rollout_dir / "result.json", result)
     return result

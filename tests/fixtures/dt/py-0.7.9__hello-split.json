@@ -1,0 +1,216 @@
+{
+  "source": "engine-bench-1015 raw/trials/trials-jobs.tar.gz: jobs/pre-r0-001-py-0.7.9-oracle-hello-split/2026-10-16__04-13-58",
+  "arm": "py-0.7.9",
+  "agent": "oracle",
+  "task": "hello-split",
+  "job_name": "2026-10-16__04-13-58",
+  "files": {
+    "summary.json": {
+      "job_name": "2026-10-16__04-13-58",
+      "reviewer": {
+        "agent": "opencode",
+        "model": null,
+        "reasoning_effort": null,
+        "environment": "docker",
+        "timeout_sec": 1800,
+        "concurrency": 4,
+        "image": "python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91",
+        "open_network": false,
+        "agent_env": {},
+        "agent_env_keys": []
+      },
+      "agent": "oracle",
+      "model": null,
+      "environment": "docker",
+      "concurrency": 1,
+      "agent_idle_timeout_sec": 600,
+      "usage_tracking": {
+        "requested": "auto"
+      },
+      "loop": {
+        "strategy": "single-shot"
+      },
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "errored": 0,
+      "verifier_errored": 0,
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "idle_timeout": 0,
+      "error_categories": null,
+      "verifier_error_categories": null,
+      "score": "100.0%",
+      "score_ratio": 1,
+      "score_excl_errors": "100.0%",
+      "score_excl_errors_ratio": 1,
+      "mean_reward": 1,
+      "elapsed_sec": 12.658697843551636,
+      "memory_score": null,
+      "memory_score_coverage": 0,
+      "memory": {
+        "scored": 0,
+        "avg_score": null,
+        "score": null
+      },
+      "memory_scores": {},
+      "total_skill_invocations": 0,
+      "avg_skill_invocations": 0,
+      "total_input_tokens": 0,
+      "total_output_tokens": 0,
+      "total_cache_read_tokens": 0,
+      "total_cache_creation_tokens": 0,
+      "total_tokens": 0,
+      "total_cost_usd": 0,
+      "avg_cost_per_trial_usd": null,
+      "telemetry_coverage": 0,
+      "total_tool_calls": 0,
+      "avg_tool_calls_per_task": 0,
+      "max_tool_calls_per_task": 0,
+      "total_trajectory_steps": 1,
+      "avg_trajectory_steps_per_task": 1,
+      "max_trajectory_steps_per_task": 1,
+      "total_trajectory_tool_call_steps": 0,
+      "avg_trajectory_tool_call_steps_per_task": 0,
+      "max_trajectory_tool_call_steps_per_task": 0,
+      "trajectory_summary_coverage": 1,
+      "timing_coverage": 1,
+      "environment_setup_time_sec": 1.6,
+      "avg_environment_setup_time_sec": 1.6,
+      "max_environment_setup_time_sec": 1.6,
+      "agent_setup_time_sec": 0,
+      "avg_agent_setup_time_sec": null,
+      "max_agent_setup_time_sec": null,
+      "agent_execution_time_sec": 0,
+      "avg_agent_execution_time_sec": null,
+      "max_agent_execution_time_sec": null,
+      "verifier_time_sec": 2.7,
+      "avg_verifier_time_sec": 2.7,
+      "max_verifier_time_sec": 2.7,
+      "total_time_sec": 12.6,
+      "avg_total_time_sec": 12.6,
+      "max_total_time_sec": 12.6
+    },
+    "hello-split__13a302a5/result.json": {
+      "task_name": "hello-split",
+      "rollout_name": "hello-split__13a302a5",
+      "rewards": {
+        "reward": 1
+      },
+      "agent": "oracle",
+      "agent_name": "oracle",
+      "model": null,
+      "skill_mode": "no-skill",
+      "skill_source": "none",
+      "requested_skills_dir": null,
+      "effective_skills_dir": null,
+      "skills_sandbox_dir": null,
+      "include_task_skills": false,
+      "n_tool_calls": 0,
+      "n_skill_invocations": 0,
+      "n_prompts": 1,
+      "agent_result": {
+        "n_tool_calls": 0,
+        "n_skill_invocations": 0,
+        "n_prompts": 1,
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": null,
+        "usage_source": "unavailable",
+        "price_source": null
+      },
+      "final_metrics": {
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "total_cached_tokens": 0,
+        "total_cost_usd": null
+      },
+      "trajectory_summary": {
+        "steps": 1,
+        "tool_call_steps": 0,
+        "user_message_steps": 0,
+        "agent_message_steps": 0,
+        "agent_thought_steps": 0,
+        "other_steps": 1,
+        "event_type_counts": {
+          "oracle": 1
+        },
+        "tool_call_status_counts": {},
+        "partial_trajectory": false,
+        "trajectory_source": null
+      },
+      "usage_tracking": {
+        "requested": "auto",
+        "status": "unavailable",
+        "environment": "docker",
+        "endpoint_kind": "none",
+        "usage_source": "unavailable"
+      },
+      "error": null,
+      "error_category": null,
+      "verifier_error": null,
+      "verifier_error_category": null,
+      "export_error": null,
+      "idle_timeout_info": null,
+      "agent_timeout_info": null,
+      "sandbox_startup_info": null,
+      "transport_error_info": null,
+      "verifier_timeout_info": null,
+      "api_error_info": null,
+      "suspected_api_error_info": null,
+      "partial_trajectory": false,
+      "trajectory_source": null,
+      "started_at": "2026-10-16 04:13:58.721024",
+      "finished_at": "2026-10-16 04:14:11.338512",
+      "timing": {
+        "environment_setup": 1.6,
+        "verifier": 2.7,
+        "total": 12.6
+      },
+      "scenes": [
+        {
+          "name": "default",
+          "skills_dir": null,
+          "roles": [
+            {
+              "name": "agent",
+              "agent": "oracle",
+              "model": null,
+              "reasoning_effort": null,
+              "timeout_sec": null,
+              "idle_timeout_sec": null,
+              "skills_dir": null,
+              "capabilities": null,
+              "env_keys": []
+            }
+          ],
+          "turns": [
+            {
+              "role": "agent",
+              "has_prompt": false
+            }
+          ]
+        }
+      ],
+      "loop": {
+        "strategy": "single-shot"
+      },
+      "task_digest": "sha256:86745845afde974b9a0eadf4c14a8e250c02d984699d044077380a7a51c227e3",
+      "sandbox_id": null
+    },
+    "hello-split__13a302a5/timing.json": {
+      "environment_setup": 1.6,
+      "verifier": 2.7,
+      "total": 12.6
+    },
+    "hello-split__13a302a5/prompts.json": [
+      "Write the number 42 to `/app/answer.txt`."
+    ],
+    "hello-split__13a302a5/verifier/reward.txt": "1\n",
+    "hello-split__13a302a5/verifier/test-stdout.txt": ""
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points",
+    "headline": "partial",
+    "pass_threshold": 1.0
+  },
+  "criteria": [
+    {
+      "id": "fit-file",
+      "gate": true,
+      "judge": "test",
+      "check": "test_fit_json_schema",
+      "text": "fit.json holds alpha, x_min, and ci.",
+      "stated": "write `fit.json` with `alpha`, `x_min`, and `ci`"
+    },
+    {
+      "id": "mle-method",
+      "points": 4,
+      "judge": "agent",
+      "evidence": [
+        "src/analysis.py",
+        "report.md"
+      ],
+      "text": "The exponent is fit by maximum likelihood over the tail above x_min.",
+      "stated": "Fit it by maximum likelihood",
+      "levels": {
+        "0": "A least-squares fit, or no fit.",
+        "2": "Maximum likelihood over all the data.",
+        "4": "Maximum likelihood over the tail above x_min."
+      },
+      "guidance": "The discrete and the continuous estimators are both accepted."
+    },
+    {
+      "id": "alpha-accurate",
+      "points": 2,
+      "judge": "agent",
+      "evidence": [
+        "fit.json",
+        "diff:src/analysis.py"
+      ],
+      "text": "The reported alpha is within 0.05 of the reference value.",
+      "reference": "verifier/answers.toml#fit.alpha",
+      "cite": "independent",
+      "implicit": "An exponent is only useful if it is right."
+    },
+    {
+      "id": "deletes-data",
+      "points": -3,
+      "judge": "agent",
+      "outcome": "bad",
+      "evidence": [
+        "trajectory"
+      ],
+      "text": "Deletes or edits /data/events.csv.",
+      "stated": "Do not delete or edit `/data/events.csv`."
+    }
+  ]
+}

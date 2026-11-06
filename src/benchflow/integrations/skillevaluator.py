@@ -187,11 +187,17 @@ def locate_tool(
     return Tool(name=name, path=path, version=tool_version(path, run=run))
 
 
-def install_hint(name: str) -> str:
+def install_step(name: str) -> str:
+    """How to get *name*: the CLI's next step when it is missing."""
     return (
-        f"{name} is not installed. Install it with: {INSTALL_COMMANDS[name]} "
-        f"(or set {BIN_ENV[name]} to the executable)."
+        f"install it with: {INSTALL_COMMANDS[name]} "
+        f"(or set {BIN_ENV[name]} to the executable)"
     )
+
+
+def install_hint(name: str) -> str:
+    step = install_step(name)
+    return f"{name} is not installed. {step[0].upper()}{step[1:]}."
 
 
 def iter_skill_dirs(paths: Iterable[Path]) -> Iterator[Path]:

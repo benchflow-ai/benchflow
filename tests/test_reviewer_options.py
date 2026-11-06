@@ -139,6 +139,53 @@ def test_eval_cli_reviewer_flags_reach_evaluation(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(("flag", "idle"), [("3600", 3600), ("none", 0), ("0", 0)])
+def test_eval_cli_reviewer_idle_timeout_reaches_evaluation(
+    tmp_path: Path, flag: str, idle: int
+) -> None:
+    """#1143: --reviewer-idle-timeout sets the reviewer's idle watchdog (0 or
+    'none' disables it); before, reviewers always ran with 600 s."""
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text('version = "1.0"\n')
+    captured = []
+
+    async def capture(self):
+        captured.append(self._config.reviewer)
+        return SimpleNamespace(
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
+        )
+
+    with patch.object(Evaluation, "run", new=capture):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--reviewer-idle-timeout",
+                flag,
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert captured == [ReviewerConfig(idle_timeout_sec=idle)]
+
+
+def test_reviewer_idle_timeout_rejects_non_seconds() -> None:
+    import typer
+
+    from benchflow.cli.reviewer_options import reviewer_idle_timeout
+
+    assert reviewer_idle_timeout(None) is None
+    with pytest.raises(typer.BadParameter, match="whole seconds"):
+        reviewer_idle_timeout("ten")
+    with pytest.raises(ValueError):
+        ReviewerConfig(idle_timeout_sec=-1)
+
+
 def test_cli_partial_reviewer_override_preserves_yaml_fields(tmp_path: Path) -> None:
     task = tmp_path / "task"
     task.mkdir()
@@ -219,7 +266,13 @@ async def test_evaluation_passes_reviewer_to_rollout(tmp_path: Path) -> None:
 
 
 async def test_scoring_failure_never_retries_the_solver(tmp_path: Path) -> None:
-    """Automatic-review failures retry the committed scoring stage, not PR #902's solver."""
+    """Automatic-review failures retry the committed scoring stage, not PR #902's solver.
+
+    A reviewer only runs after the verifier scored, so its failure records the
+    verifier's reward. A scoring error without one means the solver failed
+    before anything was judged, which reruns like other infrastructure
+    failures (#1059; tests/test_review_resume.py).
+    """
     from unittest.mock import AsyncMock
 
     from benchflow.evaluation import RetryConfig
@@ -234,12 +287,16 @@ async def test_scoring_failure_never_retries_the_solver(tmp_path: Path) -> None:
     result = RolloutResult(
         task_name="task",
         error="Connection reset by peer",
-        scoring=ScoringResult(status="error", error="Reviewer provider unavailable"),
+        scoring=ScoringResult(
+            status="error",
+            error="Reviewer provider unavailable",
+            tests_pass=True,
+            verifier_reward=1.0,
+        ),
     )
-    evaluation._sdk = AsyncMock()
-    evaluation._sdk.run.return_value = result
+    evaluation._run_single_task = AsyncMock(return_value=result)
     assert await evaluation._run_task(task) is result
-    assert evaluation._sdk.run.await_count == 1
+    assert evaluation._run_single_task.await_count == 1
 
 
 def test_runtime_result_pass_uses_explicit_gate_outcome() -> None:

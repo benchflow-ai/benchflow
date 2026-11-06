@@ -2,10 +2,11 @@
 
 import json
 import logging
-from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
+from benchflow._utils.reachable_write import ReachableLog, ReachablePath
 from benchflow.sandbox.process import LiveProcess
+from benchflow.sandbox.process._acp_lines import line_limit, shrink_line
 from benchflow.sandbox.process._base import _ANSI_CSI_RE, _ANSI_OSC_RE
 from benchflow.trajectories.types import redact_trajectory_text
 
@@ -73,14 +74,16 @@ class ContainerTransport(Transport):
         command: str,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
-        agent_log_path: Path | None = None,
+        agent_log_path: ReachablePath | None = None,
     ):
         self._cp = container_process
         self._command = command
         self._env = env or {}
         self._cwd = cwd
+        if agent_log_path is not None and not isinstance(agent_log_path, ReachablePath):
+            raise TypeError("ACP logs require a reachable-directory handle")
         self._agent_log_path = agent_log_path
-        self._agent_log_file: TextIO | None = None
+        self._agent_log_file: ReachableLog | None = None
         # First-message latch: the lenient PTY-noise decode applies only
         # until the first successfully decoded protocol message (prompt glue
         # is a startup phenomenon). Afterwards the strict whole-line decode
@@ -99,12 +102,22 @@ class ContainerTransport(Transport):
             # (which never re-opens the file). Unlink rather than truncating so we keep
             # the lazy-open contract: no empty placeholder for protocol-only runs.
             self._agent_log_path.unlink(missing_ok=True)
+        # The host and sandbox filters use the host's effective budget. Give
+        # standalone text-producing shims the same value, including "off".
+        process_env = {
+            **self._env,
+            "BENCHFLOW_ACP_LINE_LIMIT": str(line_limit() or 0),
+        }
         await self._cp.start(
             command=self._command,
-            env=self._env,
+            env=process_env,
             cwd=self._cwd,
         )
         logger.info(f"ContainerTransport: agent started ({self._command})")
+
+    def expect_silence(self, seconds: float) -> None:
+        """Pass the prompt's silence budget to the live process's read guard."""
+        self._cp.expect_silence(seconds)
 
     async def send(self, message: dict[str, Any]) -> None:
         """Send a JSON-RPC message to the agent."""
@@ -115,6 +128,13 @@ class ContainerTransport(Transport):
         """Receive a JSON-RPC message from the agent."""
         while True:
             line = await self._cp.readline()
+            limit = line_limit()
+            if limit is not None and len(line) > limit:
+                # The same rewrite the sandbox-side filter applies, for a line
+                # that reached us whole (no python3 there): #1138.
+                size = len(line)
+                line = shrink_line(line, limit)
+                logger.info("Shrank a %d-byte agent output line to %d", size, len(line))
             text = line.decode(errors="replace").strip()
             if not text:
                 continue
@@ -128,18 +148,21 @@ class ContainerTransport(Transport):
             # Capture non-protocol output (agent debug logs, errors, warnings).
             if self._agent_log_path:
                 if self._agent_log_file is None:
-                    self._agent_log_file = self._agent_log_path.open("w")
+                    self._agent_log_file = self._agent_log_path.log()
                 self._agent_log_file.write(text + "\n")
                 self._agent_log_file.flush()
             logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")
 
     async def close(self) -> None:
         """Terminate the agent process."""
-        if self._agent_log_file:
-            self._agent_log_file.close()
-            self._agent_log_file = None
-        await self._cp.close()
-        stderr = getattr(self._cp, "stderr_tail", "")
-        if isinstance(stderr, str) and stderr and self._agent_log_path:
-            with self._agent_log_path.open("a") as agent_log:
-                agent_log.write(redact_trajectory_text(stderr))
+        try:
+            await self._cp.close()
+            stderr = getattr(self._cp, "stderr_tail", "")
+            if isinstance(stderr, str) and stderr and self._agent_log_path:
+                if self._agent_log_file is None:
+                    self._agent_log_file = self._agent_log_path.log()
+                self._agent_log_file.write(redact_trajectory_text(stderr))
+        finally:
+            if self._agent_log_file:
+                self._agent_log_file.close()
+                self._agent_log_file = None

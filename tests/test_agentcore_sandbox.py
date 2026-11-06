@@ -32,6 +32,7 @@ import pytest
 from benchflow.sandbox.agentcore import AgentCoreSandbox
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
+from tests._trust_admission import admitted
 
 
 def _stream(*, stdout="", stderr="", exit_code=0, status="COMPLETED"):
@@ -107,14 +108,37 @@ class TestExecSemantics:
 
     @pytest.mark.asyncio
     async def test_command_is_wrapped_for_bash(self, sandbox):
-        """AgentCore does not run a shell for you; commands need bash -c."""
+        """AgentCore does not run a shell for you; commands need bash -c.
+
+        Both bashes start without the image's BASH_ENV, named
+        by absolute path, and the command gets the image's value back.
+        """
+        from benchflow.sandbox._base import (
+            HIDE_BASH_ENV,
+            RESTORE_BASH_ENV,
+            restore_image_env,
+        )
+        from benchflow.sandbox._task_route import as_task_command
+
         client = MagicMock()
         client.invoke_agent_runtime_command.return_value = _stream()
-        with patch.object(sandbox, "_client", return_value=client):
+        # The task's own command (C8's task route): it also gets the loader
+        # values the image keeps aside (agentcore_image) back.
+        with (
+            patch.object(sandbox, "_client", return_value=client),
+            as_task_command(sandbox),
+        ):
             await sandbox.exec("echo hi")
 
         body = client.invoke_agent_runtime_command.call_args.kwargs["body"]
-        assert body["command"].startswith("/bin/bash -c ")
+        assert shlex.split(body["command"]) == [
+            "/bin/bash",
+            "--posix",
+            "-c",
+            f'exec {HIDE_BASH_ENV} /bin/bash -c "$1"',
+            "/bin/bash",
+            RESTORE_BASH_ENV + restore_image_env() + "echo hi",
+        ]
 
     @pytest.mark.asyncio
     async def test_timeout_is_clamped_to_service_range(self, sandbox):
@@ -269,6 +293,225 @@ def _seeded_seal_keypair(sandbox):
 
 class TestFileTransfer:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", ["deepagents", "harvey-lab-harness"])
+    @pytest.mark.parametrize("install_exit", [0, 42])
+    async def test_python_agent_install_fits_the_wrapped_command_limit(
+        self, sandbox, tmp_path, agent, install_exit
+    ):
+        """Guards fix 60fd1b17 (U4-CONF-1) on the registry's install: since PT
+        round 12 the hashed lock travels as a file (sealed upload chunks), its
+        recipe in the installer replaced by a check that the file is there.
+        FF-install's recipe is still over the inline limit, so the installer
+        is staged in root's folder (FF-install-C12). Every API body stays
+        under the limit and the installer's exit status is the install's."""
+        from benchflow.agents.install import install_agent
+        from benchflow.agents.registry import AGENTS
+        from benchflow.models import AgentInstallError
+
+        (lock,) = AGENTS[agent].requirements_files
+        _seeded_seal_keypair(sandbox)
+        client = MagicMock()
+        payloads = []
+        uploads = []
+        upload = sandbox.upload_file
+
+        async def record_upload(source, target, **kwargs):
+            uploads.append((target, source.read_text()))
+            await upload(source, target, **kwargs)
+
+        def invoke(**kwargs):
+            payload = kwargs["body"]["command"]
+            payloads.append(payload)
+            # Check the final API body, after the real backend's quoting.
+            assert len(payload) <= 65_536
+            if "mktemp -d " in payload:
+                return _stream(
+                    stdout="/opt/benchflow/agent-install/install.ABC123xyz0\n"
+                )
+            if "bash /opt/benchflow/agent-install/install." in payload:
+                return _stream(
+                    stdout="installer stdout",
+                    stderr="installer stderr",
+                    exit_code=install_exit,
+                )
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(sandbox, "upload_file", side_effect=record_upload),
+        ):
+            if install_exit:
+                with pytest.raises(AgentInstallError) as exc:
+                    await install_agent(sandbox, agent, tmp_path / "rollout")
+                assert exc.value.return_code == install_exit
+            else:
+                assert (
+                    await install_agent(sandbox, agent, tmp_path / "rollout")
+                    is AGENTS[agent]
+                )
+
+        # The lock's exact bytes, to its path, then the staged installer.
+        assert [target for target, _ in uploads] == [
+            lock.path,
+            "/opt/benchflow/agent-install/install.ABC123xyz0/install.sh",
+        ]
+        assert uploads[0][1] == lock.content
+        installer = uploads[1][1]
+        assert "--require-hashes" in installer
+        assert f"test -f {lock.path}" in installer
+        assert lock.lines[0] not in installer
+        # The upload made root's (links not followed) and the agents folder
+        # checked again, before the installer runs.
+        owned = [
+            i for i, p in enumerate(payloads) if f"chown -h 0:0 -- {lock.path}" in p
+        ]
+        launch = next(
+            i
+            for i, p in enumerate(payloads)
+            if "bash /opt/benchflow/agent-install/" in p
+        )
+        assert owned and owned[0] < launch
+        assert "/opt/benchflow/agents" in payloads[owned[0]]
+        assert len(payloads) > 3  # Real sealed transfer, rather than one giant exec.
+        log = (tmp_path / "rollout/agent/install-stdout.txt").read_text()
+        assert "installer stdout" in log and "installer stderr" in log
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("install_exit", [0, 42])
+    async def test_an_installer_too_large_for_one_command_is_staged(
+        self, sandbox, tmp_path, install_exit
+    ):
+        """Guards fix 60fd1b17 (U4-CONF-1): an installer over the inline limit
+        (an install override) is uploaded and run from a fresh staging
+        folder, which is removed; its exit status is the install's."""
+        from benchflow.agents.install import install_agent
+        from benchflow.agents.registry import AGENT_INSTALLERS
+        from benchflow.models import AgentInstallError
+
+        script = "echo staged-installer\n" + ": " + "x" * 60_000 + "\n"
+        _seeded_seal_keypair(sandbox)
+        client = MagicMock()
+        payloads = []
+        scripts = []
+        upload = sandbox.upload_file
+
+        async def record_upload(source, target, **kwargs):
+            scripts.append(source.read_text())
+            await upload(source, target, **kwargs)
+
+        def invoke(**kwargs):
+            payload = kwargs["body"]["command"]
+            payloads.append(payload)
+            assert len(payload) <= 65_536
+            if "mktemp -d " in payload:
+                return _stream(
+                    stdout="/opt/benchflow/agent-install/install.ABC123xyz0\n"
+                )
+            if "bash /opt/benchflow/agent-install/install." in payload:
+                return _stream(
+                    stdout="installer stdout",
+                    stderr="installer stderr",
+                    exit_code=install_exit,
+                )
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.dict(AGENT_INSTALLERS, {"deepagents": script}),
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(sandbox, "upload_file", side_effect=record_upload),
+        ):
+            if install_exit:
+                with pytest.raises(AgentInstallError) as exc:
+                    await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+                assert exc.value.return_code == install_exit
+            else:
+                await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+
+        # An override is the operator's own: run as written, no lock swapped in.
+        assert scripts == [script]
+        assert len(payloads) > 3
+        assert any(
+            "rmdir -- /opt/benchflow/agent-install/install." in p for p in payloads
+        )
+        log = (tmp_path / "rollout/agent/install-stdout.txt").read_text()
+        assert "installer stdout" in log and "installer stderr" in log
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["upload", "exec"])
+    async def test_failed_staged_installer_cleans_up_without_hiding_the_error(
+        self, sandbox, tmp_path, failure
+    ):
+        """Guards fix 60fd1b17: failed staging cannot launch an old installer.
+        Run on an installer that is staged (over the inline limit)."""
+        from benchflow.agents.install import install_agent
+        from benchflow.agents.registry import AGENT_INSTALLERS
+
+        script = "echo staged-installer\n" + ": " + "x" * 60_000 + "\n"
+        client = MagicMock()
+        commands = []
+
+        def invoke(**kwargs):
+            payload = kwargs["body"]["command"]
+            commands.append(payload)
+            if "mktemp -d " in payload:
+                return _stream(
+                    stdout="/opt/benchflow/agent-install/install.ABC123xyz0\n"
+                )
+            if "bash /opt/benchflow/agent-install/install." in payload:
+                raise TimeoutError("installer timed out")
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.dict(AGENT_INSTALLERS, {"deepagents": script}),
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(
+                sandbox,
+                "upload_file",
+                side_effect=RuntimeError("upload failed")
+                if failure == "upload"
+                else None,
+            ),
+            pytest.raises(
+                (RuntimeError, TimeoutError), match=r"upload failed|installer timed out"
+            ),
+        ):
+            await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+        assert any(
+            "rmdir -- /opt/benchflow/agent-install/install." in c for c in commands
+        )
+        launches = [
+            c for c in commands if "bash /opt/benchflow/agent-install/install." in c
+        ]
+        assert len(launches) == (0 if failure == "upload" else 1)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lock_upload_launches_no_installer(self, sandbox, tmp_path):
+        """The registry's lock goes first: if it cannot be uploaded, the
+        error is the install's and no installer runs without its lock."""
+        from benchflow.agents.install import install_agent
+
+        client = MagicMock()
+        commands = []
+
+        def invoke(**kwargs):
+            commands.append(kwargs["body"]["command"])
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(
+                sandbox, "upload_file", side_effect=RuntimeError("upload failed")
+            ),
+            pytest.raises(RuntimeError, match="upload failed"),
+        ):
+            await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+        assert not any("--require-hashes" in c for c in commands)
+
+    @pytest.mark.asyncio
     async def test_upload_dir_ships_one_archive_not_one_command_per_file(
         self, sandbox, tmp_path
     ):
@@ -290,7 +533,7 @@ class TestFileTransfer:
             patch.object(sandbox, "exec", side_effect=_record),
             patch.object(sandbox._sealed, "_exec_raw", side_effect=_record),
         ):
-            await sandbox.upload_dir(source, "/workspace")
+            await sandbox.upload_dir(source, "/workspace", admission=admitted(sandbox))
 
         # mkdir + sealed chunk(s) + one decrypt-and-extract, not 13 uploads
         # (PR #942 moved transfers to the sealed transport).
@@ -343,7 +586,7 @@ class TestFileTransfer:
             patch.object(sandbox, "exec", side_effect=_exec),
             patch.object(sandbox._sealed, "upload", side_effect=_capture),
         ):
-            await sandbox.upload_dir(source, "/workspace")
+            await sandbox.upload_dir(source, "/workspace", admission=admitted(sandbox))
 
         # The archive is inspected pre-seal: link exclusion happens while the
         # tar is built; sealed-command confidentiality is covered separately
@@ -668,7 +911,7 @@ async def test_real_agentcore_lifecycle(tmp_path):
         payload = tmp_path / "payload"
         payload.mkdir()
         (payload / "hello.txt").write_text("from-host")
-        await env.upload_dir(payload, "/workspace/payload")
+        await env.upload_dir(payload, "/workspace/payload", admission=admitted(env))
         echoed = await env.exec("cat /workspace/payload/hello.txt")
         assert (echoed.stdout or "").strip() == "from-host"
 

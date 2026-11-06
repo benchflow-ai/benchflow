@@ -156,6 +156,8 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 .card.k-tool.failed { border-left-color: var(--bad-strip); background: var(--bad-bg); border-color: var(--bad-line); }
 .card.k-timeout { border-left-color: var(--bad-strip); background: var(--bad-bg); border-color: var(--bad-line); }
 .card.k-unknown { border-left-color: var(--rule-strong); border-style: dashed; box-shadow: none; }
+.card.k-notice { border-left-color: var(--rule-strong); box-shadow: none; }
+.card.k-notice.sev-warning, .card.k-notice.sev-error { border-left-color: var(--warn-strip); background: var(--warn-bg); border-color: var(--warn-line); }
 .card.flash { animation: flash 1.2s ease-out; }
 @keyframes flash { 0% { outline: 2px solid var(--foreground); } 100% { outline: 2px solid transparent; } }
 @media (prefers-reduced-motion: reduce) { .card.flash { animation: none; outline: 2px solid var(--foreground); } }
@@ -175,6 +177,8 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 .k-thought .klabel { color: var(--kind-agent-ink); }
 .k-timeout .klabel { color: var(--bad-ink); }
 .k-unknown .klabel { color: var(--muted-foreground); }
+.k-notice .klabel { color: var(--muted-foreground); }
+.k-notice.sev-warning .klabel, .k-notice.sev-error .klabel { color: var(--warn-ink); }
 .kindbadge {
   display: inline-flex; align-items: center; font-family: var(--font-mono);
   font-size: 11px; font-weight: 600;
@@ -229,6 +233,8 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 }
 .expander:hover { color: var(--foreground); text-decoration: underline; }
 .expander:focus-visible { outline: 2px solid var(--foreground); outline-offset: 1px; }
+/* subagent steps nest inside the spawning tool card as ordinary cards */
+.subtrace { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .hidden { display: none !important; }
 #empty { color: var(--faint); padding: 48px 0; text-align: center; font-size: 13px; }
 
@@ -242,11 +248,14 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; color: var(--faint);
   text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px;
 }
+.panelblock .note { margin-top: 10px; font-size: 12px; color: var(--muted-foreground); }
 .bigreward { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1.1; }
 table.plain { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 13px; }
 table.plain th, table.plain td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-table.plain tr:last-child td { border-bottom: none; }
+table.plain tr:last-child th, table.plain tr:last-child td { border-bottom: none; }
 table.plain th { font-family: var(--font-mono); color: var(--faint); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+table.plain a { color: inherit; text-underline-offset: 2px; }
+table.plain a:hover { color: var(--foreground); }
 .bar { height: 6px; border-radius: 3px; background: var(--rule-strong); min-width: 2px; }
 .barrow { display: grid; grid-template-columns: 160px 1fr 90px; gap: 12px; align-items: center; margin-bottom: 9px; font-size: 12.5px; color: var(--muted-foreground); }
 .barrow .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--foreground); font-weight: 600; font-size: 12px; font-family: var(--font-mono); }

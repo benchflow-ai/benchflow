@@ -21,18 +21,33 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  unit:
+    # Every Python the package lists as a classifier
+    # (tests/test_workflow_uv_pin.py checks the two lists match). Its check
+    # runs are `unit (3.12)` and `unit (3.13)`; the `test` job below
+    # reports the one check named `test` that main requires.
+    name: unit (${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
+          # Sets UV_PYTHON for every later step, so uv sync and uv run use it.
+          python-version: ${{ matrix.python-version }}
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --extra dev --extra sandbox-daytona --extra sandbox-modal --locked
@@ -52,8 +67,82 @@ jobs:
       - name: Type check
         run: uv run ty check
 
+      # The deterministic integration tier has its own job below; here it
+      # would run again on the runner's Docker and double this lane's time.
+      # -n auto: one pytest-xdist worker per CPU.
       - name: Test
-        run: uv run python -m pytest tests/
+        run: uv run python -m pytest tests/ -n auto
+        env:
+          BENCHFLOW_DETERMINISTIC_SANDBOX: "off"
+
+  # A success-only barrier also covers partial matrix reruns, where the
+  # matrix's aggregate result alone can report success for the rerun leg.
+  unit-complete:
+    needs: [unit]
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 0
+
+  # The required check on main is named `test` (.github/integration/ADMIN_SETUP.md).
+  # A matrix job reports one check per Python and none named `test`, so this
+  # job carries the name: it runs even when a unit leg fails or is cancelled,
+  # and passes only when every leg passed.
+  test:
+    needs: [unit, unit-complete]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every unit leg passed
+        run: test "$UNIT_RESULT" = success && test "$UNIT_COMPLETE_RESULT" = success
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+          UNIT_COMPLETE_RESULT: ${{ needs.unit-complete.result }}
+
+  deterministic-integration:
+    # Real `bench eval run` / `bench eval branch` in Docker with claude-agent-acp
+    # and a scripted fake model provider (tests/integration/README.md): no
+    # model keys, no model cost. Requesting docker explicitly makes a missing
+    # daemon fail the job instead of skipping every scenario.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      - name: Docker info
+        run: docker info --format '{{.ServerVersion}} {{.OperatingSystem}}' && docker compose version
+
+      - name: Deterministic integration tier
+        run: >-
+          uv run python -m pytest tests/test_deterministic_integration.py
+          tests/test_docker_parallel_isolation.py
+          tests/test_integrity_deterministic.py
+          -m deterministic -v -rs --durations=0
+        env:
+          BENCHFLOW_DETERMINISTIC_SANDBOX: docker
+          BENCHFLOW_DETERMINISTIC_JOBS_DIR: ${{ runner.temp }}/deterministic-jobs
+
+      - name: Upload job folders on failure
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: deterministic-integration-jobs
+          path: ${{ runner.temp }}/deterministic-jobs
+          retention-days: 7
 
   pip-audit:
     runs-on: ubuntu-latest
@@ -61,8 +150,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python

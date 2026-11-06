@@ -216,7 +216,18 @@ class TestStagedEnvBehavior:
             staged.append(path)
             return path
 
-        async def dispatch(command, *, timeout_sec, resolved_user):
+        async def dispatch(
+            command,
+            *,
+            timeout_sec,
+            resolved_user,
+            route,
+            agent_bootstrap=False,
+            agent_env_open="",
+        ):
+            # K1's barrier is only for AgentExecCommand; every
+            # command here is plain text, so none may arrive as a bootstrap.
+            assert not agent_bootstrap and not agent_env_open
             result = _dx(
                 container,
                 command,

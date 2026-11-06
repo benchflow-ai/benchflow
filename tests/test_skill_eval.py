@@ -486,8 +486,9 @@ class TestSkillEvaluatorResultCollection:
     async def test_collects_timestamp_nested_rollout_results(
         self, skill_dir, tmp_path, monkeypatch
     ):
-        """Guards the ENG-84 fix from commit b69bdf4 for nested result dirs."""
+        """Guards the fix from commit b69bdf4 for nested result dirs."""
         from benchflow.evaluation import EvaluationResult
+        from benchflow.models import RolloutResult
 
         async def fake_run(self):
             rollout_dir = self._jobs_dir / "2026-05-18__12-00-00" / "calc-001__abc123"
@@ -506,7 +507,20 @@ class TestSkillEvaluatorResultCollection:
             (verifier_dir / "judge_result.json").write_text(
                 json.dumps({"items": [{"criterion": "correct", "score": 1.0}]})
             )
-            return EvaluationResult(job_name="fake", config=self._config, total=1)
+            return EvaluationResult(
+                job_name="fake",
+                config=self._config,
+                total=1,
+                job_dir=rollout_dir.parent,
+                results={
+                    "calc-001": RolloutResult(
+                        "calc-001",
+                        rollout_dir.name,
+                        rewards={"reward": 1.0},
+                        n_tool_calls=4,
+                    )
+                },
+            )
 
         monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_run)
 
@@ -542,6 +556,7 @@ class TestSkillEvaluatorResultCollection:
         Finding 7.
         """
         from benchflow.evaluation import EvaluationResult
+        from benchflow.models import RolloutResult
 
         # Skill with two cases whose ids are prefixes of each other.
         skill = tmp_path / "globskill"
@@ -559,6 +574,7 @@ class TestSkillEvaluatorResultCollection:
 
         async def fake_run(self):
             # Write rollout dirs following the {case_id}__{uuid8} contract.
+            results = {}
             for case_id, reward in (("case-1", 0.0), ("case-10", 1.0)):
                 rollout_dir = (
                     self._jobs_dir / "2026-05-21__09-00-00" / f"{case_id}__deadbeef"
@@ -573,7 +589,19 @@ class TestSkillEvaluatorResultCollection:
                         }
                     )
                 )
-            return EvaluationResult(job_name="fake", config=self._config, total=2)
+                results[case_id] = RolloutResult(
+                    case_id,
+                    rollout_dir.name,
+                    rewards={"reward": reward},
+                    n_tool_calls=1,
+                )
+            return EvaluationResult(
+                job_name="fake",
+                config=self._config,
+                total=2,
+                job_dir=self._jobs_dir / "2026-05-21__09-00-00",
+                results=results,
+            )
 
         monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_run)
 

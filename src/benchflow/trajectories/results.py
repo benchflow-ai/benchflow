@@ -15,6 +15,7 @@ emission: even errored or unstructured rollouts get one JSONL row with an
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from contextlib import suppress
@@ -22,8 +23,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
+from benchflow._utils.scoring import finite_reward
+from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
+    _assistant_from_chat_response,
+    _messages_from_chat_request,
+    _messages_from_responses_request,
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
     prime_sft_last_user_training_window,
@@ -37,6 +43,10 @@ if TYPE_CHECKING:
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_FILENAME = "results.jsonl"
+#: ``info.schema_version`` of a BenchFlow row. Rows without it are version 1,
+#: where an unscored rollout had ``reward`` and ``score`` 0.0 (its ``metrics``
+#: then has no ``reward`` key). From version 2 both are null when unscored.
+RESULTS_ROW_VERSION = 2
 JOB_RESULTS_ERRORS_FILENAME = "results.errors.json"
 
 logger = logging.getLogger(__name__)
@@ -47,13 +57,42 @@ def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
     return json.dumps(redacted, default=str, allow_nan=False)
 
 
-def _reward_value(rewards: dict[str, Any] | None) -> float:
+def _structured_diagnostics_info(
+    *,
+    error_category: str | None,
+    verifier_error_category: str | None,
+    diagnostics: RolloutDiagnostics | None,
+) -> dict[str, Any]:
+    """Build the optional, redacted trainer-facing diagnostics envelope.
+
+    ``result.json`` remains the full rollout-status artifact. This compact
+    envelope carries the same typed failure evidence into the canonical
+    ``results.jsonl`` row without changing its existing error or stop fields.
+    Callers that do not provide structured diagnostics retain the historical
+    row shape.
+    """
+    block = (diagnostics or RolloutDiagnostics()).to_results_jsonl_block(
+        error_category=error_category,
+        verifier_error_category=verifier_error_category,
+    )
+    if block is None:
+        return {}
+    safe_block = redact_trajectory_obj(scrub_non_finite(block))
+    return {"diagnostics": safe_block}
+
+
+def _reward_value(rewards: dict[str, Any] | None) -> float | None:
+    """Scalar row reward: null when absent or not finite.
+
+    A missing verdict is unscored, never 0: an infrastructure failure written
+    as 0.0 reads as a real failed attempt to anything counting this file.
+    """
     if not isinstance(rewards, dict):
-        return 0.0
+        return None
     reward = rewards.get("reward")
     if isinstance(reward, (int, float)) and not isinstance(reward, bool):
-        return float(reward)
-    return 0.0
+        return finite_reward(reward)
+    return None
 
 
 def _metrics_from_rewards(
@@ -72,12 +111,12 @@ def _metrics_from_rewards(
         if key == "rubric":
             continue
         if isinstance(value, (int, float)) and not isinstance(value, bool):
-            metrics[str(key)] = float(value)
+            metrics[str(key)] = finite_reward(value)
     nested_metrics = rewards.get("metrics")
     if isinstance(nested_metrics, dict):
         for key, value in nested_metrics.items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metrics[str(key)] = float(value)
+                metrics[str(key)] = finite_reward(value)
     rubric = rewards.get("rubric")
     if isinstance(rubric, list):
         for idx, item in enumerate(rubric):
@@ -86,7 +125,7 @@ def _metrics_from_rewards(
             item = cast(dict[str, Any], item)
             score = item.get("score")
             if isinstance(score, (int, float)) and not isinstance(score, bool):
-                metrics[str(item.get("name") or f"rubric_{idx}")] = float(score)
+                metrics[str(item.get("name") or f"rubric_{idx}")] = finite_reward(score)
     return metrics
 
 
@@ -155,7 +194,7 @@ def _stop_condition(
 def _llm_steps_from_trajectory(
     rollout_dir: Path,
     *,
-    reward: float,
+    reward: float | None,
     is_truncated: bool,
     trajectory_id_prefix: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
@@ -169,6 +208,7 @@ def _llm_steps_from_trajectory(
     except PrimeSftTrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
     training_success_indices = _training_success_exchange_indices(exchanges)
+    owners = _step_owners(rollout_dir, exchanges, path)
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
@@ -212,6 +252,7 @@ def _llm_steps_from_trajectory(
             "source": "llm_trajectory",
             "tracking_source": "litellm_callback",
             "exchange_index": exchange_idx,
+            **owners.get(exchange_idx, {}),
         }
         exchange_metadata = exchange.get("metadata")
         if isinstance(exchange_metadata, dict):
@@ -244,6 +285,61 @@ def _llm_steps_from_trajectory(
     return steps, tool_defs, None
 
 
+def _step_owners(
+    rollout_dir: Path,
+    exchanges: list[dict[str, Any]],
+    path: Path,
+) -> dict[int, dict[str, Any]]:
+    """Which agent made each successful call, recorded while the capture is whole.
+
+    A results.jsonl row keeps only calls a later request consumed, so a
+    subagent's spawning call can be missing from its steps (a capture that
+    ends inside the subagent) and the row alone cannot attribute them. The
+    tags use the same attribution as converting the rollout directory and are
+    written only when the capture shows subagent activity: ``agent_role`` is
+    ``parent``, ``subagent`` (with ``parent_tool_call_id``),
+    ``helper`` or, when attribution fails, ``unattributed``.
+    """
+    from benchflow.trajectories.sft_subagents import (
+        SubagentAttributionError,
+        attribute_rollout_exchanges,
+        load_acp_parent_links,
+        subagent_row_tags,
+    )
+
+    # The same candidates bench train convert attributes from the rollout
+    # directory: every call the provider answered, consumed later or not.
+    successful = [
+        index
+        for index, exchange in enumerate(exchanges)
+        if isinstance(response := exchange.get("response"), dict)
+        and response.get("status_code") == 200
+    ]
+    try:
+        attribution = attribute_rollout_exchanges(
+            exchanges,
+            successful,
+            acp_parent_links=load_acp_parent_links(rollout_dir),
+            source=str(path),
+        )
+    except SubagentAttributionError:
+        return {index: {"agent_role": "unattributed"} for index in successful}
+    if attribution is None:
+        # No spawn call and no ACP linkage: every call is the parent's, and
+        # the rows stay as they were before attribution existed.
+        return {}
+    owners: dict[int, dict[str, Any]] = {}
+    for index in successful:
+        owner = attribution.by_exchange.get(index)
+        if owner is None:
+            owners[index] = {"agent_role": "unattributed"}
+        elif owner.role == "subagent" and owner.spawn is not None:
+            owners[index] = subagent_row_tags(owner.spawn)
+        else:
+            owners[index] = {"agent_role": owner.role}
+    return owners
+
+
 def _response_is_truncated(response_body: dict[str, Any]) -> bool:
     return bool(
         response_body.get("incomplete_details")
@@ -260,14 +356,33 @@ def _response_is_training_success(response: Any) -> bool:
     status = body.get("status")
     if status is not None and status != "completed":
         return False
+    # Legacy chat and native Anthropic use finish/stop reasons instead of a
+    # Responses status. Only terminal, usable completions enter training.
+    if "stop_reason" in body and body["stop_reason"] not in (
+        "end_turn",
+        "tool_use",
+        "stop_sequence",
+    ):
+        return False
+    choices = body.get("choices")
+    if isinstance(choices, list) and any(
+        isinstance(choice, dict)
+        and "finish_reason" in choice
+        and choice["finish_reason"] not in ("stop", "tool_calls", "function_call")
+        for choice in choices
+    ):
+        return False
     return not bool(body.get("incomplete_details"))
 
 
 def _training_success_exchange_indices(
     exchanges: list[dict[str, Any]],
 ) -> set[int]:
-    request_bodies = [
-        json.dumps(
+    candidates_by_request: dict[bytes, list[int]] = {}
+    for exchange_idx, exchange in enumerate(exchanges):
+        if not _response_is_training_success(exchange.get("response")):
+            continue
+        request_body = json.dumps(
             (
                 request.get("body")
                 if isinstance(request := exchange.get("request"), dict)
@@ -278,26 +393,32 @@ def _training_success_exchange_indices(
             separators=(",", ":"),
             default=str,
         )
-        for exchange in exchanges
-    ]
-    candidates_by_request: dict[str, list[int]] = {}
-    for exchange_idx, exchange in enumerate(exchanges):
-        if not _response_is_training_success(exchange.get("response")):
-            continue
-        candidates_by_request.setdefault(request_bodies[exchange_idx], []).append(
-            exchange_idx
-        )
+        request_key = hashlib.sha256(request_body.encode()).digest()
+        candidates_by_request.setdefault(request_key, []).append(exchange_idx)
+
+    histories = [_request_training_history(exchange) for exchange in exchanges]
     selected: set[int] = set()
     for candidates in candidates_by_request.values():
         consumed = [
             exchange_idx
             for exchange_idx in candidates
-            if _response_consumed_by_later_request(
-                exchanges, request_bodies, exchange_idx
-            )
+            if _response_consumed_by_later_request(exchanges, histories, exchange_idx)
         ]
         if consumed:
-            selected.add(max(consumed))
+            # Identical prompts can belong to independently consumed branches
+            # (for example two subagents). Only repeated captures of the same
+            # protocol calls are duplicates; distinct consumed calls all count.
+            by_calls: dict[tuple[tuple[str, tuple[str, str] | None], ...], int] = {}
+            for exchange_idx in consumed:
+                calls = _response_tool_calls(
+                    exchanges[exchange_idx]["response"]["body"]
+                )
+                identity = tuple(
+                    (call["id"], _call_signature(call))
+                    for call in sorted(calls, key=lambda call: call["id"])
+                )
+                by_calls[identity] = exchange_idx
+            selected.update(by_calls.values())
             continue
         safe_unconsumed = [
             exchange_idx
@@ -311,23 +432,133 @@ def _training_success_exchange_indices(
 
 def _response_consumed_by_later_request(
     exchanges: list[dict[str, Any]],
-    request_bodies: list[str],
+    histories: list[list[dict[str, Any]]],
     exchange_idx: int,
 ) -> bool:
     response = exchanges[exchange_idx].get("response")
     body = response.get("body") if isinstance(response, dict) else {}
-    call_ids = _response_call_ids(body if isinstance(body, dict) else {})
-    return bool(
-        call_ids
-        and any(
-            any(call_id in request_body for call_id in call_ids)
-            for request_body in request_bodies[exchange_idx + 1 :]
-        )
+    body = body if isinstance(body, dict) else {}
+    calls = _response_tool_calls(body)
+    if not calls:
+        return False
+    # Only legacy function_call has no protocol ID. Never compare a generated
+    # row ID with request data; missing IDs in other protocols fail closed.
+    message = body.get("message")
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+    legacy = (
+        isinstance(message, dict)
+        and message.get("tool_calls") is None
+        and isinstance(message.get("function_call"), dict)
+    )
+    idless = any(not call["id"] for call in calls)
+    if not legacy and idless:
+        return False
+    prefix = histories[exchange_idx]
+    for history in histories[exchange_idx + 1 :]:
+        # Without a protocol ID the replay must extend this exact prompt. An
+        # exact ID remains useful after the runtime compacts older history.
+        if idless and history[: len(prefix)] != prefix:
+            continue
+        offsets = [len(prefix)] if idless else range(len(history))
+        if any(
+            _history_consumes_calls(calls, history, offset, legacy=legacy)
+            for offset in offsets
+        ):
+            return True
+    return False
+
+
+def _history_consumes_calls(
+    calls: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    offset: int,
+    *,
+    legacy: bool,
+) -> bool:
+    if (
+        offset >= len(history)
+        or history[offset].get("role") != "assistant"
+        or (offset > 0 and history[offset - 1].get("role") == "assistant")
+    ):
+        return False
+    # Responses replays each parallel call as its own assistant item; chat
+    # history may group the same calls. Match the entire consecutive assistant
+    # turn, never a prefix/suffix or calls on opposite sides of another role.
+    replay_calls: list[dict[str, Any]] = []
+    result_offset = offset
+    while (
+        result_offset < len(history)
+        and history[result_offset].get("role") == "assistant"
+    ):
+        replay_calls.extend(history[result_offset].get("tool_calls") or [])
+        result_offset += 1
+    # Parallel calls may be replayed in another order. Their protocol IDs, not
+    # list positions, bind each call to its signature and result.
+    ordered_calls = sorted(calls, key=lambda call: call["id"])
+    ordered_replay = sorted(replay_calls, key=lambda call: call["id"])
+    if len(replay_calls) != len(calls) or any(
+        (call["id"] and call["id"] != replay_call["id"])
+        or _call_signature(call) is None
+        or _call_signature(call) != _call_signature(replay_call)
+        for call, replay_call in zip(ordered_calls, ordered_replay, strict=True)
+    ):
+        return False
+    pending = {call["id"] for call in replay_calls}
+    if len(pending) != len(replay_calls):
+        return False
+    previous_result_id = None
+    for result in history[result_offset:]:
+        if result.get("role") != "tool":
+            break
+        call_id = result.get("tool_call_id")
+        # The export normalizer merges adjacent chunks of one tool result.
+        if previous_result_id is not None and call_id == previous_result_id:
+            continue
+        if call_id not in pending:
+            break
+        if not call_id and (
+            not legacy or result.get("name") != calls[0]["function"]["name"]
+        ):
+            break
+        pending.remove(call_id)
+        previous_result_id = call_id
+        if not pending:
+            return True
+    return False
+
+
+def _call_signature(call: dict[str, Any]) -> tuple[str, str] | None:
+    function = call["function"]
+    try:
+        arguments = json.loads(function["arguments"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(arguments, dict):
+        return None
+    return function["name"], json.dumps(
+        arguments, sort_keys=True, separators=(",", ":")
     )
 
 
-def _response_call_ids(body: dict[str, Any]) -> set[str]:
-    return {call_id for call_id, _ in _response_tool_calls(body)}
+def _request_training_history(exchange: dict[str, Any]) -> list[dict[str, Any]]:
+    request = exchange.get("request")
+    body = request.get("body") if isinstance(request, dict) else {}
+    if not isinstance(body, dict):
+        return []
+    normalizer = (
+        _messages_from_chat_request
+        if "messages" in body
+        else _messages_from_responses_request
+    )
+    history = normalizer(body, redact=False, synthetic_ids=False)
+    for message in history:
+        for call in message.get("tool_calls") or []:
+            signature = _call_signature(call)
+            if signature is not None:
+                call["function"]["arguments"] = signature[1]
+    return history
 
 
 def _response_safe_without_later_consumption(
@@ -337,7 +568,7 @@ def _response_safe_without_later_consumption(
     response = exchange.get("response")
     body = response.get("body") if isinstance(response, dict) else {}
     calls = _response_tool_calls(body if isinstance(body, dict) else {})
-    if not calls or all(name == "finish" for _, name in calls):
+    if not calls or all(call["function"]["name"] == "finish" for call in calls):
         return True
     return not any(
         isinstance(request := later.get("request"), dict)
@@ -346,57 +577,14 @@ def _response_safe_without_later_consumption(
     )
 
 
-def _response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
-    calls = [
-        (
-            str(item.get("call_id") or item.get("id")),
-            str(item.get("name")) if item.get("name") else None,
-        )
-        for item in body.get("output") or []
-        if isinstance(item, dict)
-        and item.get("type") in {"function_call", "tool_call"}
-        and (item.get("call_id") or item.get("id"))
-    ]
-    choices = body.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            message = choice.get("message") if isinstance(choice, dict) else None
-            if not isinstance(message, dict):
-                continue
-            calls.extend(
-                (
-                    str(call.get("id") or call.get("tool_call_id")),
-                    (
-                        str(function.get("name"))
-                        if isinstance(function := call.get("function"), dict)
-                        and function.get("name")
-                        else str(call.get("name"))
-                        if call.get("name")
-                        else None
-                    ),
-                )
-                for call in message.get("tool_calls") or []
-                if isinstance(call, dict)
-                and (call.get("id") or call.get("tool_call_id"))
-            )
-    message = body.get("message")
-    if isinstance(message, dict):
-        calls.extend(
-            (
-                str(call.get("id") or call.get("tool_call_id")),
-                (
-                    str(function.get("name"))
-                    if isinstance(function := call.get("function"), dict)
-                    and function.get("name")
-                    else str(call.get("name"))
-                    if call.get("name")
-                    else None
-                ),
-            )
-            for call in message.get("tool_calls") or []
-            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
-        )
-    return calls
+def _response_tool_calls(body: dict[str, Any]) -> list[dict[str, Any]]:
+    # Eligibility must see the same calls that enter the training row. Sharing
+    # normalization covers native Anthropic blocks, legacy function_call,
+    # Chat Completions and Responses without a second protocol parser drifting.
+    message = _assistant_from_chat_response(body, redact=False, synthetic_ids=False)
+    if message is None:
+        return []
+    return message.get("tool_calls") or []
 
 
 def _top_level_prompt_completion(
@@ -437,6 +625,9 @@ def build_rollout_results_record(
     rewards: dict[str, Any] | None,
     error: str | None,
     verifier_error: str | None,
+    error_category: str | None = None,
+    verifier_error_category: str | None = None,
+    diagnostics: RolloutDiagnostics | None = None,
     export_error: str | None = None,
     timing: dict[str, Any] | None = None,
     agent_result: dict[str, Any] | None = None,
@@ -444,10 +635,12 @@ def build_rollout_results_record(
     scoring: ScoringResult | None = None,
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
+    branches: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rollout_path = Path(rollout_dir)
     if scoring is not None and scoring.status == "error":
         verifier_error = verifier_error or scoring.error
+        rewards = None
     reward = _reward_value(rewards)
     trajectory_id_prefix = (
         rollout_name
@@ -538,6 +731,7 @@ def build_rollout_results_record(
         "prompt": prompt,
         "completion": completion,
         "info": {
+            "schema_version": RESULTS_ROW_VERSION,
             "task_id": task_name,
             "task_name": task_name,
             "rollout_name": rollout_name,
@@ -549,12 +743,20 @@ def build_rollout_results_record(
             "rollout_dir": str(rollout_path),
             "training_ready": training_ready,
             "training_ready_reason": training_ready_reason,
+            **_structured_diagnostics_info(
+                error_category=error_category,
+                verifier_error_category=verifier_error_category,
+                diagnostics=diagnostics,
+            ),
             **(
                 {"reward_details": rewards.get("details")}
                 if isinstance(rewards, dict)
                 and isinstance(rewards.get("details"), dict)
                 else {}
             ),
+            # Branch lineage (result.json's `branches` block): which forks
+            # this rollout made and where each child's archive lives.
+            **({"branches": branches} if branches is not None else {}),
         },
         "reward": reward,
         "error": error_obj,
@@ -622,7 +824,13 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
     job_path = Path(job_dir)
     if not job_path.is_dir():
         return None
-    rollout_files = sorted(job_path.glob(f"*/{ROLLOUT_RESULTS_FILENAME}"))
+    # A legacy resume preserves the old job aggregate here, not a trial export.
+    # Other children may contain only exports, including repeated attempts.
+    rollout_files = sorted(
+        path
+        for path in job_path.glob(f"*/{ROLLOUT_RESULTS_FILENAME}")
+        if path.parent.name != ".pre-0.8"
+    )
     if not rollout_files:
         return None
 

@@ -2,7 +2,8 @@
 
 The solver snapshot is the authority for provenance and deterministic reward.
 A previous final result is only consulted to avoid rejudging a completed trial.
-No function in this module starts a solver or reruns deterministic tests.
+No function in this module starts a solver. Declared workspace recovery may
+retry deterministic verification before rubric review.
 """
 
 from __future__ import annotations
@@ -10,12 +11,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath
+from types import EllipsisType
 from typing import Any
 
 from benchflow._utils.task_authoring import task_digest
+from benchflow.budget import JOB_BUDGET_RECORDS, Budget, BudgetGuard
 from benchflow.review.options import ReviewerConfig
 from benchflow.review.outcome import scoring_from_result
+
+logger = logging.getLogger(__name__)
 
 
 class ReviewResumeError(ValueError):
@@ -91,17 +99,123 @@ async def resume_review(
     tasks_root: str | Path,
     reviewer: ReviewerConfig | None = None,
     force: bool = False,
+    budget_guard: BudgetGuard | None | EllipsisType = ...,
 ) -> dict[str, Any]:
     """Finish a saved trial's review, preserving the original solver record.
 
     Completed verdicts, including valid failures, are returned unchanged unless
     ``force`` explicitly requests a new scoring revision. ``tasks_root`` is a
     trusted local task collection or the original task directory itself.
+
+    An evaluation supplies its restored guard while holding the job lock.
+    Independent callers restore the enclosing job under that same lock; force
+    creates a scoring revision and never waives the saved spend caps.
     """
-    from benchflow.review.automatic import finish_review, prepare_review
-    from benchflow.review.persistence import commit_scoring_result, scoring_lock
+    from benchflow.review.persistence import scoring_lock
 
     path = Path(rollout_dir).resolve(strict=True)
+    # Returning an existing verdict spends nothing, even at an exhausted cap.
+    # Recheck under the core's scoring lock before creating a new revision.
+    with scoring_lock(path):
+        if not force and (path / "result.json").is_file():
+            current = _read_object(path / "result.json")
+            scoring = scoring_from_result(current)
+            if scoring is not None and scoring.status == "complete":
+                return current
+    with _scoring_budget(path.parent, budget_guard) as guard:
+        if guard is None:
+            return await _resume_review(
+                path, tasks_root=tasks_root, reviewer=reviewer, force=force
+            )
+        name = path.name.rsplit("__", 1)[0]
+        if not guard.resume_scoring(name, asyncio.current_task()):
+            raise ReviewResumeError(
+                f"{guard.reason}; raise the saved job budget before scoring again"
+            )
+        watcher = asyncio.create_task(guard.watch())
+        try:
+            with guard.track_trial(name):
+                return await _resume_review(
+                    path, tasks_root=tasks_root, reviewer=reviewer, force=force
+                )
+        except asyncio.CancelledError:
+            if not guard.was_cancelled(name):
+                raise
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+            raise ReviewResumeError(
+                f"{guard.reason}; raise the saved job budget before scoring again"
+            ) from None
+        finally:
+            # The boundary includes recovery/review teardown on every exit.
+            # Scoring continues a saved rollout; it never starts a new solver.
+            try:
+                guard.finish(name)
+            finally:
+                watcher.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watcher
+
+
+@contextmanager
+def _scoring_budget(
+    job_dir: Path, supplied: BudgetGuard | None | EllipsisType
+) -> Iterator[BudgetGuard | None]:
+    # Explicit None is an evaluation already holding an unbudgeted job lock;
+    # omission means an independent caller must restore the saved policy.
+    if not isinstance(supplied, EllipsisType):
+        yield supplied
+        return
+    from benchflow.evaluation import (
+        EVALUATION_RECORD,
+        _acquire_job_lock,
+        _recorded_attempts,
+    )
+
+    record_path = job_dir / EVALUATION_RECORD
+    if not record_path.exists():
+        if (job_dir / JOB_BUDGET_RECORDS).exists():
+            raise ReviewResumeError("Cannot restore job budget without evaluation.json")
+        yield None  # Standalone rollouts and legacy jobs have no saved job cap.
+        return
+    lock = _acquire_job_lock(job_dir)
+    try:
+        config = _read_object(record_path).get("config")
+        if not isinstance(config, dict):
+            raise ReviewResumeError("evaluation.json config must be an object")
+        try:
+            budget = Budget.coerce(config.get("budget"))
+        except (TypeError, ValueError) as exc:
+            raise ReviewResumeError(f"Invalid saved job budget: {exc}") from exc
+        guard = None
+        if budget is not None:
+            guard = BudgetGuard(budget)
+            attempts, interrupted = _recorded_attempts(job_dir)
+            guard.seed(attempts, interrupted=interrupted)
+            guard.restore(job_dir)
+        yield guard
+    finally:
+        lock.release()
+
+
+async def _resume_review(
+    path: Path,
+    *,
+    tasks_root: str | Path,
+    reviewer: ReviewerConfig | None,
+    force: bool,
+) -> dict[str, Any]:
+    """Score only after the caller owns admission, accounting and cancellation."""
+    from benchflow.review.automatic import finish_review, prepare_review
+    from benchflow.review.persistence import commit_scoring_result, scoring_lock
+    from benchflow.rollout._verifier_recovery import (
+        needs_verifier_recovery,
+        recorded_recovery_ineligible_reason,
+        resume_verification,
+    )
+    from benchflow.task import Task
+
     with scoring_lock(path):
         current_path = path / "result.json"
         if current_path.is_file():
@@ -115,9 +229,20 @@ async def resume_review(
                 "Reviewer child runs cannot be resumed as task trials"
             )
         task_path = _trusted_task(path, solver, Path(tasks_root))
+        await resume_verification(path, task_path)
         plan = prepare_review(task_path, _reviewer_options(path, reviewer))
         if plan is None:
-            raise ReviewResumeError("The original task has no automatic review rubric")
+            verifier = Task(task_path).config.verifier
+            # Without review, only an eligible recovery contract has scoring
+            # to finish; any other trial is refused as before.
+            if recorded_recovery_ineligible_reason(path) is not None or not (
+                verifier.workspace_recovery
+                or needs_verifier_recovery(solver.get("verifier_error"))
+            ):
+                raise ReviewResumeError(
+                    "The original task has no automatic review rubric"
+                )
+            return commit_scoring_result(path, None)
         review = _read_object(path / "config.json").get("review", {})
         if not isinstance(review, dict):
             raise ReviewResumeError("config.json review must be an object")
@@ -140,6 +265,7 @@ async def resume_pending_reviews(
     tasks_root: Path,
     reviewer: ReviewerConfig,
     task_names: set[str],
+    budget_guard: BudgetGuard | None | EllipsisType = ...,
 ) -> None:
     """Resume at most one unfinished scoring attempt per selected task.
 
@@ -147,28 +273,81 @@ async def resume_pending_reviews(
     A completed score always wins over an orphaned retry, matching evaluation
     resume's precedence for durable scores. The shared reviewer runtime owns
     concurrency limits; resumed reviews do not occupy solver slots.
+
+    A trial whose resume fails is logged and left with its saved result for a
+    later ``bench eval score``; it cannot cancel the other trials' reviews or
+    abort the evaluation (#1134).
     """
+    from benchflow.rollout._verifier_recovery import (
+        recorded_recovery_ineligible_reason,
+    )
+
+    if isinstance(budget_guard, EllipsisType):
+        # An independent batch needs one restored ledger and one job lock,
+        # shared by every selected task rather than reacquired per reviewer.
+        with _scoring_budget(job_dir, budget_guard) as guard:
+            await resume_pending_reviews(
+                job_dir,
+                tasks_root=tasks_root,
+                reviewer=reviewer,
+                task_names=task_names,
+                budget_guard=guard,
+            )
+        return
+
     best: dict[str, tuple[tuple[bool, float, str], Path]] = {}
     for snapshot in job_dir.glob("*/solver.json"):
         solver = _read_object(snapshot)
         task_name = solver.get("task_name")
         if task_name not in task_names or solver.get("purpose", "task") != "task":
             continue
+        config_path = snapshot.parent / "config.json"
+        config = _read_object(config_path) if config_path.is_file() else {}
+        reviewed = "review" in config
+        if (
+            not reviewed
+            and recorded_recovery_ineligible_reason(snapshot.parent) is not None
+        ):
+            # Neither review nor recovery owns this trial; its original result
+            # stays for the ordinary rerun, as before.
+            continue
         result_path = snapshot.parent / "result.json"
-        scoring = (
-            scoring_from_result(_read_object(result_path))
-            if result_path.is_file()
-            else None
-        )
+        result_payload = _read_object(result_path) if result_path.is_file() else {}
+        scoring = scoring_from_result(result_payload)
         complete = scoring is not None and scoring.status == "complete"
+        if not reviewed and scoring is None:
+            # Verifier recovery without a review commits no scoring block: a
+            # reward with no verifier error is its final verdict. A reviewed
+            # trial is complete only once its review is: a result without
+            # scoring would carry the unreviewed verifier reward.
+            complete = result_payload.get("rewards") is not None and not (
+                result_payload.get("verifier_error")
+            )
         rank = (complete, snapshot.stat().st_mtime, str(snapshot))
         previous = best.get(task_name)
         if previous is None or rank > previous[0]:
             best[task_name] = (rank, snapshot.parent)
 
+    async def score(path: Path) -> None:
+        try:
+            await resume_review(
+                path,
+                tasks_root=tasks_root,
+                reviewer=reviewer,
+                budget_guard=budget_guard,
+            )
+        except ReviewResumeError as exc:
+            logger.warning(
+                "Could not resume scoring for %s: %s; its saved result is kept",
+                path.name,
+                exc,
+            )
+        except Exception:
+            logger.exception(
+                "Could not resume scoring for %s; its saved result is kept", path.name
+            )
+
     async with asyncio.TaskGroup() as group:
         for (complete, _, _), path in best.values():
             if not complete:
-                group.create_task(
-                    resume_review(path, tasks_root=tasks_root, reviewer=reviewer)
-                )
+                group.create_task(score(path))

@@ -258,21 +258,6 @@ def test_network_hardening_public_is_blocker_on_verifier_sandbox_pr() -> None:
 
 
 # ------------------------------------------------------------------
-# Pinned-baseline reward-band parity (subprocess wrapper; needs benchflow).
-# ------------------------------------------------------------------
-
-
-def test_parity_baseline_band_reports_fail_for_missing_roots() -> None:
-    # With nonexistent roots the underlying checker FAILS closed (no matching
-    # result.json), and the wrapper surfaces that as a fail rather than crashing.
-    with tempfile.TemporaryDirectory() as tmp:
-        empty = Path(tmp) / "empty"
-        empty.mkdir()
-        result = rubric_checks.parity_baseline_band(empty, empty, ["weighted-gdp-calc"])
-        assert result.status == "fail"
-
-
-# ------------------------------------------------------------------
 # Schema adapter maps a PRODUCTION (scenarios.synth_rollout) dir.
 # ------------------------------------------------------------------
 

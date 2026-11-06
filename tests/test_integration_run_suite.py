@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,7 +64,7 @@ def test_release_suite_loads_and_tracks_backlog_lanes() -> None:
 
 
 def test_release_suite_benchmarks_have_source_uids() -> None:
-    """Guards ENG-92 benchmark identity uses source repo/path/ref, not display names."""
+    """Benchmark identity uses source repo/path/ref, not display names."""
     suite = load_suite(SUITE_PATH)
 
     seen = set()
@@ -144,7 +143,7 @@ def test_integration_runner_audits_after_nonzero_eval_exit() -> None:
 
 
 def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
-    """Guards ENG-92 hosted env hubs are tracked as env sources, not benchmarks."""
+    """Hosted env hubs are tracked as env sources, not benchmarks."""
     suite = load_suite(SUITE_PATH)
 
     hubs = suite["axes"]["hosted_env_hubs"]["current"]
@@ -152,7 +151,6 @@ def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
 
     assert {hub["platform"] for hub in hubs} == {
         "openreward",
-        "harbor",
         "primeintellect",
     }
     assert all(hub["hub_url"].startswith("https://") for hub in hubs)
@@ -169,19 +167,8 @@ def test_release_suite_hosted_env_hubs_have_hub_urls() -> None:
         "primeintellect:primeintellect/reverse-text@0.1.4",
         "primeintellect:primeintellect/math-python@0.1.10",
     ]
-    assert [env["env_uid"] for env in hubs_by_platform["harbor"]["selected_envs"]] == [
-        (
-            "harbor:terminal-bench/adaptive-rejection-sampler@"
-            "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c"
-        ),
-        (
-            "harbor:binary-audit/caddy-backdoor-detect@"
-            "75f3e6e331776b80f77faa3d2ff80627b8b5d069"
-        ),
-    ]
     assert "todo" not in hubs_by_platform["openreward"]
     assert "todo" not in hubs_by_platform["primeintellect"]
-    assert "todo" not in hubs_by_platform["harbor"]
 
 
 def test_select_lanes_rejects_unknown_lane() -> None:
@@ -192,7 +179,7 @@ def test_select_lanes_rejects_unknown_lane() -> None:
 
 
 def test_expand_shared_sandbox_smoke_resolves_release_gated_sandboxes() -> None:
-    """Guards ENG-92 keeps v0.4 release sandboxes aligned with live CLI support."""
+    """Keeps v0.4 release sandboxes aligned with live CLI support."""
     suite = load_suite(SUITE_PATH)
     lane = select_lanes(suite, ["shared-sandbox-smoke"])[0]
 
@@ -213,7 +200,7 @@ def test_expand_shared_sandbox_smoke_resolves_release_gated_sandboxes() -> None:
 
 
 def test_collect_lane_todos_groups_unresolved_manifest_todos() -> None:
-    """Guards ENG-92 manifest TODOs remain machine-detectable."""
+    """Manifest TODOs remain machine-detectable."""
     suite = load_suite(SUITE_PATH)
     lanes = select_lanes(
         suite,
@@ -226,7 +213,7 @@ def test_collect_lane_todos_groups_unresolved_manifest_todos() -> None:
 
 
 def test_security_dind_lane_has_concrete_task_but_remains_blocked() -> None:
-    """Guards ENG-92 security DinD has a task without claiming runnable support."""
+    """Security DinD has a task without claiming runnable support."""
     suite = load_suite(SUITE_PATH)
     lane = select_lanes(suite, ["security-dind-smoke"])[0]
 
@@ -237,10 +224,12 @@ def test_security_dind_lane_has_concrete_task_but_remains_blocked() -> None:
     assert "Firecracker/K8s" in lane["backlog_reason"]
     assert "bench eval run --sandbox firecracker" in lane["activation_criteria"][0]
     task_set = expanded["matrix"]["task_sets"][0]
-    assert task_set["source"]["env_uid"] == (
-        "harbor:termigen-environments/docker_escape_privileged_container_medium@"
-        "dc329464161db64b0c670f46fa39b62e4719dddd"
-    )
+    assert task_set["source"] == {
+        "kind": "git_task",
+        "repo": "ucsb-mlsec/terminal-bench-env",
+        "ref": "dc329464161db64b0c670f46fa39b62e4719dddd",
+        "task": "docker_escape_privileged_container_medium",
+    }
     assert expanded["todos"] == []
     assert collect_lane_blockers([lane]) == {"security-dind-smoke": lane["blocked_by"]}
 
@@ -264,7 +253,7 @@ def test_dry_run_prints_selected_lane(capsys: pytest.CaptureFixture[str]) -> Non
 def test_full_release_dry_run_passes_current_release_gate(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 full-release excludes future Firecracker/K8s backlog lanes."""
+    """Full-release excludes future Firecracker/K8s backlog lanes."""
     rc = main(
         [
             "--suite",
@@ -280,7 +269,6 @@ def test_full_release_dry_run_passes_current_release_gate(
     captured = capsys.readouterr()
     assert "Profile: full-release" in captured.out
     assert "shared-sandbox-smoke" in captured.out
-    assert "skillsbench-harbor-parity" in captured.out
     assert "hosted-env-compatibility-board" in captured.out
     assert "trace-to-task-e2e" in captured.out
     assert "security-dind-smoke" not in captured.out
@@ -290,7 +278,7 @@ def test_full_release_dry_run_passes_current_release_gate(
 def test_backlog_profile_tracks_security_dind_blocker(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 backlog keeps future Firecracker/K8s DinD evidence concrete."""
+    """Backlog keeps future Firecracker/K8s DinD evidence concrete."""
     rc = main(
         [
             "--suite",
@@ -306,10 +294,7 @@ def test_backlog_profile_tracks_security_dind_blocker(
     captured = capsys.readouterr()
     assert "Profile: backlog" in captured.out
     assert "Status: backlog" in captured.out
-    assert (
-        "harbor:termigen-environments/docker_escape_privileged_container_medium@"
-        in captured.out
-    )
+    assert "task=docker_escape_privileged_container_medium" in captured.out
     assert "bench eval run --sandbox firecracker" in captured.out
     assert "unresolved TODOs or blocked lanes in selected lane(s):" in captured.err
     assert "security-dind-smoke (blocked: 2)" in captured.err
@@ -318,7 +303,7 @@ def test_backlog_profile_tracks_security_dind_blocker(
 def test_trace_to_task_e2e_prints_concrete_sources_and_evidence(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 trace-to-task release planning is evidence-backed."""
+    """Trace-to-task release planning is evidence-backed."""
     rc = main(
         [
             "--suite",
@@ -348,7 +333,7 @@ def test_trace_to_task_e2e_prints_concrete_sources_and_evidence(
 def test_release_gated_cli_dry_run_passes_fail_on_todo(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 release-gated CLI planning is distinct from backlog sandboxes."""
+    """Release-gated CLI planning is distinct from backlog sandboxes."""
     rc = main(
         [
             "--suite",
@@ -372,7 +357,7 @@ def test_release_gated_cli_dry_run_passes_fail_on_todo(
 def test_near_term_dry_run_passes_fail_on_todo(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 near-term profile is TODO-free in the manifest."""
+    """Near-term profile is TODO-free in the manifest."""
     rc = main(
         [
             "--suite",
@@ -417,7 +402,7 @@ def test_near_term_profile_prints_small_daytona_plan(
 def test_hosted_env_profile_prints_hub_level_plan(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 hosted env compatibility starts with hub-level coverage."""
+    """Hosted env compatibility starts with hub-level coverage."""
     rc = main(
         [
             "--suite",
@@ -437,12 +422,9 @@ def test_hosted_env_profile_prints_hub_level_plan(
     assert "OpenReward environments [https://openreward.ai/environments]" in out
     assert "openreward:GeneralReasoning/KellyBench@" in out
     assert "openreward:GeneralReasoning/CTF@" in out
-    assert "Harbor Hub [https://hub.harborframework.com/]" in out
     assert "PrimeIntellect Environments Hub" in out
     assert "primeintellect:primeintellect/reverse-text@0.1.4" in out
     assert "primeintellect:primeintellect/math-python@0.1.10" in out
-    assert "harbor:terminal-bench/adaptive-rejection-sampler@" in out
-    assert "harbor:binary-audit/caddy-backdoor-detect@" in out
     assert "Evidence dir: dogfood/2026-05-19-release-gate/hosted-envs" in out
     assert "--execute-hosted-env-evidence" in out
     assert "TODOs:" not in out
@@ -462,7 +444,7 @@ def test_requires_dry_run_until_execution_exists(
 def test_adapter_evidence_execution_requires_adapter_lane(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-89 release runner execution is scoped to adapter evidence."""
+    """Release runner execution is scoped to adapter evidence."""
     rc = main(
         [
             "--suite",
@@ -482,7 +464,7 @@ def test_adapter_evidence_execution_invokes_checker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-89 adapter-release-set execution plumbing."""
+    """Adapter-release-set execution plumbing."""
     captured = {}
 
     def fake_checker(argv: list[str]) -> int:
@@ -527,7 +509,7 @@ def test_adapter_evidence_execution_invokes_checker(
 def test_trace_evidence_execution_requires_trace_lane(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-93 trace evidence execution is scoped to trace-to-task."""
+    """Trace evidence execution is scoped to trace-to-task."""
     rc = main(
         [
             "--suite",
@@ -547,7 +529,7 @@ def test_trace_evidence_execution_invokes_checker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-93 trace-to-task-e2e execution plumbing."""
+    """Trace-to-task-e2e execution plumbing."""
     captured = {}
 
     def fake_checker(argv: list[str]) -> int:
@@ -592,7 +574,7 @@ def test_trace_evidence_execution_invokes_checker(
 def test_hosted_env_evidence_execution_requires_hosted_lane(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 hosted-env evidence execution is scoped to the board."""
+    """Hosted-env evidence execution is scoped to the board."""
     rc = main(
         [
             "--suite",
@@ -612,7 +594,7 @@ def test_hosted_env_evidence_execution_invokes_checker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-92 hosted-env evidence execution plumbing."""
+    """Hosted-env evidence execution plumbing."""
     captured = {}
 
     def fake_checker(argv: list[str]) -> int:
@@ -632,8 +614,6 @@ def test_hosted_env_evidence_execution_invokes_checker(
             "--execute-hosted-env-evidence",
             "--hosted-env-evidence-dir",
             str(tmp_path / "hosted-envs"),
-            "--harbor-inventory-limit",
-            "3",
         ]
     )
 
@@ -643,13 +623,11 @@ def test_hosted_env_evidence_execution_invokes_checker(
         str(SUITE_PATH),
         "--evidence-dir",
         str(tmp_path / "hosted-envs"),
-        "--harbor-inventory-limit",
-        "3",
     ]
 
 
 def test_run_adapter_evidence_rejects_empty_selection() -> None:
-    """Guards ENG-89 adapter-release-set execution rejects missing lane."""
+    """Adapter-release-set execution rejects missing lane."""
     args = SimpleNamespace(
         adapter_evidence_repo_root=Path.cwd(),
         skillsbench_result=None,
@@ -662,7 +640,7 @@ def test_run_adapter_evidence_rejects_empty_selection() -> None:
 
 
 def test_run_trace_evidence_rejects_empty_selection() -> None:
-    """Guards ENG-93 trace evidence rejects missing lane."""
+    """Trace evidence rejects missing lane."""
     args = SimpleNamespace(
         suite=SUITE_PATH,
         trace_evidence_repo_root=Path.cwd(),
@@ -676,11 +654,10 @@ def test_run_trace_evidence_rejects_empty_selection() -> None:
 
 
 def test_run_hosted_env_evidence_rejects_empty_selection() -> None:
-    """Guards ENG-92 hosted-env evidence rejects missing lane."""
+    """Hosted-env evidence rejects missing lane."""
     args = SimpleNamespace(
         suite=SUITE_PATH,
         hosted_env_evidence_dir=None,
-        harbor_inventory_limit=2,
     )
 
     with pytest.raises(
@@ -694,25 +671,8 @@ def test_hosted_env_evidence_main_writes_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-92 hosted-env evidence writes durable hub artifacts."""
+    """Hosted-env evidence writes durable hub artifacts."""
     from tests.integration import check_hosted_env_evidence
-
-    def fake_harbor_registry(*args, **kwargs):
-        out = kwargs["out"]
-        record = {
-            "framework": "harbor",
-            "env_uid": "harbor:dataset/task@ref",
-            "hub_url": "https://hub.harborframework.com/",
-            "status": "pass",
-        }
-        out.write_text(f"{json.dumps(record)}\n")
-        return [record]
-
-    monkeypatch.setattr(
-        check_hosted_env_evidence,
-        "check_harbor_registry",
-        fake_harbor_registry,
-    )
 
     rc = check_hosted_env_evidence.main(
         [
@@ -720,22 +680,19 @@ def test_hosted_env_evidence_main_writes_summary(
             str(SUITE_PATH),
             "--evidence-dir",
             str(tmp_path),
-            "--harbor-inventory-limit",
-            "1",
         ]
     )
 
     assert rc == 0
     assert (tmp_path / "hosted-env-evidence.json").exists()
-    assert (tmp_path / "harbor-registry-inventory.jsonl").exists()
     out = capsys.readouterr().out
     assert "openreward" in out
     assert "primeintellect" in out
-    assert "harbor_inventory" in out
+    assert "hosted-env-evidence.json" in out
 
 
 def test_adapter_evidence_checker_validates_programbench_fixture() -> None:
-    """Guards ENG-89 adapter-release-set evidence for merged ProgramBench."""
+    """Adapter-release-set evidence for merged ProgramBench."""
     finding = check_programbench(Path.cwd())
 
     assert finding.status == "pass"
@@ -743,7 +700,7 @@ def test_adapter_evidence_checker_validates_programbench_fixture() -> None:
 
 
 def test_adapter_evidence_checker_accepts_skillsbench_result(tmp_path: Path) -> None:
-    """Guards ENG-89 adapter-release-set evidence for SkillsBench smoke runs."""
+    """Adapter-release-set evidence for SkillsBench smoke runs."""
     result = tmp_path / "result.json"
     result.write_text(
         """{
@@ -765,7 +722,7 @@ def test_adapter_evidence_checker_accepts_skillsbench_result(tmp_path: Path) -> 
 def test_adapter_evidence_checker_marks_hilbench_bucket_download_bug(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-89 adapter-release-set bucket download reporting for HILBench."""
+    """Adapter-release-set bucket download reporting for HILBench."""
     evidence = tmp_path / "benchmarks" / "hilbench"
     evidence.mkdir(parents=True)
     (evidence / "parity_experiment.json").write_text(
@@ -791,7 +748,7 @@ def test_adapter_evidence_checker_marks_hilbench_bucket_download_bug(
 def test_adapter_evidence_checker_requires_hilbench_eval_parity_pass(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-89 HILBench release evidence does not pass on stale eval parity."""
+    """Guards that HILBench release evidence does not pass on stale eval parity."""
     evidence = tmp_path / "benchmarks" / "hilbench"
     evidence.mkdir(parents=True)
     (evidence / "parity_experiment.json").write_text(
@@ -816,7 +773,7 @@ def test_adapter_evidence_checker_requires_hilbench_eval_parity_pass(
 def test_adapter_evidence_checker_requires_continuallearningbench_dogfood(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-89 adapter-release-set evidence for ContinualLearningBench dogfood."""
+    """Adapter-release-set evidence for ContinualLearningBench dogfood."""
     evidence = tmp_path / "benchmarks" / "continuallearningbench"
     evidence.mkdir(parents=True)
     (evidence / "parity_experiment.json").write_text(
@@ -837,7 +794,7 @@ def test_adapter_evidence_checker_requires_continuallearningbench_dogfood(
 def test_adapter_evidence_main_fails_without_skillsbench_result(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guards ENG-89 adapter-release-set evidence CLI failure behavior."""
+    """Adapter-release-set evidence CLI failure behavior."""
     rc = adapter_evidence_main(["--repo-root", str(Path.cwd())])
 
     assert rc == 1
@@ -852,7 +809,7 @@ def test_adapter_evidence_main_requires_open_pr_roots(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-89 open adapter PRs are release-blocking evidence."""
+    """Open adapter PRs are release-blocking evidence."""
     result = tmp_path / "skillsbench-result.json"
     result.write_text(
         """{

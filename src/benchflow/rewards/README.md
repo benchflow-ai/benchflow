@@ -122,4 +122,4 @@ After scoring, `evaluation_details.json` is written to the rollout directory wit
 
 - [docs/llm-judge.md](../../../docs/llm-judge.md) — full user-facing guide with worked examples
 - [docs/concepts.md](../../../docs/concepts.md) — the Verifier primitive
-- [docs/task-authoring.md](../../../docs/task-authoring.md) — verifier contract
+- [docs/tasks/verifier.md](../../../docs/tasks/verifier.md) — verifier contract

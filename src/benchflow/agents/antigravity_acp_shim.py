@@ -177,6 +177,42 @@ def _notify(session_id, update):
     )
 
 
+def _emit_text(session_id, text, session_update):
+    """Preserve committed text within the complete ACP wire-line budget."""
+    # Installed standalone: match sandbox.process._acp_lines.line_limit without
+    # importing BenchFlow. The transport supplies its effective host budget.
+    raw = os.environ.get("BENCHFLOW_ACP_LINE_LIMIT", "").strip().lower()
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = 0 if raw in ("off", "none", "false") else 1024 * 1024
+    # Keep messages bounded even when the host disables its content filter.
+    limit = min(limit, 64 * 1024) if limit > 0 else 64 * 1024
+    message = {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": session_update,
+                "content": {"type": "text", "text": ""},
+            },
+        },
+    }
+    budget = limit - len(json.dumps(message)) - 1  # Include the newline.
+    if budget < 0 or (text and budget < 1):
+        raise ValueError("ACP line limit cannot carry the text envelope")
+    # send() uses ASCII JSON; even an escaped surrogate pair needs <= 12 bytes.
+    width = max(1, budget // 12)
+    content = message["params"]["update"]["content"]
+    for offset in range(0, max(1, len(text)), width):
+        content["text"] = text[offset : offset + width]
+        if len(json.dumps(message)) + 1 > limit:
+            raise ValueError("ACP line limit cannot carry a text character")
+        # Retain independent messages for asynchronous or recording senders.
+        send(json.loads(json.dumps(message)))
+
+
 # ── agy home preparation ──────────────────────────────────────────────────────
 
 
@@ -188,6 +224,57 @@ def agent_home():
 
 def agy_binary():
     return os.environ.get(AGY_BIN_ENV) or DEFAULT_AGY_BIN
+
+
+# agy's built-in list (``agy models``) holds only the Gemini models Antigravity
+# ships with; in API-key mode it rejects any other id ("not recognized as a known
+# model or custom model"). Its ad-hoc custom-model form ``gemini-api://<model>``
+# runs any other Gemini API model: agy sends it to
+# ``$GOOGLE_GEMINI_BASE_URL/v1beta/models/<model>`` with the requested effort
+# (gemini-4-argon at --effort=high: thinkingLevel HIGH, agy 1.2.7 and 1.3.5, 2026-10-14).
+_CUSTOM_MODEL_SCHEME = "gemini-api://"
+_catalog = None
+
+
+def agy_catalog():
+    """The model ids ``agy models`` lists, cached; empty when the listing fails.
+
+    stdin is /dev/null: the shim's own stdin is the ACP pipe, and a child that
+    inherited it could read (and lose) the client's next request, or wait on
+    it. agy 1.3.5 lists its models in 0.2 s offline and about 2 s online
+    (measured 2026-10-16), so 30 s is a wide bound for the first turn.
+    """
+    global _catalog
+    if _catalog is None:
+        ids = set()
+        try:
+            out = subprocess.run(
+                [agy_binary(), "models"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "AGY_CLI_HIDE_LOGO": "1", "NO_COLOR": "1"},
+            ).stdout
+            for line in out.splitlines():
+                model_id = line.split("\t", 1)[0].strip()
+                if model_id and "\t" in line:
+                    ids.add(model_id)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(f"agy models failed: {exc!r}")
+        _catalog = ids
+    return _catalog
+
+
+def agy_model_arg(bare):
+    """``bare`` when agy lists it (any effort variant), else ``gemini-api://<bare>``.
+
+    An empty listing keeps ``bare``, so agy's own error names the problem.
+    """
+    catalog = agy_catalog()
+    if not catalog or any(i == bare or i.startswith(bare + "-") for i in catalog):
+        return bare
+    return _CUSTOM_MODEL_SCHEME + bare
 
 
 def prepare_settings():
@@ -378,7 +465,7 @@ class AgySession:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self):
-        model = self.resolved_model()
+        model = agy_model_arg(self.resolved_model())
         effort = self.resolved_effort()
         args = [
             agy_binary(),
@@ -531,25 +618,15 @@ class AgySession:
         step_type = step.get("step_type", "")
         state = step.get("state", "")
         text = step.get("text_delta")
+        if not isinstance(text, str):
+            text = ""
         if step_type == "agent_response":
             if text:
-                _notify(
-                    self.session_id,
-                    {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": text},
-                    },
-                )
+                _emit_text(self.session_id, text, "agent_message_chunk")
             return
         if step_type in _THOUGHT_STEP_TYPES:
             if text:
-                _notify(
-                    self.session_id,
-                    {
-                        "sessionUpdate": "agent_thought_chunk",
-                        "content": {"type": "text", "text": text},
-                    },
-                )
+                _emit_text(self.session_id, text, "agent_thought_chunk")
             return
         if step_type in ("tool", "tool_call"):
             self._handle_tool_step(step, state, open_tools)
@@ -558,12 +635,10 @@ class AgySession:
             return
         if text:
             # Unknown textual step: keep it visible rather than dropping it.
-            _notify(
+            _emit_text(
                 self.session_id,
-                {
-                    "sessionUpdate": "agent_thought_chunk",
-                    "content": {"type": "text", "text": f"[{step_type}] {text}"},
-                },
+                f"[{step_type}] {text}",
+                "agent_thought_chunk",
             )
 
     def _handle_tool_step(self, step, state, open_tools):
@@ -703,7 +778,11 @@ class Server:
         version = ""
         try:
             probe = subprocess.run(
-                [binary, "--version"], capture_output=True, text=True, timeout=30
+                [binary, "--version"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             version = (
                 (probe.stdout or "").strip().splitlines()[0] if probe.stdout else ""

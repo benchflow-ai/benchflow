@@ -36,10 +36,13 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from benchflow._paths import safe_path_segment
 from benchflow.learner_store import LearnerState
+
+if TYPE_CHECKING:
+    from benchflow._utils.reachable_write import ReachablePath
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +77,7 @@ def materialize_skills(state: LearnerState, dest: Path | str) -> Path:
     return dest_path
 
 
-def capture_skills(export_dir: Path | str) -> dict[str, str]:
+def capture_skills(export_dir: Path | str | ReachablePath) -> dict[str, str]:
     """Read an exported skills directory back into a ``name -> body`` dict.
 
     The inverse of :func:`materialize_skills`: scans ``export_dir`` for
@@ -86,7 +89,11 @@ def capture_skills(export_dir: Path | str) -> dict[str, str]:
     are all ignored: the result is empty rather than an error, so a rollout
     that evolved nothing simply commits an unchanged skill set.
     """
-    root = Path(export_dir)
+    from benchflow._utils.reachable_write import ReachablePath, _snapshot_source
+
+    root = _snapshot_source(
+        export_dir if isinstance(export_dir, ReachablePath) else Path(export_dir)
+    )
     if not root.is_dir():
         return {}
     skills: dict[str, str] = {}

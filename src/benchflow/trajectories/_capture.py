@@ -1,28 +1,25 @@
 """Trajectory capture and parsing utilities."""
 
+import asyncio
 import json
 import logging
 import os
-import time
+import threading
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from benchflow.acp.session import ACPSession, merge_text_runs
+from benchflow.sandbox._exec_output import exec_raw
 from benchflow.trajectories._snapshot import RedactedJSONLSnapshot
 
 logger = logging.getLogger(__name__)
-
-# Minimum spacing of live writes that only grow an existing event.
-_LIVE_WRITE_INTERVAL_SEC = 2.0
 
 
 def make_trajectory_sink(
     writer: "TrajectoryWriter",
     prior_trajectory: list[dict],
-    *,
-    min_interval_sec: float = _LIVE_WRITE_INTERVAL_SEC,
-    clock: Callable[[], float] = time.monotonic,
 ) -> Callable[[ACPSession], None]:
     """Build an ``on_change`` sink that writes ``prior + current session`` to disk.
 
@@ -34,32 +31,68 @@ def make_trajectory_sink(
 
     Used across multi-scene rollouts so each scene's streaming writer
     sees prior scenes' events instead of overwriting them.
-
-    Every write serializes the whole trajectory, so writing on each streamed
-    chunk would make one long thought quadratic and leave the ACP read loop
-    behind the agent. A change that only grows an existing event
-    (``session.last_change_incremental``) is therefore written at most once
-    per ``min_interval_sec``; a new event, a tool status or kind change, or
-    the end of a prompt is written at once. A hard crash can thus lose what an
-    in-flight event grew since the last write, never a whole event.
     """
     prior_snapshot = list(prior_trajectory)
-    last_write: float | None = None
 
-    def sink(session: ACPSession) -> None:
-        nonlocal last_write
-        now = clock()
-        # Steps-only sessions lack the flag; each of their changes adds a step.
-        if (
-            last_write is not None
-            and getattr(session, "last_change_incremental", False)
-            and now - last_write < min_interval_sec
-        ):
+    return _TrajectorySink(writer, prior_snapshot)
+
+
+class _TrajectorySink:
+    def __init__(self, writer: "TrajectoryWriter", prior: list[dict]) -> None:
+        self.writer = writer
+        self.prior = prior
+
+    def __call__(self, session: ACPSession) -> None:
+        # Steps-only adapters and legacy shims publish complete records and
+        # have no ACP prompt-end signal. Keep their synchronous flush contract.
+        if not getattr(session, "_events_active", False):
+            self.flush(session)
             return
-        writer.write_events(prior_snapshot + _snapshot_session_trajectory(session))
-        last_write = now
+        self.writer.schedule(lambda: self.snapshot(session))
 
-    return sink
+    def snapshot(self, session: ACPSession) -> tuple[list[dict], list[object] | None]:
+        if not getattr(session, "_events_active", False):
+            return self.prior + _snapshot_session_trajectory(session), None
+        records = list(self.prior)
+        keys: list[object] = [("prior", id(record)) for record in records]
+        for event in session.events:
+            converted = _events_to_trajectory([event])
+            records.extend(converted)
+            if event["type"] == "tool_call":
+                record = event["record"]
+                key = ("tool", id(record), record.trajectory_revision)
+            else:
+                key = ("event", id(event))
+            keys.extend([key] * len(converted))
+        pending = _events_to_trajectory(_merge_pending_text(session._pending_text))
+        return records + pending, keys + [None] * len(pending)
+
+    def flush(self, session: ACPSession) -> None:
+        self.writer.cancel_pending()
+        records, keys = self.snapshot(session)
+        self.writer.write_events(records, cache_keys=keys)
+
+    def cancel_pending(self) -> None:
+        self.writer.cancel_pending()
+
+
+def _merge_pending_text(pending: list[dict]) -> list[dict]:
+    """Merge consecutive same-type pending text events without mutating `pending`.
+
+    The merge ``ACPSession._flush_agent_text`` does, but side-effect-free so
+    a live snapshot can include in-flight chunks while leaving the session
+    free to keep streaming. It runs on every live snapshot, so it must stay
+    linear in the streamed text (``merge_text_runs``).
+    """
+    return merge_text_runs(pending)
+
+
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _iso_from_receipt_ns(observed_ns: str) -> str:
+    """Render a host receipt as ISO-8601 UTC, like ``llm_trajectory``'s ``logged_at``."""
+    return (_UNIX_EPOCH + timedelta(microseconds=int(observed_ns) // 1000)).isoformat()
 
 
 def _events_to_trajectory(events: list[dict]) -> list[dict]:
@@ -69,10 +102,16 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     end-of-run :func:`_capture_session_trajectory` and the non-destructive
     live :func:`_snapshot_session_trajectory`, so streaming-format =
     final-format is a structural invariant rather than a copy/paste
-    discipline (PR #566 review finding #3).
+    discipline.
+
+    Events with a host receipt also get the GH #1033 timing fields the
+    viewer reads: ``ts`` (first observation) on text, notice and timeout events;
+    ``started_at`` (first observation) and, once terminal, ``finished_at``
+    (observation of the terminal status) on tool calls.
     """
     out: list[dict] = []
     for event in events:
+        count = len(out)
         if event["type"] == "tool_call":
             tc = event["record"]
             record = {
@@ -81,7 +120,7 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                 "kind": tc.kind,
                 "title": tc.title,
                 "status": tc.status.value,
-                "content": tc.content,
+                "content": list(tc.content),
             }
             # Only present when the agent sent them, so trajectories of agents
             # without raw I/O keep their exact shape.
@@ -89,9 +128,25 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                 record["raw_input"] = tc.raw_input
             if getattr(tc, "raw_output", None) is not None:
                 record["raw_output"] = tc.raw_output
+            if getattr(tc, "parent_tool_call_id", None) is not None:
+                record["parent_tool_call_id"] = tc.parent_tool_call_id
+            if getattr(tc, "tool_name", None):
+                record["tool_name"] = tc.tool_name
             out.append(record)
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
-            out.append({"type": event["type"], "text": event["text"]})
+            record = {"type": event["type"], "text": event["text"]}
+            if "parent_tool_call_id" in event:
+                record["parent_tool_call_id"] = event["parent_tool_call_id"]
+            out.append(record)
+        elif event["type"] == "notice":
+            record = {
+                "type": "notice",
+                "severity": event["severity"],
+                "title": event["title"],
+            }
+            if "description" in event:
+                record["description"] = event["description"]
+            out.append(record)
         elif event["type"] == "agent_timeout":
             out.append(
                 {
@@ -104,6 +159,17 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                     ],
                 }
             )
+        if len(out) > count and "receipt" in event:
+            receipt = event["receipt"]
+            out[-1]["receipt"] = dict(receipt)
+            first_observed = _iso_from_receipt_ns(receipt["first_observed_ns"])
+            if event["type"] == "tool_call":
+                out[-1]["started_at"] = first_observed
+                finished = getattr(event["record"], "finished_observed_ns", None)
+                if finished is not None:
+                    out[-1]["finished_at"] = _iso_from_receipt_ns(finished)
+            else:
+                out[-1]["ts"] = first_observed
     return out
 
 
@@ -129,16 +195,18 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.
         return _capture_session_trajectory(session)
-    return _events_to_trajectory(session.events) + merge_text_runs(
-        session._pending_text
+    return _events_to_trajectory(session.events) + _events_to_trajectory(
+        _merge_pending_text(session._pending_text)
     )
 
 
 class TrajectoryWriter:
     """Streams ACP trajectory snapshots to ``acp_trajectory.jsonl`` on demand.
 
-    Wire as ``session.on_change`` so each ACP update flushes the current
-    trajectory to disk. Each flush rewrites the file atomically (tmp +
+    Wire as ``session.on_change`` to coalesce live updates on a 250 ms
+    cadence, with serialization and disk I/O in a worker thread. Completed
+    records reuse their serialized bytes; prompt end forces a final flush.
+    Each flush publishes the file atomically (tmp +
     ``os.replace``) so a concurrent reader (a ``cat``, a follower script)
     never sees a partial line. The on-disk format matches what
     ``_capture_session_trajectory`` produces at end-of-run, so the viewer
@@ -154,9 +222,57 @@ class TrajectoryWriter:
         self._tmp.unlink(missing_ok=True)
         self._last_payload: str | None = None
         self._snapshot = RedactedJSONLSnapshot()
+        self._lock = threading.RLock()
+        self._epoch = 0
+        self._pending: Callable | None = None
+        self._task: asyncio.Task | None = None
 
     def __call__(self, session: ACPSession) -> None:
-        self.flush(session)
+        _TrajectorySink(self, [])(session)
+
+    def schedule(self, snapshot: Callable) -> None:
+        """O(1) receive-path work; at most one background snapshot per cadence."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            records, keys = snapshot()
+            self.write_events(records, cache_keys=keys)
+            return
+        self._pending = snapshot
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        try:
+            while self._pending is not None:
+                await asyncio.sleep(0.25)
+                snapshot, self._pending = self._pending, None
+                records, keys = snapshot()
+                await asyncio.to_thread(
+                    self._write_scheduled, records, keys, self._epoch
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Live ACP trajectory write failed")
+
+    def _write_scheduled(
+        self, records: list[dict], keys: list[object] | None, epoch: int
+    ) -> None:
+        with self._lock:
+            if epoch == self._epoch:
+                self.write_events(records, cache_keys=keys)
+
+    def cancel_pending(self) -> None:
+        self._epoch += 1
+        self._pending = None
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        # A cancelled to_thread job can still be running. Finish its old write
+        # before a separate final writer publishes to this same pathname.
+        with self._lock:
+            pass
 
     def flush(self, session: ACPSession) -> None:
         """Re-snapshot ``session`` and rewrite the file if anything changed.
@@ -164,21 +280,25 @@ class TrajectoryWriter:
         Single-session use — ignores any prior scenes' events. For
         cumulative multi-scene streaming, use ``make_trajectory_sink``.
         """
-        self.write_events(_snapshot_session_trajectory(session))
+        _TrajectorySink(self, []).flush(session)
 
-    def write_events(self, events: list[dict]) -> None:
+    def write_events(
+        self, events: list[dict], *, cache_keys: list[object] | None = None
+    ) -> None:
         """Atomically write a fully-formed event list, deduped.
 
         Skips the disk write if the serialized payload is byte-identical
         to the previous one — keeps a no-op chunk (an unchanged
-        tool_call status poll) from churning the filesystem.
+        tool_call status poll, which does not advance its receipt) from
+        churning the filesystem.
         """
-        payload = self._snapshot.serialize(events)
-        if payload == self._last_payload:
-            return
-        self._tmp.write_text(payload)
-        os.replace(self._tmp, self.path)
-        self._last_payload = payload
+        with self._lock:
+            payload = self._snapshot.serialize(events, cache_keys=cache_keys)
+            if payload == self._last_payload:
+                return
+            self._tmp.write_text(payload)
+            os.replace(self._tmp, self.path)
+            self._last_payload = payload
 
     def write_final(self, trajectory: list[dict]) -> None:
         """Overwrite the file with a fully-formed trajectory list, no dedup.
@@ -188,10 +308,12 @@ class TrajectoryWriter:
         lands on disk even if the live streaming writer had already
         written the same content.
         """
-        payload = self._snapshot.serialize(trajectory)
-        self._tmp.write_text(payload)
-        os.replace(self._tmp, self.path)
-        self._last_payload = payload
+        self.cancel_pending()
+        with self._lock:
+            payload = self._snapshot.serialize(trajectory)
+            self._tmp.write_text(payload)
+            os.replace(self._tmp, self.path)
+            self._last_payload = payload
 
 
 def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
@@ -206,6 +328,9 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
     if session is None:
         return []
 
+    cancel = getattr(getattr(session, "on_change", None), "cancel_pending", None)
+    if callable(cancel):
+        cancel()
     if session._events_active:
         # Flush any trailing agent text that hasn't been recorded yet.
         session._flush_agent_text()
@@ -241,10 +366,18 @@ async def _scrape_agent_trajectory(
 
     # Gemini CLI: writes ~/.gemini/sessions/*/gemini-cli.trajectory.json
     if "gemini" in agent:
-        result = await env.exec(
-            f"cat $(find {home}/.gemini -name 'gemini-cli.trajectory.json' 2>/dev/null | head -1) 2>/dev/null",
-            timeout_sec=10,
-        )
+        # A non-zero return code and unparseable JSON both degrade to "no
+        # scraped trajectory" below, so a slow container must not be the one
+        # case that propagates and aborts verification instead (#948).
+        try:
+            result = await exec_raw(
+                env.exec,
+                f"cat $(find {home}/.gemini -name 'gemini-cli.trajectory.json' 2>/dev/null | head -1) 2>/dev/null",
+                timeout_sec=10,
+            )
+        except Exception as e:
+            logger.warning(f"Could not scrape gemini trajectory: {e}")
+            return []
         if result.return_code == 0 and result.stdout and result.stdout.strip():
             try:
                 return _parse_gemini_trajectory(json.loads(result.stdout))

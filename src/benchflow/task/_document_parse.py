@@ -18,8 +18,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from benchflow._types import Role, Scene, Turn
+from benchflow._utils.config_keys import key_lines, validation_error_text
 from benchflow.task._document_normalize import (
     TaskDocumentParseError,
     _mapping,
@@ -129,13 +131,15 @@ class TaskDocument:
 
     @classmethod
     def from_path(cls, path: str | Path) -> TaskDocument:
+        """Read a ``task.md`` file."""
         doc_path = Path(path)
         return cls.from_text(doc_path.read_text(), path=doc_path)
 
     @classmethod
     def from_text(cls, text: str, *, path: str | Path | None = None) -> TaskDocument:
-        frontmatter, body = _split_frontmatter(text)
+        """Parse ``task.md`` text (``path`` resolves relative references)."""
         doc_path = Path(path) if path is not None else None
+        frontmatter, body = _split_frontmatter(text, path=doc_path)
         frontmatter = normalize_task_document_frontmatter(
             frontmatter,
             task_dir=doc_path.parent if doc_path is not None else None,
@@ -153,7 +157,20 @@ class TaskDocument:
             scene_prompts.update(sidecars.scene_prompts)
             if sidecars.user_persona is not None:
                 user_persona = sidecars.user_persona
-        config = _config_from_frontmatter(frontmatter)
+        try:
+            config = _config_from_frontmatter(frontmatter)
+        except ValidationError as exc:
+            # One line per problem, naming the file, the line and the key, with
+            # a did-you-mean for an unknown one (``_utils.config_keys``), not
+            # pydantic's dump.
+            raise TaskDocumentParseError(
+                validation_error_text(
+                    exc,
+                    model=TaskConfig,
+                    file=doc_path or "task.md",
+                    lines=_frontmatter_key_lines(text),
+                )
+            ) from None
         roles = _parse_roles(frontmatter)
         scenes = _parse_scenes(
             frontmatter,
@@ -271,7 +288,19 @@ def render_normalized_task_md(text: str, *, path: str | Path | None = None) -> s
     return f"---\n{rendered_frontmatter}---{suffix}"
 
 
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+def _frontmatter_key_lines(text: str) -> dict[tuple[str, ...], int]:
+    """Each frontmatter key's line in the file (the opening ``---`` is line 1)."""
+    lines = text.replace("\r\n", "\n").splitlines(keepends=True)
+    end = next(
+        (i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        len(lines),
+    )
+    return key_lines("".join(lines[1:end]), first_line=2)
+
+
+def _split_frontmatter(
+    text: str, *, path: Path | None = None
+) -> tuple[dict[str, Any], str]:
     normalized = text.replace("\r\n", "\n")
     lines = normalized.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
@@ -290,9 +319,18 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     try:
         loaded = yaml.safe_load(frontmatter_text) if frontmatter_text.strip() else {}
     except yaml.YAMLError as exc:
+        # The line as the file numbers it: the frontmatter starts on line 2.
+        mark = getattr(exc, "problem_mark", None)
+        where = (
+            f"{path or 'task.md'}:{mark.line + 2}" if mark else str(path or "task.md")
+        )
+        problem = getattr(exc, "problem", None) or str(exc)
+        # The offending line itself, as YAML quotes it.
+        snippet = mark.get_snippet() if mark is not None else None
         raise TaskDocumentParseError(
-            f"task.md frontmatter is not valid YAML: {exc}"
-        ) from exc
+            f"{where}: the frontmatter is not valid YAML: {problem}"
+            + (f"\n{snippet}" if snippet else "")
+        ) from None
     if loaded is None:
         loaded = {}
     if not isinstance(loaded, dict):
@@ -418,10 +456,10 @@ def _parse_roles(frontmatter: dict[str, Any]) -> dict[str, Role]:
     for name, raw_role in raw_roles.items():
         if not isinstance(name, str):
             raise TaskDocumentParseError("agents.roles keys must be role names")
-        role_data = _mapping(raw_role, f"agents.roles.{name}", default={})
+        role_data = _mapping(raw_role, f"agents.roles[{name!r}]", default={})
         agent = role_data.get("agent")
         if not isinstance(agent, str) or not agent:
-            raise TaskDocumentParseError(f"agents.roles.{name}.agent is required")
+            raise TaskDocumentParseError(f"agents.roles[{name!r}].agent is required")
         roles[name] = Role(
             name=name,
             agent=agent,

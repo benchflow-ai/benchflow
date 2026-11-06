@@ -42,7 +42,9 @@ class Reward(Protocol):
     :func:`~benchflow.rewards.node.score_node`).
     """
 
-    async def score(self, node: RolloutNode) -> VerifyResult: ...
+    async def score(self, node: RolloutNode) -> VerifyResult:
+        """Score one rollout node: its reward and events."""
+        ...
 
 
 @runtime_checkable
@@ -57,7 +59,9 @@ class RewardFunc(Protocol):
     canonical node-based contract.
     """
 
-    async def score(self, rollout_dir: Path) -> float: ...
+    async def score(self, rollout_dir: Path) -> float:
+        """Score a rollout folder: a reward in [0, 1]."""
+        ...
 
 
 @dataclass

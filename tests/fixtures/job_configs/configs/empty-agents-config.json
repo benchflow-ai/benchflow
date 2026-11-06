@@ -1,0 +1,9 @@
+{
+    "job_name": "hb-empty-agents",
+    "agents": [],
+    "tasks": [
+        {
+            "path": "tasks/hello-craft"
+        }
+    ]
+}

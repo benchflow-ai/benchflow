@@ -1,14 +1,16 @@
-# The Environment plane
+# Environment manifests
 
-The **Environment plane** is the stateful world the agent acts in — Han's
-"S" in `E = {T, H, V, S, C}`. It is one of BenchFlow's four swappable planes
-(Sandbox, Agent, Environment, Reward). See [`architecture.md`](./architecture.md),
-"The Environment plane & the manifest".
+An environment manifest (`environment.toml`) describes the services a benchmark's agent works with, such as mock email or a hospital simulator. BenchFlow starts them, waits until they are healthy, and stops them after the trial.
 
-A benchmark author never subclasses the framework. They write one file — an
-**`environment.toml` manifest** — and the default adapter (`ManifestEnvironment`)
-runs it on any Sandbox provider. The manifest is the entire integration
-surface.
+```bash
+bench run benchmarks/clawsbench/tasks \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
+  --agent claude-agent-acp --model claude-haiku-4-5
+```
+
+You write one file; BenchFlow's default adapter, `ManifestEnvironment`, runs it on any sandbox. The manifest is the whole integration. In the architecture, this is the Environment plane; see [Architecture](./architecture.md).
+
+`--environment-manifest` is not `--sandbox`: the sandbox is *where* the trial runs, the manifest is *the world* the agent acts in.
 
 ## The manifest schema
 
@@ -18,68 +20,75 @@ The manifest's keys live under an `[environment]` table.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `name` | str | — (required) | Environment / benchmark name. |
-| `image` | str | `None` | A ready-to-run image. Set this **or** `base_image`. |
-| `base_image` | str | `None` | Image that per-task images build `FROM` (smolclaws-style). |
-| `ports` | list[int] | `[]` | Ports the environment exposes (in addition to service ports). |
-| `owns_lifecycle` | bool | `true` | `true` — the image entrypoint starts the services. `false` — the framework starts the `[[services]]`. |
-| `keep_alive` | bool | `true` | Keep the environment up for the whole rollout. |
-| `isolation` | `"per_task"` \| `"persistent"` | `"per_task"` | `per_task` — a fresh environment per episode. `persistent` — cross-episode state. |
+| `name` | str | required | The environment or benchmark name |
+| `image` | str | none | A ready-to-run image. Set this **or** `base_image` |
+| `base_image` | str | none | The image per-task images build `FROM` |
+| `ports` | list[int] | `[]` | Ports the environment exposes, besides the service ports |
+| `owns_lifecycle` | bool | `true` | `true`: the image's entrypoint starts the services. `false`: BenchFlow starts the `[[environment.services]]` |
+| `keep_alive` | bool | `true` | Keep the environment up for the whole trial |
+| `isolation` | `"per_task"` \| `"persistent"` | `"per_task"` | `per_task`: a fresh environment per episode. `persistent`: state carries across episodes |
 
-Exactly one of `image` / `base_image` must be set. When `owns_lifecycle` is
-`false` the manifest must declare `[[environment.services]]`; when it is
-`true` it must not.
+Set exactly one of `image` and `base_image`. With `owns_lifecycle = false` the manifest must declare `[[environment.services]]`; with `true` it must not.
 
 ### `[environment.task_selection]`
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `mechanism` | `"image"` \| `"env_var"` | `"env_var"` | `image` — the task's seed data is baked into a per-task image. `env_var` — one image, the task id passed at runtime. |
-| `key` | str | `"BENCHFLOW_TASK_ID"` | Env var name (when `mechanism = "env_var"`). |
-| `inject_into` | `"entrypoint"` \| `"exec"` | `"entrypoint"` | `entrypoint` reaches PID 1; `exec` does not. |
+| `mechanism` | `"image"` \| `"env_var"` | `"env_var"` | `image`: each task's seed data is baked into its own image. `env_var`: one image, with the task id passed at runtime |
+| `key` | str | `"BENCHFLOW_TASK_ID"` | The variable name, for `mechanism = "env_var"` |
+| `inject_into` | `"entrypoint"` \| `"exec"` | `"entrypoint"` | `entrypoint` reaches PID 1; `exec` does not |
 
 ### `[[environment.services]]`
 
-An array — one table per service the framework starts (only when
-`owns_lifecycle = false`). It is the declarative replacement for the
-hard-coded `SERVICES` dict in `benchflow/sandbox/services.py`.
+One table per service BenchFlow starts, only when `owns_lifecycle = false`.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `name` | str | — (required) | Service name. |
-| `command` | str | — (required) | Full start command. |
-| `port` | int | — (required) | Port the service listens on. |
-| `health_path` | str | `"/health"` | HTTP path probed for readiness. |
+| `name` | str | required | The service name |
+| `command` | str | required | The full start command |
+| `port` | int | required | The port the service listens on |
+| `health_path` | str | `"/health"` | The HTTP path probed for readiness |
 
 ### `[environment.readiness]`
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `http` | list[str] | `[]` | Explicit HTTP probes. When empty, derived from the services. |
-| `tcp` | list[int] | `[]` | TCP-connect probes. |
-| `timeout_sec` | int | `120` | How long to wait for readiness before failing the rollout. |
+| `http` | list[str] | `[]` | HTTP probes. When empty, they come from the services |
+| `tcp` | list[int] | `[]` | TCP-connect probes |
+| `timeout_sec` | int | `120` | How long to wait before the trial fails |
 
 ### `[environment.forward_env]`
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `keys` | list[str] | `[]` | Host env vars forwarded into the environment container. |
+| `keys` | list[str] | `[]` | Your variables forwarded into the environment container |
+
+A manifest a `task.md` names forwards only the keys you allow with `--allow-task-env`; the task is refused otherwise. See [Environment variables](./jobs/environment-variables.md#letting-a-task-read-your-variables).
 
 ### `[environment.state]`
 
-Present only for an environment that supports **roll-back** — `snapshot` /
-`restore`. Absent this table, the environment is treated as stateless and
-`snapshot`/`restore` raise `RuntimeError`.
+Only for an environment that supports roll-back. Without this table, the environment is stateless, and `snapshot` and `restore` raise `RuntimeError`.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `kind` | `"sqlite"` | `"sqlite"` | State backend. Only SQLite is supported today. |
-| `paths` | list[str] | `[]` | The database files to capture and restore (one snapshot covers all of them). |
+| `kind` | `"sqlite"` | `"sqlite"` | The state backend. Only SQLite is supported |
+| `paths` | list[str] | `[]` | The database files to capture and restore, all in one snapshot |
 
-## Worked example — ClawsBench
+## Two topologies
 
-`benchmarks/clawsbench/environment.toml` — the internal-dogfood stateful
-multi-service benchmark (mock Gmail / Slack / Calendar / Docs / Drive):
+```mermaid
+flowchart LR
+  subgraph claws["ClawsBench: BenchFlow starts the services"]
+    a1["Agent"] -->|localhost:9001-9005| s1["gmail, slack, gcal,<br/>gdoc, gdrive"]
+  end
+  subgraph chi["chi-bench: the image starts its own"]
+    a2["Agent"] -->|localhost:8023| s2["Entrypoint services"]
+  end
+```
+
+### ClawsBench
+
+`benchmarks/clawsbench/environment.toml`: mock Gmail, Slack, Calendar, Docs and Drive, started by BenchFlow.
 
 ```toml
 [environment]
@@ -105,18 +114,11 @@ port    = 9001
 # ... slack (9002), gcal (9003), gdoc (9004), gdrive (9005)
 ```
 
-One manifest serves the whole benchmark even though smolclaws builds a
-per-task image carrying only a subset of the services: `ManifestEnvironment`
-probes each service's entry point with `--help` and starts only the services
-whose package is actually installed in this per-task image.
+One manifest serves the whole benchmark, though each task's image carries only some of the services. `ManifestEnvironment` probes each service's command with `--help` and starts only those installed in that image.
 
-## Worked example — chi-bench
+### chi-bench
 
-`benchmarks/chi-bench/environment.toml` — the *other* topology, and the
-external proof that a heavy environment onboards untouched. chi-bench is a
-~25k-LOC healthcare simulator that ships **one** ready-to-run image whose
-entrypoint starts its own services, so the manifest declares no
-`[[services]]`:
+`benchmarks/chi-bench/environment.toml`: a hospital simulator in one image whose entrypoint starts its own services, so the manifest declares none.
 
 ```toml
 [environment]
@@ -139,99 +141,83 @@ timeout_sec = 120
 keys = ["ANTHROPIC_API_KEY"]
 ```
 
-This ~25-line manifest is the *entire* framework-integration surface:
-chi-bench's image, Dockerfile, and entrypoint are unmodified, and the ~920
-LOC of Harbor coupling it previously carried collapses into the manifest.
-ClawsBench (`base_image` + framework-started `[[services]]`) and chi-bench
-(`image` + `owns_lifecycle = true`) are the two topologies behind one
-contract. See [`benchmarks/chi-bench/README.md`](../benchmarks/chi-bench/README.md)
-for the field-by-field mapping.
+The image, its Dockerfile and its entrypoint are unchanged. See [`benchmarks/chi-bench/README.md`](https://github.com/benchflow-ai/benchflow/blob/main/benchmarks/chi-bench/README.md) for the field mapping.
 
 ## How it runs
 
-`ManifestEnvironment` runs the **in-sandbox topology** (the architecture's
-core): the services run inside the rollout's own sandbox, so the agent
-reaches them on `localhost`. During a rollout:
+The services run inside the trial's own sandbox, so the agent reaches them on `localhost`. During a trial:
 
-1. `Rollout.start()` provisions the environment — starts the declared
-   services inside the sandbox.
-2. It gates on `readiness()` — the agent never runs before the environment
-   is healthy.
-3. `Rollout.cleanup()` tears the environment down.
-
-Run one task or a task directory against an environment manifest with
-`bench eval run --tasks-dir ...`. `--environment-manifest` applies the
-Environment-plane manifest to every rollout in the Job pipeline.
+1. `Rollout.start()` starts the declared services inside the sandbox.
+2. It waits for `readiness()`. The agent never starts before the environment is healthy.
+3. `Rollout.cleanup()` stops the environment.
 
 ```bash
 # one task
-bench eval run --tasks-dir benchmarks/clawsbench/tasks/<task> \
+bench run benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 
-# task directory
-bench eval run --tasks-dir benchmarks/clawsbench/tasks \
-  --environment-manifest benchmarks/clawsbench/environment.toml \
+# chi-bench
+bench run benchmarks/chi-bench/tasks/<task> \
+  --environment-manifest benchmarks/chi-bench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 ```
 
-YAML configs may declare the same seam with ``environment_manifest:
-<path>`` at the top level so the batch run is reproducible from disk.
+A [run config](./jobs/configs.md) takes the same setting as `environment_manifest: <path>`, so the run can be repeated from disk.
 
-A task can also pin its own manifest in `task.md` frontmatter
-(`benchflow.environment.manifest: <path>`, resolved relative to the task
-directory). An explicit per-run binding always wins: `--state` beats
-`--environment-manifest`, and either flag beats the frontmatter pin, which
-applies only when no flag is given.
+## Which manifest a run uses
 
-`--environment-manifest` is distinct from `--sandbox`: the sandbox is *where*
-it runs (the Sandbox plane); the environment manifest is *the world* (the
-Environment plane).
+| Source | Wins over |
+|---|---|
+| `--state` | Everything below. It takes inline JSON with an optional tool subset (`{"name": "env0", "tools": ["gmail", "gcal"]}`), a `name@version`, or a manifest path |
+| `--environment-manifest` (or `environment_manifest:` in a config) | The task's own pin |
+| The task's pin, `benchflow.environment.manifest: <path>` in `task.md` frontmatter, relative to the task folder | Nothing; it applies only when no flag is given |
 
 ## Registry (`name@version`)
 
-`--environment-manifest` (and `--state`) also accept a **registry spec**
-instead of a file path: `name@version`, or a bare `name`, resolved by
-[`_utils/env_registry.py`](../src/benchflow/_utils/env_registry.py). The
-registry is just a directory of manifest files:
+`--environment-manifest` and `--state` also take a registry name instead of a path: `name@version`, or a bare `name`. The registry is a folder of manifest files:
 
 ```
 <registry>/<name>@<version>.toml   # a pinned environment version
 <registry>/<name>.toml             # optional default for a bare <name>
 ```
 
-`.yaml` / `.yml` work too. A bare `name` resolves to `<name>.toml` when
-present, else the highest-sorting pinned version. Every resolution is
-content-addressed (`env_hash = sha256(manifest bytes)`) so a run records
-exactly which environment it bound.
+`.yaml` and `.yml` work too. A bare `name` resolves to `<name>.toml` when it exists, else to the highest-sorting pinned version.
 
-Which directory is the registry:
+Every resolution is content-addressed (`env_hash = sha256(manifest bytes)`), so a run records exactly which environment it used.
 
-1. **`$BENCHFLOW_ENV_REGISTRY`**, when set — any local directory of
-   `name@version.toml` files. It wins entirely: names it does not contain do
-   not fall back to the built-in registry.
-2. **The built-in registry** otherwise — the pinned manifests shipped inside
-   the `benchflow` wheel
-   ([`src/benchflow/environment/_registry/`](../src/benchflow/environment/_registry)):
-   [`env0@prod.toml`](../src/benchflow/environment/_registry/env0@prod.toml)
-   and
-   [`env0@outage.toml`](../src/benchflow/environment/_registry/env0@outage.toml).
-   A bare `pip install benchflow` resolves these with no checkout and no env
-   vars.
+| Registry | When |
+|---|---|
+| `$BENCHFLOW_ENV_REGISTRY` | When set. It wins entirely: names it does not hold do not fall back to the built-in one |
+| The built-in registry, inside the `benchflow` wheel ([`src/benchflow/environment/_registry/`](https://github.com/benchflow-ai/benchflow/blob/main/src/benchflow/environment/_registry)) | Otherwise. It ships [`env0@prod`](https://github.com/benchflow-ai/benchflow/blob/main/src/benchflow/environment/_registry/env0@prod.toml) and [`env0@outage`](https://github.com/benchflow-ai/benchflow/blob/main/src/benchflow/environment/_registry/env0@outage.toml), which work on a plain `pip install benchflow` |
 
 ```bash
-# works on a bare pip install — no $BENCHFLOW_ENV_REGISTRY needed
-bench eval run --tasks-dir <tasks> --environment-manifest env0@prod ...
+# works on a plain pip install
+bench run <tasks> --environment-manifest env0@prod ...
 
-# override with your own registry directory
+# your own registry folder
 export BENCHFLOW_ENV_REGISTRY=$PWD/env-registry
-bench eval run --tasks-dir <tasks> --environment-manifest myenv@v1 ...
+bench run <tasks> --environment-manifest myenv@v1 ...
 ```
+
+## Roll-back: snapshot and restore
+
+For a manifest with an `[environment.state]` table, `snapshot()` copies each declared SQLite file with `sqlite3 .backup` (a consistent online backup) into a folder inside the sandbox. `restore(snap)` copies them back over the live files.
+
+[Branching](./jobs/branching.md) uses this: `--snapshot-layers environment` quiesces the agent and services, restores a snapshot, and runs another child from it.
+
+## Reset
+
+`reset` returns the environment to its per-task baseline, so it can be reused for a fresh episode without a new sandbox. (`restore` instead rolls back to any snapshot.)
+
+| Manifest | What `reset` does |
+|---|---|
+| With `[environment.state]` | At start, BenchFlow captures a baseline. `reset` stops the services it started, restores the baseline and starts them again |
+| `owns_lifecycle = true` | Nothing: BenchFlow cannot restart services the entrypoint owns. Recycle the container for a hard reset |
 
 ## Exporting for training
 
-A scored rollout's trajectory exports to the Verifiers / ORS dataset format
-that prime-rl ingests — `benchflow.trajectories.export`:
+A scored trajectory exports to the Verifiers dataset format that prime-rl reads:
 
 ```python
 from benchflow.trajectories.export import (
@@ -249,34 +235,14 @@ record = trajectory_to_verifiers_record(
 export_trajectories_to_jsonl([record], "dataset.jsonl")
 ```
 
-Each line is one record: `prompt`, `completion`, `reward`, `metrics`,
-`is_completed`, `is_truncated`, `example_id`, `info` — the shape pinned
-against the Verifiers `RolloutOutput` type.
+Each line is one record: `prompt`, `completion`, `reward`, `metrics`, `is_completed`, `is_truncated`, `example_id`, `info`. The shape follows Verifiers' `RolloutOutput` type.
 
-## Roll-back — `snapshot` / `restore`
+## Not supported yet
 
-`snapshot` / `restore` are **real**. For an environment that declares an
-`[environment.state]` table, `snapshot()` copies each declared SQLite file
-with `sqlite3 .backup` (a consistent online backup) into a per-snapshot
-directory inside the sandbox, and `restore(snap)` copies the captured files
-back over the live paths. This is the substrate `Rollout.branch()` runs on:
-a branch quiesces the agent and services, restores a snapshot, and explores
-an alternative continuation. An environment with no `[environment.state]`
-table is stateless — `snapshot`/`restore` raise `RuntimeError`.
+Services shared across sandboxes, with host-exposed ports, are not supported. Every trial runs its own services in its own sandbox.
 
-## Reset — `reset`
+## Next steps
 
-`reset` returns the environment to the per-task baseline so it can be reused
-for a fresh episode without tearing down the sandbox (distinct from
-`restore`, which rolls back to an arbitrary snapshot). For an environment
-that declares an `[environment.state]` table, `provision` captures a
-baseline; `reset` then stops the framework-started services, restores the
-baseline, and restarts the services. For an `owns_lifecycle = true` manifest
-the framework cannot restart entrypoint-owned services; `reset` is then a
-no-op (and the host must recycle the container for a hard reset).
-
-## Not yet implemented
-
-`ManifestEnvironment` does not exercise:
-
-- **Sidecar / shared-fleet topology** — host-exposed ports, `AccountBroker`.
+- Run a manifest benchmark: [Benchmarks](./datasets/benchmarks.md).
+- Let the manifest forward your keys: [Environment variables](./jobs/environment-variables.md).
+- Branch from saved database state: [Branching](./jobs/branching.md).

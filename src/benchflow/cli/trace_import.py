@@ -21,6 +21,9 @@ from rich.table import Table
 
 from benchflow.cli._shared import print_error
 
+# What --from-file takes.
+_TRACE_FILE_NEXT = "pass a JSONL trace file to --from-file"
+
 console = Console()
 
 
@@ -104,7 +107,9 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         ] = None,
         author: Annotated[
             str,
-            typer.Option("--author", help="Author name for task.toml"),
+            typer.Option(
+                "--author", help="Author name written into each generated task"
+            ),
         ] = "benchflow-traces",
         task_format: Annotated[
             str,
@@ -120,10 +125,10 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
     ) -> None:
         """Generate benchmark tasks from agent traces.
 
-        Exactly one source flag (``--from-local``, ``--from-file``, or
-        ``--from-hf``) is required.
+        Exactly one source flag (--from-local, --from-file or --from-hf) is
+        required.
 
-        Examples::
+        Examples:
 
             bench tasks generate --from-local
             bench tasks generate --from-local --project my-repo --limit 5
@@ -132,23 +137,35 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         """
         sources = sum([from_local, from_file is not None, from_hf is not None])
         if sources == 0:
-            print_error("Specify a source: --from-local, --from-file, or --from-hf")
-            raise typer.Exit(1)
+            print_error(
+                "Specify a source",
+                next_step="pass --from-local, --from-file or --from-hf",
+            )
+            raise typer.Exit(2)
         if sources > 1:
-            print_error("Only one source allowed at a time")
-            raise typer.Exit(1)
+            print_error(
+                "Only one source allowed at a time",
+                next_step="pass one of --from-local, --from-file and --from-hf",
+            )
+            raise typer.Exit(2)
 
         # --outcome is an equality filter; an unrecognized value would silently
         # match nothing and exit 0, hiding a typo. Reject it up front against the
         # set the help text advertises.
         if outcome is not None and outcome not in {"success", "failure", "unknown"}:
             print_error(
-                f"Invalid --outcome {outcome!r}; expected one of: "
-                "success, failure, unknown"
+                f"Invalid --outcome {outcome!r}",
+                next_step="pass --outcome success, failure or unknown",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
 
         if from_local:
+            if projects_dir is not None and not projects_dir.is_dir():
+                print_error(
+                    f"Not a directory: {projects_dir}",
+                    next_step="pass an existing projects directory to --projects-dir",
+                )
+                raise typer.Exit(2)
             traces = _load_local(projects_dir, project_filter, limit)
         elif from_file is not None:
             traces = _load_file(from_file, format)
@@ -161,7 +178,11 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             traces = traces[:limit]
 
         if not traces:
-            console.print("[yellow]No traces found.[/yellow]")
+            print_error(
+                "No traces found.",
+                next_step="check the source; `bench tasks list-sources` lists the "
+                "known --from-hf datasets",
+            )
             raise typer.Exit(1)
 
         console.print(f"Loaded {len(traces)} trace(s)")
@@ -189,14 +210,20 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         from benchflow.traces.task_gen import generate_tasks_from_traces
 
         if task_format not in ("task-md", "legacy"):
-            print_error("--task-format must be task-md or legacy")
-            raise typer.Exit(1)
+            print_error(
+                f"--task-format {task_format!r} is not a format",
+                next_step="pass --task-format task-md or legacy",
+            )
+            raise typer.Exit(2)
 
         if output_dir.exists() and not output_dir.is_dir():
             # An existing --output *file* otherwise makes the per-task mkdir raise
             # a raw NotADirectoryError deep inside generation.
-            print_error(f"--output {output_dir} is not a directory")
-            raise typer.Exit(1)
+            print_error(
+                f"--output {output_dir} is not a directory",
+                next_step="pass a folder (new or existing) to --output",
+            )
+            raise typer.Exit(2)
 
         results = generate_tasks_from_traces(
             traces,
@@ -212,9 +239,9 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             # every trace was filtered by --min-steps/--outcome. Either way, don't
             # report a green "Generated 0 tasks" success; signal it so a scripted
             # caller notices nothing was produced.
-            console.print(
-                "[yellow]No tasks generated — no matching traces "
-                "(check --min-steps/--outcome).[/yellow]"
+            print_error(
+                "No tasks generated — no matching traces.",
+                next_step="loosen --min-steps or --outcome",
             )
             raise typer.Exit(1)
 
@@ -274,14 +301,14 @@ def _load_file(path: Path, format: str) -> list:
     )
 
     if not path.exists():
-        print_error(f"File not found: {path}")
-        raise typer.Exit(1)
+        print_error(f"File not found: {path}", next_step=_TRACE_FILE_NEXT)
+        raise typer.Exit(2)
     if not path.is_file():
         # A directory (or other non-file) passes exists() but makes the format
         # sniff's path.open() raise IsADirectoryError. Reject it with a clean
         # message instead of a traceback.
-        print_error(f"Not a file (expected a JSONL trace file): {path}")
-        raise typer.Exit(1)
+        print_error(f"Not a file: {path}", next_step=_TRACE_FILE_NEXT)
+        raise typer.Exit(2)
 
     detected_format = format
     if format == "auto":
@@ -295,7 +322,10 @@ def _load_file(path: Path, format: str) -> list:
     elif detected_format == "claude-messages":
         return _parse_hf_messages_file(path)
     else:
-        print_error(f"Unknown format: {detected_format}")
+        print_error(
+            f"Unknown format: {detected_format}",
+            next_step="pass --format auto, claude-code, opentraces or claude-messages",
+        )
         raise typer.Exit(1)
 
 
@@ -318,8 +348,6 @@ def _load_hf(dataset: str, format: str | None, split: str, max_rows: int) -> lis
 
 def _parse_hf_messages_file(path: Path) -> list:
     """Parse a JSONL file of HuggingFace ``claude-messages`` rows."""
-    import json as _json
-
     from benchflow.traces.huggingface import _parse_claude_messages_row
 
     traces = []
@@ -329,8 +357,8 @@ def _parse_hf_messages_file(path: Path) -> list:
             if not line:
                 continue
             try:
-                row = _json.loads(line)
-            except _json.JSONDecodeError:
+                row = json.loads(line)
+            except json.JSONDecodeError:
                 continue
             if isinstance(row, dict):
                 parsed = _parse_claude_messages_row(row, idx=i)

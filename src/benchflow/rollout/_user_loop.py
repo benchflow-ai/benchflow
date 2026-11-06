@@ -25,11 +25,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow._types import Role
+from benchflow.checkpoints import after_prompt
 from benchflow.contracts import RoundResult
 from benchflow.loop_strategies import LoopStrategyUser
 from benchflow.rollout._results import (
@@ -47,9 +49,11 @@ from benchflow.scenes import (
 )
 from benchflow.skill_policy import SKILL_MODE_SELF_GEN
 from benchflow.trajectories.tree import Step
+from benchflow.trust.state import IngressKind, admit
 from benchflow.usage_tracking import is_token_usage_available
 
 if TYPE_CHECKING:
+    from benchflow._utils.reachable_write import ReachablePath
     from benchflow.rollout import Rollout
 
 logger = logging.getLogger(__name__)
@@ -64,10 +68,28 @@ def _round_tokens(rollout: Rollout) -> int | None:
     trusted-source check keeps uninstrumented paths reporting ``None`` rather
     than a spurious ``0`` — preserving the cost-curve's best-effort contract.
     """
-    metrics = getattr(rollout, "_native_usage_metrics", None)
-    if metrics and is_token_usage_available(metrics):
+    metrics = rollout._native_usage_metrics
+    if is_token_usage_available(metrics):
         return metrics.get("total_tokens")
     return None
+
+
+def _host_solution(task: Any) -> str | None:
+    """The task's own solve.sh as text, read on the host, or None."""
+    path = getattr(getattr(task, "paths", None), "solve_path", None)
+    try:
+        text = path.read_text(encoding="utf-8") if path is not None else ""
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text.strip() or None
+
+
+def skill_export_root(target: Path) -> ReachablePath:
+    """Hold the user-selected skill export folder's parent as a destination root."""
+    from benchflow._utils.reachable_write import pin_destination
+
+    absolute = Path(os.path.abspath(target))
+    return pin_destination(absolute.parent) / absolute.name
 
 
 async def _export_generated_skills(rollout: Rollout) -> None:
@@ -77,13 +99,20 @@ async def _export_generated_skills(rollout: Rollout) -> None:
     — the ``name -> body`` dict a continual-learning Job commits to its
     persistent LearnerStore (capability 5).
 
-    Retries transient download failures up to 3 times (guards ENG-147).
+    Retries transient download failures up to 3 times.
     """
     export_target = rollout._config.export_generated_skills_to
     if export_target is None:
         return
-    target = Path(export_target)
-    target.mkdir(parents=True, exist_ok=True)
+    # TASKMD-R14 B-M2: the export's own root is held before the agent ran
+    # (Rollout setup); a direct caller pins it here. Sandboxes still receive
+    # the plain path (their download contract); private_download selects the
+    # held root from it, and the read-back goes through the capability.
+    held = getattr(rollout, "_skill_export_root", None) or skill_export_root(
+        Path(export_target)
+    )
+    held.mkdir(parents=True, exist_ok=True)
+    target = Path(os.path.abspath(export_target))
 
     last_err: Exception | None = None
     for attempt in range(3):
@@ -108,7 +137,7 @@ async def _export_generated_skills(rollout: Rollout) -> None:
 
     from benchflow.learner_skills import capture_skills
 
-    rollout._evolved_skills = capture_skills(target)
+    rollout._evolved_skills = capture_skills(held)
     if (
         rollout._config.recorded_skill_mode == SKILL_MODE_SELF_GEN
         and not rollout._evolved_skills
@@ -147,8 +176,9 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
             sorted(path.parent.name for path in local_source.glob("*/SKILL.md"))
         )
         remote_source = f"/skills/{_safe_skill_name(scene_name)}"
+        admission = admit(rollout._env, "main", IngressKind.USER_CONTEXT)
         await _ensure_sandbox_dir(rollout._env, Path(remote_source).parent)
-        await rollout._env.upload_dir(local_source, remote_source)
+        await rollout._env.upload_dir(local_source, remote_source, admission=admission)
     elif source.startswith("/"):
         remote_source = source
     else:
@@ -177,7 +207,7 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
     """Execute already-compiled rollout Steps in declaration order."""
     current_role_key: tuple[Any, ...] | None = None
     try:
-        for step in steps:
+        for number, step in enumerate(steps, start=1):
             role = scene_step_role(step)
             role_key = (
                 step.data.get("scene_index"),
@@ -202,6 +232,8 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
                 await rollout.connect_as(role)
                 current_role_key = role_key
             await rollout.execute(prompts=[scene_step_prompt(step)])
+            # Opt-in retained snapshot (RolloutConfig.checkpoints).
+            await after_prompt(rollout, number)
     finally:
         if current_role_key is not None:
             await rollout.disconnect()
@@ -321,27 +353,15 @@ async def _run_user_loop(rollout: Rollout) -> None:
             else ("Solve the task described in /app/instruction.md")
         )
 
-        # Oracle access: read /solution before the agent runs, then remove it
+        # Oracle access: the user reads the task's solve.sh on the host. The
+        # sandbox never holds the solution while an agent runs, under any
+        # name (/oracle_backup included): an agent run as root could read it
+        # (GAP-ORACLE-READABLE).
         solution: str | None = None
         if cfg.oracle_access:
-            cat = await rollout._env.exec(
-                "cat /oracle/solve.sh 2>/dev/null || cat /solution/solve.sh 2>/dev/null || true",
-                user="root",
-                timeout_sec=10,
-            )
-            solution = (cat.stdout or "").strip() or None
+            solution = _host_solution(rollout._task)
 
         await user.setup(instruction, solution)
-
-        # Hide oracle files from agent — move rather than delete so the
-        # final verify() can still access them if the verifier needs them.
-        if cfg.oracle_access:
-            await rollout._env.exec(
-                "mv /oracle /oracle_backup 2>/dev/null || true; "
-                "mv /solution /solution_oracle_backup 2>/dev/null || true",
-                user="root",
-                timeout_sec=10,
-            )
 
         round_result: RoundResult | None = None
         last_role = scene_step_role(steps[0])
@@ -379,25 +399,9 @@ async def _run_user_loop(rollout: Rollout) -> None:
             )
 
             # Soft verify: run tests after agent disconnected but before
-            # next round. Temporarily restore /solution so the verifier can
-            # access it, then re-hide before the next agent round.
-            if cfg.oracle_access:
-                await rollout._env.exec(
-                    "mv /oracle_backup /oracle 2>/dev/null || true; "
-                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
-                    user="root",
-                    timeout_sec=10,
-                )
-            try:
-                rewards, verifier_output, verifier_error = await rollout.soft_verify()
-            finally:
-                if cfg.oracle_access:
-                    await rollout._env.exec(
-                        "mv /oracle /oracle_backup 2>/dev/null || true; "
-                        "mv /solution /solution_oracle_backup 2>/dev/null || true",
-                        user="root",
-                        timeout_sec=10,
-                    )
+            # next round. Verifiers never read the solution, so nothing is
+            # restored for them while the agent's processes are alive.
+            rewards, verifier_output, verifier_error = await rollout.soft_verify()
 
             handoff_from_role = (
                 handoff_from if handoff_from and handoff_from != role.name else None

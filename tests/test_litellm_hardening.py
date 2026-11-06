@@ -7,7 +7,9 @@ sandbox-orchestration, Bedrock-patch, and embedded-callback-logger code paths.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +25,8 @@ from benchflow.providers.litellm_logging import (
     trajectory_from_litellm_callback_log,
 )
 from benchflow.providers.runtime import ensure_litellm_runtime
+from benchflow.sandbox.env_layers import PROXY_LAYER_VENV
+from tests._root_stand_in import run_sh
 
 
 class _FakeHostServer:
@@ -246,6 +250,111 @@ async def test_await_log_stable_bails_at_deadline_while_growing():
     assert counter["v"] > 0
 
 
+@pytest.mark.asyncio
+async def test_await_log_stable_ends_early_when_no_request_came():
+    """Guards py8/perf-trial: an empty callback log held every trial's
+    teardown for the full deadline (12 s of run-08's 13.9 s) when the agent
+    made no call through the proxy. With no request marked, a quiet empty
+    log is final."""
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await runtime_mod._await_log_stable(
+        lambda: -1, deadline_s=5.0, quiet_s=0.3, requested=lambda: False
+    )
+    assert loop.time() - start < 2.0
+
+
+@pytest.mark.asyncio
+async def test_await_log_stable_waits_for_a_requested_first_record():
+    # A request reached the proxy but its record has not landed: keep the
+    # old wait (to the deadline) for it.
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await runtime_mod._await_log_stable(
+        lambda: -1, deadline_s=0.8, quiet_s=0.2, requested=lambda: True
+    )
+    assert loop.time() - start >= 0.8
+
+
+@pytest.mark.asyncio
+async def test_await_log_stable_without_marks_keeps_waiting_on_an_empty_log():
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await runtime_mod._await_log_stable(lambda: 0, deadline_s=0.8, quiet_s=0.2)
+    assert loop.time() - start >= 0.8
+
+
+@pytest.mark.asyncio
+async def test_host_proxy_stops_at_once_when_no_request_reached_it(tmp_path):
+    """Guards py8/perf-trial: the host proxy's stop() took the whole 12 s
+    settle deadline when the agent never called it (run-08's agents call
+    their model past BenchFlow's proxy), on every trial's teardown."""
+    process = runtime_mod.HostLiteLLMProcess(
+        route=SimpleNamespace(),  # type: ignore[arg-type]
+        process=SimpleNamespace(poll=lambda: 0),  # type: ignore[arg-type]
+        runtime_dir=tmp_path / "runtime",
+        endpoint=runtime_mod.LiteLLMEndpoint("http://agent", "http://local"),
+        log_path=tmp_path / "callback.jsonl",
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        session_id="run",
+        agent_name="opencode",
+    )
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await process.stop()
+    assert loop.time() - start < 3.0
+    assert process.trajectory is not None
+
+
+@pytest.mark.asyncio
+async def test_callback_marks_each_request_before_any_upstream_call(
+    tmp_path, monkeypatch
+):
+    """The proxy's pre-call hook writes the mark the host's stop reads
+    (HostLiteLLMProcess._requested), even for a request it refuses."""
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    monkeypatch.setenv("BENCHFLOW_LITELLM_SERVED_MODELS", json.dumps(["served"]))
+    host = SimpleNamespace(log_path=log_path)
+    assert not runtime_mod.HostLiteLLMProcess._requested(host)  # type: ignore[arg-type]
+
+    await logger.async_pre_call_hook(None, None, {"model": "served"}, "acompletion")
+    with pytest.raises(namespace["ModelNotServed"]):  # type: ignore[arg-type]
+        await logger.async_pre_call_hook(
+            None, None, {"model": "not-served"}, "acompletion"
+        )
+
+    mark = Path(f"{log_path}{runtime_mod._REQUEST_MARK_SUFFIX}")
+    # One line per request: its LiteLLM call id, "?" without one (PERF-B).
+    assert mark.read_text() == "?\n?\n"
+    assert runtime_mod.HostLiteLLMProcess._requested(host)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_a_request_leaves_its_mark_beside_the_callback_log(tmp_path, monkeypatch):
+    """The mark, through the callback's pre-call hook alone (no API newer
+    than the hook, so it also runs on the commit before 510d9969): without
+    it the host's stop cannot tell a quiet empty log from a first record on
+    its way, and waits its full deadline."""
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    monkeypatch.setenv("BENCHFLOW_LITELLM_SERVED_MODELS", json.dumps(["served"]))
+
+    await logger.async_pre_call_hook(None, None, {"model": "served"}, "acompletion")  # type: ignore[attr-defined]
+
+    mark = Path(f"{log_path}.requests")
+    assert mark.exists(), "the request left no mark"
+    # PERF-B's mark: the call id, "?" without one.
+    assert mark.read_text() == "?\n"
+
+
 # #
 # Sandbox orchestration: real _start_sandbox_litellm + SandboxLiteLLMProcess   #
 # #
@@ -302,7 +411,9 @@ class _FakeSandbox:
         self.log_content = log_content
         self._started = False
 
-    async def upload_file(self, local_path, remote_path, *, mode=None) -> None:
+    async def upload_file(
+        self, local_path, remote_path, *, mode=None, **_kwargs
+    ) -> None:
         self.uploaded[str(remote_path)] = Path(local_path).read_text()
         self.uploaded_modes[str(remote_path)] = mode
 
@@ -432,7 +543,14 @@ async def test_vertex_sandbox_litellm_has_google_runtime_and_local_adc():
         for command in sandbox.exec_calls
         if "pip install" in command and "litellm" in command
     )
-    assert "google-cloud-aiplatform>=1.133.0,<2.0" in install_command
+    # The Vertex SDK comes from the locked, hashed Vertex set, not a
+    # fresh resolve of a version range.
+    vertex_file = next(
+        path for path in sandbox.uploaded if path.endswith("/litellm-proxy-vertex.txt")
+    )
+    assert f"--require-hashes -r {vertex_file}" in install_command
+    assert "google-cloud-aiplatform>=" not in install_command
+    assert "\ngoogle-cloud-aiplatform==" in sandbox.uploaded[vertex_file]
     adc_path = next(
         path
         for path in sandbox.uploaded
@@ -477,7 +595,7 @@ async def test_vertex_install_failure_cleans_runtime_without_uploading_adc():
         for path in sandbox.uploaded
         if path.endswith("config.yaml")
     )
-    assert f"rm -rf {runtime_dir}" in sandbox.exec_calls
+    assert any(c.endswith(f"&& rm -rf {runtime_dir}") for c in sandbox.exec_calls)
     assert not any(
         path.endswith("application_default_credentials.json")
         for path in sandbox.uploaded
@@ -511,7 +629,7 @@ async def test_sandbox_litellm_stop_imports_usage_and_cleans_up():
     )
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 11
-    assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
+    assert any("&& rm -rf" in call for call in sandbox.exec_calls)
 
 
 @pytest.mark.asyncio
@@ -536,7 +654,7 @@ async def test_sandbox_litellm_startup_failure_tears_down():
         )
 
     # A half-started proxy (provider keys + master_key on disk) must be removed.
-    assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
+    assert any("&& rm -rf" in call for call in sandbox.exec_calls)
 
 
 # #
@@ -769,7 +887,7 @@ async def test_sandbox_litellm_bedrock_preflight_failure_fails_closed():
             agent_name="openhands",
         )
 
-    assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
+    assert any("&& rm -rf" in call for call in sandbox.exec_calls)
 
 
 @pytest.mark.asyncio
@@ -1156,3 +1274,182 @@ async def test_poll_sandbox_health_retries_slow_exec_probe():
     )
 
     assert sandbox.calls == 2
+
+
+def _host_proxy(tmp_path):
+    return runtime_mod.HostLiteLLMProcess(
+        route=SimpleNamespace(),  # type: ignore[arg-type]
+        process=SimpleNamespace(poll=lambda: 0),  # type: ignore[arg-type]
+        runtime_dir=tmp_path / "runtime",
+        endpoint=runtime_mod.LiteLLMEndpoint("http://agent", "http://local"),
+        log_path=tmp_path / "callback.jsonl",
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        session_id="run",
+        agent_name="opencode",
+    )
+
+
+@pytest.mark.asyncio
+async def test_host_proxy_stops_at_once_when_every_request_is_logged(
+    tmp_path, monkeypatch
+):
+    """Guards py8/perf-exec (PERF-B): with requests, the stop waited for the
+    callback log to stay unchanged for 0.5 s, polled every 0.2 s (0.6-0.8 s
+    of every real-agent trial's teardown). Once every request's call id is
+    marked as logged, the log is final at once. Driven through the real
+    callback: a success and a failure, each written whole, then marked."""
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    start, end = datetime(2026, 10, 19, 8, 0, 0), datetime(2026, 10, 19, 8, 0, 1)
+    for call_id in ("call-a", "call-b"):
+        await logger.async_pre_call_hook(
+            None, None, {"model": "m", "litellm_call_id": call_id}, "acompletion"
+        )
+    host = _host_proxy(tmp_path)
+    await logger.async_log_success_event(
+        {"model": "m", "litellm_call_id": "call-a"}, {"id": "r"}, start, end
+    )
+    await logger.async_log_failure_event(
+        {"model": "m", "litellm_call_id": "call-b", "exception": ValueError("x")},
+        None,
+        start,
+        end,
+    )
+    assert len(log_path.read_text().splitlines()) == 2
+
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    await host.stop()
+    assert loop.time() - began < 0.3
+    assert host._all_logged()
+
+
+@pytest.mark.asyncio
+async def test_host_proxy_keeps_the_settle_wait_for_an_unlogged_request(tmp_path):
+    """A request whose record has not landed (or that has no call id) keeps
+    the old wait: the stop never cuts off a record."""
+    host = _host_proxy(tmp_path)
+    (tmp_path / "callback.jsonl").write_text('{"event": "success"}\n')
+    for requests, logged in (
+        ("call-a\ncall-b\n", "call-a\n"),
+        ("call-a\n?\n", "call-a\n"),
+        ("call-a\n", "call-a"),  # the mark is still being written
+        ("", ""),
+    ):
+        (tmp_path / "callback.jsonl.requests").write_text(requests)
+        (tmp_path / "callback.jsonl.logged").write_text(logged)
+        assert not host._all_logged()
+    (tmp_path / "callback.jsonl.requests").write_text("call-a\ncall-b\n")
+    (tmp_path / "callback.jsonl.logged").write_text("call-a\n")
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    await runtime_mod._await_log_stable(
+        host._log_size,
+        deadline_s=5.0,
+        quiet_s=0.5,
+        requested=host._requested,
+        logged=host._all_logged,
+    )
+    assert loop.time() - began >= 0.5
+
+
+# FF-install-C11: root runs the sandbox proxy's Python after earlier roles had
+# the image's working folder. None of it may import from that folder.
+
+
+def _first_args(command: str, python: str) -> list[str]:
+    """The argument after each run of ``python`` (not ``--python <it>``)."""
+    found = []
+    for match in re.finditer(re.escape(python) + r"'?\s+(\S+)", command):
+        before = command[: match.start()].rstrip()
+        # Not ``--python <it>`` or a test such as ``[ -x <it> ]``.
+        if not before.endswith(("--python", "[ -x")):
+            found.append(match.group(1))
+    return found
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pythonpath", [None, "", "/app"])
+async def test_sandbox_proxy_root_python_never_reads_the_working_folder(pythonpath):
+    """Guards a0c81002 and f2a5ed5f: an empty or inherited PYTHONPATH entry,
+    ``python -``, ``python -c`` and a launcher without -I each let root's
+    proxy import the workspace (FF-install-C11, FF-install-C14)."""
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    agent_env = {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://x.invalid/v1"}
+    if pythonpath is not None:
+        agent_env["PYTHONPATH"] = pythonpath
+    sandbox = _FakeSandbox()
+    await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env=agent_env,
+        session_id="s",
+        agent_name="openhands",
+    )
+    launch_path = next(p for p in sandbox.uploaded if p.endswith("launch_config.json"))
+    runtime_dir = launch_path.rpartition("/")[0]
+    env = json.loads(sandbox.uploaded[launch_path])["env"]
+    assert env["PYTHONPATH"] == runtime_dir
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert not {k for k in env if k.startswith("PYTHON")} - {
+        "PYTHONPATH",
+        "PYTHONNOUSERSITE",
+        "PYTHONSAFEPATH",
+        "PYTHON_DOTENV_DISABLED",
+    }
+    launch = next(call for call in sandbox.exec_calls if "launcher.py" in call)
+    # Root's plumbing route (exec with no user), the runtime folder made
+    # root's and checked first, the launch from inside it.
+    assert launch.startswith(f"chown -R 0:0 -- {runtime_dir} && ")
+    assert f" && cd {runtime_dir} && " in launch
+    python = f"{runtime_dir}/venv/bin/python"
+    install = next(c for c in sandbox.exec_calls if "import litellm" in c)
+    probe = next(c for c in sandbox.exec_calls if "urllib.request" in c)
+    assert _first_args(install, python) == ["-I"]
+    assert _first_args(probe, python) == ["-I"]
+    assert install.lstrip().startswith("set -eu\n")
+    assert "PYTHON" not in install.split("UV=", 1)[0]
+    assert _first_args(launch, python) == ["-I"]
+    layer = runtime_mod.proxy_layer_recipe(runtime_mod.proxy_install("minimax"))
+    assert _first_args(layer.install_cmd, f"{PROXY_LAYER_VENV}/bin/python") == ["-I"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_proxy_health_probe_ignores_planted_modules(tmp_path):
+    """Guards a0c81002: the probe ran as root importing the workspace's urllib."""
+    import sys
+
+    workspace = tmp_path / "workspace"
+    (workspace / "urllib").mkdir(parents=True)
+    marker = tmp_path / "planted-module-ran"
+    planted = f"open({str(marker)!r}, 'w').write('dummy')\n"
+    (workspace / "urllib/__init__.py").write_text(planted)
+
+    class _Here:
+        async def exec(self, command, timeout_sec=None, user=None):
+            done = run_sh(
+                command,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return _ExecResult(done.returncode, done.stdout, done.stderr)
+
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        await runtime_mod._poll_sandbox_health(
+            _Here(),
+            python=sys.executable,
+            port=9,
+            stderr_path=str(tmp_path / "none.log"),
+            deadline_s=0.3,
+        )
+    assert not marker.exists(), "root's proxy probe imported a workspace module"

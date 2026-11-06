@@ -5,7 +5,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from .payload import _build_acp_payload, _safe_json
+from .payload import _branch_child_payloads, _build_acp_payload, _safe_json
 
 _PAYLOAD_PLACEHOLDER = "__BENCHFLOW_PAYLOAD__"
 _TITLE_PLACEHOLDER = "__BENCHFLOW_TITLE__"
@@ -95,8 +95,14 @@ def _render_acp_trajectory(
     Trajectory content is untrusted input: it travels as JSON data (all ``<``
     characters escaped for the HTML script-data tokenizer) and the template
     renders it exclusively via ``textContent``.
+
+    A branched rollout also embeds each branch child's payload, keyed by its
+    ``<fork id>/<node id>`` ref, so the Lineage tab's ``?branch=`` links work
+    on this server-less page too.
     """
     payload = _build_acp_payload(rollout_dir, prompts)
-    return _render_shell(
-        rollout_dir.name, {"mode": "single", "payload": payload.to_payload()}
-    )
+    boot: dict[str, Any] = {"mode": "single", "payload": payload.to_payload()}
+    branches = _branch_child_payloads(rollout_dir, payload.lineage)
+    if branches:
+        boot["branches"] = branches
+    return _render_shell(rollout_dir.name, boot)

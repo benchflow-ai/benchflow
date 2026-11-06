@@ -12,6 +12,7 @@ The suite self-skips when playwright or its chromium binary is unavailable,
 so a plain ``pytest tests/`` stays runnable without ``playwright install``.
 """
 
+import asyncio
 import json
 import re
 import socket
@@ -225,6 +226,147 @@ def edge_server(tmp_path_factory) -> str:
         _result(long_name, "harness-" + "h" * 160, long_model, 1.0),
     )
     return _start_server(base)
+
+
+@pytest.fixture(scope="module")
+def attempts_server(tmp_path_factory) -> str:
+    """An Evaluation job: a task that errored once and then passed, a task
+    that passed, and a run that has a trajectory but no result.json yet."""
+    import os
+
+    base = tmp_path_factory.mktemp("browser-attempts-corpus")
+    job = base / "eval-job"
+    say = [{"type": "agent_message", "text": "working"}]
+    now = time.time()
+    first = _rollout(
+        base,
+        "eval-job/gamma__00000001",
+        say,
+        _result(
+            "gamma-task",
+            "claude-code",
+            "sonnet-x",
+            None,
+            error="sandbox create failed",
+            error_category="sandbox_setup",
+        ),
+    )
+    second = _rollout(
+        base,
+        "eval-job/gamma__00000002",
+        say,
+        _result("gamma-task", "claude-code", "sonnet-x", 1.0),
+    )
+    for d, mtime in ((first, now - 100), (second, now - 50)):
+        os.utime(d / "result.json", (mtime, mtime))
+    _rollout(
+        base,
+        "eval-job/delta__00000003",
+        say,
+        _result("delta-task", "claude-code", "sonnet-x", 1.0),
+    )
+    # Still running: a trajectory, no result.json yet.
+    going = job / "delta__00000004" / "trajectory"
+    going.mkdir(parents=True)
+    (going / "acp_trajectory.jsonl").write_text(json.dumps(say[0]))
+    (job / "evaluation.json").write_text("{}")
+    return _start_server(base)
+
+
+SUBAGENT_RUN_ID = "claude/sub__00000001"
+UNSCORED_RUN_ID = "verify/wedge__00000001"
+
+
+def _structure_corpus(base: Path) -> Path:
+    """Subagent, verifier-recovery and branched runs for the structure tests."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tests.trajectories.test_viewer_lineage import branched_rollout
+
+    def tool(call_id, parent=None, **extra):
+        event = {
+            "type": "tool_call",
+            "tool_call_id": call_id,
+            "kind": "execute",
+            "title": call_id,
+            "status": "completed",
+            "content": [],
+            **extra,
+        }
+        if parent:
+            event["parent_tool_call_id"] = parent
+        return event
+
+    _rollout(
+        base,
+        SUBAGENT_RUN_ID,
+        [
+            {"type": "user_message", "text": "use one child agent"},
+            tool(
+                "toolu_task",
+                kind="think",
+                title="Task",
+                raw_input={"description": "Create child.txt", "prompt": "go"},
+            ),
+            {
+                "type": "agent_message",
+                "text": "child says quokka",
+                "parent_tool_call_id": "toolu_task",
+            },
+            tool("toolu_xxd", "toolu_task", status="failed", title="xxd child.txt"),
+            {"type": "agent_message", "text": "root continues"},
+            {
+                "type": "agent_message",
+                "text": "orphan wombat",
+                "parent_tool_call_id": "toolu_gone",
+            },
+        ],
+        _result("sub-task", "claude-agent-acp", "sonnet-x", 1.0),
+    )
+    unscored = _rollout(
+        base,
+        UNSCORED_RUN_ID,
+        [{"type": "agent_message", "text": "solver finished"}],
+        _result(
+            "wedge-task",
+            "oracle",
+            None,
+            None,
+            verifier_error="[solver-preserved] verifier recovery failed: boom",
+            verifier_error_category="verifier_timeout",
+        ),
+    )
+    attempt = unscored / "verifier-recovery" / "abc123"
+    attempt.mkdir(parents=True)
+    (attempt / "recovery.json").write_text(
+        json.dumps(
+            {
+                "attempt": "verifier-recovery/abc123",
+                "status": "failed",
+                "original_error": "[solver-preserved] verifier_wedge: gone",
+                "error": "verifier crashed: boom",
+                "evidence": "workspace-only",
+                "solver_replayed": False,
+                "publication_error": "OSError: disk full",
+            }
+        )
+    )
+    (unscored / "verification.json").write_text(
+        json.dumps({"attempt": "verifier-recovery/abc123"})
+    )
+    with ThreadPoolExecutor(1) as pool:  # playwright owns this thread's loop
+        pool.submit(asyncio.run, branched_rollout(base / "branched")).result()
+    return base
+
+
+@pytest.fixture(scope="module")
+def structure_base(tmp_path_factory) -> Path:
+    return _structure_corpus(tmp_path_factory.mktemp("browser-structure-corpus"))
+
+
+@pytest.fixture(scope="module")
+def structure_server(structure_base) -> str:
+    return _start_server(structure_base)
 
 
 @pytest.fixture(scope="module")
@@ -505,6 +647,75 @@ def test_run_selection_and_back_preserve_catalog_state(page, server):
     assert page.locator("#backbar").is_visible()
 
 
+def test_run_counts_agree_with_their_number(page, structure_server, tmp_path):
+    """Regression test: the run list read "1 runs"."""
+    page.goto(structure_server)
+    assert page.locator("#ixstats").inner_text().startswith("3 runs")
+    heads = page.locator(".group-head .gstats").all_inner_texts()
+    assert len(heads) == 3 and all(head.startswith("1 run\n") for head in heads)
+    page.fill("#ixsearch", "wedge")
+    assert page.locator("#ixstats").inner_text().startswith("1 / 3 runs")
+
+    _rollout(tmp_path, "job/one__00000001", [], _result("one", "a", "m", 1.0))
+    single = _start_server(tmp_path)
+    page.goto(single)
+    assert page.locator("#ixstats").inner_text().startswith("1 run\n")
+    page.goto(single + "/?run=job/nope__00000000")
+    assert "is not among the 1 discovered run." in page.locator(".errbox").inner_text()
+
+
+def test_group_pass_rate_counts_every_run(page, server):
+    """A group's pass rate counts an unscored run as a fail, and the rate
+    over its scored runs follows with that n; with no unscored run there is
+    one rate.
+
+    Guards the PY8 P4 change (one denominator for pass@k): the head showed
+    pass / scored only, so alpha-task (1 pass, 1 fail, 1 timed out) read 50%.
+    """
+    page.goto(server)
+
+    def stats(task: str) -> list[str]:
+        head = page.locator(".group-head", has_text=task)
+        return head.locator(".gstats > span").all_inner_texts()
+
+    assert stats("alpha-task") == [
+        "3 runs",
+        "1 pass",
+        "1 fail",
+        "1 unscored",
+        "33% of 3 trials",
+        "50% of 2 scored",
+    ]
+    assert stats("beta-task") == ["2 runs", "2 pass", "100%"]
+
+
+def test_group_pass_rate_counts_the_jobs_trials(page, attempts_server):
+    """A superseded attempt and a run with no result are listed, not counted.
+
+    Guards P4-R1-B-1 (round PY8): browse mode lists every folder with a
+    trajectory as a run, so in an Evaluation job whose task errored once and
+    then passed the head read '2 runs · 1 pass · 1 unscored · 50% of runs ·
+    100% of 1 scored' while bench eval metrics said 100% (1 of 1 trials).
+    """
+    page.goto(attempts_server)
+
+    def stats(group: str) -> list[str]:
+        head = page.locator(".group-head", has_text=group)
+        return head.locator(".gstats > span").all_inner_texts()
+
+    assert stats("gamma-task") == [
+        "2 runs",
+        "1 pass",
+        "1 superseded",
+        "100% of 1 trial",
+    ]
+    assert stats("delta-task") == ["1 run", "1 pass", "100%"]
+    assert stats("delta__00000004") == ["1 run", "1 unfinished"]
+    page.locator(".group-head", has_text="gamma-task").click()
+    superseded = page.locator('.runrow[data-run-id="eval-job/gamma__00000001"]')
+    assert "superseded attempt" in superseded.inner_text()
+
+
 def test_error_state_for_unknown_run(page, server):
     """Guards PR #1034 against silently substituting an unknown deep link."""
     page.goto(server + "/?run=job-1/nope__00000000")
@@ -686,6 +897,47 @@ def test_tool_status_class_uses_a_closed_whitelist(page, server):
     assert "2m 0s" in page.locator(".card .tstamp").inner_text()
 
 
+def test_a_notice_renders_as_its_own_card(page, server):
+    """An adapter's session notice is a card of its own, labelled with its
+    severity; the severity picks the card's style from a closed set."""
+    warning = "Model metadata for `gpt-5.4` not found."
+    payload = {
+        "rollout_name": "notices",
+        "meta": {"task_name": "notice task"},
+        "steps": [
+            {
+                "i": 1,
+                "kind": "notice",
+                "severity": "warning",
+                "title": warning,
+                "text": warning,
+            },
+            {
+                "i": 2,
+                "kind": "notice",
+                "severity": "warning injected-class",
+                "title": "odd",
+                "text": "odd",
+            },
+        ],
+    }
+    page.route(
+        "**/api/rollout?*",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)
+        ),
+    )
+    page.goto(server + "/?run=job-1/alpha__aaaa0001")
+    cards = page.locator(".card.k-notice")
+    cards.first.wait_for(state="visible")
+    assert cards.count() == 2
+    assert "sev-warning" in cards.nth(0).get_attribute("class").split()
+    assert cards.nth(0).locator(".klabel").text_content() == "adapter notice · warning"
+    assert warning in cards.nth(0).locator(".body").text_content()
+    odd = cards.nth(1).get_attribute("class").split()
+    assert "sev-info" in odd and "injected-class" not in odd
+
+
 def test_tabs_and_disclosures_are_keyboard_complete(page, server, edge_server):
     """Guards PR #1034 keyboard semantics, labels, and disclosure focus."""
     page.goto(server + "/?run=job-2/beta__bbbb0002")
@@ -806,6 +1058,227 @@ def test_untrusted_content_stays_text(page, server):
     # … and never became elements or executed
     assert page.locator("#view-trace img").count() == 0
     assert fired == []
+
+
+# ── run structure: subagents, assessment, lineage ────────────────────────
+
+
+def _branch_id(structure_base: Path) -> str:
+    return next(
+        run
+        for run in viewer._discover_rollouts(structure_base)
+        if run.endswith("count-files__b1a2c3d4")
+    )
+
+
+def test_subagent_steps_nest_collapsed_under_their_tool_call(page, structure_server):
+    """Guards the timeline against mixing the child attribution fix's attributed child events
+    into the main sequence: they sit collapsed inside the spawning card."""
+    page.goto(structure_server + "/?run=" + SUBAGENT_RUN_ID)
+    page.wait_for_selector("#view-trace .card")
+    top_level = page.locator("#view-trace > .card")
+    assert top_level.count() == 4  # prompt, Task, root message, orphan group
+    spawner = page.locator("#e2")
+    toggle = spawner.locator(".subagent-toggle")
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert "subagent: Create child.txt (2 events)" in toggle.inner_text()
+    nested = spawner.locator(".subtrace #e3")
+    assert nested.count() == 1 and nested.is_hidden()
+    toggle.click()
+    assert nested.is_visible()
+    assert toggle.get_attribute("aria-expanded") == "true"
+
+    group = page.locator('#view-trace > .card[data-kind="subagent"]')
+    assert group.get_attribute("id") == "g1"
+    assert (
+        "unattributed subagent" in group.locator(".klabel").first.inner_text().lower()
+    )
+    assert "toolu_gone" in group.inner_text()
+    assert "not in the capture" in group.inner_text()
+
+
+def test_search_and_anchors_reveal_nested_subagent_events(page, structure_server):
+    """Guards PR #1034's search and #eN anchors for events inside a
+    collapsed subagent trace."""
+    page.goto(structure_server + "/?run=" + SUBAGENT_RUN_ID)
+    page.wait_for_selector("#search")
+    page.fill("#search", "quokka")
+    assert page.locator("#matchinfo").inner_text() == "1 / 1"
+    assert page.locator("#e3").is_visible()
+    page.fill("#search", "wombat")
+    assert page.locator("#matchinfo").inner_text() == "1 / 1"
+    assert page.locator("#e6").is_visible()
+
+    page.goto(structure_server + "/?run=" + SUBAGENT_RUN_ID + "#e4")
+    page.wait_for_selector("#e4", state="visible")
+    assert page.locator("#e2 .subagent-toggle").get_attribute("aria-expanded") == "true"
+
+
+def test_failed_only_keeps_the_spawning_card_visible(page, structure_server):
+    """Guards PR #1034's Failed-only filter against hiding a failure that
+    happened inside a subagent."""
+    page.goto(structure_server + "/?run=" + SUBAGENT_RUN_ID)
+    page.wait_for_selector("#e2")
+    page.locator("#toolbar button", has_text="Failed only").click()
+    assert page.locator("#e2").is_visible()
+    assert page.locator("#e5").is_hidden()
+    page.locator("#e2 .subagent-toggle").click()
+    assert page.locator("#e4").is_visible()
+    assert page.locator("#e3").is_hidden()
+
+
+def test_subagent_spawn_badge_reads_agent(page, structure_server):
+    """Regression test: the Task card that spawns a subagent
+    rendered the badge ``think``."""
+    page.goto(structure_server + "/?run=" + SUBAGENT_RUN_ID)
+    page.wait_for_selector("#e2 .kindbadge")
+    assert page.locator("#e2 > .chead .kindbadge").inner_text() == "agent"
+
+
+def test_catalog_and_run_page_split_execution_from_assessment(page, structure_server):
+    """Guards the run list and run page against showing a verifier failure
+    after a clean run as a plain error (execution vs assessment)."""
+    page.goto(structure_server + "/?group=none")
+    row = page.locator(f'.runrow[data-run-id="{UNSCORED_RUN_ID}"]')
+    assert "completed but unscored (verifier timeout)" in row.inner_text()
+    assert "completed but unscored 1" in page.locator("#ixstats").inner_text()
+    ok_row = page.locator(f'.runrow[data-run-id="{SUBAGENT_RUN_ID}"]')
+    assert "unscored" not in ok_row.locator(".rsub").inner_text()
+
+    row.click()
+    page.wait_for_selector("#hdr h1")
+    identity = page.locator("#stats .statrow.identity").inner_text().lower()
+    assert "execution\ncompleted" in identity
+    assert "assessment\nunscored (verifier timeout)" in identity
+    assert "verifier publication error" in page.locator("#errors").inner_text().lower()
+    page.locator("#tabs button", has_text="Verifier").click()
+    facts = page.locator("#view-verifier").inner_text()
+    assert "verification.json \u2192 verifier-recovery/abc123" in facts
+    assert "failed \u00b7 verifier-recovery/abc123" in facts
+    assert "solver not replayed" in facts
+    assert "OSError: disk full" in facts
+
+
+def test_lineage_tab_links_to_child_trajectories_and_back(
+    page, structure_server, structure_base
+):
+    """Guards the Lineage tab over solver-evidence preservation's tree.json: parent to children
+    with reward/status/intervention, and working child trajectory links."""
+    run_id = _branch_id(structure_base)
+    page.goto(structure_server + "/?run=" + run_id)
+    page.wait_for_selector("#tabs button")
+    assert page.locator("#tabs button").all_inner_texts()[-1] == "Lineage"
+    page.locator("#tabs button", has_text="Lineage").click()
+    pane = page.locator("#view-lineage")
+    text = pane.inner_text()
+    assert "root \u2192 2 of 2" in text
+    assert "hint: off-by-one" in text and "baseline" in text
+    assert "UnscoredChildError (missing_verifier_reward)" in text
+
+    pane.locator("a", has_text="open n2").click()
+    page.wait_for_function("() => location.search.includes('branch=')")
+    page.wait_for_selector("#hdr .sub")
+    assert "branch child n2" in page.locator("#hdr .sub").inner_text()
+    assert "continuation of n2" in page.locator("#view-trace").inner_text()
+    assert page.locator("#hdr .badge").inner_text() == "FAIL 0"
+
+    page.go_back()
+    page.wait_for_function("() => !location.search.includes('branch=')")
+    page.locator("#tabs button", has_text="Lineage").wait_for()
+    assert "branch child" not in page.locator("#hdr .sub").inner_text()
+
+
+def test_run_list_marks_branched_runs(page, structure_server, structure_base):
+    """Regression test: nothing in the run list showed which runs
+    have branches; the row now says how many, and the filter finds them."""
+    run_id = _branch_id(structure_base)
+    page.goto(structure_server + "/?group=none")
+    row = page.locator(f'.runrow[data-run-id="{run_id}"]')
+    assert "branched: 4 children in 2 forks" in row.locator(".rsub").inner_text()
+    plain = page.locator(f'.runrow[data-run-id="{SUBAGENT_RUN_ID}"]')
+    assert "branched" not in plain.inner_text()
+    page.fill("#ixsearch", "branched")
+    assert page.locator(".runrow").count() == 1
+
+
+def test_back_from_a_branch_child_returns_to_its_parent_run(
+    page, structure_server, structure_base
+):
+    """Regression test: on a branch child's page the back button
+    went to the run list instead of the parent run."""
+    run_id = _branch_id(structure_base)
+    page.goto(structure_server + "/?run=" + run_id)
+    page.locator("#tabs button", has_text="Lineage").click()
+    page.locator("#view-lineage a", has_text="open n2").click()
+    page.locator("#hdr .sub", has_text="branch child n2").wait_for()
+    assert page.locator("#backbtn").inner_text() == "← parent run"
+
+    page.click("#backbtn")
+    page.wait_for_function("() => !location.search.includes('branch=')")
+    page.locator("#tabs button", has_text="Lineage").wait_for()
+    assert "branch child" not in page.locator("#hdr .sub").inner_text()
+    assert page.locator("#view-index").is_hidden()
+    assert "run=" in page.url
+    assert page.locator("#backbtn").inner_text() == "← runs"
+
+    page.click("#backbtn")  # from the parent, back is the run list again
+    assert page.locator("#view-index").is_visible()
+
+
+def test_single_page_branch_child_links_back_to_its_parent(
+    page, structure_base, tmp_path
+):
+    """Regression test on the server-less trajectory.html page: a
+    branch child offers the way back to the parent trajectory."""
+    run = structure_base / "branched" / "jobs" / "job" / "count-files__b1a2c3d4"
+    html_path = tmp_path / "trajectory.html"
+    html_path.write_text(viewer.render_rollout(run), encoding="utf-8")
+    page.goto(html_path.as_uri())
+    assert page.locator("#backbar").is_hidden()
+    page.locator("#tabs button", has_text="Lineage").click()
+    page.locator("#view-lineage a", has_text="open n1").click()
+    page.locator("#hdr .sub", has_text="branch child n1").wait_for()
+    assert page.locator("#backbtn").inner_text() == "← parent run"
+    page.click("#backbtn")
+    page.wait_for_function("() => !location.search.includes('branch=')")
+    page.locator("#tabs button", has_text="Lineage").wait_for()
+    assert "branch child" not in page.locator("#hdr .sub").inner_text()
+    assert page.locator("#backbar").is_hidden()
+
+
+def test_lineage_explains_fork_value_and_runner_return(
+    page, structure_server, structure_base
+):
+    """Regression test: the Lineage tab showed ``VALUE 0.5`` and
+    ``(runner return)`` with no word on what they mean."""
+    page.goto(structure_server + "/?run=" + _branch_id(structure_base))
+    page.locator("#tabs button", has_text="Lineage").click()
+    pane = page.locator("#view-lineage")
+    text = pane.inner_text()
+    assert "Value: mean reward of the fork's children" in text
+    assert "Runner return: the reward the custom child runner returned" in text
+    assert "not read from the verifier" in text
+    value_head = pane.locator("th", has_text=re.compile(r"^value$", re.I))
+    assert "mean reward" in value_head.first.get_attribute("title")
+    reward = pane.locator("td", has_text="(runner return)").first
+    assert "custom child runner" in reward.get_attribute("title")
+
+
+def test_single_page_branch_links_work_without_a_server(page, structure_base, tmp_path):
+    """Guards the trajectory.html sidecar: ?branch= opens embedded children."""
+    run = structure_base / "branched" / "jobs" / "job" / "count-files__b1a2c3d4"
+    html_path = tmp_path / "trajectory.html"
+    html_path.write_text(viewer.render_rollout(run), encoding="utf-8")
+    page.goto(html_path.as_uri())
+    page.locator("#tabs button", has_text="Lineage").click()
+    page.locator("#view-lineage a", has_text="open n1").click()
+    page.locator("#hdr .sub", has_text="branch child n1").wait_for()
+    assert "continuation of n1" in page.locator("#view-trace").inner_text()
+
+    page.goto(html_path.as_uri() + "?branch=nope/n0")
+    banner = page.locator(".errbox")
+    banner.wait_for(state="visible")
+    assert "is not in this rollout's lineage" in banner.inner_text()
 
 
 # ── viewports ─────────────────────────────────────────────────────────────

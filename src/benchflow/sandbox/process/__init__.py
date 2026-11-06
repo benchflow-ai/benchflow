@@ -8,10 +8,11 @@ ACP agents running inside containers. Implementations:
 - DaytonaProcess:        SSH to a Daytona sandbox
 - DaytonaPtyProcess:     Daytona PTY WebSocket
 - AgentCoreProcess:      Bedrock AgentCore shell WebSocket
+- ModalProcess:          Modal ``Sandbox.exec`` stdin/stdout streams
 
 The first three are local-subprocess transports and share
-:class:`SubprocessLiveProcess`; the last two carry bytes over a WebSocket and
-implement :class:`LiveProcess` directly.
+:class:`SubprocessLiveProcess`; the WebSocket transports and the Modal stream
+transport implement :class:`LiveProcess` directly.
 
 This package was a single ``process.py`` until it outgrew 1000 lines. Import
 paths are unchanged — everything public is re-exported here.
@@ -26,6 +27,7 @@ from benchflow.sandbox.process.agentcore import AgentCoreProcess
 from benchflow.sandbox.process.apple import AppleContainerProcess
 from benchflow.sandbox.process.daytona import DaytonaProcess, DaytonaPtyProcess
 from benchflow.sandbox.process.docker import DockerProcess
+from benchflow.sandbox.process.modal import ModalProcess
 
 __all__ = [
     "AgentCoreProcess",
@@ -34,6 +36,7 @@ __all__ = [
     "DaytonaPtyProcess",
     "DockerProcess",
     "LiveProcess",
+    "ModalProcess",
     "SubprocessLiveProcess",
     "drain_oversized_line",
 ]

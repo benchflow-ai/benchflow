@@ -9,14 +9,21 @@ import shlex
 import shutil
 import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
+from benchflow._utils.modal_gpu import modal_gpu_request
 from benchflow.agents.registry import AGENTS
-from benchflow.sandbox.providers import OPTIONAL_SANDBOX_EXTRAS, providers_phrase
+from benchflow.sandbox._exec_output import exec_raw
+from benchflow.sandbox.providers import (
+    OPTIONAL_SANDBOX_EXTRAS,
+    extra_install_hint,
+    providers_phrase,
+)
 from benchflow.skill_policy import validate_container_mount_path
-from benchflow.task import RolloutPaths, Task
+from benchflow.task import RolloutPaths, SandboxPaths, Task
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +70,7 @@ def _raise_missing_optional_sandbox_dependency(
     extra = OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
     raise RuntimeError(
         f"Missing optional dependency for {sandbox_type!r} sandbox. "
-        f"Install it with `uv sync --extra {extra}` for local development, "
-        f"or `pip install 'benchflow[{extra}]'` for a packaged install."
+        f"Install it with {extra_install_hint(extra)}."
     ) from exc
 
 
@@ -184,9 +190,10 @@ def _create_benchflow_modal_environment_class():
     class BenchFlowModalSandbox(ModalSandbox):
         async def start(self, force_build: bool) -> None:
             """Starts the Modal sandbox, adding Python for plain Linux images."""
+            gpu_config = modal_gpu_request(
+                self.task_env_config.gpus, self.task_env_config.gpu_types
+            )
             from modal import App, Image, Secret, Volume
-
-            from benchflow.task import SandboxPaths
 
             def noop_cleanup_dockerfile() -> None:
                 return None
@@ -227,20 +234,6 @@ def _create_benchflow_modal_environment_class():
                 create_if_missing=True,
             )
 
-            gpu_config = None
-            gpu_type = "any"
-
-            if self.task_env_config.gpus > 0:
-                if self.task_env_config.gpu_types:
-                    if len(self.task_env_config.gpu_types) > 1:
-                        self.logger.debug(
-                            "Multiple GPU types specified but Modal only supports one GPU "
-                            "type. Using the first GPU type."
-                        )
-                    gpu_type = self.task_env_config.gpu_types[0]
-
-                gpu_config = f"{gpu_type}:{self.task_env_config.gpus}"
-
             secrets_config = [Secret.from_name(secret) for secret in self._secrets]
             volumes_config = {
                 mount_path: Volume.from_name(volume_name)
@@ -255,20 +248,18 @@ def _create_benchflow_modal_environment_class():
                 )
             finally:
                 cleanup_dockerfile()
+            # Before any shell: an image ENV with bash's start-up names is
+            # refused (ModalSandbox._refuse_startup_names, startup_name).
+            await self._refuse_startup_names()
 
-            sandbox = cast(Any, self._sandbox)
-            await sandbox.mkdir.aio(
-                str(SandboxPaths.agent_dir),
-                parents=True,
-            )
-            await sandbox.mkdir.aio(
-                str(SandboxPaths.verifier_dir),
-                parents=True,
-            )
+            # Log directories (Sandbox.filesystem: Modal refuses the legacy
+            # Sandbox.mkdir, see ModalSandbox._make_log_dirs).
+            await self._make_log_dirs()
 
             # Make log directories world-writable so non-root agents/verifiers can write to them.
-            await self.exec(
-                f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
+            await exec_raw(
+                self.exec,
+                f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}",
             )
 
     return BenchFlowModalSandbox
@@ -692,6 +683,8 @@ def _create_sandbox_environment(
     rollout_paths: RolloutPaths,
     preserve_agent_network: bool = False,
     environment_manifest: Any = None,
+    block_cloud_metadata: bool = False,
+    cloud_metadata_root_agent: bool = False,
 ) -> Any:
     """Create a sandbox environment (Docker, Daytona, or Modal).
 
@@ -703,7 +696,17 @@ def _create_sandbox_environment(
     persistent env overlay so the values reach the container's entrypoint
     via compose and every subsequent ``sandbox.exec`` call.
     """
-    env_config = task.config.sandbox
+    from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+
+    # An [agent] allowlist override is enforced like a sandbox allowlist, so
+    # the provider sees it (NET_ADMIN overlay, snapshot-restore guard).
+    env_config = (
+        task.config.sandbox
+        if not preserve_agent_network
+        and getattr(getattr(task.config, "agent", None), "network_mode", None)
+        == "no-network"
+        else agent_network_sandbox_config(task.config)
+    )
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
         environment_dir = task.paths.environment_dir
@@ -711,7 +714,70 @@ def _create_sandbox_environment(
         task,
         sandbox_type=sandbox_type,
         task_path=task_path,
+        environment_dir=environment_dir,
+        environment_manifest=environment_manifest,
+        # Checked below, on the sandbox's own copy, as the sandbox runs it.
+        check_compose=False,
     )
+    # Every backend builds and launches from a private, no-follow copy of
+    # the environment folder, never the task's own files.
+    staged = _stage_environment(environment_dir, task_path.name)
+    try:
+        sandbox = _make_sandbox(
+            sandbox_type,
+            task,
+            task_path,
+            rollout_name,
+            rollout_paths,
+            env_config,
+            staged,
+            preserve_agent_network=preserve_agent_network,
+            environment_manifest=environment_manifest,
+            block_cloud_metadata=block_cloud_metadata,
+            cloud_metadata_root_agent=cloud_metadata_root_agent,
+        )
+    except BaseException:
+        staged.remove()
+        raise
+    import weakref
+
+    # Never ``remove``: the collector can run this while the same thread
+    # holds the staging lock (PY8-B23-STAGING-GC). ``release`` only queues.
+    weakref.finalize(sandbox, staged.release)
+    return sandbox
+
+
+def _stage_environment(environment_dir: Path, task_name: str) -> Any:
+    """The private copy of a task's environment folder (refused with the
+    task's name for a link out of it or a special file)."""
+    from benchflow.task.compose_env import host_access_allowed
+    from benchflow.task.env import TaskEnvNotAllowedError
+    from benchflow.task.staging import StagingRefused, stage_environment
+
+    try:
+        return stage_environment(environment_dir, allow_outside=host_access_allowed())
+    except StagingRefused as exc:
+        raise TaskEnvNotAllowedError({task_name: exc.refused}) from None
+
+
+def _make_sandbox(
+    sandbox_type: str,
+    task: Task,
+    task_path: Path,
+    rollout_name: str,
+    rollout_paths: RolloutPaths,
+    env_config: Any,
+    staged: Any,
+    *,
+    preserve_agent_network: bool,
+    environment_manifest: Any,
+    block_cloud_metadata: bool = False,
+    cloud_metadata_root_agent: bool = False,
+) -> Any:
+    from benchflow.sandbox.cloud_metadata import task_compose_topology
+    from benchflow.task.config import NetworkMode
+
+    environment_dir = staged.environment_dir
     if preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
@@ -719,6 +785,40 @@ def _create_sandbox_environment(
         # network block for these runs.
         env_config = env_config.model_copy(deep=True)
         env_config.allow_internet = True
+    elif (
+        preserve_agent_network
+        and env_config.network_mode == NetworkMode.PUBLIC
+        and getattr(task.config.agent, "network_mode", None) == NetworkMode.NO_NETWORK
+    ):
+        # An [agent] no-network over an online sandbox: the agent's uid
+        # firewall arms inside ``main`` as for an offline sandbox run by a
+        # model agent, so the provider gets the same pair (no-network kept
+        # open) and stacks the NET_ADMIN overlay iptables needs. Without it
+        # the firewall failed and every agent trial of such a task errored.
+        env_config = env_config.model_copy(deep=True)
+        env_config.network_mode = NetworkMode.NO_NETWORK
+        env_config.allow_internet = True
+    if (
+        block_cloud_metadata
+        and env_config.network_mode == NetworkMode.PUBLIC
+        and env_config.allow_internet
+        and not getattr(task.config, "allows_cloud_metadata", False)
+        and not task_compose_topology(environment_dir).main_shares_outside_network
+    ):
+        # The run refuses the cloud metadata endpoints inside main (see
+        # lockdown.cloud_metadata_plan); the compose backends give main the
+        # NET_ADMIN those rules need (compose_needs_net_admin). Never under
+        # the task's opt-out, whatever the caller asked, and never when the
+        # task's compose file puts main on the host's network (or another
+        # container's): NET_ADMIN there is power over the host's firewall.
+        # For a root agent the rules refuse root too.
+        if env_config is task.config.sandbox:
+            env_config = env_config.model_copy(deep=True)
+        env_config.arm_cloud_metadata_block(root_agent=cloud_metadata_root_agent)
+        if preserve_agent_network:
+            # No-web at the agent layer: root's uid firewall in main needs
+            # main's NET_ADMIN, whatever adds the metadata block's rules.
+            env_config.need_agent_uid_firewall()
 
     manifest_env: dict[str, str] = {}
     if environment_manifest is not None:
@@ -739,21 +839,46 @@ def _create_sandbox_environment(
             environment_manifest, task_id=task_path.name
         )
 
+    # The Compose service the verifier runs in (Docker backends only).
+    verifier_service = getattr(
+        getattr(task.config, "verifier", None), "service", "main"
+    )
     if sandbox_type == "docker":
         from benchflow.sandbox.docker import DockerSandbox
 
-        return DockerSandbox(
+        sandbox = DockerSandbox(
             environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
             persistent_env=manifest_env or None,
+            staged_environment=staged,
+            verifier_service=verifier_service,
         )
+        # Refused here, before the sandbox exists, with what it would run.
+        _freeze(sandbox)
+        return sandbox
+    elif sandbox_type == "remote-docker":
+        from benchflow.sandbox.remote_docker import RemoteDockerSandbox
+
+        sandbox = RemoteDockerSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+            staged_environment=staged,
+            verifier_service=verifier_service,
+        )
+        _freeze(sandbox)
+        return sandbox
     elif sandbox_type == "daytona":
         try:
             from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
             from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
+            from benchflow.sandbox.daytona_reaper import AUTO_STOP_MIN
 
             # ``benchflow.sandbox.daytona`` is deliberately import-safe without the
             # optional Daytona SDK (#358), so the imports above succeed even on a
@@ -790,16 +915,27 @@ def _create_sandbox_environment(
             )
             env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
 
-        return DaytonaSandbox(
+        sandbox = DaytonaSandbox(
             environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
-            auto_stop_interval_mins=1440,
+            # Daytona stops a sandbox whose controller went quiet this long
+            # (DAYTONA-START round 3); a stopped one is deleted a day later.
+            auto_stop_interval_mins=AUTO_STOP_MIN,
             auto_delete_interval_mins=1440,
             persistent_env=manifest_env or None,
         )
+        # DinD: checked before the Daytona sandbox is created, on the copy
+        # it uploads; the VM checks again before the hook.
+        _preflight_daytona_compose(
+            environment_dir,
+            task_path.name,
+            _task_values(task, environment_manifest, task_path.name),
+            env_config,
+        )
+        return sandbox
     elif sandbox_type == "modal":
         try:
             modal_environment_class = _create_benchflow_modal_environment_class()
@@ -850,23 +986,91 @@ def _create_sandbox_environment(
         )
 
 
+def _freeze(sandbox: Any) -> None:
+    """Check and freeze a Docker sandbox's Compose project now, before it
+    exists (``DockerSandbox.freeze_launch``); a stand-in sandbox class
+    without one is left as it is."""
+    if callable(getattr(type(sandbox), "freeze_launch", None)):
+        sandbox.freeze_launch()
+
+
+def _task_values(task: Task, environment_manifest: Any, task_id: str) -> dict:
+    from benchflow.task.compose_env import task_compose_values
+
+    return task_compose_values(
+        task.config.sandbox.env, environment_manifest, task_id=task_id
+    )
+
+
+def _preflight_daytona_compose(
+    environment_dir: Path, task_name: str, values: dict, env_config: Any
+) -> None:
+    from benchflow.task.compose_env import check_compose, compose_path
+    from benchflow.task.env import TaskEnvNotAllowedError
+
+    if not compose_path(environment_dir).exists():
+        return
+    refused = check_compose(
+        environment_dir,
+        values,
+        sandbox_type="daytona",
+        sandbox_config=env_config,
+    ).refused
+    if refused:
+        raise TaskEnvNotAllowedError({task_name: refused})
+
+
 def _validate_task_runtime_for_launch(
     task: Task,
     *,
     sandbox_type: str,
     task_path: Path,
+    environment_dir: Path | None = None,
+    environment_manifest: Any = None,
+    check_compose: bool = True,
 ) -> None:
-    """Fail closed before launch when a real parsed task has unsupported fields."""
+    """Fail closed before launch when a real parsed task has unsupported fields
+    or reads a variable of the operator's environment nobody named."""
 
+    from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+    from benchflow.task.compose_env import (
+        COMPOSE_CHECKED,
+        refused_compose_env,
+        task_compose_values,
+    )
     from benchflow.task.config import TaskConfig
     from benchflow.task.document import TaskDocument
+    from benchflow.task.env import TaskEnvNotAllowedError, check_task_env
     from benchflow.task.runtime_capabilities import raise_for_task_runtime_support
     from benchflow.task.runtime_view import TaskRuntimeView
 
     document = getattr(task, "document", None)
     config = getattr(task, "config", None)
+    if isinstance(config, TaskConfig):
+        # A ${VAR} the operator did not name is refused here, before the
+        # sandbox exists, rather than when its table is filled after start.
+        check_task_env(config, task=task_path.name)
+        if check_compose and sandbox_type in COMPOSE_CHECKED:
+            # Check the project Compose resolves, as the run would.
+            refused = refused_compose_env(
+                environment_dir or task.paths.environment_dir,
+                task_compose_values(
+                    config.sandbox.env, environment_manifest, task_id=task_path.name
+                ),
+                sandbox_type=sandbox_type,
+                sandbox_config=agent_network_sandbox_config(config),
+            )
+            if refused:
+                raise TaskEnvNotAllowedError({task_path.name: refused})
     if isinstance(document, TaskDocument):
-        runtime_task: TaskDocument | TaskConfig = document
+        # Config overlays replace task.config without rewriting the author's
+        # document. Keep document-only checks, but admit the resources/policies
+        # that this run will actually use. Never mutate the source document.
+        runtime_task: TaskDocument | TaskConfig = (
+            replace(document, config=config)
+            if isinstance(config, TaskConfig)
+            else document
+        )
     elif isinstance(config, TaskConfig):
         runtime_task = config
     else:

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "hello",
+      "gate": true,
+      "text": "/app/hello.txt contains exactly \"Hello, world!\".",
+      "stated": "Create a file `/app/hello.txt` that contains exactly `Hello, world!`",
+      "judge": "test",
+      "check": "test_hello"
+    }
+  ]
+}

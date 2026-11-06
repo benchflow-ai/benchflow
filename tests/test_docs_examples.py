@@ -20,7 +20,7 @@ def _load_nanofirm_evaluator():
 
 
 def test_nanofirm_perfect_analysis_reaches_full_reward(tmp_path, monkeypatch):
-    """Guards ENG-87: visible scoring increments should allow reward 1.0."""
+    """Visible scoring increments should allow reward 1.0."""
     module = _load_nanofirm_evaluator()
     analysis = {
         "risks": [
@@ -86,7 +86,7 @@ def _imports_from(path: Path) -> set[str]:
 
 @pytest.mark.parametrize("script", _DOCS_EXAMPLE_SCRIPTS, ids=lambda p: p.name)
 def test_docs_example_imports_resolve(script: Path) -> None:
-    """ENG-368: docs/examples scripts must not reference removed modules."""
+    """docs/examples scripts must not reference removed modules."""
     assert script.exists(), f"missing example script: {script}"
     imports = _imports_from(script)
     # benchflow.user was removed; FunctionUser/RoundResult now live at top-level
@@ -98,24 +98,24 @@ def test_docs_example_imports_resolve(script: Path) -> None:
 
 
 def test_use_cases_mcp_import_path_is_experimental() -> None:
-    """ENG-368: docs/use-cases.md must use benchflow.experimental.mcp.*."""
-    text = Path("docs/use-cases.md").read_text()
+    """docs/tasks/scenes.md must use benchflow.experimental.mcp.*."""
+    text = Path("docs/tasks/scenes.md").read_text()
     # Reject the stale path; require the current one.
     assert "from benchflow.mcp.hooks" not in text, (
-        "docs/use-cases.md references the stale benchflow.mcp.hooks path; "
+        "docs/tasks/scenes.md references the stale benchflow.mcp.hooks path; "
         "use benchflow.experimental.mcp.hooks instead"
     )
     assert "benchflow.experimental.mcp.hooks" in text
 
 
 def test_task_authoring_docs_require_dockerfile() -> None:
-    """ENG-368: task-authoring.md must not say compose can replace Dockerfile.
+    """The environment page must not say compose can replace Dockerfile.
 
     `check_task` always requires `environment/Dockerfile`, so the multi-container
     section must not promise compose-only tasks.
     """
-    text = Path("docs/task-authoring.md").read_text()
+    text = Path("docs/tasks/environment.md").read_text()
     assert "alongside (or instead of)" not in text, (
-        "task-authoring.md still claims docker-compose can replace the "
+        "docs/tasks/environment.md claims docker-compose can replace the "
         "Dockerfile, but `bench tasks check` rejects compose-only tasks"
     )

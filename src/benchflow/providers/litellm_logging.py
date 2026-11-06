@@ -7,7 +7,13 @@ import re
 from datetime import datetime
 from typing import Any
 
+from benchflow._utils.reported_models import add_model
 from benchflow.trajectories.call_purpose import infer_call_purpose
+from benchflow.trajectories.token_capture import (
+    TOKEN_CAPTURE_METADATA_KEY,
+    build_token_capture,
+    strip_captured_token_ids,
+)
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -160,6 +166,34 @@ def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
     _skill_catalog_gate_passed = True
 
 
+def _served_models() -> frozenset[str] | None:
+    # Every name the run's config.yaml routes (BENCHFLOW_LITELLM_SERVED_MODELS,
+    # set by the controller); None when the controller named none.
+    raw = os.environ.get("BENCHFLOW_LITELLM_SERVED_MODELS", "")
+    if not raw:
+        return None
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(values, list):
+        return None
+    return frozenset(value for value in values if isinstance(value, str) and value)
+
+
+class ModelNotServed(Exception):
+    # LiteLLM answers with the exception's status_code; 400 is what it sends
+    # itself for a model its router does not know.
+    status_code = 400
+
+    def __init__(self, model: str) -> None:
+        self.message = (
+            f"model_not_served: this run's gateway serves only the run's model, "
+            f"not {model!r}"
+        )
+        super().__init__(self.message)
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -222,6 +256,205 @@ def _failure_traceback(detail: Any) -> str:
     return tb[-2000:]
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+# How a route provider's OpenAI-compatible server is asked for token ids:
+# ``vllm``: ``return_token_ids`` (top-level ``prompt_token_ids``, per-choice
+# ``token_ids``); ``sglang``: the ``sglext`` extension flags below, which also
+# work on streamed chat (SGLang refuses ``return_token_ids`` there).
+_TOKEN_ID_PROVIDERS = {"vllm": "vllm", "sglang": "sglang"}
+_SGLANG_ID_FLAGS = ("return_input_ids_in_sglext", "return_output_ids_in_sglext")
+_RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
+_STREAM_TOKENS_KEY = "benchflow_stream_tokens"
+
+
+def _upstream_api(upstream: str) -> str:
+    head, _, rest = upstream.partition("/")
+    lowered = rest.lower()
+    if head in {"anthropic", "bedrock"} or (
+        head in {"vertex_ai", "azure_ai"} and "claude" in lowered
+    ):
+        return "anthropic-messages"
+    if head in {"gemini", "vertex_ai"}:
+        return "gemini"
+    if head in {"openai", "azure", "deepseek", "hosted_vllm"}:
+        return "openai"
+    return "other"
+
+
+def _token_capture_plan(call_type: Any, model: Any) -> dict[str, Any] | None:
+    # What token data to request for one call; None while capture is off.
+    # ``wire`` is the API the upstream call uses: chat calls, Anthropic
+    # Messages calls LiteLLM bridges to an OpenAI-compatible chat backend, and
+    # Responses calls on the ``-responses-bridge`` aliases all reach the server
+    # as chat completions; other Responses calls reach a native Responses API.
+    if os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower() not in _TRUTHY:
+        return None
+    provider = os.environ.get("BENCHFLOW_LITELLM_ROUTE_PROVIDER", "")
+    upstream_api = _upstream_api(os.environ.get("BENCHFLOW_LITELLM_UPSTREAM_MODEL", ""))
+    call = str(call_type or "")
+    request = None
+    if call in {"completion", "acompletion"}:
+        request = "chat"
+        wire = "openai-chat" if upstream_api in {"openai", "other"} else upstream_api
+    elif call == "anthropic_messages" and upstream_api == "openai":
+        request, wire = "chat", "openai-chat"
+    elif call in {"responses", "aresponses"} and str(model or "").endswith(
+        "-responses-bridge"
+    ):
+        request, wire = "chat", "openai-chat"
+    elif call in {"responses", "aresponses"} and upstream_api == "openai":
+        request, wire = "responses", "openai-responses"
+    else:
+        wire = upstream_api
+    ids_setting = os.environ.get("BENCHFLOW_CAPTURE_TOKEN_IDS", "auto").strip().lower()
+    token_ids = request == "chat" and wire == "openai-chat" and (
+        ids_setting in _TRUTHY
+        or (ids_setting in {"", "auto"} and provider in _TOKEN_ID_PROVIDERS)
+    )
+    token_id_style = _TOKEN_ID_PROVIDERS.get(provider, "vllm") if token_ids else None
+    try:
+        top_logprobs = int(os.environ.get("BENCHFLOW_CAPTURE_TOP_LOGPROBS", "") or 0)
+    except ValueError:
+        top_logprobs = 0
+    return {
+        "enabled": True,
+        "wire": wire,
+        "provider": provider or None,
+        "request": request,
+        "logprobs": request is not None,
+        "top_logprobs": top_logprobs if request is not None and top_logprobs > 0 else None,
+        "token_ids": token_ids,
+        "token_id_style": token_id_style,
+    }
+
+
+def _apply_token_capture(data: dict[str, Any], plan: dict[str, Any] | None) -> dict[str, Any]:
+    # Return ``data`` (copied when changed) with the plan's request fields.
+    if not plan or plan.get("request") is None:
+        return data
+    cleaned = dict(data)
+    top = plan.get("top_logprobs")
+    if plan["request"] == "chat":
+        cleaned["logprobs"] = True
+        if top:
+            cleaned["top_logprobs"] = top
+        if plan.get("token_ids"):
+            # extra_body survives drop_params on openai/ routes and LiteLLM's
+            # Anthropic-Messages and Responses bridges to chat completions.
+            extra = dict(cleaned.get("extra_body") or {})
+            if plan.get("token_id_style") == "sglang":
+                for flag in _SGLANG_ID_FLAGS:
+                    extra[flag] = True
+            else:
+                extra["return_token_ids"] = True
+            cleaned["extra_body"] = extra
+    elif cleaned.get("input") is None:
+        return data
+    else:
+        include = list(cleaned.get("include") or [])
+        if _RESPONSES_LOGPROBS_INCLUDE not in include:
+            include.append(_RESPONSES_LOGPROBS_INCLUDE)
+        cleaned["include"] = include
+        if top:
+            cleaned["top_logprobs"] = top
+    return cleaned
+
+
+# Opt-in wire capture (BENCHFLOW_LITELLM_WIRE_LOG_DIR): each request as the
+# agent sent it, before any routing change, for the native-harness wire-parity
+# check. Only these headers are kept (they identify the client and the
+# protocol, never credentials), and the proxy's own bookkeeping keys are left
+# out of the body.
+_WIRE_HEADERS = frozenset(
+    {
+        "user-agent",
+        "anthropic-beta",
+        "anthropic-version",
+        "x-app",
+        "originator",
+        "openai-beta",
+        "version",
+        "x-codex-beta-features",
+    }
+)
+_WIRE_PROXY_KEYS = frozenset(
+    {
+        "proxy_server_request",
+        "secret_fields",
+        "litellm_call_id",
+        "litellm_logging_obj",
+        "litellm_metadata",
+        "litellm_parent_otel_span",
+        "litellm_session_id",
+        "litellm_trace_id",
+        "provider_specific_header",
+        "user_api_key_dict",
+        "api_key",
+    }
+)
+
+
+def _note_request(data: Any) -> None:
+    # One line per request that reached the proxy, before any upstream call
+    # (pass-through routes run this hook too): its LiteLLM call id, or "?"
+    # when it has none. The host stops the proxy as soon as the callback log
+    # is quiet when no request ever came: no record can still be on its way,
+    # so the 12 s settle wait is not needed.
+    _mark(".requests", data.get("litellm_call_id") if isinstance(data, dict) else None)
+
+
+def _note_logged(kwargs: Any) -> None:
+    # The call id of a request whose record is now whole in the callback log.
+    # Once every id in ".requests" is here, the host stops the proxy at once,
+    # with no settle wait (PERF-B).
+    _mark(".logged", kwargs.get("litellm_call_id") if isinstance(kwargs, dict) else None)
+
+
+def _mark(suffix: str, call_id: Any) -> None:
+    path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
+    if not path:
+        return
+    usable = isinstance(call_id, str) and call_id and call_id.isprintable()
+    text = call_id if usable and call_id.strip() == call_id else "?"
+    try:
+        with open(path + suffix, "a", encoding="utf-8") as handle:
+            handle.write(text + "\n")
+    except OSError:
+        traceback.print_exc()
+
+
+def _write_wire(data: dict[str, Any], call_type: Any) -> None:
+    directory = os.environ.get("BENCHFLOW_LITELLM_WIRE_LOG_DIR")
+    if not directory:
+        return
+    try:
+        request = data.get("proxy_server_request") or {}
+        url = str(request.get("url") or "")
+        headers = {
+            str(k).lower(): v
+            for k, v in (request.get("headers") or {}).items()
+            if str(k).lower() in _WIRE_HEADERS
+        }
+        body = {k: v for k, v in data.items() if k not in _WIRE_PROXY_KEYS}
+        metadata = body.get("metadata")
+        if isinstance(metadata, dict):
+            # LiteLLM fills metadata with its own entries; the Messages API's
+            # own metadata field carries only user_id.
+            body["metadata"] = {k: v for k, v in metadata.items() if k == "user_id"}
+        record = {
+            "call_type": str(call_type),
+            "path": "/" + url.split("://", 1)[-1].split("/", 1)[-1] if url else None,
+            "headers": headers,
+            "body": body,
+        }
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, f"wire-{os.getpid()}.jsonl")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_jsonable(record), separators=(",", ":")) + "\n")
+    except Exception:
+        traceback.print_exc()
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -257,8 +490,25 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = kwargs.get(key)
             if value is not None:
                 request_body[key] = value
+        model_group = metadata.get("model_group") if isinstance(metadata, dict) else None
+        call_type = kwargs.get("call_type") or litellm_params.get("call_type")
+        token_capture = _token_capture_plan(call_type, model_group or kwargs.get("model"))
+        extra_fields: dict[str, Any] = {}
+        if token_capture is not None:
+            # Record what was actually sent upstream for token capture.
+            for key in ("include", "extra_body"):
+                value = optional_params.get(key)
+                if value is None:
+                    value = kwargs.get(key)
+                if value:
+                    request_body[key] = value
+            extra_fields["token_capture"] = token_capture
+            stream_tokens = kwargs.get(_STREAM_TOKENS_KEY)
+            if stream_tokens:
+                extra_fields["stream_tokens"] = stream_tokens
         request_body = {k: v for k, v in request_body.items() if v is not None}
         return {
+            **extra_fields,
             "request_model": kwargs.get("model"),
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
             "model_group": metadata.get("model_group") if isinstance(metadata, dict) else None,
@@ -281,8 +531,28 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     async def async_pre_call_hook(
         self, user_api_key_dict, cache, data, call_type
     ):
+        _note_request(data)
         if not isinstance(data, dict):
             return None
+        _write_wire(data, call_type)
+
+        # Refuse, and record without the request body, a request for a model
+        # the run's config does not route (codex-acp's title thread asks for
+        # gpt-5.6-luna with the task prompt). LiteLLM would also refuse it;
+        # the gate keeps that true whatever its routing fallbacks do, and the
+        # record shows the attempt in the run.
+        model = data.get("model")
+        served = _served_models()
+        if served is not None and isinstance(model, str) and model and model not in served:
+            self._write(
+                {
+                    "event": "refused",
+                    "rule": "model-not-served",
+                    "request_model": model,
+                    "call_type": call_type,
+                }
+            )
+            raise ModelNotServed(model)
 
         _gate_opencode_skill_catalog(data)
 
@@ -304,7 +574,9 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         # tools cannot be represented on the chat wire anyway; the function tools
         # (shell, file IO, ...) survive untouched.
         tools = cleaned.get("tools")
-        if isinstance(tools, list):
+        chat_bridge_models = json.loads(os.environ.get("BENCHFLOW_LITELLM_CHAT_BRIDGE_MODELS", "[]"))
+        chat_request = call_type in {"completion", "acompletion"} or cleaned.get("model") in chat_bridge_models
+        if chat_request and isinstance(tools, list):
             kept = [
                 t
                 for t in tools
@@ -318,7 +590,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         # Forward ``reasoning_effort`` VERBATIM on deepseek routes. LiteLLM's
         # deepseek transform consumes the top-level field (it maps it into its
         # own thinking handling and drops the raw param — even with drop_params
-        # off; verified against a capture upstream 2026-08-08), while
+        # off), while
         # ``extra_body`` fields merge into the wire request untouched. Lifting
         # the param means the upstream receives exactly what the agent sent —
         # the same request a native (gateway-less) run produces. Scoped to
@@ -332,18 +604,15 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             extra.setdefault("reasoning_effort", cleaned.pop("reasoning_effort"))
             cleaned["extra_body"] = extra
 
-        capture_logprobs = (
-            os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()
-            in {"1", "true", "yes", "on"}
-        )
-        if (
-            capture_logprobs
-            and call_type in {"completion", "acompletion"}
-            and cleaned.get("messages") is not None
+        # Opt-in token capture (BENCHFLOW_CAPTURE_TOKEN_LOGPROBS): ask for
+        # sampled-token logprobs, and token ids where the route supports them.
+        plan = _token_capture_plan(call_type, cleaned.get("model"))
+        if plan is not None and (
+            plan.get("request") != "chat"
+            or call_type not in {"completion", "acompletion"}
+            or cleaned.get("messages") is not None
         ):
-            if cleaned is data:
-                cleaned = dict(data)
-            cleaned["logprobs"] = True
+            cleaned = _apply_token_capture(cleaned, plan)
         if cleaned is data:
             return None
         return cleaned
@@ -380,6 +649,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             }
         )
         self._write(record)
+        _note_logged(kwargs)
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
@@ -396,6 +666,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             }
         )
         self._write(record)
+        _note_logged(kwargs)
 
 
 proxy_handler_instance = BenchFlowLiteLLMLogger()
@@ -459,6 +730,9 @@ def _exchange_metadata(
         agent_name=agent_name,
         request_body=request_body,
     )
+    token_capture = build_token_capture(record)
+    if token_capture is not None:
+        metadata[TOKEN_CAPTURE_METADATA_KEY] = token_capture
     return metadata
 
 
@@ -576,6 +850,7 @@ def trajectory_from_litellm_callback_log(
     trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
     total_cost = 0.0
     saw_cost = False
+    reported_models: list[str] = []
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -583,12 +858,40 @@ def trajectory_from_litellm_callback_log(
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("event") in {
+            "request_start",
+            "response_start",
+            "request_end",
+            "upstream_start",
+            "upstream_end",
+        }:
+            continue
+        if record.get("event") == "refused":
+            # The gateway refused the request before any provider call: not an
+            # exchange, so replay, usage and token coverage never see it.
+            trajectory.metadata.setdefault("refused_requests", []).append(
+                {
+                    key: record.get(key)
+                    for key in ("request_model", "call_type", "rule", "logged_at")
+                }
+            )
+            continue
+        raw_response = record.get("response")
+        if record.get("event") == "success" and isinstance(raw_response, dict):
+            # The model the provider's response names, read before
+            # _record_response_body fills in the requested one where the
+            # response named none (a fill-in never counts as reported).
+            add_model(reported_models, raw_response.get("model"))
         request = (
             record.get("request") if isinstance(record.get("request"), dict) else {}
         )
         request_body = request.get("body")
         request_body = request_body if isinstance(request_body, dict) else {}
         response_body = _record_response_body(record)
+        if record.get("token_capture"):
+            response_body = strip_captured_token_ids(response_body)
         if record.get("event") == "success":
             status = 200
         else:
@@ -621,6 +924,8 @@ def trajectory_from_litellm_callback_log(
     trajectory.finished_at = datetime.now()
     if saw_cost:
         trajectory.metadata["cost_usd"] = round(total_cost, 10)
+    if reported_models:
+        trajectory.metadata["reported_models"] = reported_models
     return trajectory
 
 

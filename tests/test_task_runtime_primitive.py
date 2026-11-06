@@ -17,6 +17,17 @@ from benchflow.task import VerifierResult
 TASK_PATH = Path(__file__).parent / "examples" / "hello-world-task"
 
 
+_LAUNCH = " -- sh -c "
+
+
+def _agent_command(cmd: str) -> str:
+    """The command S2's launcher (build_priv_drop_cmd) runs, or *cmd*."""
+    if not cmd.startswith("if setpriv --help") or _LAUNCH not in cmd:
+        return cmd
+    inner = shlex.split(cmd.split(_LAUNCH, 1)[1])[0]
+    return inner.split(" && ", 1)[1] if inner.startswith("export HOME=") else inner
+
+
 @dataclass
 class _ExecResult:
     return_code: int = 0
@@ -25,6 +36,8 @@ class _ExecResult:
 
 
 class _FakeSandbox:
+    agent_container_no_new_privileges = True
+
     def __init__(self) -> None:
         self.started = 0
         self.stopped = 0
@@ -41,6 +54,7 @@ class _FakeSandbox:
 
     async def exec(self, cmd: str, **kwargs: Any) -> _ExecResult:
         self.exec_calls.append({"cmd": cmd, **kwargs})
+        cmd = _agent_command(cmd)
         if cmd == "pwd":
             return _ExecResult(stdout="/app\n")
         if cmd.startswith("bash -lc "):
@@ -52,12 +66,12 @@ class _FakeSandbox:
                 return _ExecResult(return_code=7, stderr="bad command\n")
         return _ExecResult()
 
-    async def upload_file(self, src: str | Path, dst: str) -> None:
+    async def upload_file(self, src: str | Path, dst: str, **_kwargs) -> None:
         self.uploads.append((str(src), dst))
         self.files[dst] = Path(src).read_text()
 
     async def upload_dir(
-        self, src: str | Path, dst: str, service: str = "main"
+        self, src: str | Path, dst: str, service: str = "main", **_kwargs
     ) -> None:
         self.uploads.append((str(src), dst))
 
@@ -82,6 +96,9 @@ class _FakePlanes:
         self.locked_paths: list[str] = []
 
     def install_docker_compat(self) -> None:
+        return None
+
+    async def quiesce_agent(self, env: Any, sandbox_user: str) -> None:
         return None
 
     def extract_usage(self, runtime: Any) -> dict[str, Any]:
@@ -137,6 +154,7 @@ class _FakePlanes:
         *,
         preserve_agent_network: bool,
         environment_manifest: Any,
+        block_cloud_metadata: bool = False,
     ) -> _FakeSandbox:
         self.created.append(
             {
@@ -167,6 +185,11 @@ class _FakePlanes:
 
     async def seed_verifier_workspace(
         self, env: Any, *, workspace: str, sandbox_user: str | None
+    ) -> None:
+        return None
+
+    async def prepare_verifier_runtime(
+        self, env: Any, *, task: Any, sandbox_user: str | None
     ) -> None:
         return None
 
@@ -226,6 +249,23 @@ class _FakePlanes:
 
 
 @pytest.mark.asyncio
+async def test_task_runtime_default_setup_does_not_resolve_an_agent_launch(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1093 from making the non-agent task runtime fail closed."""
+    rollout = Rollout(
+        TaskRuntimeConfig(
+            task_path=TASK_PATH,
+            jobs_dir=tmp_path / "jobs",
+        ).to_rollout_config()
+    )
+
+    await rollout.setup()
+
+    assert rollout._agent_launch == ""
+
+
+@pytest.mark.asyncio
 async def test_task_runtime_bash_verify_writes_rollout_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -262,15 +302,28 @@ async def test_task_runtime_bash_verify_writes_rollout_artifacts(
     bash_call = next(
         call for call in planes.sandbox.exec_calls if "bash -lc" in call["cmd"]
     )
+    # A container barrier preserves the native user and command.
     assert bash_call["user"] == "agent"
-    assert "cd /app && printf" in shlex.split(bash_call["cmd"])[2]
+    assert "cd /app && printf" in shlex.split(_agent_command(bash_call["cmd"]))[2]
 
     rollout_dir = result.rollout_dir
     assert (rollout_dir / "config.json").is_file()
     assert (rollout_dir / "result.json").is_file()
     assert (rollout_dir / "rewards.jsonl").is_file()
     assert (rollout_dir / "trajectory" / "acp_trajectory.jsonl").is_file()
-    assert planes.sandbox.files["/logs/agent/acp_trajectory.jsonl"]
+    # Published for the verifier: staged under /logs, then copied into
+    # /logs/agent (#1182).
+    (staged,) = [
+        path
+        for path in planes.sandbox.files
+        if path.startswith("/logs/.benchflow-publish-")
+        and path.endswith("/acp_trajectory.jsonl")
+    ]
+    assert planes.sandbox.files[staged]
+    assert any(
+        "> /logs/agent/acp_trajectory.jsonl" in call["cmd"]
+        for call in planes.sandbox.exec_calls
+    )
     trajectory_events = [
         json.loads(line)
         for line in (rollout_dir / "trajectory" / "acp_trajectory.jsonl")
@@ -364,7 +417,7 @@ async def test_task_runtime_returns_integrated_reward_after_releasing_solver(
     async def deterministic_verifier(self):
         return {"reward": 1.0}
 
-    async def reviewer(rollout):
+    async def reviewer(rollout, *, result=None, lock_held=False):
         assert planes.sandbox.stopped == 1
         return expected
 

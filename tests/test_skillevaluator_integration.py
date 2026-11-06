@@ -852,7 +852,7 @@ class TestCli:
         assert self._invoke(runner, str(tmp_path)).exit_code == 1
         skill = _write_skill(tmp_path, "s")
         bad = self._invoke(runner, str(skill), "--fail-on", "sometimes")
-        assert bad.exit_code == 1 and "Invalid --fail-on" in bad.output
+        assert bad.exit_code == 2 and "Invalid --fail-on" in bad.output
 
     def test_every_path_must_hold_a_skill(self, tmp_path, fakes, runner):
         good = _write_skill(tmp_path / "skills", "a-clean")

@@ -32,6 +32,7 @@ _REQUIRED_METHODS = (
     "setup_sandbox_user",
     "snapshot_build_config",
     "seed_verifier_workspace",
+    "prepare_verifier_runtime",
     "deploy_skills",
     "lockdown_paths",
     "install_agent",
@@ -45,6 +46,7 @@ _REQUIRED_METHODS = (
     "stop_egress_denylist",
     "extract_usage",
     "connect_acp",
+    "connect_native",
     "execute_prompts",
     "harden_before_verify",
     "verifier",
@@ -103,16 +105,20 @@ def test_agent_launch_appends_web_tool_suffix_when_disallowed(
     )
 
 
-def test_agent_launch_unknown_agent_falls_back_to_name() -> None:
+def test_agent_launch_unknown_bare_agent_fails_closed() -> None:
+    """Guards PR #1090 rollout-plane launch bypass."""
+    import pytest
+
     planes = DefaultRolloutPlanes()
-    # An unknown agent has no launch mapping and no config: returns the name,
-    # and the disallow flag is a no-op (no config -> no suffix).
-    assert planes.agent_launch("not-a-real-agent", disallow_web_tools=False) == (
-        "not-a-real-agent"
-    )
-    assert planes.agent_launch("not-a-real-agent", disallow_web_tools=True) == (
-        "not-a-real-agent"
-    )
+    with pytest.raises(KeyError, match="Unknown agent"):
+        planes.agent_launch("not-a-real-agent", disallow_web_tools=False)
+
+
+def test_agent_launch_explicit_raw_command_passes_through() -> None:
+    """Guards PR #1090 explicit rollout-plane command compatibility."""
+    planes = DefaultRolloutPlanes()
+    command = "agent --flag"
+    assert planes.agent_launch(command, disallow_web_tools=True) == command
 
 
 def test_agent_config_delegates_to_registry() -> None:

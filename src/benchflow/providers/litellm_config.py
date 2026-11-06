@@ -9,9 +9,11 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from benchflow.agents.providers import (
+    REGISTRY_BASE_PROVIDERS,
     ZAI_CODING_REGISTRY_BASE_ENV,
     ProviderConfig,
     find_provider,
+    find_provider_for_bare_model,
     resolve_base_url,
     strip_provider_prefix,
 )
@@ -78,8 +80,11 @@ def custom_cost_per_token(model: str) -> tuple[float, float] | None:
     return None
 
 
+# Claude 4.8+ and every 5-family model. Kept in sync with
+# ``litellm_bedrock_patch.BEDROCK_ADAPTIVE_THINKING_RE``.
 _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
-    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)|fable-5(?!\d))",
+    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)"
+    r"|(?:opus|sonnet|haiku|fable)-(?:[5-9]|[1-9]\d))(?!\d)",
     re.IGNORECASE,
 )
 _BEDROCK_LITELLM_EFFORT_LIMIT_RE = re.compile(
@@ -296,11 +301,12 @@ def _route_registered_provider(
     )
     explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
     explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-    zai_registry_base = (
-        provider_name == "zai-coding" and env.get(ZAI_CODING_REGISTRY_BASE_ENV) == "1"
+    registry_base = (
+        provider_name in REGISTRY_BASE_PROVIDERS
+        and env.get(ZAI_CODING_REGISTRY_BASE_ENV) == "1"
     )
-    explicit_route = explicit_api_base and explicit_api_key and not zai_registry_base
-    if explicit_api_base and not zai_registry_base:
+    explicit_route = explicit_api_base and explicit_api_key and not registry_base
+    if explicit_api_base and not registry_base:
         api_base = explicit_api_base
     else:
         try:
@@ -343,12 +349,12 @@ def _route_registered_provider(
     if api_base:
         params["api_base"] = api_base
     native_key = (env.get(provider_cfg.auth_env or "") or "").strip()
-    explicit_zai_key = bool(
-        zai_registry_base and explicit_api_key and explicit_api_key != native_key
+    explicit_generic_key = bool(
+        registry_base and explicit_api_key and explicit_api_key != native_key
     )
     api_key_ref = (
         _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-        if explicit_route or explicit_zai_key
+        if explicit_route or explicit_generic_key
         else _registered_api_key_ref(provider_cfg)
     )
     if api_key_ref:
@@ -369,7 +375,7 @@ def _route_registered_provider(
 
 def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     """Resolve a BenchFlow model ID to one LiteLLM proxy route."""
-    provider = find_provider(model)
+    provider = find_provider(model) or find_provider_for_bare_model(model)
     if provider is not None:
         provider_name, provider_cfg = provider
         return _route_registered_provider(
@@ -404,14 +410,17 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
         required = ("OPENAI_API_KEY",)
 
     params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
-    if upstream.lower().startswith("gemini/"):
-        explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
-        explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-        if explicit_api_base:
-            params["api_base"] = explicit_api_base
-            if explicit_api_key:
-                params["api_key"] = _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-                required = ("BENCHFLOW_PROVIDER_API_KEY",)
+    # The proxy serves the key and endpoint resolve_agent_env selected, in
+    # every family: a generic key is mapped to the agent's own slot
+    # (ANTHROPIC_AUTH_TOKEN for Claude), never to the family key named above,
+    # and an unrelated family key from the host must not replace it.
+    explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
+    if explicit_api_base:
+        params["api_base"] = explicit_api_base
+    if explicit_api_key:
+        params["api_key"] = _env_ref("BENCHFLOW_PROVIDER_API_KEY")
+        required = ("BENCHFLOW_PROVIDER_API_KEY",)
 
     key = required[0] if required else None
     if key and "api_key" not in params:

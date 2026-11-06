@@ -167,6 +167,8 @@ class TestCleanupCommandGating:
 
         calls: list[str] = []
         monkeypatch.setattr(sandbox_cli, "_daytona_sdk_available", lambda: True)
+        monkeypatch.setattr(sandbox_cli, "cleanup_docker_snapshots", lambda **_: None)
+        monkeypatch.setattr(sandbox_cli, "cleanup_docker_leftovers", lambda **_: False)
         monkeypatch.setattr(
             sandbox_cli,
             "_cleanup_agentcore_runtimes",
@@ -176,9 +178,13 @@ class TestCleanupCommandGating:
         fake_main._cleanup_daytona_sandboxes.side_effect = typer.Exit(1)
         monkeypatch.setitem(__import__("sys").modules, "benchflow.cli.main", fake_main)
 
-        sandbox_cli.sandbox_cleanup(dry_run=True, max_age_minutes=60)
+        # AgentCore is still cleaned up; the command then exits 1 because the
+        # Daytona backend failed (a teardown step must not pass).
+        with pytest.raises(typer.Exit) as exited:
+            sandbox_cli.sandbox_cleanup(dry_run=True, max_age_minutes=60)
 
         assert calls == ["agentcore"]
+        assert exited.value.exit_code == 1
 
 
 class TestAwsResponseShapeConformance:

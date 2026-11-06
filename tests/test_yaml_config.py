@@ -55,11 +55,11 @@ orchestrator:
 sandbox_setup_timeout: 75
 environment:
   type: daytona
-  env:
-    - ANTHROPIC_API_KEY=test-key
 agents:
   - name: claude-agent-acp
     model_name: anthropic/claude-haiku-4-5-20251001
+    env:
+      ANTHROPIC_API_KEY: test-key
 datasets:
   - path: tasks
 """)
@@ -79,7 +79,7 @@ def test_from_native_yaml(native_yaml):
     assert cfg.sandbox_setup_timeout == 45
     assert cfg.prompts == [None, "Review your solution."]
     assert cfg.skill_mode == SKILL_MODE_NO_SKILL
-    assert job._tasks_dir == Path("tasks")
+    assert job._tasks_dir == (Path.cwd() / "tasks")
     assert job._jobs_dir == Path("output")
 
 
@@ -104,7 +104,7 @@ skip_install: true
 
 
 def test_native_yaml_normalizes_agent_alias_and_root_sandbox_user(tmp_path):
-    """Guards ENG-91 P0 dogfood config-boundary regression."""
+    """Dogfood config-boundary regression."""
     tasks = tmp_path / "tasks" / "task-a"
     tasks.mkdir(parents=True)
     (tasks / "task.toml").write_text('version = "1.0"')
@@ -124,7 +124,7 @@ sandbox_user: none
 
 
 def test_rollout_yaml_loader_normalizes_alias_and_root_sandbox_user():
-    """Guards ENG-91 P0 dogfood rollout YAML-loader regression."""
+    """Dogfood rollout YAML-loader regression."""
     from benchflow._utils.yaml_loader import rollout_config_from_dict
 
     cfg = rollout_config_from_dict(
@@ -331,18 +331,26 @@ def test_rollout_yaml_accepts_numeric_string_agent_idle_timeout():
 
 
 def test_from_legacy_yaml(legacy_yaml):
-    """Test loading legacy-format YAML."""
-    job = Evaluation.from_yaml(legacy_yaml)
+    """Test loading legacy-format YAML.
+
+    n_attempts: 2 is two trials (two jobs), never one trial and a retry
+    one Evaluation is one of them.
+    """
+    from benchflow.evaluation import JobMatrixError
+
+    with pytest.raises(JobMatrixError, match="n_attempts 2"):
+        Evaluation.from_yaml(legacy_yaml)
+    job = Evaluation.from_yaml(legacy_yaml, job_cell=0)
     cfg = job._config
 
     assert cfg.agent == "claude-agent-acp"
     assert cfg.model == "anthropic/claude-haiku-4-5-20251001"
     assert cfg.environment == "daytona"
     assert cfg.concurrency == 8
-    assert cfg.retry.max_retries == 1  # n_attempts=2 → max_retries=1
+    assert cfg.retry.max_retries == 0  # a YAML job config never retries
     assert cfg.agent_env.get("ANTHROPIC_API_KEY") == "test-key"
     assert cfg.sandbox_setup_timeout == 75
-    assert job._tasks_dir == Path("tasks")
+    assert job._tasks_dir == (Path.cwd() / "tasks")
     assert job._jobs_dir == Path("output")
 
 
@@ -412,7 +420,7 @@ datasets:
     assert cfg.environment == "docker"
     assert cfg.concurrency == 4
     assert cfg.sandbox_setup_timeout == 120
-    assert job._tasks_dir == Path("tasks")
+    assert job._tasks_dir == (Path.cwd() / "tasks")
     assert job._jobs_dir == Path("jobs")
 
 
@@ -467,7 +475,7 @@ skills_dir: skills
 """)
 
     job = Evaluation.from_yaml(config)
-    assert job._tasks_dir == Path("tasks")
+    assert job._tasks_dir == (Path.cwd() / "tasks")
     assert job._jobs_dir == Path("jobs/my-run")
     assert job._config.skill_mode == SKILL_MODE_WITH_SKILL
     assert job._config.skills_dir == "skills"
@@ -490,7 +498,7 @@ datasets:
 """)
 
     job = Evaluation.from_yaml(config)
-    assert job._tasks_dir == Path("tasks")
+    assert job._tasks_dir == (Path.cwd() / "tasks")
     assert job._jobs_dir == Path("jobs/my-run")
     assert job._config.skill_mode == SKILL_MODE_WITH_SKILL
     assert job._config.skills_dir == "skills"

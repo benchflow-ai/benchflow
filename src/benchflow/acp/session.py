@@ -5,18 +5,17 @@ import os
 import time
 from collections.abc import Callable
 from datetime import datetime
-from itertools import groupby
-from operator import itemgetter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from benchflow.trajectories.metrics import is_skill_invocation_event
 
-from .types import (
-    AgentCapabilities,
-    AgentInfo,
-    StopReason,
-    ToolCallStatus,
-)
+from .types import StopReason, ToolCallStatus
+
+if TYPE_CHECKING:
+    # SDK-backed (benchflow.acp.types loads the ACP schema for them): only
+    # annotations here, so trajectory capture, which every rollout imports,
+    # does not load it.
+    from .types import AgentCapabilities, AgentInfo
 
 logger = logging.getLogger(__name__)
 
@@ -140,24 +139,6 @@ def _canonical_tool_kind(kind: object, title: object = "") -> str:
     return raw_kind
 
 
-def merge_text_runs(chunks: list[dict]) -> list[dict]:
-    """Merge consecutive same-type text chunks into one event per run.
-
-    Each run is joined once, so the cost is linear in the streamed text;
-    growing a run with ``+=`` would copy everything streamed so far on every
-    chunk. ``chunks`` is left untouched, and each event keeps the other keys
-    of its run's first chunk.
-    """
-    merged: list[dict] = []
-    for _type, group in groupby(chunks, key=itemgetter("type")):
-        run = list(group)
-        event = dict(run[0])
-        if len(run) > 1:
-            event["text"] = "".join(chunk["text"] for chunk in run)
-        merged.append(event)
-    return merged
-
-
 def _tool_display_title(title: str, kind: str) -> str:
     """A tool call's display title: first line of ``title``, else ``kind``.
 
@@ -167,6 +148,75 @@ def _tool_display_title(title: str, kind: str) -> str:
     "renders differently".
     """
     return (title or kind or "").strip().split("\n", 1)[0]
+
+
+def _parent_tool_call_id(update: dict) -> str | None:
+    """Read only the explicit attribution claude-agent-acp emits.
+
+    The shape, ``_meta.claudeCode.parentToolUseId``, is the same from 0.73.0
+    through 0.81.2.
+    """
+    meta = update.get("_meta")
+    claude = meta.get("claudeCode") if isinstance(meta, dict) else None
+    parent = claude.get("parentToolUseId") if isinstance(claude, dict) else None
+    return parent if isinstance(parent, str) and parent else None
+
+
+def _same_text_stream(left: dict, right: dict) -> bool:
+    return left["type"] == right["type"] and left.get(
+        "parent_tool_call_id"
+    ) == right.get("parent_tool_call_id")
+
+
+_TERMINAL_TOOL_STATUSES = frozenset(
+    {ToolCallStatus.COMPLETED, ToolCallStatus.FAILED, ToolCallStatus.CANCELLED}
+)
+
+
+class _RecordedOutputState:
+    """Compare serialized output without joining the growing stream per update.
+
+    Terminal chunks are append-only. Capture their boundary and the effective
+    non-text fields; two snapshots of that stream differ only if a new chunk
+    is nonempty or a field changes. Materialize only when comparing a streamed
+    value with an explicit replacement, which may serialize identically.
+    """
+
+    def __init__(self, record: "ToolCallRecord"):
+        self._raw = record._raw_output
+        self._chunks: list[str] | None = None
+        self._end = 0
+        self._fields: dict = {}
+        if not record._terminal_output and record._terminal_exit is None:
+            return
+        raw = self._raw
+        if raw is not None and (not isinstance(raw, dict) or "formatted_output" in raw):
+            return
+        self._chunks = record._terminal_output
+        self._end = len(self._chunks)
+        self._fields = dict(raw) if isinstance(raw, dict) else {}
+        if record._terminal_exit is not None:
+            self._fields["exit_code"] = record._terminal_exit.get("exit_code")
+        self._fields.setdefault("exit_code", None)
+
+    def _value(self) -> object:
+        if self._chunks is None:
+            return self._raw
+        return {
+            "formatted_output": "".join(self._chunks[: self._end]),
+            **self._fields,
+        }
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _RecordedOutputState):
+            return NotImplemented
+        if self._chunks is not None and other._chunks is not None:
+            if self._fields != other._fields:
+                return False
+            if self._chunks is other._chunks:
+                start, end = sorted((self._end, other._end))
+                return not any(self._chunks[i] for i in range(start, end))
+        return self._value() == other._value()
 
 
 class ToolCallRecord:
@@ -181,6 +231,7 @@ class ToolCallRecord:
         self.title = title
         self.kind = kind
         self.status = ToolCallStatus.PENDING
+        self.trajectory_revision = 0
         self.content: list[dict] = []
         # ACP ``rawInput`` / ``rawOutput``: the agent's own view of the call.
         # codex-acp puts the command here; its output lands in ``raw_output``
@@ -189,21 +240,74 @@ class ToolCallRecord:
         self._raw_output: object | None = None
         self._terminal_output: list[str] = []
         self._terminal_exit: dict | None = None
+        self.parent_tool_call_id: str | None = None
+        # The agent's own tool name (Claude ACP: _meta.claudeCode.toolName),
+        # e.g. "Write" where the title says "Write hello.txt".
+        self.tool_name: str | None = None
         self.started_at = datetime.now()
         self.finished_at: datetime | None = None
+        # Host receipt (unix ns string) of the update that moved the call into
+        # its current terminal status; None while the call is not terminal.
+        self.finished_observed_ns: str | None = None
 
     def update_status(
-        self, status: ToolCallStatus, content: list[dict] | None = None
+        self,
+        status: ToolCallStatus,
+        content: list[dict] | None = None,
+        observed_ns: str | None = None,
     ) -> None:
+        was_terminal = self.status in _TERMINAL_TOOL_STATUSES
         self.status = status
         if content:
             self.content.extend(content)
-        if status in (
-            ToolCallStatus.COMPLETED,
-            ToolCallStatus.FAILED,
-            ToolCallStatus.CANCELLED,
-        ):
+        if status in _TERMINAL_TOOL_STATUSES:
             self.finished_at = datetime.now()
+            if not was_terminal:
+                self.finished_observed_ns = observed_ns
+        else:
+            self.finished_observed_ns = None
+
+    def absorb_tool_name(self, update: dict) -> None:
+        """Keep the agent-reported tool name, when the adapter sends one."""
+        meta = update.get("_meta")
+        claude = meta.get("claudeCode") if isinstance(meta, dict) else None
+        name = claude.get("toolName") if isinstance(claude, dict) else None
+        if isinstance(name, str) and name:
+            self.tool_name = name
+
+    def absorb_parent_attribution(self, update: dict) -> None:
+        """Retain Claude ACP's explicit child-tool attribution, not arbitrary meta.
+
+        claude-agent-acp (0.73.0 through 0.81.2) emits this even without its
+        optional native subagent-session capability. It is adapter-reported
+        parentage, not evidence that the child's complete transcript was
+        captured. A call named as its own parent is not attributed: the
+        adapter's ``tool_progress`` heartbeat for an Agent call whose subagent
+        is running reports that call with its own id as ``parentToolUseId``,
+        and a self-parented call would detach its whole subagent tree from
+        the root agent (the ATIF export drops unreachable scopes).
+        """
+        parent = _parent_tool_call_id(update)
+        if parent is None or parent == self.tool_call_id:
+            return
+        if self.parent_tool_call_id is None:
+            self.parent_tool_call_id = parent
+        elif self.parent_tool_call_id != parent:
+            logger.warning("Ignoring conflicting ACP child-tool parent attribution")
+
+    def absorb_title(self, update: dict) -> bool:
+        """Take the title an update sends; True when it changed.
+
+        ACP update fields replace the call's, and agents rely on it:
+        claude-agent-acp opens a call with a provisional title ("Preparing
+        file…", "Edit") and sends "<verb> <path>" once the input has arrived.
+        An absent, empty or whitespace-only title keeps the current one.
+        """
+        title = update.get("title")
+        if not isinstance(title, str) or not title.strip() or title == self.title:
+            return False
+        self.title = title
+        return True
 
     @property
     def raw_output(self) -> object | None:
@@ -251,6 +355,75 @@ class ToolCallRecord:
         if isinstance(terminal_exit, dict):
             self._terminal_exit = terminal_exit
 
+    def recorded_state(self) -> tuple:
+        """The mutable fields a trajectory serializes, for change detection."""
+        return (
+            self.status,
+            self.title,
+            self.kind,
+            len(self.content),
+            self.raw_input,
+            _RecordedOutputState(self),
+            self.parent_tool_call_id,
+        )
+
+
+def _host_receipt() -> dict[str, str]:
+    """Host observation times, not model/tool execution times.
+
+    Decimal nanosecond strings preserve precision in JSON/JavaScript. Unix wall
+    time is not monotonic or synchronized to a robot/video clock. First/last
+    refer to arrival order; do not infer execution duration from this range.
+    Trajectory capture also renders these times as the ISO-8601 ``ts`` /
+    ``started_at`` / ``finished_at`` fields proposed in GH #1033, which the
+    trajectory viewer (PR #1034) reads.
+
+    ``first_observed_ns`` is when the event's first update arrived. For merged
+    text it is the first chunk and ``last_observed_ns`` the last chunk. For a
+    tool call ``last_observed_ns`` is the arrival of the latest update that
+    changed the call's recorded state (status, kind, content, raw I/O, parent);
+    an unchanged status poll does not advance it, so repeated polls leave the
+    serialized trajectory byte-identical and the writer skips the rewrite.
+    """
+    now = str(time.time_ns())
+    return {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": now,
+        "last_observed_ns": now,
+    }
+
+
+def _merge_text_receipt(current: dict, event: dict) -> None:
+    """Retain the first and last chunk observations without mutating inputs."""
+    current["receipt"] = {
+        **current["receipt"],
+        "last_observed_ns": event["receipt"]["last_observed_ns"],
+    }
+
+
+def merge_text_runs(chunks: list[dict]) -> list[dict]:
+    """Merge consecutive chunks of one text stream into one event per run.
+
+    Each run is joined once, so the cost is linear in the streamed text;
+    growing a run with ``+=`` copied everything streamed so far on every
+    chunk, quadratic in the chunk count of a long streamed thought. ``chunks``
+    is left untouched; each event keeps the other keys of its run's first
+    chunk, and its receipt the run's first and last observations.
+    """
+    merged: list[dict] = []
+    start = 0
+    for end in range(1, len(chunks) + 1):
+        if end < len(chunks) and _same_text_stream(chunks[end], chunks[start]):
+            continue
+        event = dict(chunks[start])
+        if end - start > 1:
+            event["text"] = "".join(chunk["text"] for chunk in chunks[start:end])
+            _merge_text_receipt(event, chunks[end - 1])
+        merged.append(event)
+        start = end
+    return merged
+
 
 class ACPSession:
     """Tracks mutable state for one ACP session.
@@ -267,12 +440,20 @@ class ACPSession:
 
     def __init__(self, session_id: str):
         self.session_id = session_id
+        self.model_request_activity: Callable[[], tuple[int, float, float]] | None = (
+            None
+        )
         self.agent_info: AgentInfo | None = None
         self.agent_capabilities: AgentCapabilities | None = None
         self.model_state: dict | None = None
         self.config_options: list[dict] = []
         self.message_chunks: list[str] = []
         self.thought_chunks: list[str] = []
+        # Chunk lists count all received activity for the idle watchdog. These
+        # indices exclude child text from the root answer without discarding
+        # legacy flat chunks supplied by older shims. Lists are append-only.
+        self._child_message_chunk_indices: set[int] = set()
+        self._child_thought_chunk_indices: set[int] = set()
         self.tool_calls: list[ToolCallRecord] = []
         self._tool_call_map: dict[str, ToolCallRecord] = {}
         # Total update count is diagnostic. Per-call pending versions let the
@@ -291,15 +472,11 @@ class ACPSession:
         self.created_at = datetime.now()
         self.events: list[dict] = []
         self._pending_text: list[dict] = []
+        self._tool_receipts: dict[str, dict[str, str]] = {}
         self._events_active: bool = False
         # Optional sink invoked after every public state mutation so callers
         # can stream a trajectory snapshot to disk without polling.
         self.on_change: Callable[[ACPSession], None] | None = None
-        # True when the latest change only grew an existing event: another
-        # chunk of the newest text run, or more output for a tool call whose
-        # status and kind did not change. A sink may coalesce these, but
-        # should publish any other change at once.
-        self.last_change_incremental = False
         # Console progress heartbeat. Without it a first-run user stares at
         # total silence between "Prompt 1/1: ..." and the verifier — observed
         # 18 minutes on a passing rollout (fresh-user dogfood 2026-08-09) with
@@ -309,13 +486,13 @@ class ACPSession:
         self._prompt_started_at: float | None = None
         self._last_progress_at = 0.0
 
-    def _notify_change(self, *, incremental: bool = False) -> None:
+    def _notify_change(self, *, final: bool = False) -> None:
         self._maybe_log_progress()
-        self.last_change_incremental = incremental
         if self.on_change is None:
             return
         try:
-            self.on_change(self)
+            flush = getattr(self.on_change, "flush", None) if final else None
+            (flush if callable(flush) else self.on_change)(self)
         except Exception as e:
             # error (not warning): a failing callback means trajectory
             # streaming is silently degraded for the rest of the run,
@@ -367,14 +544,16 @@ class ACPSession:
         # prompts stay single-line.
         self._last_progress_at = time.monotonic()
         self._flush_agent_text()
-        self.events.append({"type": "user_message", "text": text})
+        self.events.append(
+            {"type": "user_message", "text": text, "receipt": _host_receipt()}
+        )
         self._notify_change()
 
     def mark_prompt_end(self) -> None:
         """Flush pending agent text after a prompt completes."""
         self._prompt_started_at = None
         self._flush_agent_text()
-        self._notify_change()
+        self._notify_change(final=True)
 
     def pending_tool_call_ids(self) -> list[str]:
         """Return tool calls that have not reached a terminal status."""
@@ -413,6 +592,7 @@ class ACPSession:
             {
                 "type": "agent_timeout",
                 "reason": "wall_clock_timeout",
+                "receipt": _host_receipt(),
                 "timeout_sec": timeout_sec,
                 "pending_tool_call_ids": list(pending_tool_call_ids),
                 "terminal_trajectory_complete": terminal_trajectory_complete,
@@ -441,21 +621,69 @@ class ACPSession:
         self.events.extend(merge_text_runs(self._pending_text))
         self._pending_text.clear()
 
-    def _record_tool_call(self, record: ToolCallRecord) -> None:
+    def _record_tool_call(
+        self, record: ToolCallRecord, receipt: dict[str, str]
+    ) -> None:
         """Register a newly created tool-call record in every live structure.
 
         Single bookkeeping site for the two creation paths in
         :meth:`handle_update` (``tool_call``, and the ``tool_call_update``
         fallback for unseen ids), so the distinct-title tracker can never
-        drift from the record list. ``title`` itself is never rewritten after
-        creation, but an empty-title record's display title follows ``kind``,
-        which the legacy-skill upgrade can rewrite — that site re-registers
-        the new display title (over-counting fails safe).
+        drift from the record list. A later update can retitle a call, and an
+        empty-title record's display title follows ``kind``, which the
+        legacy-skill upgrade can rewrite; both sites re-register the new
+        display title (over-counting fails safe).
         """
         self.tool_calls.append(record)
         self._tool_call_map[record.tool_call_id] = record
         self._seen_tool_titles.add(_tool_display_title(record.title, record.kind))
-        self.events.append({"type": "tool_call", "record": record})
+        self._tool_receipts[record.tool_call_id] = receipt
+        self.events.append({"type": "tool_call", "record": record, "receipt": receipt})
+
+    def _record_text(
+        self, text: str, event_type: str, update: dict, receipt: dict[str, str]
+    ) -> None:
+        parent = _parent_tool_call_id(update)
+        thought = event_type == "agent_thought"
+        chunks = self.thought_chunks if thought else self.message_chunks
+        child_indices = (
+            self._child_thought_chunk_indices
+            if thought
+            else self._child_message_chunk_indices
+        )
+        event: dict = {"type": event_type, "text": text, "receipt": receipt}
+        if parent is not None:
+            child_indices.add(len(chunks))
+            event["parent_tool_call_id"] = parent
+        chunks.append(text)
+        self._pending_text.append(event)
+
+    def _record_notice(self, update: dict, receipt: dict[str, str]) -> None:
+        """Record an ACP session notice as its own event.
+
+        A notice is what the adapter composed (a Codex warning, a model
+        fallback or reroute), not what the agent said: it never joins the
+        message or thought chunks, so it is not the agent's answer, not
+        activity for the idle watchdog, and not work for the integration
+        check (:mod:`benchflow.integration_health`).
+        """
+        title = str(update.get("title") or "").strip()
+        if not title:
+            return
+        severity = str(update.get("severity") or "info").strip() or "info"
+        description = str(update.get("description") or "").strip()
+        log = logger.info if severity == "info" else logger.warning
+        log("Agent notice (%s): %s", severity, title)
+        self._flush_agent_text()
+        event: dict = {
+            "type": "notice",
+            "severity": severity,
+            "title": title,
+            "receipt": receipt,
+        }
+        if description:
+            event["description"] = description
+        self.events.append(event)
 
     _RECOGNIZED_UPDATE_TYPES = frozenset(
         {
@@ -465,14 +693,18 @@ class ACPSession:
             "text_update",
             "agent_thought",
             "agent_thought_chunk",
+            "notice",
         }
     )
-    _TEXT_UPDATE_TYPES = frozenset(
-        {"agent_message_chunk", "text_update", "agent_thought", "agent_thought_chunk"}
-    )
 
-    def handle_update(self, update: dict) -> None:
-        """Process a session/update notification."""
+    def handle_update(
+        self, update: dict, *, _receipt: dict[str, str] | None = None
+    ) -> None:
+        """Process an update with an optional trusted, host-captured replay receipt.
+
+        ``_receipt`` is client bookkeeping, never read from the remote payload.
+        Direct callers continue to timestamp their observation here.
+        """
         self._events_active = True
         update_type = update.get("sessionUpdate")
         # Unknown update types (future ACP versions, agent-specific
@@ -482,9 +714,8 @@ class ACPSession:
         # types.
         if update_type not in self._RECOGNIZED_UPDATE_TYPES:
             return
-        incremental = False
-        pending_type = self._pending_text[-1]["type"] if self._pending_text else None
 
+        receipt = dict(_receipt) if _receipt is not None else _host_receipt()
         if update_type == "tool_call":
             self._flush_agent_text()
             record = ToolCallRecord(
@@ -500,21 +731,25 @@ class ACPSession:
             if isinstance(initial_content, list) and initial_content:
                 record.content.extend(initial_content)
             record.absorb_raw_io(update)
+            record.absorb_parent_attribution(update)
+            record.absorb_tool_name(update)
             # An opening call may already be terminal (codex-acp file edits
             # arrive completed with no later update); honor its status so it
             # never lingers in pending_tool_call_ids().
             if update.get("status") is not None:
                 try:
-                    record.update_status(ToolCallStatus(update["status"]))
+                    record.update_status(
+                        ToolCallStatus(update["status"]),
+                        observed_ns=receipt["last_observed_ns"],
+                    )
                 except ValueError:
                     logger.warning(f"Unknown tool call status: {update.get('status')}")
-            self._record_tool_call(record)
+            self._record_tool_call(record, receipt)
 
         elif update_type == "tool_call_update":
             self.tool_call_update_count += 1
             tc_id = update.get("toolCallId", "")
             record = self._tool_call_map.get(tc_id)
-            previous = (record.status, record.kind) if record else None
             if not record:
                 self._flush_agent_text()
                 record = ToolCallRecord(
@@ -524,15 +759,37 @@ class ACPSession:
                         update.get("kind", "tool"), update.get("title", "")
                     ),
                 )
-                self._record_tool_call(record)
+                record.status = ToolCallStatus.IN_PROGRESS
+                self._record_tool_call(record, receipt)
+            state_before = record.recorded_state()
+            record.trajectory_revision += 1
+            if record.absorb_title(update):
+                self._seen_tool_titles.add(
+                    _tool_display_title(record.title, record.kind)
+                )
+            # An update without a usable status never reopens a finished call
+            # (SWEEP-acp-providers-sol-7); on a live call it means it runs.
+            unchanged = (
+                record.status
+                if record.status in _TERMINAL_TOOL_STATUSES
+                else ToolCallStatus.IN_PROGRESS
+            )
             try:
-                status = ToolCallStatus(update.get("status", "in_progress"))
+                status = (
+                    ToolCallStatus(update["status"])
+                    if "status" in update
+                    else unchanged
+                )
             except ValueError:
                 logger.warning(f"Unknown tool call status: {update.get('status')}")
-                status = ToolCallStatus.IN_PROGRESS
+                status = unchanged
             content = update.get("content")
-            record.update_status(status, content)
+            record.update_status(
+                status, content, observed_ns=receipt["last_observed_ns"]
+            )
             record.absorb_raw_io(update)
+            record.absorb_parent_attribution(update)
+            record.absorb_tool_name(update)
             if status in (ToolCallStatus.PENDING, ToolCallStatus.IN_PROGRESS):
                 self._pending_tool_call_update_counts[tc_id] = (
                     self._pending_tool_call_update_counts.get(tc_id, 0) + 1
@@ -553,49 +810,53 @@ class ACPSession:
                 self._seen_tool_titles.add(
                     _tool_display_title(record.title, record.kind)
                 )
-            incremental = previous == (record.status, record.kind)
+            if record.recorded_state() != state_before:
+                tool_receipt = self._tool_receipts[tc_id]
+                tool_receipt["last_observed_ns"] = receipt["last_observed_ns"]
 
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
                 text = content.get("text", "")
-                self.message_chunks.append(text)
-                self._pending_text.append({"type": "agent_message", "text": text})
+                self._record_text(text, "agent_message", update, receipt)
 
         elif update_type == "text_update":
-            # Used by openclaw shim — full text (not chunked)
+            # Some ACP agents send full text rather than chunks.
             text = update.get("text", "")
             if text:
-                self.message_chunks.append(text)
-                self._pending_text.append({"type": "agent_message", "text": text})
+                self._record_text(text, "agent_message", update, receipt)
 
         elif update_type == "agent_thought":
-            # Used by openclaw shim — full thought (not chunked)
+            # Some ACP agents send full thoughts rather than chunks.
             text = update.get("text", "")
             if text:
-                self.thought_chunks.append(text)
-                self._pending_text.append({"type": "agent_thought", "text": text})
+                self._record_text(text, "agent_thought", update, receipt)
 
         elif update_type == "agent_thought_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
                 text = content.get("text", "")
-                self.thought_chunks.append(text)
-                self._pending_text.append({"type": "agent_thought", "text": text})
+                self._record_text(text, "agent_thought", update, receipt)
 
-        if update_type in self._TEXT_UPDATE_TYPES:
-            # Only the first chunk of a run starts an event.
-            incremental = (
-                not self._pending_text or self._pending_text[-1]["type"] == pending_type
-            )
-        self._notify_change(incremental=incremental)
+        elif update_type == "notice":
+            self._record_notice(update, receipt)
+
+        self._notify_change()
 
     @property
     def full_message(self) -> str:
-        """Concatenated agent message text from all received chunks."""
-        return "".join(self.message_chunks)
+        """Concatenated root-agent text, excluding explicitly attributed child chunks."""
+        return "".join(
+            text
+            for index, text in enumerate(self.message_chunks)
+            if index not in self._child_message_chunk_indices
+        )
 
     @property
     def full_thought(self) -> str:
-        """Concatenated agent thought/reasoning text from all received chunks."""
-        return "".join(self.thought_chunks)
+        """Concatenated root-agent reasoning, excluding attributed child chunks."""
+        return "".join(
+            text
+            for index, text in enumerate(self.thought_chunks)
+            if index not in self._child_thought_chunk_indices
+        )

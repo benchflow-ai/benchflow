@@ -7,7 +7,9 @@ provider calls are mocked — no live API keys are required.
 
 from __future__ import annotations
 
+import io
 import json
+import tarfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -111,8 +113,35 @@ input_dir = "/app"
 
 
 def _make_sandbox(deliverables: dict[str, str]) -> MagicMock:
-    """A sandbox stub whose download_dir drops the given files into dest."""
+    """Model the bounded native-judge archive, retaining direct-copy tests."""
     sandbox = MagicMock()
+    sandbox.supports_system_shell = True
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        folder = tarfile.TarInfo("app")
+        folder.type = tarfile.DIRTYPE
+        tar.addfile(folder)
+        for name, content in deliverables.items():
+            data = content.encode()
+            member = tarfile.TarInfo("app/" + name)
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+
+    async def fake_exec(command: str, **_kwargs: object) -> MagicMock:
+        stdout = (
+            f"BF copy {len(archive.getvalue())} 0" if "BF copy" in command else "dir"
+        )
+        return MagicMock(return_code=0, stdout=stdout)
+
+    async def fake_download_file(source: str, target: Path) -> None:
+        from benchflow.taskmd.verify import COPY_TAR
+
+        assert source == COPY_TAR
+        Path(target).write_bytes(archive.getvalue())
+
+    sandbox.exec = AsyncMock(side_effect=fake_exec)
+    sandbox.download_file = AsyncMock(side_effect=fake_download_file)
 
     async def fake_download_dir(source_dir: str, target_dir: Path) -> None:
         dest = Path(target_dir)
@@ -329,6 +358,7 @@ class TestLLMJudgeVerifier:
         import os
 
         monkeypatch.setenv("MY_JUDGE_KEY", "secret-123")
+        monkeypatch.setenv("BENCHFLOW_ALLOW_TASK_ENV", "MY_JUDGE_KEY")
         monkeypatch.delenv("RESOLVED_KEY", raising=False)
         mock_judge.return_value = _MOCK_PASS
 
@@ -363,6 +393,7 @@ class TestLLMJudgeVerifier:
 
         mock_judge.return_value = _MOCK_PASS
         monkeypatch.setenv("MY_JUDGE_KEY", "secret-123")
+        monkeypatch.setenv("BENCHFLOW_ALLOW_TASK_ENV", "MY_JUDGE_KEY")
         monkeypatch.setenv("RESOLVED_KEY", "preexisting")
 
         toml = _judge_toml() + '\n[verifier.env]\nRESOLVED_KEY = "${MY_JUDGE_KEY}"\n'
@@ -460,13 +491,14 @@ class TestLLMJudgeVerifier:
         (task.task_dir / "tests" / "rubric.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
-        sandbox = MagicMock()
-        sandbox.download_dir = AsyncMock(side_effect=RuntimeError("network down"))
+        sandbox = _make_sandbox({})
+        sandbox.download_file = AsyncMock(side_effect=RuntimeError("network down"))
         rollout_paths = RolloutPaths(tmp_path / "rollout")
         rollout_paths.mkdir()
 
         with pytest.raises(DownloadVerifierDirError, match="llm-judge input"):
             await Verifier(task, rollout_paths, sandbox).verify()
+        sandbox.download_file.assert_awaited_once()
         mock_judge.assert_not_awaited()
 
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
@@ -487,12 +519,7 @@ class TestLLMJudgeVerifier:
         stale_deliverables.mkdir()
         (stale_deliverables / "answer.txt").write_text("stale passing answer")
 
-        sandbox = MagicMock()
-
-        async def empty_download(source_dir: str, target_dir: Path) -> None:
-            Path(target_dir).mkdir(parents=True, exist_ok=True)
-
-        sandbox.download_dir = AsyncMock(side_effect=empty_download)
+        sandbox = _make_sandbox({})
 
         result = await Verifier(task, rollout_paths, sandbox).verify()
 
@@ -629,9 +656,9 @@ class TestTestScriptStillDefault:
         with pytest.raises(RewardFileNotFoundError, match="No reward file found"):
             await Verifier(task, rollout_paths, sandbox).verify()
 
-    # NOTE: pre-ENG-150 test `test_nonzero_test_script_cannot_turn_reward_file_into_pass`
-    # was deleted here (not rewritten). ENG-150 intentionally changed the verifier
-    # contract: nonzero exit + valid reward is now accepted. The new behavior is
+    # NOTE: the older test `test_nonzero_test_script_cannot_turn_reward_file_into_pass`
+    # was deleted here (not rewritten). The verifier contract was intentionally
+    # changed: nonzero exit + valid reward is now accepted. The new behavior is
     # covered by TestVerifierNonzeroExitRewardAcceptance in test_oracle_chokepoint.py.
 
     @pytest.mark.asyncio
@@ -702,7 +729,8 @@ class TestTestScriptStillDefault:
             ({"reward": float("nan")}, "missing numeric 'reward'"),
             ({"reward": float("inf")}, "missing numeric 'reward'"),
             ({"reward": True}, "missing numeric 'reward'"),
-            ({"reward": 1.2}, "missing numeric 'reward'"),
+            # Out of range: refused by name with its raw value (#1178).
+            ({"reward": 1.2}, r"verifier/reward\.json: reward = 1\.2 is outside"),
             ({"reward": 0.5, "extra": float("nan")}, "invalid reward value"),
         ],
     )

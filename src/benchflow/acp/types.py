@@ -22,33 +22,44 @@ A few types stay vendored on purpose:
   are BenchFlow framework transport types, not protocol schema.
 """
 
+import contextlib
+import importlib
+import sys
+import threading
 from enum import StrEnum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from acp import meta as _acp_meta
-from acp.schema import (
-    AgentCapabilities,
-    AuthCapabilities,
-    ClientCapabilities,
-    FileSystemCapabilities,
-    ImageContentBlock,
-    Implementation,
-    InitializeRequest,
-    InitializeResponse,
-    McpCapabilities,
-    NewSessionRequest,
-    NewSessionResponse,
-    PromptCapabilities,
-    PromptRequest,
-    PromptResponse,
-    ResourceContentBlock,
-    TextContentBlock,
-)
 from pydantic import BaseModel, Field
 
-# The ACP protocol version this client implements. Sourced from the SDK so it
-# tracks upstream; v1 is current. ``client.py`` imports this name.
-ACP_PROTOCOL_VERSION: int = _acp_meta.PROTOCOL_VERSION
+# The SDK-backed names (the aliases below, the capabilities and
+# ``ACP_PROTOCOL_VERSION``) resolve on first use (PEP 562, ``__getattr__`` at
+# the bottom): the SDK's schema takes about 0.2 s to import, and the vendored
+# names here (``StopReason``, ``McpServerSpec``) are imported by modules every
+# run loads, ACP agent or not. Type checkers read the same names from the
+# block below.
+if TYPE_CHECKING:
+    from acp.schema import (
+        AgentCapabilities,
+        AuthCapabilities,
+        ClientCapabilities,
+        FileSystemCapabilities,
+        ImageContentBlock,
+        Implementation,
+        InitializeRequest,
+        InitializeResponse,
+        McpCapabilities,
+        NewSessionRequest,
+        NewSessionResponse,
+        PromptCapabilities,
+        PromptRequest,
+        PromptResponse,
+        ResourceContentBlock,
+        TextContentBlock,
+    )
+
+    # The ACP protocol version this client implements. Sourced from the SDK so
+    # it tracks upstream; v1 is current. ``client.py`` imports this name.
+    ACP_PROTOCOL_VERSION: int
 
 
 # Enums (vendored — SDK exposes these as typing.Literal, not enums)
@@ -100,18 +111,20 @@ class ToolCallStatus(StrEnum):
 # BenchFlow's content-block names map to the SDK's discriminated ``*ContentBlock``
 # variants (which carry the ``type`` discriminator field).
 
-TextContent = TextContentBlock
-ImageContent = ImageContentBlock
-ResourceLink = ResourceContentBlock
+if TYPE_CHECKING:
+    TextContent = TextContentBlock
+    ImageContent = ImageContentBlock
+    ResourceLink = ResourceContentBlock
 
-ContentBlock = TextContentBlock | ImageContentBlock | ResourceContentBlock
+    ContentBlock = TextContentBlock | ImageContentBlock | ResourceContentBlock
 
 
 # Capabilities & identity (SDK-backed)
 
-FsCapabilities = FileSystemCapabilities
-ClientInfo = Implementation
-AgentInfo = Implementation
+if TYPE_CHECKING:
+    FsCapabilities = FileSystemCapabilities
+    ClientInfo = Implementation
+    AgentInfo = Implementation
 
 # ``ClientCapabilities``, ``AgentCapabilities``, ``PromptCapabilities`` and
 # ``McpCapabilities`` are re-exported directly from the SDK under their
@@ -123,12 +136,45 @@ AgentInfo = Implementation
 # BenchFlow historically named these ``*Params`` / ``*Result``; the SDK names
 # them ``*Request`` / ``*Response``. Keep both working.
 
-InitializeParams = InitializeRequest
-InitializeResult = InitializeResponse
-NewSessionParams = NewSessionRequest
-NewSessionResult = NewSessionResponse
-PromptParams = PromptRequest
-PromptResult = PromptResponse
+if TYPE_CHECKING:
+    InitializeParams = InitializeRequest
+    InitializeResult = InitializeResponse
+    NewSessionParams = NewSessionRequest
+    NewSessionResult = NewSessionResponse
+    PromptParams = PromptRequest
+    PromptResult = PromptResponse
+
+# Each SDK-backed name and the ``acp.schema`` class it is.
+_SDK_NAMES = {
+    "AgentCapabilities": "AgentCapabilities",
+    "AuthCapabilities": "AuthCapabilities",
+    "ClientCapabilities": "ClientCapabilities",
+    "FileSystemCapabilities": "FileSystemCapabilities",
+    "ImageContentBlock": "ImageContentBlock",
+    "Implementation": "Implementation",
+    "InitializeRequest": "InitializeRequest",
+    "InitializeResponse": "InitializeResponse",
+    "McpCapabilities": "McpCapabilities",
+    "NewSessionRequest": "NewSessionRequest",
+    "NewSessionResponse": "NewSessionResponse",
+    "PromptCapabilities": "PromptCapabilities",
+    "PromptRequest": "PromptRequest",
+    "PromptResponse": "PromptResponse",
+    "ResourceContentBlock": "ResourceContentBlock",
+    "TextContentBlock": "TextContentBlock",
+    "TextContent": "TextContentBlock",
+    "ImageContent": "ImageContentBlock",
+    "ResourceLink": "ResourceContentBlock",
+    "FsCapabilities": "FileSystemCapabilities",
+    "ClientInfo": "Implementation",
+    "AgentInfo": "Implementation",
+    "InitializeParams": "InitializeRequest",
+    "InitializeResult": "InitializeResponse",
+    "NewSessionParams": "NewSessionRequest",
+    "NewSessionResult": "NewSessionResponse",
+    "PromptParams": "PromptRequest",
+    "PromptResult": "PromptResponse",
+}
 
 
 class McpServerSpec(BaseModel):
@@ -383,3 +429,51 @@ __all__ = [
     "WaitForExitParams",
     "WriteFileParams",
 ]
+
+
+_sdk_import_started = False
+
+
+def prewarm_sdk() -> None:
+    """Import the ACP SDK's schema in a thread of this process, once.
+
+    The names above load it on first use, when the agent connects: about
+    0.25 s of the event loop on a build VM, right before the agent starts.
+    Started once the sandbox is up (Rollout._prewarm_acp), the import overlaps
+    the sandbox's setup; the later import waits on the module lock for what is
+    left and gets the same module. The SDK imports nothing of BenchFlow's
+    (SPEED-FIX)."""
+    global _sdk_import_started
+    if _sdk_import_started or "acp.schema" in sys.modules:
+        return
+    _sdk_import_started = True
+
+    def _import() -> None:
+        with contextlib.suppress(Exception):
+            importlib.import_module("acp.schema")
+            importlib.import_module("acp.meta")
+
+    threading.Thread(target=_import, name="acp-import", daemon=True).start()
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ACP_PROTOCOL_VERSION":
+        from acp import meta
+
+        value: Any = meta.PROTOCOL_VERSION
+    elif name == "ContentBlock":
+        from acp.schema import (
+            ImageContentBlock,
+            ResourceContentBlock,
+            TextContentBlock,
+        )
+
+        value = TextContentBlock | ImageContentBlock | ResourceContentBlock
+    elif name in _SDK_NAMES:
+        from acp import schema
+
+        value = getattr(schema, _SDK_NAMES[name])
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value

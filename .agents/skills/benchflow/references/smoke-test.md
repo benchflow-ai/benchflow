@@ -6,20 +6,21 @@ Run these after any code change to verify the system works end-to-end.
 
 ```python
 import asyncio
-from benchflow import SDK
+import benchflow as bf
+
+TASK = bf.resolve_source("terminal-bench-2", path="log-summary-date-ranges")
 
 async def main():
-    sdk = SDK()
     for agent in ["claude-agent-acp", "pi-acp", "openclaw"]:
-        result = await sdk.run(
-            task_path="harbor-framework/terminal-bench-2/log-summary-date-ranges",
+        result = await bf.run(bf.RolloutConfig(
+            task_path=TASK,
             agent=agent,
             model="claude-haiku-4-5-20251001",
             environment="daytona",
             jobs_dir=f"jobs/smoke-{agent}",
-        )
-        status = "PASS" if result.rewards and result.rewards.get("reward") == 1.0 else "FAIL"
-        print(f"[{agent}] {status} reward={result.rewards} tools={result.n_tool_calls} error={result.error}")
+        ))
+        status = "PASS" if result.passed else "FAIL"
+        print(f"[{agent}] {status} reward={result.reward} tools={result.n_tool_calls} error={result.error}")
 
 asyncio.run(main())
 ```
@@ -28,11 +29,11 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from benchflow import Job, JobConfig
+from benchflow import Evaluation, EvaluationConfig, resolve_source
 
 TASKS = {
-    "tb2": "harbor-framework/terminal-bench-2",
-    "skills": "benchflow-ai/skillsbench/tasks",
+    "tb2": resolve_source("terminal-bench-2"),
+    "skills": resolve_source("skillsbench"),
 }
 
 async def main():
@@ -48,10 +49,10 @@ async def main():
                 if not link.exists():
                     link.symlink_to(task.resolve())
 
-        job = Job(
+        job = Evaluation(
             tasks_dir=str(subset),
             jobs_dir=f"jobs/smoke-{name}",
-            config=JobConfig(
+            config=EvaluationConfig(
                 agent="claude-agent-acp",
                 model="claude-haiku-4-5-20251001",
                 environment="daytona",
@@ -78,7 +79,7 @@ Every smoke test must verify:
 TB2 single-turn:
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: terminal-bench-2
 jobs_dir: jobs/tb2-haiku
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
@@ -90,7 +91,7 @@ max_retries: 1
 TB2 multi-turn:
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: terminal-bench-2
 jobs_dir: jobs/tb2-multiturn
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001

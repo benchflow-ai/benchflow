@@ -152,7 +152,7 @@ def test_cli_single_task_dir_unmatched_include_exits_nonzero(tmp_path, monkeypat
         ],
     )
 
-    assert result.exit_code == 1, result.stdout
+    assert result.exit_code == 2, result.stdout
     assert sdk_calls["count"] == 0, (
         "--include with a missing name must not silently run the task (#401)."
     )

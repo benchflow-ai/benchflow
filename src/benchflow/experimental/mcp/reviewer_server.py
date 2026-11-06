@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import stat
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -86,13 +87,9 @@ def create_reviewer_server(
         # Read files — restrict to /app/ to prevent path traversal
         file_contents = []
         target_files = files or _find_modified_files()
-        app_root = Path("/app").resolve()
         for f in target_files:
-            path = (Path("/app") / f).resolve()
-            if not str(path).startswith(str(app_root)):
-                continue
-            if path.exists():
-                content = path.read_text()[:50000]
+            content = _read_app_file(f)
+            if content is not None:
                 file_contents.append(f"=== {f} ===\n{content}")
 
         if not file_contents:
@@ -113,6 +110,38 @@ def create_reviewer_server(
         return json.dumps({"status": "ready", "model": model})
 
     return mcp
+
+
+def _read_app_file(name: str) -> str | None:
+    """Read through a pinned /app descriptor; refuse links and special files.
+
+    Each component is checked as it is opened, so a rename cannot redirect a
+    later privileged read outside the directory already held open.
+    """
+    parts = name.split("/")
+    if not parts or any(p in {"", ".", ".."} for p in parts):
+        return None
+    directory = None
+    try:
+        directory = os.open(Path("/app"), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in parts[:-1]:
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+            )
+            os.close(directory)
+            directory = child
+        fd = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+        )
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return None
+            return stream.read(50000)
+    except (OSError, ValueError):
+        return None
+    finally:
+        if directory is not None:
+            os.close(directory)
 
 
 def _find_modified_files() -> list[str]:

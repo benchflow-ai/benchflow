@@ -10,10 +10,12 @@ import asyncio
 import json
 import shutil
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from benchflow._utils.reachable_write import ReachablePath
 from benchflow.sandbox import apple_container as apple_mod
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.apple_container import (
@@ -24,6 +26,7 @@ from benchflow.sandbox.apple_container import (
 )
 from benchflow.task.config import NetworkMode, SandboxConfig
 from benchflow.task.paths import RolloutPaths
+from tests._trust_admission import admitted
 
 
 @pytest.fixture(autouse=True)
@@ -373,6 +376,8 @@ class TestExec:
         sandbox = _started(make_sandbox)
         hostile_user = "worker; touch /tmp/pwned"
         hostile_cwd = "/app/a path; touch /tmp/pwned"
+        # Its uid as exec_route's lookup would read it (not root).
+        sandbox._named_uids = (sandbox._exec_generation, {("main", hostile_user): 1000})
         with patch.object(
             apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
         ) as run:
@@ -384,7 +389,7 @@ class TestExec:
             "--user",
             hostile_user,
             "bf_sess-001",
-            "sh",
+            "/bin/sh",
             "-c",
             "printf ok",
             timeout=None,
@@ -416,7 +421,9 @@ class TestExec:
         assert call is not None
         argv = call.args
         assert "sk-secret-123" not in "\n".join(argv)
-        assert "base64 -d" in argv[-1]
+        # The env is the exec's stdin, as on Docker (b156).
+        assert argv[:2] == ("exec", "-i") and ". /dev/stdin" in argv[-1]
+        assert b"export API_KEY=sk-secret-123\n" in call.kwargs["stdin_data"]
 
     @pytest.mark.asyncio
     async def test_exec_rejects_non_main_service(self, make_sandbox):
@@ -448,12 +455,27 @@ class TestFileTransfer:
         sandbox = _started(make_sandbox)
         source = tmp_path / "source.txt"
         source.write_text("data")
-        with patch.object(apple_mod.shutil, "copy2") as copy:
-            await sandbox.upload_file(source, "/logs/verifier/out.txt")
+        from benchflow._utils import reachable_write
+
+        with patch.object(
+            reachable_write, "copy_mounted", wraps=reachable_write.copy_mounted
+        ) as copy:
+            await sandbox.upload_file(
+                source, "/logs/verifier/out.txt", admission=admitted(sandbox)
+            )
         assert sandbox.rollout_paths is not None
         copy.assert_called_once_with(
-            source, sandbox.rollout_paths.rollout_dir / "verifier" / "out.txt"
+            source.parent,
+            (source.name,),
+            # /logs is the whole rollout folder: the destination is held there
+            # and walked no-follow, never a resolved path (R8-1).
+            ReachablePath.directory(sandbox.rollout_paths.rollout_dir)
+            / "verifier"
+            / "out.txt",
+            directory=False,
+            mode=None,
         )
+        assert (sandbox.rollout_paths.verifier_dir / "out.txt").read_text() == "data"
 
     @pytest.mark.asyncio
     async def test_unmounted_upload_uses_native_copy(self, make_sandbox, tmp_path):
@@ -465,7 +487,9 @@ class TestFileTransfer:
         with patch.object(
             apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
         ) as run:
-            await sandbox.upload_file(source, "/app/out.txt")
+            await sandbox.upload_file(
+                source, "/app/out.txt", admission=admitted(sandbox)
+            )
         calls = [call.args for call in run.await_args_list]
         assert calls[-1] == ("cp", str(source), "bf_sess-001:/app/out.txt")
         assert all("base64" not in "\n".join(call) for call in calls)
@@ -483,7 +507,7 @@ class TestFileTransfer:
         with patch.object(
             apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
         ) as run:
-            await sandbox.upload_dir(source, "/skills")
+            await sandbox.upload_dir(source, "/skills", admission=admitted(sandbox))
         copy_calls = [call.args for call in run.await_args_list if call.args[0] == "cp"]
         assert copy_calls == [
             ("cp", str(source / "file.txt"), "bf_sess-001:/skills/"),
@@ -496,16 +520,73 @@ class TestFileTransfer:
 
         sandbox = _started(make_sandbox)
         target = tmp_path / "out.bin"
+
+        async def copy(*args, **kwargs):
+            Path(args[2]).write_bytes(b"downloaded")
+            return _success()
+
         with patch.object(
-            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+            apple_mod, "_run_cli", new_callable=AsyncMock, side_effect=copy
         ) as run:
             await sandbox.download_file("/opt/data.bin", target)
-        run.assert_awaited_once_with(
-            "cp",
-            "bf_sess-001:/opt/data.bin",
-            str(target),
-            timeout=120,
-        )
+        assert run.await_count == 1
+        assert run.await_args.args[:2] == ("cp", "bf_sess-001:/opt/data.bin")
+        assert Path(run.await_args.args[2]).name == "payload"
+        assert not Path(run.await_args.args[2]).exists()
+        assert run.await_args.kwargs == {"timeout": 120}
+        assert target.read_bytes() == b"downloaded"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("directory", [False, True])
+    @pytest.mark.parametrize("mounted", [False, True])
+    async def test_download_refuses_linked_destination_parent(
+        self, make_sandbox, tmp_path, directory, mounted
+    ):
+        """Guards the fix at 04d3d5f9 on both Apple copy routes.
+
+        The link is planted where a sandbox can write: under the rollout's
+        /logs/verifier (R8-1 canonicalises only the controller-owned prefix).
+        """
+        sandbox = _started(make_sandbox)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        marker = outside / "dummy"
+        marker.write_text("DUMMY_HOST_MARKER")
+        sandbox.rollout_paths.mkdir()
+        parent = sandbox.rollout_paths.rollout_dir / "verifier" / "parent"
+        parent.symlink_to(outside, target_is_directory=True)
+
+        def payload(path):
+            if directory:
+                path.mkdir(parents=True, exist_ok=True)
+                (path / "dummy").write_text("submission")
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("submission")
+
+        async def copy(*args, **kwargs):
+            payload(Path(args[2]))
+            return _success()
+
+        if mounted:
+            payload(sandbox.rollout_paths.rollout_dir / "artifacts" / "payload")
+        source = "/logs/artifacts/payload" if mounted else "/workspace/payload"
+        with (
+            patch.object(apple_mod, "_run_cli", side_effect=copy),
+            pytest.raises((OSError, ValueError)),
+        ):
+            if directory:
+                # The rollout's capability: verifier/ is the trusted root and
+                # the planted link below it is refused.
+                await sandbox.download_dir(
+                    source, sandbox.rollout_paths.verifier_dir / "parent" / "out"
+                )
+            else:
+                await sandbox.download_file(
+                    source, sandbox.rollout_paths.verifier_dir / "parent" / "dummy"
+                )
+        assert marker.read_text() == "DUMMY_HOST_MARKER"
+        assert not (outside / "out").exists()
 
     def test_mounted_path_rejects_parent_traversal(self, make_sandbox):
         """Guards PR #936 against escaping the rollout directory through /logs."""
@@ -562,7 +643,9 @@ async def test_real_apple_container_lifecycle_and_copy(tmp_path):
 
         source = tmp_path / "upload.txt"
         source.write_text("uploaded content")
-        await sandbox.upload_file(source, "/tmp/upload.txt")
+        await sandbox.upload_file(
+            source, "/tmp/upload.txt", admission=admitted(sandbox)
+        )
         downloaded = tmp_path / "downloaded.txt"
         await sandbox.download_file("/tmp/upload.txt", downloaded)
         assert downloaded.read_text() == "uploaded content"
@@ -571,7 +654,9 @@ async def test_real_apple_container_lifecycle_and_copy(tmp_path):
         source_dir.mkdir()
         source_dir.joinpath("nested").mkdir()
         source_dir.joinpath("nested", "child.txt").write_text("nested content")
-        await sandbox.upload_dir(source_dir, "/tmp/dir-target")
+        await sandbox.upload_dir(
+            source_dir, "/tmp/dir-target", admission=admitted(sandbox)
+        )
         result = await sandbox.exec("cat /tmp/dir-target/nested/child.txt")
         assert result.stdout == "nested content"
     finally:

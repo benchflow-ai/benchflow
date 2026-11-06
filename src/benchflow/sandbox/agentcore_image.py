@@ -8,12 +8,21 @@ data-plane behavior.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from benchflow.sandbox import agentcore_builder as builders
 from benchflow.sandbox import agentcore_provisioning as provisioning
+from benchflow.sandbox._base import (
+    BASH_STARTUP_PREFIX,
+    BASH_STARTUP_VARS,
+    IMAGE_ENV_PREFIX,
+    SYSTEM_SHELL_EMPTY_VARS,
+    restore_image_env,
+    startup_refusal,
+)
 from benchflow.task.config import SandboxConfig
 
 # Stdlib-only responder for the AgentCore Runtime HTTP contract. Kept
@@ -58,6 +67,62 @@ if __name__ == "__main__":
 '''
 
 
+# AgentCore starts every command's first shell itself, as root, with the
+# image's ENV (C8): an image whose LD_PRELOAD or BASH_ENV names a file the
+# agent can replace would run the agent's code there before any text
+# BenchFlow sends. The image BenchFlow builds keeps those values aside under
+# IMAGE_ENV_PREFIX names and sets them empty; restore_image_env gives them
+# back to every command but BenchFlow's plumbing. One ENV instruction:
+# Docker expands each value from the environment before it.
+_STARTUP_ENV_ASIDE = (
+    "# --- BenchFlow: loader and start-up values aside (C8) ---\n"
+    + "ENV "
+    + " ".join(
+        f"{IMAGE_ENV_PREFIX}{name}=${{{name}}} {name}="
+        for name in SYSTEM_SHELL_EMPTY_VARS
+    )
+    + "\n"
+)
+
+
+# bash's start-up names (an exported function, SHELLOPTS, BASHOPTS) cannot
+# be set aside the same way (no ENV line can name an unknown ``BASH_FUNC_*%%``)
+# or given back to a task's command, so an image that sets one to a value is
+# refused at build (``startup_name``). Exec form and the
+# shim's python3, so no shell of the image runs the check.
+_STARTUP_NAMES_CHECK = (
+    "# --- BenchFlow: no bash start-up names in the image's ENV (C8) ---\n"
+    + "RUN "
+    + json.dumps(
+        [
+            "python3",
+            "-c",
+            "import os, sys\n"
+            "bad = sorted(n for n, v in os.environ.items() if v and "
+            f"(n.startswith({BASH_STARTUP_PREFIX!r}) or n in {BASH_STARTUP_VARS!r}))\n"
+            "if bad:\n"
+            f"    sys.exit({startup_refusal(['{names}'], 'the AgentCore image')!r}"
+            ".replace('{names}', ', '.join(bad)))\n",
+        ]
+    )
+    + "\n"
+)
+
+
+# The ping shim is the image's own ``python3``, started when the session
+# starts, before any agent turn: it gets the image's loader values back (a
+# Python that finds libpython only through the image's LD_LIBRARY_PATH) in a
+# subshell, so only the shim has them, not PID 1: the ``/bin/sh`` that
+# passes a stop on to the shim. Every command the runtime starts later still
+# begins with them empty (the ENV line above).
+_SHIM_PATH = "/opt/benchflow_agentcore_shim.py"
+_SHIM_START = (
+    f"({restore_image_env()}exec python3 {_SHIM_PATH}) & "
+    'pid=$!; trap \'kill "$pid"\' TERM INT; wait "$pid"'
+)
+_SHIM_CMD = "CMD " + json.dumps(["/bin/sh", "-c", _SHIM_START]) + "\n"
+
+
 class AgentCoreImagePublisher:
     """Publish one task context to ECR and return its immutable image URI."""
 
@@ -100,8 +165,9 @@ class AgentCoreImagePublisher:
 
     async def publish(self, *, force_build: bool) -> str:
         """Build/push the image once and return an immutable digest URI."""
-        _digest, tag = self.identity()
-        tagged_uri = f"{self._registry()}/{self._ecr_repository}:{tag}"
+        _digest, tag = await asyncio.to_thread(self.identity)
+        registry = await asyncio.to_thread(self._registry)
+        tagged_uri = f"{registry}/{self._ecr_repository}:{tag}"
         cache_key = f"image:{tagged_uri}:{force_build}"
 
         async def _publish() -> str:
@@ -161,14 +227,15 @@ class AgentCoreImagePublisher:
             + "RUN command -v openssl >/dev/null 2>&1 || "
             + "(apt-get update -qq && apt-get install -y -qq openssl) || "
             + "dnf -y install openssl || apk add --no-cache openssl || true\n"
+            + _STARTUP_NAMES_CHECK
+            + _STARTUP_ENV_ASIDE
             + "# --- BenchFlow AgentCore runtime contract ---\n"
             + "# AgentCore refuses command execution for a session whose\n"
             + "# container does not answer GET /ping on :8080.\n"
-            + f"COPY {provisioning.GENERATED_SHIM} "
-            + "/opt/benchflow_agentcore_shim.py\n"
+            + f"COPY {provisioning.GENERATED_SHIM} {_SHIM_PATH}\n"
             + "EXPOSE 8080\n"
             + "ENTRYPOINT []\n"
-            + 'CMD ["python3", "/opt/benchflow_agentcore_shim.py"]\n'
+            + _SHIM_CMD
         )
 
     def _ensure_ecr_repository(self) -> None:

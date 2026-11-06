@@ -36,6 +36,9 @@ def _pi_env(monkeypatch, tmp_path):
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_MODEL",
     ):
+        # Guards batch 7 at f79b2260: delenv records nothing for an absent
+        # key, so register it first to undo setup_provider's direct writes.
+        monkeypatch.setenv(key, "")
         monkeypatch.delenv(key, raising=False)
 
 

@@ -3,6 +3,6 @@ source:
   path: datasets/harvey-lab/tasks
 
 agent: gemini
-model: gemini/gemini-3.1-flash-lite-preview
+model: gemini/gemini-3.5-flash-lite
 environment: docker
 concurrency: 4

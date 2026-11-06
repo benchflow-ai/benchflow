@@ -11,7 +11,7 @@ exporters.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +20,17 @@ from typing import Any, Literal, cast
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
 from benchflow._utils.result_paths import iter_task_result_paths
 from benchflow._utils.scoring import extract_reward
+from benchflow.trajectories.sft_subagents import (
+    SubagentConversionCounts,
+    reject_results_row_subagent_steps,
+    split_rollout_exchanges,
+    subagent_row_tags,
+)
+from benchflow.trajectories.training_signal import (
+    GroupAdvantage,
+    TrainingSignals,
+    compute_training_signals,
+)
 from benchflow.trajectories.types import redact_trajectory_obj
 
 PrimeSftRowMode = Literal["rollout", "exchange"]
@@ -65,13 +76,28 @@ class PrimeSftExportStats:
     skipped_no_assistant: int = 0
     skipped_missing_tool_defs: int = 0
     skipped_terminal_error: int = 0
+    # Control runs (oracle, empty/nop): no model calls to train on.
+    skipped_control: int = 0
+    # Tool-less model calls nested inside a tool (e.g. Claude Code's WebSearch)
+    # in rollouts whose exchanges were attributed; they belong to no agent.
+    skipped_helper_calls: int = 0
     skipped_invalid: int = 0
     tool_call_ids_rewritten: int = 0
     tool_messages_merged: int = 0
+    subagents: SubagentConversionCounts = field(
+        default_factory=SubagentConversionCounts
+    )
     sources: list[str] = field(default_factory=list)
+    # --reward-vector / --group-advantage: options and one entry per group.
+    training_signal: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            **(
+                {"training_signal": self.training_signal}
+                if self.training_signal is not None
+                else {}
+            ),
             "rollouts_seen": self.rollouts_seen,
             "exchanges_seen": self.exchanges_seen,
             "rows_written": self.rows_written,
@@ -84,9 +110,12 @@ class PrimeSftExportStats:
             "skipped_no_assistant": self.skipped_no_assistant,
             "skipped_missing_tool_defs": self.skipped_missing_tool_defs,
             "skipped_terminal_error": self.skipped_terminal_error,
+            "skipped_control": self.skipped_control,
+            "skipped_helper_calls": self.skipped_helper_calls,
             "skipped_invalid": self.skipped_invalid,
             "tool_call_ids_rewritten": self.tool_call_ids_rewritten,
             "tool_messages_merged": self.tool_messages_merged,
+            **self.subagents.as_dict(),
             "sources": self.sources,
         }
 
@@ -152,6 +181,17 @@ def load_llm_trajectory_jsonl(
                 f"{path}: line {line_num}: top-level record must be an object"
             )
     return records
+
+
+def is_control_run(rollout_dir: Path) -> bool:
+    """An oracle or empty (nop) control run, as ``bf.load_trial`` names one:
+    it made no model calls, so it has no rows to train on (DFR-p5-18)."""
+    from benchflow.jobs import load_trial
+
+    try:
+        return load_trial(rollout_dir).control is not None
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
 
 
 def _iter_rollout_dirs(root: str | Path) -> list[Path]:
@@ -274,7 +314,11 @@ def _json_tool_call_arguments(arguments: Any, *, redact: bool = True) -> str:
 
 
 def _normalize_tool_call(
-    call: dict[str, Any], index: int = 0, *, redact: bool = True
+    call: dict[str, Any],
+    index: int = 0,
+    *,
+    redact: bool = True,
+    synthetic_ids: bool = True,
 ) -> dict[str, Any]:
     function = call.get("function")
     if not isinstance(function, dict):
@@ -282,7 +326,11 @@ def _normalize_tool_call(
     name = function.get("name") or call.get("name") or "tool"
     arguments = function.get("arguments", call.get("arguments", {}))
     return {
-        "id": str(call.get("id") or call.get("tool_call_id") or f"call_{index:06d}"),
+        "id": str(
+            call.get("id")
+            or call.get("tool_call_id")
+            or (f"call_{index:06d}" if synthetic_ids else "")
+        ),
         "type": "function",
         "function": {
             "name": str(name),
@@ -292,10 +340,14 @@ def _normalize_tool_call(
 
 
 def _normalize_message(
-    message: dict[str, Any], index: int, *, redact: bool = True
+    message: dict[str, Any],
+    index: int,
+    *,
+    redact: bool = True,
+    synthetic_ids: bool = True,
 ) -> dict[str, Any]:
     message_type = message.get("type")
-    if message_type == "function_call":
+    if message_type in {"function_call", "tool_call"}:
         return {
             "role": "assistant",
             "content": "",
@@ -311,10 +363,11 @@ def _normalize_message(
                     },
                     index,
                     redact=redact,
+                    synthetic_ids=synthetic_ids,
                 )
             ],
         }
-    if message_type == "function_call_output":
+    if message_type in {"function_call_output", "tool_call_output"}:
         return {
             "role": "tool",
             "tool_call_id": str(message.get("call_id") or message.get("id") or ""),
@@ -333,7 +386,7 @@ def _normalize_message(
         tool_calls = [message["function_call"]]
     if isinstance(tool_calls, list) and tool_calls:
         out["tool_calls"] = [
-            _normalize_tool_call(call, i, redact=redact)
+            _normalize_tool_call(call, i, redact=redact, synthetic_ids=synthetic_ids)
             for i, call in enumerate(tool_calls)
             if isinstance(call, dict)
         ]
@@ -377,24 +430,89 @@ def prime_sft_last_user_training_window(
 
 
 def _messages_from_chat_request(
-    body: dict[str, Any], *, redact: bool = True
+    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
 ) -> list[dict[str, Any]]:
     messages = body.get("messages")
     if not isinstance(messages, list):
         return []
     normalized: list[dict[str, Any]] = []
+    if body.get("system"):
+        normalized.append(
+            {"role": "system", "content": _content_to_text(body["system"])}
+        )
     for idx, message in enumerate(messages):
         if not isinstance(message, dict):
             continue
         message = cast(dict[str, Any], message)
         if message.get("type") == "reasoning":
             continue
-        normalized.append(_normalize_message(message, idx, redact=redact))
+        if message.get("role") == "function" and normalized:
+            # Legacy function results identify the pending call by name rather
+            # than ID. Only an immediately preceding single call can supply it.
+            previous = normalized[-1]
+            calls = previous.get("tool_calls") or []
+            if (
+                previous.get("role") == "assistant"
+                and len(calls) == 1
+                and calls[0]["function"]["name"] == message.get("name")
+            ):
+                normalized.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": calls[0]["id"],
+                        "name": str(message["name"]),
+                        "content": _content_to_text(message.get("content")),
+                    }
+                )
+                continue
+        content = message.get("content")
+        if isinstance(content, list):
+            if message.get("role") == "assistant" and any(
+                isinstance(block, dict) and block.get("type") == "tool_use"
+                for block in content
+            ):
+                assistant = _assistant_from_anthropic_content(
+                    content, redact=redact, synthetic_ids=synthetic_ids
+                )
+                if assistant is not None:
+                    normalized.append(assistant)
+                continue
+            if message.get("role") == "user" and any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in content
+            ):
+                # Tool results are protocol messages, not new user instructions.
+                # Keep parallel results and their IDs before any new user text.
+                remaining = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        normalized.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": str(block.get("tool_use_id") or ""),
+                                "content": _content_to_text(block.get("content")),
+                            }
+                        )
+                    else:
+                        remaining.append(block)
+                if remaining:
+                    normalized.append(
+                        _normalize_message(
+                            {**message, "content": remaining},
+                            idx,
+                            redact=redact,
+                            synthetic_ids=synthetic_ids,
+                        )
+                    )
+                continue
+        normalized.append(
+            _normalize_message(message, idx, redact=redact, synthetic_ids=synthetic_ids)
+        )
     return normalized
 
 
 def _messages_from_responses_request(
-    body: dict[str, Any], *, redact: bool = True
+    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     instructions = body.get("instructions")
@@ -409,7 +527,11 @@ def _messages_from_responses_request(
                 continue
             item = cast(dict[str, Any], item)
             if item.get("type") != "reasoning":
-                messages.append(_normalize_message(item, idx, redact=redact))
+                messages.append(
+                    _normalize_message(
+                        item, idx, redact=redact, synthetic_ids=synthetic_ids
+                    )
+                )
     return messages
 
 
@@ -428,7 +550,8 @@ def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
                 "name": item.get("name"),
                 "description": item.get("description", ""),
                 "parameters": item.get(
-                    "parameters", {"type": "object", "properties": {}}
+                    "parameters",
+                    item.get("input_schema", {"type": "object", "properties": {}}),
                 ),
             }
         if not function.get("name"):
@@ -440,7 +563,7 @@ def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _assistant_from_anthropic_content(
-    content: Any, *, redact: bool = True
+    content: Any, *, redact: bool = True, synthetic_ids: bool = True
 ) -> dict[str, Any] | None:
     """Build an assistant row from Anthropic ``/v1/messages`` content blocks.
 
@@ -471,37 +594,45 @@ def _assistant_from_anthropic_content(
     }
     if raw_tool_calls:
         message["tool_calls"] = [
-            _normalize_tool_call(call, i, redact=redact)
+            _normalize_tool_call(call, i, redact=redact, synthetic_ids=synthetic_ids)
             for i, call in enumerate(raw_tool_calls)
         ]
     return message
 
 
 def _assistant_from_chat_response(
-    body: dict[str, Any], *, redact: bool = True
+    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
 ) -> dict[str, Any] | None:
     choices = body.get("choices")
     if isinstance(choices, list) and choices:
         first = choices[0]
         if isinstance(first, dict) and isinstance(first.get("message"), dict):
-            return _normalize_message(first["message"], 0, redact=redact)
+            return _normalize_message(
+                first["message"], 0, redact=redact, synthetic_ids=synthetic_ids
+            )
     message = body.get("message")
     if isinstance(message, dict):
-        return _normalize_message(message, 0, redact=redact)
+        return _normalize_message(
+            message, 0, redact=redact, synthetic_ids=synthetic_ids
+        )
     content = body.get("content")
     if content:
-        assistant = _assistant_from_anthropic_content(content, redact=redact)
+        assistant = _assistant_from_anthropic_content(
+            content, redact=redact, synthetic_ids=synthetic_ids
+        )
         if assistant is not None:
             return assistant
         return {"role": "assistant", "content": _content_to_text(content)}
-    assistant = _assistant_from_responses_response(body, redact=redact)
+    assistant = _assistant_from_responses_response(
+        body, redact=redact, synthetic_ids=synthetic_ids
+    )
     if assistant is not None:
         return assistant
     return None
 
 
 def _assistant_from_responses_response(
-    body: dict[str, Any], *, redact: bool = True
+    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
 ) -> dict[str, Any] | None:
     output = body.get("output")
     if not isinstance(output, list):
@@ -533,10 +664,28 @@ def _assistant_from_responses_response(
     }
     if tool_calls:
         message["tool_calls"] = [
-            _normalize_tool_call(call, i, redact=redact)
+            _normalize_tool_call(call, i, redact=redact, synthetic_ids=synthetic_ids)
             for i, call in enumerate(tool_calls)
         ]
     return message
+
+
+def _has_custom_tool_definition(tools: Any) -> bool:
+    """Inspect typed declaration lists, including namespaces, without scanning data."""
+    if not isinstance(tools, list):
+        return False
+    pending = [tools]
+    while pending:
+        for tool in pending.pop():
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("type") == "custom":
+                return True
+            if tool.get("type") == "namespace" and isinstance(
+                nested := tool.get("tools"), list
+            ):
+                pending.append(nested)
+    return False
 
 
 def _exchange_to_messages_and_tools(
@@ -564,6 +713,34 @@ def _exchange_to_messages_and_tools(
         if isinstance(response.get("body"), dict)
         else {}
     )
+
+    # Custom tools carry arbitrary string input, not function JSON arguments.
+    # This export cannot represent those calls or their replayed results. Refuse
+    # before normalizing either side, including replies that also contain text.
+    unsupported = {
+        item["type"]
+        for items in (
+            request_body.get("input"),
+            request_body.get("messages"),
+            response_body.get("output"),
+        )
+        if isinstance(items, list)
+        for item in items
+        if isinstance(item, dict)
+        and item.get("type") in {"custom_tool_call", "custom_tool_call_output"}
+    }
+    declarations = [request_body.get("tools"), request_body.get("tool_defs")]
+    for items in (request_body.get("input"), request_body.get("messages")):
+        if isinstance(items, list):
+            declarations.extend(
+                item.get("tools")
+                for item in items
+                if isinstance(item, dict) and item.get("type") == "additional_tools"
+            )
+    if any(_has_custom_tool_definition(tools) for tools in declarations):
+        unsupported.add("custom")
+    if unsupported:
+        return [], [], "unsupported_tool_protocol: " + ", ".join(sorted(unsupported))
 
     if "messages" in request_body:
         messages = _messages_from_chat_request(request_body, redact=redact)
@@ -1078,6 +1255,10 @@ def _existing_prime_sft_jsonl_stats(
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
             continue
+        if _is_benchflow_results_row(row):
+            reject_results_row_subagent_steps(
+                row.get("trajectory"), where=f"{path}: row {row_num}"
+            )
         messages = _row_messages(row, row_num)
         typed_messages = [m for m in messages if isinstance(m, dict)]
         if _has_tool_calls(typed_messages):
@@ -1147,6 +1328,11 @@ def _row_from_exchange(
     redact: bool = True,
 ) -> tuple[dict[str, Any] | None, str | None]:
     normalized, skip_reason = normalize_prime_sft_exchange(exchange, redact=redact)
+    if skip_reason and skip_reason.startswith("unsupported_tool_protocol:"):
+        raise ValueError(
+            f"{rollout_dir / 'trajectory' / 'llm_trajectory.jsonl'}: "
+            f"exchange {exchange_idx}: {skip_reason}"
+        )
     if skip_reason:
         return None, skip_reason
     if normalized is None:
@@ -1182,20 +1368,48 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
     row_mode: PrimeSftRowMode = "rollout",
     canonical_selection: str | Path | None = None,
     redact: bool = True,
+    subagent_rows: bool = False,
+    reward_vector: bool = False,
+    group_advantage: GroupAdvantage | None = None,
+    group_by: str | Sequence[str] | None = None,
 ) -> tuple[list[dict[str, Any]], PrimeSftExportStats]:
+    """Build Prime-SFT rows from each rollout's ``llm_trajectory.jsonl``.
+
+    Rows come from the parent agent's model calls only. Claude subagent calls
+    are attributed by :mod:`benchflow.trajectories.sft_subagents`, excluded and
+    counted; ``subagent_rows=True`` also emits them as separate rows tagged
+    with the spawning tool call, and tags parent rows ``agent_role=parent``.
+
+    ``reward_vector`` and ``group_advantage`` add the fields described in
+    :mod:`benchflow.trajectories.training_signal`; groups are keyed by
+    ``group_by`` and computed before ``min_reward`` filters rows.
+    """
     stats = PrimeSftExportStats()
     rows: list[dict[str, Any]] = []
+
+    from benchflow.trajectories.results import _training_success_exchange_indices
 
     rollout_dirs = (
         _iter_selected_rollout_dirs(canonical_selection)
         if canonical_selection is not None
         else _iter_rollout_dirs(jobs_dir)
     )
+    signals = _training_signals(
+        rollout_dirs,
+        reward_vector=reward_vector,
+        group_advantage=group_advantage,
+        group_by=group_by,
+    )
+    if signals.enabled:
+        stats.training_signal = signals.manifest()
     for rollout_dir in rollout_dirs:
         stats.rollouts_seen += 1
         result = _load_json(rollout_dir / "result.json")
         if result is None:
             stats.skipped_no_result += 1
+            continue
+        if is_control_run(rollout_dir):
+            stats.skipped_control += 1
             continue
         if _result_training_skip_reason(result) is not None:
             stats.skipped_terminal_error += 1
@@ -1211,6 +1425,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             stats.skipped_no_trajectory += 1
             continue
         stats.exchanges_seen += len(exchanges)
+        training_indices = _training_success_exchange_indices(exchanges)
         successful = [
             (idx, ex)
             for idx, ex in enumerate(exchanges)
@@ -1221,37 +1436,89 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             stats.skipped_exchanges_provider_error += len(exchanges)
             continue
 
-        candidates = successful if row_mode == "exchange" else [successful[-1]]
-        for idx, exchange in candidates:
-            row, skip_reason = _row_from_exchange(
-                exchange=exchange,
-                rollout_dir=rollout_dir,
-                result=result,
-                reward=reward,
-                exchange_idx=idx,
-                redact=redact,
-            )
-            if skip_reason == "no_assistant":
-                stats.skipped_no_assistant += 1
-                continue
-            if skip_reason == "missing_tool_defs":
-                stats.skipped_missing_tool_defs += 1
-                continue
-            if row is None:
-                stats.skipped_invalid += 1
-                continue
-            try:
-                validate_prime_sft_row(row, len(rows) + 1)
-            except ValueError:
-                stats.skipped_invalid += 1
-                continue
-            rows.append(row)
-            stats.rows_written += 1
-            if _has_tool_calls(row["messages"]):
-                stats.rows_with_tool_calls += 1
-            stats.sources.append(str(trajectory_path))
+        split = split_rollout_exchanges(
+            rollout_dir,
+            exchanges,
+            successful,
+            counts=stats.subagents,
+            subagent_rows=subagent_rows,
+        )
+        stats.skipped_helper_calls += split.helper_calls
+        parent_tags = {"agent_role": "parent"} if subagent_rows else {}
+        groups = [(parent_tags, split.parent)] + [
+            (subagent_row_tags(spawn), group) for spawn, group in split.subagents
+        ]
+        subagent_written = 0
+        for tags, group in groups:
+            group = [
+                (idx, exchange) for idx, exchange in group if idx in training_indices
+            ]
+            candidates = group if row_mode == "exchange" else group[-1:]
+            for idx, exchange in candidates:
+                row, skip_reason = _row_from_exchange(
+                    exchange=exchange,
+                    rollout_dir=rollout_dir,
+                    result=result,
+                    reward=reward,
+                    exchange_idx=idx,
+                    redact=redact,
+                )
+                if skip_reason == "no_assistant":
+                    stats.skipped_no_assistant += 1
+                    continue
+                if skip_reason == "missing_tool_defs":
+                    stats.skipped_missing_tool_defs += 1
+                    continue
+                if row is None:
+                    stats.skipped_invalid += 1
+                    continue
+                try:
+                    validate_prime_sft_row(row, len(rows) + 1)
+                except ValueError:
+                    stats.skipped_invalid += 1
+                    continue
+                row.update(tags)
+                row.update(signals.for_rollout(rollout_dir))
+                rows.append(row)
+                stats.rows_written += 1
+                if tags.get("agent_role") == "subagent":
+                    subagent_written += 1
+                if _has_tool_calls(row["messages"]):
+                    stats.rows_with_tool_calls += 1
+                stats.sources.append(str(trajectory_path))
+        stats.subagents.subagent_rows_written += subagent_written
+        stats.subagents.subagent_exchanges_excluded += (
+            split.subagent_exchanges - subagent_written
+        )
 
     return rows, stats
+
+
+def _training_signals(
+    rollout_dirs: list[Path],
+    *,
+    reward_vector: bool,
+    group_advantage: GroupAdvantage | None,
+    group_by: str | Sequence[str] | None,
+) -> TrainingSignals:
+    return compute_training_signals(
+        ((d, _load_json(d / "result.json")) for d in rollout_dirs)
+        if reward_vector or group_advantage is not None
+        else (),
+        reward_vector=reward_vector,
+        group_advantage=group_advantage,
+        group_by=group_by,
+    )
+
+
+def refuse_training_signal_for_jsonl(
+    *, reward_vector: bool, group_advantage: str | None
+) -> None:
+    if reward_vector or group_advantage is not None:
+        raise ValueError(
+            "--reward-vector/--group-advantage need a rollout or jobs directory "
+            "(the rollouts of a group are read from their result.json files)"
+        )
 
 
 def _result_training_skip_reason(result: dict[str, Any]) -> str | None:
@@ -1276,8 +1543,17 @@ def export_prime_sft_jsonl(
     manifest: str | Path | None = None,
     canonical_selection: str | Path | None = None,
     redact: bool = True,
+    subagent_rows: bool = False,
+    reward_vector: bool = False,
+    group_advantage: GroupAdvantage | None = None,
+    group_by: str | Sequence[str] | None = None,
 ) -> PrimeSftExportStats:
     """Export BenchFlow rollouts to a Prime-RL SFT JSONL file.
+
+    ``reward_vector``, ``group_advantage`` and ``group_by`` add per-criterion
+    rewards and group-relative advantages (see
+    :mod:`benchflow.trajectories.training_signal`); they need a rollout or
+    jobs directory, not an existing JSONL.
 
     When ``expected_rows`` is set, the row-count assertion fires *before* the
     output file (or manifest) is opened — so a mismatch raises ``ValueError`` and
@@ -1291,6 +1567,11 @@ def export_prime_sft_jsonl(
     if source_path.is_file() and source_path.suffix == ".jsonl":
         if source_path.resolve() == out_path.resolve():
             raise ValueError("--out must differ from the source JSONL path")
+        if subagent_rows:
+            raise ValueError("--subagent-rows requires a rollout or jobs directory")
+        refuse_training_signal_for_jsonl(
+            reward_vector=reward_vector, group_advantage=group_advantage
+        )
         stats = _existing_prime_sft_jsonl_stats(
             source_path, min_reward=min_reward, redact=redact
         )
@@ -1317,6 +1598,10 @@ def export_prime_sft_jsonl(
         row_mode=row_mode,
         canonical_selection=canonical_selection,
         redact=redact,
+        subagent_rows=subagent_rows,
+        reward_vector=reward_vector,
+        group_advantage=group_advantage,
+        group_by=group_by,
     )
     if expected_rows is not None and len(rows) != expected_rows:
         raise ValueError(f"row count {len(rows)} != expected {expected_rows}")

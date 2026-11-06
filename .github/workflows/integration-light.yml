@@ -255,8 +255,12 @@ jobs:
         run: python .github/scripts/select_integration_provider.py
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python
@@ -315,12 +319,22 @@ jobs:
             -m integration -k "$DESELECT" \
             -p no:cacheprovider -v
 
+      - name: Archive smoke rollout artifacts
+        if: always()
+        # The trusted base may predate this helper. Fetch its reviewed release,
+        # never the PR's infra, even when that base contains an older helper.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin 1a32bcbee558377912ae01c6d15767ef88d981f5
+          git show 1a32bcbee558377912ae01c6d15767ef88d981f5:.github/scripts/job_artifacts.py > "$RUNNER_TEMP/job_artifacts.py"
+          python -I "$RUNNER_TEMP/job_artifacts.py" pack jobs/integration-light "$RUNNER_TEMP/job-archives/jobs.tar.gz"
+
       - name: Upload smoke rollout artifacts
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
         with:
           name: integration-light-jobs
-          path: jobs/integration-light
+          path: ${{ runner.temp }}/job-archives/jobs.tar.gz
           if-no-files-found: ignore
           retention-days: 14
 
@@ -386,8 +400,12 @@ jobs:
           git checkout "$HEAD_SHA" -- docs/examples/task-md
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python

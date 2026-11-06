@@ -84,11 +84,8 @@ class MailStore:
     def messages(self, mailbox: str, folder: str) -> list[Path]:
         self.ensure_mailbox(mailbox)
         folder_path = self._folder_path(mailbox, folder)
-        return [
-            path
-            for path in sorted(folder_path.glob("*.eml"))
-            if not path.with_suffix(path.suffix + ".deleted").exists()
-        ]
+        # IMAP sequence numbers include \\Deleted messages until EXPUNGE.
+        return sorted(folder_path.glob("*.eml"))
 
     def mark_deleted(self, mailbox: str, folder: str, seqs: list[int]) -> None:
         messages = self.messages(mailbox, folder)

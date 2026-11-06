@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from benchflow.agents.env import resolve_agent_env, resolve_provider_env
+from benchflow.agents.registry import AGENTS, AgentConfig
 from benchflow.providers.litellm_config import (
     litellm_proxy_config,
     resolve_litellm_route,
@@ -132,19 +133,18 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
-@pytest.mark.parametrize(
-    ("agent", "agent_base"),
-    [
-        ("claude-agent-acp", "https://api.z.ai/api/anthropic"),
-        ("openclaw", "https://api.z.ai/api/coding/paas/v4"),
-    ],
-)
-def test_zai_coding_clawsbench_routes(agent, agent_base):
-    """Guards PR #1074: ClawsBench agents use each supported Z.AI surface."""
+def test_zai_coding_openai_protocol_route(monkeypatch):
+    """Guards PR #1074: generic agents can use Z.AI's coding surface."""
+    agent = "openai-protocol-probe"
+    monkeypatch.setitem(
+        AGENTS,
+        agent,
+        AgentConfig(agent, "true", "true", api_protocol="openai-completions"),
+    )
     env = resolve_agent_env(agent, "zai-coding/glm-5.3", {"ZAI_API_KEY": "native-key"})
     route = resolve_litellm_route("zai-coding/glm-5.3", env)
 
-    assert env["BENCHFLOW_PROVIDER_BASE_URL"] == agent_base
+    assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/coding/paas/v4"
     assert route.litellm_params["api_base"] == ("https://api.z.ai/api/coding/paas/v4")
     assert route.litellm_params["api_key"] == "os.environ/ZAI_API_KEY"
     assert route.required_env == ("ZAI_API_KEY",)

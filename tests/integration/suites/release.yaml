@@ -66,7 +66,6 @@ execution_profiles:
     lanes:
       - shared-sandbox-smoke
       - skillsbench-agent-matrix
-      - skillsbench-harbor-parity
       - adapter-release-set
       - hosted-env-compatibility-board
       - trace-to-task-e2e
@@ -99,8 +98,8 @@ axes:
       - gemini
     experimental:
       # mimo runs the Xiaomi MiMo (MiMo Code) ACP path via the `xiaomi`
-      # provider and is intentionally OUTSIDE the credentialed release set
-      # (ENG-265). Listed here so the config<->manifest consistency check
+      # provider and is intentionally OUTSIDE the credentialed release set.
+      # Listed here so the config<->manifest consistency check
       # accepts configs/mimo.yaml rather than reporting it as drift.
       - mimo
       # antigravity drives the Google Antigravity CLI (agy, the Gemini CLI
@@ -150,16 +149,10 @@ axes:
       scope: current release-gated sandbox smoke
     security_dind_smoke:
       source:
-        kind: hosted_env
-        platform: harbor
-        hub_url: https://hub.harborframework.com/
-        env_uid: harbor:termigen-environments/docker_escape_privileged_container_medium@dc329464161db64b0c670f46fa39b62e4719dddd
-        registry: https://raw.githubusercontent.com/harbor-framework/harbor/main/registry.json
-        dataset: termigen-environments
+        kind: git_task
+        repo: ucsb-mlsec/terminal-bench-env
+        ref: dc329464161db64b0c670f46fa39b62e4719dddd
         task: docker_escape_privileged_container_medium
-        source_repo: ucsb-mlsec/terminal-bench-env
-        source_ref: dc329464161db64b0c670f46fa39b62e4719dddd
-        source_path: environments_harbor/docker_escape_privileged_container_medium
       scope: future Firecracker/K8s nested-container security smoke
       requires:
         - docker-in-docker
@@ -286,33 +279,6 @@ axes:
               status: blocked_insufficient_openreward_credits
               note: Catalog and README metadata are available, but SDK split/task inspection required a session and returned insufficient credits with the current key.
             selection_reason: Public OpenReward security environment with sandboxed CTF challenges, verifiable flag rewards, and no external API key requirement beyond OpenReward credits.
-      - name: Harbor Hub
-        platform: harbor
-        hub_url: https://hub.harborframework.com/
-        env_uid_pattern: harbor:<dataset>/<env-or-task-slug>@<version-or-ref>
-        source:
-          kind: harbor_registry
-          registry: https://raw.githubusercontent.com/harbor-framework/harbor/main/registry.json
-        inventory_command: bench compat harbor-registry --limit 1 --level inventory
-        selected_envs:
-          - env_uid: harbor:terminal-bench/adaptive-rejection-sampler@69671fbaac6d67a7ef0dfec016cc38a64ef7a77c
-            dataset: terminal-bench
-            version: "2.0"
-            task: adaptive-rejection-sampler
-            role: terminal_style_packaging
-            source_repo: laude-institute/terminal-bench-2
-            source_ref: 69671fbaac6d67a7ef0dfec016cc38a64ef7a77c
-            source_path: adaptive-rejection-sampler
-            selection_reason: Harbor Hub-visible Terminal-Bench 2 task for shell/task packaging compatibility.
-          - env_uid: harbor:binary-audit/caddy-backdoor-detect@75f3e6e331776b80f77faa3d2ff80627b8b5d069
-            dataset: binary-audit
-            version: "1.0"
-            task: caddy-backdoor-detect
-            role: security_style_nested_workload
-            source_repo: QuesmaOrg/BinaryAudit
-            source_ref: 75f3e6e331776b80f77faa3d2ff80627b8b5d069
-            source_path: tasks/caddy-backdoor-detect
-            selection_reason: Security-flavored Harbor task for future hard-isolation and DinD adaptation checks.
       - name: PrimeIntellect Environments Hub
         platform: primeintellect
         hub_url: https://app.primeintellect.ai/dashboard/environments?ex_sort=by_sections
@@ -391,33 +357,6 @@ lanes:
       - "No infrastructure errors: agent install, timeout, pipe closed, or sandbox setup."
       - summary.json contains total, passed, failed, errored, and score.
 
-  - id: skillsbench-harbor-parity
-    release_blocker: true
-    purpose: Compare BenchFlow SkillsBench outputs against a pinned Harbor trajectory/result baseline.
-    evidence_command: uv run python tests/integration/run_suite.py --lane skillsbench-harbor-parity --execute-skillsbench-harbor-parity --skillsbench-harbor-benchflow-root <benchflow-jobs-root> --skillsbench-harbor-baseline-root <local-skillsbench-trajectories-checkout>
-    sources:
-      - kind: harbor_skillsbench_baseline
-        repo: benchflow-ai/skillsbench-trajectories
-        path: shenghan/gemini-cli/gemini3flash/noskills
-        ref: 2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c
-        schema_notes:
-          - Harbor stores rewards under verifier_result.rewards.reward.
-          - Harbor stores agent trajectories as ATIF JSON under agent/trajectory.json.
-      - kind: benchflow_results
-        path: jobs/integration-<run-id>/<agent>
-        schema_notes:
-          - BenchFlow stores rewards under rewards.reward.
-          - BenchFlow stores ACP trajectories as trajectory/acp_trajectory.jsonl.
-    matrix:
-      task_sets:
-        - skillsbench_release_subset
-    acceptance:
-      - Harbor baseline root is pinned to the recorded skillsbench-trajectories SHA.
-      - Expected schema differences are normalized explicitly before comparison.
-      - Compared tasks have result.json and trajectory artifacts on both sides.
-      - BenchFlow result source provenance points to native SkillsBench task.md tasks in the expected skill lane.
-      - Outcome-rate, mean-reward, and per-task reward drift remain within the configured parity thresholds.
-
   - id: adapter-release-set
     release_blocker: true
     purpose: Prove every merged adapter and open adapter PR preserves source-suite semantics.
@@ -444,7 +383,6 @@ lanes:
     acceptance:
       - Each hub entry has a canonical hub_url and env_uid pattern.
       - Exact env_uid selections are recorded before claiming agent-smoke or parity.
-      - Harbor inventory can emit env_uid and hub_url evidence through bench compat harbor-registry.
 
   - id: trace-to-task-e2e
     release_blocker: true

@@ -41,7 +41,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,7 @@ class Monitor:
         logger.warning(_NOT_IMPLEMENTED_MSG)
         raise MonitorNotImplementedError(_NOT_IMPLEMENTED_MSG)
 
-    async def watch(self):  # type: ignore[no-untyped-def]
+    async def watch(self) -> NoReturn:
         """Stream-score live production events.
 
         Not implemented — see :class:`Monitor` and :mod:`benchflow.monitor`.

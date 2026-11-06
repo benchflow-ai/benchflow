@@ -38,6 +38,9 @@ class _FakeFs:
     async def get_file_info(self, file_path: str):
         return SimpleNamespace(is_dir=False)
 
+    async def list_files(self, source_dir: str):
+        return []
+
     async def download_files(self, *, files):
         self.download_files_calls += 1
         raise RuntimeError("provider batch export failed")
@@ -135,10 +138,16 @@ async def test_daytona_download_dir_falls_back_to_individual_files(
     await sandbox._sdk_download_dir("/logs/verifier", tmp_path)
 
     assert fake_fs.download_files_calls == 1
-    assert fake_fs.download_file_calls == [
-        ("/logs/verifier/reward.txt", str(tmp_path / "reward.txt")),
-        ("/logs/verifier/ctrf.json", str(tmp_path / "ctrf.json")),
+    assert [
+        (source, Path(target).name) for source, target in fake_fs.download_file_calls
+    ] == [
+        ("/logs/verifier/reward.txt", "reward.txt"),
+        ("/logs/verifier/ctrf.json", "ctrf.json"),
     ]
+    assert all(
+        not Path(target).is_relative_to(tmp_path)
+        for _, target in fake_fs.download_file_calls
+    )
     assert (tmp_path / "reward.txt").read_text() == "reward.txt"
     assert (tmp_path / "ctrf.json").read_text() == "ctrf.json"
 
@@ -148,7 +157,7 @@ async def test_daytona_download_dir_tolerates_broken_file_info(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards private PR #1's Daytona FileInfo.modified_at=None regression."""
+    """Guards the Daytona FileInfo.modified_at=None regression."""
     fake_fs = _FakeMetadataErrorFs()
     sandbox = _fake_daytona_sandbox(fake_fs)
     monkeypatch.setattr(daytona_mod, "FileDownloadRequest", _FakeFileDownloadRequest)
@@ -166,7 +175,7 @@ async def test_daytona_download_dir_fails_when_individual_fallback_recovers_noth
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards private PR #1's Daytona listed-but-undownloadable export case."""
+    """Guards the Daytona listed-but-undownloadable export case."""
     fake_fs = _FakeMissingFs()
     sandbox = _fake_daytona_sandbox(fake_fs)
     monkeypatch.setattr(daytona_mod, "FileDownloadRequest", _FakeFileDownloadRequest)
@@ -178,6 +187,7 @@ async def test_daytona_download_dir_fails_when_individual_fallback_recovers_noth
 
 def _fake_dind_strategy():
     strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+    strategy._check_compose_download_file = AsyncMock()
     strategy._env = SimpleNamespace(
         logger=logging.getLogger("test.daytona.dind"),
         _sdk_download_dir=AsyncMock(),
@@ -193,7 +203,7 @@ def _fake_dind_strategy():
 async def test_dind_log_download_dir_falls_back_to_compose_when_host_path_fails(
     tmp_path: Path,
 ) -> None:
-    """Guards private PR #1's Daytona DinD verifier log export fallback."""
+    """Guards the Daytona DinD verifier log export fallback."""
     strategy = _fake_dind_strategy()
     sdk_calls: list[tuple[str, Path | str]] = []
     compose_calls: list[list[str]] = []
@@ -215,10 +225,10 @@ async def test_dind_log_download_dir_falls_back_to_compose_when_host_path_fails(
 
     await strategy.download_dir("/logs/verifier", tmp_path, service="main")
 
-    assert sdk_calls[0] == ("/benchflow/logs/verifier", tmp_path)
-    assert sdk_calls[1][0].startswith("/tmp/benchflow_")
-    assert sdk_calls[1][1] == tmp_path
-    assert compose_calls == [["cp", "main:/logs/verifier/.", sdk_calls[1][0]]]
+    assert len(sdk_calls) == 1
+    assert sdk_calls[0][0].startswith("/tmp/benchflow_")
+    assert sdk_calls[0][1] == tmp_path
+    assert compose_calls == [["cp", "main:/logs/verifier/.", sdk_calls[0][0]]]
     assert (tmp_path / "reward.txt").read_text() == "0"
 
 
@@ -226,7 +236,7 @@ async def test_dind_log_download_dir_falls_back_to_compose_when_host_path_fails(
 async def test_dind_log_download_file_falls_back_to_compose_when_host_path_fails(
     tmp_path: Path,
 ) -> None:
-    """Guards private PR #1's Daytona DinD verifier file recovery fallback."""
+    """Guards the Daytona DinD verifier file recovery fallback."""
     strategy = _fake_dind_strategy()
     sdk_calls: list[tuple[str, Path | str]] = []
     compose_calls: list[list[str]] = []
@@ -247,8 +257,8 @@ async def test_dind_log_download_file_falls_back_to_compose_when_host_path_fails
     target = tmp_path / "reward.txt"
     await strategy.download_file("/logs/verifier/reward.txt", target)
 
-    assert sdk_calls[0] == ("/benchflow/logs/verifier/reward.txt", target)
-    assert sdk_calls[1][0].startswith("/tmp/benchflow_")
-    assert sdk_calls[1][1] == target
-    assert compose_calls == [["cp", "main:/logs/verifier/reward.txt", sdk_calls[1][0]]]
+    assert len(sdk_calls) == 1
+    assert sdk_calls[0][0].startswith("/tmp/benchflow_")
+    assert sdk_calls[0][1] == target
+    assert compose_calls == [["cp", "main:/logs/verifier/reward.txt", sdk_calls[0][0]]]
     assert target.read_text() == "0"

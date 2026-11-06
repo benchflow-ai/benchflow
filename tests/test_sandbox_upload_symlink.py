@@ -14,12 +14,15 @@ file is *not* presented to the upload/copy code path.
 from __future__ import annotations
 
 import logging
+import tarfile
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
+from tests._trust_admission import admitted
 
 SECRET = "SECRET_FROM_HOST_SANDBOX_LEAK"
 
@@ -53,22 +56,26 @@ async def test_daytona_sdk_upload_dir_skips_symlinked_files(
     (src / "sub").mkdir()
     (src / "sub" / "linked").symlink_to(tmp_path)  # symlinked dir
 
-    upload_files = AsyncMock()
+    # One archive (DAYTONA-GAPS rule 1): its members are what is uploaded.
+    members: list[str] = []
+
+    async def upload_file(source, destination):
+        with tarfile.open(source) as tar:
+            members.extend(tar.getnames())
+
     env = DaytonaSandbox.__new__(DaytonaSandbox)
-    env._sandbox = SimpleNamespace(fs=SimpleNamespace(upload_files=upload_files))
+    env._sandbox = SimpleNamespace(fs=SimpleNamespace(upload_file=upload_file))
+    env._sandbox_exec = AsyncMock(return_value=SimpleNamespace(return_code=0))
 
     with caplog.at_level(logging.WARNING):
         await env._sdk_upload_dir(src, "/remote/dst")
 
-    assert upload_files.await_count == 1
-    sources = [u.source for u in upload_files.await_args.kwargs["files"]]
     # The symlinked file is not in the upload set.
-    assert not any(str(secret) in s for s in sources)
-    assert not any(s.endswith("/leak.txt") for s in sources)
+    assert "leak.txt" not in members
     # The symlinked directory was never descended into.
-    assert not any("/linked/" in s for s in sources)
+    assert not any(m.startswith("sub/") for m in members)
     # The legitimate file is still uploaded.
-    assert any(s.endswith("/ok/real.txt") for s in sources)
+    assert members == ["ok/real.txt"]
     assert any("leak.txt" in r.message for r in caplog.records)
 
 
@@ -88,19 +95,30 @@ async def test_modal_upload_dir_skips_symlinked_files(
     (src / "real.txt").write_text("real")
     (src / "leak.txt").symlink_to(secret)
 
+    from benchflow.sandbox._base import ExecResult
+
+    members: list[str] = []
+
+    async def upload_file(source, destination, **kwargs):
+        with tarfile.open(source) as tar:
+            members.extend(tar.getnames())
+
     sandbox = ModalSandbox.__new__(ModalSandbox)
     sandbox._sandbox = SimpleNamespace()  # truthy; upload_file is mocked
-    sandbox.exec = AsyncMock(return_value=SimpleNamespace(exit_code=0))
-    sandbox.upload_file = AsyncMock()
+    sandbox.exec = AsyncMock(
+        return_value=ExecResult(return_code=0, stdout="", stderr="")
+    )
+    sandbox.exec_route = AsyncMock(
+        return_value=SimpleNamespace(shell="/bin/sh", pin=None)
+    )
+    sandbox.upload_file = upload_file
     sandbox.logger = logging.getLogger("modal-test")
 
     with caplog.at_level(logging.WARNING):
-        await sandbox.upload_dir(src, "/remote/dst")
+        await sandbox.upload_dir(src, "/remote/dst", admission=admitted(sandbox))
 
-    uploaded_sources = [call.args[0] for call in sandbox.upload_file.await_args_list]
-    assert all(str(secret) not in str(s) for s in uploaded_sources)
-    assert not any(str(s).endswith("/leak.txt") for s in uploaded_sources)
-    assert any(str(s).endswith("/real.txt") for s in uploaded_sources)
+    # One archive (DAYTONA-GAPS rule 1) holding only the regular file.
+    assert members == ["real.txt"]
     assert any("leak.txt" in r.message for r in caplog.records)
 
 

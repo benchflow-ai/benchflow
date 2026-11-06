@@ -40,6 +40,17 @@ def _load_module():
 cr = _load_module()
 
 
+@pytest.fixture(autouse=True)
+def isolated_codex_home(tmp_path: Path, monkeypatch):
+    """Guards FF-CLI-C3/C4 at 9e69f68f: dummy auth stays in this test's home.
+
+    main() stages the synthetic API key in auth.json. A shared HOME leaves
+    that key for later CLI tests to redact, changing their unrelated text.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home" / ".codex"))
+
+
 # ------------------------------------------------------------------
 # _codex_env — isolate the codex CLI auth from the DeepSeek judge clobber
 # ------------------------------------------------------------------

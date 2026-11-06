@@ -2,7 +2,7 @@
 
 This is the **L2/L3 network-lane vehicle** for the Benchflow integration ladder.
 It is a minimal overlay of the base
-[`../citation-check/`](../citation-check/) task whose **only** behavioural
+[`../citation-check/`](https://github.com/benchflow-ai/benchflow/blob/main/docs/examples/task-md/real-skillsbench/citation-check) task whose **only** behavioural
 difference is the sandbox network policy: instead of the base task's deprecated
 `allow_internet: true` (which reconciles to `network_mode: public`), this variant
 declares a hardened **`network_mode: allowlist`** scoped to exactly the hosts the
@@ -22,10 +22,11 @@ declares a hardened **`network_mode: allowlist`** scoped to exactly the hosts th
   - api.crossref.org          # extract_metadata.py / validate_citations.py (CrossRef metadata)
   ```
 
-- `environment/`, `oracle/`, `verifier/` — **symlinks** to the base
+- `environment/`, `oracle/`, `verifier/` — byte-identical copies of the base
   `../citation-check/` directories. Nothing about the environment build, the
-  oracle, or the verifier changes; this is a pure network-policy overlay, so the
-  supporting bytes are shared (not duplicated).
+  oracle, or the verifier changes; this is a pure network-policy overlay. They
+  are copies, not symlinks, because sandbox uploads skip symlinks and
+  `bench check` refuses a task that relies on them.
 
 ## Why exactly these four hosts
 
@@ -47,7 +48,7 @@ future citation flow makes arXiv resolution load-bearing.
 
 ## How the ladder uses it (CONTRACT Q3)
 
-Network is **not** a `bench eval run` flag — there is no `--network` flag, and
+Network is **not** a `bench run` flag — there is no `--network` flag, and
 `network_mode` is **never serialized into a rollout artifact**. It is a per-task
 config field only. So this variant is a **STATIC hardening vehicle**, not a live
 network-egress test:
@@ -77,13 +78,13 @@ runner.
 ## Deferred follow-ups
 
 This variant is the documented placeholder for two **deferred** (documented, not
-built) pieces of work, tracked in `docs/integration-tiers.md` → "Deferred
-follow-ups":
+built) pieces of work, tracked in
+[Integration CI → Not built yet](https://github.com/benchflow-ai/benchflow/blob/main/.github/integration/README.md#not-built-yet):
 
-1. A real `--network-mode` CLI passthrough on `bench eval run`.
+1. A real `--network-mode` CLI passthrough on `bench run`.
 2. `persist_sandbox_info` network-mode serialization into the rollout artifact,
    which would let the lane move from a STATIC declaration check to an observed
    egress-policy check.
 
-See `docs/integration-tiers.md` (network lane, Q3) and
-`docs/integration-review-rubric.md` (`V-NETWORK` gate, Reward-hacking checklist).
+See [Integration CI → The network lane](https://github.com/benchflow-ai/benchflow/blob/main/.github/integration/README.md#the-network-lane)
+and the [review rubric's `V-NETWORK` gate](https://github.com/benchflow-ai/benchflow/blob/main/.github/integration/REVIEW_RUBRIC.md#v-network).

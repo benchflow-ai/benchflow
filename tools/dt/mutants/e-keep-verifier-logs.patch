@@ -1,0 +1,50 @@
+Mutant (e), test-only: keep the forged reward. A file the agent writes into
+/logs/verifier/ before the verifier runs survives into grading, because all
+three clean-up sites that would remove it are skipped: harden_before_verify's
+clear (lockdown.py), Verifier._clear_output_dir's own clear, and
+Verifier.verify's unlink of the host-bound reward files (verifier_core.py).
+The first patch skipped only the first, so the other two still removed the
+forged file and the mutant was inert (DT2-F1).
+
+diff --git a/src/benchflow/sandbox/lockdown.py b/src/benchflow/sandbox/lockdown.py
+index 444ac9e..d91fc0a 100644
+--- a/src/benchflow/sandbox/lockdown.py
++++ b/src/benchflow/sandbox/lockdown.py
+@@ -2387,6 +2387,8 @@ async def harden_before_verify(
+     # 2. Wipe /logs/verifier/ contents while preserving remote bind mounts, then
+     #    prepare the legacy /app rootdir fallback.
+     with step("clear_verifier_output"):
++        _ = clear_verifier_output_dir  # mutant e: the clear is skipped
++    if False:
+         await clear_verifier_output_dir(
+             env,
+             "Verifier hardening failed: clearing verifier output directory",
+diff --git a/src/benchflow/task/verifier_core.py b/src/benchflow/task/verifier_core.py
+--- a/src/benchflow/task/verifier_core.py
++++ b/src/benchflow/task/verifier_core.py
+@@ -298,7 +298,7 @@
+ 
+     async def verify(self) -> VerifierResult:
+         """Run the configured verifier and return the reward result."""
+-        self._clear_reward_outputs()
++        # mutant e: the host reward files are kept
+         verifier_document = self._selected_verifier_document()
+         if verifier_document is not None:
+             strategy = verifier_document.selected_strategy
+@@ -412,15 +412,7 @@
+         raise VerifierOutputParseError(failure)
+ 
+     async def _clear_output_dir(self, service: str) -> None:
+-        await self._setup_step(
+-            "clearing verifier output directory",
+-            lambda: clear_verifier_output_dir(
+-                self._sandbox,
+-                user="root",
+-                service=service,
+-                timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+-            ),
+-        )
++        return  # mutant e: the verifier's own clear is skipped
+ 
+     async def _prepare_execution_receipt(self, service: str) -> str | None:
+         """Return a fresh start-receipt path for the test command, if requested.

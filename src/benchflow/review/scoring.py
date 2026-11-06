@@ -35,6 +35,7 @@ class ReviewScoring:
     decision: PublicationDecision
 
     def to_dict(self) -> dict[str, Any]:
+        """The scoring as a JSON-ready mapping."""
         return {
             "deterministic_pass": self.deterministic_pass,
             "all_blockers_pass": self.all_blockers_pass,

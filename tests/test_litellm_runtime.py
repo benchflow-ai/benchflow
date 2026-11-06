@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from importlib.metadata import version
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from packaging.requirements import Requirement
@@ -17,7 +18,6 @@ from benchflow.providers.runtime import (
     ensure_litellm_runtime,
     stop_provider_runtime,
 )
-from benchflow.sandbox.egress_denylist import EgressGuard
 
 
 class FakeLiteLLMServer:
@@ -246,7 +246,12 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
 
 @pytest.mark.asyncio
 async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
-    """Guards PR #803: Pi metadata follows the LiteLLM alias in proxy mode."""
+    """Guards PRs #803/#1093: supplied metadata wins over catalog lookup."""
+    import litellm
+
+    monkeypatch.setattr(
+        litellm, "get_model_info", lambda *_: pytest.fail("unexpected catalog lookup")
+    )
 
     async def fake_start(**kwargs):
         return FakeLiteLLMServer("http://172.17.0.1:45678", kwargs["route"])
@@ -280,10 +285,14 @@ async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
     assert provider_runtime is not None
     assert updated["BENCHFLOW_PROVIDER_MODEL"] == "benchflow-vllm-Qwen-Qwen3-4B"
     models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
-    alias = next(m for m in models if m["id"] == "benchflow-vllm-Qwen-Qwen3-4B")
-    assert alias["name"] == "benchflow-vllm-Qwen-Qwen3-4B"
-    assert alias["maxTokens"] == 1024
-    assert alias["contextWindow"] == 16384
+    assert models == [
+        provider_models[0],
+        {
+            **provider_models[0],
+            "id": "benchflow-vllm-Qwen-Qwen3-4B",
+            "name": "benchflow-vllm-Qwen-Qwen3-4B",
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -321,10 +330,10 @@ async def test_runtime_reuse_and_stop(monkeypatch):
     assert created[0].stopped is True
 
 
-@pytest.mark.parametrize("agent", ["claude-agent-acp", "openclaw"])
 @pytest.mark.asyncio
-async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch, agent):
+async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch):
     """Guards PR #1074: reconnects retain Z.AI upstream routing and auth."""
+    agent = "claude-agent-acp"
     starts = []
 
     async def fake_start(**kwargs):
@@ -779,7 +788,7 @@ async def test_antigravity_uses_gemini_pass_through(monkeypatch):
         environment="docker",
         usage_tracking="required",
         sandbox=SimpleNamespace(),
-        egress_guard=EgressGuard(block_log=None),
+        force_sandbox_local=True,
     )
 
     assert provider_runtime is not None
@@ -819,7 +828,7 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
         environment="docker",
         usage_tracking="required",
         sandbox=sandbox,
-        egress_guard=EgressGuard(block_log=None),
+        force_sandbox_local=True,
     )
 
     assert starts[0]["sandbox"] is sandbox
@@ -832,6 +841,43 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
     ):
         assert updated[key] == provider_runtime.master_key
     assert LITELLM_MODEL_ALIAS_ENV not in updated
+
+
+@pytest.mark.asyncio
+async def test_opencode_gemini_keeps_its_google_client_on_the_passthrough(monkeypatch):
+    """OpenCode on a Gemini model talks to the Gemini pass-through with its own
+    Google client, not to the chat-completions alias, and holds only the
+    gateway key."""
+
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env={
+            "GEMINI_API_KEY": "upstream-gemini-key",
+            "GOOGLE_GENERATIVE_AI_API_KEY": "upstream-generative-ai-key",
+        },
+        model="gemini/gemini-4-argon",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+        sandbox=SimpleNamespace(),
+        force_sandbox_local=True,
+    )
+
+    assert provider_runtime is not None
+    assert (
+        updated["BENCHFLOW_OPENCODE_GOOGLE_BASE_URL"]
+        == "http://127.0.0.1:45678/gemini/v1beta"
+    )
+    assert updated["GOOGLE_GENERATIVE_AI_API_KEY"] == provider_runtime.master_key
+    assert "GEMINI_API_KEY" not in updated
+    # Empty explicitly suppresses an inherited image alias at launch.
+    assert not updated.get(LITELLM_MODEL_ALIAS_ENV)
+    assert "OPENAI_API_KEY" not in updated
 
 
 @pytest.mark.asyncio
@@ -854,61 +900,60 @@ async def test_oracle_does_not_start_litellm(monkeypatch):
     assert provider_runtime is None
 
 
-@pytest.mark.asyncio
-async def test_guarded_gateway_runs_in_the_sandbox_with_the_guard(monkeypatch):
-    """Guards no-web and denylist egress (PR #1113): the agent's gateway is guarded."""
-    starts = []
+def test_proxy_alias_metadata_is_reused_after_catalog_resolution(monkeypatch):
+    """Guards PR #1093: resolve capabilities once, preserve caller alias metadata."""
+    import litellm
 
-    async def fake_sandbox_start(**kwargs):
-        starts.append(kwargs)
-        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
-
-    async def unexpected_host_start(**_kwargs):
-        raise AssertionError("a guarded gateway must run inside the sandbox")
-
-    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
-    monkeypatch.setattr(runtime_mod, "_start_host_litellm", unexpected_host_start)
-    guard = EgressGuard(block_log="/opt/benchflow-egress/blocked.jsonl")
-
-    await ensure_litellm_runtime(
-        agent="codex-acp",
-        agent_env={"OPENAI_API_KEY": "upstream-key"},
-        model="openai/gpt-5.4",
-        runtime=None,
-        environment="docker",
-        sandbox=SimpleNamespace(),
-        egress_guard=guard,
+    route = runtime_mod.resolve_litellm_route("openai/gpt-5.5", {})
+    model_info = Mock(
+        return_value={
+            "supports_reasoning": True,
+            "max_output_tokens": 128000,
+            "max_input_tokens": 1050000,
+            "supports_vision": True,
+            "supported_openai_params": ["reasoning_effort"],
+        }
     )
-
-    assert starts[0]["egress_guard"] == guard
-
-
-def test_runtime_modules_install_the_guard_first_only_when_guarded():
-    guarded = runtime_mod._runtime_modules(
-        EgressGuard(block_log="/opt/x/blocked.jsonl")
+    monkeypatch.setattr(litellm, "get_model_info", model_info)
+    params = dict(
+        agent="external-openclaw",
+        route=route,
+        base_url="http://proxy.test",
+        master_key="test-key",
     )
-    open_gateway = runtime_mod._runtime_modules()
-
-    assert guarded["sitecustomize.py"].splitlines()[:2] == [
-        "from benchflow.providers.litellm_egress_guard import install",
-        "install(block_log='/opt/x/blocked.jsonl')",
+    updated = runtime_mod._wire_litellm_agent_env(agent_env={}, **params)
+    models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
+    assert models == [
+        {
+            "id": route.model_alias,
+            "name": route.model_alias,
+            "reasoning": True,
+            "maxTokens": 128000,
+            "contextWindow": 1050000,
+            "input": ["text", "image"],
+            "compat": {"supportsReasoningEffort": True},
+        }
     ]
-    assert {
-        "benchflow/providers/litellm_egress_guard.py",
-        "benchflow/sandbox/_egress_policy.py",
-        "benchflow/sandbox/_hosted_fetch.py",
-    } <= set(guarded)
-    assert "egress_guard" not in open_gateway["sitecustomize.py"]
-    assert not any(path.startswith("benchflow/") for path in open_gateway)
+    models[0].update(
+        reasoning=False, maxTokens=123, compat={"supportsReasoningEffort": False}
+    )
+    updated["BENCHFLOW_PROVIDER_MODELS"] = json.dumps(models)
+    rewired = runtime_mod._wire_litellm_agent_env(agent_env=updated, **params)
+    assert rewired["BENCHFLOW_PROVIDER_MODELS"] == updated["BENCHFLOW_PROVIDER_MODELS"]
+    model_info.assert_called_once_with(route.upstream_model)
 
 
-@pytest.mark.asyncio
-async def test_unguarded_gateway_fails_closed():
-    class Sandbox:
-        async def exec(self, command, timeout_sec):
-            return SimpleNamespace(return_code=1, stdout="", stderr="")
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        Exception("This model isn't mapped yet"),
+        {"supports_reasoning": None, "max_output_tokens": -1},
+    ],
+)
+def test_unknown_proxy_metadata_keeps_existing_behavior(monkeypatch, outcome):
+    """Guards PR #1093: absent catalog metadata does not block custom models."""
+    import litellm
 
-    with pytest.raises(RuntimeError, match="egress guard is not active"):
-        await runtime_mod._verify_sandbox_egress_guard(
-            Sandbox(), python="python3", port=45678
-        )
+    monkeypatch.setattr(litellm, "get_model_info", Mock(side_effect=[outcome]))
+    route = runtime_mod.resolve_litellm_route("openai/custom-model", {})
+    assert runtime_mod._provider_models_for_proxy_alias(raw=None, route=route) is None

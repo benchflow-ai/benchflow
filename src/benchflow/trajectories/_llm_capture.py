@@ -18,7 +18,10 @@ class LiveLLMTrajectoryWriter:
     missed live poll without changing the trajectory schema.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, preceding_trajectories: tuple[Trajectory, ...] = ()
+    ) -> None:
+        self._preceding_trajectories = preceding_trajectories
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._tmp = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -31,7 +34,9 @@ class LiveLLMTrajectoryWriter:
         if trajectory is None or not trajectory.exchanges:
             return False
         payload = self._snapshot.serialize(
-            exchange.model_dump(mode="json") for exchange in trajectory.exchanges
+            exchange.model_dump(mode="json")
+            for segment in (*self._preceding_trajectories, trajectory)
+            for exchange in segment.exchanges
         )
         if payload == self._last_payload:
             return False

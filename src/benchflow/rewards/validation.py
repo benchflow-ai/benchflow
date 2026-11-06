@@ -17,6 +17,11 @@ RewardRange = tuple[float, float]
 # :func:`validate_declared_reward_range`.
 DEFAULT_REWARD_RANGE: RewardRange = (0.0, 1.0)
 
+# How a trial's ``verifier_error`` starts when its verifier wrote a reward
+# outside the task's range (#1178); ``classify_verifier_error`` keys
+# the ``reward_out_of_range`` category on it.
+REWARD_OUT_OF_RANGE = "reward out of range:"
+
 # Operator toggle for the lenient reward-map path. Default (unset/empty/``0``)
 # keeps the strict contract; any truthy value opts the classic
 # ``test.sh → reward.json`` flow into lenient parsing. Lives here next to the
@@ -47,6 +52,96 @@ _STRUCTURED_REWARD_KEYS = {
     "regressions",
     "winner",
 }
+
+
+class RewardOutOfRange(ValueError):
+    """A verifier wrote a finite reward number outside the task's range (#1178).
+
+    The trial is not scored, and the raw number is kept for the record
+    (``key``, ``value`` and the ``reward_range`` it was checked against), so
+    it can be read and regraded rather than lost in a parse error. BenchFlow
+    never clamps it: a clamped reward would be a score the verifier did not
+    give. Rust's ``bench`` 0.8.2 refuses the same numbers (its R302).
+    """
+
+    def __init__(
+        self,
+        key: str,
+        value: float | int,
+        reward_range: RewardRange | None,
+        *,
+        source: str = "verifier",
+    ) -> None:
+        self.key = key
+        self.value = value
+        self.reward_range: RewardRange = reward_range or DEFAULT_REWARD_RANGE
+        self.declared = reward_range is not None
+        self.source = source
+        super().__init__(self.describe())
+
+    def describe(self, where: str | None = None) -> str:
+        """``<where>: <key> = <value> is outside [lo, hi]`` (``where`` defaults
+        to the source the validator was given)."""
+        lo, hi = self.reward_range
+        whose = " (the task's reward_range)" if self.declared else ""
+        return (
+            f"{where or self.source}: {self.key} = {self.value!r} "
+            f"is outside [{lo}, {hi}]{whose}"
+        )
+
+
+def is_out_of_range_reward(
+    value: Any,
+    *,
+    reward_range: RewardRange | None = None,
+) -> bool:
+    """True for a finite number (not a bool) outside the task's reward range.
+
+    Such a number is a reward the verifier meant but the task's contract does
+    not allow, unlike a non-number or NaN, which is no reward at all.
+    """
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(number) and not is_valid_reward_number(
+        value, reward_range=reward_range
+    )
+
+
+def _non_finite_path(value: Any, path: str) -> str | None:
+    """Where inside ``value`` the first non-finite number sits, or None.
+
+    A kept field (an extra field beside the reward, or a structured key BenchFlow
+    passes through) is written to the trial's JSON records as it is, and those
+    writes refuse NaN and the infinities (``allow_nan=False``). Python's JSON
+    decoder accepts ``NaN``, ``Infinity`` and an overflowing ``1e400``, so such a
+    number has to be refused here, as a verifier problem, not when the result
+    is published. An integer too big for a float counts too, as
+    the result exporters write it as they write an infinity.
+    """
+    stack: list[tuple[Any, str]] = [(value, path)]
+    while stack:
+        item, where = stack.pop()
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                return where
+        elif isinstance(item, int):
+            try:
+                float(item)
+            except OverflowError:
+                return where
+        elif isinstance(item, Mapping):
+            stack.extend((v, f"{where}.{k}") for k, v in reversed(item.items()))
+        elif isinstance(item, list | tuple):
+            stack.extend(
+                (v, f"{where}[{i}]") for i, v in reversed(list(enumerate(item)))
+            )
+    return None
 
 
 def is_valid_reward_number(
@@ -127,7 +222,7 @@ def reward_lenient_from_env() -> bool:
 
     Lenient mode keeps the classic ``test.sh → reward.json`` flow working when a
     verifier emits a rich reward map carrying extra bookkeeping keys (e.g. the
-    Harbor-era ``{"reward": 1.0, "done": true, ...}``) or non-numeric metrics:
+    older ``{"reward": 1.0, "done": true, ...}``) or non-numeric metrics:
     unrecognized/non-numeric top-level keys and non-numeric metric entries are
     dropped with a single warning instead of failing the whole run. A usable
     scalar ``reward`` is still required (or derived from a ``score``/``rewards``
@@ -167,6 +262,15 @@ def _apply_structured(
     the malformed key so it can be reported in the single aggregated warning.
     """
     try:
+        # A recognized structure may retain metadata beside its validated
+        # fields. Check all of it before publication, not only its scores
+        # (CONF-V4-1); lenient mode drops the same whole key as other errors.
+        bad = _non_finite_path(value, key)
+        if bad is not None:
+            raise ValueError(
+                f"{source} returned rewards with a non-finite number "
+                f"at {bad}: kept fields must be finite"
+            )
         parsed[key] = validate(value, source=source)
     except ValueError:
         # The assignment never ran, so ``parsed`` is untouched; just record it.
@@ -190,14 +294,22 @@ def validate_reward_map(
     as ``metrics``, ``aggregate``, ``rubric``, or evidence payloads; those are
     preserved rather than flattened into scalar-only maps.
 
-    With ``lenient=False`` (the default) the strict contract applies: any
-    unrecognized non-numeric top-level key, or a non-numeric metric, raises and
-    fails the run.
+    Beside a numeric ``reward``, a top-level key that holds no number (a
+    bool, a string, null, a list or an object: ``"feature1_passed": true``,
+    ``"answer": "Empowering"``) is kept as written, in both modes (#1178):
+    it is the verifier's own record of the trial, and throwing the whole
+    reward away for it turned correct runs into verifier errors. Without a
+    numeric ``reward`` (a flat map of metrics) such a key still fails the
+    strict contract, as in Rust's ``bench``.
+
+    With ``lenient=False`` (the default) the strict contract applies
+    otherwise: a non-numeric metric, a malformed structured key, or (without
+    a ``reward``) an unrecognized non-numeric top-level key raises and fails
+    the run.
 
     With ``lenient=True`` the classic ``test.sh → reward.json`` flow keeps
-    working when a verifier emits extra bookkeeping keys (e.g. ``done``) or
-    non-numeric metrics. Such keys — and any malformed recognized-structured
-    key — are dropped, the non-numeric metric *entries* are pruned from
+    working when a verifier emits non-numeric metrics or malformed structured
+    keys. Those are dropped, the non-numeric metric *entries* are pruned from
     ``metrics``, and a single :func:`warnings.warn` lists everything dropped
     instead of raising. A usable scalar ``reward`` is still required: it is
     taken from ``reward`` when valid, otherwise derived from a numeric
@@ -210,10 +322,18 @@ def validate_reward_map(
     strict [0, 1]. The range applies to every reward-valued number in the map
     — the scalar ``reward``, top-level numeric metrics, and ``metrics``
     entries — but NOT to ``rubric`` item scores, which are normalized
-    judge-criterion scores and always stay in [0, 1].
+    judge-criterion scores and always stay in [0, 1]. A finite number outside
+    it raises :class:`RewardOutOfRange` (a ``ValueError``) naming the key and
+    the raw value: the trial is unscored, never clamped. Lenient
+    mode raises it for the scalar ``reward`` too, rather than dropping the
+    score and reading a ``score`` alias in its place; it still drops an
+    out-of-range metric.
     """
     if rewards is None:
         raise ValueError(f"{source} returned no rewards")
+
+    if is_out_of_range_reward(rewards.get("reward"), reward_range=reward_range):
+        raise RewardOutOfRange("reward", rewards["reward"], reward_range, source=source)
 
     working: Mapping[str, Any] = rewards
     dropped: list[str] = []
@@ -222,6 +342,18 @@ def validate_reward_map(
         # Operate on a copy so we can re-home a legacy alias onto ``reward``
         # and drop an unusable scalar without mutating the caller's mapping.
         mutable = dict(rewards)
+        explicit = mutable.get("reward")
+        if (
+            isinstance(explicit, int | float)
+            and not isinstance(explicit, bool)
+            and _non_finite_path(explicit, "reward")
+        ):
+            # NaN or an infinity is a number the verifier wrote, not a missing
+            # one: no ``score`` alias stands in for it.
+            raise ValueError(
+                f"{source} returned rewards without numeric 'reward': "
+                f"reward = {explicit!r} is not a finite number"
+            )
         if "reward" in mutable and not is_valid_reward_number(
             mutable["reward"], reward_range=reward_range
         ):
@@ -243,6 +375,7 @@ def validate_reward_map(
             f"missing numeric 'reward' {reward_range_phrase(reward_range)}"
         )
 
+    has_reward = "reward" in working
     parsed: RewardMap = {}
     has_numeric_metric = False
     for key, value in working.items():
@@ -308,13 +441,30 @@ def validate_reward_map(
                 dropped=dropped,
             )
             continue
-        if key in _STRUCTURED_REWARD_KEYS:
+        if key in _STRUCTURED_REWARD_KEYS or (
+            has_reward
+            and (not isinstance(value, int | float) or isinstance(value, bool))
+        ):
+            # A passed-through structured key, or an extra field beside the
+            # reward (#1178): kept as written, never scored, so it must hold
+            # nothing the trial's JSON records cannot write.
+            bad = _non_finite_path(value, key)
+            if bad is not None:
+                if lenient:
+                    dropped.append(key)
+                    continue
+                raise ValueError(
+                    f"{source} returned rewards with a non-finite number "
+                    f"at {bad}: kept fields must be finite"
+                )
             parsed[key] = value
             continue
         if not is_valid_reward_number(value, reward_range=reward_range):
             if lenient:
                 dropped.append(key)
                 continue
+            if is_out_of_range_reward(value, reward_range=reward_range):
+                raise RewardOutOfRange(key, value, reward_range, source=source)
             raise ValueError(
                 f"{source} returned rewards with invalid reward value for {key!r}"
             )
@@ -484,6 +634,10 @@ def _validate_metrics(
 
     parsed: dict[str, RewardValue] = {}
     for key, metric in value.items():
+        if is_out_of_range_reward(metric, reward_range=reward_range):
+            raise RewardOutOfRange(
+                f"metrics.{key}", metric, reward_range, source=source
+            )
         if not is_valid_reward_number(metric, reward_range=reward_range):
             raise ValueError(
                 f"{source} returned rewards with invalid metric value for {str(key)!r}"

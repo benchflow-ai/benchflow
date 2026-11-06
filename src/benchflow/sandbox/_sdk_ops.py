@@ -5,18 +5,122 @@ SDK is only touched when a Daytona environment is actually being built.
 """
 
 import asyncio
+import inspect
 import logging
+import os
+from collections.abc import Callable
 from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
+_HEARTBEAT_PATCHED = "_benchflow_ws_heartbeat"
+
+# Seconds between websocket pings on the SDK's PTY and log websockets; 0 or
+# "off" disables. aiohttp closes a websocket whose pong is missing after half
+# the interval.
+DAYTONA_WS_HEARTBEAT_ENV = "BENCHFLOW_DAYTONA_WS_HEARTBEAT_SEC"
+_DAYTONA_WS_HEARTBEAT_DEFAULT_SEC = 120.0
+
+
+def daytona_ws_heartbeat_sec() -> float | None:
+    """The websocket ping interval, or None when pings are off."""
+    raw = os.environ.get(DAYTONA_WS_HEARTBEAT_ENV, "").strip().lower()
+    if not raw:
+        return _DAYTONA_WS_HEARTBEAT_DEFAULT_SEC
+    if raw in {"0", "off", "none", "false"}:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not value > 0:  # also rejects NaN
+        logger.warning(
+            "Invalid %s=%r; pinging every %.0fs",
+            DAYTONA_WS_HEARTBEAT_ENV,
+            raw,
+            _DAYTONA_WS_HEARTBEAT_DEFAULT_SEC,
+        )
+        return _DAYTONA_WS_HEARTBEAT_DEFAULT_SEC
+    return value
+
+
+def _patch_websocket_heartbeat(sdk_process: Any = None) -> None:
+    """Open the SDK's websockets with aiohttp's ``heartbeat``.
+
+    The agent's ACP stream rides a Daytona PTY websocket that the SDK opens
+    with no pings, and the Daytona side sends none. A quiet channel (a long
+    model turn, a long tool call) then carries no frames: a NAT on the path
+    (Azure SNAT drops a flow after about four idle minutes) can drop it
+    without a close frame, and the next ACP message vanishes while both ends
+    wait. With a heartbeat, frames keep flowing, and a missed pong closes the
+    websocket, which DaytonaPtyProcess reports at once as a lost transport
+    (#1143, #1144). Only the SDK layouts this was written against are wrapped:
+    ``AsyncProcess._open_ws(self, url, headers)`` (0.184 to 0.196) and
+    ``_open_ws(self, url, headers, subprotocols=None)`` (0.197 to 0.207, which
+    carries the PTY's exit-control and env subprotocols); another layout is
+    left alone.
+    """
+    if sdk_process is None:
+        try:
+            from daytona._async import process as sdk_process
+        except Exception:  # SDK not installed, or its layout changed
+            logger.debug("daytona SDK process module not importable", exc_info=True)
+            return
+    cls = cast(Any, getattr(sdk_process, "AsyncProcess", None))
+    original = getattr(cls, "_open_ws", None)
+    if original is None or not hasattr(sdk_process, "http_session_of"):
+        logger.debug("daytona SDK has no _open_ws/http_session_of; no ws heartbeat")
+        return
+    if getattr(original, _HEARTBEAT_PATCHED, False):
+        return
+    try:
+        params = list(inspect.signature(original).parameters)
+    except (TypeError, ValueError):
+        return
+
+    async def _open_ws(self: Any, url: str, headers: dict[str, str]) -> Any:
+        heartbeat = daytona_ws_heartbeat_sec()
+        if heartbeat is None:
+            return await original(self, url, headers)
+        # The SDK's own body (0.184 to 0.196), plus the heartbeat.
+        session = sdk_process.http_session_of(self._api_client.api_client)
+        return await session.ws_connect(url, headers=headers, heartbeat=heartbeat)
+
+    async def _open_ws_with_subprotocols(
+        self: Any,
+        url: str,
+        headers: dict[str, str],
+        subprotocols: list[str] | None = None,
+    ) -> Any:
+        heartbeat = daytona_ws_heartbeat_sec()
+        if heartbeat is None:
+            return await original(self, url, headers, subprotocols)
+        # The SDK's own body (0.197 to 0.207), plus the heartbeat.
+        session = sdk_process.http_session_of(self._api_client.api_client)
+        return await session.ws_connect(
+            url, headers=headers, protocols=subprotocols or (), heartbeat=heartbeat
+        )
+
+    layouts: dict[tuple[str, ...], Callable[..., Any]] = {
+        ("self", "url", "headers"): _open_ws,
+        ("self", "url", "headers", "subprotocols"): _open_ws_with_subprotocols,
+    }
+    wrapper = layouts.get(tuple(params))
+    if wrapper is None:
+        logger.debug("daytona SDK _open_ws%s changed; no ws heartbeat", params)
+        return
+    setattr(wrapper, _HEARTBEAT_PATCHED, True)
+    wrapper.__wrapped__ = original  # ty: ignore[unresolved-attribute]
+    cls._open_ws = wrapper
 
 
 def apply() -> None:
     """Install workarounds for known Daytona SDK bugs.
 
     Currently:
+      * ``AsyncProcess._open_ws`` opens websockets without pings
+        (:func:`_patch_websocket_heartbeat`).
       * ``AsyncProcess.get_session_command_logs`` occasionally raises
         ``pydantic.ValidationError`` because the server returns an empty
         string instead of a JSON object for ``SessionCommandLogsResponse``.
@@ -26,6 +130,7 @@ def apply() -> None:
         ``get_session_command``, so a missing logs payload is recoverable.
     """
     global _PATCHED
+    _patch_websocket_heartbeat()
     if _PATCHED:
         return
 
@@ -59,7 +164,7 @@ def apply() -> None:
     async def _patched_get_session_command_logs(
         self: Any, session_id: str, command_id: str
     ) -> SessionCommandLogsResponse:
-        # Harbor already wraps this call in tenacity (3 attempts), so
+        # The caller already wraps this call in tenacity (3 attempts), so
         # additional retries here are usually wasted on a deterministic
         # malformed payload. Try once more with a small delay in case it
         # IS transient, then return an empty-but-valid response so the

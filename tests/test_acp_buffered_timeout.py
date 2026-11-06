@@ -120,3 +120,33 @@ async def test_early_completion_observed_after_deadline_still_succeeds(idle_watc
 
     assert result.stop_reason == "end_turn"
     assert not any(event["type"] == "agent_timeout" for event in session.events)
+
+
+class QuickClient:
+    async def prompt(self, prompt):
+        await asyncio.sleep(0.05)
+        return PromptResult(stop_reason="end_turn")
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_returns_when_the_prompt_finishes():
+    """Guards the PR #203 idle-watchdog loop against sitting out its poll.
+
+    With the default 600 s idle budget the loop polls every 30 s, and a prompt
+    that finished early was only noticed at the next poll, so
+    ``agent_execution`` was rounded up to a multiple of the 30 s poll.
+    """
+    session = ACPSession("prompt-finishes-early")
+    session.record_user_prompt("go")
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    result = await asyncio.wait_for(
+        _prompt_with_idle_watchdog(
+            QuickClient(), session, "go", timeout=3600, idle_timeout=600
+        ),
+        timeout=5,
+    )
+
+    assert result.stop_reason == "end_turn"
+    assert loop.time() - started < 5

@@ -21,19 +21,19 @@ from typing import Any
 
 import pytest
 
-from benchflow.adapters.harbor import HarborAdapter
 from benchflow.adapters.inbound import (
     InboundTask,
     manifest_from_task_config,
 )
+from benchflow.adapters.task_toml import TaskTomlAdapter
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.task.config import TaskConfig
 
-# Foreign task fixtures — minimal Harbor task dirs
+# Foreign task fixtures — minimal task.toml task dirs
 
 
-_HARBOR_TASK_TOML = """\
+_TASK_TOML = """\
 schema_version = "1.0"
 
 [task]
@@ -49,7 +49,7 @@ ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
 """
 
 
-_HARBOR_TASK_TOML_PREBUILT = """\
+_TASK_TOML_PREBUILT = """\
 schema_version = "1.0"
 
 [task]
@@ -60,8 +60,8 @@ docker_image = "ghcr.io/openmoss/abc-widget:1.2.3"
 """
 
 
-def _write_harbor_task(root: Path, *, toml: str = _HARBOR_TASK_TOML) -> Path:
-    task_dir = root / "harbor-task"
+def _write_task_toml_task(root: Path, *, toml: str = _TASK_TOML) -> Path:
+    task_dir = root / "toml-task"
     task_dir.mkdir()
     (task_dir / "task.toml").write_text(toml)
     (task_dir / "instruction.md").write_text("Build the widget service.\n")
@@ -77,7 +77,7 @@ def _write_harbor_task(root: Path, *, toml: str = _HARBOR_TASK_TOML) -> Path:
 
 class TestManifestFromTaskConfig:
     def test_uses_prebuilt_docker_image_when_set(self) -> None:
-        cfg = TaskConfig.model_validate_toml(_HARBOR_TASK_TOML_PREBUILT)
+        cfg = TaskConfig.model_validate_toml(_TASK_TOML_PREBUILT)
         manifest = manifest_from_task_config(name="openmoss/widget", config=cfg)
         assert manifest.image == "ghcr.io/openmoss/abc-widget:1.2.3"
         assert manifest.base_image is None
@@ -86,7 +86,7 @@ class TestManifestFromTaskConfig:
         # Foreign tasks without docker_image must still yield a manifest;
         # the synthesized tag mirrors the framework's Dockerfile build path
         # so the manifest stays consistent with what the builder produces.
-        cfg = TaskConfig.model_validate_toml(_HARBOR_TASK_TOML)
+        cfg = TaskConfig.model_validate_toml(_TASK_TOML)
         manifest = manifest_from_task_config(
             name="openmoss/abc-bench__widget", config=cfg
         )
@@ -100,7 +100,7 @@ class TestManifestFromTaskConfig:
         # The legacy [environment.env] keys (host env forwarded into the
         # sandbox) become the manifest's forward_env.keys so the seam stays
         # honest about what the legacy path forwarded.
-        cfg = TaskConfig.model_validate_toml(_HARBOR_TASK_TOML)
+        cfg = TaskConfig.model_validate_toml(_TASK_TOML)
         manifest = manifest_from_task_config(name="x/y", config=cfg)
         assert set(manifest.forward_env.keys) == {
             "OPENAI_API_KEY",
@@ -108,10 +108,10 @@ class TestManifestFromTaskConfig:
         }
 
     def test_single_container_owns_lifecycle(self) -> None:
-        # Legacy single-container Harbor/Terminal-Bench tasks have no
+        # Legacy single-container task.toml (Terminal-Bench) tasks have no
         # separate service plane — owns_lifecycle = true so the manifest
         # validates without [[services]].
-        cfg = TaskConfig.model_validate_toml(_HARBOR_TASK_TOML)
+        cfg = TaskConfig.model_validate_toml(_TASK_TOML)
         manifest = manifest_from_task_config(name="x/y", config=cfg)
         assert manifest.owns_lifecycle is True
         assert manifest.services == []
@@ -120,38 +120,38 @@ class TestManifestFromTaskConfig:
 # Adapter -> manifest contract — the core of #420
 
 
-class TestHarborManifestSeam:
+class TestTaskTomlManifestSeam:
     def test_returns_validated_manifest(self, tmp_path: Path) -> None:
-        task_dir = _write_harbor_task(tmp_path)
-        result = HarborAdapter.from_task_dir(task_dir)
+        task_dir = _write_task_toml_task(tmp_path)
+        result = TaskTomlAdapter.from_task_dir(task_dir)
         assert isinstance(result, InboundTask)
         assert isinstance(result.manifest, EnvironmentManifest)
 
     def test_manifest_carries_task_identity(self, tmp_path: Path) -> None:
-        task_dir = _write_harbor_task(tmp_path)
-        result = HarborAdapter.from_task_dir(task_dir)
+        task_dir = _write_task_toml_task(tmp_path)
+        result = TaskTomlAdapter.from_task_dir(task_dir)
         assert result.manifest.name == "openmoss/abc-bench__widget"
 
     def test_manifest_forwards_env_keys(self, tmp_path: Path) -> None:
-        task_dir = _write_harbor_task(tmp_path)
-        result = HarborAdapter.from_task_dir(task_dir)
+        task_dir = _write_task_toml_task(tmp_path)
+        result = TaskTomlAdapter.from_task_dir(task_dir)
         assert set(result.manifest.forward_env.keys) == {
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
         }
 
     def test_prefers_sibling_environment_toml(self, tmp_path: Path) -> None:
-        """A Harbor task shipping its own ``environment.toml`` (the
+        """A task.toml task shipping its own ``environment.toml`` (the
         Environment-plane-native shape — chi-bench, clawsbench) bypasses
         the derived manifest and loads the file directly."""
-        task_dir = _write_harbor_task(tmp_path)
+        task_dir = _write_task_toml_task(tmp_path)
         (task_dir / "environment.toml").write_text(
             "[environment]\n"
             'name = "explicit-env"\n'
             'image = "ghcr.io/example/explicit:9.9"\n'
             "owns_lifecycle = true\n"
         )
-        result = HarborAdapter.from_task_dir(task_dir)
+        result = TaskTomlAdapter.from_task_dir(task_dir)
         assert result.manifest.name == "explicit-env"
         assert result.manifest.image == "ghcr.io/example/explicit:9.9"
 
@@ -183,8 +183,8 @@ async def test_adapter_manifest_runs_through_manifest_environment(
     Environment plane's default runtime adapter without further
     translation. This is the architectural contract #420 demands —
     adapter output flows through manifest-backed paths."""
-    task_dir = _write_harbor_task(tmp_path)
-    result = HarborAdapter.from_task_dir(task_dir)
+    task_dir = _write_task_toml_task(tmp_path)
+    result = TaskTomlAdapter.from_task_dir(task_dir)
 
     sandbox = _FakeSandbox()
     env = ManifestEnvironment(result.manifest, sandbox=sandbox)
@@ -204,8 +204,8 @@ def test_legacy_file_map_still_carried(tmp_path: Path) -> None:
     """The Environment-plane manifest is the new contract, but the
     ``files`` map (the legacy task-file compatibility layer) must keep
     working so downstream materialization paths are untouched."""
-    task_dir = _write_harbor_task(tmp_path)
-    result = HarborAdapter.from_task_dir(task_dir)
+    task_dir = _write_task_toml_task(tmp_path)
+    result = TaskTomlAdapter.from_task_dir(task_dir)
     assert (
         result.files["environment/Dockerfile"]
         == task_dir / "environment" / "Dockerfile"

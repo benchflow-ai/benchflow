@@ -38,6 +38,9 @@ def _make_trial(
     trial._rollout_dir.mkdir()
     trial._rollout_paths = MagicMock()
     trial._task = MagicMock()
+    # FIX-49 r4: this unnamed-runner fake has a readable tests folder.
+    trial._task.task_dir = tmp_path / "task"
+    (trial._task.task_dir / "tests").mkdir(parents=True)
     trial._effective_locked = []
     return trial
 
@@ -100,7 +103,8 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     else:
         install_agent_mock.assert_awaited_once()
         assert install_agent_mock.await_args.kwargs["sandbox_setup_timeout"] == 41
-        write_credential_files_mock.assert_awaited_once()
+        # Credentials are staged per connection, not at install (C23).
+        write_credential_files_mock.assert_not_awaited()
         deploy_skills_mock.assert_awaited_once()
         assert trial._agent_cwd == "/home/agent"
 
@@ -111,7 +115,10 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
 
 @pytest.mark.asyncio
 async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
-    """Guards #588: skip_install skips installer but keeps setup/credentials."""
+    """Guards #588: skip_install skips the installer but keeps setup.
+
+    Credentials are staged per connection (connect/connect_as), not here.
+    """
     trial = _make_trial(
         tmp_path,
         agent="claude-agent-acp",
@@ -140,8 +147,7 @@ async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
 
     install_agent_mock.assert_not_awaited()
     setup_sandbox_user_mock.assert_awaited_once()
-    write_credential_files_mock.assert_awaited_once()
-    assert write_credential_files_mock.await_args.args[3] is None
+    write_credential_files_mock.assert_not_awaited()
     deploy_skills_mock.assert_awaited_once()
     assert trial._agent_cfg is None
     assert trial._agent_cwd == "/home/agent"
@@ -200,9 +206,9 @@ async def test_install_agent_passes_effective_task_path_to_deploy_skills(
 
 
 @pytest.mark.asyncio
-async def test_install_agent_applies_web_policy_after_sandbox_setup(
-    tmp_path, monkeypatch
-):
+async def test_install_agent_leaves_web_policy_to_the_connection(tmp_path, monkeypatch):
+    """The web-tool setup may edit a credential-backed config, so it runs per
+    connection after the credentials are written (C30), never at install."""
     trial = _make_trial(tmp_path, agent="openhands", sandbox_setup_timeout=41)
     trial._disallow_web_tools = True
 
@@ -236,7 +242,8 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
 
     await trial.install_agent()
 
-    assert order == ["sandbox", "credentials", "web-policy"]
+    # Neither credentials (C23) nor the web-tool setup (C30) run at install.
+    assert order == ["sandbox"]
 
 
 def _write_config_for(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> dict:

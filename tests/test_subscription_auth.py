@@ -159,7 +159,7 @@ class TestResolveAgentEnvSubscription:
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
 
-        with pytest.raises(ValueError, match=r"required for model .* but not set"):
+        with pytest.raises(ValueError, match=r"No Claude login found for model"):
             self._resolve(
                 model="claude-haiku-4-5-20251001",
                 agent_env={},
@@ -471,11 +471,12 @@ class _FakeEnv:
         self.exec_calls = []
         self.uploads = []
 
-    async def exec(self, cmd: str, timeout_sec: int | None = None):
-        self.exec_calls.append((cmd, timeout_sec))
+    async def exec(self, cmd: str, timeout_sec: int | None = None, *, user=None):
+        self.exec_calls.append((cmd, timeout_sec, user))
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-    async def upload_file(self, source: str, dest: str):
+    async def upload_file(self, source: str, dest: str, *, mode=None, **_kwargs):
+        assert mode == "600"
         self.uploads.append((source, dest, Path(source).read_text()))
 
 
@@ -496,10 +497,14 @@ class TestUploadSubscriptionAuth:
         )
 
         assert len(env.uploads) == 1
-        assert env.uploads[0][1:] == (
-            "/home/agent/.codex/auth.json",
-            '{"tokens": {"access_token": "test"}}',
-        )
+        assert env.uploads[0][1].startswith("/.benchflow-credential-")
+        assert env.uploads[0][2] == '{"tokens": {"access_token": "test"}}'
+        (install,) = [
+            call for call in env.exec_calls if "/home/agent/.codex/auth.json" in call[0]
+        ]
+        assert install[2] == "agent"
+        assert f"cat {env.uploads[0][1]} > /home/agent/.codex/auth.json" in install[0]
+        assert "set -C" in install[0]
 
     @pytest.mark.asyncio
     async def test_openai_key_wins_over_codex_auth_json_file_write(self):
@@ -551,12 +556,13 @@ class TestUploadSubscriptionAuth:
         await upload_subscription_auth(env, "codex-acp", "/home/agent")
 
         assert len(env.uploads) == 1
-        assert env.uploads[0][1:] == (
-            "/home/agent/.codex/auth.json",
-            '{"token": "test"}',
-        )
-        assert (
-            "chown -R agent:agent /home/agent/.codex "
-            "&& chmod 600 /home/agent/.codex/auth.json",
-            10,
-        ) in env.exec_calls
+        assert env.uploads[0][1].startswith("/.benchflow-credential-")
+        assert env.uploads[0][2] == '{"token": "test"}'
+        (install,) = [
+            call for call in env.exec_calls if "/home/agent/.codex/auth.json" in call[0]
+        ]
+        assert install[1:] == (10, "agent")
+        assert "mkdir -- /home/agent/.codex" in install[0]
+        assert "[ ! -L /home/agent/.codex ]" in install[0]
+        assert "umask 077" in install[0] and "set -C" in install[0]
+        assert all("chown -R" not in call[0] for call in env.exec_calls)

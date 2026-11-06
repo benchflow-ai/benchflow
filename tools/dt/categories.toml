@@ -1,0 +1,113 @@
+# Failure families shared by both engines. normalise.py gives every record a
+# `family` from this table, so the comparer sees the same word for the same
+# failure whichever engine wrote it. Families are coarse on purpose: Python's
+# categories (src/benchflow/_utils/scoring.py, ERROR_CATEGORIES and
+# VERIFIER_ERROR_CATEGORIES) and Rust's R-codes (integ/p1:
+# crates/benchflow-run/src/record.rs:721-746, `category()`) cut failures at
+# different places, and a family is the finest cut both make.
+#
+# A value missing from this table is an error in normalise.py (never a silent
+# "other"): a new category or code must be placed here before a diff reads it.
+
+[python.error_category]
+kept_service_freezer = "refusal"
+runtime_sealing = "refusal"
+guard_timeout = "sandbox"
+invalid_provider_response = "provider"
+unsupported_task_feature = "refusal"
+sandbox_setup = "sandbox"
+install_failure = "agent_install"
+pipe_closed = "agent_error"
+acp_error = "agent_error"
+idle_timeout = "agent_idle"
+timeout = "agent_timeout"
+provider_auth = "provider"
+provider_rate_limit = "provider"
+provider_rejected = "provider"
+api_error = "provider"
+suspected_api_error = "provider"
+agent_integration = "integration"
+usage_limit = "usage_limit"
+infra_failure = "infra"
+# DX-a: a task image that does not build is the sandbox family, as Rust files
+# its image build failures (R10x); a full disk under the job folder was
+# "other" before it had a name, and stays in that family.
+image_build = "sandbox"
+# DX-a review A-1: a registry refusing the login was sandbox_setup or other.
+registry_auth = "sandbox"
+disk_full = "other"
+# DX-a round 2: a task file that does not load was "other" before.
+task_config = "other"
+other = "other"
+
+[python.verifier_error_category]
+verifier_failure = "verifier_error"
+verifier_other = "verifier_error"
+verifier_dep_install = "verifier_error"
+verifier_infra = "infra"
+verifier_timeout = "verifier_timeout"
+# V4 / #1178: a rejected raw reward is unscored, in Rust R302's family.
+reward_out_of_range = "verifier_error"
+# DX-a: an empty reward on a full disk was a verifier_failure before.
+disk_full = "verifier_error"
+infra_failure = "infra"
+
+# A Python refusal by the runtime capability check
+# (UnsupportedTaskFeatureError, src/benchflow/task/runtime_capabilities.py)
+# is R401, the code UnsupportedTaskFeature.code carries since DT1. Base
+# records (category "other") are still read as this refusal, from the error's
+# header line.
+[python.runtime_refusal]
+family = "refusal"
+code = "R401"
+
+# A task.md draft 2 package the Python planner refuses (TaskMdError,
+# src/benchflow/taskmd/plan.py:931-936 -> taskmd/materialize.py:133-138)
+# writes no trial folder and no result.json, so it has no category at all;
+# the runner records the cell as `refused_at_load` from the "Skipping task"
+# log line (src/benchflow/evaluation.py:1766-1776).
+[python.refused_at_load]
+family = "refusal"
+code = "R401"
+
+[rust.code]
+R000 = "internal"
+R001 = "stopped"
+R101 = "sandbox"
+R102 = "sandbox"
+R103 = "sandbox"
+R104 = "sandbox"
+R105 = "sandbox"
+R106 = "sandbox"
+R107 = "sandbox"
+R108 = "sandbox"
+R109 = "sandbox"
+R110 = "sandbox"
+R201 = "agent_install"
+R202 = "agent_error"
+R203 = "agent_idle"
+R204 = "agent_error"
+R205 = "agent_error"
+R206 = "integration"
+R211 = "provider"
+R212 = "provider"
+R213 = "usage_limit"
+R214 = "provider"
+R215 = "integration"
+R301 = "verifier_error"
+R302 = "verifier_error"
+R303 = "verifier_timeout"
+R304 = "verifier_error"
+R305 = "verifier_hardening"
+R306 = "verifier_error"
+R307 = "verifier_hardening"
+R309 = "verifier_error"
+R310 = "verifier_error"
+R311 = "verifier_error"
+R312 = "verifier_error"
+R313 = "verifier_error"
+R314 = "verifier_hardening"
+R315 = "verifier_hardening"
+R316 = "verifier_error"
+R401 = "refusal"
+R901 = "internal"

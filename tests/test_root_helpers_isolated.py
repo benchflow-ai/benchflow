@@ -24,6 +24,8 @@ from pathlib import Path
 import pytest
 
 from benchflow.sandbox.protocol import ExecResult
+from tests._receipt_fakes import inner_command
+from tests._root_python_fakes import is_root_python
 
 # Stdlib modules the helpers import that are not loaded at interpreter start.
 PLANTED = ("json", "glob", "shutil", "pathlib", "fnmatch", "hashlib", "tarfile")
@@ -54,6 +56,8 @@ def _run_from(workspace: Path, command: str) -> subprocess.CompletedProcess:
     if command.startswith("python3 "):
         command = python + command[len("python3") :]
     command = command.replace("&& python3 ", f"&& {python} ")
+    # The interpreter the host judged, as the root route names it.
+    command = f"__bf_root_python={python}; " + command
     return subprocess.run(
         ["sh", "-c", command], cwd=workspace, capture_output=True, text=True
     )
@@ -121,8 +125,36 @@ def test_pytest_plugin_discovery_is_isolated(workspace: Path) -> None:
     env = _Recorder(workspace)
     task = SimpleNamespace(config=TaskConfig(), task_dir=None)
     asyncio.run(_discover_pytest_plugin_flags(env, task))
-    assert env.commands and env.commands[0].startswith("cd / && python3 -I -c")
+    # The receipt wraps it (exec_raw); inside, PT's protected Python (C8).
+    assert env.commands and is_root_python(inner_command(env.commands[0]))
     assert _imported(workspace) == []
+
+
+def test_pytest_plugin_discovery_never_imports_from_a_trusted_workspace_pythonpath(
+    workspace: Path,
+) -> None:
+    """The trusted PYTHONPATH keeps the workspace.
+
+    An image with ``WORKDIR /app`` and ``ENV PYTHONPATH=/app`` gives the
+    verifier ``PYTHONPATH=/app`` (``_trusted_verifier_pythonpath`` does not
+    block the workspace). Discovery searches it for plugins, but as data: a
+    ``json.py`` planted there is never imported by the root helper.
+    """
+    from types import SimpleNamespace
+
+    from benchflow.sandbox.lockdown import _discover_pytest_plugin_flags
+    from benchflow.task.config import TaskConfig
+
+    env = _Recorder(workspace)
+    task = SimpleNamespace(config=TaskConfig(), task_dir=None)
+    flags = asyncio.run(
+        _discover_pytest_plugin_flags(env, task, pythonpath=str(workspace))
+    )
+    # The receipt wraps it (exec_raw); inside, PT's protected Python (C8).
+    assert env.commands and is_root_python(inner_command(env.commands[0]))
+    assert "PYTHONPATH=" not in env.commands[0]
+    assert _imported(workspace) == []
+    assert isinstance(flags, str)
 
 
 def test_workspace_capture_is_isolated(workspace: Path, tmp_path: Path) -> None:
@@ -141,11 +173,8 @@ def test_workspace_capture_is_isolated(workspace: Path, tmp_path: Path) -> None:
     assert _imported(workspace) == []
     # The planted modules are the agent's files and are captured as such.
     assert {"json.py", "answer.txt"} <= {entry.path for entry in manifest.entries}
-    assert all(
-        shlex.split(c)[:3] == ["python3", "-I", "-c"]
-        for c in env.commands
-        if c.startswith("python3")
-    )
+    # integ batch 12 skipped site (-I -S); PT's protected Python (-I -S -B).
+    assert all(is_root_python(c) for c in env.commands if "-c" in shlex.split(c))
 
 
 def test_reviewer_side_evidence_scripts_are_isolated() -> None:
@@ -161,15 +190,25 @@ def test_reviewer_side_evidence_scripts_are_isolated() -> None:
     asyncio.run(evidence.validate_uploaded_workspace(Env(), "/app", "/m.json"))
     asyncio.run(evidence.install_uploaded_workspace(Env(), "/a.tar", "/app", "/m.json"))
     assert commands
-    assert all(shlex.split(c)[:3] == ["python3", "-I", "-c"] for c in commands)
+    assert all(is_root_python(c) for c in commands)
 
 
 def test_cleanup_and_restore_keep_out_of_the_workspace() -> None:
-    from benchflow.sandbox.lockdown import _build_cleanup_cmd, _restore_workspace_cmd
+    from benchflow.sandbox.lockdown import (
+        _build_cleanup_cmd,
+        _cleanup_site_cmd,
+        _restore_workspace_cmd,
+    )
 
-    # Not run here: the cleanup walks / deleting conftest.py files. Its purge
-    # stays non-isolated on purpose (it must see PYTHONPATH and user-site
-    # directories) but runs from /, and imports nothing but sys and os.
+    # Not run here: the cleanup walks / deleting conftest.py files. Its hook
+    # purge runs only on PT's protected Python, with test.sh's search-path
+    # inputs (PYTHONPATH, PYTHONHOME, PYTHONUSERBASE, the working folder) as
+    # data: no image python3 starts with site.
     cleanup = _build_cleanup_cmd()
-    assert 'cd / && python3 -c "import sys,os;' in cleanup
-    assert "python3 -I -c 'import shutil,sys;" in _restore_workspace_cmd("/app")
+    assert cleanup.endswith(_cleanup_site_cmd(None))
+    assert "${__bf_hook_pythonpath-${PYTHONPATH-}}" in cleanup
+    assert 'python3 -c "' not in cleanup
+    # V8 finds the interpreter through _interpreter_lookup (PT's kit when
+    # there is one); -I -S -B, from /.
+    restore = _restore_workspace_cmd("/app")
+    assert '(cd / && "$__bf_hp_py" -I -S -B -c \'import shutil,sys;' in restore

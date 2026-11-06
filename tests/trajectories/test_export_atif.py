@@ -1,8 +1,7 @@
 """ATIF (Agent Trajectory Interchange Format) trajectory export.
 
-Record shape pinned against the Harbor pydantic models
-(harbor-framework/harbor, src/harbor/models/trajectories/*.py) and the
-ATIF RFC (rfcs/0001-trajectory-format.md), schema version ATIF-v1.7.
+Record shape follows the ATIF RFC (rfcs/0001-trajectory-format.md),
+schema version ATIF-v1.7.
 """
 
 import json

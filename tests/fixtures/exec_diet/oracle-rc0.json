@@ -1,0 +1,12 @@
+{
+ "name": "oracle",
+ "preview_ran": true,
+ "trajectory": [
+  {
+   "command": "solution/solve.sh",
+   "return_code": 0,
+   "stdout": "solved\nto-stderr\n",
+   "type": "oracle"
+  }
+ ]
+}

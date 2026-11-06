@@ -1,0 +1,11 @@
+{
+ "chmod_tries": "3",
+ "receipt": [
+  "/run/benchflow/verifier-started-<hex>",
+  "main"
+ ],
+ "receipt_dir": "1777 directory",
+ "rewards": {
+  "reward": 1.0
+ }
+}

@@ -1,6 +1,6 @@
 """Hosted-search switches and rollout wiring for network_mode='denylist'.
 
-Guards the denylist egress mode, benchflow-ai/FrontierPhysics#365: a task
+Guards the denylist egress mode: a task
 keeps internet access, listed URLs and hosts are unreachable through the
 loopback egress proxy, and each harness's hosted (provider-side) search tool
 is switched off because the proxy cannot see those requests.
@@ -30,16 +30,9 @@ from benchflow.agents.registry import (
 )
 from benchflow.rollout import Role, Rollout, RolloutConfig, Scene
 from benchflow.rollout_planes import DefaultRolloutPlanes
-from benchflow.sandbox.egress_denylist import (
-    BLOCK_LOG_PATH,
-    EGRESS_DENYLIST_ENV,
-    EgressDenylist,
-    EgressGuard,
-)
+from benchflow.sandbox.egress_denylist import EGRESS_DENYLIST_ENV, EgressDenylist
 from benchflow.task import RolloutPaths
-
-# The gateway guard a denylist rollout runs with.
-_DENYLIST_GUARD = EgressGuard(block_log=BLOCK_LOG_PATH)
+from tests._policy_setup import run_policy_setup
 
 _USAGE_UNAVAILABLE = {
     "n_input_tokens": None,
@@ -63,24 +56,12 @@ def _run_hosted_search_cmd(agent_name: str, home: Path) -> None:
     """Execute an agent's disallow_hosted_search_setup_cmd against a temp home."""
     cmd = AGENTS[agent_name].disallow_hosted_search_setup_cmd
     assert cmd, f"{agent_name} has no disallow_hosted_search_setup_cmd"
-    result = subprocess.run(
-        ["bash", "-c", cmd],
-        env={"BENCHFLOW_AGENT_HOME": str(home), "PATH": "/usr/bin:/bin"},
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    result = run_policy_setup(cmd, home)
     assert result.returncode == 0, f"{agent_name} setup_cmd failed: {result.stderr}"
 
 
 def _run_no_web_cmd(agent_name: str, home: Path) -> None:
-    result = subprocess.run(
-        ["bash", "-c", AGENTS[agent_name].disallow_web_tools_setup_cmd],
-        env={"BENCHFLOW_AGENT_HOME": str(home), "PATH": "/usr/bin:/bin"},
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    result = run_policy_setup(AGENTS[agent_name].disallow_web_tools_setup_cmd, home)
     assert result.returncode == 0, result.stderr
 
 
@@ -152,7 +133,8 @@ def test_opencode_hosted_search_cmd_merges_with_no_web_settings(tmp_path):
 
 
 def test_agents_without_hosted_search_switch_keep_defaults():
-    for name in ("pi-acp", "openclaw", "harvey-lab-harness", "deepagents", "openhands"):
+    """Guards PR #1093 after OpenClaw moves out of the built-in registry."""
+    for name in ("pi-acp", "harvey-lab-harness", "deepagents", "openhands"):
         assert AGENTS[name].disallow_hosted_search_setup_cmd == "", name
         assert AGENTS[name].disallow_hosted_search_launch_suffix == "", name
 
@@ -184,6 +166,7 @@ def test_codex_web_policy_uses_launch_config_instead_of_ignored_cli_flags():
 
 def test_launch_without_suffix_is_unchanged_for_hosted_search():
     planes = DefaultRolloutPlanes()
+    raw_command = "not-a-real-agent --acp"
 
     assert (
         planes.agent_launch(
@@ -193,9 +176,9 @@ def test_launch_without_suffix_is_unchanged_for_hosted_search():
     )
     assert (
         planes.agent_launch(
-            "not-a-real-agent", disallow_web_tools=False, disallow_hosted_search=True
+            raw_command, disallow_web_tools=False, disallow_hosted_search=True
         )
-        == "not-a-real-agent"
+        == raw_command
     )
 
 
@@ -367,7 +350,8 @@ async def test_apply_web_tool_policy_repairs_ownership_for_hosted_search():
     )
 
     cmd = env.exec.await_args.args[0]
-    assert "chown -R agent:agent /home/agent/.claude" in cmd
+    assert "chown" not in cmd
+    assert env.exec.await_args.kwargs["user"] == "agent"
     assert "WebSearch" in cmd
     assert "WebFetch" not in cmd
 
@@ -377,6 +361,8 @@ async def test_apply_web_tool_policy_repairs_ownership_for_hosted_search():
 
 def _denylist_task(network_mode: str = "denylist") -> SimpleNamespace:
     sandbox = SimpleNamespace(
+        env={},
+        setup_commands=[],
         network_mode=network_mode,
         blocked_urls=[_BLOCKED_URL],
         blocked_hosts=[_BLOCKED_HOST],
@@ -390,6 +376,8 @@ def _denylist_task(network_mode: str = "denylist") -> SimpleNamespace:
         config=SimpleNamespace(
             sandbox=sandbox,
             agent=SimpleNamespace(prompt_prefix=None, timeout_sec=60),
+            verifier=SimpleNamespace(service="main", env={}),
+            solution=SimpleNamespace(env={}),
         ),
     )
 
@@ -431,6 +419,7 @@ def _fake_planes(env: Any) -> MagicMock:
     planes.stop_provider_runtime = AsyncMock()
     planes.install_agent = AsyncMock(return_value=MagicMock())
     planes.write_credential_files = AsyncMock()
+    planes.quiesce_agent = AsyncMock()
     planes.upload_subscription_auth = AsyncMock()
     planes.apply_web_tool_policy = AsyncMock()
     planes.connect_acp = AsyncMock(side_effect=lambda **k: _fake_acp_connection())
@@ -479,29 +468,82 @@ def _rollout(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("agent", [*sorted(AGENTS), "custom-denylist-acp"])
 @pytest.mark.parametrize(
-    "model", ["openai/model-a", "anthropic/model-b", "google/model-c", "custom/model-d"]
+    ("model", "agent"),
+    [
+        (model, agent)
+        for model in (
+            "openai/model-a",
+            "anthropic/model-b",
+            "google/model-c",
+            "custom/model-d",
+        )
+        for agent in [*sorted(AGENTS), "custom-denylist-acp"]
+    ]
+    + [
+        (model, "muse-code")
+        for model in ("muse-spark-1.3", "meta/muse-spark-1.3", "muse/muse-spark-1.3")
+    ],
 )
 async def test_denylist_wiring_does_not_depend_on_harness_or_model(
     tmp_path, monkeypatch, agent, model
 ):
     """Guards PR #1118's shared follow-up to #1113, including future ACP registrations.
 
-    Model identifiers are opaque to this policy layer. This checks wiring,
-    not whether each native harness speaks every provider's model protocol.
+    Model identifiers are opaque to this policy layer. AG-C4 at bf2d8c83 now
+    refuses foreign Muse routes at plan admission; keep those refusal cases
+    and exercise the unchanged policy wiring on supported Muse aliases too.
     """
+    # The synthetic pairs intentionally include incompatible protocols. The
+    # shared plan gate now checks routes too; isolate this wiring test at that
+    # boundary and retain all of its network-policy assertions. The real route
+    # refusal is covered by test_check_run_sweep on a complete task package.
+    monkeypatch.setattr("benchflow.agents.env.unroutable_agent_model", lambda *_: None)
     custom = agent == "custom-denylist-acp"
     if custom:
         register_agent(agent, "true", "true", protocol="acp")
     try:
         env = _fake_sandbox()
         planes = _fake_planes(env)
+        # The fake sandbox cannot answer Codex Apps probes; stub admission and
+        # check it still precedes every ACP connection.
+        admission_order = []
+
+        async def apps_policy(sandbox, **kwargs):
+            assert sandbox is env
+            assert kwargs["agent"] == agent
+            assert kwargs["policy"] == "disabled"
+            admission_order.append("apps")
+            return kwargs["agent_env"]
+
+        async def connect_acp(**kwargs):
+            admission_order.append("acp")
+            return _fake_acp_connection()
+
+        apps = AsyncMock(side_effect=apps_policy)
+        monkeypatch.setattr("benchflow.rollout.enforce_codex_apps_policy", apps)
+        planes.connect_acp.side_effect = connect_acp
         runtime = SimpleNamespace(agent_base_url="http://127.0.0.1:12345")
         planes.ensure_litellm_runtime.side_effect = lambda **k: (
             k["agent_env"],
             runtime,
         )
+        if agent == "muse-code" and not model.startswith(
+            ("muse-", "meta/muse-", "muse/muse-")
+        ):
+            with pytest.raises(ValueError, match="muse-code requires a Muse model"):
+                _rollout(
+                    tmp_path,
+                    monkeypatch,
+                    task=_denylist_task(),
+                    planes=planes,
+                    agent=agent,
+                    model=model,
+                )
+            planes.resolve_agent_env.assert_not_called()
+            planes.write_credential_files.assert_not_awaited()
+            planes.connect_acp.assert_not_awaited()
+            return
         rollout = _rollout(
             tmp_path,
             monkeypatch,
@@ -516,8 +558,10 @@ async def test_denylist_wiring_does_not_depend_on_harness_or_model(
         await rollout.connect_as(Role(name="next", agent=agent, model=model))
 
         assert planes.connect_acp.await_count == 2
+        assert apps.await_count == 2
+        assert admission_order == ["apps", "acp", "apps", "acp"]
         for call in planes.ensure_litellm_runtime.await_args_list:
-            assert call.kwargs["egress_guard"] == _DENYLIST_GUARD
+            assert call.kwargs["force_sandbox_local"] is True
             assert (call.kwargs["agent"], call.kwargs["model"]) == (agent, model)
         for call in planes.start_egress_denylist.await_args_list:
             assert call.args == (env, "agent", _DENYLIST)
@@ -554,23 +598,18 @@ async def test_setup_defers_proxy_env_until_connect(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.parametrize(
-    ("network_mode", "agent"),
-    [("public", "claude-agent-acp"), ("denylist", "oracle")],
-    ids=["other-network-mode", "oracle"],
-)
 @pytest.mark.asyncio
 async def test_setup_leaves_env_alone_outside_denylist_agent_runs(
-    tmp_path, monkeypatch, network_mode, agent
+    tmp_path, monkeypatch
 ):
     env = _fake_sandbox()
     planes = _fake_planes(env)
     rollout = _rollout(
         tmp_path,
         monkeypatch,
-        task=_denylist_task(network_mode),
+        task=_denylist_task("public"),
         planes=planes,
-        agent=agent,
+        agent="claude-agent-acp",
     )
 
     await rollout.setup()
@@ -580,8 +619,32 @@ async def test_setup_leaves_env_alone_outside_denylist_agent_runs(
     assert EGRESS_DENYLIST_ENV not in rollout._agent_env
     assert "HTTPS_PROXY" not in rollout._agent_env
     planes.agent_launch.assert_called_once_with(
-        agent, disallow_web_tools=False, disallow_hosted_search=False
+        "claude-agent-acp",
+        disallow_web_tools=False,
+        disallow_hosted_search=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_setup_does_not_resolve_agent_launch_for_oracle(tmp_path, monkeypatch):
+    """Guards PR #1093's non-agent rollout boundary under denylist tasks."""
+    env = _fake_sandbox()
+    planes = _fake_planes(env)
+    rollout = _rollout(
+        tmp_path,
+        monkeypatch,
+        task=_denylist_task("denylist"),
+        planes=planes,
+        agent="oracle",
+    )
+
+    await rollout.setup()
+
+    assert rollout._egress_denylist is None
+    assert rollout._disallow_hosted_search is False
+    assert EGRESS_DENYLIST_ENV not in rollout._agent_env
+    assert "HTTPS_PROXY" not in rollout._agent_env
+    planes.agent_launch.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -601,12 +664,14 @@ async def test_setup_fails_closed_without_sandbox_user(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_install_agent_requests_hosted_search_policy(tmp_path, monkeypatch):
+async def test_connect_requests_hosted_search_policy(tmp_path, monkeypatch):
+    """Requested per connection, after its credentials are written (C30)."""
     env = _fake_sandbox()
     planes = _fake_planes(env)
     planes.setup_sandbox_user = AsyncMock(return_value="/workspace")
     planes.snapshot_build_config = AsyncMock()
     planes.seed_verifier_workspace = AsyncMock()
+    planes.prepare_verifier_runtime = AsyncMock()
     planes.deploy_skills = AsyncMock()
     planes.lockdown_paths = AsyncMock()
     rollout = _rollout(tmp_path, monkeypatch, task=_denylist_task(), planes=planes)
@@ -614,6 +679,8 @@ async def test_install_agent_requests_hosted_search_policy(tmp_path, monkeypatch
     env.exec.return_value = MagicMock(return_code=0, stdout="/workspace\n", stderr="")
 
     await rollout.install_agent()
+    planes.apply_web_tool_policy.assert_not_awaited()
+    await rollout.connect()
 
     kwargs = planes.apply_web_tool_policy.await_args.kwargs
     assert kwargs == {"disallow": False, "disallow_hosted_search": True}
@@ -643,7 +710,7 @@ async def test_connect_starts_proxy_before_acp_and_cleanup_stops_it(
     await rollout.connect()
 
     litellm_kwargs = planes.ensure_litellm_runtime.await_args.kwargs
-    assert litellm_kwargs["egress_guard"] == _DENYLIST_GUARD
+    assert litellm_kwargs["force_sandbox_local"] is True
     assert "SSL_CERT_FILE" not in litellm_kwargs["agent_env"]
     assert "HTTPS_PROXY" not in litellm_kwargs["agent_env"]
     planes.start_egress_denylist.assert_awaited_once_with(
@@ -739,12 +806,9 @@ async def test_connect_as_applies_denylist_to_role_env(tmp_path):
     env = _fake_sandbox()
     planes = _fake_planes(env)
     planes.install_agent.return_value = AGENTS["gemini"]
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = env
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = _denylist_task()
     trial._planes = planes
@@ -754,8 +818,9 @@ async def test_connect_as_applies_denylist_to_role_env(tmp_path):
     planes.agent_launch.assert_called_once_with(
         "gemini", disallow_web_tools=False, disallow_hosted_search=True
     )
-    guard = planes.ensure_litellm_runtime.await_args.kwargs["egress_guard"]
-    assert guard == _DENYLIST_GUARD
+    assert (
+        planes.ensure_litellm_runtime.await_args.kwargs["force_sandbox_local"] is True
+    )
     assert planes.apply_web_tool_policy.await_args.kwargs == {
         "disallow": False,
         "disallow_hosted_search": True,
@@ -781,16 +846,12 @@ async def test_connect_as_applies_denylist_when_primary_is_oracle(tmp_path):
     env = _fake_sandbox()
     planes = _fake_planes(env)
     planes.install_agent.return_value = AGENTS["gemini"]
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = env
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = _denylist_task()
     trial._planes = planes
-    trial._egress_denylist = None
 
     await trial.connect_as(role)
 
@@ -846,12 +907,9 @@ async def test_connect_as_skips_denylist_for_oracle_role(tmp_path):
     cfg = RolloutConfig(task_path=tmp_path / "task", scenes=[Scene(roles=[role])])
     env = _fake_sandbox()
     planes = _fake_planes(env)
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = env
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = _denylist_task()
     trial._planes = planes
@@ -863,3 +921,15 @@ async def test_connect_as_skips_denylist_for_oracle_role(tmp_path):
     )
     planes.start_egress_denylist.assert_not_awaited()
     assert EGRESS_DENYLIST_ENV not in planes.connect_acp.await_args.kwargs["agent_env"]
+
+
+@pytest.fixture(autouse=True)
+def _image_hands_no_firewall_power(monkeypatch):
+    """These fake sandboxes answer no commands of PY8 S3's firewall-power
+    check (tests/test_firewall_power.py), which would refuse the trial; here
+    the image is a sound one."""
+
+    async def clear(env, user, **_):
+        return {"defense": "firewall_power", "state": "clear", "why": "test"}, None
+
+    monkeypatch.setattr("benchflow.rollout.check_firewall_power", clear)

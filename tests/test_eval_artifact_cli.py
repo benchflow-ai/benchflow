@@ -339,9 +339,15 @@ def test_eval_run_eval_results_dedupes_retry_attempts(
     assert captured["value"] == 100.0
 
 
-def test_eval_run_eval_results_warns_when_nothing_scored(
+def test_eval_run_eval_results_publishes_zero_when_every_task_is_unscored(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Guards FF-sw-trajectories: all-unscored jobs still have a denominator."""
+    captured = {}
+    monkeypatch.setattr(
+        "benchflow.publish.huggingface.open_eval_results_pr",
+        lambda **kwargs: captured.update(kwargs),
+    )
     tasks = tmp_path / "tasks"
     _write_task(tasks / "task-a")
 
@@ -387,7 +393,8 @@ def test_eval_run_eval_results_warns_when_nothing_scored(
     )
 
     assert result.exit_code == 0, result.output
-    assert "no scored rollouts" in result.output
+    assert captured["value"] == 0.0
+    assert "n = 1, unscored as 0; scored n = 0" in captured["notes"]
 
 
 def test_sharded_health_and_selection_discover_worker_shards(tmp_path: Path) -> None:
@@ -486,6 +493,7 @@ models:
 
     assert result.exit_code == 0, result.output
     summary = json.loads((tmp_path / "jobs" / "matrix-summary.json").read_text())
+    assert summary["schema_version"] == 2
     assert len(summary["runs"]) == 4
     assert {row["alias"] for row in summary["runs"]} == {"base", "sft"}
     assert json.loads((tmp_path / "task-manifest.json").read_text())["total"] == 1

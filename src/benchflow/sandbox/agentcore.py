@@ -46,11 +46,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import functools
 import hashlib
 import io
 import json
 import os
 import re
+import secrets
 import shlex
 import tarfile
 import threading
@@ -61,15 +63,40 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from benchflow._paths import iter_safe_tree
+from benchflow._runtime_tree import KIT_BIN
+from benchflow.sandbox import _transport
 from benchflow.sandbox import agentcore_builder as builders
 from benchflow.sandbox import agentcore_provisioning as provisioning
-from benchflow.sandbox._base import BaseSandbox, ExecResult
+from benchflow.sandbox._base import (
+    SYSTEM_PATH,
+    SYSTEM_SHELL_UNSET_VARS,
+    BaseSandbox,
+    ExecResult,
+    ExecRoute,
+    _root_exec_command,
+    bash_argv_without_bash_env,
+    restore_bash_env,
+    restore_image_env,
+    system_shell_prefix,
+    system_shell_route,
+    with_system_path,
+)
 from benchflow.sandbox._compose import compose_definition_path
+from benchflow.sandbox._download import private_download
+from benchflow.sandbox._exec_output import exec_raw
+from benchflow.sandbox._transport import (
+    STAGE_ROOT,
+    fit,
+    open_staged,
+    reader_cat,
+    stage_proof,
+)
 from benchflow.sandbox.agentcore_image import AgentCoreImagePublisher
-from benchflow.sandbox.agentcore_sealed import SealedChannel
+from benchflow.sandbox.agentcore_sealed import SEAL_DIR, SealedChannel
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
+from benchflow.trust.state import TRUSTED_TRANSFER, admit
 
 if TYPE_CHECKING:
     from benchflow.sandbox.process import LiveProcess
@@ -87,7 +114,20 @@ _LIFECYCLE_MAX_SEC = 28800
 # The service caps a single command payload at 64 KB. Base64 inflates by 4/3,
 # and the wrapper adds shell scaffolding, so keep a wide margin.
 _MAX_INLINE_UPLOAD_BYTES = 24 * 1024
+# The transport bound of one command here, counted as the service counts it
+# (the JSON-escaped string): below its 64 KB body cap, and above the sealed
+# channel's own upload commands (24 KiB pieces), which never stage.
+AGENTCORE_COMMAND_BOUND = 60_000
+
+
+def _json_size(command: str) -> int:
+    return len(json.dumps(command).encode())
+
+
 _MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+_MAX_EXTRACT_BYTES = 64 * 1024 * 1024
+_MAX_EXTRACT_MEMBERS = 10_000
+_MAX_TAR_BYTES = _MAX_EXTRACT_BYTES + 16 * 1024 * 1024
 # ``PING_SHIM`` implements the plain HTTP contract (GET /ping,
 # POST /invocations), so register the runtime as HTTP rather than relying on
 # whatever the service currently defaults to.
@@ -112,6 +152,12 @@ _ENV_SECURITY_GROUPS = "BENCHFLOW_AGENTCORE_SECURITY_GROUPS"
 
 class AgentCoreSandbox(BaseSandbox):
     """Sandbox backend for Bedrock AgentCore Runtime microVMs."""
+
+    # a root agent here runs under the provider's own metadata
+    # policy (the block's record says provider-managed).
+    cloud_metadata_provider_managed = True
+
+    agent_exec_shell = "/bin/bash"
 
     def __init__(
         self,
@@ -261,6 +307,9 @@ class AgentCoreSandbox(BaseSandbox):
         return cached
 
     async def start(self, force_build: bool) -> None:
+        from benchflow.trust import state as trust_state
+
+        trust_state.begin_fresh(self)
         try:
             image_uri = await self._images.publish(force_build=force_build)
             self.runtime_arn = await self._ensure_runtime(image_uri)
@@ -276,6 +325,7 @@ class AgentCoreSandbox(BaseSandbox):
             # limited) or a long matrix outlives the lease it inherited.
             await self._renew_lease()
             await self._warm_session()
+            await self._deliver_bfx()
             self.logger.info(
                 "AgentCore session ready (runtime=%s, session=%s)",
                 self.runtime_arn,
@@ -292,6 +342,32 @@ class AgentCoreSandbox(BaseSandbox):
                 build_timeout_sec=self.task_env_config.build_timeout_sec,
             ) from exc
 
+    async def _deliver_bfx(self) -> None:
+        """bfx by upload (root's 0555 /.bfx) over the sealed channel, before
+        the agent's first byte (TRUSTED-RUNTIME.md §6)."""
+        from benchflow._bfx import delivery as bfx_delivery
+
+        async def run_root(command: str) -> tuple[int, str]:
+            result = await exec_raw(
+                self.exec, command, user="root", timeout_sec=60, system_shell=True
+            )
+            out = result.stdout or ""
+            if result.return_code != 0:
+                out += result.stderr or ""
+            return result.return_code, out
+
+        await bfx_delivery.deliver_upload(
+            self,
+            "agentcore",
+            functools.partial(
+                self.upload_file,
+                admission=admit(
+                    self, "main", TRUSTED_TRANSFER, reason="the pinned bfx helper"
+                ),
+            ),
+            run_root,
+        )
+
     async def _ensure_runtime(self, image_uri: str) -> str:
         """Resolve the shared runtime for an image and execution contract.
 
@@ -300,8 +376,10 @@ class AgentCoreSandbox(BaseSandbox):
         stores those on the runtime, so image-only naming made a later rollout
         with a different timeout collide with an incompatible existing runtime.
         """
-        digest, _tag = self._images.identity()
-        contract_digest = self._runtime_contract_digest(digest)
+        # A recipe can resolve to different bytes after a forced rebuild.
+        # Bind the name itself to immutable bytes: another evaluator must
+        # never move the DEFAULT endpoint used by our cached runtime.
+        contract_digest = self._runtime_contract_digest(image_uri)
         name = provisioning.runtime_name(self.environment_name, contract_digest)
 
         async def _create() -> tuple[str, str]:
@@ -667,8 +745,6 @@ class AgentCoreSandbox(BaseSandbox):
 
     @staticmethod
     def _wait_ready(control: Any, runtime_id: str) -> None:
-        import time
-
         deadline = time.monotonic() + _RUNTIME_READY_TIMEOUT_SEC
         status = "CREATING"
         while time.monotonic() < deadline:
@@ -708,7 +784,7 @@ class AgentCoreSandbox(BaseSandbox):
         last: Exception | None = None
         for attempt in range(1, _SESSION_WARMUP_ATTEMPTS + 1):
             try:
-                result = await self.exec("true", timeout_sec=60)
+                result = await exec_raw(self.exec, "true", timeout_sec=60)
                 if result.return_code == 0:
                     if attempt > 1:
                         self.logger.info(
@@ -782,6 +858,14 @@ class AgentCoreSandbox(BaseSandbox):
                 "require the Docker sandbox (#248)."
             )
 
+    @property
+    def supports_system_shell(self) -> bool:
+        return True
+
+    @property
+    def supports_runtime_kit(self) -> bool:
+        return True
+
     async def exec(
         self,
         command: str,
@@ -790,14 +874,81 @@ class AgentCoreSandbox(BaseSandbox):
         timeout_sec: int | None = None,
         user: str | int | None = None,
         service: str = "main",
+        system_shell: bool = False,
     ) -> ExecResult:
+        """Run ``command`` in the session.
+
+        ``system_shell``: the payload's first shell unsets the loader and
+        start-up variables and pins the system PATH before it starts
+        anything; the runtime starts that first ``/bin/sh`` itself, with the
+        session's environment (as on native Daytona). A K1 agent command
+        (``AgentExecCommand``) is built on the same route and then started
+        inside K1's barrier.
+        """
+        from benchflow.sandbox.agent_exec import AgentExecCommand
+
+        agent_bootstrap = isinstance(command, AgentExecCommand)
         self._reject_non_main(service)
         if not self.runtime_arn or not self.runtime_session_id:
             raise RuntimeError("AgentCore sandbox not started. Call start() first.")
 
-        wrapped = command
         resolved_user = self._resolve_user(user)
-        merged_env = self._merge_env(env)
+        # C8: plumbing (route.pin) never gets the loader and start-up values
+        # back; every other command gets the image's (kept aside in the
+        # image's ENV, AgentCoreImagePublisher) after its staged env.
+        route = await self.exec_route(user, system_shell=system_shell)
+        merged_env = self._merge_env(
+            env,
+            user,
+            plumbing=route.pin is not None,
+            explicit_root=route.explicit_root,
+        )
+        if agent_bootstrap and merged_env:
+            from benchflow.sandbox.native_agent_env import uploaded_agent_env
+
+            root_route = await system_shell_route(self)
+
+            async def root_exec(body: str) -> ExecResult:
+                return await self._dispatch_command(
+                    body,
+                    timeout_sec=30,
+                    resolved_user="root",
+                    route=root_route,
+                    agent_bootstrap=True,
+                )
+
+            async with uploaded_agent_env(
+                command,
+                merged_env,
+                root_exec=root_exec,
+                upload=self._exec_env_upload(),
+            ) as (_restored, opening):
+                from benchflow.sandbox.native_agent_env import restore_command
+
+                def restored_for(agent_command: str) -> str:
+                    restored = restore_command(agent_command)
+                    if cwd:
+                        restored = f"cd {shlex.quote(cwd)} && {restored}"
+                    return restored
+
+                return await self._dispatch_command(
+                    command,
+                    timeout_sec=timeout_sec,
+                    resolved_user=resolved_user,
+                    route=route,
+                    agent_bootstrap=True,
+                    agent_env_open=opening,
+                    agent_wrap=restored_for,
+                )
+        wrapped = (
+            command
+            if route.pin is not None
+            else restore_image_env(
+                merged_env or (),
+                tools=route.tools if route.kit and route.root else None,
+            )
+            + command
+        )
         if merged_env:
             # NEVER use the shared env-file command wrapper here: it embeds
             # the whole environment as reversible base64 in the command, and
@@ -811,7 +962,9 @@ class AgentCoreSandbox(BaseSandbox):
             )
             quoted_env = shlex.quote(env_path)
             if cwd:
-                wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
+                # Not ``&&``: the restore before the command is several
+                # statements, and a failed cd must stop all of them.
+                wrapped = f"cd {shlex.quote(cwd)} || exit 1; {wrapped}"
             # Cleanup must not depend on anything that can be skipped:
             # - the trap is installed FIRST, before any `cd` (a failed cd
             #   previously prevented trap installation and leaked the file);
@@ -822,16 +975,26 @@ class AgentCoreSandbox(BaseSandbox):
             #   non-interactive shells; `|| exit 97` covers shells where it
             #   is not) rather than silently running with an empty
             #   environment — the trap still fires on that exit.
+            # Both removals start with no loader or start-up value (C8): the
+            # sourced file holds the task's on its route, and the trap runs
+            # after the command. Only builtins run between the source and
+            # the command.
+            unset_loader = f"unset {' '.join(SYSTEM_SHELL_UNSET_VARS)}"
+            rm = f"{KIT_BIN}/rm" if route.kit else "/bin/rm"
             wrapped = (
-                f"trap 'rm -f {quoted_env}' EXIT; "
+                f"trap '{unset_loader}; {rm} -f {quoted_env}' EXIT; "
                 f"set -a; . {quoted_env} || exit 97; set +a; "
-                f"rm -f {quoted_env}; {wrapped}"
+                f"({unset_loader}; {rm} -f {quoted_env}); {wrapped}"
             )
         elif cwd:
-            wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
+            wrapped = f"cd {shlex.quote(cwd)} || exit 1; {wrapped}"
 
         return await self._dispatch_command(
-            wrapped, timeout_sec=timeout_sec, resolved_user=resolved_user
+            wrapped,
+            timeout_sec=timeout_sec,
+            resolved_user=resolved_user,
+            route=route,
+            agent_bootstrap=agent_bootstrap,
         )
 
     async def _dispatch_command(
@@ -840,19 +1003,129 @@ class AgentCoreSandbox(BaseSandbox):
         *,
         timeout_sec: int | None,
         resolved_user: str | int | None,
+        route: ExecRoute,
+        agent_bootstrap: bool = False,
+        agent_env_open: str = "",
+        agent_wrap: Any = None,
     ) -> ExecResult:
-        """Send one environment-free shell command to the active session."""
+        """Send one environment-free shell command to the active session.
 
-        if resolved_user is not None:
-            if isinstance(resolved_user, int):
-                user_arg = f"$(getent passwd {resolved_user} | cut -d: -f1)"
+        *route* (C8, no default) is :meth:`exec_route`'s. A plumbing route
+        pins its PATH in the runtime's first ``/bin/sh``, builtins only,
+        before it starts the command's shell: ``/bin/sh`` for the system
+        shell, otherwise ``/bin/bash`` as every AgentCore command had
+        before (the sealed channel's ``set -o pipefail``; a Debian image's
+        ``/bin/sh`` is dash). ``agent_bootstrap``: the routed payload then
+        starts inside K1's barrier, its uploaded env opened there
+        (``agent_env_open``).
+        """
+        from benchflow.sandbox.agent_exec import native_agent_argv
+
+        def payload_for(command: str) -> str:
+            if agent_wrap is not None:
+                command = agent_wrap(command)
+            pin = route.pin
+            # On the protected kit (C8) every program named here is the kit's.
+            kit = route.kit
+            kit_bash = route.bash if kit and route.bash.endswith("/bash") else None
+            bash = kit_bash or "/bin/bash"
+            shell = (
+                route.shell if route.system_shell or (kit and not kit_bash) else bash
+            )
+            su = f"{KIT_BIN}/su" if kit else "/bin/su"
+            # The command's own shell gets the image's BASH_ENV back first, before
+            # it sources a staged env file (whose BASH_ENV then wins); neither
+            # wrapping bash runs the image's file (bash_argv_without_bash_env).
+            # Plumbing never gets it back.
+            if not pin:
+                command = restore_bash_env(route) + command
+            if resolved_user is not None:
+                from benchflow.sandbox._su import su_command
+
+                # K1's agent bootstrap starts POSIX sh with absolute tools (a
+                # minimal image may have no bash); the route's su either way.
+                command = su_command(
+                    command,
+                    resolved_user,
+                    shell="/bin/sh" if agent_bootstrap else shell,
+                    su=su,
+                    trusted_tools=agent_bootstrap,
+                )
+
+            # K1's agent bootstrap starts POSIX sh only, as on integ (PT-INTEG-B-5):
+            # the route's own sh (the kit's on the kit, else
+            # /bin/sh) where it pins, else the command straight inside the barrier.
+            if pin:
+                inner = with_system_path(command, pin)
+                if agent_bootstrap:
+                    started = f"{route.shell} -c {shlex.quote(inner)}"
+                elif shell != bash:
+                    started = f"{shell} -c {shlex.quote(inner)}"
+                else:
+                    started = shlex.join([bash, "--noprofile", "--norc", "-c", inner])
+                bootstrap = f"{system_shell_prefix(pin)}; {started}"
+                payload = f"{route.shell} -c {shlex.quote(bootstrap)}"
             else:
-                user_arg = shlex.quote(str(resolved_user))
-            command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
+                command = _root_exec_command(
+                    command, route.explicit_root, route.root_path
+                )
+                payload = (
+                    command
+                    if agent_bootstrap
+                    else shlex.join(bash_argv_without_bash_env(command, bash))
+                )
+            if agent_bootstrap:
+                # K1's barrier around the routed payload.
+                payload = shlex.join(native_agent_argv(agent_env_open + payload))
+            return payload
 
-        payload = f"/bin/bash -c {shlex.quote(command)}"
+        # The transport contract (benchflow.sandbox._transport): a payload
+        # over this service's bound is staged by root over the sealed
+        # channel and becomes the command's stdin, and the reader runs it. A
+        # K1 agent command's own command is the data, its barrier rebuilt
+        # around the reader.
+        agent = command if hasattr(command, "agent_target") else None
+        fitted = fit(
+            payload_for,
+            command,
+            cat=reader_cat(route),
+            bound=AGENTCORE_COMMAND_BOUND,
+            agent=agent,
+            measure=_json_size,
+        )
+        payload = fitted.sent
         # The service enforces 1..3600 for the command timeout.
         timeout = max(1, min(int(timeout_sec or 300), 3600))
+        if fitted.payload is None:
+            _transport.sent(
+                "AgentCore", payload, AGENTCORE_COMMAND_BOUND, measure=_json_size
+            )
+            return await asyncio.to_thread(self._invoke_command, payload, timeout)
+        # Root's staging folder: the kit's RUN_DIR (root's, mode 700, made
+        # before the agent's first turn) once the sandbox has one; before
+        # that the sealed channel's own root-only folder (no agent has run).
+        root = STAGE_ROOT if getattr(self, "runtime_kit", None) else SEAL_DIR
+        folder = f"{root}/stage-{secrets.token_hex(16)}"
+        path = f"{folder}/payload"
+        await self._sealed.upload(fitted.payload, target=path, mode="600")
+        rm = f"{KIT_BIN}/rm" if getattr(self, "runtime_kit", None) else "/bin/rm"
+        # Opened by root's first shell before anything runs, and only once
+        # that shell has proved the folder and the file root's alone along
+        # their whole route (DX-1 review A M1); the folder goes before the
+        # command does (the open file stays readable).
+        root_route = await system_shell_route(self)
+        proof = stage_proof(
+            [path],
+            shell=root_route.shell,
+            path=root_route.pin or SYSTEM_PATH,
+            root=root,
+        )
+        payload = open_staged(
+            payload, {0: path}, proof, first=f"{rm} -rf -- {shlex.quote(folder)}\n"
+        )
+        _transport.sent(
+            "AgentCore", payload, AGENTCORE_COMMAND_BOUND, measure=_json_size
+        )
         return await asyncio.to_thread(self._invoke_command, payload, timeout)
 
     def _invoke_command(self, payload: str, timeout: int) -> ExecResult:
@@ -943,6 +1216,9 @@ class AgentCoreSandbox(BaseSandbox):
             command,
             timeout_sec=timeout_sec,
             resolved_user=self._resolve_user(user),
+            # The sealed channel's openssl, rm and chmod are root's
+            # plumbing, even for a task command's env file.
+            route=await self.exec_route(user, plumbing=True),
         )
 
     async def write_text_file(
@@ -982,7 +1258,7 @@ class AgentCoreSandbox(BaseSandbox):
             path: PurePosixPath(target_dir) / path.relative_to(source).as_posix()
             for path in iter_safe_tree(source, context=f"agentcore upload_dir {source}")
         }
-        await self.exec(f"mkdir -p {shlex.quote(target_dir)}", user="root")
+        await exec_raw(self.exec, f"mkdir -p {shlex.quote(target_dir)}", user="root")
         if members:
             await self._upload_via_tar(members)
 
@@ -1000,6 +1276,7 @@ class AgentCoreSandbox(BaseSandbox):
             buffer.getvalue(), target=None, extract_tar=True, timeout_sec=600
         )
 
+    @private_download(directory=False)
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         # NOT sealed: the file body returns as base64 through command
         # OUTPUT, which the platform records like command text. Downloads
@@ -1007,7 +1284,9 @@ class AgentCoreSandbox(BaseSandbox):
         # logs, review results) — never credentials.
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        result = await self.exec(f"base64 {shlex.quote(source_path)}", timeout_sec=300)
+        result = await exec_raw(
+            self.exec, f"base64 {shlex.quote(source_path)}", timeout_sec=300
+        )
         if result.return_code != 0:
             raise RuntimeError(
                 f"AgentCore download_file failed: {(result.stderr or '')[:500]}"
@@ -1039,13 +1318,15 @@ class AgentCoreSandbox(BaseSandbox):
             )
         return blob
 
+    @private_download(directory=True)
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None:
         self._reject_non_main(service)
         target = Path(target_dir)
         target.mkdir(parents=True, exist_ok=True)
-        result = await self.exec(
+        result = await exec_raw(
+            self.exec,
             f"tar -czf - -C {shlex.quote(source_dir)} . | base64 -w0",
             timeout_sec=600,
         )
@@ -1057,5 +1338,13 @@ class AgentCoreSandbox(BaseSandbox):
         if not raw:
             return
         blob = self._decode_download_payload(raw, kind="directory")
-        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-            tar.extractall(target, filter="data")
+        from benchflow.sandbox._bounded_tar import extract_download
+
+        await asyncio.to_thread(
+            extract_download,
+            blob,
+            target,
+            tar_bytes=_MAX_TAR_BYTES,
+            content_bytes=_MAX_EXTRACT_BYTES,
+            members=_MAX_EXTRACT_MEMBERS,
+        )

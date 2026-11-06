@@ -1,4 +1,4 @@
-"""Tests for rubric.toml / rubric.json parsing (ENG-55, #270)."""
+"""Tests for rubric.toml / rubric.json parsing (#270)."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ description = "Does it work?"
         assert cfg.criteria[0].type == "binary"
 
     def test_plural_criteria_and_method_aliases(self, tmp_path: Path) -> None:
-        """Harbor-ish Reward Kit rubrics can use [[criteria]] and method."""
+        """Criteria-runner rubrics can use [[criteria]] and method."""
         toml_content = """\
 [scoring]
 method = "mean"
@@ -179,10 +179,10 @@ weight = 0.4
         cfg = load_rubric_toml(rubric_file)
         assert len(cfg.criteria) == 0
 
-    def test_reward_kit_criteria_policy_from_harborish_toml(
+    def test_criteria_runner_criteria_policy_from_plural_criteria_toml(
         self, tmp_path: Path
     ) -> None:
-        """Selected Reward Kit criteria become authoritative aggregate policy."""
+        """Selected criteria-runner criteria become authoritative aggregate policy."""
         rubric_file = tmp_path / "rubric.toml"
         rubric_file.write_text(
             """\
@@ -247,7 +247,7 @@ match_criteria = "A."
             ),
         ],
     )
-    def test_reward_kit_criteria_policy_rejects_invalid_rubrics(
+    def test_criteria_runner_criteria_policy_rejects_invalid_rubrics(
         self, tmp_path: Path, content: str, match: str
     ) -> None:
         rubric_file = tmp_path / "rubric.toml"

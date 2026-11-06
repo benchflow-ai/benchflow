@@ -1,0 +1,13 @@
+diff --git a/src/benchflow/_utils/scoring.py b/src/benchflow/_utils/scoring.py
+index b0a0ea7..c74d4ac 100644
+--- a/src/benchflow/_utils/scoring.py
++++ b/src/benchflow/_utils/scoring.py
+@@ -427,7 +427,7 @@ def classify_result(
+        a verdict.
+     """
+     if reward is not None:
+-        return "passed" if reward == 1.0 else "failed"
++        return "passed" if reward >= 0.5 else "failed"
+     if error:
+         return "errored"
+     if verifier_error:

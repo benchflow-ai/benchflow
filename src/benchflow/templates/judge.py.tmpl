@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import stat
 from pathlib import Path
 
 VERIFIER_DIR = Path(os.environ.get("BENCHFLOW_VERIFIER_DIR", "/verifier"))
@@ -84,20 +85,24 @@ def read_trajectory() -> str:
 
 
 def call_llm(prompt: str) -> str:
-    """Call LLM judge, trying Gemini, Anthropic, or OpenAI based on model name and available keys."""
+    """Use only the configured provider and model; ambient keys never select it."""
     model = JUDGE_MODEL
-    is_openai_model = model.startswith(("gpt-", "o1", "o3"))
+    provider = None
+    if "/" in model:
+        provider, model = model.split("/", 1)
+    is_openai_model = provider == "openai" or model.startswith("gpt-") or re.match(r"o[0-9]+(?:[-.]|$)", model) is not None
     is_gemini_model = model.startswith("gemini")
+    if provider not in (None, "openai", "google", "gemini", "anthropic"):
+        raise JudgeUnavailableError("Unsupported judge provider")
 
-    # Try Gemini first (if model is gemini or GOOGLE_API_KEY/GEMINI_API_KEY is set)
-    if is_gemini_model or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
+    if provider in ("google", "gemini") or (provider is None and is_gemini_model):
         try:
             from google import genai
             api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
             if api_key:
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
-                    model=model if is_gemini_model else "gemini-3.1-flash-lite",
+                    model=model,
                     contents=prompt,
                 )
                 return response.text
@@ -107,7 +112,7 @@ def call_llm(prompt: str) -> str:
             print(f"WARNING: Gemini API error: {e}", file=sys.stderr)
 
     # Try Anthropic
-    if not is_openai_model and not is_gemini_model:
+    elif provider == "anthropic" or (provider is None and not is_openai_model and not is_gemini_model):
         try:
             import anthropic
             client = anthropic.Anthropic()
@@ -122,25 +127,22 @@ def call_llm(prompt: str) -> str:
         except Exception as e:
             print(f"WARNING: Anthropic API error: {e}", file=sys.stderr)
 
-    # Try OpenAI
-    try:
-        import openai
-        client = openai.OpenAI()
-        response = client.chat.completions.create(
-            model=model if is_openai_model else "gpt-4o-mini",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content
-    except ImportError:
-        pass
-    except Exception as e:
-        print(f"WARNING: OpenAI API error: {e}", file=sys.stderr)
+    else:
+        try:
+            import openai
+            client = openai.OpenAI()
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.choices[0].message.content
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"WARNING: OpenAI API error: {e}", file=sys.stderr)
 
-    print("ERROR: No LLM SDK available (tried google-genai, anthropic, openai)", file=sys.stderr)
-    raise JudgeUnavailableError(
-        "No LLM judge available (tried google-genai, anthropic, openai)"
-    )
+    raise JudgeUnavailableError("Configured LLM judge unavailable")
 
 
 def judge_with_llm(trajectory_text: str) -> float:
@@ -169,22 +171,26 @@ def judge_exact_match() -> float:
     if not ground_truth:
         return 0.0
 
-    # Only check agent output files, not arbitrary filesystem content
-    search_paths = [AGENT_LOG_DIR, APP_DIR]
-    for search_root in search_paths:
-        if not search_root.exists():
-            continue
-        for f in search_root.rglob("*"):
-            if not f.is_file() or f.stat().st_size > 100_000:
-                continue
-            try:
-                content = f.read_text()
-                # Check for exact match on word boundaries (not substring)
-                if re.search(r'\b' + re.escape(ground_truth) + r'\b', content):
-                    return 1.0
-            except (UnicodeDecodeError, PermissionError):
-                pass
-    return 0.0
+    # The harness publishes the final reply here on every backend (#1182).
+    # Neither the prompt/transcript nor workspace inputs are answers. Pin the
+    # directory and leaf at open time so links cannot expose verifier files.
+    directory = None
+    try:
+        directory = os.open(AGENT_LOG_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open("output.txt", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 100_000:
+                return 0.0
+            content = stream.read(100_001)
+            if len(content) > 100_000:
+                return 0.0
+            return float(bool(re.search(r'\b' + re.escape(ground_truth) + r'\b', content)))
+    except (OSError, UnicodeError):
+        return 0.0
+    finally:
+        if directory is not None:
+            os.close(directory)
 
 
 def main():

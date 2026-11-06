@@ -5,26 +5,27 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.markup import escape
 
-from benchflow._utils.result_paths import load_task_results
 from benchflow._utils.scoring import score_summary_fields
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     _parse_agent_env,
     console,
+    print_error,
 )
 from benchflow.cli.reviewer_options import (
     ReviewerAgentOption,
     ReviewerConcurrencyOption,
     ReviewerEffortOption,
     ReviewerEnvOption,
+    ReviewerIdleTimeoutOption,
     ReviewerImageOption,
     ReviewerModelOption,
     ReviewerNetworkOption,
     ReviewerSandboxOption,
     ReviewerTimeoutOption,
     reviewer_from_cli,
+    reviewer_idle_timeout,
 )
 from benchflow.review.outcome import scoring_from_result
 from benchflow.review.persistence import write_json_atomic
@@ -36,6 +37,7 @@ def _refresh_job_artifacts(job_dir: Path) -> None:
     """Rebuild derived exports while retaining job configuration and provenance."""
     import json
 
+    from benchflow.jobs import load_job
     from benchflow.trajectories.export import write_job_verifiers_jsonl
     from benchflow.trajectories.export_adp import write_job_adp_jsonl
 
@@ -46,7 +48,23 @@ def _refresh_job_artifacts(job_dir: Path) -> None:
     if not summary_path.is_file():
         return
     summary = json.loads(summary_path.read_text())
-    summary.update(score_summary_fields(load_task_results(job_dir).values()))
+    # Resume's completed-task filter deliberately omits agent errors. Derived
+    # metrics instead use the canonical final attempts, including those errors.
+    job = load_job(job_dir)
+    rows = [
+        json.loads((trial.path / "result.json").read_text()) for trial in job.trials
+    ]
+    summary.update(score_summary_fields(rows))
+    if "planned" in summary:
+        from benchflow._utils.scoring import pass_rate
+
+        summary["score_of_plan"] = pass_rate(
+            passed=summary["passed"], total=summary["planned"]
+        )
+    previous_rates = summary.get("solve_rates") or {}
+    summary["solve_rates"] = job.solve_rates(
+        solve_threshold=previous_rates.get("solve_threshold"), include_controls=True
+    ).to_dict()
     write_json_atomic(summary_path, summary)
     root_summary_path = job_dir.parent / "summary.json"
     if root_summary_path.is_file():
@@ -74,6 +92,7 @@ def eval_score(
     reviewer_reasoning_effort: ReviewerEffortOption = None,
     reviewer_sandbox: ReviewerSandboxOption = None,
     reviewer_timeout_sec: ReviewerTimeoutOption = None,
+    reviewer_idle_timeout_sec: ReviewerIdleTimeoutOption = None,
     reviewer_concurrency: ReviewerConcurrencyOption = None,
     reviewer_image: ReviewerImageOption = None,
     reviewer_agent_env: ReviewerEnvOption = None,
@@ -87,6 +106,7 @@ def eval_score(
         reasoning_effort=reviewer_reasoning_effort,
         environment=reviewer_sandbox,
         timeout_sec=reviewer_timeout_sec,
+        idle_timeout_sec=reviewer_idle_timeout(reviewer_idle_timeout_sec),
         concurrency=reviewer_concurrency,
         image=reviewer_image,
         agent_env=_parse_agent_env(reviewer_agent_env) if reviewer_agent_env else None,
@@ -99,11 +119,24 @@ def eval_score(
         _refresh_job_artifacts(path.resolve().parent)
         scoring = scoring_from_result(result)
     except (ValueError, RuntimeError, OSError) as exc:
-        console.print(f"[red]Scoring failed: {escape(str(exc))}[/red]")
+        print_error(
+            f"Scoring failed: {exc}",
+            next_step="pass a saved trial folder and the task it ran with --tasks-root",
+        )
         raise typer.Exit(1) from exc
+    if (
+        scoring is None
+        and result.get("rewards") is not None
+        and not result.get("verifier_error")
+    ):
+        console.print(f"Verification complete: rewards={result['rewards']}")
+        return
     if scoring is None or scoring.status != "complete":
         reason = scoring.error if scoring is not None else "No scoring verdict"
-        console.print(f"[red]Scoring incomplete: {escape(str(reason))}[/red]")
+        print_error(
+            f"Scoring incomplete: {reason}",
+            next_step="fix that, then score again with `bench eval score --force`",
+        )
         raise typer.Exit(1)
     rewards = scoring.numeric_rewards()
     assert rewards is not None

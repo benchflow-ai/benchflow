@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from benchflow._utils.reachable_write import ReachablePath, rollout_input, snapshot_text
 from benchflow.rewards.validation import is_valid_reward_number
 from benchflow.task.verifier_errors import AgentJudgeInputError
 
@@ -35,17 +36,23 @@ def _agent_judge_score(verdict: dict[str, Any]) -> float:
     raise ValueError("agent-judge verdict must include score/reward or pass/fail")
 
 
-def _read_agent_judge_input(path: Path) -> tuple[str, bool]:
-    if not path.is_file():
+def _read_agent_judge_input(
+    path: Path | ReachablePath, *, evidence_root: Path | None = None
+) -> tuple[str, bool]:
+    try:
+        with snapshot_text(
+            path, evidence_root=evidence_root, limit=_AGENT_JUDGE_INPUT_CHAR_LIMIT + 1
+        ) as content:
+            pass
+    except (OSError, ValueError) as exc:
         raise AgentJudgeInputError(
             f"agent-judge input {path} must resolve to a regular file"
-        )
-    content = path.read_text(errors="replace")
+        ) from exc
     if len(content) <= _AGENT_JUDGE_INPUT_CHAR_LIMIT:
         return content, False
     truncated = (
         content[:_AGENT_JUDGE_INPUT_CHAR_LIMIT]
-        + f"\n[TRUNCATED: {len(content)} chars total]"
+        + f"\n[TRUNCATED: more than {_AGENT_JUDGE_INPUT_CHAR_LIMIT} chars]"
     )
     return truncated, True
 
@@ -54,7 +61,7 @@ def _local_rollout_input_path(
     declared_path: str,
     *,
     rollout_dir: Path,
-) -> Path | None:
+) -> Path | ReachablePath | None:
     path = PurePosixPath(declared_path)
     if path.is_absolute():
         logs_prefix = PurePosixPath("/logs")
@@ -69,7 +76,7 @@ def _local_rollout_input_path(
         raise AgentJudgeInputError(
             f"agent-judge input {declared_path!r} must stay inside rollout evidence"
         )
-    return rollout_dir / Path(*relative.parts)
+    return rollout_input(rollout_dir, relative)
 
 
 def _safe_input_filename(path: PurePosixPath) -> str:

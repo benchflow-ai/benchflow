@@ -12,7 +12,7 @@ allowed-tools:
 # BenchFlow — Agent Benchmarking
 
 BenchFlow runs AI coding agents against tasks in sandboxed environments and
-scores their output. It combines Harbor (environments, verifier) with ACP
+scores their output. It combines sandboxed environments and verifiers with ACP
 (multi-turn agent communication).
 
 Arguments passed: `$ARGUMENTS`
@@ -70,7 +70,7 @@ benchflow job --config examples/configs/tb2-haiku.yaml
 YAML format (benchflow-native):
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: terminal-bench-2
 jobs_dir: jobs/tb2-haiku
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001
@@ -79,7 +79,7 @@ concurrency: 64
 max_retries: 1
 ```
 
-Harbor-compatible YAML also works:
+The legacy agents + datasets YAML also works:
 ```yaml
 jobs_dir: jobs
 n_attempts: 2
@@ -91,13 +91,13 @@ agents:
   - name: claude-agent-acp
     model_name: anthropic/claude-haiku-4-5-20251001
 datasets:
-  - path: harbor-framework/terminal-bench-2
+  - path: path/to/tasks
 ```
 
 Multi-turn (adds a recheck prompt):
 ```yaml
 source:
-  repo: harbor-framework/terminal-bench-2
+  repo: terminal-bench-2
 jobs_dir: jobs/tb2-multiturn
 agent: claude-agent-acp
 model: claude-haiku-4-5-20251001

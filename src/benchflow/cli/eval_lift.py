@@ -84,7 +84,11 @@ def register_eval_lift(eval_app: typer.Typer) -> None:
                 allow_duplicate_first_by_path=allow_duplicate_first_by_path,
             )
         except ValueError as exc:
-            print_error(str(exc))
+            print_error(
+                str(exc),
+                next_step="`bench eval compare-lift --help` describes the two job "
+                "folders it pairs",
+            )
             raise typer.Exit(1) from None
         paired = report["pairing"]["paired_tasks_count"]
         console.print(f"[green]Paired healthy tasks:[/green] {paired}")

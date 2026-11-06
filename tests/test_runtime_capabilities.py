@@ -111,7 +111,7 @@ def test_runtime_view_selects_task_md_and_native_aliases(tmp_path: Path) -> None
 
 
 def test_runtime_view_preserves_legacy_split_packages(tmp_path: Path) -> None:
-    """Legacy Harbor split packages remain executable compatibility input."""
+    """Legacy task.toml split packages remain executable compatibility input."""
     task_dir = tmp_path / "legacy"
     _write_legacy_task(task_dir)
 
@@ -128,7 +128,11 @@ def test_runtime_view_preserves_legacy_split_packages(tmp_path: Path) -> None:
 
 
 def test_validator_reports_allowlist_as_runtime_gap() -> None:
-    """Parsed allowlists are invalid for launch until a sandbox enforces them."""
+    """Parsed allowlists are invalid for launch until a sandbox enforces them.
+
+    Docker and Daytona enforce allowlists
+    (tests/test_network_allowlist.py); modal still refuses.
+    """
     config = TaskConfig.model_validate(
         {
             "agent": {
@@ -142,7 +146,7 @@ def test_validator_reports_allowlist_as_runtime_gap() -> None:
         }
     )
 
-    issues = validate_task_runtime_support(config, sandbox="docker")
+    issues = validate_task_runtime_support(config, sandbox="modal")
 
     assert [issue.path for issue in issues] == [
         "agent.network_mode",
@@ -159,8 +163,8 @@ def test_validator_reports_unknown_sandbox_backend() -> None:
     assert [(issue.path, issue.reason) for issue in issues] == [
         (
             "sandbox",
-            "unknown sandbox backend; use docker, daytona, modal, apple-container, "
-            "or agentcore",
+            "unknown sandbox backend; use docker, remote-docker, daytona, modal, "
+            "apple-container, or agentcore",
         )
     ]
 
@@ -253,22 +257,22 @@ def test_validator_reports_selected_llm_judge_missing_files(
     assert any("llm-judge context file not found" in reason for reason in reasons)
 
 
-def test_validator_reports_selected_reward_kit_without_runner(
+def test_validator_reports_selected_criteria_runner_without_runner(
     tmp_path: Path,
 ) -> None:
-    """Selected Reward Kit strategies need a concrete package runner."""
-    task_dir = tmp_path / "rewardkit"
+    """Selected criteria-runner strategies need a concrete package runner."""
+    task_dir = tmp_path / "kit-task"
     _write_task_md(task_dir)
     (task_dir / "verifier" / "verifier.md").write_text(
         dedent(
             """\
             ---
             verifier:
-              default_strategy: rewardkit
+              default_strategy: scorer
               strategies:
-                rewardkit:
-                  type: reward-kit
-                  root: reward_kit/
+                scorer:
+                  type: criteria-runner
+                  root: criteria_runner/
             ---
             """
         )
@@ -283,29 +287,29 @@ def test_validator_reports_selected_reward_kit_without_runner(
     )
 
     assert any(
-        issue.path == "verifier.strategies.rewardkit"
+        issue.path == "verifier.strategies.scorer"
         and "runner not found" in issue.reason
         for issue in issues
     )
 
 
-def test_validator_allows_selected_reward_kit_with_runner(tmp_path: Path) -> None:
-    """Reward Kit packages are executable when a safe runner exists."""
-    task_dir = tmp_path / "rewardkit-supported"
+def test_validator_allows_selected_criteria_runner_with_runner(tmp_path: Path) -> None:
+    """Criteria-runner packages are executable when a safe runner exists."""
+    task_dir = tmp_path / "kit-supported"
     _write_task_md(task_dir)
-    reward_kit = task_dir / "verifier" / "reward_kit"
-    reward_kit.mkdir()
-    (reward_kit / "reward.py").write_text("print('score')\n")
+    criteria_runner = task_dir / "verifier" / "criteria_runner"
+    criteria_runner.mkdir()
+    (criteria_runner / "reward.py").write_text("print('score')\n")
     (task_dir / "verifier" / "verifier.md").write_text(
         dedent(
             """\
             ---
             verifier:
-              default_strategy: rewardkit
+              default_strategy: scorer
               strategies:
-                rewardkit:
-                  type: reward-kit
-                  root: reward_kit/
+                scorer:
+                  type: criteria-runner
+                  root: criteria_runner/
             ---
             """
         )
@@ -319,18 +323,18 @@ def test_validator_allows_selected_reward_kit_with_runner(tmp_path: Path) -> Non
         task_dir=task_dir,
     )
 
-    assert not any(issue.path == "verifier.strategies.rewardkit" for issue in issues)
+    assert not any(issue.path == "verifier.strategies.scorer" for issue in issues)
 
 
-def test_validator_reports_selected_reward_kit_with_invalid_criteria(
+def test_validator_reports_selected_criteria_runner_with_invalid_criteria(
     tmp_path: Path,
 ) -> None:
-    """Selected Reward Kit criteria parse before sandbox launch."""
-    task_dir = tmp_path / "bad-rewardkit-criteria"
+    """Selected criteria-runner criteria parse before sandbox launch."""
+    task_dir = tmp_path / "bad-kit-criteria"
     _write_task_md(task_dir)
-    reward_kit = task_dir / "verifier" / "reward_kit"
-    reward_kit.mkdir()
-    (reward_kit / "reward.py").write_text("print('score')\n")
+    criteria_runner = task_dir / "verifier" / "criteria_runner"
+    criteria_runner.mkdir()
+    (criteria_runner / "reward.py").write_text("print('score')\n")
     rubric_dir = task_dir / "verifier" / "rubrics"
     rubric_dir.mkdir()
     (rubric_dir / "verifier.toml").write_text(
@@ -349,11 +353,11 @@ match_criteria = "B."
             """\
             ---
             verifier:
-              default_strategy: rewardkit
+              default_strategy: scorer
               strategies:
-                rewardkit:
-                  type: reward-kit
-                  root: reward_kit/
+                scorer:
+                  type: criteria-runner
+                  root: criteria_runner/
                   criteria: rubrics/verifier.toml
             ---
             """
@@ -369,7 +373,7 @@ match_criteria = "B."
     )
 
     verifier_issue = next(
-        issue for issue in issues if issue.path == "verifier.strategies.rewardkit"
+        issue for issue in issues if issue.path == "verifier.strategies.scorer"
     )
     assert "criteria are invalid" in verifier_issue.reason
     assert "duplicate id" in verifier_issue.reason
@@ -514,7 +518,7 @@ def test_validator_allows_supported_benchflow_verifier_strategies(
                   strategies:
                     deterministic: verifier/test.sh
                     llm_judge: verifier/rubrics/verifier.toml
-                    rewardkit: verifier/reward_kit/
+                    criteria_runner: verifier/criteria_runner/
                     agent_judge: verifier/judges/reviewer.md
                     ors_episode: trajectory/ors-rewards.jsonl
             """
@@ -530,6 +534,44 @@ def test_validator_allows_supported_benchflow_verifier_strategies(
     )
 
     assert not any(issue.path.startswith("benchflow.verifier") for issue in issues)
+
+
+def test_validator_calls_an_unknown_verifier_strategy_unknown(
+    tmp_path: Path,
+) -> None:
+    """A strategy name BenchFlow does not know, a retired spelling included,
+    gets the plain unknown-value wording, with no promise it works later."""
+    task_dir = tmp_path / "unknown-strategy"
+    _write_task_md(
+        task_dir,
+        frontmatter=dedent(
+            """\
+            benchflow:
+              verifier:
+                spec: verifier/verifier.md
+                implementation:
+                  type: hybrid
+                  strategies:
+                    rewardpack: verifier/rewards/
+            """
+        ),
+    )
+    task = Task(task_dir)
+    assert task.document is not None
+
+    issues = validate_task_runtime_support(
+        task.document,
+        sandbox="docker",
+        task_dir=task_dir,
+    )
+
+    [issue] = [i for i in issues if i.path.startswith("benchflow.verifier")]
+    assert issue.path == "benchflow.verifier.implementation.strategies.rewardpack"
+    assert issue.reason == (
+        "verifier strategy 'rewardpack' is an unknown value; choose one of: "
+        "script, deterministic, test-script, llm-judge, agent-judge, "
+        "ors-episode, criteria-runner"
+    )
 
 
 def test_validator_allows_selected_ors_episode_verifier_strategy(

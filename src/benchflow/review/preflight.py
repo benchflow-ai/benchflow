@@ -17,6 +17,13 @@ def validate_reviewer_backend(config: ReviewerConfig) -> None:
             from benchflow.sandbox.docker import DockerSandbox
 
             DockerSandbox.preflight()
+        elif backend == "remote-docker":
+            from benchflow.sandbox.remote_docker import (
+                probe_remote_docker,
+                resolve_remote_docker_host,
+            )
+
+            probe_remote_docker(resolve_remote_docker_host())
         elif backend == "daytona":
             from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
 

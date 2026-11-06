@@ -1,5 +1,4 @@
 import json
-import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +13,7 @@ from benchflow.rollout import (
     _apply_web_policy,
     _task_disallows_internet,
 )
+from tests._policy_setup import run_policy_setup
 
 
 def _wire_fake_planes(trial: Rollout) -> MagicMock:
@@ -136,16 +136,15 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
         ],
         agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
     )
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = SimpleNamespace(
         config=SimpleNamespace(sandbox=SimpleNamespace(allow_internet=False))
     )
+    # What setup() derives from the task's allow_internet=False.
+    trial._disallow_web_tools = True
     planes = _wire_fake_planes(trial)
     captured = {}
 
@@ -214,12 +213,9 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
             )
         ],
     )
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._disallow_web_tools = True
     planes = _wire_fake_planes(trial)
@@ -269,13 +265,7 @@ def _run_setup_cmd(agent_name: str, tmp_path) -> dict:
     cfg = AGENTS[agent_name]
     assert cfg.disallow_web_tools_setup_cmd, f"{agent_name} has no setup_cmd"
 
-    result = subprocess.run(
-        ["bash", "-c", cfg.disallow_web_tools_setup_cmd],
-        env={"BENCHFLOW_AGENT_HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    result = run_policy_setup(cfg.disallow_web_tools_setup_cmd, tmp_path)
     assert result.returncode == 0, f"{agent_name} setup_cmd failed: {result.stderr}"
     return tmp_path
 
@@ -433,3 +423,15 @@ def test_task_toml_missing_allow_internet_defaults_to_allowed(tmp_path):
 
     task = Task(task_dir)
     assert _task_disallows_internet(task) is False
+
+
+@pytest.fixture(autouse=True)
+def _image_hands_no_firewall_power(monkeypatch):
+    """These fake sandboxes answer no commands of PY8 S3's firewall-power
+    check (tests/test_firewall_power.py), which would refuse the trial; here
+    the image is a sound one."""
+
+    async def clear(env, user, **_):
+        return {"defense": "firewall_power", "state": "clear", "why": "test"}, None
+
+    monkeypatch.setattr("benchflow.rollout.check_firewall_power", clear)

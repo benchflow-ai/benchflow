@@ -1,0 +1,166 @@
+{
+  "hello-pass": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "hello-wrong": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Goodbye, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "draft": [
+    {
+      "text": "Writing a draft.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'draft\\n' > /app/draft.txt",
+        "description": "Write draft.txt"
+      }
+    },
+    {
+      "text": "Draft written."
+    }
+  ],
+  "pass-then-hang": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Waiting.",
+      "tool": "Bash",
+      "input": {
+        "command": "sleep 590",
+        "description": "Wait",
+        "timeout": 600000
+      }
+    },
+    {
+      "text": "Done waiting."
+    }
+  ],
+  "crash": [
+    {
+      "text": "Stopping the agent process.",
+      "tool": "Bash",
+      "input": {
+        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/benchflow/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+        "description": "Kill the Claude Code CLI"
+      }
+    },
+    {
+      "text": "Still here."
+    }
+  ],
+  "codex-crash": [
+    {
+      "text": "Stopping the agent process.",
+      "tool": "Bash",
+      "input": {
+        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if [ \"$(cat /proc/$pid/comm 2>/dev/null)\" = codex ]; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+        "description": "Kill the Codex CLI"
+      }
+    },
+    {
+      "text": "Still here."
+    }
+  ],
+  "slow-model": [
+    {
+      "text": "Thinking it over.",
+      "delay_sec": 590
+    },
+    {
+      "text": "Done."
+    }
+  ],
+  "metadata-probe": [
+    {
+      "text": "Probing the cloud metadata endpoints the test mocked on this sandbox's loopback (TCP connect and close only; an address that is not local here is never connected to).",
+      "tool": "Bash",
+      "input": {
+        "command": "local_addr() { awk -v a=\"$1\" '$1 == \"|--\" && $2 == a {f = 1; next} f && /host LOCAL/ {print a; exit} {f = 0}' /proc/net/fib_trie; }; i=0; while [ $i -lt 300 ] && [ -z \"$(local_addr 169.254.169.254)\" ]; do i=$((i + 1)); sleep 0.1; done; for a in 169.254.169.254 169.254.170.2 169.254.170.23 100.100.100.200 168.63.129.16 169.254.0.23; do if [ -z \"$(local_addr $a)\" ]; then echo \"probe $a not-mocked\"; continue; fi; e=$(timeout 3 bash -c \"exec 3<>/dev/tcp/$a/80\" 2>&1); r=$?; case $r in 0) s=reached;; 124) s=timeout;; *) case $e in *[Rr]efused*) s=refused;; *[Uu]nreachable*) s=unreachable;; *) s=failed;; esac;; esac; echo \"probe $a $s\"; done; printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Probe the mocked cloud metadata endpoints"
+      }
+    },
+    {
+      "text": "Probed."
+    }
+  ],
+  "firewall-probe": [
+    {
+      "text": "Trying to change the firewall (an empty chain of its own, made and deleted).",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt; for t in iptables /usr/local/sbin/fwhelper; do command -v \"$t\" >/dev/null 2>&1 || continue; if XTABLES_LOCKFILE=/tmp/agent-xtables.lock \"$t\" -w -N AGENTPROBE >/dev/null 2>&1; then echo \"firewall $t changed\"; XTABLES_LOCKFILE=/tmp/agent-xtables.lock \"$t\" -w -X AGENTPROBE >/dev/null 2>&1; else echo \"firewall $t refused\"; fi; done; if [ -x /usr/local/bin/rootsh ]; then echo \"rootsh euid $(/usr/local/bin/rootsh -p -c 'id -u')\"; fi",
+        "description": "Try to change the firewall"
+      }
+    },
+    {
+      "text": "Tried."
+    }
+  ],
+  "env-probe": [
+    {
+      "text": "Writing hello.txt and listing the agent's variable names (never values).",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt; pid=$(cut -d' ' -f4 /proc/$$/stat); agent=; while [ \"$pid\" -gt 1 ]; do if tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null | grep -q '^/opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/claude-agent-acp'; then agent=$pid; break; fi; pid=$(cut -d' ' -f4 /proc/$pid/stat); done; echo \"envprobe agent ${agent:-none}\" | sed 's/agent [0-9][0-9]*$/agent found/'; e=$(tr '\\0' '\\n' < /proc/${agent:-0}/environ 2>/dev/null); echo \"envprobe keys $(printf '%s\\n' \"$e\" | cut -d= -f1 | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | sort | tr '\\n' ' ')\"; for v in BF_SU_MARK BF_ROOT_ONLY BENCHFLOW_SU_PATH BENCHFLOW_SU_NAMES; do if printf '%s\\n' \"$e\" | grep -q \"^$v=\"; then echo \"envprobe var $v present\"; else echo \"envprobe var $v absent\"; fi; done; echo \"envprobe path-sha $(printf '%s\\n' \"$e\" | grep '^PATH=' | sha256sum | cut -c1-16)\"; echo \"envprobe uid $(id -u)\"; sed 's/^/envprobe /' /tmp/bf-rc.log 2>/dev/null; true",
+        "description": "List the agent's variable names"
+      }
+    },
+    {
+      "text": "Listed."
+    }
+  ],
+  "keep-service": [
+    {
+      "text": "Starting the service and leaving it running.",
+      "tool": "Bash",
+      "input": {
+        "command": "mkdir -p /tmp/svcroot && echo kept > /tmp/svcroot/index.html && (setsid nohup python3 -m http.server 5005 --bind 0.0.0.0 --directory /tmp/svcroot > /tmp/svc.out 2>&1 < /dev/null &) && sleep 1 && echo started",
+        "description": "Start the service"
+      }
+    },
+    {
+      "text": "The service is running on port 5005."
+    }
+  ],
+  "mini-swe-hello-pass": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt"
+      }
+    },
+    {
+      "text": "Submitting.",
+      "tool": "bash",
+      "input": {
+        "command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+      }
+    }
+  ]
+}

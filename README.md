@@ -1,244 +1,210 @@
 <div align="center">
   <h1>BenchFlow</h1>
-  <p>The universal environment framework — a benchmark is just a frozen environment.</p>
+  <p>Run AI agents on benchmark tasks in sandboxes, and score them.</p>
   <a href="https://pypi.org/project/benchflow/" target="_blank">
     <img src="https://img.shields.io/badge/PyPI-benchflow-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI package">
   </a>
+  <a href="https://github.com/benchflow-ai/benchflow" target="_blank">
+    <img src="https://img.shields.io/github/stars/benchflow-ai/benchflow?style=for-the-badge&logo=github&logoColor=white&label=Stars&color=181717" alt="GitHub stars">
+  </a>
   <a href="https://discord.gg/mZ9Rc8q8W3" target="_blank">
-    <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
+    <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Finvites%2FmZ9Rc8q8W3%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=Discord&suffix=%20members&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Discord members">
   </a>
 </div>
 
-## What
+BenchFlow runs AI agents on tasks in sandboxes and scores them. Point it at a benchmark's tasks and pick an agent: Claude Code, Codex, Gemini CLI, OpenHands and more, over [ACP](https://agentclientprotocol.com). Each run records its reward, cost and full trajectory.
 
-BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
+Tasks run on Docker (local or remote), Daytona, Modal or AgentCore. The same runtime serves evaluation and RL training.
 
-## Quick start: 1. Submit a trajectory
+## Quick start
 
-**Send these to your coding agent.** Copy
-the block below and paste it as a message to Claude Code, Codex, OpenCode, or
-Cursor. That is the $2,000 eval prize path. No BenchFlow account, API key, or
-Azure login.
+You need [Docker](https://docs.docker.com/get-started/get-docker/) running and [uv](https://docs.astral.sh/uv/getting-started/installation/). Steps 1 and 2 need no model and no API key.
 
-> Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, on this laptop) to the BenchFlow eval prize.
->
-> 1. First make sure the latest benchflow CLI is installed: uv tool install --python 3.12 --upgrade --force benchflow
->
-> 2. Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, and upload only after I (the human) review it.
-
-The agent finds sessions on this machine, opens the viewer, and uploads after
-you like what you see.
-
-The prompt has the agent install the latest BenchFlow first (`uv tool
-install --python 3.12 --upgrade --force benchflow`). The `bench traj` commands
-also print a one-line upgrade hint when a newer release is available.
-
-Prefer the terminal instead? The guided upload inspects before anything leaves
-your machine — it renders a redacted trajectory report (step counts, masked
-secrets, preview) and asks for confirmation:
+**1. Install BenchFlow and check this machine.**
 
 ```bash
-uv tool install --python 3.12 --upgrade benchflow
-bench traj upload
+uv tool install --python 3.12 benchflow
+bench doctor    # needs 0.8 or newer; checks Docker, agent logins and network, with a fix for each problem
 ```
 
-Detected secret values are replaced locally with
-`<XXX-benchflow-key-values-XXX>` before upload, and the full redacted report is
-retained in the uploaded `manifest.json`. See the
-[upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md) or the
-[trajectory upload guide](./docs/traj-upload.md).
+The examples use `bench`; the installed `benchflow` command is the same CLI.
 
-Optional — set the skill up once, then keep talking to the agent:
+Before you log in to an agent, `bench doctor` reports that no agent can run. That is expected: step 2 needs no login.
+
+**2. Run a task with the oracle.** The oracle runs the task's own reference solution. It tests the sandbox, the task and its verifier with no model:
 
 ```bash
-npx skills add benchflow-ai/benchflow --skill benchflow-traj-upload
-# or, if BenchFlow is already installed:
-bench traj setup
+bench run --source-repo benchflow-ai/skillsbench --source-path tasks/citation-check \
+  --agent oracle --sandbox docker --jobs-dir jobs/oracle
 ```
 
-`npx skills add` asks which agents to install for. `bench traj setup` copies
-the skill into this project and prints the same agent prompt. See the
-[upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md).
+BenchFlow downloads only that task from [SkillsBench](https://github.com/benchflow-ai/skillsbench), builds its image, runs its solution and verifier, and prints `Score: 1/1`. A cold-cache first run took 6 minutes 12 seconds, including the verifier's package downloads; allow longer on a slow connection.
 
-## Quick start: 2. Run with a ChatGPT or Claude subscription
-
-No OpenAI or Anthropic API key is required. Start Docker, install BenchFlow,
-then run **one** of these options. BenchFlow detects the saved host login and
-makes it available to the agent inside the sandbox.
+**3. Run an agent on your Claude subscription.** No API key is needed. `claude setup-token` comes with [Claude Code](https://code.claude.com/docs/en/quickstart) and prints a login token that lasts a year:
 
 ```bash
-uv tool install --python 3.12 --upgrade benchflow
-docker info >/dev/null  # Docker must be running
+claude setup-token
+export CLAUDE_CODE_OAUTH_TOKEN='<token>'
+bench run --source-repo benchflow-ai/skillsbench --source-path tasks/citation-check \
+  --agent claude --model claude-haiku-4-5-20251001 --sandbox docker --jobs-dir jobs/claude
 ```
 
-### ChatGPT subscription via Codex
+The agent may pass or fail. Either way, the run worked.
 
-Install the [Codex CLI](https://github.com/openai/codex), then:
+> **Billing:** an exported `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` wins over the token and is billed. Unset both to use your subscription.
+
+On a ChatGPT plan, run `codex login` and use `--agent codex --model <model>` with a model your plan offers. [Auth](./docs/agents/auth.md) covers API keys and the other agents.
+
+**4. Read the results.**
 
 ```bash
-codex login
-unset OPENAI_API_KEY CODEX_API_KEY  # ensure subscription auth is used
-
-bench eval run \
-  --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/citation-check \
-  --agent codex \
-  --model gpt-5.5 \
-  --sandbox docker
+bench results jobs/              # one row per job, named by its folder, with its score
+bench eval metrics jobs/claude   # pass rate, solve rate, pass@k, tool calls and time
+bench view jobs/claude           # trajectory, verifier output and score, in your browser
 ```
 
-### Claude subscription via Claude Code
+`jobs/claude` is a jobs directory; each timestamped child is one job. Copy the exact `Artifacts:` path printed by `bench run` to inspect or resume that job with `bench results <job>` or `bench eval resume <job>`. If you skipped the model run, use `jobs/oracle` instead.
 
-Install [Claude Code](https://code.claude.com/docs/en/quickstart), then:
+Each run writes its rewards, token usage and trajectory under `--jobs-dir`. Run the same command again to resume the latest matching job: finished tasks are kept, not rerun. Add `--fresh` to start over.
 
-```bash
-claude auth login
-unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN  # ensure subscription auth is used
+## Next steps
 
-bench eval run \
-  --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/citation-check \
-  --agent claude \
-  --model claude-sonnet-4-6 \
-  --sandbox docker
-```
-
-The agent may pass or fail the benchmark task; either result means the
-evaluation completed. Each run writes rewards, token usage, and the full
-trajectory under `jobs/`. See [Getting started](./docs/getting-started.md) for
-other agents, models, and sandboxes.
-
-## Install
-
-Install or upgrade to the latest stable release from PyPI with `uv`:
-
-```bash
-uv tool install --python 3.12 --upgrade benchflow
-```
-
-- Confirm with `bench --version`.
-- BenchFlow CLI releases require Python 3.12 or newer. Keep `--python 3.12`
-  in the install command so `uv` does not resolve an older Python-compatible
-  package that lacks the CLI entrypoints.
-- If you see `Executables already exist: bench, benchflow`, re-run with `uv tool install --python 3.12 --upgrade --force benchflow` to replace stale entrypoints from an older install.
-- For Daytona, Modal, or AgentCore extras, install the relevant optional package, for example `uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'`.
-
-Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --python 3.12 --prerelease allow --upgrade benchflow`).
-
-**Requirements & auth.** Install [uv](https://docs.astral.sh/uv/); the
-`--python 3.12` flag lets it provision a compatible interpreter for the tool
-install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal;
-export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use
-subscription auth (`claude auth login` / `codex login`). Provider-prefixed models
-may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` +
-`AZURE_API_ENDPOINT`.
+- [Write your own task](docs/tasks/overview.md): `bench new my-task`.
+- Run a whole benchmark: [Quick start](./docs/getting-started/quick-start.md#run-a-whole-benchmark).
+- Check every agent login at once: `bench eval smoke` runs a bundled hello-world task once per logged-in agent.
+- [Run from Python](./docs/getting-started/quick-start.md#run-from-python): [`quickstart.py`](./docs/examples/python-sdk/quickstart.py) runs a task with the oracle, with no key.
+- Learn the words: [Core concepts](./docs/core-concepts.md).
+- Upgrading from 0.7? Read [What's new in 0.9](./docs/whats-new-0.9.md).
 
 ## Documentation
 
-Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Prefer to have an AI coding agent run the whole quickstart for you? Paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code, Codex CLI, or Gemini CLI. Then by goal:
+To have a coding agent do the quick start for you, paste the [agent quickstart prompt](./docs/getting-started/agent-quickstart.md) into Claude Code, Codex CLI or Gemini CLI.
+
+### Start and run
 
 | If you want to… | Read |
 |------------------|------|
-| Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
-| Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./docs/running-any-benchmark.md) |
-| Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
-| Run an agent from the public agents repo (goose, qwen-code, prime-agent, …) | [Running external agents](./docs/external-agents.md) |
-| Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
-| Author a new task | [Task authoring](./docs/task-authoring.md) |
-| Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
+| Run your first task, then a model | [Quick start](./docs/getting-started/quick-start.md) |
+| Install, upgrade or uninstall | [Install](./docs/getting-started/install.md) |
+| Keep the Rust `bench` beside this one | [Which bench runs](./docs/getting-started/install.md#which-bench-runs) |
+| Log in to an agent, or use an API key | [Auth](./docs/agents/auth.md) |
+| Know what a task, dataset, agent, sandbox, verifier, trial and job are | [Core concepts](./docs/core-concepts.md) |
+| Run any benchmark, including ones with their own task format | [Run any benchmark](./docs/running-any-benchmark.md) |
+| Find out why a run failed, whose problem it is, and what to do | [When a run fails](docs/jobs/when-a-run-fails.md) |
+| Resume an interrupted job | [Resume a job](./docs/jobs/resume.md) |
+| Run an agent from the public agents repo (goose, qwen-code, prime-agent, …) | [Running external agents](docs/agents/external-agents.md) |
+| Run Claude Code or Codex through their own CLIs instead of their ACP adapters | [Native harness](docs/agents/harness.md) |
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
-| Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
-| Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
-| Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
-| Contribute a trajectory capture | [Trajectory upload](./docs/traj-upload.md) |
-| Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
-| Use public vs internal preview SDK releases | [Release channels](./docs/release.md) |
-| CLI flags + commands | [CLI reference](./docs/reference/cli.md) |
-| Python API surface | [Python API reference](./docs/reference/python-api.md) |
+| Run tasks on a Docker host you control | [Remote Docker](docs/sandboxes/remote-docker.md) |
+| Keep BenchFlow loaded between CLI calls, and prepare the next sandbox | [Local runtime](./docs/local-runtime.md) |
+| Cap a job's spend, sandbox time, tokens or rollouts | [Budgets](./docs/reference/budget.md) |
 
-Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
+### Several agents, several rounds, branching
 
-> **`bench agent` vs `bench eval adopt`.** `bench agent list` / `bench agent show`
-> inspect **registered AI agents** (the solver programs like Claude Code or
-> Gemini CLI). Onboarding a third-party benchmark into `benchmarks/<name>/` is a
-> separate workflow — `bench eval adopt <source>` scaffolds and drives the
-> conversion, and `bench eval adopt <name> --verify` parity-gates it. (The legacy
-> `bench agent create|run|verify` commands still work as deprecated aliases.)
-> See the [CLI reference](./docs/reference/cli.md#bench-eval-adopt) for details.
+| If you want to… | Read |
+|------------------|------|
+| Run several agents in one task: coder and reviewer, simulated user | [Scenes and simulated users](./docs/tasks/scenes.md) |
+| Give one agent hints over several rounds | [Progressive disclosure](docs/tasks/scripted-users.md) |
+| Fork a run at a checkpoint into scored children | [Branching](docs/jobs/branching.md) |
+| Evaluate a skill rather than a workspace | [Skill eval](docs/judging/skill-evals.md) |
+| Run robots and simulators | [Embodied rollouts](docs/tasks/embodied.md) |
 
-## Benchmark task sources
+### Scores you can trust
 
-Benchmark datasets live in external Git repos and are referenced with two fields:
+| If you want to… | Read |
+|------------------|------|
+| Understand the security model | [Sandbox hardening](docs/sandboxes/security.md) |
+| Score in a sandbox that holds only the agent's final workspace and declared artifacts | [Separate verifier sandboxes](docs/tasks/separate-verifier.md) |
+| Check what the agent did to the things its reward depends on (BenchShield) | [Reward integrity](./docs/integrity.md) |
+| Re-score stored runs after fixing a verifier, without running the agent again | [Regrade](docs/jobs/regrade.md) |
+
+### Tasks
+
+| If you want to… | Read |
+|------------------|------|
+| Write a new task | [Task authoring](docs/tasks/overview.md) |
+| Write a task in the native `task.md` format | [task.md authoring](docs/tasks/overview.md) |
+| Run task.md draft 2 packages | [task.md draft 2 packages](docs/tasks/taskmd-draft-2.md) |
+| Run a benchmark's own task folders with no conversion | [Task formats](./docs/tasks/task-formats.md) |
+
+### Results and training
+
+| If you want to… | Read |
+|------------------|------|
+| Read, compare and export runs in Python or a notebook | [Analysing runs](./docs/results/analysing-runs.md) |
+| Stream rollouts to a trainer while a job runs | [Streaming rollouts](./docs/reference/rollout-stream.md) |
+| Capture token ids and logprobs for training | [Token capture](./docs/reference/token-capture.md) |
+| Share a coding-agent session or trial | [Share a trajectory](./docs/results/share-a-trajectory.md) |
+
+### Reference
+
+| If you want to… | Read |
+|------------------|------|
+| Every command and flag | [CLI reference](./docs/reference/cli.md) |
+| The Python API | [Python API reference](./docs/reference/python-api.md) |
+| Stable and preview releases | [Install: stable and preview releases](./docs/getting-started/install.md#stable-and-preview-releases) |
+
+Runnable scripts and notebooks are in [`docs/examples/`](./docs/examples/).
+
+## Run a benchmark from a Git repository
+
+A run config names the repository and the folder of tasks in it, then the agent and model:
 
 ```yaml
 # benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 source:
-  repo: benchflow-ai/benchmarks    # GitHub org/repo
-  path: datasets/harvey-lab/tasks  # optional subpath within repo
-  ref: main                         # optional branch/tag
+  repo: benchflow-ai/benchmarks
+  path: datasets/harvey-lab/tasks
+
 agent: gemini
-model: gemini/gemini-3.1-flash-lite-preview
+model: gemini/gemini-3.5-flash-lite
+environment: docker
+concurrency: 4
 ```
-
-Run any benchmark via the CLI:
 
 ```bash
-# From a YAML config (shipped with the repo)
-bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+# From the config, in a clone of this repository (benchmarks/ is not in the installed package)
+bench run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
-# Inline — mirrors the YAML source fields
-bench eval run \
-    --source-repo benchflow-ai/skillsbench --source-path tasks \
-    --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
+# The same source, inline
+bench run benchflow-ai/benchmarks/datasets/harvey-lab/tasks \
+    --agent gemini --model gemini/gemini-3.5-flash-lite --sandbox docker --concurrency 4
 ```
 
-Repos are cloned and cached locally under `.cache/datasets/` on first use.
+BenchFlow caches repositories in `.cache/datasets-v2/`, at the root of the Git repository you run from, or in the current folder outside one. BenchFlow writes a `.gitignore` there, so the cache never shows in `git status`. With a folder in the target, it downloads only that folder. A target with no folder, or a folder with no BenchFlow task in it, downloads the whole repository.
 
-Hosted environments are another source type. Instead of a repo, pass
-`--source-env` with the environment's pinned source version to run an external
-PrimeIntellect / Verifiers environment on its own native harness — BenchFlow
-preserves the hosted identity (`env_uid`, `hub_url`) and still writes the shared
-rollout output contract. See the [CLI reference](./docs/reference/cli.md) for
-the full hosted-environment command shape.
+## Write a task
 
-Downstream projects should depend on the public PyPI release by default. For
-internal validation before the next public release, install or lock the internal
-preview channel with prereleases enabled; see [Release channels](./docs/release.md).
-
-## Authoring tasks
-
-A task is one `task.md` (YAML frontmatter for config + a markdown prompt body)
-plus `environment/` and `verifier/` sidecars. The `bench tasks` commands cover
-the authoring lifecycle:
+A task is a folder: a `task.md` (YAML settings on top, the instruction below), an `environment/` folder and a `verifier/` folder. Four commands cover a task's life:
 
 ```bash
-bench tasks init my-task                 # scaffold a task.md package under tasks/
-bench tasks check tasks/my-task          # validate (default --level structural)
-bench tasks migrate legacy-task/ --remove-legacy  # convert old split packages to task.md
-bench tasks export tasks/my-task out/             # write a compatibility export + loss report
+bench new my-task                          # scaffold tasks/my-task
+bench check tasks/my-task                  # validate it (default: --level structural)
+bench import legacy-task/ --remove-legacy  # convert a task.toml + instruction.md task
+bench export tasks/my-task out/            # write the split layout, with a loss report
 ```
 
-See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
-[task standard](./docs/task-standard.md).
+`bench new` leaves placeholders for the task author; `bench check` reports them until you fill in the instruction, oracle and verifier. The import command assumes an existing `legacy-task/` folder in the split format.
 
-## Featured
-
-- **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round rollout: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). See [Progressive disclosure](./docs/progressive-disclosure.md).
-
-## Audience
-
-- **Eval researchers / paper writers** → [Getting started](./docs/getting-started.md) → [Concepts](./docs/concepts.md) → [Use cases](./docs/use-cases.md)
-- **Task authors** → [Task authoring](./docs/task-authoring.md) → [Sandbox hardening](./docs/sandbox-hardening.md)
-- **Agent builders integrating with benchflow** → [Concepts](./docs/concepts.md) → [Python API reference](./docs/reference/python-api.md) → [`benchflow.agents.registry`](./src/benchflow/agents/registry.py)
-- **External benchmark adapters** → [Task authoring](./docs/task-authoring.md) → [Progressive disclosure](./docs/progressive-disclosure.md#comparison-with-multi-agent-simulated-user)
+BenchFlow also runs older split tasks (`task.toml`, `instruction.md`, `solution/`, `tests/`), [task.md draft 2](docs/tasks/taskmd-draft-2.md) packages, and any [task format](./docs/tasks/task-formats.md) a benchmark registers. See [task.md authoring](docs/tasks/overview.md) and the [task standard](docs/reference/task-package.md).
 
 ## Contributing
 
-PRs welcome. Open against `main`. CI runs ruff + tests on every PR; please run `ruff check .` and `pytest tests/` locally first.
+For a source build, prepare the pinned `bfx` binaries first; see [Build from a checkout](./docs/getting-started/install.md#try-a-pre-release). Without them, Docker uses the fallback root steps.
 
-Release channels are documented in [Release channels](./docs/release.md). In
-short: merges to `main` publish an internal preview after CI passes, while a
-matching release tag publishes the public release.
+Open pull requests against `main`. CI runs ruff (lint and format), `ty`, the unit tests, a Docker integration tier and `pip-audit`. Run the same checks before you push:
+
+```bash
+uv sync --extra dev --extra sandbox-daytona --extra sandbox-modal
+uv run ruff check src tests tools
+uv run ruff format --check src tests tools
+uv run ty check
+uv run python -m pytest tests/ -k 'not cloud_metadata'
+```
+
+A checkout has no `bfx` binaries (BenchFlow's helper for root's steps on Docker; they are not in git). An editable install runs without them, as with `BENCHFLOW_BFX_DELIVERY=off`. To run Docker trials with `bfx`, or before you build a wheel, build them on Linux with `rustup` installed: `BFX_REQUIRE_PIN=1 scripts/build_bfx.sh` (or `make bfx`). See [Try a pre-release](./docs/getting-started/install.md#try-a-pre-release).
+
+Merges to `main` publish an internal preview once CI passes. A release tag publishes the public release. See [Stable and preview releases](./docs/getting-started/install.md#stable-and-preview-releases); maintainers, see [Publishing a release](./docs/contributing/release.md).
 
 ## License
 

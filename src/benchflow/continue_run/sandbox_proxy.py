@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from benchflow._root_python import root_python_command
+from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.trajectories.types import LLMExchange
 
 SANDBOX_REPLAY_ROOT = "/tmp/benchflow-replay"
@@ -299,12 +301,14 @@ if __name__ == "__main__":
 """
 
 
-async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -> None:
+async def _upload_text(
+    sandbox: Any, text: str, target_path: str, suffix: str, *, admission: Any
+) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False) as tmp:
         tmp.write(text)
         tmp_path = Path(tmp.name)
     try:
-        await sandbox.upload_file(tmp_path, target_path)
+        await sandbox.upload_file(tmp_path, target_path, admission=admission)
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -321,7 +325,8 @@ async def _read_remote_text(sandbox: Any, path: str, *, timeout_sec: int = 15) -
             pass
         finally:
             tmp_path.unlink(missing_ok=True)
-    result = await sandbox.exec(
+    result = await exec_raw(
+        sandbox.exec,
         f"cat {shlex.quote(path)} 2>/dev/null || true",
         timeout_sec=timeout_sec,
     )
@@ -358,6 +363,9 @@ class SandboxReplayProxy:
         strict_divergence: bool = False,
         port: int = DEFAULT_SANDBOX_REPLAY_PORT,
     ) -> SandboxReplayProxy:
+        from benchflow.trust.state import IngressKind, admit
+
+        admission = admit(sandbox, "main", IngressKind.CONTINUATION_REPLAY)
         token = uuid4().hex[:16]
         runtime_dir = f"{SANDBOX_REPLAY_ROOT}/{token}"
         paths = {
@@ -369,7 +377,8 @@ class SandboxReplayProxy:
             "stderr": f"{runtime_dir}/stderr.log",
             "live_log": f"{runtime_dir}/live_exchanges.jsonl",
         }
-        result = await sandbox.exec(
+        result = await exec_raw(
+            sandbox.exec,
             f"mkdir -p {shlex.quote(runtime_dir)} && "
             f"chmod 700 {shlex.quote(runtime_dir)}",
             timeout_sec=20,
@@ -377,7 +386,7 @@ class SandboxReplayProxy:
         if result.return_code != 0:
             raise RuntimeError(
                 "prepare sandbox replay runtime failed: "
-                f"{result.stderr or result.stdout}"
+                f"{diagnostic_result(result).stderr.render() or diagnostic_result(result).stdout.render()}"
             )
 
         recorded_rows = [
@@ -393,8 +402,20 @@ class SandboxReplayProxy:
             "state_path": paths["state"],
             "live_log_path": paths["live_log"],
         }
-        await _upload_text(sandbox, _sandbox_proxy_source(), paths["script"], ".py")
-        await _upload_text(sandbox, json.dumps(config), paths["config"], ".json")
+        await _upload_text(
+            sandbox,
+            _sandbox_proxy_source(),
+            paths["script"],
+            ".py",
+            admission=admission,
+        )
+        await _upload_text(
+            sandbox,
+            json.dumps(config),
+            paths["config"],
+            ".json",
+            admission=admission,
+        )
 
         command = (
             f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
@@ -403,10 +424,10 @@ class SandboxReplayProxy:
             f"> {shlex.quote(paths['stdout'])} 2> {shlex.quote(paths['stderr'])} & "
             f"echo $! > {shlex.quote(paths['pid'])})"
         )
-        result = await sandbox.exec(command, timeout_sec=20)
+        result = await exec_raw(sandbox.exec, command, timeout_sec=20)
         if result.return_code != 0:
             raise RuntimeError(
-                f"start sandbox replay proxy failed: {result.stderr or result.stdout}"
+                f"start sandbox replay proxy failed: {diagnostic_result(result).stderr.render() or diagnostic_result(result).stdout.render()}"
             )
         proxy = cls(
             sandbox=sandbox,
@@ -426,20 +447,29 @@ class SandboxReplayProxy:
         return proxy
 
     async def _wait_until_ready(self) -> None:
-        probe = (
-            "python3 - <<'PY'\n"
+        # Root's probe, on the protected Python (C8, PY8-PT-R8-5).
+        probe = await root_python_command(
+            self.sandbox,
             "import urllib.request\n"
-            f"urllib.request.urlopen('http://127.0.0.1:{self.port}/health', timeout=2).read()\n"
-            "PY"
+            f"urllib.request.urlopen('http://127.0.0.1:{self.port}/health', timeout=2).read()\n",
         )
         last = ""
         for _ in range(120):
-            result = await self.sandbox.exec(probe, timeout_sec=5)
+            result = await exec_raw(self.sandbox.exec, probe, timeout_sec=5)
             if result.return_code == 0:
                 return
-            last = (result.stderr or result.stdout or "").strip()
+            last = (
+                diagnostic_result(result).stderr.render()
+                or diagnostic_result(result).stdout.render()
+                or ""
+            ).strip()
             await asyncio.sleep(0.25)
-        stderr = await _read_remote_text(self.sandbox, self.stderr_path, timeout_sec=5)
+        stderr_result = await exec_raw(
+            self.sandbox.exec,
+            f"cat {shlex.quote(self.stderr_path)} 2>/dev/null || true",
+            timeout_sec=5,
+        )
+        stderr = diagnostic_result(stderr_result).stdout.render() or ""
         raise RuntimeError(
             f"sandbox replay proxy did not become healthy: {last or stderr.strip()}"
         )
@@ -447,14 +477,16 @@ class SandboxReplayProxy:
     async def stop(self) -> None:
         self.live_exchanges = await self._load_live_exchanges()
         with contextlib.suppress(Exception):
-            await self.sandbox.exec(
+            await exec_raw(
+                self.sandbox.exec,
                 f"if [ -s {shlex.quote(self.pid_path)} ]; then "
                 f"kill -TERM $(cat {shlex.quote(self.pid_path)}) 2>/dev/null || true; "
                 "fi",
                 timeout_sec=10,
             )
         with contextlib.suppress(Exception):
-            await self.sandbox.exec(
+            await exec_raw(
+                self.sandbox.exec,
                 f"rm -rf {shlex.quote(self.runtime_dir)}",
                 timeout_sec=10,
             )

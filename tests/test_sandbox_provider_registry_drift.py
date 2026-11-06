@@ -23,9 +23,11 @@ from benchflow.sandbox.providers import (
     ModelProxyLocation,
     providers_phrase,
 )
+from tests._package_files import PACKAGE_ROOT
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "benchflow"
-_REGISTRY = _SRC / "sandbox" / "providers.py"
+_SRC = PACKAGE_ROOT
+_REPO = Path(__file__).resolve().parents[1]
+_REGISTRY = _SRC / "_utils" / "sandbox_providers.py"
 
 
 def test_registry_is_the_single_source_of_truth() -> None:
@@ -33,6 +35,7 @@ def test_registry_is_the_single_source_of_truth() -> None:
     # deliberate edit here + a test update, never a silent scatter.
     assert SANDBOX_PROVIDERS == (
         "docker",
+        "remote-docker",
         "daytona",
         "modal",
         "apple-container",
@@ -44,9 +47,12 @@ def test_registry_is_the_single_source_of_truth() -> None:
 def test_providers_phrase_is_byte_identical() -> None:
     # The refactor must be behavior-preserving for every help/error string that
     # used to hand-write this phrase.
-    assert providers_phrase() == "docker, daytona, modal, apple-container, or agentcore"
+    assert providers_phrase() == (
+        "docker, remote-docker, daytona, modal, apple-container, or agentcore"
+    )
     assert providers_phrase(quote=True) == (
-        "'docker', 'daytona', 'modal', 'apple-container', or 'agentcore'"
+        "'docker', 'remote-docker', 'daytona', 'modal', 'apple-container', "
+        "or 'agentcore'"
     )
 
 
@@ -54,12 +60,16 @@ def test_model_proxy_placement_is_explicit_for_every_provider() -> None:
     """Guards PR #936 against routing host loopback into an Apple VM."""
 
     assert PROVIDERS_BY_NAME["docker"].model_proxy is ModelProxyLocation.HOST
-    for provider in ("daytona", "modal", "apple-container", "agentcore"):
-        assert PROVIDERS_BY_NAME[provider].model_proxy is ModelProxyLocation.SANDBOX
-    assert (
-        frozenset({"daytona", "modal", "apple-container", "agentcore"})
-        == SANDBOX_MODEL_PROXY_PROVIDERS
+    sandbox_proxy = (
+        "remote-docker",
+        "daytona",
+        "modal",
+        "apple-container",
+        "agentcore",
     )
+    for provider in sandbox_proxy:
+        assert PROVIDERS_BY_NAME[provider].model_proxy is ModelProxyLocation.SANDBOX
+    assert frozenset(sandbox_proxy) == SANDBOX_MODEL_PROXY_PROVIDERS
     assert OFF_BOX_MODEL_PROVIDERS is SANDBOX_MODEL_PROXY_PROVIDERS
 
 
@@ -80,9 +90,7 @@ def test_no_divergent_provider_set_literal_outside_the_registry() -> None:
         for rx, what in ((triple, "provider-set"), (off_box, "off-box-subset")):
             for m in rx.finditer(text):
                 line = text[: m.start()].count("\n") + 1
-                offenders.append(
-                    f"{py.relative_to(_SRC.parent.parent)}:{line} ({what})"
-                )
+                offenders.append(f"{py.relative_to(_SRC.parent)}:{line} ({what})")
     assert not offenders, (
         "Hardcoded sandbox-provider literal(s) found outside "
         "benchflow.sandbox.providers — derive from the registry instead:\n  "
@@ -93,7 +101,7 @@ def test_no_divergent_provider_set_literal_outside_the_registry() -> None:
 def test_optional_extras_match_pyproject() -> None:
     # Every provider extra must be a real packaging extra; fails if an extra is
     # renamed in pyproject without updating the registry.
-    pyproject = tomllib.loads((_SRC.parent.parent / "pyproject.toml").read_text())
+    pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
     declared = set(pyproject["project"]["optional-dependencies"])
     assert set(OPTIONAL_SANDBOX_EXTRAS.values()) <= declared, (
         f"registry extras {set(OPTIONAL_SANDBOX_EXTRAS.values())} not all declared "

@@ -30,6 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from benchflow._utils import live_activity
+from benchflow._utils.log_context import current_task, task_prefix
 from benchflow.cli._shared import console
 from benchflow.usage_tracking import is_trusted_usage_source
 
@@ -86,13 +87,16 @@ class _WarningBuffer(logging.Handler):
 
     def __init__(self) -> None:
         super().__init__(level=logging.WARNING)
-        self._records: list[logging.LogRecord] = []
+        self._records: list[tuple[logging.LogRecord, str]] = []
 
     def emit(self, record: logging.LogRecord) -> None:
-        self._records.append(record)
+        # The task of the trial that logged it, read now, in the trial's
+        # context: replayed after the dashboard, a line without it cannot be
+        # told apart from another trial's (dogfood p5-16).
+        self._records.append((record, task_prefix(current_task())))
 
     def replay(self) -> None:
-        for record in self._records:
+        for record, prefix in self._records:
             style = "red" if record.levelno >= logging.ERROR else "yellow"
             # escape(): buffered warnings carry user-derived text (a malformed
             # task dir name, a resume agent-mismatch from config.json) that can
@@ -100,7 +104,8 @@ class _WarningBuffer(logging.Handler):
             # crashes the CLI on live-context exit (and silently swallows
             # balanced [tokens]), defeating the buffer's "warnings must survive
             # the Live" purpose.
-            console.print(f"[{style}]{escape(record.getMessage())}[/{style}]")
+            text = escape(prefix + record.getMessage())
+            console.print(f"[{style}]{text}[/{style}]")
 
 
 @contextlib.contextmanager
@@ -146,6 +151,10 @@ def _fmt_tokens(n: int) -> str:
 _PHASE_LABELS = {
     "created": "creating sandbox…",
     "setup": "creating sandbox…",
+    # Not Rollout phases: activity_snapshot reports them while the sandbox
+    # builds the task image inside setup, then starts it (DF-p1-first-run-6).
+    "image-building": "building image…",
+    "image-built": "starting sandbox…",
     "started": "installing agent…",
     "installed": "running agent…",
     "connected": "running agent…",
@@ -182,7 +191,8 @@ def _activity_cell(snap: live_activity.ActivitySnapshot | None) -> str:
     counters = snap.counters
     if counters is None:
         return _PHASE_LABELS.get(snap.phase, _PHASE_FALLBACK)
-    cell = f"{counters.tool_calls} calls"
+    noun = "call" if counters.tool_calls == 1 else "calls"
+    cell = f"{counters.tool_calls} {noun}"
     if counters.total_tokens:
         cell += f" · {_fmt_tokens(counters.total_tokens)} tok"
     # A single-tool agent (prime-agent funnels every call through one IPython
@@ -216,7 +226,12 @@ class LiveEvalProgress:
         self._console = console
         self._label = label
         self._agent = agent
-        self._model = model or "(default)"
+        # The controls (oracle, nop) call no model and install no agent:
+        # their header has no model slot, their footer no token, cost or
+        # telemetry figures, and the install stretch reads as preparing
+        # (DF-p1-first-run-20).
+        self._control = agent in ("oracle", "nop") and not model
+        self._model = model or "(default model)"
         self._sandbox = sandbox
         self._lock = threading.Lock()
 
@@ -236,6 +251,9 @@ class LiveEvalProgress:
         self._covered = 0  # finished with trusted token telemetry
 
         self._live: Live | None = None
+        # Set when Ctrl-C or SIGTERM ends the run: the last frame says the
+        # running trials were stopped, not that they are still starting.
+        self._stopped = False
 
     # -- engine hooks -------------------------------------------------------
 
@@ -296,6 +314,13 @@ class LiveEvalProgress:
         return self
 
     def __exit__(self, *exc) -> None:
+        if (
+            exc
+            and isinstance(exc[0], type)
+            and issubclass(exc[0], (KeyboardInterrupt, SystemExit))
+        ):
+            with self._lock:
+                self._stopped = True
         if self._live is not None:
             self._live.__exit__(*exc)
             self._live = None
@@ -312,6 +337,7 @@ class LiveEvalProgress:
             tokens, cost = self._tokens, self._cost
             completed, covered = self._completed, self._covered
             elapsed = time.monotonic() - self._run_start
+            stopped = self._stopped
 
         # passed/failed/errored already include the resumed-seeded outcomes, so
         # "done" is their sum — adding `resumed` again would double-count.
@@ -321,7 +347,9 @@ class LiveEvalProgress:
         header = Text()
         header.append("benchflow", style="bold cyan")
         header.append(f"  ·  {self._label}  ·  {self._agent}", style="dim")
-        header.append(f"  ·  {self._model}  ·  {self._sandbox}", style="dim")
+        if not self._control:
+            header.append(f"  ·  {self._model}", style="dim")
+        header.append(f"  ·  {self._sandbox}", style="dim")
 
         # Progress bar + ETA (computed from this run's finish rate).
         frac = (done / total) if total else 0.0
@@ -335,7 +363,15 @@ class LiveEvalProgress:
         bar.append(f"  {done}/{total}", style="bold")
         bar.append(f" · {frac * 100:.0f}%", style="dim")
         bar.append(f" · {_fmt_dur(elapsed)}", style="dim")
-        if eta is not None:
+        if running and not queued:
+            # Every task left is running: the rate of the finished ones says
+            # nothing about them, and its ETA only grew while the last one
+            # ran (dogfood p5-15). Say how long the oldest has run instead.
+            oldest = time.monotonic() - min(running.values())
+            bar.append(
+                f" · {len(running)} left, running {_fmt_dur(oldest)}", style="dim"
+            )
+        elif eta is not None:
             bar.append(f" · ETA {_fmt_dur(eta)}", style="dim")
         if resumed:
             bar.append(f" · {resumed} resumed", style="dim")
@@ -347,7 +383,10 @@ class LiveEvalProgress:
         counts.append("   ")
         counts.append(f"⚠ {errored} errored", style="yellow" if errored else "dim")
         counts.append("   ")
-        counts.append(f"◷ {len(running)} running", style="cyan")
+        counts.append(
+            f"◷ {len(running)} stopped" if stopped else f"◷ {len(running)} running",
+            style="cyan",
+        )
         counts.append("   ")
         counts.append(f"⋯ {queued} queued", style="dim")
 
@@ -376,10 +415,13 @@ class LiveEvalProgress:
                 # CLI on live-context exit, violating this module's "a render
                 # bug can never perturb a run" contract. Same for the activity
                 # cell, which carries agent-authored tool titles.
+                cell = _activity_cell(snaps.get(name))
+                if self._control and cell == "installing agent…":
+                    cell = "preparing sandbox…"
                 tbl.add_row(
                     Text(name),
                     _fmt_dur(now - running[name]),
-                    Text(_activity_cell(snaps.get(name)), style="dim"),
+                    Text("stopped" if stopped else cell, style="dim"),
                 )
             extra = len(running) - _MAX_RUNNING_ROWS
             if extra > 0:
@@ -417,9 +459,14 @@ class LiveEvalProgress:
         footer = Text()
         scored = passed + failed
         if scored:
-            footer.append(f"pass-rate {passed / scored * 100:.1f}% (excl-err)", "bold")
+            footer.append(
+                f"pass rate {passed / scored * 100:.1f}% (errors excluded)", "bold"
+            )
         else:
-            footer.append("pass-rate —", style="dim")
+            footer.append("pass rate —", style="dim")
+        if self._control:
+            parts.append(footer)
+            return Group(*parts)
         footer.append(" · ")
         footer.append(
             f"{_fmt_tokens(tokens + live_tokens)} tokens"

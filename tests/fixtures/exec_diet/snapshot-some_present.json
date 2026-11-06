@@ -1,0 +1,1 @@
+"700 root\nMakefile\nmanifest.json\nsetup.py\n---\n{\"setup.py\": true, \"pyproject.toml\": false, \"setup.cfg\": false, \"tox.ini\": false, \"noxfile.py\": false, \"hatch.toml\": false, \"flit.ini\": false, \"MANIFEST.in\": false, \"requirements.txt\": false, \"requirements-dev.txt\": false, \"Makefile\": true}\n"

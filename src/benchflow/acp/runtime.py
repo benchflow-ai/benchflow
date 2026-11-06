@@ -21,8 +21,11 @@ Does not own:
 import asyncio
 import contextlib
 import logging
+import shlex
 from pathlib import Path
 
+from benchflow._utils.artifact_names import agent_log_name
+from benchflow._utils.reachable_write import ReachablePath
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
@@ -31,8 +34,14 @@ from benchflow.acp.timeout_cleanup import (
     cancel_prompt_after_timeout,
 )
 from benchflow.acp.types import McpServerSpec, PromptResult
-from benchflow.acp.watchdog import IdleWatchdog
+from benchflow.acp.watchdog import (
+    PENDING_GRACE_MULTIPLIER,
+    IdleWatchdog,
+    pending_grace_from_env,
+)
 from benchflow.agents.codex_config import apply_codex_launch_config
+from benchflow.agents.errors import AgentProtocolError, UsageLimitError
+from benchflow.agents.launch_env import agent_launch_env
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -46,18 +55,23 @@ from benchflow.agents.registry import (
     routes_gemini_natively,
 )
 from benchflow.diagnostics import (
+    AgentModelNotOfferedError,
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
     IdleTimeoutError,
     TransportClosedDiagnostic,
     TransportClosedError,
 )
+from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox.lockdown import (
     build_priv_drop_cmd,
+    build_root_no_web_launch,
     enforce_agent_egress_firewall,
+    no_web_root_agent,
 )
 from benchflow.sandbox.process._base import _timeout_sec_from_env
 from benchflow.trajectories._capture import _capture_session_trajectory
+from benchflow.trust.state import IngressKind, admit
 
 # Re-exported for backwards compatibility — tests and downstream code
 # import ``IdleTimeoutError`` from this module. The canonical definition
@@ -104,11 +118,10 @@ async def _prepare_openhands_direct_execution(
 ) -> dict[str, str]:
     """Patch OpenHands as root before a sandbox-user privilege drop.
 
-    OpenHands is installed under ``/root/.local/share/uv/tools`` and exposed to
-    the sandbox user through a read-only symlink.  Running the opt-in patch from
-    the launch command only worked for tasks whose workspace was ``/root``,
-    because sandbox-user setup happened to chown that whole directory.  Tasks
-    rooted elsewhere (for example ``/app``) exited before ACP initialization.
+    OpenHands is installed as a uv tool in BenchFlow's protected tree
+    (``/opt/benchflow/uv-tools``, its entry point in ``/opt/benchflow/bin``),
+    which the sandbox user may read but not write, so the opt-in patch runs
+    here as root rather than from the sandbox user's launch command.
 
     Apply the same narrow patch through the environment's root execution plane,
     then disable the duplicate launch-time patch for this process.  The caller's
@@ -118,14 +131,25 @@ async def _prepare_openhands_direct_execution(
     if agent != "openhands" or agent_env.get(_OPENHANDS_DISABLE_SUBAGENTS_ENV) != "1":
         return agent_env
 
+    from benchflow._runtime_tree import runtime_custody_check
+
+    # Root runs the tool's own Python, from BenchFlow's protected tree, only
+    # after the tree holding it is shown root's alone (C8): never a program
+    # found under a HOME (PT-R8-SIB-1).
     patch_cmd = (
-        'export PATH="$HOME/.local/bin:$PATH"; '
-        'OH_BIN="$(command -v openhands)"; '
-        '[ -n "$OH_BIN" ] || { echo "Cannot locate OpenHands executable" >&2; exit 127; }; '
+        runtime_custody_check(
+            ("/opt/benchflow/uv-tools", "/opt/benchflow/bin", "/opt/benchflow/python"),
+            "OpenHands' runtime",
+        )
+        + " && cd / && "
+        "OH_BIN=/opt/benchflow/bin/openhands; "
+        '[ -x "$OH_BIN" ] || { echo "Cannot locate OpenHands executable" >&2; exit 127; }; '
         'OH_PY="$(dirname "$(readlink -f "$OH_BIN")")/python"; '
+        'case "$OH_PY" in /opt/benchflow/uv-tools/*) ;; *) '
+        'echo "OpenHands tool interpreter is outside the protected tree" >&2; exit 127;; esac; '
         '[ -x "$OH_PY" ] || { '
         'echo "Cannot locate OpenHands tool interpreter" >&2; exit 127; }; '
-        '"$OH_PY" -c \'from pathlib import Path; '
+        '"$OH_PY" -I -c \'from pathlib import Path; '
         "import openhands_cli.utils as u; "
         "p=Path(u.__file__); s=p.read_text(); "
         'old="        Tool(name=task_tool_name),\\n"; '
@@ -134,15 +158,15 @@ async def _prepare_openhands_direct_execution(
         "p.write_text(s.replace(old,new,1)) if old in s else None; "
         "assert new in p.read_text()'"
     )
-    result = await env.exec(patch_cmd, user="root", timeout_sec=30)
+    result = await exec_raw(env.exec, patch_cmd, user="root", timeout_sec=30)
     return_code = getattr(
         result,
         "return_code",
         getattr(result, "exit_code", 1),
     )
     if return_code != 0:
-        stdout = (getattr(result, "stdout", "") or "").strip()
-        stderr = (getattr(result, "stderr", "") or "").strip()
+        stdout = (diagnostic_result(result).stdout.render() or "").strip()
+        stderr = (diagnostic_result(result).stderr.render() or "").strip()
         detail = stderr or stdout or "no output"
         raise RuntimeError(
             "Failed to prepare OpenHands direct-execution mode as root "
@@ -201,6 +225,10 @@ def _codex_reasoning_effort(model_id: str) -> str:
     return model_id.rsplit("[", 1)[1][:-1]
 
 
+# The requested model is not among the models the Codex session offers.
+CodexModelNotOffered = AgentModelNotOfferedError
+
+
 def _codex_session_model_id(
     model: str,
     session: object | None,
@@ -240,6 +268,17 @@ def _codex_session_model_id(
         and _codex_model_name(entry["modelId"]) == requested_name
     ]
     if not candidates:
+        offered = sorted(
+            {
+                _codex_model_name(entry["modelId"])
+                for entry in available
+                if isinstance(entry, dict) and isinstance(entry.get("modelId"), str)
+            }
+        )
+        if offered:
+            # Sending the name anyway gets an opaque -32603 from codex-acp,
+            # and the same answer on every retry.
+            raise AgentModelNotOfferedError("codex-acp", requested_name, offered)
         return model
 
     # A requested reasoning effort rides the codex model id: codex-acp
@@ -300,6 +339,9 @@ def _format_acp_model(model: str, agent: str) -> str:
         return model if find_provider(model) else bare
     if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
         return bare
+    # LiteLLM's ``gemini/`` route (Google AI Studio) is models.dev's ``google``.
+    if bare.startswith("gemini/"):
+        return "google/" + bare.removeprefix("gemini/")
     # Already has a slash — assume it's provider/model already
     if "/" in bare:
         return bare
@@ -440,7 +482,7 @@ def _resolve_acp_model_option_id(
     automatically, while a member that does not keeps using
     ``session/set_model``.
 
-    codex-acp is the documented exception: 1.6.0 advertises a "model" config
+    codex-acp is the documented exception: 1.6.0 and 1.13.1 advertise a "model" config
     option whose values reject the ``model[effort]`` ids its own
     ``session/set_model`` requires (-32602 Invalid params, verified live
     2026-08-19), so codex stays on the set_model path.
@@ -455,6 +497,47 @@ def _resolve_acp_model_option_id(
     return None
 
 
+def _config_option_values(session: object | None, config_id: str) -> list[str]:
+    """The values a ``select`` config option offers (groups flattened)."""
+    for option in getattr(session, "config_options", None) or ():
+        if not isinstance(option, dict) or option.get("id") != config_id:
+            continue
+        values: list[str] = []
+        stack = list(option.get("options") or ())
+        while stack:
+            choice = stack.pop(0)
+            if not isinstance(choice, dict):
+                continue
+            if isinstance(choice.get("options"), list):  # a group of choices
+                stack[:0] = choice["options"]
+            elif isinstance(choice.get("value"), str):
+                values.append(choice["value"])
+        return values
+    return []
+
+
+# "not available" is deliberately absent: a provider answering "model
+# temporarily not available" is a transient failure that must stay retried,
+# and it reads the same as a refusal.
+_REFUSAL_MARKERS = ("invalid value", "not offered", "unknown model")
+
+
+def _refuses_value(exc: BaseException, value: str = "") -> bool:
+    """Whether an ACP error answer says the value itself was refused.
+
+    The answer has to both read as a refusal and name the value, so a
+    transient error on the same request stays the retried error it was.
+    """
+    if not isinstance(exc, AgentProtocolError):
+        return False
+    data = getattr(exc, "data", None)
+    details = data.get("details") if isinstance(data, dict) else data
+    text = f"{getattr(exc, 'message', '')} {details or ''}".lower()
+    if value and value.lower() not in text:
+        return False
+    return any(marker in text for marker in _REFUSAL_MARKERS)
+
+
 async def _set_acp_model(
     acp_client: ACPClient,
     *,
@@ -464,6 +547,8 @@ async def _set_acp_model(
     try:
         await asyncio.wait_for(acp_client.set_model(model_id), timeout=60)
         logger.info(f"Model set to: {model_id}")
+    except UsageLimitError:
+        raise
     except Exception as e:
         logger.error(
             "ACP session/set_model failed for agent=%s model=%s: %s",
@@ -496,6 +581,8 @@ async def _set_acp_config_option(
             acp_client.set_config_option(config_id, value), timeout=60
         )
         logger.info(f"ACP {label} config option {config_id!r} set to: {value}")
+    except UsageLimitError:
+        raise
     except Exception as e:
         logger.error(
             "ACP session/set_config_option failed for agent=%s config=%s value=%s: %s",
@@ -504,6 +591,20 @@ async def _set_acp_config_option(
             value,
             e,
         )
+        offered = _config_option_values(session, config_id)
+        if (
+            label == "model"
+            and offered
+            and value not in offered
+            and _refuses_value(e, value)
+        ):
+            # The agent refused a value it does not list (claude-agent-acp:
+            # -32603 "Internal error" with data.details "Invalid value for
+            # config option model: <value>") and will on every retry: an
+            # unscored agent_model integration failure that names what it
+            # offers, like codex's set_model. Anything else stays a retried
+            # error: a transient failure must not become permanent.
+            raise AgentModelNotOfferedError(agent, value, offered) from e
         raise RuntimeError(
             f"Failed to set ACP {label} config option {config_id!r}="
             f"{value!r} for agent {agent!r}: {e}"
@@ -575,16 +676,19 @@ async def _configure_acp_session(
             f"Reasoning effort {reasoning_effort!r} applied with model selection for {agent}"
         )
         return
-    if not agent_cfg or not agent_cfg.acp_effort_config_id:
+    effort_config_id = getattr(agent_cfg, "acp_effort_config_id", "") or (
+        "effort" if "effort" in _session_config_option_ids(session) else None
+    )
+    if not effort_config_id:
         raise RuntimeError(
             f"reasoning_effort={reasoning_effort!r} was requested for agent "
-            f"{agent!r}, but that agent does not declare an ACP effort config option"
+            f"{agent!r}, but that agent does not declare or advertise an ACP effort config option"
         )
     await _set_acp_config_option(
         acp_client,
         session,
         agent=agent,
-        config_id=agent_cfg.acp_effort_config_id,
+        config_id=effort_config_id,
         value=reasoning_effort,
         label="reasoning effort",
     )
@@ -602,8 +706,14 @@ async def connect_acp(
     agent_cwd: str,
     reasoning_effort: str | None = None,
     mcp_servers: list[McpServerSpec] | None = None,
+    resume_session_id: str | None = None,
 ) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
     """Create ACP transport, connect, init session, and configure model/effort.
+
+    ``resume_session_id`` opens that existing session with ``session/load``
+    (a branch child resuming its parent's conversation, whose transcript the
+    sandbox snapshot captured) instead of ``session/new``. An agent that does
+    not advertise ``loadSession`` is refused.
 
     Returns ``(client, session, session_adapter, agent_name)``. ``session`` is
     the raw :class:`~benchflow.acp.session.ACPSession` (still passed to
@@ -632,11 +742,22 @@ async def connect_acp(
         agent=agent,
         agent_env=agent_env,
     )
+    # Resolution inherited every host login to pick the route; the agent
+    # process gets only the selected route's credentials.
+    agent_env = agent_launch_env(agent, model, agent_env)
 
-    # Resolve agent binary path for non-docker environments
+    # Resolve agent binary path for non-docker environments. ``command -v`` is
+    # the shell's own lookup: this runs as the sandbox's default user (root),
+    # and a ``which`` on the image's PATH could be the agent's (C8). It is
+    # root's plumbing, so PATH is pinned; the lookup itself (a builtin, which
+    # runs nothing) reads the task's PATH, kept as _BENCHFLOW_IMAGE_PATH.
     if environment != "docker":
-        which_result = await env.exec(
-            f"which {agent_launch.split()[0]}", timeout_sec=10
+        which_result = await exec_raw(
+            env.exec,
+            '(PATH="${_BENCHFLOW_IMAGE_PATH-$PATH}"; command -v '
+            + shlex.quote(agent_launch.split()[0])
+            + ")",
+            timeout_sec=10,
         )
         if which_result.return_code == 0 and (which_result.stdout or "").strip():
             full_path = which_result.stdout.strip()
@@ -645,13 +766,29 @@ async def connect_acp(
             agent_launch = " ".join(parts)
             logger.info(f"Resolved agent path: {agent_launch}")
 
+    from benchflow.sandbox.process._acp_lines import line_limit
+
+    # The legacy su -l privilege-drop route clears inherited env. Keep the
+    # transport budget after that boundary for every spelling or custom shim.
+    agent_launch = (
+        f"export BENCHFLOW_ACP_LINE_LIMIT={line_limit() or 0}; {agent_launch}"
+    )
+
     if sandbox_user:
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
         logger.info(f"Agent sandboxed as: {sandbox_user}")
+    elif no_web_root_agent(sandbox_user, agent_env):
+        # Held under no-web as root: its group is what the
+        # uid firewall matches, and it cannot change the rules.
+        agent_launch = build_root_no_web_launch(agent_launch)
+        logger.info("Agent runs as root under the no-web policy (restricted launch)")
 
     acp_client: ACPClient | None = None
     session: object | None = None
     agent_name = agent
+    # Pin the log directory once, including across connection retries.
+    agent_log = ReachablePath.rollout(rollout_dir, "agent") / agent_log_name(agent)
+    agent_log.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(_ACP_CONNECT_MAX_RETRIES + 1):
         if attempt > 0:
             delay = _ACP_CONNECT_BASE_DELAY * (2 ** (attempt - 1))
@@ -667,9 +804,9 @@ async def connect_acp(
             # from BaseSandbox.live_process rather than silently receiving
             # another backend's transport (Modal previously fell through to
             # DaytonaProcess and failed deep inside SSH setup).
-            live_proc = await env.live_process(agent=agent)
+            admission = admit(env, "main", IngressKind.AGENT_LAUNCH)
+            live_proc = await env.live_process(agent=agent, admission=admission)
 
-            agent_log = rollout_dir / "agent" / f"{agent.replace('-', '_')}.txt"
             transport = ContainerTransport(
                 container_process=live_proc,
                 command=agent_launch,
@@ -677,7 +814,14 @@ async def connect_acp(
                 cwd=agent_cwd,
                 agent_log_path=agent_log,
             )
-            acp_client = ACPClient(transport)
+            agent_config = AGENTS.get(agent)
+            acp_client = ACPClient(
+                transport,
+                subagent_transcript=bool(
+                    agent_config and agent_config.acp_subagent_transcript
+                ),
+                typed_failures=bool(getattr(agent_config, "acp_typed_failures", False)),
+            )
             await acp_client.connect()
 
             init_result = await _wait_for_acp_handshake(
@@ -689,10 +833,31 @@ async def connect_acp(
             )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await _wait_for_acp_handshake(
-                acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
-                phase="session_new",
-            )
+            if resume_session_id is not None:
+                capabilities = getattr(init_result, "agent_capabilities", None)
+                if not getattr(capabilities, "load_session", False):
+                    raise RuntimeError(
+                        f"{agent_name} does not advertise loadSession, so a branch "
+                        "child cannot resume the parent's conversation; branch "
+                        "without resume_session (fresh sessions)"
+                    )
+                session = await _wait_for_acp_handshake(
+                    acp_client.session_load(
+                        resume_session_id, cwd=agent_cwd, mcp_servers=mcp_servers
+                    ),
+                    phase="session_load",
+                )
+                # (events, tool calls) the load replayed: the caller skips
+                # them, as they belong to the resumed conversation's prefix.
+                session.replayed_prefix = (
+                    len(_capture_session_trajectory(session)),
+                    len(session.tool_calls),
+                )
+            else:
+                session = await _wait_for_acp_handshake(
+                    acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
+                    phase="session_new",
+                )
             logger.info(f"Session: {session.session_id}")
             break
         except ConnectionError as e:
@@ -735,12 +900,45 @@ async def connect_acp(
     return acp_client, session, session_adapter, agent_name
 
 
+# One watchdog poll (at most 30 s) plus margin: the watchdog reports silence
+# before the transport guard would.
+_SILENCE_GUARD_SLACK_SEC = 60
+
+
+def transport_silence_budget(
+    timeout: int, idle_timeout: int | None, pending_tool_grace: int | None = None
+) -> int:
+    """The longest silence a prompt allows its transport, plus one poll.
+
+    With the idle watchdog on, a pending tool call defers the idle abort for
+    its grace: ``pending_tool_grace`` when given, else
+    BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC, else ``PENDING_GRACE_MULTIPLIER``
+    idle budgets (acp/watchdog.py). A silent tool call may legitimately run
+    that long, and silence up to the idle budget is always allowed, so the read
+    guard covers the longer of the two and must not cut either first (#1143).
+    Without the watchdog the wall budget decides. A long guard is safe because
+    a closed Daytona websocket fails the read at once (DaytonaPtyProcess), not
+    at the guard.
+    """
+    if idle_timeout is None:
+        return timeout + _SILENCE_GUARD_SLACK_SEC
+    grace = (
+        pending_tool_grace
+        if pending_tool_grace is not None
+        else pending_grace_from_env()
+    )
+    if grace is None:
+        grace = PENDING_GRACE_MULTIPLIER * idle_timeout
+    return max(grace, idle_timeout) + _SILENCE_GUARD_SLACK_SEC
+
+
 async def execute_prompts(
     acp_client: ACPClient,
     session,
     prompts: list[str],
     timeout: int,
     idle_timeout: int | None = None,
+    pending_tool_grace: int | None = None,
 ) -> tuple[list[dict], int]:
     """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls).
 
@@ -749,7 +947,22 @@ async def execute_prompts(
                    this many seconds. Catches agents that hung silently while
                    the agent process is still alive (e.g. gemini-cli not
                    responding). None disables idle detection.
+    pending_tool_grace — seconds a silent pending tool call may defer the
+                   idle abort; None reads BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC,
+                   else 3x idle_timeout (IdleWatchdog).
+
+    The transport's read guard is raised to the silence this call allows
+    plus one watchdog poll, so the watchdog, not a fixed transport timeout,
+    decides when silence is too long (#1143): see
+    :func:`transport_silence_budget`.
     """
+    expect_silence = getattr(acp_client, "expect_silence", None)
+    if callable(expect_silence):
+        expect_silence(
+            timeout + _SILENCE_GUARD_SLACK_SEC
+            if callable(getattr(session, "model_request_activity", None))
+            else transport_silence_budget(timeout, idle_timeout, pending_tool_grace)
+        )
     for i, prompt in enumerate(prompts):
         logger.info(
             f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}..."
@@ -766,7 +979,12 @@ async def execute_prompts(
         else:
             try:
                 prompt_result = await _prompt_with_idle_watchdog(
-                    acp_client, session, prompt, timeout, idle_timeout
+                    acp_client,
+                    session,
+                    prompt,
+                    timeout,
+                    idle_timeout,
+                    pending_tool_grace=pending_tool_grace,
                 )
             except AgentPromptTimeoutError as e:
                 e.executed_prompts = prompts[: i + 1]
@@ -858,6 +1076,8 @@ async def _prompt_with_idle_watchdog(
     prompt: str,
     timeout: int,
     idle_timeout: int,
+    *,
+    pending_tool_grace: int | None = None,
 ):
     """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
     prompt_task = asyncio.create_task(_timed_prompt(acp_client, prompt))
@@ -868,14 +1088,15 @@ async def _prompt_with_idle_watchdog(
         idle_timeout_sec=idle_timeout,
         wall_timeout_sec=timeout,
         now=loop.time(),
+        pending_grace_sec=pending_tool_grace,
     )
 
     try:
         while not prompt_task.done():
-            await asyncio.sleep(watchdog.poll_interval_sec)
-            # Re-check done() after the sleep — the prompt may have completed
-            # during the poll interval. Without this, we'd cancel an already-
-            # completed task and discard a successful result.
+            # Wake on completion, not only at the next poll: with the default
+            # 600 s idle budget a poll is 30 s, which would otherwise be added
+            # to every prompt's agent time.
+            await asyncio.wait({prompt_task}, timeout=watchdog.poll_interval_sec)
             if prompt_task.done():
                 break
             now = loop.time()

@@ -44,12 +44,15 @@ from pydantic import (
     model_validator,
 )
 
+from benchflow.errors import UserError
+
 LEGACY_REVIEW_RUBRIC_CONTRACT = "v0.1"
 WEIGHTED_REVIEW_RUBRIC_CONTRACT = "v0.2"
 # Backward-compatible public alias. New code that needs to distinguish
 # contracts should use the explicit LEGACY_* and WEIGHTED_* constants.
 REVIEW_RUBRIC_CONTRACT = LEGACY_REVIEW_RUBRIC_CONTRACT
 REVIEW_RUBRIC_FILENAME = "rubric.json"
+TASKMD_RUBRIC_SCHEMA_PREFIX = "https://task.md/schema/rubric-"
 REVIEW_RESULT_FILENAME = "review-result.json"
 
 DEFAULT_RUBRIC_PATH = Path(__file__).parent / "default-rubric.json"
@@ -68,8 +71,10 @@ NonBlankText = Annotated[
 ]
 
 
-class ReviewRubricError(ValueError):
+class ReviewRubricError(ValueError, UserError):
     """Raised when a rubric file cannot be loaded or is not a valid rubric."""
+
+    fault = "task"
 
 
 class RubricCriterion(BaseModel):
@@ -132,10 +137,12 @@ class RubricCriterion(BaseModel):
 
     @property
     def is_legacy(self) -> bool:
+        """Whether the criterion is from a legacy rubric (no blocker flag)."""
         return self.blocker is None
 
     @property
     def is_blocker(self) -> bool:
+        """Whether a fail on this criterion zeroes the reward."""
         return self.blocker == 1
 
     def metadata(self) -> dict[str, str | int | None]:
@@ -189,6 +196,7 @@ class Rubric(BaseModel):
 
     @property
     def contract(self) -> str:
+        """The rubric contract: weighted (blockers and scored criteria) or legacy."""
         return (
             LEGACY_REVIEW_RUBRIC_CONTRACT
             if self.criteria[0].is_legacy
@@ -197,6 +205,7 @@ class Rubric(BaseModel):
 
     @property
     def is_weighted(self) -> bool:
+        """Whether this is a weighted rubric (not the legacy pass/fail one)."""
         return self.contract == WEIGHTED_REVIEW_RUBRIC_CONTRACT
 
     def metadata(self) -> dict[str, Any]:
@@ -293,6 +302,11 @@ def is_review_rubric_file(path: Path) -> bool:
         return True
     if not isinstance(data, dict):
         return True
+    schema = data.get("$schema")
+    if isinstance(schema, str) and schema.startswith(TASKMD_RUBRIC_SCHEMA_PREFIX):
+        # A task.md draft 2 rubric: its package's own verifier grades it
+        # (benchflow.taskmd), so automatic review leaves it alone.
+        return False
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
         return True

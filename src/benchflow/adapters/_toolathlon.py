@@ -7,6 +7,7 @@ import logging
 import re
 import shlex
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 import tomli_w
 import yaml
 
+from benchflow._uv_pin import UV_DIR, uv_install_command
 from benchflow.adapters import _toolathlon_services
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,51 @@ _TOOLATHLON_TOKEN_SECRET_ENVS = (
     "TOOLATHLON_SNOWFLAKE_SCHEMA",
 )
 
+# The ``token.X`` keys whose container default is a placeholder (``XX`` or
+# empty, see ``_toolathlon_container._GLOBAL_TOKENS``), by the variable that
+# fills them: a task whose MCP servers read one cannot work without it, so
+# its token-setup env reads that variable with no default and the launch
+# gate refuses the task until the operator names it (``--allow-task-env``).
+# The others keep ``${NAME:-}`` (the gate warns when one is set but unnamed).
+_TOOLATHLON_REQUIRED_TOKEN_ENVS = {
+    "serper_api_key": "TOOLATHLON_SERPER_API_KEY",
+    "google_cloud_console_api_key": "TOOLATHLON_MAPS_API_KEY",
+    "gcp_project_id": "TOOLATHLON_GCP_PROJECT_ID",
+    "google_client_id": "TOOLATHLON_GOOGLE_CLIENT_ID",
+    "google_client_secret": "TOOLATHLON_GOOGLE_CLIENT_SECRET",
+    "google_refresh_token": "TOOLATHLON_GOOGLE_REFRESH_TOKEN",
+    "github_token": "TOOLATHLON_GITHUB_TOKEN",
+    "huggingface_token": "TOOLATHLON_HF_TOKEN",
+    "wandb_api_key": "TOOLATHLON_WANDB_API_KEY",
+    "notion_integration_key": "TOOLATHLON_NOTION_KEY",
+    "notion_integration_key_eval": "TOOLATHLON_NOTION_KEY_EVAL",
+    "source_notion_page_url": "TOOLATHLON_NOTION_SOURCE_PAGE_URL",
+    "eval_notion_page_url": "TOOLATHLON_NOTION_EVAL_PAGE_URL",
+    "snowflake_account": "TOOLATHLON_SNOWFLAKE_ACCOUNT",
+    "snowflake_user": "TOOLATHLON_SNOWFLAKE_USER",
+}
+_TOOLATHLON_TOKEN_REF_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
+# The required keys as words in a task's own preprocess and evaluation code
+# (``all_token_key_session.notion_integration_key_eval``, or a key looked up
+# by name), which reads them without the MCP server configs doing so.
+# The keys are plain identifiers (no escaping), and the closing \b makes
+# notion_integration_key_eval match whole, whatever the order.
+_TOOLATHLON_TOKEN_KEY_RE = re.compile(
+    r"\b(" + "|".join(sorted(_TOOLATHLON_REQUIRED_TOKEN_ENVS)) + r")\b"
+)
+# A task on the notion server duplicates its source page in preprocess (the
+# shared upstream page duplicator, through notion_official's OAuth, not a
+# ``${token.X}`` of its config) and checks the copy with the eval
+# integration in evaluation, so it needs the whole Notion deployment.
+_TOOLATHLON_NOTION_TOKEN_KEYS = frozenset(
+    {
+        "notion_integration_key",
+        "notion_integration_key_eval",
+        "source_notion_page_url",
+        "eval_notion_page_url",
+    }
+)
+
 _TOOLATHLON_CONTAINER_MODULE_PATH = "/workspace/.toolathlon/toolathlon_container.py"
 
 # MCP server flags whose value is a working DIRECTORY the server (and the task's
@@ -214,6 +261,9 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
         needs_notion_auth = variant == "official" and "notion" in (
             task_config.get("needed_mcp_servers") or []
         )
+        code_token_keys = _toolathlon_code_token_keys(upstream_task)
+        if needs_notion_auth:
+            code_token_keys |= _TOOLATHLON_NOTION_TOKEN_KEYS
         mcp_servers = []
         for server_name in task_config.get("needed_mcp_servers", []):
             try:
@@ -244,6 +294,7 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
                 credential_refs=credential_refs,
                 services=services,
                 needs_notion_auth=needs_notion_auth,
+                code_token_keys=code_token_keys,
             ),
         )
         _write_text(
@@ -287,6 +338,28 @@ def _toolathlon_referenced_config_paths(task_dir: Path) -> set[str]:
                 continue
             refs.update(_TOOLATHLON_CREDENTIAL_REF_RE.findall(text))
     return refs
+
+
+def _toolathlon_code_token_keys(task_dir: Path) -> set[str]:
+    """The required token keys a task's own code names: its preprocess and
+    evaluation sources and its ``token_key_session.py``."""
+    paths = [task_dir / "token_key_session.py"]
+    for root_name in ("preprocess", "evaluation"):
+        root = task_dir / root_name
+        if root.is_dir():
+            paths += sorted(root.rglob("*"))
+    keys: set[str] = set()
+    for path in paths:
+        if not path.is_file() or path.stat().st_size > 1_000_000:
+            continue
+        if path.suffix not in {".py", ".json", ".yaml", ".yml", ".sh"}:
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        keys.update(_TOOLATHLON_TOKEN_KEY_RE.findall(text))
+    return keys
 
 
 def _toolathlon_credential_refs_for_task(
@@ -359,6 +432,7 @@ def _toolathlon_task_toml(
     credential_refs: set[str],
     services: set[str] | None = None,
     needs_notion_auth: bool = False,
+    code_token_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     services = services or set()
     benchmark_name = "toolathlon-gym" if variant == "gym" else "toolathlon"
@@ -368,7 +442,9 @@ def _toolathlon_task_toml(
             "command": _toolathlon_token_setup_command(variant),
             "cwd": "/workspace",
             "timeout_sec": 60.0,
-            "env": _toolathlon_token_setup_env(),
+            "env": _toolathlon_token_setup_env(
+                _toolathlon_required_token_envs(mcp_servers, code_token_keys)
+            ),
         }
     )
     credential_command = _toolathlon_credential_setup_command(credential_refs)
@@ -581,7 +657,8 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "                sys.exit(66)",
             "        else:",
             "            missing.append(",
-            "                f\"{spec['path']} ({spec['raw_env']} or {spec['b64_env']})\"",
+            "                f\"{spec['path']} ({spec['raw_env']} or {spec['b64_env']}, \"",
+            "                'named with --allow-task-env)'",
             "            )",
             "            continue",
             "    if spec['content_format'] == 'json':",
@@ -617,9 +694,27 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
     )
 
 
-def _toolathlon_token_setup_env() -> dict[str, str]:
+def _toolathlon_required_token_envs(
+    mcp_servers: list[dict[str, Any]], code_keys: Iterable[str] | None = None
+) -> set[str]:
+    """The token variables the task cannot work without: the ones behind each
+    ``${token.X}`` its MCP servers read, and each key its own preprocess or
+    evaluation code reads (*code_keys*), that has no usable default."""
+    keys = set(_TOOLATHLON_TOKEN_REF_RE.findall(json.dumps(mcp_servers)))
+    keys |= set(code_keys or ())
+    return {
+        _TOOLATHLON_REQUIRED_TOKEN_ENVS[key]
+        for key in keys
+        if key in _TOOLATHLON_REQUIRED_TOKEN_ENVS
+    }
+
+
+def _toolathlon_token_setup_env(required: set[str] | None = None) -> dict[str, str]:
     """Env for the token-setup command: the container helper (base64) plus the
-    secret token values, resolved host-side from BenchFlow's environment/.env."""
+    secret token values, resolved host-side from BenchFlow's environment/.env
+    for the names the operator gives (``--allow-task-env``). The *required*
+    ones have no default, so the launch gate refuses the task until they are
+    named; the rest fall back to the container's placeholder."""
     import base64
 
     module_b64 = base64.b64encode(
@@ -627,7 +722,7 @@ def _toolathlon_token_setup_env() -> dict[str, str]:
     ).decode()
     env: dict[str, str] = {"TOOLATHLON_CONTAINER_MODULE_B64": module_b64}
     for name in _TOOLATHLON_TOKEN_SECRET_ENVS:
-        env[name] = f"${{{name}:-}}"
+        env[name] = f"${{{name}}}" if name in (required or ()) else f"${{{name}:-}}"
     return env
 
 
@@ -953,6 +1048,12 @@ def _toolathlon_dockerfile(
 ) -> str:
     services = services or set()
     repo_url = f"https://github.com/{ctx.repo}.git"
+    # The pinned uv, its tarball checked against the published sha256
+    # (benchflow._uv_pin), not the latest uv from Astral's install script.
+    # Both variants install it, and copy it to /usr/local/bin, even when the
+    # base image has a uv of its own: that one is neither pinned nor checked
+    # .
+    uv_install = uv_install_command()
     if variant == "official":
         k8s_install = ""
         if _toolathlon_services.K8S in services:
@@ -1009,9 +1110,9 @@ RUN rm -rf /tmp/toolathlon-src \\
 RUN if [ -f /workspace/configs/global_configs_example.py ] && [ ! -f /workspace/configs/global_configs.py ]; then \\
         cp /workspace/configs/global_configs_example.py /workspace/configs/global_configs.py; \\
     fi
-RUN if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; fi \\
-    && cp "$(command -v uv)" /usr/local/bin/uv \\
-    && if command -v uvx >/dev/null 2>&1; then cp "$(command -v uvx)" /usr/local/bin/uvx; else ln -sf /usr/local/bin/uv /usr/local/bin/uvx; fi \\
+RUN {uv_install} \\
+    && cp {UV_DIR}/uv /usr/local/bin/uv \\
+    && cp {UV_DIR}/uvx /usr/local/bin/uvx \\
     && chmod 755 /usr/local/bin/uv /usr/local/bin/uvx
 {k8s_install.rstrip()}
 RUN [ ! -e /workspace/utils/local_servers ] || chmod -R a+rwX /workspace/utils/local_servers
@@ -1025,9 +1126,9 @@ RUN apt-get update && apt-get install -y \\
     libatspi2.0-0 libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 \\
     libxrandr2 libgbm1 libxcb1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2 \\
     && rm -rf /var/lib/apt/lists/*
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh \\
-    && cp /root/.local/bin/uv /usr/local/bin/uv \\
-    && cp /root/.local/bin/uvx /usr/local/bin/uvx \\
+RUN {uv_install} \\
+    && cp {UV_DIR}/uv /usr/local/bin/uv \\
+    && cp {UV_DIR}/uvx /usr/local/bin/uvx \\
     && chmod 755 /usr/local/bin/uv /usr/local/bin/uvx
 ENV PATH="/usr/local/bin:/root/.local/bin:$PATH"
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\

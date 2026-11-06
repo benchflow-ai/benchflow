@@ -11,6 +11,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: The key an OpenAI-compatible judge call sends to an endpoint the task
+#: chose when the task gave no key of its own (never the operator's).
+NO_JUDGE_KEY = "benchflow-no-key"
+
 
 class JudgeEnvironmentError(RuntimeError):
     """No LLM provider SDK is installed for the judge.
@@ -51,21 +55,17 @@ def parse_verdict(text: str) -> dict[str, Any]:
         except ValueError:
             pass
 
-    # Balanced braces
+    # The JSON decoder handles quoted braces, escapes and nesting. Trying each
+    # opening also permits prose or a malformed candidate before the verdict.
+    decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
     for i, ch in enumerate(text):
         if ch == "{":
-            depth = 0
-            for j in range(i, len(text)):
-                if text[j] == "{":
-                    depth += 1
-                elif text[j] == "}":
-                    depth -= 1
-                if depth == 0:
-                    try:
-                        return _loads_verdict_json(text[i : j + 1])
-                    except ValueError:
-                        break
-            break
+            try:
+                parsed, _ = decoder.raw_decode(text, i)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
 
     raise ValueError(f"Could not parse verdict from: {text[:300]}")
 
@@ -256,9 +256,19 @@ async def _call_anthropic(
     return ""
 
 
+#: The OpenAI SDK's own endpoint: a task that pins it keeps the operator's key.
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+
+def _endpoint(url: str | None) -> str:
+    return (url or "").strip().rstrip("/").lower()
+
+
 async def _call_openai(
     model: str, prompt: str, max_tokens: int, env: Mapping[str, str] | None = None
 ) -> str:
+    import os
+
     import openai
 
     creds = env or {}
@@ -271,6 +281,14 @@ async def _call_openai(
         kwargs["api_key"] = api_key
     if base_url:
         kwargs["base_url"] = base_url
+        operators = (os.environ.get("OPENAI_BASE_URL"), OPENAI_DEFAULT_BASE_URL)
+        if not api_key and _endpoint(base_url) not in map(_endpoint, operators):
+            # The endpoint is the task's ([verifier] env), not the
+            # operator's own or OpenAI's: without a key of its own the call
+            # carries a placeholder, never the operator's OPENAI_API_KEY (or
+            # OPENAI_ADMIN_KEY) the SDK would read from os.environ. The SDK
+            # refuses an empty key, so the placeholder is a fixed word.
+            kwargs["api_key"] = NO_JUDGE_KEY
     client = openai.AsyncOpenAI(**kwargs)
     response = await client.chat.completions.create(
         model=model,

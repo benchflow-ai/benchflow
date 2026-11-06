@@ -10,6 +10,8 @@ vars injected by the SDK, then execs ``pi-acp``.
 See https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/models.md
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -54,7 +56,7 @@ def _positive_int(value: object) -> int | None:
         if not value.is_integer():
             return None
         parsed = int(value)
-    elif isinstance(value, str | bytes | bytearray):
+    elif isinstance(value, (str, bytes, bytearray)):
         try:
             parsed = int(value)
         except ValueError:
@@ -128,7 +130,11 @@ def setup_provider() -> None:
                     f"Warning: could not parse {models_path}, overwriting.",
                     file=sys.stderr,
                 )
-        models_path.write_text(json.dumps(config, indent=2))
+        # The controller detached this ledgered path from any old aliases.
+        # A first launch must also create its new inode privately.
+        fd = os.open(models_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(config, indent=2))
     else:
         # Anthropic mode — set native env vars that Pi reads directly.
         # DO NOT change setdefault to assignment. Users route through proxies

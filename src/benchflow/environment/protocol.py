@@ -59,6 +59,8 @@ class StateSnapshot:
 
     id: str
     path: str = ""
+    # Source database path -> relative backup filename. Empty for legacy handles.
+    files: dict[str, str] = field(default_factory=dict)
 
 
 @runtime_checkable

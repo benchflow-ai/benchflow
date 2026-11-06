@@ -527,50 +527,56 @@ class TestEvaluationConfigLoopStrategy:
             EvaluationConfig(loop_strategy=5)
 
 
-class TestResumeLoopMismatchWarning:
+class TestResumeLoopMismatchSetAside:
     def _job_dir(self, tmp_path, config_data: dict):
         import json
 
         task_dir = tmp_path / "job" / "task-a"
         task_dir.mkdir(parents=True)
         (task_dir / "config.json").write_text(json.dumps(config_data))
+        # BenchFlow's rollout result marks the folder as a BenchFlow job.
+        (task_dir / "result.json").write_text(
+            json.dumps({"task_name": "task-a", "rollout_name": "task-a"})
+        )
         return tmp_path / "job"
 
-    def test_pre_feature_config_without_loop_key_warns(self, tmp_path, caplog):
+    def test_pre_feature_config_without_loop_key_is_set_aside(self, tmp_path, caplog):
         """config.json written before loop strategies existed has no "loop"
-        key — it ran single-shot, so resuming with a strategy must warn."""
+        key — it ran single-shot, so resuming with a strategy sets it aside
+        (P2: before, it only warned and blended the two)."""
         from benchflow.evaluation import EvaluationConfig, _check_resume_mismatch
 
         job_dir = self._job_dir(tmp_path, {"agent": "claude-agent-acp"})
         config = EvaluationConfig(loop_strategy="verify-retry:k=2")
         with caplog.at_level("WARNING"):
-            _check_resume_mismatch(job_dir, config)
+            dest = _check_resume_mismatch(job_dir, config)
+        assert dest is not None and (dest / "task-a").is_dir()
         assert any(
-            "loop_strategy" in r.message and "single-shot" in r.message
-            for r in caplog.records
+            "loop=" in r.message and "single-shot" in r.message for r in caplog.records
         )
 
-    def test_matching_single_shot_does_not_warn(self, tmp_path, caplog):
+    def test_matching_single_shot_is_kept(self, tmp_path, caplog):
         from benchflow.evaluation import EvaluationConfig, _check_resume_mismatch
 
         job_dir = self._job_dir(tmp_path, {"agent": "claude-agent-acp"})
         with caplog.at_level("WARNING"):
-            _check_resume_mismatch(job_dir, EvaluationConfig())
-        assert not [r for r in caplog.records if "loop_strategy" in r.message]
+            assert _check_resume_mismatch(job_dir, EvaluationConfig()) is None
+        assert not [r for r in caplog.records if "loop" in r.message]
+        assert (job_dir / "task-a").is_dir()
 
-    def test_agent_mismatch_refuses_instead_of_blending_scores(self, tmp_path):
+    def test_agent_mismatch_sets_aside_instead_of_blending_scores(self, tmp_path):
         """Guards PR #789 (CLI error-handling hardening)."""
         # The reported bug: resuming a jobs_dir with a different agent silently
         # folded the prior agent's cached rollouts into the new run's summary,
-        # publishing a blended Score: X/N. An agent mismatch must refuse (a
-        # loop-only mismatch still just warns), preserving the prior results.
-        from benchflow.evaluation import (
-            EvaluationConfig,
-            ResumeMismatchError,
-            _check_resume_mismatch,
-        )
+        # publishing a blended Score: X/N. An agent mismatch moves the prior
+        # trial aside (P2), preserving it without counting it.
+        import json
+
+        from benchflow.evaluation import EvaluationConfig, _check_resume_mismatch
 
         job_dir = self._job_dir(tmp_path, {"agent": "oracle"})
         config = EvaluationConfig(agent="codex-acp")
-        with pytest.raises(ResumeMismatchError, match="codex-acp"):
-            _check_resume_mismatch(job_dir, config)
+        dest = _check_resume_mismatch(job_dir, config)
+        assert dest is not None and not (job_dir / "task-a").exists()
+        reason = json.loads((dest / "set-aside.json").read_text())["reason"]
+        assert reason == "agent='oracle' (this run: 'codex-acp')"

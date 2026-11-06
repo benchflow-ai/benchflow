@@ -89,18 +89,19 @@ def test_top_level_help_lists_public_groups() -> None:
     commands = _help_command_names(out)
     for group in ("eval", "train", "skills", "tasks", "hub", "agent", "sandbox"):
         assert group in commands, f"missing public group {group!r} in: {out}"
+    # The verb set Rust's bench 0.8.2 shares (cli/verbs.py).
+    for verb in ("new", "check", "run", "results", "view", "regrade", "agents"):
+        assert verb in commands, f"missing verb {verb!r} in: {out}"
     # Deprecated, hidden, and removed commands must not show up in public help.
     # `environment` is now a hidden deprecated alias group (→ sandbox / hub env);
     # `adopt` is a hidden deprecated alias group (→ eval adopt).
     for hidden in (
-        "run",
         "job",
-        "agents",
         "metrics",
-        "view",
         "eval-batch",
         "environment",
         "adopt",
+        "embodied",
     ):
         assert hidden not in commands, (
             f"hidden command {hidden!r} unexpectedly shown: {out}"
@@ -108,7 +109,7 @@ def test_top_level_help_lists_public_groups() -> None:
 
 
 def test_eval_run_flags_match_cli_md_bidirectional() -> None:
-    """`bench eval run`'s flags and its cli.md table must be set-equal.
+    """`bench run`'s flags and its cli.md section must be set-equal.
 
     The old guard only checked doc→CLI (a hand-maintained list of documented
     flags must exist in --help). It could not catch the *reverse* — a new CLI
@@ -116,11 +117,16 @@ def test_eval_run_flags_match_cli_md_bidirectional() -> None:
     ``--ignore-bench-version`` rotted out of the docs (#731). Deriving both
     sides from ground truth (the live parser + the doc table) drops the
     hand-maintained list and closes both directions.
+
+    cli.md is organised by the verbs users type, so ``## bench run`` documents
+    every ``bench eval run`` flag too: ``bench run``'s parser holds them all
+    (``RunCommand``), and the first assert keeps that true.
     """
-    cli = _cli_long_flags(["eval", "run"])
-    doc = _doc_flags("### bench eval run")
+    cli = _cli_long_flags(["run"])
+    assert _cli_long_flags(["eval", "run"]) <= cli
+    doc = _doc_flags("## bench run")
     assert cli == doc, (
-        "bench eval run CLI↔cli.md flag drift:\n"
+        "bench run CLI↔cli.md flag drift:\n"
         f"  in CLI but UNDOCUMENTED: {sorted(cli - doc)}\n"
         f"  documented but NOT in CLI: {sorted(doc - cli)}"
     )
@@ -130,12 +136,12 @@ def test_documented_defaults_match_cli() -> None:
     """Documented default *values* must match the live param defaults.
 
     The name-only guard happily passed while ``bench hub check --cache-dir``
-    documented the pre-rename ``.cache/compat/harbor`` (the CLI moved to
-    ``.cache/hub/harbor``). Pin the defaults that have drift history so a
+    documented a cache folder the CLI no longer used (it is now
+    ``.cache/hub/registry``). Pin the defaults that have drift history so a
     stale value in either the code or the doc fails CI.
     """
     checks = [
-        (["hub", "check"], "--cache-dir", "### bench hub check", ".cache/hub/harbor"),
+        (["hub", "check"], "--cache-dir", "### bench hub check", ".cache/hub/registry"),
     ]
     for path, flag, header, expected in checks:
         param = next(
@@ -158,14 +164,15 @@ def test_eval_run_accepts_environment_manifest() -> None:
     assert "--environment-manifest" in out
 
 
-def test_eval_create_is_deprecated_alias_of_run() -> None:
-    """`bench eval create` was renamed to `bench eval run`; the old name stays
-    as a deprecated alias so existing scripts and downstream repos keep working.
+def test_eval_create_is_a_hidden_alias_of_run() -> None:
+    """`bench eval create` was renamed to `bench eval run` (now `bench run`);
+    the old name stays as a hidden alias so existing scripts and downstream
+    repos keep working, and prints the note every 0.8 spelling prints.
     """
     by_name = {c.name: c for c in eval_app.registered_commands}
     assert "run" in by_name, "primary `bench eval run` command missing"
-    assert "create" in by_name, "deprecated `bench eval create` alias missing"
-    assert by_name["create"].deprecated, "`create` must be marked deprecated"
+    assert "create" in by_name, "`bench eval create` alias missing"
+    assert by_name["create"].hidden, "`create` must be hidden"
     assert not by_name["run"].deprecated, "`run` must not be deprecated"
     # Both names share the same callback so flags/behavior never drift apart.
     assert by_name["run"].callback is by_name["create"].callback
@@ -229,11 +236,13 @@ def test_documented_subcommands_exist() -> None:
 # that pattern.
 _INSTALL_URL_DOCS = (
     "README.md",
-    "docs/getting-started.md",
-    "docs/release.md",
-    "docs/agent-quickstart.md",
+    "docs/getting-started/quick-start.md",
+    "docs/contributing/release.md",
+    "docs/getting-started/agent-quickstart.md",
     "docs/skill-eval.md",
     "docs/llm-judge.md",
+    "docs/judging/skill-evals.md",
+    "docs/judging/llm-judge.md",
     "docs/reference/python-api.md",
     "docs/examples/coder-reviewer-demo.py",
     "docs/examples/scene-patterns.ipynb",

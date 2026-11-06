@@ -1,0 +1,11 @@
+{
+    "job_name": "hb-glob",
+    "tasks": [
+        {
+            "path": "tasks/hello-craft"
+        },
+        {
+            "path": "tasks/hello-tw?"
+        }
+    ]
+}

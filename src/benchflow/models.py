@@ -6,12 +6,15 @@ _scoring.py (extracts rewards and classifies errors from results).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from benchflow.usage_tracking import UsageSource
 
 if TYPE_CHECKING:
+    from benchflow._utils.reachable_write import ReachablePath
     from benchflow._utils.scoring import ScoreOutcome
     from benchflow.review.outcome import ScoringResult
     from benchflow.rewards.events import RewardEvent
@@ -39,7 +42,7 @@ class AgentInstallError(RuntimeError):
         return_code: int,
         stdout: str,
         diagnostics: str,
-        log_path: str = "",
+        log_path: str | ReachablePath = "",
     ):
         self.agent = agent
         self.return_code = return_code
@@ -75,7 +78,7 @@ class RolloutResult:
         purpose:      Distinguishes task trials from nested reviewer runs.
         trajectory:   Ordered list of ACP session-update dicts (tool calls,
                       messages, thoughts) captured during execution.
-        agent:        Harness name from the registry (e.g. "openclaw").
+        agent:        Harness name from the registry (e.g. "codex-acp").
         agent_name:   Name reported by the agent via ACP initialize handshake.
         model:        Model ID used (e.g. "google/gemini-3.1-flash-lite-preview").
         n_tool_calls: Total tool calls observed during the session.
@@ -120,11 +123,24 @@ class RolloutResult:
                       as a ``name -> body`` dict. Populated only by a
                       continual-learning (``sequential-shared``) rollout that
                       captured an exported skill set; None otherwise. This is
-                      the data path that feeds the persistent LearnerStore
-                      (capability 5).
+                      the data path that feeds the persistent LearnerStore.
         source_provenance: Source repository/ref/file-hash evidence for the task.
         started_at:   Wall-clock start time.
         finished_at:  Wall-clock end time.
+        rollout_dir:  Directory holding this rollout's artifacts (result.json,
+                      trajectory/, verifier/, ...), or None when the rollout
+                      failed before the directory was created.
+        retry:        The ``--retry-from-checkpoint`` outcome (status, reason,
+                      checkpoint, reward, original_reward), or None. The
+                      retry's reward never replaces ``rewards``.
+        integrity:    The reward-integrity verdict (``integrity`` audit or
+                      strict), as ``IntegrityVerdict.as_dict()``, or None when
+                      the run was not audited. It never changes ``rewards``.
+
+    Convenience properties: ``reward`` (the canonical ``rewards["reward"]``),
+    ``passed`` (the scoring outcome is a pass), ``success`` (no agent, verifier
+    or export error) and ``score_outcome``. ``RolloutResult.load(path)`` reads
+    a finished rollout back from its ``result.json``.
     """
 
     def __init__(
@@ -163,11 +179,16 @@ class RolloutResult:
         scoring: ScoringResult | None = None,
         purpose: Literal["task", "reviewer"] = "task",
         parent_rollout: str | None = None,
+        rollout_dir: Path | None = None,
+        retry: dict[str, Any] | None = None,
+        integrity: dict[str, Any] | None = None,
     ):
         self.task_name = task_name
         self.rollout_name = rollout_name
         self.rewards = rewards
         self.trajectory = trajectory or []
+        # True when ``trajectory`` was read back from the stored, redacted copy.
+        self._trajectory_stored = False
         self.agent = agent
         self.agent_name = agent_name
         self.model = model
@@ -198,6 +219,190 @@ class RolloutResult:
         self.scoring = scoring
         self.purpose = purpose
         self.parent_rollout = parent_rollout
+        self.rollout_dir = rollout_dir
+        # A retry from the trial's last checkpoint (benchflow.checkpoint_retry),
+        # reported next to ``rewards``, never merged into them.
+        self.retry = retry
+        # The integrity verdict (benchflow.integrity), reported next to
+        # ``rewards``, never merged into them.
+        self.integrity = integrity
+
+    @property
+    def reward(self) -> float | None:
+        """The canonical scalar reward; None when scoring has not completed.
+
+        ``rewards`` retains the original verifier evidence when an incomplete
+        review withholds its final score.
+
+        >>> RolloutResult("t", rewards={"reward": 0.5, "tests": 1.0}).reward
+        0.5
+        >>> RolloutResult("t", error="agent crashed").reward is None
+        True
+        """
+        from benchflow._utils.scoring import extract_reward
+
+        value = extract_reward(
+            {
+                "rewards": self.rewards,
+                "scoring": self.scoring.to_dict() if self.scoring is not None else None,
+            }
+        )
+        return None if value is None else float(value)
+
+    @property
+    def passed(self) -> bool:
+        """True when the rollout was scored and passed (``score_outcome == "passed"``).
+
+        >>> RolloutResult("t", rewards={"reward": 1.0}).passed
+        True
+        >>> RolloutResult("t", rewards={"reward": 0.0}).score_outcome
+        'failed'
+        """
+        return self.score_outcome == "passed"
+
+    def to_record(self) -> dict[str, Any]:
+        """One flat, JSON-safe dict of the headline fields (a CSV/JSONL row).
+
+        >>> RolloutResult("t", rewards={"reward": 1.0}).to_record()["passed"]
+        True
+        """
+        duration = (
+            (self.finished_at - self.started_at).total_seconds()
+            if self.started_at is not None and self.finished_at is not None
+            else None
+        )
+        return {
+            "task_name": self.task_name,
+            "rollout_name": self.rollout_name,
+            "agent": self.agent,
+            "model": self.model,
+            "reward": self.reward,
+            "passed": self.passed,
+            "score_outcome": self.score_outcome,
+            "error": self.error,
+            "error_category": self.error_category,
+            "verifier_error": self.verifier_error,
+            "verifier_error_category": self.verifier_error_category,
+            "n_tool_calls": self.n_tool_calls,
+            "n_prompts": self.n_prompts,
+            "n_input_tokens": self.n_input_tokens,
+            "n_output_tokens": self.n_output_tokens,
+            "n_cache_read_tokens": self.n_cache_read_tokens,
+            "n_cache_creation_tokens": self.n_cache_creation_tokens,
+            "total_tokens": self.total_tokens,
+            "cost_usd": self.cost_usd,
+            "usage_source": self.usage_source,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "duration_sec": duration,
+            "rollout_dir": str(self.rollout_dir) if self.rollout_dir else None,
+        }
+
+    @property
+    def verified(self) -> bool:
+        """Deprecated: use ``score_outcome in ("passed", "failed")``.
+
+        True when the verifier produced a verdict (pass or fail). Kept from the
+        retired ``RuntimeResult``.
+        """
+        import warnings
+
+        warnings.warn(
+            "RolloutResult.verified is deprecated; use "
+            'result.score_outcome in ("passed", "failed").',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.score_outcome in ("passed", "failed")
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        """Deprecated and always empty (``RuntimeResult`` never populated it).
+
+        The agent's messages are the ``agent_message`` events in ``trajectory``.
+        """
+        import warnings
+
+        warnings.warn(
+            "RolloutResult.messages is deprecated and always empty; read the "
+            '"agent_message" events in result.trajectory.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return []
+
+    @property
+    def snapshots(self) -> list[str]:
+        """Deprecated and always empty (``RuntimeResult`` never populated it)."""
+        import warnings
+
+        warnings.warn(
+            "RolloutResult.snapshots is deprecated and always empty; branch "
+            "checkpoints are recorded in the rollout's tree.json.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return []
+
+    @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], *, rollout_dir: Path | None = None
+    ) -> RolloutResult:
+        """Build a result from a persisted ``result.json`` payload.
+
+        Keys the constructor does not take (``timing``, ``sandbox_id``, ...)
+        are ignored; read them from the dict or the file directly. Token and
+        cost fields are taken from the ``agent_result`` block when they are not
+        at the top level.
+        """
+        import inspect
+
+        from benchflow.review.outcome import ScoringResult
+
+        accepted = set(inspect.signature(cls.__init__).parameters) - {"self"}
+        merged = {**(data.get("agent_result") or {}), **data}
+        kwargs = {k: v for k, v in merged.items() if k in accepted}
+        kwargs.pop("rollout_dir", None)
+        for key in ("started_at", "finished_at"):
+            value = kwargs.get(key)
+            if isinstance(value, str):
+                try:
+                    kwargs[key] = datetime.fromisoformat(value)
+                except ValueError:
+                    kwargs[key] = None
+        scoring = kwargs.get("scoring")
+        if isinstance(scoring, dict):
+            kwargs["scoring"] = ScoringResult.model_validate(scoring, strict=False)
+        kwargs.setdefault("task_name", "")
+        return cls(**kwargs, rollout_dir=rollout_dir)
+
+    @classmethod
+    def load(cls, path: str | Path) -> RolloutResult:
+        """Read a finished rollout from its directory (or its ``result.json``).
+
+        The trajectory is read from ``trajectory/acp_trajectory.jsonl`` when
+        present. Raises ``FileNotFoundError`` naming the missing file.
+        """
+        path = Path(path)
+        result_file = path if path.name.endswith(".json") else path / "result.json"
+        if not result_file.is_file():
+            raise FileNotFoundError(
+                f"No result.json at {result_file}; pass a rollout directory "
+                "(jobs/<job>/<task>__<id>) or its result.json"
+            )
+        rollout_dir = result_file.parent
+        data = json.loads(result_file.read_text())
+        result = cls.from_dict(data, rollout_dir=rollout_dir)
+        traj_file = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+        if traj_file.is_file():
+            result.trajectory = [
+                json.loads(line)
+                for line in traj_file.read_text().splitlines()
+                if line.strip()
+            ]
+            # The stored copy is redacted: integrity re-audits it.
+            result._trajectory_stored = True
+        return result
 
     @property
     def score_outcome(self) -> ScoreOutcome:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import typer
+import click
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app, eval_run
@@ -140,7 +140,7 @@ def test_eval_create_default_idle_timeout_is_600(tmp_path: Path):
 
 
 def test_eval_create_rejects_invalid_idle_timeout(tmp_path: Path):
-    """Non-numeric, non-sentinel strings raise typer.Exit with a friendly message."""
+    """Non-numeric, non-sentinel strings are a usage error with a friendly message."""
     tasks = _make_tasks_dir(tmp_path)
 
     try:
@@ -149,10 +149,11 @@ def test_eval_create_rejects_invalid_idle_timeout(tmp_path: Path):
             agent_idle_timeout="forever",
             jobs_dir=str(tmp_path / "jobs"),
         )
-    except typer.Exit as exc:
-        assert exc.exit_code == 1
+    except click.UsageError as exc:
+        # A usage mistake: exit 2, as on bench run (dogfood p5-8, p5-11).
+        assert exc.exit_code == 2
     else:
-        raise AssertionError("expected typer.Exit for invalid idle timeout")
+        raise AssertionError("expected a usage error for invalid idle timeout")
 
 
 def test_eval_create_idle_timeout_overrides_yaml_config(tmp_path: Path):

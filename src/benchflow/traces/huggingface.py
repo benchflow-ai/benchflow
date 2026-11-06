@@ -17,6 +17,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
@@ -75,7 +76,7 @@ def _pick_split_file(repo_files: list[str], split: str, suffix: str) -> str | No
     Returns ``None`` when no file matches so the caller can fall back to
     constructed filename candidates.
     """
-    sharded_re = re.compile(rf"^{re.escape(split)}-\d+-of-\d+")
+    sharded_re = re.compile(rf"^{re.escape(split)}-\d+-of-\d+{re.escape(suffix)}$")
     candidates = [
         f
         for f in repo_files
@@ -90,6 +91,32 @@ def _pick_split_file(repo_files: list[str], split: str, suffix: str) -> str | No
     # Prefer files under data/, then the shortest path for determinism.
     candidates.sort(key=lambda f: (not f.startswith("data/"), len(f), f))
     return candidates[0]
+
+
+def _split_file_groups(
+    repo_files: list[str], split: str, suffix: str
+) -> list[list[str]]:
+    """Select one split layout; shards in it are an indivisible ordered group."""
+    first = _pick_split_file(repo_files, split, suffix)
+    if first is None:
+        return [[name] for name in _split_filename_candidates(None, split, suffix)]
+    if Path(first).name == f"{split}{suffix}":
+        return [[first]]
+    pattern = re.compile(rf"^{re.escape(split)}-(\d+)-of-(\d+){re.escape(suffix)}$")
+    shards = []
+    for name in repo_files:
+        match = pattern.fullmatch(Path(name).name)
+        if match and Path(name).parent == Path(first).parent:
+            shards.append((int(match[1]), int(match[2]), name))
+    shards.sort()
+    count = shards[0][1]
+    if len(shards) != count or any(
+        index != position or total != count
+        for position, (index, total, _) in enumerate(shards)
+    ):
+        # An incomplete listing must use another format or the paginated API.
+        return []
+    return [[name for _, _, name in shards]]
 
 
 def _split_filename_candidates(
@@ -128,7 +155,8 @@ def _download_hf_dataset(
     cache = cache or _cache_dir()
     safe_name = repo_id.replace("/", "__")
     rows_suffix = f"_n{max_rows}" if max_rows else ""
-    out_path = cache / f"{safe_name}__{split}{rows_suffix}.jsonl"
+    # Version the cache: pre-v2 entries may contain only one shard.
+    out_path = cache / f"{safe_name}__{split}{rows_suffix}__v2.jsonl"
 
     if out_path.exists():
         logger.info("Using cached dataset: %s", out_path)
@@ -149,45 +177,56 @@ def _download_hf_dataset(
         except Exception:
             logger.debug("Could not list files for %s", repo_id, exc_info=True)
 
-        parquet_file = _pick_split_file(repo_files, split, ".parquet")
-        jsonl_file = _pick_split_file(repo_files, split, ".jsonl")
-
-        # Try to download a parquet data file for the split
-        for filename in _split_filename_candidates(parquet_file, split, ".parquet"):
-            try:
-                downloaded = hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    repo_type="dataset",
-                )
-                # Convert parquet to JSONL. The conversion is kept inside the
-                # try/fallback scope: if a parquet file downloads but pyarrow
-                # is missing (or decoding fails), the failure must fall through
-                # to the JSONL candidates / `_download_via_api` rather than
-                # propagating immediately (regression guarded — PR #323).
-                _parquet_to_jsonl(Path(downloaded), out_path, max_rows=max_rows)
-            except Exception:
-                continue
-            return out_path
-
-        # Try a JSONL data file for the split
-        for filename in _split_filename_candidates(jsonl_file, split, ".jsonl"):
-            try:
-                downloaded = hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    repo_type="dataset",
-                )
-            except Exception:
-                continue
-            _copy_jsonl(Path(downloaded), out_path, max_rows=max_rows)
-            return out_path
+        cache.mkdir(parents=True, exist_ok=True)
+        for suffix in (".parquet", ".jsonl"):
+            for filenames in _split_file_groups(repo_files, split, suffix):
+                try:
+                    with TemporaryDirectory(dir=cache, prefix="download-") as temporary:
+                        staged = Path(temporary) / "combined.jsonl"
+                        count = 0
+                        with staged.open("w") as output:
+                            for filename in filenames:
+                                downloaded = Path(
+                                    hf_hub_download(
+                                        repo_id=repo_id,
+                                        filename=filename,
+                                        repo_type="dataset",
+                                    )
+                                )
+                                if suffix == ".parquet":
+                                    converted = Path(temporary) / "shard.jsonl"
+                                    _parquet_to_jsonl(
+                                        downloaded,
+                                        converted,
+                                        max_rows=max_rows - count if max_rows else None,
+                                    )
+                                    downloaded = converted
+                                with downloaded.open() as stream:
+                                    for line in stream:
+                                        if not line.strip():
+                                            continue
+                                        output.write(line.rstrip("\n") + "\n")
+                                        count += 1
+                                        if max_rows and count >= max_rows:
+                                            break
+                                if max_rows and count >= max_rows:
+                                    break
+                        staged.replace(out_path)
+                    return out_path
+                except Exception:
+                    # Failure of any shard invalidates the entire candidate.
+                    # Keep PR #323's parquet-to-JSONL/API fallback.
+                    continue
 
     except ImportError:
         logger.debug("huggingface_hub not installed, using API fallback")
 
     # Fallback: use the HF datasets API via httpx
-    _download_via_api(repo_id, split=split, max_rows=max_rows, out_path=out_path)
+    cache.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=cache, prefix="download-") as temporary:
+        staged = Path(temporary) / "api.jsonl"
+        _download_via_api(repo_id, split=split, max_rows=max_rows, out_path=staged)
+        staged.replace(out_path)
     return out_path
 
 
@@ -232,24 +271,50 @@ def _download_via_api(
     """Download dataset rows via the HuggingFace datasets API."""
     import httpx
 
-    limit = max_rows or 100
-    url = f"https://datasets-server.huggingface.co/rows?dataset={repo_id}&config=default&split={split}&offset=0&length={limit}"
+    from benchflow._utils.benchmark_repos import _OFFLINE_NEXT
+    from benchflow.errors import UserError
 
-    try:
-        resp = httpx.get(url, timeout=60.0)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        raise RuntimeError(f"Failed to download {repo_id}: {e}") from e
-
-    rows = data.get("rows", [])
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
     with out_path.open("w") as f:
-        for row_wrapper in rows:
-            row = row_wrapper.get("row", row_wrapper)
-            f.write(json.dumps(row, default=str) + "\n")
+        while not max_rows or count < max_rows:
+            limit = min(100, max_rows - count) if max_rows else 100
+            url = f"https://datasets-server.huggingface.co/rows?dataset={repo_id}&config=default&split={split}&offset={count}&length={limit}"
+            try:
+                resp = httpx.get(url, timeout=60.0)
+                resp.raise_for_status()
+                data = resp.json()
+                rows = data.get("rows", [])
+            except (
+                httpx.NetworkError,
+                httpx.TimeoutException,
+                httpx.ProxyError,
+            ) as exc:
+                error = UserError(
+                    f"Could not download {repo_id} from Hugging Face: {exc}"
+                )
+                error.hint = _OFFLINE_NEXT
+                raise error from exc
+            except Exception as exc:
+                raise RuntimeError(f"Failed to download {repo_id}: {exc}") from exc
+            if not rows:
+                if (
+                    isinstance(data.get("num_rows_total"), int)
+                    and count < data["num_rows_total"]
+                ):
+                    raise RuntimeError(f"Incomplete dataset response for {repo_id}")
+                break
+            for row_wrapper in rows[:limit]:
+                row = row_wrapper.get("row", row_wrapper)
+                f.write(json.dumps(row, default=str) + "\n")
+                count += 1
+            if (
+                isinstance(data.get("num_rows_total"), int)
+                and count >= data["num_rows_total"]
+            ):
+                break
 
-    logger.info("Downloaded %d rows to %s", len(rows), out_path)
+    logger.info("Downloaded %d rows to %s", count, out_path)
 
 
 # Format-specific parsers for HuggingFace datasets

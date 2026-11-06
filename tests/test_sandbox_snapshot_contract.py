@@ -17,6 +17,7 @@ The contract surface (``docs/architecture.md``, "The four contracts"):
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -173,55 +174,40 @@ class _FakeRolloutEnv:
         pass
 
 
-class _FakeRollout:
-    """A stand-in just rich enough for the require_sandbox_snapshot gate."""
+def _snapshot_gate_rollout(sandbox_supports: bool):
+    """A rollout whose sandbox does (or does not) advertise container snapshots."""
+    from benchflow.rollout import Rollout, RolloutConfig
 
-    def __init__(self, sandbox_supports: bool):
-        from benchflow.trajectories.tree import RolloutTree
+    class _FakeSandbox:
+        supports_snapshot = sandbox_supports
 
-        self._tree = RolloutTree()
-        self._cursor = self._tree.root
-        self._environment = _FakeRolloutEnv()
-
-        class _FakeSandbox:
-            supports_snapshot = sandbox_supports
-
-        self._env = _FakeSandbox()
-        self._trajectory: list = []
-        self._n_tool_calls = 0
-        self._phase = "ready"
-        self._rewards = None
-        self._trajectory_source = None
-        self._partial_trajectory = False
-        self._session_tool_count = 0
-        self._session_traj_count = 0
-        self._executed_prompts: list[str] = []
-
-    async def disconnect(self):
-        pass
+    rollout = Rollout(RolloutConfig(task_path=Path("task")))
+    rollout._environment = _FakeRolloutEnv()
+    rollout._env = _FakeSandbox()
+    return rollout
 
 
 async def test_branch_fails_closed_when_sandbox_snapshot_required_but_unsupported():
     """``require_sandbox_snapshot=True`` rejects providers without snapshot."""
     from benchflow.rollout_branch import branch
 
-    rollout = _FakeRollout(sandbox_supports=False)
+    rollout = _snapshot_gate_rollout(sandbox_supports=False)
     with pytest.raises(RuntimeError, match="container-level snapshot/restore"):
-        await branch(rollout, n=2, require_sandbox_snapshot=True)  # type: ignore[arg-type]
+        await branch(rollout, n=2, require_sandbox_snapshot=True)
 
 
 async def test_branch_does_not_require_sandbox_snapshot_by_default():
     """Backwards-compat: the existing Environment-only path is unchanged."""
     from benchflow.rollout_branch import branch
 
-    rollout = _FakeRollout(sandbox_supports=False)
+    rollout = _snapshot_gate_rollout(sandbox_supports=False)
 
     async def _runner(child):
         return 0.5
 
     # Without the flag, the engine continues — the env-only path still works.
     # Children run via the injected runner so this exercises only the gate.
-    value = await branch(rollout, n=2, run_child=_runner)  # type: ignore[arg-type]
+    value = await branch(rollout, n=2, run_child=_runner)
     assert value == pytest.approx(0.5)
 
 

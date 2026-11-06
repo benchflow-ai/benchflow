@@ -19,6 +19,7 @@ from benchflow.sandbox.lockdown import (
 )
 from benchflow.sdk import SDK
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
+from tests._receipt_fakes import receipt_aware
 
 # _validate_locked_path
 
@@ -154,6 +155,7 @@ class TestTestbedVerifyLockdown:
         """The emitted lockdown command for /testbed_verify denies group/other
         access (chown root:root + chmod 700), the mechanism that blocks reads."""
         env = MagicMock()
+        env.supports_system_shell = True
         env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr=""))
         await lockdown_paths(env, ["/testbed_verify"])
         cmd = env.exec.call_args_list[0][0][0]
@@ -213,6 +215,7 @@ class TestSeedLockdownOrdering:
 
     async def test_seed_marks_world_readable_and_default_lock_targets_it(self):
         env = MagicMock()
+        env.supports_system_shell = True
         env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
         await _seed_verifier_workspace(env, workspace="/testbed")
         seed_cmds = [c.args[0] for c in env.exec.call_args_list]
@@ -232,6 +235,7 @@ class TestLockdownPaths:
     @pytest.fixture
     def mock_env(self):
         env = MagicMock()
+        env.supports_system_shell = True
         env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr=""))
         return env
 
@@ -243,12 +247,13 @@ class TestLockdownPaths:
         await lockdown_paths(mock_env, [])
         mock_env.exec.assert_not_called()
 
-    async def test_chown_before_chmod_and_symlink_skip(self, mock_env):
+    async def test_chown_before_chmod_and_symlink_refusal(self, mock_env):
         await lockdown_paths(mock_env, ["/solution"])
         assert mock_env.exec.call_count == 1
         cmd = self._get_lockdown_cmd(mock_env)
         assert cmd.index("chown root:root") < cmd.index("chmod 700")
-        assert '[ -L "$d" ]' in cmd
+        assert '[ ! -L "$d" ]' in cmd
+        assert "Cannot lock symlink $d" in cmd
 
     async def test_multiple_paths(self, mock_env):
         await lockdown_paths(mock_env, ["/solution", "/tests", "/data"])
@@ -299,7 +304,7 @@ class TestJobConfigYAML:
         job = Evaluation.from_yaml(tmp_path / "config.yaml")
         assert job._config.sandbox_locked_paths is None
 
-    def test_harbor_yaml_with_locked_paths(self, tmp_path):
+    def test_agents_datasets_yaml_with_locked_paths(self, tmp_path):
         yaml_content = (
             "agents:\n"
             "  - name: claude-agent-acp\n"
@@ -365,25 +370,31 @@ class TestWriteConfigRecordsPaths:
 
 
 class TestPrivDropCommand:
-    """build_priv_drop_cmd — setpriv/su-l command generation."""
+    """build_priv_drop_cmd — setpriv/su command generation."""
 
     def test_contains_setpriv_and_su_fallback(self):
         cmd = build_priv_drop_cmd("my-agent --stdio", "agent")
         assert "setpriv --reuid=agent --regid=agent --init-groups" in cmd
-        assert "su -l agent -c" in cmd
+        # PY8 SU: su keeps the agent env (-m), no login shell.
+        assert 'su -m -s "$bf_su_shell" -c ' in cmd
+        assert " agent; else " in cmd and cmd.endswith("fi")
+        assert "su -l" not in cmd
 
     def test_exec_prefix(self):
         """Both branches use exec to replace the shell (no lingering parent)."""
         cmd = build_priv_drop_cmd("my-agent", "agent")
-        assert "exec setpriv" in cmd
-        assert "exec su" in cmd
+        assert cmd.count("exec setpriv") == 2
+        assert "-- su -m" in cmd
 
     def test_inner_command_is_shlex_quoted(self):
         import shlex
 
         cmd = build_priv_drop_cmd("agent --flag value", "agent")
-        inner = "export HOME=/home/agent && agent --flag value"
-        assert shlex.quote(inner) in cmd
+        # The launch is carried whole and quoted for the user's shell; the
+        # text around it is the root bootstrap (C8).
+        assert (cmd.launch, cmd.sandbox_user) == ("agent --flag value", "agent")
+        assert shlex.quote("export HOME=/home/agent; ")[:-1] in cmd
+        subprocess.run(["bash", "-n", "-c", cmd], check=True)
 
     def test_single_quotes_in_launch(self):
         """Single quotes in agent_launch don't break the command."""
@@ -394,7 +405,7 @@ class TestPrivDropCommand:
     def test_custom_sandbox_user(self):
         cmd = build_priv_drop_cmd("my-agent", "bench-user")
         assert "--reuid=bench-user" in cmd
-        assert "su -l bench-user" in cmd
+        assert " bench-user; else " in cmd and cmd.endswith("fi")
         assert "/home/bench-user" in cmd
 
     def test_privilege_drop_does_not_install_firewall_during_acp_bootstrap(self):
@@ -427,6 +438,7 @@ class TestAgentEgressFirewall:
         from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
 
         env = MagicMock()
+        env.supports_system_shell = True
         env.exec = AsyncMock()
 
         await enforce_agent_egress_firewall(
@@ -441,6 +453,7 @@ class TestAgentEgressFirewall:
         from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
 
         env = MagicMock()
+        env.supports_system_shell = True
         env.exec = AsyncMock(return_value=MagicMock(return_code=0))
 
         await enforce_agent_egress_firewall(
@@ -463,6 +476,7 @@ class TestAgentEgressFirewall:
         from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
 
         env = MagicMock()
+        env.supports_system_shell = True
         env.exec = AsyncMock(return_value=MagicMock(return_code=0))
 
         await enforce_agent_egress_firewall(
@@ -480,6 +494,7 @@ class TestAgentEgressFirewall:
         from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
 
         env = MagicMock()
+        env.supports_system_shell = True
         env.exec = AsyncMock()
 
         with pytest.raises(RuntimeError, match="loopback provider base URL"):
@@ -757,9 +772,14 @@ class TestSandboxDaemonGuard:
     @staticmethod
     def _env(mode, stdout="BF daemon-guard ports=2280 status=0", rc=0):
         env = MagicMock()
+        env.supports_system_shell = True
         env.sandbox_daemon_guard = mode
         env.exec = AsyncMock(
-            return_value=MagicMock(return_code=rc, stdout=stdout, stderr="")
+            side_effect=receipt_aware(
+                lambda command, **kw: MagicMock(
+                    return_code=rc, stdout=stdout, stderr=""
+                )
+            )
         )
         return env
 
@@ -827,7 +847,8 @@ class TestSandboxDaemonGuard:
     async def test_docker_gets_no_guard_and_no_iptables_install(self):
         from benchflow.sandbox.lockdown import setup_sandbox_user
 
-        env = MagicMock(spec=["exec"])
+        env = MagicMock(spec=["exec", "supports_system_shell"])
+        env.supports_system_shell = True
         env.exec = AsyncMock(
             return_value=MagicMock(return_code=0, stdout="", stderr="")
         )
