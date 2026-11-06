@@ -51,11 +51,11 @@ from tests._receipt_fakes import receipt_aware
 PINNED_SPECS = {
     "claude-agent-acp": (
         "@agentclientprotocol/claude-agent-acp@0.81.2",
-        "@anthropic-ai/claude-code@2.1.280",
+        "@anthropic-ai/claude-code@2.1.316",
     ),
     "codex-acp": ("@agentclientprotocol/codex-acp@2.0.1",),
     "gemini": ("@google/gemini-cli@0.42.0",),
-    "opencode": ("opencode-ai@1.18.11",),
+    "opencode": ("opencode-ai@1.19.5",),
     "mimo": ("@mimo-ai/cli@0.1.15",),
     # AG moved agy from 1.2.7 to 1.3.5 (antigravity_config.AGY_RELEASES).
     "antigravity": ("1.3.5",),
@@ -113,7 +113,7 @@ def restore_registry():
 def test_a_plugin_with_a_pinned_install_is_cached(restore_registry):
     """register_agent(cacheable_version=...) is how a plugin such as
     mini-swe-acp, whose install pins every package, gets the agent layer."""
-    install = "pip install -r /opt/benchflow/plugin-requirements.txt"
+    install = "pip install -r /opt/runtime/plugin-requirements.txt"
     registry.register_agent(
         "plugin-pinned", install, "plugin", cacheable_version="2.4.6+lock-1"
     )
@@ -631,7 +631,7 @@ async def test_preinstall_mutation_never_trusts_an_intact_recipe_stamp(
     elif mutation == "manifest":
         trial._config.environment_manifest = MagicMock()
     elif mutation == "upload":
-        trial._config.uploads = {"fixture": "/opt/benchflow/bin/gemini"}
+        trial._config.uploads = {"fixture": "/opt/runtime/bin/gemini"}
     elif mutation == "healthcheck":
         trial._task.config.sandbox.healthcheck = HealthcheckConfig(command="true")
     else:

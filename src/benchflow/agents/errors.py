@@ -35,6 +35,13 @@ class AgentProtocolError(Exception):
     message: str
 
 
+class ModelCatalogMiss(AgentProtocolError):
+    """The agent's model catalog has no entry for the model, so it would run
+    on fallback tools (Codex's "Model metadata for ... not found" warning).
+    The ACP client raises it (``ModelMetadataError``); the rollout makes it an
+    ``agent_model_catalog`` integration failure."""
+
+
 class UsageLimitError(AgentProtocolError, UserError):
     """The login the agent runs on has used up its subscription usage.
 

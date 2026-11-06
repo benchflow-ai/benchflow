@@ -24,13 +24,13 @@ PLAIN = lockdown._chown_workspace_cmd("/app")
 def test_without_bfx_the_step_is_root_python_with_a_checked_find_fallback():
     assert shlex.quote(lockdown._WORKSPACE_OWNER_SCRIPT) in PLAIN
     assert " freeze /app)" in PLAIN
-    python, _, fallback = PLAIN.rpartition("; else ")
+    python, _, fallback = PLAIN.partition("; else bf_workspace=")
+    fallback = "bf_workspace=" + fallback
     assert "__bf_hp_py" in python
     assert fallback.startswith("bf_workspace=$(cd -P /app")
-    assert (
-        '-exec chown -h root:root {} + || exit 1; bf_left=$(find "$bf_workspace" '
-        "! -user 0 \\( ! -type f -o -links 1 \\) -print -quit) || exit 1;"
-    ) in fallback
+    assert 'bf_failed=$(find "$bf_workspace"' in fallback
+    assert "ownership failed" in fallback
+    assert 'bf_left=$(find "$bf_workspace" ! -user 0' in fallback
     step = next(
         s for s in lockdown._freeze_steps("/app") if s.name == "chown_workspace"
     )
@@ -502,3 +502,20 @@ def test_closing_a_hard_linked_venv_of_10260_files(plain_box):
     assert done.returncode == 0, done.stderr
     assert _run(plain_box, "find /app ! -user 0").stdout == ""
     assert took < 30, took
+
+
+@pytest.mark.parametrize("bfx", [False, True])
+def test_clearing_verifier_output_restores_root_ownership(box, bfx):
+    """Clearing a bind mount also resets its owner."""
+    made = _run(
+        box,
+        "mkdir -p /logs/verifier; chown agent:agent /logs/verifier; touch /logs/verifier/stale",
+    )
+    assert made.returncode == 0, made.stderr
+    cleared = _run(box, lockdown._clear_verifier_dir_cmd(bfx=bfx))
+    assert cleared.returncode == 0, cleared.stderr
+    checked = _run(
+        box, "stat -c '%u %a' /logs/verifier; test ! -e /logs/verifier/stale"
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert checked.stdout.strip() == "0 777"

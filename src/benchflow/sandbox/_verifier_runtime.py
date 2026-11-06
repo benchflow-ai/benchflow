@@ -4,7 +4,7 @@ Four review rounds (V2-REDESIGN-R1 to R4) found ways around authenticating
 plugin bytes that sit where the agent can write, so the verifier's plugins
 come from BenchFlow's protected runtime tree (C8, ``benchflow._runtime_tree``)
 instead. Before the agent's turn BenchFlow fills
-``VERIFIER_DIR`` (``/opt/benchflow/verifier``, which C8 reserves and makes
+``VERIFIER_DIR`` (``/opt/runtime/verifier``, which C8 reserves and makes
 root's) from wheels it fetched on the host and checked against the sha256
 PyPI lists for each file:
 
@@ -1069,7 +1069,7 @@ _token = "%%d-%%s" %% (os.getpid(), os.urandom(4).hex())
 
 def _mark(kind, detail=""):
     """A signed marker the verifier reads, as the guard writes them."""
-    if not (_markers and _key_file and _markers.startswith("/_benchflow_guard_")):
+    if not (_markers and _key_file and _markers.startswith("/_runtime_guard_")):
         return
     try:
         with open(_key_file, "rb") as handle:
@@ -1902,30 +1902,44 @@ def runner_requested(task: Any) -> bool:
     site-packages (a CUDA torch is several GB) and was written to the
     sandbox's disk on every trial. Read as bytes, never run; a folder that
     cannot be read through, or holds more than
-    :data:`_RUNNER_SCAN_MAX_BYTES`, keeps the runner."""
-    verifier = getattr(getattr(task, "config", None), "verifier", None)
-    for value in (getattr(verifier, "env", None) or {}).values():
-        if _RUNNER_NAME.search(str(value).encode("utf-8", "surrogateescape")):
-            return True
+    :data:`_RUNNER_SCAN_MAX_BYTES`, keeps the runner. A multi-step task's
+    are each step's folder and ``[steps.verifier] env`` (task/steps.py):
+    the runtime is prepared once, before the first step."""
+    from benchflow.task.steps import has_steps, step_paths
+
+    config = getattr(task, "config", None)
+    verifiers = [getattr(config, "verifier", None)]
     task_dir = getattr(task, "task_dir", None)
     if not task_dir:
         return True
-    native = getattr(getattr(task, "paths", None), "uses_native_verifier_dir", False)
-    folder = Path(task_dir) / ("verifier" if native is True else "tests")
-    if not folder.is_dir():
-        return True
+    if has_steps(task):
+        steps = task.config.steps
+        verifiers += [step.verifier for step in steps]
+        folders = [step_paths(task, i).tests_dir for i in range(len(steps))]
+    else:
+        native = getattr(
+            getattr(task, "paths", None), "uses_native_verifier_dir", False
+        )
+        folders = [Path(task_dir) / ("verifier" if native is True else "tests")]
+    for verifier in verifiers:
+        for value in (getattr(verifier, "env", None) or {}).values():
+            if _RUNNER_NAME.search(str(value).encode("utf-8", "surrogateescape")):
+                return True
     total = 0
-    try:
-        for path in sorted(folder.rglob("*")):
-            if path.is_symlink() or not path.is_file():
-                continue
-            total += path.stat().st_size
-            if total > _RUNNER_SCAN_MAX_BYTES:
-                return True
-            if _RUNNER_NAME.search(path.read_bytes()):
-                return True
-    except OSError:
-        return True
+    for folder in dict.fromkeys(folders):
+        if not folder.is_dir():
+            return True
+        try:
+            for path in sorted(folder.rglob("*")):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                total += path.stat().st_size
+                if total > _RUNNER_SCAN_MAX_BYTES:
+                    return True
+                if _RUNNER_NAME.search(path.read_bytes()):
+                    return True
+        except OSError:
+            return True
     return False
 
 

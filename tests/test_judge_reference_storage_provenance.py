@@ -744,8 +744,14 @@ async def test_submitted_evidence_failures_still_save_zero(
         "malformed-archive",
     ):
         sandbox.download_file.assert_awaited_once()
-    observe(tmp_path, rewards, error, 0)
-    assert warnings
+    if case == "malformed-reward":
+        # A reward with no number is now the verifier's error.
+        from benchflow._utils.scoring import NO_USABLE_REWARD
+
+        observe(tmp_path, rewards, error, "unscored", NO_USABLE_REWARD)
+    else:
+        observe(tmp_path, rewards, error, 0)
+        assert warnings
 
 
 @pytest.mark.parametrize("refusal", ["location", "mount", "custody"])

@@ -410,6 +410,47 @@ class TestUnscopedOwnerIsForeignToAScopedRun:
         )
 
 
+def test_orphan_warning_does_not_invite_deleting_someone_elses_sandbox(
+    monkeypatch, caplog
+):
+    """On a shared account the warning said "verify and remove
+    it manually if it is stale" about sandboxes that may be another user's; a
+    first-run reader read it as an instruction. It now says so and names the
+    one command that deletes exactly one sandbox."""
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")
+    client = FakeClient(
+        [_sb("unlabelled-leak", "STARTED", 9999, labels={"benchflow.run": "abc"})]
+    )
+    with caplog.at_level("WARNING", logger="benchflow.sandbox.daytona_reaper"):
+        counts = reap_stale_sandboxes(client)
+    assert client.deleted == [] and counts["skipped"] == 1
+    (message,) = [r.getMessage() for r in caplog.records if "orphan" in r.getMessage()]
+    assert "unlabelled-leak" in message
+    assert "may belong to other users of this API key" in message
+    assert "bench sandbox cleanup --id <sandbox id>" in message
+    assert "remove it manually" not in message
+
+
+def test_orphan_warnings_are_one_line_however_many(monkeypatch, caplog):
+    """On an account shared with others, `bench sandbox cleanup
+    --dry-run` printed 259 orphan warnings, one per sandbox, and a first-run
+    reader had to filter them to find the summary. The sweep now logs one
+    line with the count and the first five ids."""
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")
+    client = FakeClient(
+        [
+            _sb(f"leak-{i}", "STARTED", 9999, labels={"benchflow.run": str(i)})
+            for i in range(8)
+        ]
+    )
+    with caplog.at_level("WARNING", logger="benchflow.sandbox.daytona_reaper"):
+        counts = reap_stale_sandboxes(client)
+    assert client.deleted == [] and counts["skipped"] == 8
+    (message,) = [r.getMessage() for r in caplog.records if "orphan" in r.getMessage()]
+    assert message.startswith("8 Daytona sandbox(es)")
+    assert "leak-0, leak-1, leak-2, leak-3, leak-4 and 3 more" in message
+
+
 def test_reaper_skips_other_scoped_owner(monkeypatch):
     """Guards PR #921 against cross-operator deletion on a shared API key."""
     monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")
@@ -511,7 +552,7 @@ class TestCliCleanupWrapper:
                 _sb("foreign-stale", "STARTED", 9999, labels={"owner": "bob"}),
             ]
         )
-        monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda: client)
+        monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda **_: client)
         cli_main._cleanup_daytona_sandboxes(dry_run=False, max_age_minutes=1440)
         assert client.deleted == ["bf-stale"]
 
@@ -519,7 +560,7 @@ class TestCliCleanupWrapper:
         from benchflow.cli import main as cli_main
 
         client = FakeClient([_sb("bf-stale", "STARTED", 9999)])
-        monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda: client)
+        monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda **_: client)
         cli_main._cleanup_daytona_sandboxes(dry_run=True, max_age_minutes=1440)
         assert client.deleted == []
 

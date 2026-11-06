@@ -207,7 +207,7 @@ def test_placeholder():
             + canary
             + f"""\
 # Oracle solution - demonstrates the task is solvable.
-# Used by: bench eval run --agent oracle --tasks-dir tasks/{name}
+# Check it: bench run {task_dir.as_posix()} -a oracle   (should score 1)
 
 # [REPLACE: implement the oracle solution. It must satisfy the verifier in
 # {verifier_dirname}/test.sh so that running solve.sh -> test.sh produces reward 1.0.]

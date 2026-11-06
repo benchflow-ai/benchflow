@@ -56,6 +56,22 @@ def attempt_rank(result_path: Path, *, scored: bool) -> tuple[bool, float, str]:
     return (scored, mtime, str(result_path))
 
 
+def is_job_summary(path: Path) -> bool:
+    """Whether *path* is a job's own ``result.json`` (a task.toml-package
+    runner writes one beside its trial folders), not a trial's: read as a
+    trial, it hid every trial below it."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(data, dict)
+        and "n_total_trials" in data
+        and "stats" in data
+        and "trial_name" not in data
+    )
+
+
 def iter_task_result_paths(root: Path) -> list[Path]:
     """Return result files at trial boundaries, excluding reviewer children.
 
@@ -66,7 +82,11 @@ def iter_task_result_paths(root: Path) -> list[Path]:
     (:data:`SET_ASIDE_DIR`) are not the job's. Corrupt task files are left to
     callers' existing error handling.
     """
-    paths = [p for p in sorted(root.rglob("result.json")) if not is_set_aside(p, root)]
+    paths = [
+        p
+        for p in sorted(root.rglob("result.json"))
+        if not is_set_aside(p, root) and not is_job_summary(p)
+    ]
     trial_dirs = {path.parent for path in paths}
     trial_dirs.update(path.parent for path in root.rglob("solver.json"))
     selected: list[Path] = []
@@ -106,6 +126,9 @@ def load_task_results(
                 and result.get("scoring") is None
                 and assessment_status(result) is None
                 and not (include_terminal_errors and result.get("error"))
+                # The model's refusal is its answer: a resume that ran the
+                # trial again would re-roll it.
+                and not result.get("model_refusal")
             ):
                 continue
             if rewards is not None and not isinstance(rewards, dict):

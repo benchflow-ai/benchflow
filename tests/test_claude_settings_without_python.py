@@ -127,7 +127,7 @@ def test_neither_runtime_names_both(tmp_path):
             "/usr/bin/python3", "/missing/dummy-python3"
         )
         .replace("/usr/local/bin/python3", "/missing/dummy-local-python3")
-        .replace("/opt/benchflow/node/bin/node", "/missing/dummy-node")
+        .replace("/opt/runtime/node/bin/node", "/missing/dummy-node")
     )
     result = _run(command, home, bin_dir)
 

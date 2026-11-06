@@ -295,7 +295,7 @@ async def test_prepare_writes_the_tests_own_imports_into_the_runner(
         '"$BENCHFLOW_PYTEST" /tests/test_outputs.py\n'
     )
     interpreter = runtime.Interpreter(
-        exe="/opt/benchflow/rt/py/python3",
+        exe="/opt/runtime/rt/py/python3",
         version=(3, 12),
         machine="x86_64",
         glibc=(2, 39),

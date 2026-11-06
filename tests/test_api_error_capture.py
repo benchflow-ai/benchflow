@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from benchflow._utils.scoring import (
     API_ERROR,
     SUSPECTED_API_ERROR,
@@ -387,3 +389,41 @@ class TestBareTimeoutReclassification:
         r._maybe_classify_api_error()
         assert r._error == recorded
         assert r._rewards == {"reward": 0.0}
+
+
+class TestOwnModelRouteExemption:
+    """An agent that routes its own model calls has no BenchFlow
+    usage channel, so zero tokens is no sign of a provider failure there: like
+    a native login, its verifier reward is kept."""
+
+    @pytest.fixture
+    def own_route_agent(self, monkeypatch):
+        from benchflow.agents.registry import AGENTS, AgentConfig
+
+        monkeypatch.setitem(
+            AGENTS,
+            "en191-own-route",
+            AgentConfig(
+                name="en191-own-route",
+                install_cmd="true",
+                launch_cmd="en191-own-route --acp",
+                model_route="agent",
+            ),
+        )
+        return "en191-own-route"
+
+    @pytest.mark.parametrize("label", [None, "deepseek-v4-flash"])
+    def test_own_route_run_keeps_verifier_reward(self, own_route_agent, label):
+        from benchflow.rollout import Rollout, RolloutConfig
+
+        r = Rollout(
+            RolloutConfig(task_path=Path("task"), agent=own_route_agent, model=label)
+        )
+        r._executed_prompts = ["p"]
+        r._agent_env = {}
+        r._usage_metrics = {}
+        r._rewards = {"reward": 1.0}
+        r._diagnostics = SimpleNamespace(set=lambda d: None)
+        r._maybe_classify_api_error()
+        assert r._rewards == {"reward": 1.0}
+        assert r._error is None

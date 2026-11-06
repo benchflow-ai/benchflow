@@ -177,6 +177,19 @@ def test_an_explicit_gate_verdict_wins_over_the_reward_under_the_pass_rule() -> 
     assert rates.solve_rate == pytest.approx(0.5)
 
 
+def test_the_partial_credit_caveat_leaves_out_trials_a_rubric_verdict_decided() -> None:
+    """A rubric-reviewed trial that passed at reward 0.8 counts as passed, so the caveat
+    that partial rewards "count as not passed" must not count it (it said 1 for this job)."""
+    reviewed = solve_rates([Sample("a", 0.8, passed=True), Sample("b", 1.0)])
+    assert reviewed.solve_rate == pytest.approx(1.0)
+    assert reviewed.nonbinary_rewards == 1
+    assert not any("--solve-threshold" in c for c in reviewed.caveats)
+
+    plain = solve_rates([Sample("a", 0.8), Sample("b", 1.0)])
+    assert plain.solve_rate == pytest.approx(0.5)
+    assert any(c.startswith("1 scored trial(s)") for c in plain.caveats)
+
+
 def test_threshold_must_be_finite() -> None:
     with pytest.raises(ValueError):
         solve_rates([Sample("a", 1.0)], solve_threshold=math.nan)

@@ -31,7 +31,7 @@ FREEZER = (
 )
 SEALING = (
     "RuntimeError: BenchFlow could not prepare its protected runtime "
-    "(/opt/benchflow/rt) in the sandbox"
+    "(/opt/runtime/rt) in the sandbox"
 )
 API_502 = "provider api error [server_error/transient] HTTP 502 on 3/3 requests"
 ACP_JSON = "ACP error -32603: Internal error: Expecting value: line 60 column 1"

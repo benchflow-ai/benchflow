@@ -195,8 +195,8 @@ async def _proxied(monkeypatch, agent, model, explicit):
 
 def _master_slots(launch: dict[str, str]) -> set[str]:
     """The proxy route's own credential: the master key, wherever wiring put it."""
-    master = launch[MASTER_KEY_ENV]
-    assert master.startswith("sk-benchflow-")
+    master = launch.get("RUNTIME_LITELLM_MASTER_KEY") or launch[MASTER_KEY_ENV]
+    assert master.startswith("sk-runtime-")
     return {name for name, value in launch.items() if value == master}
 
 
@@ -248,7 +248,7 @@ async def test_proxy_route_acp_process_holds_only_the_proxy_key(
     launch = await _acp_launch_env(monkeypatch, tmp_path, agent, model, wired)
     _assert_only(launch, _master_slots(launch))
     assert SELECTED not in "\n".join(launch.values())
-    assert launch[MASTER_KEY_ENV] == wired[MASTER_KEY_ENV]
+    assert launch["RUNTIME_LITELLM_MASTER_KEY"] == wired[MASTER_KEY_ENV]
 
 
 @pytest.mark.asyncio

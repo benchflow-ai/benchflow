@@ -163,7 +163,7 @@ class LLMJudgeRewardFunc:
     def __init__(
         self,
         prompt: str = "",
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-sonnet-5-5",
         *,
         rubric_path: Path | None = None,
         criteria: list[dict] | None = None,

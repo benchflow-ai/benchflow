@@ -61,3 +61,29 @@ async def test_setup_tolerates_a_later_step_failing_once_the_user_exists() -> No
     )
 
     assert await setup_sandbox_user(env, "agent", "/app") == "/app"
+
+
+@pytest.mark.asyncio
+async def test_the_user_is_created_as_root_whatever_the_images_user() -> None:
+    """Terminal-Bench 4.1's risk-scorer-replay ends its Dockerfile with
+    `USER nobody`: an exec with no user ran useradd and the uid inventory as
+    nobody, and setup failed with "could not create sandbox user". Both the
+    setup and the `id -u` check run as root."""
+    env = MagicMock()
+    env.supports_system_shell = True
+    env.exec = AsyncMock(
+        side_effect=[
+            _result(0),
+            _result(1, "useradd: Permission denied"),
+            _result(0),
+            _result(0),
+        ]
+    )
+
+    await setup_sandbox_user(env, "agent", "/app")
+
+    setup, check = env.exec.call_args_list[1], env.exec.call_args_list[2]
+    assert "useradd" in setup.args[0] and setup.kwargs.get("user") == "root"
+    assert (
+        check.args[0].startswith("id -u agent") and check.kwargs.get("user") == "root"
+    )

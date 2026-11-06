@@ -304,6 +304,29 @@ def _budget(files: list[dict[str, Any]]) -> tuple[int, int]:
     return sum(f["size"] for f in regular), len(files)
 
 
+async def _hand_back_mounted_logs(env: Any, logs_source: str) -> None:
+    """Give the mounted logs folder back to the host user before declared
+    artifacts are placed in it.
+
+    On Docker ``/logs/artifacts`` is the trial's own ``artifacts/`` (a bind
+    mount), and the agent's turn hands it to the sandbox user
+    (``lockdown._log_dir_cmds``), so a controller with another uid could not
+    place a declared artifact there. Collection runs
+    after the agent's turn, and only the folder itself changes owner, never
+    what the agent left in it. Looked up on the type, as the rollout does for
+    optional sandbox hooks: test doubles grow any attribute.
+    """
+    chown = getattr(type(env), "_chown_to_host_user", None)
+    if chown is None:
+        return
+    try:
+        await asyncio.wait_for(chown(env, logs_source), timeout=30)
+    except Exception as exc:
+        logger.warning(
+            "Could not hand the mounted artifacts folder to the host user: %s", exc
+        )
+
+
 async def collect_artifacts(
     env: Any,
     *,
@@ -332,6 +355,8 @@ async def collect_artifacts(
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     configs = [as_artifact_config(item) for item in artifacts]
+    if mounted and configs:
+        await _hand_back_mounted_logs(env, logs_source)
     collections: list[dict[str, Any]] = []
     files: list[dict[str, Any]] = []
 
@@ -602,6 +627,13 @@ async def collect_rollout_artifacts(rollout: Any) -> None:
 
     cfg = rollout._config
     paths = rollout._rollout_paths
+    from benchflow.rollout._collect_hooks import (
+        collect_sidecar_artifacts,
+        run_collect_hooks,
+    )
+
+    # Once per trial: a path that freezes the workspace ran them already.
+    await run_collect_hooks(rollout, main=True)
     try:
         excluded = credential_evidence_overrides(
             rollout._agent_env or {},
@@ -617,6 +649,10 @@ async def collect_rollout_artifacts(rollout: Any) -> None:
             mounted=bool(getattr(rollout._env, "is_mounted", False)),
             excluded_paths=excluded,
         )
+        # The other services' hooks, then their artifacts, from each
+        # service's own filesystem (rollout/_collect_hooks.py).
+        await run_collect_hooks(rollout, main=False)
+        await collect_sidecar_artifacts(rollout)
     except Exception as exc:
         if is_disk_full(exc):
             # A full disk is the run's to report, once and with no traceback

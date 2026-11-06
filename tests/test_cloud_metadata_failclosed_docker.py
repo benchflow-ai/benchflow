@@ -87,6 +87,8 @@ out=/logs/agent/probe.txt
 {
   echo "uid $(id -u)"
   grep -E '^Cap(Bnd|Prm|Eff):' /proc/self/status
+  # su's mode during the agent's turn (a setuid su is disarmed).
+  [ -e /usr/bin/su ] && echo "su mode $(stat -c %a /usr/bin/su)"
   for _ in $(seq 1 300); do
     grep -q '169\.254\.169\.254' /proc/net/fib_trie 2>/dev/null && break
     sleep 0.1
@@ -120,6 +122,10 @@ out=/logs/agent/probe.txt
 } > "$out" 2>&1
 """
 
+# ubuntu:24.04 as it ships, with iptables: su is setuid root (as in every
+# Debian and Ubuntu base) and nothing reads file capabilities, so the block's
+# delegate inventory runs on BenchFlow's own staged CPython and disarms su for
+# the agent's turn.
 DOCKERFILE = """FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends iptables \\
     && rm -rf /var/lib/apt/lists/*
@@ -440,7 +446,7 @@ def test_the_agent_user_runs_only_behind_the_block(tmp_path, probe_image):
     done, result, record, probe, mock = _run(tmp_path, probe_image)
     assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-2000:])
     assert record["state"] == "on" and record["rules_from"] == "helper", record
-    assert result["cloud_metadata"] == {"state": "on"}
+    assert result["cloud_metadata"]["state"] == "on"
     assert ("NET_ADMIN" in mock.cap_add) is record["main_net_admin"], (
         mock.cap_add,
         record,
@@ -449,6 +455,34 @@ def test_the_agent_user_runs_only_behind_the_block(tmp_path, probe_image):
     assert not _caps(probe, "CapBnd") & NET_ADMIN, probe
     assert _connects(probe, "connect") == {"refused"}, probe
     assert _connects(probe, "after") == {"refused"}, probe
+
+
+def test_a_stock_image_starts_with_su_disarmed_and_restored_before_grading(
+    tmp_path, probe_image
+):
+    """Option A on a real daemon: ubuntu:24.04 as it ships
+    (setuid su, no Python, no getcap) starts behind the block. BenchFlow's
+    staged CPython inventories it and disarms su, which is not setuid while
+    the agent runs, and su gets its exact mode back before grading; the
+    records name what was disarmed and restored."""
+    done, result, record, probe, _mock = _run(tmp_path, probe_image)
+    assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-2000:])
+    assert record["state"] == "on", record
+    assert record["delegate_inventory"]["python"] == "staged", record
+    disarmed = record["delegates_disarmed"]
+    assert [(d["path"], d["why"], d["mode"]) for d in disarmed] == [
+        ("/usr/bin/su", "setuid root", "4755")
+    ], disarmed
+    assert len(disarmed[0]["sha256"]) == 64 and disarmed[0]["inode"] > 0
+    assert "su mode 755" in probe, probe
+    assert record["delegates_restored"] == [
+        {"path": "/usr/bin/su", "outcome": "restored", "why": "4755:exact"}
+    ], record
+    assert result["cloud_metadata"] == {
+        "state": "on",
+        "delegates_disarmed": ["/usr/bin/su"],
+        "delegates_restored": 1,
+    }
 
 
 def test_a_forced_helper_failure_refuses_the_start(tmp_path, probe_image):
@@ -622,6 +656,11 @@ def test_an_image_without_timeout_starts_behind_a_block_the_helper_proves(
     assert record["test_connect_from"] == "helper", record
     assert (record["test_connect_ids"] == "0:0") is uid0, record
     assert result["cloud_metadata"] == {"state": "on"}
+    # The agent user's delegate inventory read file capabilities with
+    # BenchFlow's staged musl CPython: the image has neither Python nor
+    # getcap.
+    if not uid0:
+        assert record["delegate_inventory"]["python"] == "staged", record
     assert ("uid 0" in probe) is uid0, probe
     assert _connects(probe, "connect") == {"refused"}, probe
 
@@ -648,7 +687,7 @@ def test_an_image_without_bash_is_proven_and_stops_only_at_the_agents_launch(
 # --- A uid-0 agent on a no-web task ---------------------------
 
 # The probe for a no-web trial, as the agent. It connects only to the model
-# proxy (on loopback, from BENCHFLOW_PROVIDER_BASE_URL) and to 192.0.2.1
+# proxy (on loopback, from RUNTIME_PROVIDER_BASE_URL) and to 192.0.2.1
 # (TEST-NET-1, never routed): a refused connect there is the uid firewall's
 # REJECT; an open network gives a timeout. It never connects to a metadata
 # address.
@@ -666,8 +705,10 @@ out=/logs/agent/probe.txt
     esac
     echo "$3 $s"
   }
-  hp=${BENCHFLOW_PROVIDER_BASE_URL#http://}; hp=${hp%%/*}
-  echo "proxy-url $BENCHFLOW_PROVIDER_BASE_URL"
+  # The agent's own name for it (RUNTIME_ since the neutral names).
+  url=${RUNTIME_PROVIDER_BASE_URL:-$BENCHFLOW_PROVIDER_BASE_URL}
+  hp=${url#http://}; hp=${hp%%/*}
+  echo "proxy-url $url"
   t "${hp%:*}" "${hp##*:}" proxy
   t 192.0.2.1 80 outside
   for x in iptables iptables-nft iptables-legacy; do

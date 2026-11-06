@@ -166,6 +166,7 @@ def register_agent(app: typer.Typer) -> None:
             return
         from benchflow.agents.registry import (
             AGENT_ALIASES,
+            MODEL_ROUTE_AGENT,
             resolve_agent,
         )
 
@@ -191,7 +192,14 @@ def register_agent(app: typer.Typer) -> None:
         console.print(f"  Protocol:    {cfg.protocol}")
         console.print(f"  Launch:      {cfg.launch_cmd}")
         console.print(f"  Requires:    {_format_requires(cfg) or '(none)'}")
-        console.print(f"  Provider auth: {_PROVIDER_AUTH_MESSAGE}")
+        if getattr(cfg, "model_route", None) == MODEL_ROUTE_AGENT:
+            # No provider route to explain: the agent brings its own.
+            console.print(
+                "  Model route: agent (calls its own endpoint; BenchFlow starts "
+                "no model proxy and meters no usage)"
+            )
+        else:
+            console.print(f"  Provider auth: {_PROVIDER_AUTH_MESSAGE}")
         if cfg.subscription_auth:
             console.print(
                 f"  Auth:        subscription via {cfg.subscription_auth.detect_file}"

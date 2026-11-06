@@ -145,9 +145,7 @@ async def test_upload_dir_stages_one_archive_through_the_filesystem_api(
 
     assert len(filesystem.copy_from_local.calls) == 1
     staged = filesystem.copy_from_local.calls[0][1]
-    assert staged.startswith("/opt/benchflow/run/stage-") and staged.endswith(
-        "/dir.tar"
-    )
+    assert staged.startswith("/opt/runtime/run/stage-") and staged.endswith("/dir.tar")
 
 
 @pytest.mark.asyncio
@@ -223,9 +221,9 @@ async def test_a_file_over_modals_transfer_limit_fails_with_that_reason(tmp_path
     filesystem.copy_to_local = _Method(too_large)
     target = tmp_path / "out" / "workspace.tar"
     with pytest.raises(ModalFileTooLargeError) as refused:
-        await env.download_file("/tmp/benchflow-evidence-x.tar", target)
+        await env.download_file("/tmp/runtime-evidence-x.tar", target)
     message = str(refused.value)
-    assert "/tmp/benchflow-evidence-x.tar" in message
+    assert "/tmp/runtime-evidence-x.tar" in message
     assert str(MODAL_FILE_TRANSFER_LIMIT) in message and "5 GiB" in message
     assert "no part of it was copied" in message
     assert not target.exists()

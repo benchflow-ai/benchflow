@@ -1,10 +1,12 @@
-"""A task edited since its result is run again on resume, never reused (DF-13).
+"""A task edited since its result is never reused on resume (DF-13).
 
 Dogfood p2-task-author (2026-10-18): ``bench run tasks/my-task`` once, edit
 the task (``[:3]`` to ``[:4]`` in the verifier, "3 most frequent" to "4" in
 the prompt), ``bench run`` again without ``--fresh``: the job resumed and
 printed the earlier 1/1, although the trial's config.json records
-``task_digest`` and the digest had changed.
+``task_digest`` and the digest had changed. An unnamed rerun now runs the
+edited task again; a named job is refused, and ``restart_changed`` runs it
+again.
 """
 
 from __future__ import annotations
@@ -15,9 +17,16 @@ import logging
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
+
 from benchflow._utils.result_paths import SET_ASIDE_DIR
 from benchflow._utils.task_authoring import task_digest
-from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+from benchflow.evaluation import (
+    Evaluation,
+    EvaluationConfig,
+    ResumeMismatchError,
+    RetryConfig,
+)
 from benchflow.models import RolloutResult
 
 
@@ -32,7 +41,13 @@ def _tasks(tmp_path: Path) -> Path:
     return tasks_dir
 
 
-def _job(tmp_path: Path, tasks_dir: Path, job_name: str | None) -> Evaluation:
+def _job(
+    tmp_path: Path,
+    tasks_dir: Path,
+    job_name: str | None,
+    *,
+    restart_changed: bool = False,
+) -> Evaluation:
     job = Evaluation(
         tasks_dir=tasks_dir,
         jobs_dir=tmp_path / "jobs",
@@ -40,6 +55,7 @@ def _job(tmp_path: Path, tasks_dir: Path, job_name: str | None) -> Evaluation:
             agent="oracle", concurrency=1, retry=RetryConfig(max_retries=0)
         ),
         job_name=job_name,
+        restart_changed=restart_changed,
     )
 
     async def fake_run(task_path, _cfg):
@@ -104,17 +120,44 @@ def test_an_edited_task_runs_again_on_an_unnamed_resume(tmp_path, caplog) -> Non
     assert (set_aside[0] / "task-0__abcd1234").is_dir()
 
 
-def test_an_edited_task_runs_again_on_a_named_resume(tmp_path) -> None:
+def test_an_edited_task_refuses_a_named_resume(tmp_path) -> None:
+    tasks_dir = _tasks(tmp_path)
+    first = asyncio.run(_job(tmp_path, tasks_dir, "named").run())
+    before, after = _edit(tasks_dir / "task-1")
+    trials = sorted(p.name for p in first.job_dir.iterdir() if p.is_dir())
+
+    job = _job(tmp_path, tasks_dir, "named")
+    with pytest.raises(ResumeMismatchError) as refused:
+        asyncio.run(job.run())
+
+    assert (
+        f"1 finished trial in it ran task 'task-1' at task_digest {before[:19]} "
+        f"(this run: {after[:19]}; the task's files changed since)"
+    ) in str(refused.value)
+    assert refused.value.exit_code == 2
+    assert "put the changed tasks' files back" in (refused.value.hint or "")
+    job._run_single_task.assert_not_called()
+    assert sorted(p.name for p in job.job_dir.iterdir() if p.is_dir()) == trials
+    assert not (job.job_dir / SET_ASIDE_DIR).exists()
+
+
+def test_an_edited_task_runs_again_on_a_named_resume_with_restart_changed(
+    tmp_path,
+) -> None:
     tasks_dir = _tasks(tmp_path)
     asyncio.run(_job(tmp_path, tasks_dir, "named").run())
     _edit(tasks_dir / "task-1")
 
-    job = _job(tmp_path, tasks_dir, "named")
+    job = _job(tmp_path, tasks_dir, "named", restart_changed=True)
     second = asyncio.run(job.run())
 
     assert (second.reused, second.ran) == (1, 1)
     ran = [call.args[0].name for call in job._run_single_task.call_args_list]
     assert ran == ["task-1"]
+    summary = json.loads((job.job_dir / "summary.json").read_text())
+    restart = summary["restarted_after_change"]
+    assert restart["trials"] == restart["finished_trials"] == 1
+    assert (job.job_dir / restart["set_aside"] / "task-1__abcd1234").is_dir()
 
 
 def test_an_unchanged_task_is_still_reused(tmp_path) -> None:

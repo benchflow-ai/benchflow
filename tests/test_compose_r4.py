@@ -236,7 +236,7 @@ def test_r4_6_no_compose_cannot_approve_unresolved_path_consumers(
 
 @compose
 @pytest.mark.parametrize(
-    "source", ["/benchflow/task/environment/data", "${CONTEXT_DIR}/data"]
+    "source", ["/runtime/task/environment/data", "${CONTEXT_DIR}/data"]
 )
 @pytest.mark.parametrize("absolute_dependency", [False, True])
 def test_r4_7_daytona_checks_vm_coordinates(tmp_path, source, absolute_dependency):
@@ -248,7 +248,7 @@ def test_r4_7_daytona_checks_vm_coordinates(tmp_path, source, absolute_dependenc
     if absolute_dependency:
         root = task / "environment/docker-compose.yaml"
         root.write_text(
-            root.read_text() + "    env_file: /benchflow/task/environment/task.env\n"
+            root.read_text() + "    env_file: /runtime/task/environment/task.env\n"
         )
         (task / "environment/task.env").write_text("MODE=task-value\n")
     _gate(task, sandbox_type="daytona")

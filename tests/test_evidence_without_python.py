@@ -164,17 +164,26 @@ async def test_tar_fallback_records_escaping_symlinks_as_python_capture_does(
     secret = tmp_path / "secret"
     secret.write_text("host\n")
     (workspace / "sub").mkdir()
+    (workspace / "x" / "y").mkdir(parents=True)
+    (workspace / "x" / "b").write_text("sub\n")
+    (workspace / "b").write_text("root\n")
+    (workspace / "a").symlink_to("x/y", target_is_directory=True)
     escaping = {
         "escape": str(secret),
         "parent-escape": "../../secret",
         "venv-python": "/usr/bin/python3",
         "through-escape": "escape",
-        "text-detour": str(workspace / "sub" / ".." / "answer.txt"),
+        # Kept as its normalised text it would name b, but the link reaches
+        # x/b through a -> x/y (PR #1207's port keeps only same-meaning links).
+        "folder-detour": str(workspace / "a" / ".." / "b"),
         "loop": "loop",
     }
     for name, target in escaping.items():
         (workspace / name).symlink_to(target)
     (workspace / "kept-dangling").symlink_to("sub/not-written")
+    # An absolute detour through a real folder is kept as answer.txt on both
+    # paths since PR #1207.
+    (workspace / "text-detour").symlink_to(workspace / "sub" / ".." / "answer.txt")
 
     with_python = await capture_workspace(
         LocalSandbox(python=True), str(workspace), tmp_path / "a"
@@ -193,6 +202,9 @@ async def test_tar_fallback_records_escaping_symlinks_as_python_capture_does(
         if x.reason == "symlink_escape"
     ) == sorted(escaping.items())
     assert {"kept-dangling", "link-to-answer"} <= {e.path for e in without.entries}
+    assert ("text-detour", "answer.txt") in {
+        (e.path, e.link_target) for e in without.entries
+    }
     copied = [
         path.read_bytes()
         for path in (tmp_path / "b" / "workspace").rglob("*")

@@ -230,6 +230,18 @@ def test_a_nop_control_that_passes_is_flagged(capsys):
     assert "can be passed without solving them" in out
 
 
+def test_an_oracle_control_that_fails_is_flagged(capsys):
+    """Round 5 of the release review: nop's control got a verdict line, but an
+    oracle that failed a task printed nothing beside its score."""
+    from benchflow.cli._shared import _report_eval_result
+
+    _report_eval_result(_result("oracle", 0, 1))
+    out = capsys.readouterr().out
+    assert "oracle control: 0/1: the reference solution fails 1 of the tasks" in out
+    _report_eval_result(_result("oracle", 1, 1))
+    assert "oracle control" not in capsys.readouterr().out
+
+
 def test_an_agents_zero_is_still_a_failure(capsys):
     from benchflow.cli._shared import _report_eval_result
 
@@ -309,3 +321,16 @@ def test_the_task_config_page_explains_it(capsys):
     assert "a task file does not load" in out
     assert "task.toml" in out
     json.dumps(out)  # plain text
+
+
+def test_an_oracle_control_that_fails_names_its_tasks(capsys):
+    """A broken task's oracle run ended on a plain score. The line comes only when the
+    oracle fails a task, and it names the tasks."""
+    from benchflow.cli._shared import _report_eval_result
+
+    _report_eval_result(_result("oracle", 0, 1))
+    out = " ".join(capsys.readouterr().out.split())
+    assert (
+        "oracle control: 0/1: the reference solution fails 1 of the tasks (hello)"
+        in out
+    )

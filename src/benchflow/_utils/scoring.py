@@ -110,6 +110,13 @@ _TASK_CONFIG_CLASSES = (
 )
 DISK_FULL = "disk_full"
 DISK_FULL_MARKER = "the disk that holds the job folder is full"
+# The trial's token or turn budget was spent: the model proxy refused the next
+# call and the agent was stopped (benchflow.trial_budget). Its workspace is
+# graded, as after a timeout, and it is never retried. Read head-anchored,
+# like the refusals above, so an agent's words cannot claim it.
+TRIAL_BUDGET = "trial_budget"
+_TRIAL_BUDGET_HEADER = "trial budget reached: "
+_TRIAL_BUDGET_CLASS = "trialbudgetspenterror: "
 _DISK_FULL_HEADS = (
     "unexpected: [errno 28]",
     "[errno 28]",
@@ -159,14 +166,54 @@ VERIFIER_FAILED = "verifier_failure"
 VERIFIER_INFRA = "verifier_infra"
 VERIFIER_TIMEOUT = "verifier_timeout"
 VERIFIER_DEP_INSTALL = "verifier_dep_install"
-# The verifier wrote a reward outside the task's range (#1178): unscored, the
-# raw number kept in result.json's reward_out_of_range_info.
+# The verifier wrote a reward outside the task's range (#1178): the trial
+# scores 0 (rollout/_setup.py), the raw number kept in result.json's
+# reward_out_of_range_info.
 VERIFIER_REWARD_OUT_OF_RANGE = "reward_out_of_range"
 
 # Catalogs for fixed-schema exports; reuse the classifier constants rather
 # than admitting arbitrary saved text as a category.
 OTHER_ERROR = "other"
 VERIFIER_OTHER = "verifier_other"
+# The warning a trial gets when the verifier's own evidence scored it 0 (a
+# reported guard problem, a refusal marker): a failure, not an error, so only
+# this warning tells it from a wrong answer.
+VERIFIER_SCORED_ZERO = "Verifier scored 0: "
+# The verifier error of a final verify that left no reward BenchFlow could use
+# (none, an empty, unreadable or non-numeric file): the verifier's error, never
+# a silent 0. It is still a failure in every score, as a guard refusal is:
+# the reward file is evidence the agent can reach.
+NO_USABLE_REWARD = "verifier wrote no usable reward: "
+# A rubric-reviewed trial's review refuses such a trial with this error, and
+# its scoring block keeps it as ``ValueError: <error>`` (review/automatic.py).
+_NO_USABLE_REWARD_RE = re.compile(
+    r"^(?:\[solver-preserved\] )?(?:ValueError: )?" + re.escape(NO_USABLE_REWARD)
+)
+
+
+def is_unusable_reward(verifier_error: str | None) -> bool:
+    """Whether *verifier_error* says the final verify left no usable reward."""
+    return isinstance(verifier_error, str) and bool(
+        _NO_USABLE_REWARD_RE.match(verifier_error)
+    )
+
+
+def grading_timed_out(row: Mapping[str, Any]) -> bool:
+    """Whether a result row scored 0 because its tests ran past the verifier's
+    time limit (a scored ``verifier_timeout_info``): the agent's slow code, or
+    a slow grading machine, so reports name it apart from a wrong answer."""
+    info = row.get("verifier_timeout_info")
+    return isinstance(info, Mapping) and info.get("scored") is True
+
+
+def verifier_scored_zero(row: Mapping[str, Any]) -> bool:
+    """Whether a result row failed because the verifier wrote no usable reward."""
+    warnings = row.get("warnings")
+    return isinstance(warnings, list) and any(
+        isinstance(w, str) and w.startswith(VERIFIER_SCORED_ZERO) for w in warnings
+    )
+
+
 ERROR_CATEGORIES = frozenset(
     {
         INSTALL_FAILED,
@@ -192,6 +239,7 @@ ERROR_CATEGORIES = frozenset(
         REGISTRY_AUTH,
         TASK_CONFIG,
         DISK_FULL,
+        TRIAL_BUDGET,
         OTHER_ERROR,
     }
 )
@@ -286,7 +334,7 @@ def extract_reward(result: Mapping[str, Any]) -> float | None:
     rewards = result.get("rewards")
     if not isinstance(rewards, dict):
         return None
-    return rewards.get("reward")
+    return finite_reward(rewards.get("reward"))
 
 
 #: Categories that name a cause and its remedy for reports only. Retry and
@@ -299,6 +347,20 @@ ORIGINAL_ERROR = "\noriginal error: "
 #: A model request that got no response when the agent's deadline ended: a
 #: transient provider error, so it is retried and resumed like one.
 PROVIDER_STALL = "provider api error [provider_stall/transient]"
+
+
+# The agent's word that the model's answer ran past the output cap: Claude
+# Code's "Claude's response exceeded the 32000 output token maximum", agy's
+# "... exceeded the output token limit".
+_OUTPUT_CAP_RE = re.compile(
+    r"exceeded the (?:[\d,]+ )?output[ -]token (?:maximum|limit)", re.IGNORECASE
+)
+
+
+def is_output_cap_error(error: str | None) -> bool:
+    """Whether *error* says the model's answer ran past the output cap: the
+    model's own ending under the run's cap, never a failure to retry."""
+    return bool(error and _OUTPUT_CAP_RE.search(error))
 
 
 def classify_error(error: str | None) -> str | None:
@@ -341,6 +403,8 @@ def _classify_error(error: str) -> str | None:
         return UNSUPPORTED_TASK_FEATURE
     if head.startswith(_DISK_FULL_HEADS) or head.startswith(DISK_FULL_MARKER):
         return DISK_FULL
+    if head.removeprefix(_TRIAL_BUDGET_CLASS).startswith(_TRIAL_BUDGET_HEADER):
+        return TRIAL_BUDGET
     if head.startswith(_TASK_CONFIG_CLASSES):
         return TASK_CONFIG
     built = lower.lstrip().removeprefix("sandbox startup failed: ")
@@ -422,6 +486,22 @@ _UNRECOVERABLE_STARTUP_RES = (
     # The image hands the agent user the firewall that refuses the cloud
     # metadata endpoints (lockdown.CloudMetadataPowerError).
     re.compile(r"the agent user '[^']*' can change the firewall through "),
+    # The cloud metadata block's delegate inventory could not disarm what it
+    # found, or read file capabilities, because the image has no machine
+    # build, C library or tar for BenchFlow's own Python (lockdown):
+    # another attempt meets the same image. A failed download or
+    # exec stays retryable.
+    re.compile(
+        r"benchflow's own python could not be had to disarm them \((?:the image's "
+        r"machine \([^)]*\) or c library \([^)]*\) has no build|the image has no "
+        r"tar to unpack)"
+    ),
+    # An allowlist task's compose services have a route out of the sandbox
+    # (egress_denylist.TaskServiceEgressError): the task's compose file says so.
+    re.compile(
+        r"sandbox startup refused: network_mode='allowlist' needs the task's "
+        r"services kept inside the sandbox"
+    ),
     # The image lets another user change a library root's steps load
     # (lockdown.LoaderCustodyError).
     re.compile(
@@ -511,8 +591,11 @@ def _looks_like_docker_registry_metadata_error(error: str) -> bool:
 # How the rollout records a PluginGuardLoadError (``rollout/_setup.py``: the
 # exception's class leads), optionally behind the recovery contract's
 # ``[solver-preserved]`` tag (``rollout._verifier_recovery.PRESERVED_SOLVER``).
+# "ValueError: " is how a rubric-reviewed trial's scoring block keeps the
+# verifier error its review refused (review/automatic.py).
 _PLUGIN_GUARD_ERROR_RE = re.compile(
-    r"^(?:\[solver-preserved\] )?verifier crashed: PluginGuardLoadError: "
+    r"^(?:\[solver-preserved\] )?(?:ValueError: )?"
+    r"verifier crashed: PluginGuardLoadError: "
 )
 
 
@@ -531,9 +614,12 @@ _RECOVERY_TIMED_OUT_RE = re.compile(
 # A plugin guard marker read that failed before any verdict was read
 # (``task/verifier_core.py``): the sandbox's failure, not the guard's verdict
 # (V2-R1-A-2). Matched at the start only, like the guard's own errors.
+# Trials saved before the guard's neutral name call it _benchflow_guard_<hex>.
 _PLUGIN_GUARD_MARKERS_UNREAD_RE = re.compile(
     r"^(?:\[solver-preserved\] )?verifier crashed: "
-    r"PluginGuardMarkersUnreadableError: "
+    r"(?:PluginGuardMarkersUnreadableError: |VerifierInfrastructureError: the "
+    r"pytest plugin guard _(?:runtime|benchflow)_guard_[0-9a-f]+'s markers could "
+    r"not be read )"
 )
 # BenchFlow's protected verifier runtime that a separate verifier
 # sandbox could not build from PyPI before test.sh ran
@@ -563,11 +649,12 @@ def plugin_guard_error_message(verifier_error: str | None) -> str | None:
 # A pytest stopped while the guard was still checking plugins counts too: the
 # agent can bring that about (a FIFO it left as plugin metadata, under
 # test.sh's own timeout), so it must not raise a score either (V2-R1-B-1).
+# Trials saved by older releases name the guard _benchflow_guard_<hex>.
 _GUARD_REFUSAL_RE = re.compile(
-    r"the pytest plugin guard _benchflow_guard_[0-9a-f]+ refused a pytest "
-    r"plugin it could not trust"
-    r"|pytest stopped while the plugin guard _benchflow_guard_[0-9a-f]+ was "
-    r"still checking pytest plugins"
+    r"the pytest plugin guard _(?:runtime|benchflow)_guard_[0-9a-f]+ refused a "
+    r"pytest plugin it could not trust"
+    r"|pytest stopped while the plugin guard _(?:runtime|benchflow)_guard_[0-9a-f]+ "
+    r"was still checking pytest plugins"
 )
 
 
@@ -575,6 +662,17 @@ def is_guard_refusal(verifier_error: str | None) -> bool:
     """Whether *verifier_error* is a plugin guard refusal (or a stopped check)."""
     message = plugin_guard_error_message(verifier_error)
     return message is not None and _GUARD_REFUSAL_RE.match(message) is not None
+
+
+def count_unusable_rewards(results: Iterable[Mapping[str, Any]]) -> int:
+    """Verifier-errored trials whose final verify left no usable reward
+    (:data:`NO_USABLE_REWARD`), counted like :func:`count_guard_refusals`."""
+    return sum(
+        1
+        for r in results
+        if is_unusable_reward(r.get("verifier_error"))
+        and classify_score_outcome(r) == "verifier_errored"
+    )
 
 
 def count_guard_refusals(results: Iterable[Mapping[str, Any]]) -> int:
@@ -596,6 +694,10 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     """Classify a verifier error string, or None if no error."""
     if not verifier_error:
         return None
+    if is_unusable_reward(verifier_error):
+        # BenchFlow's own wording; the reason after it names files, not text
+        # the agent chose. Never infrastructure, so never retried.
+        return VERIFIER_FAILED
     if plugin_guard_error_message(verifier_error) is not None:
         # The guard decided, deterministically, from what the sandbox holds:
         # never infrastructure, whatever words a refused path contains.
@@ -823,11 +925,12 @@ def mean_scored_reward(results: Iterable[Mapping[str, Any]]) -> float | None:
     A trial the plugin guard refused (:func:`is_guard_refusal`) has no reward
     either, but counts here as 0: it is the agent's disqualification, and
     leaving it out would let a refusal planted only where the agent failed
-    raise the mean.
+    raise the mean. So does one whose final verify left no
+    usable reward (:func:`is_unusable_reward`).
     """
     rows = list(results)
     scored = _scored_rewards(rows)
-    count = len(scored) + count_guard_refusals(rows)
+    count = len(scored) + count_guard_refusals(rows) + count_unusable_rewards(rows)
     return sum(scored) / count if count else None
 
 
@@ -889,9 +992,9 @@ def pass_rate(*, passed: int, total: int) -> float:
 def pass_rate_excl_errors(*, passed: int, failed: int, refused: int = 0) -> float:
     """Pass rate excluding errored tasks.
 
-     *refused* trials, the plugin guard's refusals, stay in the denominator
-     as failures: an error the agent caused must not raise the rate
-    .
+    *refused* trials, the plugin guard's refusals and the trials whose final
+    verify left no usable reward, stay in the denominator as failures: an
+    error the agent can cause must not raise the rate.
     """
     completed = passed + failed + refused
     return passed / completed if completed > 0 else 0.0
@@ -902,8 +1005,28 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
 
     Callers retain run configuration, solver usage, timing, and provenance; only
     fields derived from the current terminal scoring evidence are rebuilt.
+
+    ``score`` and ``score_excl_errors`` are the scoring rule's
+    (:mod:`benchflow.scoring`, named in ``scoring_rule``); ``scoring`` holds
+    the rule's whole account: its counts by outcome and by who ended the
+    trials with no score, its interval over tasks, the error, timeout and
+    rate-limit rates and their warnings. ``passed`` … ``unscored`` stay the
+    audit view (a verifier error counted first, :func:`count_audit_outcomes`).
+    With no trial, or none left once errors are left out, a ratio stays 0.0
+    as before.
     """
+    from benchflow.scoring import rule_record, score, trial_record
+
     rows = list(results)
+    rule = score(
+        {
+            **record,
+            # The task is the interval's cluster; a row that names none is
+            # its own.
+            "task": record["task"] or record["trial"] or f"#{i}",
+        }
+        for i, record in enumerate(trial_record(row) for row in rows)
+    )
     counts = count_audit_outcomes(rows)
     error_categories: Counter[str] = Counter()
     verifier_categories: Counter[str] = Counter()
@@ -922,10 +1045,9 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         if verifier_category:
             verifier_categories[verifier_category] += 1
     refused = count_guard_refusals(rows)
-    ratio = pass_rate(passed=counts["passed"], total=len(rows))
-    scored_ratio = pass_rate_excl_errors(
-        passed=counts["passed"], failed=counts["failed"], refused=refused
-    )
+    unusable = count_unusable_rewards(rows)
+    ratio = rule.score if rule.score is not None else 0.0
+    scored_ratio = rule.score_excl_errors if rule.score_excl_errors is not None else 0.0
     return {
         "schema_version": 2,
         "total": len(rows),
@@ -937,6 +1059,22 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         # Unscored trials the plugin guard refused: failures in the
         # error-excluding score and the mean reward.
         "guard_refusals": refused,
+        # Verifier-errored trials whose final verify left no usable reward:
+        # failures in the same two figures.
+        "unusable_rewards": unusable,
+        # Failed trials the verifier scored 0 by its own evidence (a guard
+        # problem, a refusal marker): counted in "failed", told apart here.
+        "verifier_scored_zero": sum(
+            1
+            for row in rows
+            if classify_score_outcome(row) == "failed" and verifier_scored_zero(row)
+        ),
+        # Of those, the trials whose tests ran past the verifier's time limit.
+        "grading_timeouts": sum(
+            1
+            for row in rows
+            if classify_score_outcome(row) == "failed" and grading_timed_out(row)
+        ),
         "pass": counts["passed"],
         "fail": counts["failed"],
         "error": counts["errored"],
@@ -952,6 +1090,18 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         "score_ratio": ratio,
         "score_excl_errors": f"{scored_ratio:.1%}",
         "score_excl_errors_ratio": scored_ratio,
+        # Beside the score: the trials whose model refused or a content
+        # filter stopped (not the plugin guard's refusals above), and those a
+        # trial budget stopped, each in the score as graded, with their rates
+        # over every trial (benchflow.scoring).
+        "model_refusals": rule.model_refusals,
+        "model_refusal_rate": rule.rates()["model_refusal"],
+        "budget_stops": rule.budget_stops,
+        "budget_stop_rate": rule.rates()["budget_stop"],
+        # The rule both figures follow, and its whole account of the trials
+        # (benchflow.scoring).
+        "scoring_rule": rule_record(),
+        "scoring": rule.to_dict(),
         # Every trial counted (an unscored one as 0), and the mean over scored
         # trials only (BenchFlow 0.7's mean_reward), each with its n and the
         # rule named in the file itself (DF-p4-upgrader-1).

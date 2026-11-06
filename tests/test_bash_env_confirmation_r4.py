@@ -268,7 +268,7 @@ async def test_activation_is_decided_before_ownership_changes(
         observations.append(changed)
         return "/etc/profile.d/frozen-alias.sh" if changed else permitted
 
-    async def mutate(*args):
+    async def mutate(*args, **kwargs):
         nonlocal changed
         changed = True
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 _USAGE_KEYS = {
     "input_tokens",
@@ -241,22 +241,26 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         "***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
     ),
-    # BenchFlow proxy master key (sk-benchflow-<token_urlsafe(24)>), OpenAI service
-    # account (sk-svcacct-), OpenRouter (sk-or-v1-): rare labels that won't appear
-    # in a normal kebab slug, so the hyphen-permitting entropy class is safe here.
+    # BenchFlow proxy master key as older releases made it
+    # (sk-benchflow-<token_urlsafe(24)>), OpenAI service account (sk-svcacct-),
+    # OpenRouter (sk-or-v1-): rare labels that won't appear in a normal kebab
+    # slug, so the hyphen-permitting entropy class is safe here.
     (
         re.compile(r"sk-(?:benchflow|svcacct|or-v1)-[A-Za-z0-9_-]{12,}"),
         "***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
     ),
-    # OpenAI org-scoped sk-proj-/sk-admin-: `proj`/`admin` ARE common identifier
-    # words, so a bare hyphen class would redact kebab slugs like
-    # `sk-proj-refactor-auth`. Real keys are high-entropy base64url and always
-    # carry an uppercase char; gate on a lookahead for one so lowercase slugs
-    # survive (#830). Before generic sk- so it wins.
+    # OpenAI org-scoped sk-proj-/sk-admin- and the BenchFlow proxy master key
+    # (sk-runtime-<token_urlsafe(24)>): `proj`/`admin`/`runtime` ARE common
+    # identifier words, so a bare hyphen class would redact kebab slugs like
+    # `sk-proj-refactor-auth` or `task-runtime-configuration`. Real keys are
+    # high-entropy base64url and always carry an uppercase char; gate on a
+    # lookahead for one so lowercase slugs survive (#830). Before generic sk- so
+    # it wins.
     (
         re.compile(
-            r"sk-(?:proj|admin)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
+            r"sk-(?:proj|admin|runtime)-(?=[A-Za-z0-9_-]{0,200}[A-Z])"
+            r"[A-Za-z0-9_-]{12,}"
         ),
         "***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
@@ -724,6 +728,10 @@ class Trajectory(BaseModel):
     finished_at: datetime | None = None
     exchanges: list[LLMExchange] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # The provider tool evidence a stopped proxy's import read from each
+    # exchange before it shed its request body (the full records are in
+    # llm_trajectory.jsonl); None while the exchanges are whole.
+    _tool_evidence: list[dict[str, Any]] | None = PrivateAttr(default=None)
 
     @property
     def has_provider_usage(self) -> bool:

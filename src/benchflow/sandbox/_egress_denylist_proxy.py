@@ -1,8 +1,12 @@
-"""Loopback egress proxy for network_mode='denylist'. Stdlib only; runs inside the sandbox as root.
+"""Loopback egress proxy for network_mode='denylist' and 'allowlist'. Stdlib only; runs inside the sandbox as root.
 
 HTTPS is intercepted so the CONNECT authority, TLS name and decrypted HTTP
 authority stay bound to the same destination. Leaf certificates are generated
 on demand with the per-rollout CA kept in the root-only runtime directory.
+Refusals go to the block log. With ``--allowed-log``, every request let out
+goes to a second log twice: an ``allowed`` record with its admitting rule,
+written before its first byte leaves, and a ``closed`` record with its status
+and byte counts when it ends.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import argparse
 import contextlib
 import hashlib
 import ipaddress
+import itertools
 import json
 import os
 import re
@@ -24,7 +29,9 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.parse
+import zlib
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +53,20 @@ RELAY_POLL = 30
 BLOCK_BODY = "Blocked by the task network policy: {url}\n"
 CERT_MINT_TIMEOUT = 15
 MODEL_BODY_LIMIT = 32 * 1024 * 1024  # Anthropic Messages API request-size ceiling
+# Native Codex on a ChatGPT login: its model endpoint, and the request size it
+# may send there (each request carries the whole history, screenshots included).
+CODEX_MODEL_ORIGIN = ("chatgpt.com", 443)
+CODEX_MODEL_PATH = "/backend-api/codex/responses"
+# Codex's remote compaction: the same model, the same body rule.
+CODEX_COMPACT_PATH = "/backend-api/codex/responses/compact"
+# Read-only metadata Codex cannot start a session without (measured on
+# codex-acp 2.0.1 / Codex 0.159.3): its account check and its model list.
+CODEX_METADATA_PATHS = frozenset(
+    {"/backend-api/wham/accounts/check", "/backend-api/codex/models"}
+)
+CODEX_MODEL_BODY_LIMIT = 64 * 1024 * 1024
+# The model gateway's request boundary, uploaded beside this script in a sandbox.
+REQUEST_GUARD_FILE = "request_guard.py"
 # Content sources the model endpoint reads from the request itself; any other
 # source type (notably "url") is fetched by Anthropic on the caller's behalf.
 _REQUEST_SOURCE_TYPES = frozenset({"base64", "text", "content", "file"})
@@ -139,6 +160,8 @@ class Policy:
         allowed_hosts: list[str] | None = None,
         native_claude_model_origin: bool = False,
         diagnostic_secrets: list[str] | None = None,
+        native_codex_model_only: bool = False,
+        task_services: list[str] | None = None,
     ):
         # Controller-supplied runtime state, never a task-authored allowlist.
         if model_gateway_port is not None and (
@@ -148,15 +171,21 @@ class Policy:
             raise ValueError("invalid model gateway port")
         if type(native_claude_model_only) is not bool:
             raise ValueError("invalid native model policy")
+        if type(native_codex_model_only) is not bool:
+            raise ValueError("invalid native model policy")
         if type(native_claude_model_origin) is not bool:
             raise ValueError("invalid native model origin policy")
-        if native_claude_model_only and model_gateway_port is not None:
+        if native_claude_model_only and native_codex_model_only:
+            raise ValueError("native model policy admits one model origin")
+        native_only = native_claude_model_only or native_codex_model_only
+        if native_only and model_gateway_port is not None:
             raise ValueError("native model policy cannot tunnel a gateway")
-        if native_claude_model_only and allowed_hosts is not None:
+        if native_only and allowed_hosts is not None:
             raise ValueError("native model policy cannot carry an allowlist")
         if native_claude_model_origin and allowed_hosts is None:
             raise ValueError("native model origin is an allowlist addition")
         self.native_claude_model_only = native_claude_model_only
+        self.native_codex_model_only = native_codex_model_only
         self.diagnostic_secrets: tuple[str, ...] = tuple(
             value
             for value in diagnostic_secrets or []
@@ -193,6 +222,14 @@ class Policy:
                 raise ValueError(f"invalid allowed_hosts entry: {raw!r}")
             else:
                 self.allow_names.add(entry)
+        # The listed names the controller found to be the task's own compose
+        # services (their addresses are listed beside them); only labels the
+        # allowed log, never admits anything by itself.
+        self.task_services = frozenset(
+            name.strip().rstrip(".").lower() for name in task_services or ()
+        )
+        if not self.task_services <= self.allow_names:
+            raise ValueError("task services must be listed allowed_hosts names")
 
     @classmethod
     def load(cls, path: str) -> Policy:
@@ -207,6 +244,8 @@ class Policy:
             None if allowed is None else list(allowed),
             data.get("native_claude_model_origin", False),
             data.get("diagnostic_secrets"),
+            native_codex_model_only=data.get("native_codex_model_only", False),
+            task_services=data.get("task_services"),
         )
 
     def diagnostic(self, value: Any) -> Any:
@@ -308,6 +347,8 @@ class Policy:
     def host_rule(self, host: str, port: int = 0) -> str | None:
         if self.native_claude_model_only and (host, port) != ("api.anthropic.com", 443):
             return "native-model-origin"
+        if self.native_codex_model_only and (host, port) != CODEX_MODEL_ORIGIN:
+            return "native-model-origin"
         if (host, port) == ("127.0.0.1", self.model_gateway_port):
             return None
         name = host.strip().rstrip(".").lower()
@@ -334,19 +375,101 @@ class Policy:
         address = self._address(host)
         return address is not None and self._in_networks(address)
 
-    def url_rule(self, host: str, path: str, port: int = 0) -> str | None:
-        rule = self.host_rule(host, port)
-        if rule:
-            return rule
-        key, pkey = host_key(host), _path_key(path)
+    def _direct_url_rule(self, host: str, path: str) -> str | None:
+        name = host_key(host)
+        for blocked in self.hosts:
+            if name == blocked or name.endswith("." + blocked):
+                return f"host:{blocked}"
+        key = _path_key(path)
         for bhost, bpath in self.prefixes:
-            if key == bhost and pkey.startswith(bpath):
+            if name == bhost and key.startswith(bpath):
                 return f"url:{bhost}{bpath}"
         return None
 
+    def _mirror_rule(self, host: str, path: str) -> str | None:
+        """Map repository services to an owner/repository, never to arbitrary pages."""
+        host = host_key(host)
+        parts = urllib.parse.urlsplit(path)
+        segments = _path_key(parts.path).strip("/").split("/")
+        source = ""
+        if host.endswith(".jsdelivr.net") or host == "cdn.statically.io":
+            if segments[0] == "gh":
+                source, segments = "github.com", segments[1:]
+        elif host in {
+            "raw.githack.com",
+            "rawcdn.githack.com",
+            "raw.githubusercontent.com",
+            "codeload.github.com",
+        }:
+            source = "github.com"
+        elif host == "api.github.com" and segments[0] == "repos":
+            source, segments = "github.com", segments[1:]
+        elif host == "hf-mirror.com":
+            source = "huggingface.co"
+        elif host == "huggingface.co" and segments[0] == "api":
+            source, segments = "huggingface.co", segments[1:]
+            if segments and segments[0] == "models":
+                segments = segments[1:]
+        elif host == "datasets-server.huggingface.co":
+            dataset = urllib.parse.parse_qs(parts.query).get("dataset", [""])[0]
+            source, segments = (
+                "huggingface.co",
+                ["datasets", *dataset.lower().split("/")],
+            )
+        if not source:
+            return None
+        count = (
+            3
+            if source == "huggingface.co" and segments[0] in {"datasets", "spaces"}
+            else 2
+        )
+        if len(segments) < count:
+            return None
+        segments[count - 1] = segments[count - 1].split("@", 1)[0]
+        repo = "/" + "/".join(segments[:count])
+        return self._direct_url_rule(source, repo)
+
+    def named_page_rule(self, text: str) -> str | None:
+        """Find blocked addresses, including percent-encoded and IDNA spellings."""
+        for _ in range(8):
+            decoded = urllib.parse.unquote(text)
+            if decoded == text:
+                break
+            text = decoded
+        text = unicodedata.normalize("NFKC", text).replace("\\/", "/")
+        text = "".join(
+            c for c in text if c not in "\t\r\n" and unicodedata.category(c) != "Cf"
+        )
+        text = text.replace("。", ".").replace("｡", ".")
+        # Scheme-less URLs are accepted by readers and archive services too.
+        for match in re.finditer(
+            r"(?<![\w.-])(?:[\w-]+\.)+[\w-]+\.?(?::[0-9]*)?(?:/[^\s\"'<>?&#]*)?", text
+        ):
+            try:
+                parts = urllib.parse.urlsplit("https://" + match[0])
+                host = (parts.hostname or "").encode("idna").decode("ascii")
+            except (ValueError, UnicodeError):
+                continue
+            rule = self._direct_url_rule(host, parts.path) or self._mirror_rule(
+                host, parts.path
+            )
+            if rule:
+                return rule
+        return None
+
+    def url_rule(self, host: str, path: str, port: int = 0) -> str | None:
+        rule = self.host_rule(host, port) or self._direct_url_rule(host, path)
+        if rule or self.allow_mode:
+            return rule
+        if host.endswith(".translate.goog"):
+            encoded = host.removesuffix(".translate.goog")
+            original = encoded.replace("--", "_").replace("-", ".").replace("_", "-")
+            rule = self._direct_url_rule(original, path)
+        return rule or self._mirror_rule(host, path) or self.named_page_rule(path)
+
     def model_only(self, host: str) -> bool:
-        """Whether requests to ``host`` pass the native Claude model gate."""
-        if self.native_claude_model_only:
+        """Whether requests to ``host`` pass a native model gate (Claude or Codex)."""
+        if self.native_claude_model_only or self.native_codex_model_only:
             return True
         return (
             self.native_claude_model_origin
@@ -358,12 +481,41 @@ class Policy:
         self, host: str, port: int, path: str, method: str, secure: bool
     ) -> str | None:
         """Positive native model gate; deliberately separate from deny-prefix normalization."""
+        if self.native_codex_model_only:
+            # Codex on a ChatGPT login: Responses requests to its ChatGPT
+            # endpoint, bodiless GETs of the metadata it starts from, and
+            # nothing else that origin serves (plugins, connectors, usage,
+            # analytics, websockets, the token refresh).
+            if (host, port, secure) != (*CODEX_MODEL_ORIGIN, True):
+                return "native-model-request"
+            if method == "POST":
+                if path in (CODEX_MODEL_PATH, CODEX_COMPACT_PATH):
+                    return None
+                return "native-model-path"
+            if method == "GET" and path.partition("?")[0] in CODEX_METADATA_PATHS:
+                return None
+            return "native-model-request"
         if self.model_only(host):
             if (host, port, secure, method) != ("api.anthropic.com", 443, True, "POST"):
                 return "native-model-request"
             if path not in ("/v1/messages", "/v1/messages?beta=true"):
                 return "native-model-path"
         return self.url_rule(host, path, port)
+
+    def admitted_by(self, host: str, port: int) -> str:
+        """What let an allowed request to ``host``:``port`` out (the allowed log's ``rule``)."""
+        if (host, port) == ("127.0.0.1", self.model_gateway_port):
+            return "model-gateway"
+        if self.model_only(host):
+            return "native-model"
+        if not self.allow_mode:
+            return "not-denylisted"
+        name = host.strip().rstrip(".").lower()
+        if name in self.task_services:
+            return "task-service"
+        if self._address(name) is not None:
+            return "allowed-range"
+        return "allowed-host"
 
     def dns_rule(self, name: str) -> str | None:
         """Allow mode answers DNS only for listed hostnames; deny mode answers all."""
@@ -430,6 +582,65 @@ def native_model_body_rule(body: bytes, headers: list[tuple[str, str]]) -> str |
     except (UnicodeDecodeError, ValueError, RecursionError):
         return "native-model-body-json"
     return None
+
+
+_REQUEST_GUARD: Any = None
+
+
+def _request_guard() -> Any:
+    """The model gateway's request boundary module.
+
+    In a sandbox it is the root-owned copy uploaded beside this script, loaded
+    by path (the proxy's Python runs isolated, so nothing on a search path the
+    agent can write is consulted); on the controller, BenchFlow's own.
+    """
+    global _REQUEST_GUARD
+    if _REQUEST_GUARD is None:
+        beside = Path(__file__).resolve().with_name(REQUEST_GUARD_FILE)
+        if beside.is_file():
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "benchflow_request_guard", beside
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(f"cannot load {beside}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        else:
+            from benchflow.providers import litellm_request_guard as module
+        _REQUEST_GUARD = module
+    return _REQUEST_GUARD
+
+
+def native_codex_body_rule(body: bytes, headers: list[tuple[str, str]]) -> str | None:
+    """Admit a native Codex model request only when OpenAI executes nothing for it.
+
+    The body is a Responses API request. It passes only what the model
+    gateway admits under web restrictions, on the request a client sends and
+    on the bytes that leave: known fields, client-executed tools (never hosted
+    web or file search, code interpreter, image generation or remote MCP), no
+    stored prompt, conversation or previous response, and input images and
+    files carried inline, never by URL. Encoded or unreadable bodies are
+    refused.
+    """
+    if any(
+        name.lower() == "content-encoding" and value.lower() not in ("", "identity")
+        for name, value in headers
+    ):
+        return "native-model-body-encoding"
+    try:
+        request = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_keys)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return "native-model-body-json"
+    if not isinstance(request, dict):
+        return "native-model-body-json"
+    try:
+        refusal = _request_guard().restricted_responses_refusal(request, body)
+    except (ImportError, AttributeError, TypeError, RecursionError):
+        return "native-model-body-guard"
+    # The guard's reason names protocol fields and tool types, never content.
+    return f"native-model-body-hosted: {refusal}"[:400] if refusal else None
 
 
 class CertStore:
@@ -757,7 +968,7 @@ class _BodyBuffer:
 
 def _copy_request_body(
     client: socket.socket,
-    upstream: socket.socket | _BodyBuffer | None,
+    upstream: socket.socket | _BodyBuffer | _CountingSink | None,
     rest: bytes,
     length: int,
     chunked: bool,
@@ -806,6 +1017,286 @@ def _copy_request_body(
             raise ConnectionError("invalid chunk terminator")
         if framing is not None:
             framing.sendall(b"\r\n")
+
+
+class _DeniedBody(Exception):
+    pass
+
+
+_MODEL_REQUEST_KEYS = frozenset({"model", "messages", "input", "contents", "tools"})
+
+
+def _model_document(item: dict, path: str) -> bool:
+    """Whether a JSON object is a model request rather than data sharing a key.
+
+    A model request names at least two of its fields (the model, its
+    conversation, its tools), or one when it is sent to a model inference
+    path (a Gemini body names its model only in the path). An object with
+    a single such key, an upload's "model" or a GraphQL "input", is
+    application data and is scanned like any other.
+    """
+    found = _MODEL_REQUEST_KEYS & {str(k).casefold() for k in item}
+    if len(found) > 1:
+        return True
+    route = path.split("?", 1)[0]
+    return bool(found) and any(
+        rx.fullmatch(route) for rx, _ in _request_guard()._OUT_PATHS
+    )
+
+
+def deny_body_rule(policy: Policy, data: bytes, path: str = "") -> str | None:
+    """Judge JSON documents without treating model conversation text as a fetch."""
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeError:
+        return "uninspectable-body"
+    decoder = json.JSONDecoder(object_pairs_hook=_unique_keys)
+    if "\x00" in text[:4]:
+        return "uninspectable-body"
+    remaining = text.lstrip()
+    if not remaining.startswith(("{", "[")):
+        rule = policy.named_page_rule(text)
+        if rule:
+            return rule
+        for line in text.splitlines():
+            if line.lstrip().startswith(("{", "[")) and (
+                rule := deny_body_rule(policy, line.encode(), path)
+            ):
+                return rule
+        return None
+    documents = []
+    try:
+        offset = 0
+        while offset < len(text):
+            while offset < len(text) and text[offset].isspace():
+                offset += 1
+            if offset == len(text):
+                break
+            document, offset = decoder.raw_decode(text, offset)
+            documents.append(document)
+    except RecursionError:
+        return "uninspectable-body"
+    except ValueError:
+        # TOML/INI headings are text, not broken model requests.
+        return (
+            policy.named_page_rule(text)
+            if remaining.startswith("[")
+            else "uninspectable-body"
+        )
+    pending = list(documents)
+    count = 0
+    while pending:
+        item = pending.pop()
+        count += 1
+        if count > 1_000_000:
+            return "oversized-body"
+        if isinstance(item, dict):
+            if _model_document(item, path):
+                if "contents" in item:
+                    schema = "/v1beta/models/guard:generateContent"
+                elif "input" in item:
+                    schema = "/v1/responses"
+                elif "max_tokens" in item and "messages" in item and "model" in item:
+                    # Both chat and Messages accept max_tokens. Try both schemas.
+                    encoded = json.dumps(item).encode()
+                    why = _request_guard().outbound_refusal(
+                        "POST", "/v1/messages", encoded
+                    )
+                    if why is None:
+                        continue
+                    schema = "/v1/chat/completions"
+                else:
+                    schema = "/v1/chat/completions"
+                why = _request_guard().outbound_refusal(
+                    "POST", schema, json.dumps(item).encode()
+                )
+                if why:
+                    return "deny-model-body: " + why[:300]
+                continue
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, str):
+            rule = policy.named_page_rule(item)
+            if rule:
+                return rule
+    return None
+
+
+def _body_chunks(reader: _BodyReader, length: int, chunked: bool):
+    """Yield payload only; validate framing and discard trailers."""
+    while True:
+        if chunked:
+            line = reader.line().split(b";", 1)[0]
+            if not re.fullmatch(rb"[0-9a-fA-F]+", line):
+                raise ConnectionError("invalid chunk size")
+            length = int(line, 16)
+            if length == 0:
+                total = 0
+                while trailer := reader.line():
+                    total += len(trailer) + 2
+                    if total > HEAD_LIMIT:
+                        raise ConnectionError("trailers too large")
+                return
+        while length:
+            piece = reader.take(min(length, 65536))
+            length -= len(piece)
+            yield piece
+        if not chunked:
+            return
+        if reader.line():
+            raise ConnectionError("invalid chunk terminator")
+
+
+class _DenyText:
+    """Bounded address overlap and a bounded JSON line; ordinary uploads can stream."""
+
+    def __init__(self, policy: Policy, path: str = ""):
+        self.policy, self.path = policy, path
+        self.tail = b""
+        self.line = bytearray()
+        self.json_line: bool | None = None
+
+    def feed(self, data: bytes) -> str | None:
+        overlap = self.tail + data
+        self.tail = overlap[-8192:]
+        if rule := self.policy.named_page_rule(overlap.decode("utf-8", "replace")):
+            return rule
+        pieces = data.split(b"\n")
+        for index, piece in enumerate(pieces):
+            if self.json_line is not False:
+                self.line.extend(piece)
+                start = self.line.lstrip()
+                if start and self.json_line is None:
+                    self.json_line = start[:1] in (b"{", b"[")
+                if self.json_line is False:
+                    self.line.clear()
+                elif len(self.line) > MODEL_BODY_LIMIT:
+                    return "oversized-body"
+            if index + 1 < len(pieces) and (rule := self.finish()):
+                return rule
+        return None
+
+    def finish(self) -> str | None:
+        rule = (
+            deny_body_rule(self.policy, bytes(self.line), self.path)
+            if self.json_line
+            else None
+        )
+        self.line.clear()
+        self.json_line = None
+        return rule
+
+
+class _DenyBody:
+    """Buffer JSON/coded uploads, scan text, and stream opaque binary uploads.
+
+    Text may reach an origin in part, but is judged whole before completion.
+    This is a denylist heuristic, not a replacement for an allowlist.
+    """
+
+    def __init__(
+        self,
+        policy: Policy,
+        sock: socket.socket,
+        headers: list[tuple[str, str]],
+        rest: bytes,
+        length: int,
+        chunked: bool,
+        path: str = "",
+    ):
+        self.policy, self.length, self.chunked = policy, length, chunked
+        self.path = path
+        self.parts = _body_chunks(_BodyReader(sock, rest), length, chunked)
+        self.first = b""
+        self.scan = _DenyText(policy, path)
+        self.buffered = False
+        fields = {n.lower(): v.lower() for n, v in headers}
+        self.ambiguous = any(
+            sum(n.lower() == key for n, _ in headers) > 1
+            for key in ("content-type", "content-encoding")
+        )
+        self.coding = fields.get("content-encoding", "identity").strip()
+        kind = fields.get("content-type", "").split(";", 1)[0].strip()
+        self.binary = kind.startswith(
+            ("image/", "audio/", "video/", "font/")
+        ) or kind in {
+            "application/octet-stream",
+            "application/pdf",
+            "application/zip",
+            "application/gzip",
+            "application/x-tar",
+            "application/x-protobuf",
+        }
+        self.json_type = "json" in kind
+
+    def check(self) -> str | None:
+        if self.ambiguous:
+            return "uninspectable-body"
+        data = bytearray()
+        for part in self.parts:
+            data.extend(part)
+            if self.coding == "identity" and not self.json_type:
+                start = data.lstrip(b" \t\r\n\xef\xbb\xbf")
+                if start and start[:1] not in (b"{", b"[") and b"\x00" not in start[:4]:
+                    self.first = bytes(data)
+                    if not self.binary:
+                        return self.scan.feed(bytes(data))
+                    return None
+            if len(data) > MODEL_BODY_LIMIT:
+                return "oversized-body"
+        self.first, self.buffered = bytes(data), True
+        decoded = self.first
+        if self.coding != "identity":
+            if self.coding not in {"gzip", "deflate"}:
+                return "uninspectable-body"
+            try:
+                inflater = zlib.decompressobj(31 if self.coding == "gzip" else 15)
+                decoded = inflater.decompress(decoded, MODEL_BODY_LIMIT + 1)
+                if (
+                    len(decoded) > MODEL_BODY_LIMIT
+                    or not inflater.eof
+                    or inflater.unused_data
+                ):
+                    return "uninspectable-body"
+            except zlib.error:
+                return "uninspectable-body"
+        if self.binary and not decoded.lstrip().startswith((b"{", b"[")):
+            return None
+        return deny_body_rule(self.policy, decoded, self.path)
+
+    def send(self, sink: _CountingSink | _BodyBuffer) -> None:
+        def emit(part: bytes) -> None:
+            if part:
+                sink.sendall(
+                    (f"{len(part):x}\r\n".encode() + part + b"\r\n")
+                    if self.chunked
+                    else part
+                )
+
+        sent = len(self.first)
+        if (
+            not self.buffered
+            and not self.binary
+            and not self.chunked
+            and sent == self.length
+            and (rule := self.scan.finish())
+        ):
+            raise _DeniedBody(rule)
+        emit(self.first)
+        for part in self.parts:
+            sent += len(part)
+            if not self.binary:
+                rule = self.scan.feed(part)
+                if not self.chunked and sent == self.length:
+                    rule = rule or self.scan.finish()
+                if rule:
+                    raise _DeniedBody(rule)
+            emit(part)
+        if self.chunked:
+            if not self.buffered and not self.binary and (rule := self.scan.finish()):
+                raise _DeniedBody(rule)
+            sink.sendall(b"0\r\n\r\n")
 
 
 def _drain_denied_body(
@@ -955,7 +1446,50 @@ def _send(sock: socket.socket, data: bytes, idle: _Idle) -> None:
         view = view[sent:]
 
 
-def _pump(src: socket.socket, dst: socket.socket, idle: _Idle) -> None:
+class _Meter:
+    """Bytes one direction of a forwarded exchange carried; the first few kept for the status line."""
+
+    def __init__(self) -> None:
+        self.bytes = 0
+        self.head = b""
+
+    def add(self, data: bytes) -> None:
+        self.bytes += len(data)
+        if len(self.head) < 64:
+            self.head += data[: 64 - len(self.head)]
+
+    def status(self) -> int | None:
+        """The HTTP status of a response that started with a status line."""
+        parts = self.head.split(b"\r\n", 1)[0].split(b" ")
+        if len(parts) >= 2 and parts[0].startswith(b"HTTP/") and parts[1].isdigit():
+            return int(parts[1])
+        return None
+
+
+class _CountingSink:
+    """An upstream socket for ``_copy_request_body`` that counts what it sends."""
+
+    def __init__(self, upstream: socket.socket, meter: _Meter):
+        self.upstream, self.meter = upstream, meter
+
+    def sendall(self, data: bytes) -> None:
+        self.upstream.sendall(data)
+        self.meter.add(data)
+
+
+class _Exchange:
+    """One request or tunnel the proxy let out: its log id and what it carried."""
+
+    def __init__(self, ident: str) -> None:
+        self.id = ident
+        self.started = time.monotonic()
+        self.sent = _Meter()
+        self.received = _Meter()
+
+
+def _pump(
+    src: socket.socket, dst: socket.socket, idle: _Idle, meter: _Meter | None = None
+) -> None:
     """Copy until EOF, then half-close the destination so the other direction can finish."""
     try:
         while True:
@@ -963,6 +1497,8 @@ def _pump(src: socket.socket, dst: socket.socket, idle: _Idle) -> None:
             if not data:
                 break
             _send(dst, data, idle)
+            if meter is not None:
+                meter.add(data)
     except OSError:
         with contextlib.suppress(OSError):
             dst.shutdown(socket.SHUT_RDWR)
@@ -971,18 +1507,27 @@ def _pump(src: socket.socket, dst: socket.socket, idle: _Idle) -> None:
         dst.shutdown(socket.SHUT_WR)
 
 
-def _relay(client: socket.socket, upstream: socket.socket) -> None:
+def _relay(
+    client: socket.socket,
+    upstream: socket.socket,
+    sent: _Meter | None = None,
+    received: _Meter | None = None,
+) -> None:
     idle = _Idle()
     idle.arm(client, upstream)
-    t = threading.Thread(target=_pump, args=(upstream, client, idle), daemon=True)
+    t = threading.Thread(
+        target=_pump, args=(upstream, client, idle, received), daemon=True
+    )
     t.start()
-    _pump(client, upstream, idle)
+    _pump(client, upstream, idle, sent)
     t.join()
     with contextlib.suppress(OSError):
         upstream.close()
 
 
-def _relay_response(client: socket.socket, upstream: socket.socket) -> None:
+def _relay_response(
+    client: socket.socket, upstream: socket.socket, received: _Meter | None = None
+) -> None:
     """Relay the response and propagate client EOF without forwarding more requests."""
     idle = _Idle()
     idle.arm(client, upstream)
@@ -1003,7 +1548,7 @@ def _relay_response(client: socket.socket, upstream: socket.socket) -> None:
     watcher = threading.Thread(target=discard_client_bytes, daemon=True)
     watcher.start()
     try:
-        _pump(upstream, client, idle)
+        _pump(upstream, client, idle, received)
     finally:
         with contextlib.suppress(OSError):
             socket.socket.shutdown(client, socket.SHUT_RD)
@@ -1021,13 +1566,26 @@ class Proxy(socketserver.ThreadingTCPServer):
         certs: CertStore,
         log: Log,
         upstream_ca: str | None = None,
+        allowed_log: Log | None = None,
     ):
         super().__init__(addr, Handler)
         self.policy = policy
         self.certs = certs
         self.log = log
         self.log.policy = policy
+        # Every request the proxy lets out, so a trial's egress can be audited
+        # beside its refusals; a separate file keeps the block log's meaning.
+        self.allowed_log = allowed_log
+        if allowed_log is not None:
+            allowed_log.policy = policy
+        # Joins an "allowed" record to its "closed" one; unique across the
+        # proxy restarts that append to the same log.
+        self._exchange_prefix = secrets.token_hex(4)
+        self._exchanges = itertools.count(1)
         self.upstream_ctx = ssl.create_default_context(cafile=upstream_ca)
+
+    def next_exchange_id(self) -> str:
+        return f"{self._exchange_prefix}-{next(self._exchanges)}"
 
 
 class Handler(socketserver.BaseRequestHandler):
@@ -1070,7 +1628,18 @@ class Handler(socketserver.BaseRequestHandler):
     def _deny(
         self, sock: socket.socket, method: str, url: str, rule: str, **evidence: object
     ) -> None:
-        if self.proxy.policy.native_claude_model_only:
+        policy = self.proxy.policy
+        if policy.native_codex_model_only:
+            # The Codex gate records which request Codex could not make: the
+            # origin and path, never a query, a header or a body.
+            parts = urllib.parse.urlsplit(url) if "://" in url else None
+            url = (
+                f"{parts.scheme}://{parts.hostname}{parts.path}"
+                if parts is not None and parts.hostname
+                else url.split("?", 1)[0]
+            )
+            evidence = {}
+        elif policy.native_claude_model_only:
             # Native model admission records rules, never caller-supplied URLs or headers.
             url, evidence = "native-model-only", {}
         url = self.proxy.policy.diagnostic(url)
@@ -1085,6 +1654,38 @@ class Handler(socketserver.BaseRequestHandler):
                 BLOCK_BODY.format(url=url),
                 "X-BenchFlow-Blocked: 1\r\n",
             )
+        )
+
+    def _admit(self, method: str, url: str, host: str, port: int) -> _Exchange:
+        """Record a request the proxy lets out before its first byte leaves.
+
+        A failed write raises here, so nothing is forwarded without a record,
+        and a request still open when the proxy stops is in the log anyway.
+        """
+        exchange = _Exchange(self.proxy.next_exchange_id())
+        log = self.proxy.allowed_log
+        if log is not None:
+            log.write(
+                action="allowed",
+                id=exchange.id,
+                method=method,
+                url=url,
+                rule=self.proxy.policy.admitted_by(host, port),
+            )
+        return exchange
+
+    def _close(self, exchange: _Exchange, status: int | None) -> None:
+        """Record how an admitted request ended: status, bytes each way, duration."""
+        log = self.proxy.allowed_log
+        if log is None:
+            return
+        log.write(
+            action="closed",
+            id=exchange.id,
+            status=status,
+            bytes_sent=exchange.sent.bytes,
+            bytes_received=exchange.received.bytes,
+            ms=round((time.monotonic() - exchange.started) * 1000),
         )
 
     def _connect(self, target: str, early: bytes) -> None:
@@ -1155,10 +1756,20 @@ class Handler(socketserver.BaseRequestHandler):
                 )
             )
             return
-        self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        if early:
-            upstream.sendall(early)
-        _relay(self.request, upstream)
+        exchange = None
+        try:
+            exchange = self._admit("CONNECT", f"{host}:{port}", host, port)
+            self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            if early:
+                upstream.sendall(early)
+                exchange.sent.add(early)
+            _relay(self.request, upstream, exchange.sent, exchange.received)
+        finally:
+            with contextlib.suppress(OSError):
+                upstream.close()
+            if exchange is not None:
+                # An opaque tunnel has no response line of its own to report.
+                self._close(exchange, None)
 
     def _forward(
         self,
@@ -1248,7 +1859,14 @@ class Handler(socketserver.BaseRequestHandler):
         ]
         headers.insert(0, ("Host", authority))
         body = None
-        if self.proxy.policy.model_only(host):
+        deny_body = None
+        if self.proxy.policy.native_codex_model_only and method == "GET":
+            if length or chunked:
+                self._deny(sock, method, url, "native-model-request")
+                if not expectations:
+                    _drain_denied_body(sock, rest, length, chunked)
+                return
+        elif self.proxy.policy.model_only(host):
             body, rule = self._read_model_body(
                 sock, headers, rest, length, chunked, bool(expectations)
             )
@@ -1264,6 +1882,22 @@ class Handler(socketserver.BaseRequestHandler):
                 if n.lower() not in {"content-length", "transfer-encoding"}
             ]
             headers.append(("Content-Length", str(len(body))))
+        elif not self.proxy.policy.allow_mode and (length or chunked):
+            if expectations:
+                sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+            sock.settimeout(IDLE_TIMEOUT)
+            deny_body = _DenyBody(
+                self.proxy.policy,
+                sock,
+                headers,
+                _body_prefix(headers, rest),
+                length,
+                chunked,
+                path,
+            )
+            if rule := deny_body.check():
+                self._deny(sock, method, url, rule)
+                return
         try:
             upstream = _connect_upstream(host, port, **self._upstream_options())
             if secure:
@@ -1280,23 +1914,42 @@ class Handler(socketserver.BaseRequestHandler):
                 )
             )
             return
+        exchange = None
         try:
+            # The allowed log names the port the request went to.
+            scheme = "https" if secure else "http"
+            exchange = self._admit(method, f"{scheme}://{authority}{path}", host, port)
             sock.settimeout(IDLE_TIMEOUT)
             upstream.settimeout(IDLE_TIMEOUT)
-            upstream.sendall(_build_head(method, path, version, headers))
+            head = _build_head(method, path, version, headers)
+            upstream.sendall(head)
+            exchange.sent.add(head)
             if body is not None:
                 upstream.sendall(body)
+                exchange.sent.add(body)
+            elif deny_body is not None:
+                try:
+                    deny_body.send(_CountingSink(upstream, exchange.sent))
+                except _DeniedBody as exc:
+                    self._deny(sock, method, url, str(exc))
+                    return
             else:
                 if expectations:
                     sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
                 _copy_request_body(
-                    sock, upstream, _body_prefix(headers, rest), length, chunked
+                    sock,
+                    _CountingSink(upstream, exchange.sent),
+                    _body_prefix(headers, rest),
+                    length,
+                    chunked,
                 )
             # Never relay additional client bytes: a later request could name
             # an unchecked virtual host or path on the same origin connection.
-            _relay_response(sock, upstream)
+            _relay_response(sock, upstream, exchange.received)
         finally:
             upstream.close()
+            if exchange is not None:
+                self._close(exchange, exchange.received.status())
 
     def _read_model_body(
         self,
@@ -1308,12 +1961,14 @@ class Handler(socketserver.BaseRequestHandler):
         expect_continue: bool,
     ) -> tuple[bytes, str | None]:
         """Buffer a native model request so no byte goes upstream before inspection."""
-        if not chunked and length > MODEL_BODY_LIMIT:
+        codex = self.proxy.policy.native_codex_model_only
+        limit = CODEX_MODEL_BODY_LIMIT if codex else MODEL_BODY_LIMIT
+        if not chunked and length > limit:
             return b"", "native-model-body-size"
         if expect_continue:
             sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
         sock.settimeout(IDLE_TIMEOUT)
-        buffer = _BodyBuffer(MODEL_BODY_LIMIT)
+        buffer = _BodyBuffer(limit)
         try:
             _copy_request_body(
                 sock, buffer, _body_prefix(headers, rest), length, chunked, dechunk=True
@@ -1321,7 +1976,8 @@ class Handler(socketserver.BaseRequestHandler):
         except _BodyTooLarge:
             return b"", "native-model-body-size"
         body = bytes(buffer.data)
-        return body, native_model_body_rule(body, headers)
+        rule = native_codex_body_rule if codex else native_model_body_rule
+        return body, rule(body, headers)
 
 
 # ---------------------------------------------------------------- DNS filter
@@ -1558,9 +2214,12 @@ def serve(
     log: Log,
     *,
     upstream_ca: str | None = None,
+    allowed_log: Log | None = None,
 ) -> Proxy:
     """Bind the proxy on loopback and return it (callers run ``serve_forever``)."""
-    return Proxy(("127.0.0.1", port), policy, certs, log, upstream_ca)
+    return Proxy(
+        ("127.0.0.1", port), policy, certs, log, upstream_ca, allowed_log=allowed_log
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1581,6 +2240,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--openssl", required=True, help="OpenSSL executable")
     parser.add_argument(
         "--log", help="JSONL file for blocked attempts (default stderr)"
+    )
+    parser.add_argument(
+        "--allowed-log", help="JSONL file for every request let out (default none)"
     )
     parser.add_argument("--upstream-ca", help="CA bundle for upstream TLS (tests)")
     parser.add_argument(
@@ -1613,6 +2275,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         log,
         upstream_ca=args.upstream_ca,
+        allowed_log=Log(args.allowed_log) if args.allowed_log else None,
     )
     print(
         f"egress proxy listening on 127.0.0.1:{args.port}", file=sys.stderr, flush=True

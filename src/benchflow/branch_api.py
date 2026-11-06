@@ -108,7 +108,7 @@ class BranchResult:
     error: str | None = None
     timing_sec: dict[str, Any] | None = field(default=None, repr=False)
     # Trial totals (tokens, usd, usd_known, sandbox_seconds) and one row per
-    # fork (id, from, children, value, cost); see docs/jobs/branching.md.
+    # fork (id, from, children, value, cost); see docs/train/environment.md.
     cost: dict[str, Any] | None = field(default=None, repr=False)
     forks: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
@@ -127,7 +127,7 @@ class BranchResult:
         )
 
     def to_records(self) -> list[dict[str, Any]]:
-        """One flat dict per child, with the task and V(checkpoint)."""
+        """Return one flat dict per child; each holds the task and V(checkpoint)."""
         return [
             {"task": self.task, "value": self.value, **c.to_record()}
             for c in self.children
@@ -562,7 +562,7 @@ def branch(
         result = bf.branch(
             "tests/examples/hello-world-task",
             agent="claude-agent-acp",
-            model="claude-haiku-4-5",
+            model="claude-haiku-5-5",
             prompts=["Create draft.txt containing: Hello world", "@instruction"],
             children={
                 "baseline": None,  # the parent's remaining prompts

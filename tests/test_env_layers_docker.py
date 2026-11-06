@@ -143,9 +143,9 @@ def _recipe(rid: str) -> AgentLayerRecipe:
         agent=f"fake-agent-{rid}",
         version="1.0.0",
         install_cmd=(
-            "mkdir -p /opt/benchflow/bin && "
-            f"printf '#!/bin/sh\\necho fake-agent 1.0.0 {rid}\\n' > /opt/benchflow/bin/fake-agent && "
-            "chmod 755 /opt/benchflow/bin/fake-agent"
+            "mkdir -p /opt/runtime/bin && "
+            f"printf '#!/bin/sh\\necho fake-agent 1.0.0 {rid}\\n' > /opt/runtime/bin/fake-agent && "
+            "chmod 755 /opt/runtime/bin/fake-agent"
         ),
     )
 
@@ -179,13 +179,13 @@ async def test_layer_built_from_the_task_image_reused_and_clean(run_id, libc, tm
     # The layer adds the agent and nothing else: no credential, no per-trial
     # file (logs, the working folder, /tmp), no skill.
     names, raw = _layer_files(first.tag, tmp_path)
-    assert "opt/benchflow/bin/fake-agent" in names, names
+    assert "opt/runtime/bin/fake-agent" in names, names
     for name in names:
         assert name.rstrip("/") in {
             "opt",
-            "opt/benchflow",
-            "opt/benchflow/bin",
-        } or name.startswith("opt/benchflow/bin/"), (
+            "opt/runtime",
+            "opt/runtime/bin",
+        } or name.startswith("opt/runtime/bin/"), (
             f"unexpected path in the layer: {name}"
         )
     for bad in (
@@ -205,7 +205,7 @@ async def test_layer_built_from_the_task_image_reused_and_clean(run_id, libc, tm
     history = _docker("image", "history", "--no-trunc", first.tag).stdout
     assert CANARY not in history
 
-    out = _docker("run", "--rm", first.tag, "/opt/benchflow/bin/fake-agent").stdout
+    out = _docker("run", "--rm", first.tag, "/opt/runtime/bin/fake-agent").stdout
     assert f"fake-agent 1.0.0 {run_id}" in out
 
 
@@ -310,7 +310,7 @@ async def test_a_leased_layer_and_an_image_committed_from_it_survive_the_prune(
     report = await layers.prune(keep=0, only=[result.key])
     assert report.removed == [result.key] and report.bytes_removed > 0
     assert _docker("image", "inspect", tag, check=False).returncode != 0
-    out = _docker("run", "--rm", snap, "/opt/benchflow/bin/fake-agent").stdout
+    out = _docker("run", "--rm", snap, "/opt/runtime/bin/fake-agent").stdout
     assert f"fake-agent 1.0.0 {run_id}" in out
 
 

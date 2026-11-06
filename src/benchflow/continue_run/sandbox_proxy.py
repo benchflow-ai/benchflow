@@ -27,7 +27,7 @@ from benchflow._root_python import root_python_command
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.trajectories.types import LLMExchange
 
-SANDBOX_REPLAY_ROOT = "/tmp/benchflow-replay"
+SANDBOX_REPLAY_ROOT = "/tmp/runtime-replay"
 DEFAULT_SANDBOX_REPLAY_PORT = 61357
 
 

@@ -78,7 +78,7 @@ def guard_parent(tmp_path, monkeypatch):
 
 
 def guard_of(env) -> str:
-    return re.search(r"-p (_benchflow_guard_[0-9a-f]+)", env["PYTEST_ADDOPTS"])[1]
+    return re.search(r"-p (_runtime_guard_[0-9a-f]+)", env["PYTEST_ADDOPTS"])[1]
 
 
 # A-1: registered markers of many clean pytest runs.
@@ -119,7 +119,7 @@ async def test_many_clean_pytest_runs_stay_scored(
 
 def test_the_reader_caps_verdicts_not_registrations(guard_parent):
     """300 registrations read whole; 300 verdicts still stop at the cap."""
-    name = "_benchflow_guard_" + "cd" * 16
+    name = "_runtime_guard_" + "cd" * 16
     Path(lockdown.pytest_plugin_guard_markers_dir(name)).mkdir(parents=True)
     for i in range(300):
         signed_marker(name, f"1-{i:08x}", "registered")
@@ -370,7 +370,7 @@ def test_a_pytest_stopped_while_checking_counts_as_a_refusal():
     """Guards V2-R1-B-1 route 3: the agent's FIFO under test.sh's timeout was left out."""
     error = (
         "verifier crashed: PluginGuardLoadError: pytest stopped while the plugin "
-        "guard _benchflow_guard_0123abcd was still checking pytest plugins, so it "
+        "guard _runtime_guard_0123abcd was still checking pytest plugins, so it "
         "never decided whether to trust them; listed in verifier/x.checking; this "
         "run is not scored"
     )
@@ -557,7 +557,7 @@ def test_a_refusal_on_an_errored_agent_trial_is_left_out_of_both_scores():
     """Guards V2-R1-A-5: the job summary and the metrics disagreed."""
     refusal = (
         "verifier crashed: PluginGuardLoadError: the pytest plugin guard "
-        "_benchflow_guard_0123abcd refused a pytest plugin it could not trust, so "
+        "_runtime_guard_0123abcd refused a pytest plugin it could not trust, so "
         "pytest stopped and this run is not scored"
     )
     rows = [

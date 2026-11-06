@@ -28,6 +28,9 @@ import pytest
 
 from benchflow.sandbox._base import ExecResult
 
+# Helper regressions must fail instead of hanging the suite.
+pytestmark = pytest.mark.timeout(120)
+
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the helper reads /proc"
 )
@@ -551,6 +554,24 @@ async def test_a_command_the_helper_cannot_start_is_not_started(tmp_path, helper
 
 @linux_only
 @pytest.mark.asyncio
+async def test_empty_cwd_is_not_replaced_by_the_helpers_working_directory():
+    """The shared helper keeps an explicit empty cwd distinct from None."""
+    from benchflow.sandbox._exec_channel import ChannelUnavailable
+
+    channel = _local_channel("python")
+    await channel.start()
+    try:
+        # Send an explicit empty folder after the helper itself has started.
+        channel.workdir = ""
+        with pytest.raises(ChannelUnavailable):
+            await channel.run([*SH, "true"], cwd="", stdin_data=None)
+        assert channel.alive
+    finally:
+        await channel.close()
+
+
+@linux_only
+@pytest.mark.asyncio
 async def test_commands_get_the_helpers_environment_unchanged_and_lead_a_session(
     tmp_path,
     helper,
@@ -578,31 +599,30 @@ def test_only_the_kits_own_python_wrappers_are_started_directly():
     from benchflow.sandbox._exec_channel import helper_python_argv
 
     loader = (
-        "#!/opt/benchflow/rt/bin/sh\nexec /lib64/ld-linux-x86-64.so.2 --library-path "
-        '/opt/benchflow/rt/lib /opt/benchflow/rt/libexec/python3 -I -S -B "$@"\n'
+        "#!/opt/runtime/rt/bin/sh\nexec /lib64/ld-linux-x86-64.so.2 --library-path "
+        '/opt/runtime/rt/lib /opt/runtime/rt/libexec/python3 -I -S -B "$@"\n'
     )
     direct = (
-        "#!/opt/benchflow/rt/bin/sh\n"
-        'exec /opt/benchflow/rt/libexec/python3 -I -S -B "$@"\n'
+        '#!/opt/runtime/rt/bin/sh\nexec /opt/runtime/rt/libexec/python3 -I -S -B "$@"\n'
     )
     assert helper_python_argv(loader) == [
         "/lib64/ld-linux-x86-64.so.2",
         "--library-path",
-        "/opt/benchflow/rt/lib",
-        "/opt/benchflow/rt/libexec/python3",
+        "/opt/runtime/rt/lib",
+        "/opt/runtime/rt/libexec/python3",
         "-I",
         "-S",
         "-B",
     ]
     assert helper_python_argv(direct) == [
-        "/opt/benchflow/rt/libexec/python3",
+        "/opt/runtime/rt/libexec/python3",
         "-I",
         "-S",
         "-B",
     ]
     for bad in (
         direct.replace("-I -S -B", "-S -B"),
-        direct.replace("/opt/benchflow/rt/libexec", "/srv/bin"),
+        direct.replace("/opt/runtime/rt/libexec", "/srv/bin"),
         loader.replace("/lib64/ld-linux-x86-64.so.2", "/srv/ld-linux-x86-64.so.2"),
         direct + "echo extra\n",
         "",
@@ -1022,7 +1042,7 @@ async def test_a_root_step_through_the_channel_runs_as_its_own_docker_exec(
         same(channel, direct)
         assert "NoNewPrivs:\t1" in channel.stdout
         assert "session-leader" in channel.stdout
-        assert "exe=/opt/benchflow/rt/" in channel.stdout
+        assert "exe=/opt/runtime/rt/" in channel.stdout
         assert f"cwd={WORKSPACE}" in channel.stdout
         assert channel.stderr is None  # no image preload in root's plumbing
 

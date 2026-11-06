@@ -18,6 +18,7 @@ from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
 if TYPE_CHECKING:
     from benchflow.providers.litellm_runtime import LiteLLMProcess
+    from benchflow.trial_budget import TrialBudget
 
 
 @dataclass
@@ -69,6 +70,7 @@ async def ensure_litellm_runtime(
     force_sandbox_local: bool = False,
     install_layer_bypass_reason: str | None = None,
     disallow_web_tools: bool = False,
+    trial_budget: TrialBudget | None = None,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     from benchflow.providers.litellm_runtime import (
         ensure_litellm_runtime as _ensure_litellm_runtime,
@@ -90,6 +92,7 @@ async def ensure_litellm_runtime(
         force_sandbox_local=force_sandbox_local,
         install_layer_bypass_reason=install_layer_bypass_reason,
         disallow_web_tools=disallow_web_tools,
+        trial_budget=trial_budget,
     )
 
 
@@ -121,6 +124,7 @@ def reserve_host_proxy(
     environment: str,
     required_skill_names: tuple[str, ...] = (),
     force_sandbox_local: bool = False,
+    trial_budget: TrialBudget | None = None,
 ) -> Any:
     """Start the host model proxy a trial's agent will connect through while
     its sandbox starts (``litellm_runtime.reserve_host_proxy``); the
@@ -136,6 +140,7 @@ def reserve_host_proxy(
         environment=environment,
         required_skill_names=required_skill_names,
         force_sandbox_local=force_sandbox_local,
+        trial_budget=trial_budget,
     )
 
 

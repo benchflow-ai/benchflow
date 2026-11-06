@@ -108,7 +108,7 @@ async def test_activation_with_kept_services_precedes_every_ownership_change(
         order.append("inspect")
         return "/etc/profile.d/safe.sh"
 
-    async def freeze(*args):
+    async def freeze(*args, **kwargs):
         order.append("ownership")
 
     async def kill(*args, **kwargs):

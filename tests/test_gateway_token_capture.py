@@ -336,7 +336,7 @@ def test_hook_native_responses_asks_for_output_text_logprobs(monkeypatch):
     _route_env(monkeypatch, "openai", "openai/gpt-5.5")
     monkeypatch.setenv("BENCHFLOW_CAPTURE_TOP_LOGPROBS", "2")
     data = {
-        "model": "benchflow-openai-gpt-5.5",
+        "model": "runtime-openai-gpt-5.5",
         "input": "hi",
         "include": ["reasoning.encrypted_content"],
     }

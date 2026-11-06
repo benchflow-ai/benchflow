@@ -486,6 +486,8 @@ async def blocking_work(function: Any, *args: Any, **kwargs: Any) -> Any:
 @asynccontextmanager
 async def captured_image_async(image: Any) -> AsyncIterator[Any]:
     """Capture and release off-loop, including cancellation during capture."""
+    from benchflow.sandbox.daytona_context import context_readers
+
     manager = captured_image(image)
     entered = False
 
@@ -495,12 +497,15 @@ async def captured_image_async(image: Any) -> AsyncIterator[Any]:
         entered = True
         return staged
 
-    try:
-        staged = await blocking_work(enter)
-        yield staged
-    finally:
-        if entered:
-            await blocking_work(manager.__exit__, None, None, None)
+    with context_readers() as readers:
+        try:
+            staged = await blocking_work(enter)
+            yield staged
+        finally:
+            if entered and not readers.defer_release(
+                lambda: manager.__exit__(None, None, None)
+            ):
+                await blocking_work(manager.__exit__, None, None, None)
 
 
 def _context_path(path: str) -> str:

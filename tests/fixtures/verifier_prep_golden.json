@@ -1,14 +1,15 @@
 {
  "commands": {
-  "chown_workspace": "if [ -f /opt/benchflow/rt/RECORD ]; then if [ -x /opt/benchflow/rt/py/python3 ]; then __bf_hp_py=/opt/benchflow/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c '\"\"\"Give the workspace to root (freeze), or close it to kept services (close).\n\nRuns as root with python3 -I -S while no sandbox-user process runs (killed,\nor kept services frozen). One walk: it changes into each folder through a\nno-follow descriptor and back through \"..\", checked by device and inode, so\nit follows no link, resolves no long path and holds one descriptor at any\ndepth. Mounts are entered, as chown -R does. Each change is its own checked\nsyscall: the first that fails stops the walk and fails the step.\n\nfreeze: every entry becomes root'\"'\"'s, except a regular file with more than one\nname, which keeps its owner and mode (TRUSTED-RUNTIME v2 I5).\n\nclose (after freeze): a regular file that is not root'\"'\"'s is replaced at its\nworkspace name by a root-owned copy without setuid, setgid or group and other\nwrite; the file'\"'\"'s other names keep the old one. Group and other write go from\nevery other entry. Any other entry that is not root'\"'\"'s fails the step, and\nevery entry the step changes is read back.\n\nThis script also runs on older image Pythons; keep it annotation-free.\n\"\"\"\n\nimport os\nimport stat\nimport sys\n\nUID = GID = 0  # the owner the workspace goes to\nDIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC\nNEW = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC\n\n\ndef same(a, b):\n    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)\n\n\ndef copy(src, dst, size):\n    done = 0\n    while done < size:\n        try:\n            n = os.sendfile(dst, src, done, size - done)\n        except OSError:\n            os.lseek(src, done, os.SEEK_SET)\n            n = os.write(dst, os.read(src, min(size - done, 1 << 20)))\n        if n == 0:\n            raise OSError(\"file shrank while copied\")\n        done += n\n\n\ndef replace(name, st):\n    \"\"\"Put a root-owned copy of the regular file *name* in its place.\"\"\"\n    # A short temporary name, so a 255-byte name still has room beside it.\n    for _ in range(100):\n        tmp = \".bf\" + os.urandom(4).hex()\n        try:\n            dst = os.open(tmp, NEW, 0o600)\n            break\n        except FileExistsError:\n            pass\n    else:\n        raise OSError(f\"no free temporary name beside {name!r}\")\n    try:\n        try:\n            src = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)\n            try:\n                if not same(os.fstat(src), st):\n                    raise OSError(f\"{name!r} changed during the step\")\n                copy(src, dst, st.st_size)\n            finally:\n                os.close(src)\n            os.fchown(dst, UID, GID)\n            os.fchmod(dst, stat.S_IMODE(st.st_mode) & ~0o6022)\n            os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))\n        finally:\n            os.close(dst)\n        # Nothing reads the name meanwhile, and a rename over a file makes\n        # ext4 write the copy out first (auto_da_alloc): ten times slower.\n        os.unlink(name)\n        os.rename(tmp, name)\n    except BaseException:\n        os.unlink(tmp)  # still there: renaming it is the last step\n        raise\n\n\ndef freeze(name, entry):\n    \"\"\"Give *name* to root unless it is a regular file with another name.\"\"\"\n    if (\n        entry is not None\n        and entry.is_file(follow_symlinks=False)\n        and entry.stat(follow_symlinks=False).st_nlink > 1\n    ):\n        return False\n    os.chown(name, UID, GID, follow_symlinks=False)\n    return entry is None or entry.is_dir(follow_symlinks=False)\n\n\ndef close(name, entry):\n    \"\"\"Close *name* to the sandbox user; True when it is a folder.\"\"\"\n    st = os.lstat(name) if entry is None else entry.stat(follow_symlinks=False)\n    if st.st_uid != UID:\n        if not stat.S_ISREG(st.st_mode):\n            raise OSError(f\"{name!r} is not root'\"'\"'s after the freeze\")\n        replace(name, st)\n        bits = 0o6022\n    elif st.st_mode & 0o022 and not stat.S_ISLNK(st.st_mode):\n        os.chmod(name, stat.S_IMODE(st.st_mode) & ~0o022)\n        bits = 0o022\n    else:\n        return stat.S_ISDIR(st.st_mode)\n    after = os.lstat(name)\n    if after.st_uid != UID or after.st_mode & bits:\n        raise OSError(f\"{name!r} is still open after the step\")\n    return stat.S_ISDIR(after.st_mode)\n\n\ndef scan(settle):\n    \"\"\"Settle the current folder'\"'\"'s entries; return its subfolders.\"\"\"\n    with os.scandir(\".\") as it:\n        entries = list(it)\n    return [e.name for e in entries if settle(e.name, e)]\n\n\ndef walk(workspace, settle):\n    os.chdir(workspace)\n    settle(\".\", None)\n    stack = [(os.lstat(\".\"), scan(settle))]\n    while stack:\n        subs = stack[-1][1]\n        if subs:\n            fd = os.open(subs.pop(), DIR)\n            try:\n                os.fchdir(fd)\n            finally:\n                os.close(fd)\n            stack.append((os.lstat(\".\"), scan(settle)))\n            continue\n        stack.pop()\n        if stack:\n            os.chdir(\"..\")\n            if not same(os.lstat(\".\"), stack[-1][0]):\n                raise OSError(\"a folder moved during the step\")\n\n\nif __name__ == \"__main__\":\n    try:\n        walk(sys.argv[2], {\"freeze\": freeze, \"close\": close}[sys.argv[1]])\n    except OSError as e:\n        sys.exit(f\"workspace {sys.argv[1]}: {e}\")\n' freeze /app); else bf_workspace=$(cd -P /app && printf '%s.' \"$PWD\") || exit 1; bf_workspace=${bf_workspace%.}; find \"$bf_workspace\" -type f -links +1 -prune -o -exec chown -h root:root {} + || exit 1; bf_left=$(find \"$bf_workspace\" ! -user 0 \\( ! -type f -o -links 1 \\) -print -quit) || exit 1; [ -z \"$bf_left\" ] || { echo \"workspace freeze: entries are left that are not root's\" >&2; exit 1; }; fi",
-  "cleanup_conftests": "find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o -path /opt/benchflow/verifier -prune -o -name conftest.py -not -path '/verifier/*' -not -path '/tests/*' -exec rm -f -- {} + 2>/dev/null; bf_cleanup_workspace=$(cd -P /app && printf '%s.' \"$PWD\" | sed 's/[][\\\\*?]/\\\\&/g') || exit 1; bf_cleanup_workspace=${bf_cleanup_workspace%.}; find /tmp /var/tmp \\( -path /app -o -path \"$bf_cleanup_workspace\" \\) -prune -o -name '*.py' -exec rm -f -- {} + 2>/dev/null; ( _BF_HOOK_PYTHONPATH=\"${_BENCHFLOW_IMAGE_PYTHONPATH-${__bf_hook_pythonpath-${PYTHONPATH-}}}\"; _BF_HOOK_PYTHONHOME=\"${_BENCHFLOW_IMAGE_PYTHONHOME-${__bf_hook_pythonhome-${PYTHONHOME-}}}\"; _BF_HOOK_PYTHONUSERBASE=\"${_BENCHFLOW_IMAGE_PYTHONUSERBASE-${PYTHONUSERBASE-}}\"; _BF_HOOK_IMAGE_PATH=\"${_BENCHFLOW_IMAGE_PATH-}\"; export _BF_HOOK_PYTHONPATH _BF_HOOK_PYTHONHOME _BF_HOOK_PYTHONUSERBASE _BF_HOOK_IMAGE_PATH; ( if [ -f /opt/benchflow/rt/RECORD ]; then [ -x /opt/benchflow/rt/py/python3 ] || { echo 'benchflow: python3 not found in the protected runtime, so this root step does not run' >&2; exit 127; }; bf_py=/opt/benchflow/rt/py/python3; else bf_py=\"${__bf_root_python:-/nonexistent/benchflow-judged-python3}\"; fi; exec \"$bf_py\" -I -S -B -c 'import os as _bf_os\n_bf_os.chdir('\"'\"'/'\"'\"')\n[_bf_os.environ.pop(_bf_k) for _bf_k in list(_bf_os.environ) if _bf_k.startswith('\"'\"'PYTHON'\"'\"')]\ndel _bf_os\nimport json, os, site, sys, sysconfig\n_bf_record = '\"'\"'/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json'\"'\"'\n_bf_each = '\"'\"'/opt/benchflow/rt/IMAGE_PYTHON_PATHS.jsonl'\"'\"'\nif os.path.isfile(_bf_record):\n    with open(_bf_record) as _bf_handle:\n        _bf_paths = json.load(_bf_handle)\nelif os.path.isfile('\"'\"'/opt/benchflow/rt/RECORD'\"'\"'):\n    raise RuntimeError('\"'\"'missing pre-agent Python search paths; start a fresh sandbox'\"'\"')\nelse:\n    # No kit means no sandbox-user turn. Keep this fallback isolated too;\n    # explicit verifier PYTHONPATH is supplied separately as data.\n    _bf_paths = {'\"'\"'path'\"'\"': list(sys.path) + site.getsitepackages(),\n                 '\"'\"'user_site'\"'\"': [site.getusersitepackages()],\n                 '\"'\"'site'\"'\"': site.getsitepackages() + [site.getusersitepackages()]}\n_bf_paths['\"'\"'interpreters'\"'\"'] = {}\nif os.path.isfile(_bf_each):\n    with open(_bf_each) as _bf_handle:\n        for _bf_line in _bf_handle:\n            _bf_entry = json.loads(_bf_line)\n            if not isinstance(_bf_entry, dict) or not isinstance(_bf_entry.get('\"'\"'exe'\"'\"'), str):\n                raise RuntimeError('\"'\"'invalid pre-agent Python search paths'\"'\"')\n            _bf_paths['\"'\"'interpreters'\"'\"'][_bf_entry['\"'\"'exe'\"'\"']] = _bf_entry\nfor _bf_entry in [_bf_paths] + list(_bf_paths['\"'\"'interpreters'\"'\"'].values()):\n    if not isinstance(_bf_entry, dict) or any(\n        not isinstance(_bf_entry.get(k), list) or any(\n            not isinstance(p, str) or not os.path.isabs(p) or '\"'\"'\\x00'\"'\"' in p\n            for p in _bf_entry[k]) for k in ('\"'\"'path'\"'\"', '\"'\"'user_site'\"'\"')) or (\n        '\"'\"'site'\"'\"' in _bf_entry and (not isinstance(_bf_entry['\"'\"'site'\"'\"'], list) or any(\n            not isinstance(p, str) or not os.path.isabs(p) for p in _bf_entry['\"'\"'site'\"'\"']))):\n        raise RuntimeError('\"'\"'invalid pre-agent Python search paths'\"'\"')\n    _bf_h = _bf_entry.get('\"'\"'hooks'\"'\"', {})\n    if not isinstance(_bf_h, dict) or any(\n        not isinstance(d, str) or not os.path.isabs(d) or not isinstance(fs, dict)\n        or any(not isinstance(n, str) or not isinstance(v, str) for n, v in fs.items())\n        for d, fs in _bf_h.items()):\n        raise RuntimeError('\"'\"'invalid pre-agent Python search paths'\"'\"')\n\n\ndef _bf_paths_for(path_value):\n    '\"'\"''\"'\"''\"'\"'The record of the first python3 or python on *path_value* (the\n    verifier'\"'\"'s PATH) that has one; root'\"'\"'s python3 when none does.'\"'\"''\"'\"''\"'\"'\n    for _bf_dir in (path_value or '\"'\"''\"'\"').split('\"'\"':'\"'\"'):\n        if not os.path.isabs(_bf_dir):\n            continue\n        for _bf_name in ('\"'\"'python3'\"'\"', '\"'\"'python'\"'\"'):\n            _bf_exe = os.path.join(_bf_dir, _bf_name)\n            if _bf_exe in _bf_paths['\"'\"'interpreters'\"'\"']:\n                return _bf_paths['\"'\"'interpreters'\"'\"'][_bf_exe]\n            if os.path.exists(_bf_exe):\n                return _bf_paths\n    return _bf_paths\n\n\ndef _bf_recorded_hooks():\n    '\"'\"''\"'\"''\"'\"'Every recorded folder and the hooks it held before the agent:\n    {folder: {name: digest}} (HOOK_RULE). A folder no record lists is absent.'\"'\"''\"'\"''\"'\"'\n    _bf_out = {}\n    for _bf_entry in [_bf_paths] + list(_bf_paths['\"'\"'interpreters'\"'\"'].values()):\n        for _bf_d, _bf_files in (_bf_entry.get('\"'\"'hooks'\"'\"') or {}).items():\n            _bf_out.setdefault(_bf_d, {}).update(_bf_files)\n    return _bf_out\n\n\ndef _bf_site_folders():\n    '\"'\"''\"'\"''\"'\"'Every folder whose *.pth files site executes for some recorded\n    interpreter. A record from before PT round 16 has no '\"'\"'site'\"'\"': each of\n    its folders (search path, user site, hook folders) counts as one.'\"'\"''\"'\"''\"'\"'\n    _bf_out = set()\n    for _bf_entry in [_bf_paths] + list(_bf_paths['\"'\"'interpreters'\"'\"'].values()):\n        if '\"'\"'site'\"'\"' in _bf_entry:\n            _bf_out.update(_bf_entry['\"'\"'site'\"'\"'])\n        else:\n            _bf_out.update(_bf_entry.get('\"'\"'hooks'\"'\"') or {})\n            _bf_out.update(_bf_entry['\"'\"'path'\"'\"'] + _bf_entry['\"'\"'user_site'\"'\"'])\n    return _bf_out\n\n\ndef _bf_all_paths():\n    '\"'\"''\"'\"''\"'\"'Every folder any recorded interpreter searches, its user site included.'\"'\"''\"'\"''\"'\"'\n    _bf_all = list(_bf_paths['\"'\"'path'\"'\"']) + list(_bf_paths['\"'\"'user_site'\"'\"'])\n    for _bf_entry in _bf_paths['\"'\"'interpreters'\"'\"'].values():\n        _bf_all += _bf_entry['\"'\"'path'\"'\"'] + _bf_entry['\"'\"'user_site'\"'\"']\n    return _bf_all\n\nimport ast, binascii, glob, hashlib, os, stat\n_BF_NB = getattr(os, '\"'\"'O_NONBLOCK'\"'\"', 0) | getattr(os, '\"'\"'O_CLOEXEC'\"'\"', 0)\n_BF_MAX = 64 << 20\n\n\ndef _bf_is_hook(name, site_folder):\n    '\"'\"''\"'\"''\"'\"'site imports sitecustomize and usercustomize from any folder on the\n    search path, in any form the import system finds (name.py, a sourceless\n    name.pyc, name.<abi>.so, a package folder), and executes *.pth only in\n    a site folder.'\"'\"''\"'\"''\"'\"'\n    for _bf_n in ('\"'\"'sitecustomize'\"'\"', '\"'\"'usercustomize'\"'\"'):\n        if name == _bf_n or name.startswith(_bf_n + '\"'\"'.'\"'\"'):\n            return True\n    return bool(site_folder) and name.endswith('\"'\"'.pth'\"'\"')\n\n\ndef _bf_read_fd(fd):\n    '\"'\"''\"'\"''\"'\"'The bytes of the open regular file *fd* (at most _BF_MAX), else None.'\"'\"''\"'\"''\"'\"'\n    if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size > _BF_MAX:\n        return None\n    _bf_chunks = []\n    while True:\n        _bf_chunk = os.read(fd, 1 << 20)\n        if not _bf_chunk:\n            return b'\"'\"''\"'\"'.join(_bf_chunks)\n        _bf_chunks.append(_bf_chunk)\n        if sum(len(c) for c in _bf_chunks) > _BF_MAX:\n            return None\n\n\ndef _bf_node(name, dir_fd, depth=0):\n    '\"'\"''\"'\"''\"'\"'The entry *name* in *dir_fd* as read once, never following a link:\n    ('\"'\"'f'\"'\"', bytes, mode), ('\"'\"'l'\"'\"', target, bytes of the regular file it points\n    to or None), ('\"'\"'d'\"'\"', mode, [(name, node)]), or None (anything else, too\n    deep or too big, unreadable).'\"'\"''\"'\"''\"'\"'\n    try:\n        _bf_st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)\n        if stat.S_ISLNK(_bf_st.st_mode):\n            _bf_data = None\n            try:\n                _bf_fd = os.open(name, os.O_RDONLY | _BF_NB, dir_fd=dir_fd)\n                try:\n                    _bf_data = _bf_read_fd(_bf_fd)\n                finally:\n                    os.close(_bf_fd)\n            except OSError:\n                pass\n            return ('\"'\"'l'\"'\"', os.readlink(name, dir_fd=dir_fd), _bf_data)\n        if stat.S_ISREG(_bf_st.st_mode):\n            _bf_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | _BF_NB, dir_fd=dir_fd)\n            try:\n                _bf_data = _bf_read_fd(_bf_fd)\n                _bf_mode = os.fstat(_bf_fd).st_mode\n            finally:\n                os.close(_bf_fd)\n            return None if _bf_data is None else ('\"'\"'f'\"'\"', _bf_data, _bf_mode)\n        if stat.S_ISDIR(_bf_st.st_mode) and depth < 16:\n            _bf_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\n                             | getattr(os, '\"'\"'O_CLOEXEC'\"'\"', 0), dir_fd=dir_fd)\n            try:\n                _bf_names = sorted(os.listdir(_bf_fd))\n                if len(_bf_names) > 4096:\n                    return None\n                _bf_kids = [(n, _bf_node(n, _bf_fd, depth + 1)) for n in _bf_names]\n                _bf_mode = os.fstat(_bf_fd).st_mode\n            finally:\n                os.close(_bf_fd)\n            if any(k is None for _, k in _bf_kids):\n                return None\n            return ('\"'\"'d'\"'\"', _bf_mode, _bf_kids)\n    except (OSError, ValueError):\n        pass\n    return None\n\n\ndef _bf_sha(data):\n    return hashlib.sha256(data).hexdigest()\n\n\ndef _bf_digest(node):\n    '\"'\"''\"'\"''\"'\"'A file: its sha256. A link: over its target and what it points to. A\n    folder: over its whole tree (sorted names, each entry'\"'\"'s digest).'\"'\"''\"'\"''\"'\"'\n    if node is None:\n        return None\n    if node[0] == '\"'\"'f'\"'\"':\n        return _bf_sha(node[1])\n    if node[0] == '\"'\"'l'\"'\"':\n        _bf_t = node[1].encode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"')\n        _bf_c = b'\"'\"'-'\"'\"' if node[2] is None else _bf_sha(node[2]).encode()\n        return '\"'\"'link:'\"'\"' + _bf_sha(_bf_t + b'\"'\"'\\0'\"'\"' + _bf_c)\n    _bf_lines = [n.encode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"') + b'\"'\"'\\0'\"'\"'\n                 + _bf_digest(k).encode() + b'\"'\"'\\n'\"'\"' for n, k in node[2]]\n    return '\"'\"'tree:'\"'\"' + _bf_sha(b'\"'\"''\"'\"'.join(_bf_lines))\n\n\ndef _bf_open_dir(path):\n    '\"'\"''\"'\"''\"'\"'A descriptor on the folder *path* as the import system sees it (a\n    link to a folder followed), or None: a path no folder can have (an\n    embedded NUL) included.'\"'\"''\"'\"''\"'\"'\n    try:\n        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, '\"'\"'O_CLOEXEC'\"'\"', 0))\n    except (OSError, ValueError):\n        return None\n\n\n_BF_INPUT_NAMES = ('\"'\"'PYTHONPATH'\"'\"', '\"'\"'PYTHONHOME'\"'\"', '\"'\"'PYTHONUSERBASE'\"'\"')\n\n\ndef _bf_env_inputs(values):\n    '\"'\"''\"'\"''\"'\"'PYTHONPATH, PYTHONHOME and PYTHONUSERBASE as test.sh'\"'\"'s Python gets\n    them, as text: *values* (the route'\"'\"'s data copies) and PID\n    1'\"'\"'s (the image'\"'\"'s, which the task route gives test.sh back).'\"'\"''\"'\"''\"'\"'\n    out = dict((n, [v] if v else []) for n, v in zip(_BF_INPUT_NAMES, values))\n    for n in _BF_INPUT_NAMES:\n        out.setdefault(n, [])\n    try:\n        with open('\"'\"'/proc/1/environ'\"'\"', '\"'\"'rb'\"'\"') as h:\n            for item in h.read().split(b'\"'\"'\\0'\"'\"'):\n                name, _, value = item.decode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"').partition('\"'\"'='\"'\"')\n                if name in out and value and value not in out[name]:\n                    out[name].append(value)\n    except OSError:\n        pass\n    return out\n\n\ndef _bf_pth_folders(d, dirs, sites):\n    '\"'\"''\"'\"''\"'\"'Add the folders the .pth files in the site folder *d* name, read as\n    text and never run: a path line as site joins it, an import line'\"'\"'s\n    literal sys.path.append/insert argument; a literal site.addsitedir\n    argument is a site folder itself.'\"'\"''\"'\"''\"'\"'\n    fd = _bf_open_dir(d)\n    if fd is None:\n        return\n    try:\n        names = sorted(n for n in os.listdir(fd) if n.endswith('\"'\"'.pth'\"'\"'))\n        for n in names:\n            try:\n                pfd = os.open(n, os.O_RDONLY | _BF_NB, dir_fd=fd)\n                try:\n                    data = _bf_read_fd(pfd)\n                finally:\n                    os.close(pfd)\n            except OSError:\n                continue\n            for line in (data or b'\"'\"''\"'\"').decode('\"'\"'utf-8'\"'\"', '\"'\"'replace'\"'\"').splitlines():\n                # A line with a NUL names no folder: a binary file named\n                # *.pth (model weights beside the packages), which site\n                # also passes over (PT-R16-R2-1).\n                if not line.strip() or line.startswith('\"'\"'#'\"'\"') or '\"'\"'\\0'\"'\"' in line:\n                    continue\n                if not line.startswith(('\"'\"'import '\"'\"', '\"'\"'import\\t'\"'\"')):\n                    dirs.add(os.path.normpath(os.path.join(d, line.rstrip())))\n                    continue\n                try:\n                    tree = ast.parse(line)\n                except (SyntaxError, ValueError):\n                    continue\n                for call in ast.walk(tree):\n                    attr = getattr(getattr(call, '\"'\"'func'\"'\"', None), '\"'\"'attr'\"'\"', '\"'\"''\"'\"')\n                    if attr not in ('\"'\"'append'\"'\"', '\"'\"'insert'\"'\"', '\"'\"'addsitedir'\"'\"'):\n                        continue\n                    for arg in getattr(call, '\"'\"'args'\"'\"', []):\n                        value = getattr(arg, '\"'\"'value'\"'\"', getattr(arg, '\"'\"'s'\"'\"', None))\n                        if isinstance(value, str) and os.path.isabs(value):\n                            (sites if attr == '\"'\"'addsitedir'\"'\"' else dirs).add(\n                                os.path.normpath(value))\n    finally:\n        os.close(fd)\n\n\ndef _bf_search_inputs(values, cwd, sites, harvest=True):\n    '\"'\"''\"'\"''\"'\"'The folders test.sh'\"'\"'s Python searches that its interpreter'\"'\"'s own\n    search path may not show: each\n    PYTHONPATH entry (an empty or relative one against *cwd*, the original\n    working folder), PYTHONHOME'\"'\"'s prefix'\"'\"'s site folders, the user site, and\n    the folders the .pth files of *sites* and of those name (unless\n    *harvest* is false: the clean-up reads those only from the .pth files\n    it keeps). Returns (folders, site folders); only the latter run *.pth.'\"'\"''\"'\"''\"'\"'\n    inputs = _bf_env_inputs(values)\n    dirs, found = set(), set()\n    for value in inputs['\"'\"'PYTHONPATH'\"'\"']:\n        for entry in value.split('\"'\"':'\"'\"'):\n            if '\"'\"'\\0'\"'\"' not in entry and (cwd or os.path.isabs(entry)):\n                dirs.add(os.path.normpath(os.path.join(cwd, entry)))\n    # PYTHONHOME is prefix[:exec_prefix]; site takes site folders under both\n    # (site.PREFIXES, PT-R16-R2-4).\n    for value in inputs['\"'\"'PYTHONHOME'\"'\"']:\n        for prefix in value.split('\"'\"':'\"'\"')[:2]:\n            if os.path.isabs(prefix) and '\"'\"'\\0'\"'\"' not in prefix:\n                for pat in ('\"'\"'lib/python3*/site-packages'\"'\"', '\"'\"'lib/python3*/dist-packages'\"'\"'):\n                    found.update(glob.glob(os.path.join(glob.escape(prefix), pat)))\n    for base in inputs['\"'\"'PYTHONUSERBASE'\"'\"'] + ['\"'\"'/root/.local'\"'\"']:\n        if os.path.isabs(base):\n            found.update(glob.glob(os.path.join(glob.escape(base), '\"'\"'lib/python3*/site-packages'\"'\"')))\n    found = set(os.path.normpath(p) for p in found)\n    if not harvest:\n        return dirs - found, found\n    done = set()\n    while len(done) < 4096:\n        todo = sorted((set(sites) | found) - done)\n        if not todo:\n            break\n        for d in todo:\n            done.add(d)\n            _bf_pth_folders(d, dirs, found)\n    return dirs - found, found\n\nimport glob, os\ncwd, workspace = (sys.argv[1:] + ['\"'\"''\"'\"'] * 2)[:2]\nvalues = [os.environ.get('\"'\"'_BF_HOOK_'\"'\"' + n, '\"'\"''\"'\"') for n in ('\"'\"'PYTHONPATH'\"'\"', '\"'\"'PYTHONHOME'\"'\"', '\"'\"'PYTHONUSERBASE'\"'\"')]\ndirs = set(_bf_paths['\"'\"'path'\"'\"'] + _bf_paths['\"'\"'user_site'\"'\"'])\nglobbed = set(glob.glob('\"'\"'/root/.local/lib/python3*/site-packages'\"'\"'))\nprefixes = []\nfor search in (os.environ.get('\"'\"'PATH'\"'\"', '\"'\"''\"'\"'), os.environ.get('\"'\"'_BF_HOOK_IMAGE_PATH'\"'\"', '\"'\"''\"'\"')):\n    for p in search.split('\"'\"':'\"'\"'):\n        exe = os.path.join(p, '\"'\"'python3'\"'\"')\n        if (not os.path.isabs(p) or p.startswith('\"'\"'/opt/benchflow/'\"'\"')\n                or not os.path.isfile(exe)):\n            continue\n        prefixes.append(os.path.dirname(os.path.dirname(os.path.realpath(exe))))\n        bindir = os.path.dirname(os.path.abspath(exe))\n        for cfg in (bindir, os.path.dirname(bindir)):\n            if os.path.isfile(os.path.join(cfg, '\"'\"'pyvenv.cfg'\"'\"')):\n                prefixes.append(cfg)\n                break\n        break\nprefix_sites = set()\nfor prefix in prefixes:\n    for pat in ('\"'\"'lib/python3*/site-packages'\"'\"', '\"'\"'lib/python3*/dist-packages'\"'\"'):\n        prefix_sites.update(glob.glob(os.path.join(glob.escape(prefix), pat)))\nprefix_sites = set(os.path.normpath(p) for p in prefix_sites)\nglobbed |= prefix_sites\ndirs |= globbed\nw = os.path.realpath(workspace) + '\"'\"'/'\"'\"' if workspace else '\"'\"''\"'\"'\nimport errno\nrecorded = _bf_recorded_hooks()\nsite_folders = _bf_site_folders() | set(_bf_paths['\"'\"'user_site'\"'\"']) | globbed\nmore, more_sites = _bf_search_inputs(\n    values, cwd, site_folders,\n    False)\nsite_folders |= more_sites\ndirs |= more | more_sites\nfailed = []\n_BF_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _BF_NB\ndef remove(dfd, name):\n    if stat.S_ISDIR(os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mode):\n        fd = os.open(name, _BF_DIR, dir_fd=dfd)\n        try:\n            for n in os.listdir(fd):\n                remove(fd, n)\n        finally:\n            os.close(fd)\n        os.rmdir(name, dir_fd=dfd)\n    else:\n        os.unlink(name, dir_fd=dfd)\ndef write(dfd, name, node):\n    if node[0] == '\"'\"'d'\"'\"':\n        os.mkdir(name, 0o700, dir_fd=dfd)\n        fd = os.open(name, _BF_DIR, dir_fd=dfd)\n        try:\n            for n, k in node[2]:\n                if k[0] != '\"'\"'l'\"'\"' or k[2] is not None:\n                    write(fd, n, k)\n            if os.geteuid() == 0:\n                os.fchown(fd, 0, 0)\n            os.fchmod(fd, stat.S_IMODE(node[1]) & 0o755)\n        finally:\n            os.close(fd)\n        return\n    data, mode = (node[1], node[2]) if node[0] == '\"'\"'f'\"'\"' else (node[2], 0o644)\n    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _BF_NB, 0o600, dir_fd=dfd)\n    try:\n        while data:\n            data = data[os.write(fd, data):]\n        if os.geteuid() == 0:\n            os.fchown(fd, 0, 0)\n        os.fchmod(fd, stat.S_IMODE(mode) & 0o755)\n    finally:\n        os.close(fd)\ndef fresh(dfd, name, node):\n    tag = binascii.hexlify(os.urandom(8)).decode()\n    new, old = '\"'\"'.bf-fresh-'\"'\"' + tag + '\"'\"'.tmp'\"'\"', '\"'\"'.bf-stale-'\"'\"' + tag + '\"'\"'.tmp'\"'\"'\n    write(dfd, new, node)\n    if node[0] == '\"'\"'d'\"'\"':\n        os.rename(name, old, src_dir_fd=dfd, dst_dir_fd=dfd)\n        os.rename(new, name, src_dir_fd=dfd, dst_dir_fd=dfd)\n        remove(dfd, old)\n    else:\n        os.rename(new, name, src_dir_fd=dfd, dst_dir_fd=dfd)\nagent_user = sys.argv[3:4] == ['\"'\"'1'\"'\"']\nexcluded = [os.path.realpath(p).rstrip('\"'\"'/'\"'\"') + '\"'\"'/'\"'\"' for p in\n            [workspace] + sys.argv[4:] + ['\"'\"'/tmp'\"'\"', '\"'\"'/var/tmp'\"'\"', '\"'\"'/home'\"'\"', '\"'\"'/logs'\"'\"', '\"'\"'/testbed'\"'\"'] if p]\nroot_made = []\ndef _bf_root_alone(st):\n    return st.st_uid == 0 and not st.st_mode & 0o022\ndef _bf_root_tree(dfd, name, depth=0):\n    st = os.stat(name, dir_fd=dfd, follow_symlinks=False)\n    if not _bf_root_alone(st):\n        return False\n    if stat.S_ISREG(st.st_mode):\n        return st.st_nlink == 1\n    if not stat.S_ISDIR(st.st_mode) or depth >= 16:\n        return False\n    fd = os.open(name, _BF_DIR, dir_fd=dfd)\n    try:\n        names = os.listdir(fd)\n        return len(names) <= 4096 and all(_bf_root_tree(fd, n, depth + 1) for n in names)\n    finally:\n        os.close(fd)\ndef _bf_root_made(dfd, name):\n    if not agent_user:\n        return False\n    try:\n        here = os.path.realpath('\"'\"'/proc/self/fd/%d'\"'\"' % dfd)\n        if not here.startswith('\"'\"'/'\"'\"') or any((here.rstrip('\"'\"'/'\"'\"') + '\"'\"'/'\"'\"').startswith(e) for e in excluded):\n            return False\n        folder = here\n        while True:\n            st = os.stat(folder, follow_symlinks=False)\n            if not (stat.S_ISDIR(st.st_mode) and _bf_root_alone(st)):\n                return False\n            if folder == '\"'\"'/'\"'\"':\n                break\n            folder = os.path.dirname(folder)\n        a, b = os.stat(here), os.fstat(dfd)\n        if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):\n            return False\n        return _bf_root_tree(dfd, name)\n    except (OSError, ValueError, RecursionError):\n        return False\ndef keep_or_remove(dfd, name, digest):\n    node = None\n    if digest is not None:\n        node = _bf_node(name, dfd)\n        if not (node is not None and _bf_digest(node) == digest\n                and not (node[0] == '\"'\"'l'\"'\"' and node[2] is None)):\n            node = None\n    if node is None and _bf_root_made(dfd, name):\n        node = _bf_node(name, dfd)\n        if node is not None and node[0] != '\"'\"'l'\"'\"':\n            root_made.append(name)\n        else:\n            node = None\n    if node is not None:\n        try:\n            fresh(dfd, name, node)\n            return\n        except OSError as error:\n            if error.errno == errno.EROFS:\n                return\n    remove(dfd, name)\ndef clean(dfd, known, site_folder):\n    for f in os.listdir(dfd):\n        try:\n            if f == '\"'\"'__pycache__'\"'\"':\n                if stat.S_ISLNK(os.stat(f, dir_fd=dfd, follow_symlinks=False).st_mode):\n                    os.unlink(f, dir_fd=dfd)\n                    continue\n                fd = os.open(f, _BF_DIR, dir_fd=dfd)\n                try:\n                    for n in os.listdir(fd):\n                        if _bf_is_hook(n, False):\n                            remove(fd, n)\n                finally:\n                    os.close(fd)\n            elif _bf_is_hook(f, site_folder):\n                keep_or_remove(dfd, f, None if known is None else known.get(f))\n        except OSError as error:\n            if error.errno != errno.ENOENT:\n                failed.append(f)\ndef visit(d):\n    known = recorded.get(d)\n    if known is None and d.startswith(('\"'\"'/usr/lib'\"'\"', '\"'\"'/usr/local/lib'\"'\"')):\n        return\n    if known is not None and (os.path.islink(d) or (os.path.lexists(d) and not os.path.isdir(d))):\n        parent = _bf_open_dir(os.path.dirname(d))\n        if parent is None:\n            return\n        try:\n            node = _bf_node(os.path.basename(d), parent)\n            if node is None or node[0] != '\"'\"'l'\"'\"' or _bf_digest(node) != known.get('\"'\"''\"'\"'):\n                keep_or_remove(parent, os.path.basename(d), known.get('\"'\"''\"'\"'))\n                return\n        except OSError as error:\n            if error.errno != errno.ENOENT:\n                failed.append(d)\n            return\n        finally:\n            os.close(parent)\n    dfd = _bf_open_dir(d)\n    if dfd is None:\n        return\n    try:\n        spare = (bool(w) and known is None and d in prefix_sites\n                 and (os.path.realpath(d) + '\"'\"'/'\"'\"').startswith(w))\n        clean(dfd, known, d in site_folders and not spare)\n    finally:\n        os.close(dfd)\nvisited = {}\nfor d in sorted(set(recorded) | dirs):\n    visited[d] = d in site_folders\n    visit(d)\nfor _ in range(64):\n    named, named_sites = set(), set()\n    for d in sorted(site_folders):\n        _bf_pth_folders(d, named, named_sites)\n    site_folders |= named_sites\n    todo = sorted(d for d in named | named_sites\n                  if d not in visited or (d in site_folders and not visited[d]))\n    if not todo:\n        break\n    for d in todo:\n        visited[d] = d in site_folders\n        visit(d)\nif root_made:\n    sys.stderr.write('\"'\"'benchflow: kept %d new or changed Python start-up hook(s) '\"'\"'\n                     '\"'\"'only root could have written, e.g. %r\\n'\"'\"' % (len(root_made), root_made[0]))\nif failed:\n    sys.stderr.write('\"'\"'benchflow: could not remove %d Python start-up hook(s), '\"'\"'\n                     '\"'\"'e.g. %r\\n'\"'\"' % (len(failed), failed[0]))\n    sys.exit(3)\n' \"$PWD\" /app 1 ) ); bf_rc=$?; [ \"$bf_rc\" = 0 ] || { [ \"$bf_rc\" = 127 ] && echo \"benchflow: no protected Python in this sandbox, so the Python start-up hook clean-up was skipped\" >&2; } || { echo \"benchflow: removing Python start-up hooks failed (rc=$bf_rc)\" >&2; false; }",
-  "clear_verifier_output": "if [ -L /logs/verifier ]; then rm -f /logs/verifier; fi && mkdir -p /logs/verifier && if command -v find >/dev/null 2>&1; then find /logs/verifier -mindepth 1 -exec rm -rf -- {} +; else rm -rf /logs/verifier/* /logs/verifier/.[!.]* /logs/verifier/..?* 2>/dev/null; true; fi && chmod 777 /logs/verifier",
-  "kill_sandbox_user": "P=/proc\nuid=$(id -u agent 2>/dev/null) || { echo 'Invalid sandbox UID' >&2; exit 2; }\ncase \"$uid\" in ''|*[!0-9]*|0) echo 'Invalid sandbox UID' >&2; exit 2 ;; esac\nif [ ! -r \"$P/self/status\" ]; then\n    echo 'Process table is unavailable' >&2\n    exit 2\nfi\ngid=$(id -g agent 2>/dev/null)\ncase \"$gid\" in ''|*[!0-9]*) gid=$uid ;; esac\nme=\n{ while read -r key first second rest || [ -n \"$key\" ]; do\n    [ \"$key\" = Uid: ] && me=$second\n    key=\ndone <\"$P/self/status\"; } 2>/dev/null\nif [ \"$me\" != 0 ] && [ 1 != 0 ]; then\n    echo 'The kill before grading is not running as root' >&2\n    exit 2\nfi\n# The descriptor inspections in the keeping/release paths need a helper\n# that can read as the user too. Signals still check each actual invocation.\nas_user=\ncan_be() (\n    check=\"[ \\\"\\$(id -u)\\\" = $uid ] && [ \\\"\\$(id -g)\\\" = $gid ]\"\n    case \"$1\" in\n        setpriv) setpriv --reuid=\"$uid\" --regid=\"$gid\" --clear-groups -- sh -c \"$check\" </dev/null >/dev/null 2>&1 ;;\n        su) su -s /bin/sh agent -c \"$check\" </dev/null >/dev/null 2>&1 ;;\n    esac\n)\nif [ \"$me\" = 0 ]; then\n    for helper in setpriv su; do\n        if command -v \"$helper\" >/dev/null 2>&1 && can_be \"$helper\"; then\n            as_user=$helper\n            break\n        fi\n    done\nfi\nasuser() {\n    if [ \"$me\" != 0 ]; then\n        eval \"$1\" >/dev/null\n        return 0\n    fi\n    body=\"[ \\\"\\$(id -u)\\\" = $uid ] && [ \\\"\\$(id -g)\\\" = $gid ] || exit 3; $1\"\n    for helper in setpriv su; do\n        command -v \"$helper\" >/dev/null 2>&1 || continue\n        case \"$helper\" in\n            setpriv) out=$(setpriv --reuid=\"$uid\" --regid=\"$gid\" --clear-groups -- sh -c \"$body\" </dev/null 2>/dev/null) ;;\n            su) out=$(su -s /bin/sh agent -c \"$body\" </dev/null 2>/dev/null) ;;\n        esac\n        if [ \"$out\" = 'BF as-user' ]; then\n            as_user=$helper\n            return 0\n        fi\n    done\n    return 1\n}\nhelpless() {\n    echo \"Cannot send SIG$1 as the sandbox user: neither setpriv nor su ran it as UID $uid GID $gid (install setpriv or su in the image and let root switch to that UID and GID)\" >&2\n    exit 2\n}\neveryone() {\n    [ \"$me\" = 0 ] || return 0\n    # kill(-1) runs in the helper's own shell, which it skips; in a ``$( )``\n    # subshell it would stop that shell, still waiting for it. Its error, if\n    # any, goes to the output root reads. A child gives even an otherwise\n    # empty UID a recipient: ESRCH never has to count as success. Keep its\n    # pid as our unreaped child through cleanup, and signal it as the user.\n    asuser \"sleep 60 </dev/null >/dev/null 2>&1 & probe=\\$!; delivered=; if LC_ALL=C kill -$1 -1 2>&1; then delivered=1; fi; kill -KILL \\\"\\$probe\\\" 2>/dev/null; wait \\\"\\$probe\\\" 2>/dev/null; [ \\\"\\$delivered\\\" = 1 ] && echo BF as-user\" || helpless \"$1\"\n}\neach() {\n    sig=$1\n    shift\n    mine=\n    for pid in \"$@\"; do\n        case \"$pid\" in\n            r*) kill -s \"$sig\" \"${pid#r}\" 2>/dev/null ;;\n            *) mine=\"$mine $pid\" ;;\n        esac\n    done\n    [ -n \"$mine\" ] || return 0\n    asuser \"for p in$mine; do kill -s $sig \\$p 2>/dev/null; done; echo BF as-user\" || helpless \"$sig\"\n}\nlive() {\n    for entry in \"$P\"/[0-9]*; do\n        pid=${entry##*/}\n        case \"$pid\" in ''|*[!0-9]*) continue ;; esac\n        state=\n        ruid=\n        euid=\n        suid=\n        threads=\n        if { while read -r key first second third rest || [ -n \"$key\" ]; do\n                case \"$key\" in\n                    State:) state=$first ;;\n                    Uid:) ruid=$first euid=$second suid=$third ;;\n                    Threads:) threads=$first ;;\n                esac\n                key=\n                # Stop once the fields the test below reads are in (Threads\n                # only for a zombie): the shell reads the file a byte at a\n                # time, and the ~45 lines after Uid made each walk cost\n                # ~15 ms in a trial's container (PERF-G).\n                if [ -n \"$state\" ] && [ -n \"$euid\" ] &&\n                    { [ \"$state\" != Z ] || [ -n \"$threads\" ]; }; then\n                    break\n                fi\n            done <\"$entry/status\"; } 2>/dev/null &&\n            [ -n \"$state\" ] && [ -n \"$euid\" ]; then\n            tag=\n            if [ \"$ruid\" != \"$uid\" ] && [ \"$suid\" != \"$uid\" ]; then\n                [ \"$euid\" = \"$uid\" ] || continue\n                tag=r\n            fi\n            if [ \"$state\" != Z ]; then\n                echo \"$tag$pid\"\n            else\n                case \"$threads\" in ''|*[!0-9]*) ;; *) [ \"$threads\" -gt 1 ] && echo \"$tag$pid\" ;; esac\n            fi\n        elif [ -d \"$entry\" ]; then\n            echo \"Cannot inspect process $pid\" >&2\n            return 2\n        fi\n    done\n    return 0\n}\n# Keeping uses numeric pids for socket and lineage lookups. Recheck their\n# signal role here, then use the same UID-constrained delivery as the plain\n# kill. Root's all-zero replacement is skipped; only the effective-UID-only\n# population needs root's residual list/signal window.\nsignal_one() {\n    sr= se= ssaved=\n    { while read -r key a b c rest || [ -n \"$key\" ]; do\n        [ \"$key\" = Uid: ] && { sr=$a; se=$b; ssaved=$c; }\n        key=\n    done <\"$P/$2/status\"; } 2>/dev/null || return 0\n    if [ \"$sr\" = \"$uid\" ] || [ \"$ssaved\" = \"$uid\" ]; then\n        each \"$1\" \"$2\"\n    elif [ \"$se\" = \"$uid\" ]; then\n        each \"$1\" \"r$2\"\n    fi\n    return 0\n}\nfreeze() {\n    everyone STOP\n    stopped=' '\n    pass=0\n    while [ \"$pass\" -lt 100 ]; do\n        pass=$((pass + 1))\n        found=$(live) || exit 2\n        new=\n        for pid in $found; do\n            case \"$stopped\" in *\" $pid \"*) continue ;; esac\n            new=\"$new $pid\"\n            stopped=\"$stopped$pid \"\n        done\n        [ -z \"$new\" ] && break\n        each STOP $new\n    done\n    found=$(live) || exit 2\n    for pid in $found; do\n        # The root/user signaling role can change during the grace without\n        # changing the process. Count its numeric pid only.\n        pid=${pid#r}\n        case \"$killed\" in *\" $pid \"*) ;; *) killed=\"$killed$pid \"; n=$((n + 1)) ;; esac\n    done\n}\nkilled=' '\nn=0\nfreeze\neach TERM $found\neach CONT $found\neveryone CONT\nif [ -n \"$found\" ]; then\n    if sleep 0.1 2>/dev/null; then tick=0.1 ticks=10; else tick=1 ticks=1; fi\n    t=0\n    while [ \"$t\" -lt \"$ticks\" ]; do\n        found=$(live) || exit 2\n        [ -z \"$found\" ] && break\n        sleep \"$tick\"\n        t=$((t + 1))\n    done\nfi\nround=0\nwhile [ \"$round\" -lt 8 ]; do\n    round=$((round + 1))\n    freeze\n    each KILL $found\n    everyone KILL\n    found=$(live) || exit 2\n    if [ -z \"$found\" ]; then\n        echo \"BF killed $n end\"\n        exit 0\n    fi\n    sleep 1\ndone\nfound=$(live) || exit 2\nif [ -z \"$found\" ]; then\n    echo \"BF killed $n end\"\n    exit 0\nfi\nnames=\nfor pid in $found; do\n    pid=${pid#r}\n    cmd=$(tr '\\000\\n' ' ?' <\"$P/$pid/cmdline\" 2>/dev/null | cut -c1-200)\n    names=\"$names $pid ($cmd)\"\ndone\necho \"Sandbox-user writers remain:$names\" >&2\nexit 1",
+  "chown_workspace": "if [ -f /opt/runtime/rt/RECORD ]; then if [ -x /opt/runtime/rt/py/python3 ]; then __bf_hp_py=/opt/runtime/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c '\"\"\"Give the workspace to root (freeze), or close it to kept services (close).\n\nRuns as root with python3 -I -S while no sandbox-user process runs (killed,\nor kept services frozen). One walk: it changes into each folder through a\nno-follow descriptor and back through \"..\", checked by device and inode, so\nit follows no link, resolves no long path and holds one descriptor at any\ndepth. Mounts are entered, as chown -R does. Each change is its own checked\nsyscall: the first that fails stops the walk and fails the step.\n\nfreeze: every entry becomes root'\"'\"'s, except a regular file with more than one\nname, which keeps its owner and mode. A regular file whose chown is denied\nis replaced by a root-owned copy; other failed changes still stop the walk.\n\nclose (after freeze): a regular file that is not root'\"'\"'s is replaced at its\nworkspace name by a root-owned copy without setuid, setgid or group and other\nwrite; the file'\"'\"'s other names keep the old one. Group and other write go from\nevery other entry. Any other entry that is not root'\"'\"'s fails the step, and\nevery entry the step changes is read back.\n\nThis script also runs on older image Pythons; keep it annotation-free.\n\"\"\"\n\nimport os\nimport stat\nimport sys\n\nUID = GID = 0  # the owner the workspace goes to\nDIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC\nNEW = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC\n\n\ndef same(a, b):\n    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)\n\n\ndef copy(src, dst, size):\n    done = 0\n    while done < size:\n        try:\n            n = os.sendfile(dst, src, done, size - done)\n        except OSError:\n            os.lseek(src, done, os.SEEK_SET)\n            n = os.write(dst, os.read(src, min(size - done, 1 << 20)))\n        if n == 0:\n            raise OSError(\"file shrank while copied\")\n        done += n\n\n\ndef replace(name, st):\n    \"\"\"Put a root-owned copy of the regular file *name* in its place.\"\"\"\n    # A short temporary name, so a 255-byte name still has room beside it.\n    for _ in range(100):\n        tmp = \".bf\" + os.urandom(4).hex()\n        try:\n            dst = os.open(tmp, NEW, 0o600)\n            break\n        except FileExistsError:\n            pass\n    else:\n        raise OSError(f\"no free temporary name beside {name!r}\")\n    try:\n        try:\n            src = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)\n            try:\n                if not same(os.fstat(src), st):\n                    raise OSError(f\"{name!r} changed during the step\")\n                copy(src, dst, st.st_size)\n            finally:\n                os.close(src)\n            os.fchown(dst, UID, GID)\n            os.fchmod(dst, stat.S_IMODE(st.st_mode) & ~0o6022)\n            os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))\n        finally:\n            os.close(dst)\n        # Nothing reads the name meanwhile, and a rename over a file makes\n        # ext4 write the copy out first (auto_da_alloc): ten times slower.\n        os.unlink(name)\n        os.rename(tmp, name)\n    except BaseException:\n        os.unlink(tmp)  # still there: renaming it is the last step\n        raise\n\n\ndef freeze(name, entry):\n    \"\"\"Give *name* to root unless it is a regular file with another name.\"\"\"\n    if (\n        entry is not None\n        and entry.is_file(follow_symlinks=False)\n        and entry.stat(follow_symlinks=False).st_nlink > 1\n    ):\n        return False\n    try:\n        os.chown(name, UID, GID, follow_symlinks=False)\n    except PermissionError:\n        st = os.lstat(name)\n        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:\n            raise\n        # An unmapped image owner can prevent chown even for namespace root.\n        # Copy instead of trusting the overflow uid as proof of ownership.\n        replace(name, st)\n        print(f\"workspace freeze: copied unchownable file {name!r}\", file=sys.stderr)\n    return entry is None or entry.is_dir(follow_symlinks=False)\n\n\ndef close(name, entry):\n    \"\"\"Close *name* to the sandbox user; True when it is a folder.\"\"\"\n    st = os.lstat(name) if entry is None else entry.stat(follow_symlinks=False)\n    if st.st_uid != UID:\n        if not stat.S_ISREG(st.st_mode):\n            raise OSError(f\"{name!r} is not root'\"'\"'s after the freeze\")\n        replace(name, st)\n        bits = 0o6022\n    elif st.st_mode & 0o022 and not stat.S_ISLNK(st.st_mode):\n        os.chmod(name, stat.S_IMODE(st.st_mode) & ~0o022)\n        bits = 0o022\n    else:\n        return stat.S_ISDIR(st.st_mode)\n    after = os.lstat(name)\n    if after.st_uid != UID or after.st_mode & bits:\n        raise OSError(f\"{name!r} is still open after the step\")\n    return stat.S_ISDIR(after.st_mode)\n\n\ndef scan(settle):\n    \"\"\"Settle the current folder'\"'\"'s entries; return its subfolders.\"\"\"\n    with os.scandir(\".\") as it:\n        entries = list(it)\n    return [e.name for e in entries if settle(e.name, e)]\n\n\ndef walk(workspace, settle):\n    os.chdir(workspace)\n    settle(\".\", None)\n    stack = [(os.lstat(\".\"), scan(settle))]\n    while stack:\n        subs = stack[-1][1]\n        if subs:\n            fd = os.open(subs.pop(), DIR)\n            try:\n                os.fchdir(fd)\n            finally:\n                os.close(fd)\n            stack.append((os.lstat(\".\"), scan(settle)))\n            continue\n        stack.pop()\n        if stack:\n            os.chdir(\"..\")\n            if not same(os.lstat(\".\"), stack[-1][0]):\n                raise OSError(\"a folder moved during the step\")\n\n\nif __name__ == \"__main__\":\n    try:\n        walk(sys.argv[2], {\"freeze\": freeze, \"close\": close}[sys.argv[1]])\n    except OSError as e:\n        sys.exit(f\"workspace {sys.argv[1]}: {e}\")\n' freeze /app); else bf_workspace=$(cd -P /app && printf '%s.' \"$PWD\") || exit 1; bf_workspace=${bf_workspace%.}; bf_failed=$(find \"$bf_workspace\" -type f -links +1 -prune -o -exec sh -c 'bf_copy() { for f; do [ -f \"$f\" ] && [ ! -h \"$f\" ] || continue; t=$(mktemp \"${f%/*}/.bf-fresh.XXXXXX\") || exit 1; { cat \"$f\" >\"$t\" && chmod \"$(stat -c %a \"$f\")\" \"$t\" && chmod go-w,ug-s \"$t\" && touch -r \"$f\" \"$t\" && mv -f \"$t\" \"$f\"; } || { rm -f \"$t\"; exit 1; }; done; }; for f; do if chown -h root:root \"$f\"; then continue; fi; if [ -f \"$f\" ] && [ ! -h \"$f\" ] && [ \"$(stat -c %h \"$f\")\" = 1 ] && (bf_copy \"$f\"); then printf '\"'\"'workspace freeze: copied unchownable file %s\\n'\"'\"' \"$f\" >&2; else printf '\"'\"'failed\\n'\"'\"'; fi; done' sh {} +) || exit 1; [ -z \"$bf_failed\" ] || { echo \"workspace freeze: ownership failed\" >&2; exit 1; }; bf_left=$(find \"$bf_workspace\" ! -user 0 \\( ! -type f -o -links 1 \\) -print -quit) || exit 1; [ -z \"$bf_left\" ] || { echo \"workspace freeze: entries are left that are not root's\" >&2; exit 1; }; fi",
+  "cleanup_conftests": "{ find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o -path /opt/runtime/verifier -prune -o -name conftest.py -not -path '/verifier/*' -not -path '/tests/*' -print0 2>/dev/null | ( if [ -f /opt/runtime/rt/RECORD ]; then [ -x /opt/runtime/rt/py/python3 ] || { echo 'benchflow: python3 not found in the protected runtime, so this root step does not run' >&2; exit 127; }; bf_py=/opt/runtime/rt/py/python3; else bf_py=\"${__bf_root_python:-/nonexistent/benchflow-judged-python3}\"; fi; exec \"$bf_py\" -I -S -B -c 'import os as _bf_os\n_bf_os.chdir('\"'\"'/'\"'\"')\n[_bf_os.environ.pop(_bf_k) for _bf_k in list(_bf_os.environ) if _bf_k.startswith('\"'\"'PYTHON'\"'\"')]\ndel _bf_os\n\nimport base64, csv, hashlib, io, os, stat, sys\nnames = (\"site-packages\", \"dist-packages\")\nargs = sys.argv[1:]\nbaseline = \"\"\nif args and args[0].startswith(\"baseline=\"):\n    baseline, args = args[0][len(\"baseline=\"):], args[1:]\nroots = []\nfor p in args:\n    if p:\n        roots.append(os.path.normpath(p))\n        roots.append(os.path.realpath(p))\ndef inside(path):\n    return any(path == r or path.startswith(r.rstrip(\"/\") + \"/\") for r in roots)\ncache = {}\ndef records(site):\n    if site not in cache:\n        found = {}\n        try:\n            listed = os.listdir(site)\n        except OSError:\n            listed = []\n        for n in listed:\n            if not n.endswith(\".dist-info\"):\n                continue\n            try:\n                fd = os.open(os.path.join(site, n, \"RECORD\"), os.O_RDONLY | os.O_NOFOLLOW)\n            except OSError:\n                continue\n            with os.fdopen(fd, \"rb\") as f:\n                data = f.read(64 << 20)\n            for row in csv.reader(io.StringIO(data.decode(\"utf-8\", \"replace\"))):\n                if len(row) >= 2 and row[1].startswith(\"sha256=\"):\n                    found.setdefault(row[0], set()).add(row[1])\n        cache[site] = found\n    return cache[site]\ndef owned(path):\n    parts = path.split(\"/\")\n    for i in range(len(parts) - 2, 0, -1):\n        if parts[i] in names:\n            site, rel = \"/\".join(parts[: i + 1]), \"/\".join(parts[i + 1 :])\n            break\n    else:\n        return False\n    if inside(path):\n        return False\n    try:\n        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)\n    except OSError:\n        return False\n    with os.fdopen(fd, \"rb\") as f:\n        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):\n            return False\n        data = f.read((64 << 20) + 1)\n    if len(data) > 64 << 20:\n        return False\n    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b\"=\")\n    return \"sha256=\" + digest.decode() in records(site).get(rel, ())\ndef closed(path):\n    try:\n        st = os.lstat(path)\n    except OSError:\n        return False\n    return stat.S_ISDIR(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o077\nbase_ok = bool(baseline) and closed(baseline)\ndef read_at(fd, name):\n    try:\n        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)\n    except OSError:\n        return None\n    with os.fdopen(fd, \"rb\") as f:\n        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):\n            return None\n        data = f.read((64 << 20) + 1)\n    return None if len(data) > 64 << 20 else data\ndef in_baseline(rel):\n    parts = rel.split(\"/\")\n    if not parts or any(p in (\"\", \".\", \"..\") for p in parts):\n        return None\n    try:\n        fd = os.open(baseline, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)\n    except OSError:\n        return None\n    try:\n        for part in parts[:-1]:\n            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)\n            os.close(fd)\n            fd = nxt\n        return read_at(fd, parts[-1])\n    except OSError:\n        return None\n    finally:\n        os.close(fd)\ndef unchanged(path):\n    if not base_ok:\n        return None\n    for r in roots:\n        prefix = r.rstrip(\"/\") + \"/\"\n        if path.startswith(prefix):\n            here = read_at(None, path)\n            if here is not None and here == in_baseline(path[len(prefix):]):\n                return here\n    return None\ndef rewrite(path, data):\n    tmp = os.path.join(os.path.dirname(path), \".bf-conftest-%s.tmp\" % os.urandom(8).hex())\n    try:\n        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)\n        try:\n            os.write(fd, data)\n            os.fchmod(fd, 0o644)\n            os.fsync(fd)\n        finally:\n            os.close(fd)\n        os.rename(tmp, path)\n        return True\n    except OSError:\n        try:\n            os.unlink(tmp)\n        except OSError:\n            pass\n        return False\nfound = [os.fsdecode(raw) for raw in sys.stdin.buffer.read().split(b\"\\0\") if raw]\ndecided = [(path, True, None) if owned(path) else (path, False, unchanged(path)) for path in found]\nfor path, package, data in decided:\n    if package or (data is not None and rewrite(path, data)):\n        continue\n    try:\n        os.unlink(path)\n    except OSError:\n        pass\n' baseline=/testbed_verify /app ); } || find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o -path /opt/runtime/verifier -prune -o -name conftest.py -not -path '/verifier/*' -not -path '/tests/*' -exec rm -f -- {} + 2>/dev/null; bf_cleanup_workspace=$(cd -P /app && printf '%s.' \"$PWD\" | sed 's/[][\\\\*?]/\\\\&/g') || exit 1; bf_cleanup_workspace=${bf_cleanup_workspace%.}; find /tmp /var/tmp \\( -path /app -o -path \"$bf_cleanup_workspace\" \\) -prune -o -name '*.py' -exec rm -f -- {} + 2>/dev/null; ( _BF_HOOK_PYTHONPATH=\"${_BENCHFLOW_IMAGE_PYTHONPATH-${__bf_hook_pythonpath-${PYTHONPATH-}}}\"; _BF_HOOK_PYTHONHOME=\"${_BENCHFLOW_IMAGE_PYTHONHOME-${__bf_hook_pythonhome-${PYTHONHOME-}}}\"; _BF_HOOK_PYTHONUSERBASE=\"${_BENCHFLOW_IMAGE_PYTHONUSERBASE-${PYTHONUSERBASE-}}\"; _BF_HOOK_IMAGE_PATH=\"${_BENCHFLOW_IMAGE_PATH-}\"; export _BF_HOOK_PYTHONPATH _BF_HOOK_PYTHONHOME _BF_HOOK_PYTHONUSERBASE _BF_HOOK_IMAGE_PATH; ( if [ -f /opt/runtime/rt/RECORD ]; then [ -x /opt/runtime/rt/py/python3 ] || { echo 'benchflow: python3 not found in the protected runtime, so this root step does not run' >&2; exit 127; }; bf_py=/opt/runtime/rt/py/python3; else bf_py=\"${__bf_root_python:-/nonexistent/benchflow-judged-python3}\"; fi; exec \"$bf_py\" -I -S -B -c 'import os as _bf_os\n_bf_os.chdir('\"'\"'/'\"'\"')\n[_bf_os.environ.pop(_bf_k) for _bf_k in list(_bf_os.environ) if _bf_k.startswith('\"'\"'PYTHON'\"'\"')]\ndel _bf_os\nimport json, os, site, sys, sysconfig\n_bf_record = '\"'\"'/opt/runtime/rt/IMAGE_PYTHON_PATHS.json'\"'\"'\n_bf_each = '\"'\"'/opt/runtime/rt/IMAGE_PYTHON_PATHS.jsonl'\"'\"'\nif os.path.isfile(_bf_record):\n    with open(_bf_record) as _bf_handle:\n        _bf_paths = json.load(_bf_handle)\nelif os.path.isfile('\"'\"'/opt/runtime/rt/RECORD'\"'\"'):\n    raise RuntimeError('\"'\"'missing pre-agent Python search paths; start a fresh sandbox'\"'\"')\nelse:\n    # No kit means no sandbox-user turn. Keep this fallback isolated too;\n    # explicit verifier PYTHONPATH is supplied separately as data.\n    _bf_paths = {'\"'\"'path'\"'\"': list(sys.path) + site.getsitepackages(),\n                 '\"'\"'user_site'\"'\"': [site.getusersitepackages()],\n                 '\"'\"'site'\"'\"': site.getsitepackages() + [site.getusersitepackages()]}\n_bf_paths['\"'\"'interpreters'\"'\"'] = {}\nif os.path.isfile(_bf_each):\n    with open(_bf_each) as _bf_handle:\n        for _bf_line in _bf_handle:\n            _bf_entry = json.loads(_bf_line)\n            if not isinstance(_bf_entry, dict) or not isinstance(_bf_entry.get('\"'\"'exe'\"'\"'), str):\n                raise RuntimeError('\"'\"'invalid pre-agent Python search paths'\"'\"')\n            _bf_paths['\"'\"'interpreters'\"'\"'][_bf_entry['\"'\"'exe'\"'\"']] = _bf_entry\nfor _bf_entry in [_bf_paths] + list(_bf_paths['\"'\"'interpreters'\"'\"'].values()):\n    if not isinstance(_bf_entry, dict) or any(\n        not isinstance(_bf_entry.get(k), list) or any(\n            not isinstance(p, str) or not os.path.isabs(p) or '\"'\"'\\x00'\"'\"' in p\n            for p in _bf_entry[k]) for k in ('\"'\"'path'\"'\"', '\"'\"'user_site'\"'\"')) or (\n        '\"'\"'site'\"'\"' in _bf_entry and (not isinstance(_bf_entry['\"'\"'site'\"'\"'], list) or any(\n            not isinstance(p, str) or not os.path.isabs(p) for p in _bf_entry['\"'\"'site'\"'\"']))):\n        raise RuntimeError('\"'\"'invalid pre-agent Python search paths'\"'\"')\n    _bf_h = _bf_entry.get('\"'\"'hooks'\"'\"', {})\n    if not isinstance(_bf_h, dict) or any(\n        not isinstance(d, str) or not os.path.isabs(d) or not isinstance(fs, dict)\n        or any(not isinstance(n, str) or not isinstance(v, str) for n, v in fs.items())\n        for d, fs in _bf_h.items()):\n        raise RuntimeError('\"'\"'invalid pre-agent Python search paths'\"'\"')\n\n\ndef _bf_paths_for(path_value):\n    '\"'\"''\"'\"''\"'\"'The record of the first python3 or python on *path_value* (the\n    verifier'\"'\"'s PATH) that has one; root'\"'\"'s python3 when none does.'\"'\"''\"'\"''\"'\"'\n    for _bf_dir in (path_value or '\"'\"''\"'\"').split('\"'\"':'\"'\"'):\n        if not os.path.isabs(_bf_dir):\n            continue\n        for _bf_name in ('\"'\"'python3'\"'\"', '\"'\"'python'\"'\"'):\n            _bf_exe = os.path.join(_bf_dir, _bf_name)\n            if _bf_exe in _bf_paths['\"'\"'interpreters'\"'\"']:\n                return _bf_paths['\"'\"'interpreters'\"'\"'][_bf_exe]\n            if os.path.exists(_bf_exe):\n                return _bf_paths\n    return _bf_paths\n\n\ndef _bf_recorded_hooks():\n    '\"'\"''\"'\"''\"'\"'Every recorded folder and the hooks it held before the agent:\n    {folder: {name: digest}} (HOOK_RULE). A folder no record lists is absent.'\"'\"''\"'\"''\"'\"'\n    _bf_out = {}\n    for _bf_entry in [_bf_paths] + list(_bf_paths['\"'\"'interpreters'\"'\"'].values()):\n        for _bf_d, _bf_files in (_bf_entry.get('\"'\"'hooks'\"'\"') or {}).items():\n            _bf_out.setdefault(_bf_d, {}).update(_bf_files)\n    return _bf_out\n\n\ndef _bf_site_folders():\n    '\"'\"''\"'\"''\"'\"'Every folder whose *.pth files site executes for some recorded\n    interpreter. A record from before PT round 16 has no '\"'\"'site'\"'\"': each of\n    its folders (search path, user site, hook folders) counts as one.'\"'\"''\"'\"''\"'\"'\n    _bf_out = set()\n    for _bf_entry in [_bf_paths] + list(_bf_paths['\"'\"'interpreters'\"'\"'].values()):\n        if '\"'\"'site'\"'\"' in _bf_entry:\n            _bf_out.update(_bf_entry['\"'\"'site'\"'\"'])\n        else:\n            _bf_out.update(_bf_entry.get('\"'\"'hooks'\"'\"') or {})\n            _bf_out.update(_bf_entry['\"'\"'path'\"'\"'] + _bf_entry['\"'\"'user_site'\"'\"'])\n    return _bf_out\n\n\ndef _bf_all_paths():\n    '\"'\"''\"'\"''\"'\"'Every folder any recorded interpreter searches, its user site included.'\"'\"''\"'\"''\"'\"'\n    _bf_all = list(_bf_paths['\"'\"'path'\"'\"']) + list(_bf_paths['\"'\"'user_site'\"'\"'])\n    for _bf_entry in _bf_paths['\"'\"'interpreters'\"'\"'].values():\n        _bf_all += _bf_entry['\"'\"'path'\"'\"'] + _bf_entry['\"'\"'user_site'\"'\"']\n    return _bf_all\n\nimport ast, binascii, glob, hashlib, os, stat\n_BF_NB = getattr(os, '\"'\"'O_NONBLOCK'\"'\"', 0) | getattr(os, '\"'\"'O_CLOEXEC'\"'\"', 0)\n_BF_MAX = 64 << 20\n\n\ndef _bf_is_hook(name, site_folder):\n    '\"'\"''\"'\"''\"'\"'site imports sitecustomize and usercustomize from any folder on the\n    search path, in any form the import system finds (name.py, a sourceless\n    name.pyc, name.<abi>.so, a package folder), and executes *.pth only in\n    a site folder.'\"'\"''\"'\"''\"'\"'\n    for _bf_n in ('\"'\"'sitecustomize'\"'\"', '\"'\"'usercustomize'\"'\"'):\n        if name == _bf_n or name.startswith(_bf_n + '\"'\"'.'\"'\"'):\n            return True\n    return bool(site_folder) and name.endswith('\"'\"'.pth'\"'\"')\n\n\ndef _bf_read_fd(fd):\n    '\"'\"''\"'\"''\"'\"'The bytes of the open regular file *fd* (at most _BF_MAX), else None.'\"'\"''\"'\"''\"'\"'\n    if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size > _BF_MAX:\n        return None\n    _bf_chunks = []\n    while True:\n        _bf_chunk = os.read(fd, 1 << 20)\n        if not _bf_chunk:\n            return b'\"'\"''\"'\"'.join(_bf_chunks)\n        _bf_chunks.append(_bf_chunk)\n        if sum(len(c) for c in _bf_chunks) > _BF_MAX:\n            return None\n\n\ndef _bf_node(name, dir_fd, depth=0):\n    '\"'\"''\"'\"''\"'\"'The entry *name* in *dir_fd* as read once, never following a link:\n    ('\"'\"'f'\"'\"', bytes, mode), ('\"'\"'l'\"'\"', target, bytes of the regular file it points\n    to or None), ('\"'\"'d'\"'\"', mode, [(name, node)]), or None (anything else, too\n    deep or too big, unreadable).'\"'\"''\"'\"''\"'\"'\n    try:\n        _bf_st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)\n        if stat.S_ISLNK(_bf_st.st_mode):\n            _bf_data = None\n            try:\n                _bf_fd = os.open(name, os.O_RDONLY | _BF_NB, dir_fd=dir_fd)\n                try:\n                    _bf_data = _bf_read_fd(_bf_fd)\n                finally:\n                    os.close(_bf_fd)\n            except OSError:\n                pass\n            return ('\"'\"'l'\"'\"', os.readlink(name, dir_fd=dir_fd), _bf_data)\n        if stat.S_ISREG(_bf_st.st_mode):\n            _bf_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | _BF_NB, dir_fd=dir_fd)\n            try:\n                _bf_data = _bf_read_fd(_bf_fd)\n                _bf_mode = os.fstat(_bf_fd).st_mode\n            finally:\n                os.close(_bf_fd)\n            return None if _bf_data is None else ('\"'\"'f'\"'\"', _bf_data, _bf_mode)\n        if stat.S_ISDIR(_bf_st.st_mode) and depth < 16:\n            _bf_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\n                             | getattr(os, '\"'\"'O_CLOEXEC'\"'\"', 0), dir_fd=dir_fd)\n            try:\n                _bf_names = sorted(os.listdir(_bf_fd))\n                if len(_bf_names) > 4096:\n                    return None\n                _bf_kids = [(n, _bf_node(n, _bf_fd, depth + 1)) for n in _bf_names]\n                _bf_mode = os.fstat(_bf_fd).st_mode\n            finally:\n                os.close(_bf_fd)\n            if any(k is None for _, k in _bf_kids):\n                return None\n            return ('\"'\"'d'\"'\"', _bf_mode, _bf_kids)\n    except (OSError, ValueError):\n        pass\n    return None\n\n\ndef _bf_sha(data):\n    return hashlib.sha256(data).hexdigest()\n\n\ndef _bf_digest(node):\n    '\"'\"''\"'\"''\"'\"'A file: its sha256. A link: over its target and what it points to. A\n    folder: over its whole tree (sorted names, each entry'\"'\"'s digest).'\"'\"''\"'\"''\"'\"'\n    if node is None:\n        return None\n    if node[0] == '\"'\"'f'\"'\"':\n        return _bf_sha(node[1])\n    if node[0] == '\"'\"'l'\"'\"':\n        _bf_t = node[1].encode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"')\n        _bf_c = b'\"'\"'-'\"'\"' if node[2] is None else _bf_sha(node[2]).encode()\n        return '\"'\"'link:'\"'\"' + _bf_sha(_bf_t + b'\"'\"'\\0'\"'\"' + _bf_c)\n    _bf_lines = [n.encode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"') + b'\"'\"'\\0'\"'\"'\n                 + _bf_digest(k).encode() + b'\"'\"'\\n'\"'\"' for n, k in node[2]]\n    return '\"'\"'tree:'\"'\"' + _bf_sha(b'\"'\"''\"'\"'.join(_bf_lines))\n\n\ndef _bf_open_dir(path):\n    '\"'\"''\"'\"''\"'\"'A descriptor on the folder *path* as the import system sees it (a\n    link to a folder followed), or None: a path no folder can have (an\n    embedded NUL) included.'\"'\"''\"'\"''\"'\"'\n    try:\n        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, '\"'\"'O_CLOEXEC'\"'\"', 0))\n    except (OSError, ValueError):\n        return None\n\n\n_BF_INPUT_NAMES = ('\"'\"'PYTHONPATH'\"'\"', '\"'\"'PYTHONHOME'\"'\"', '\"'\"'PYTHONUSERBASE'\"'\"')\n\n\ndef _bf_env_inputs(values):\n    '\"'\"''\"'\"''\"'\"'PYTHONPATH, PYTHONHOME and PYTHONUSERBASE as test.sh'\"'\"'s Python gets\n    them, as text: *values* (the route'\"'\"'s data copies) and PID\n    1'\"'\"'s (the image'\"'\"'s, which the task route gives test.sh back).'\"'\"''\"'\"''\"'\"'\n    out = dict((n, [v] if v else []) for n, v in zip(_BF_INPUT_NAMES, values))\n    for n in _BF_INPUT_NAMES:\n        out.setdefault(n, [])\n    try:\n        with open('\"'\"'/proc/1/environ'\"'\"', '\"'\"'rb'\"'\"') as h:\n            for item in h.read().split(b'\"'\"'\\0'\"'\"'):\n                name, _, value = item.decode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"').partition('\"'\"'='\"'\"')\n                if name in out and value and value not in out[name]:\n                    out[name].append(value)\n    except OSError:\n        pass\n    return out\n\n\ndef _bf_pth_folders(d, dirs, sites):\n    '\"'\"''\"'\"''\"'\"'Add the folders the .pth files in the site folder *d* name, read as\n    text and never run: a path line as site joins it, an import line'\"'\"'s\n    literal sys.path.append/insert argument; a literal site.addsitedir\n    argument is a site folder itself.'\"'\"''\"'\"''\"'\"'\n    fd = _bf_open_dir(d)\n    if fd is None:\n        return\n    try:\n        names = sorted(n for n in os.listdir(fd) if n.endswith('\"'\"'.pth'\"'\"'))\n        for n in names:\n            try:\n                pfd = os.open(n, os.O_RDONLY | _BF_NB, dir_fd=fd)\n                try:\n                    data = _bf_read_fd(pfd)\n                finally:\n                    os.close(pfd)\n            except OSError:\n                continue\n            for line in (data or b'\"'\"''\"'\"').decode('\"'\"'utf-8'\"'\"', '\"'\"'replace'\"'\"').splitlines():\n                # A line with a NUL names no folder: a binary file named\n                # *.pth (model weights beside the packages), which site\n                # also passes over (PT-R16-R2-1).\n                if not line.strip() or line.startswith('\"'\"'#'\"'\"') or '\"'\"'\\0'\"'\"' in line:\n                    continue\n                if not line.startswith(('\"'\"'import '\"'\"', '\"'\"'import\\t'\"'\"')):\n                    dirs.add(os.path.normpath(os.path.join(d, line.rstrip())))\n                    continue\n                try:\n                    tree = ast.parse(line)\n                except (SyntaxError, ValueError):\n                    continue\n                for call in ast.walk(tree):\n                    attr = getattr(getattr(call, '\"'\"'func'\"'\"', None), '\"'\"'attr'\"'\"', '\"'\"''\"'\"')\n                    if attr not in ('\"'\"'append'\"'\"', '\"'\"'insert'\"'\"', '\"'\"'addsitedir'\"'\"'):\n                        continue\n                    for arg in getattr(call, '\"'\"'args'\"'\"', []):\n                        value = getattr(arg, '\"'\"'value'\"'\"', getattr(arg, '\"'\"'s'\"'\"', None))\n                        if isinstance(value, str) and os.path.isabs(value):\n                            (sites if attr == '\"'\"'addsitedir'\"'\"' else dirs).add(\n                                os.path.normpath(value))\n    finally:\n        os.close(fd)\n\n\ndef _bf_search_inputs(values, cwd, sites, harvest=True):\n    '\"'\"''\"'\"''\"'\"'The folders test.sh'\"'\"'s Python searches that its interpreter'\"'\"'s own\n    search path may not show: each\n    PYTHONPATH entry (an empty or relative one against *cwd*, the original\n    working folder), PYTHONHOME'\"'\"'s prefix'\"'\"'s site folders, the user site, and\n    the folders the .pth files of *sites* and of those name (unless\n    *harvest* is false: the clean-up reads those only from the .pth files\n    it keeps). Returns (folders, site folders); only the latter run *.pth.'\"'\"''\"'\"''\"'\"'\n    inputs = _bf_env_inputs(values)\n    dirs, found = set(), set()\n    for value in inputs['\"'\"'PYTHONPATH'\"'\"']:\n        for entry in value.split('\"'\"':'\"'\"'):\n            if '\"'\"'\\0'\"'\"' not in entry and (cwd or os.path.isabs(entry)):\n                dirs.add(os.path.normpath(os.path.join(cwd, entry)))\n    # PYTHONHOME is prefix[:exec_prefix]; site takes site folders under both\n    # (site.PREFIXES, PT-R16-R2-4).\n    for value in inputs['\"'\"'PYTHONHOME'\"'\"']:\n        for prefix in value.split('\"'\"':'\"'\"')[:2]:\n            if os.path.isabs(prefix) and '\"'\"'\\0'\"'\"' not in prefix:\n                for pat in ('\"'\"'lib/python3*/site-packages'\"'\"', '\"'\"'lib/python3*/dist-packages'\"'\"'):\n                    found.update(glob.glob(os.path.join(glob.escape(prefix), pat)))\n    for base in inputs['\"'\"'PYTHONUSERBASE'\"'\"'] + ['\"'\"'/root/.local'\"'\"']:\n        if os.path.isabs(base):\n            found.update(glob.glob(os.path.join(glob.escape(base), '\"'\"'lib/python3*/site-packages'\"'\"')))\n    found = set(os.path.normpath(p) for p in found)\n    if not harvest:\n        return dirs - found, found\n    done = set()\n    while len(done) < 4096:\n        todo = sorted((set(sites) | found) - done)\n        if not todo:\n            break\n        for d in todo:\n            done.add(d)\n            _bf_pth_folders(d, dirs, found)\n    return dirs - found, found\n\nimport glob, os\ncwd, workspace = (sys.argv[1:] + ['\"'\"''\"'\"'] * 2)[:2]\nvalues = [os.environ.get('\"'\"'_BF_HOOK_'\"'\"' + n, '\"'\"''\"'\"') for n in ('\"'\"'PYTHONPATH'\"'\"', '\"'\"'PYTHONHOME'\"'\"', '\"'\"'PYTHONUSERBASE'\"'\"')]\ndirs = set(_bf_paths['\"'\"'path'\"'\"'] + _bf_paths['\"'\"'user_site'\"'\"'])\nglobbed = set(glob.glob('\"'\"'/root/.local/lib/python3*/site-packages'\"'\"'))\nprefixes = []\nfor search in (os.environ.get('\"'\"'PATH'\"'\"', '\"'\"''\"'\"'), os.environ.get('\"'\"'_BF_HOOK_IMAGE_PATH'\"'\"', '\"'\"''\"'\"')):\n    for p in search.split('\"'\"':'\"'\"'):\n        exe = os.path.join(p, '\"'\"'python3'\"'\"')\n        if (not os.path.isabs(p) or p.startswith('\"'\"'/opt/runtime/'\"'\"')\n                or not os.path.isfile(exe)):\n            continue\n        prefixes.append(os.path.dirname(os.path.dirname(os.path.realpath(exe))))\n        bindir = os.path.dirname(os.path.abspath(exe))\n        for cfg in (bindir, os.path.dirname(bindir)):\n            if os.path.isfile(os.path.join(cfg, '\"'\"'pyvenv.cfg'\"'\"')):\n                prefixes.append(cfg)\n                break\n        break\nprefix_sites = set()\nfor prefix in prefixes:\n    for pat in ('\"'\"'lib/python3*/site-packages'\"'\"', '\"'\"'lib/python3*/dist-packages'\"'\"'):\n        prefix_sites.update(glob.glob(os.path.join(glob.escape(prefix), pat)))\nprefix_sites = set(os.path.normpath(p) for p in prefix_sites)\nglobbed |= prefix_sites\ndirs |= globbed\nw = os.path.realpath(workspace) + '\"'\"'/'\"'\"' if workspace else '\"'\"''\"'\"'\nimport errno\nrecorded = _bf_recorded_hooks()\nsite_folders = _bf_site_folders() | set(_bf_paths['\"'\"'user_site'\"'\"']) | globbed\nmore, more_sites = _bf_search_inputs(\n    values, cwd, site_folders,\n    False)\nsite_folders |= more_sites\ndirs |= more | more_sites\nfailed = []\n_BF_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _BF_NB\ndef remove(dfd, name):\n    if stat.S_ISDIR(os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mode):\n        fd = os.open(name, _BF_DIR, dir_fd=dfd)\n        try:\n            for n in os.listdir(fd):\n                remove(fd, n)\n        finally:\n            os.close(fd)\n        os.rmdir(name, dir_fd=dfd)\n    else:\n        os.unlink(name, dir_fd=dfd)\ndef write(dfd, name, node):\n    if node[0] == '\"'\"'d'\"'\"':\n        os.mkdir(name, 0o700, dir_fd=dfd)\n        fd = os.open(name, _BF_DIR, dir_fd=dfd)\n        try:\n            for n, k in node[2]:\n                if k[0] != '\"'\"'l'\"'\"' or k[2] is not None:\n                    write(fd, n, k)\n            if os.geteuid() == 0:\n                os.fchown(fd, 0, 0)\n            os.fchmod(fd, stat.S_IMODE(node[1]) & 0o755)\n        finally:\n            os.close(fd)\n        return\n    data, mode = (node[1], node[2]) if node[0] == '\"'\"'f'\"'\"' else (node[2], 0o644)\n    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _BF_NB, 0o600, dir_fd=dfd)\n    try:\n        while data:\n            data = data[os.write(fd, data):]\n        if os.geteuid() == 0:\n            os.fchown(fd, 0, 0)\n        os.fchmod(fd, stat.S_IMODE(mode) & 0o755)\n    finally:\n        os.close(fd)\ndef fresh(dfd, name, node):\n    tag = binascii.hexlify(os.urandom(8)).decode()\n    new, old = '\"'\"'.bf-fresh-'\"'\"' + tag + '\"'\"'.tmp'\"'\"', '\"'\"'.bf-stale-'\"'\"' + tag + '\"'\"'.tmp'\"'\"'\n    write(dfd, new, node)\n    if node[0] == '\"'\"'d'\"'\"':\n        os.rename(name, old, src_dir_fd=dfd, dst_dir_fd=dfd)\n        os.rename(new, name, src_dir_fd=dfd, dst_dir_fd=dfd)\n        remove(dfd, old)\n    else:\n        os.rename(new, name, src_dir_fd=dfd, dst_dir_fd=dfd)\nagent_user = sys.argv[3:4] == ['\"'\"'1'\"'\"']\nexcluded = [os.path.realpath(p).rstrip('\"'\"'/'\"'\"') + '\"'\"'/'\"'\"' for p in\n            [workspace] + sys.argv[4:] + ['\"'\"'/tmp'\"'\"', '\"'\"'/var/tmp'\"'\"', '\"'\"'/home'\"'\"', '\"'\"'/logs'\"'\"', '\"'\"'/testbed'\"'\"'] if p]\nroot_made = []\ndef _bf_root_alone(st):\n    return st.st_uid == 0 and not st.st_mode & 0o022\ndef _bf_root_tree(dfd, name, depth=0):\n    st = os.stat(name, dir_fd=dfd, follow_symlinks=False)\n    if not _bf_root_alone(st):\n        return False\n    if stat.S_ISREG(st.st_mode):\n        return st.st_nlink == 1\n    if not stat.S_ISDIR(st.st_mode) or depth >= 16:\n        return False\n    fd = os.open(name, _BF_DIR, dir_fd=dfd)\n    try:\n        names = os.listdir(fd)\n        return len(names) <= 4096 and all(_bf_root_tree(fd, n, depth + 1) for n in names)\n    finally:\n        os.close(fd)\ndef _bf_root_made(dfd, name):\n    if not agent_user:\n        return False\n    try:\n        here = os.path.realpath('\"'\"'/proc/self/fd/%d'\"'\"' % dfd)\n        if not here.startswith('\"'\"'/'\"'\"') or any((here.rstrip('\"'\"'/'\"'\"') + '\"'\"'/'\"'\"').startswith(e) for e in excluded):\n            return False\n        folder = here\n        while True:\n            st = os.stat(folder, follow_symlinks=False)\n            if not (stat.S_ISDIR(st.st_mode) and _bf_root_alone(st)):\n                return False\n            if folder == '\"'\"'/'\"'\"':\n                break\n            folder = os.path.dirname(folder)\n        a, b = os.stat(here), os.fstat(dfd)\n        if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):\n            return False\n        return _bf_root_tree(dfd, name)\n    except (OSError, ValueError, RecursionError):\n        return False\ndef keep_or_remove(dfd, name, digest):\n    node = None\n    if digest is not None:\n        node = _bf_node(name, dfd)\n        if not (node is not None and _bf_digest(node) == digest\n                and not (node[0] == '\"'\"'l'\"'\"' and node[2] is None)):\n            node = None\n    if node is None and _bf_root_made(dfd, name):\n        node = _bf_node(name, dfd)\n        if node is not None and node[0] != '\"'\"'l'\"'\"':\n            root_made.append(name)\n        else:\n            node = None\n    if node is not None:\n        try:\n            fresh(dfd, name, node)\n            return\n        except OSError as error:\n            if error.errno == errno.EROFS:\n                return\n    remove(dfd, name)\ndef clean(dfd, known, site_folder):\n    for f in os.listdir(dfd):\n        try:\n            if f == '\"'\"'__pycache__'\"'\"':\n                if stat.S_ISLNK(os.stat(f, dir_fd=dfd, follow_symlinks=False).st_mode):\n                    os.unlink(f, dir_fd=dfd)\n                    continue\n                fd = os.open(f, _BF_DIR, dir_fd=dfd)\n                try:\n                    for n in os.listdir(fd):\n                        if _bf_is_hook(n, False):\n                            remove(fd, n)\n                finally:\n                    os.close(fd)\n            elif _bf_is_hook(f, site_folder):\n                keep_or_remove(dfd, f, None if known is None else known.get(f))\n        except OSError as error:\n            if error.errno != errno.ENOENT:\n                failed.append(f)\ndef visit(d):\n    known = recorded.get(d)\n    if known is None and d.startswith(('\"'\"'/usr/lib'\"'\"', '\"'\"'/usr/local/lib'\"'\"')):\n        return\n    if known is not None and (os.path.islink(d) or (os.path.lexists(d) and not os.path.isdir(d))):\n        parent = _bf_open_dir(os.path.dirname(d))\n        if parent is None:\n            return\n        try:\n            node = _bf_node(os.path.basename(d), parent)\n            if node is None or node[0] != '\"'\"'l'\"'\"' or _bf_digest(node) != known.get('\"'\"''\"'\"'):\n                keep_or_remove(parent, os.path.basename(d), known.get('\"'\"''\"'\"'))\n                return\n        except OSError as error:\n            if error.errno != errno.ENOENT:\n                failed.append(d)\n            return\n        finally:\n            os.close(parent)\n    dfd = _bf_open_dir(d)\n    if dfd is None:\n        return\n    try:\n        spare = (bool(w) and known is None and d in prefix_sites\n                 and (os.path.realpath(d) + '\"'\"'/'\"'\"').startswith(w))\n        clean(dfd, known, d in site_folders and not spare)\n    finally:\n        os.close(dfd)\nvisited = {}\nfor d in sorted(set(recorded) | dirs):\n    visited[d] = d in site_folders\n    visit(d)\nfor _ in range(64):\n    named, named_sites = set(), set()\n    for d in sorted(site_folders):\n        _bf_pth_folders(d, named, named_sites)\n    site_folders |= named_sites\n    todo = sorted(d for d in named | named_sites\n                  if d not in visited or (d in site_folders and not visited[d]))\n    if not todo:\n        break\n    for d in todo:\n        visited[d] = d in site_folders\n        visit(d)\nif root_made:\n    sys.stderr.write('\"'\"'benchflow: kept %d new or changed Python start-up hook(s) '\"'\"'\n                     '\"'\"'only root could have written, e.g. %r\\n'\"'\"' % (len(root_made), root_made[0]))\nif failed:\n    sys.stderr.write('\"'\"'benchflow: could not remove %d Python start-up hook(s), '\"'\"'\n                     '\"'\"'e.g. %r\\n'\"'\"' % (len(failed), failed[0]))\n    sys.exit(3)\n' \"$PWD\" /app 1 ) ); bf_rc=$?; [ \"$bf_rc\" = 0 ] || { [ \"$bf_rc\" = 127 ] && echo \"benchflow: no protected Python in this sandbox, so the Python start-up hook clean-up was skipped\" >&2; } || { echo \"benchflow: removing Python start-up hooks failed (rc=$bf_rc)\" >&2; false; }",
+  "clear_verifier_output": "if [ -L /logs/verifier ]; then rm -f /logs/verifier; fi && mkdir -p /logs/verifier && if command -v find >/dev/null 2>&1; then find /logs/verifier -mindepth 1 -exec rm -rf -- {} +; else rm -rf /logs/verifier/* /logs/verifier/.[!.]* /logs/verifier/..?* 2>/dev/null; true; fi && chown root:root /logs/verifier && chmod 777 /logs/verifier",
+  "kill_sandbox_user": "P=/proc\nuid=$(id -u agent 2>/dev/null) || { echo 'Invalid sandbox UID' >&2; exit 2; }\ncase \"$uid\" in ''|*[!0-9]*|0) echo 'Invalid sandbox UID' >&2; exit 2 ;; esac\nif [ ! -r \"$P/self/status\" ]; then\n    echo 'Process table is unavailable' >&2\n    exit 2\nfi\ngid=$(id -g agent 2>/dev/null)\ncase \"$gid\" in ''|*[!0-9]*) gid=$uid ;; esac\nme=\n{ while read -r key first second rest || [ -n \"$key\" ]; do\n    [ \"$key\" = Uid: ] && me=$second\n    key=\ndone <\"$P/self/status\"; } 2>/dev/null\nif [ \"$me\" != 0 ] && [ 1 != 0 ]; then\n    echo 'The kill before grading is not running as root' >&2\n    exit 2\nfi\n# The descriptor inspections in the keeping/release paths need a helper\n# that can read as the user too. Signals still check each actual invocation.\nas_user=\ncan_be() (\n    check=\"[ \\\"\\$(id -u)\\\" = $uid ] && [ \\\"\\$(id -g)\\\" = $gid ]\"\n    case \"$1\" in\n        setpriv) setpriv --reuid=\"$uid\" --regid=\"$gid\" --clear-groups -- sh -c \"$check\" </dev/null >/dev/null 2>&1 ;;\n        su) su -s /bin/sh agent -c \"$check\" </dev/null >/dev/null 2>&1 ;;\n    esac\n)\nif [ \"$me\" = 0 ]; then\n    for helper in setpriv su; do\n        if command -v \"$helper\" >/dev/null 2>&1 && can_be \"$helper\"; then\n            as_user=$helper\n            break\n        fi\n    done\nfi\nasuser() {\n    if [ \"$me\" != 0 ]; then\n        eval \"$1\" >/dev/null\n        return 0\n    fi\n    body=\"[ \\\"\\$(id -u)\\\" = $uid ] && [ \\\"\\$(id -g)\\\" = $gid ] || exit 3; $1\"\n    for helper in setpriv su; do\n        command -v \"$helper\" >/dev/null 2>&1 || continue\n        case \"$helper\" in\n            setpriv) out=$(setpriv --reuid=\"$uid\" --regid=\"$gid\" --clear-groups -- sh -c \"$body\" </dev/null 2>/dev/null) ;;\n            su) out=$(su -s /bin/sh agent -c \"$body\" </dev/null 2>/dev/null) ;;\n        esac\n        if [ \"$out\" = 'BF as-user' ]; then\n            as_user=$helper\n            return 0\n        fi\n    done\n    return 1\n}\nhelpless() {\n    echo \"Cannot send SIG$1 as the sandbox user: neither setpriv nor su ran it as UID $uid GID $gid (install setpriv or su in the image and let root switch to that UID and GID)\" >&2\n    exit 2\n}\neveryone() {\n    [ \"$me\" = 0 ] || return 0\n    # kill(-1) runs in the helper's own shell, which it skips; in a ``$( )``\n    # subshell it would stop that shell, still waiting for it. Its error, if\n    # any, goes to the output root reads. A child gives even an otherwise\n    # empty UID a recipient: ESRCH never has to count as success. Keep its\n    # pid as our unreaped child through cleanup, and signal it as the user.\n    asuser \"sleep 60 </dev/null >/dev/null 2>&1 & probe=\\$!; delivered=; if LC_ALL=C kill -$1 -1 2>&1; then delivered=1; fi; kill -KILL \\\"\\$probe\\\" 2>/dev/null; wait \\\"\\$probe\\\" 2>/dev/null; [ \\\"\\$delivered\\\" = 1 ] && echo BF as-user\" || helpless \"$1\"\n}\neach() {\n    sig=$1\n    shift\n    mine=\n    for pid in \"$@\"; do\n        case \"$pid\" in\n            r*) kill -s \"$sig\" \"${pid#r}\" 2>/dev/null ;;\n            *) mine=\"$mine $pid\" ;;\n        esac\n    done\n    [ -n \"$mine\" ] || return 0\n    asuser \"for p in$mine; do kill -s $sig \\$p 2>/dev/null; done; echo BF as-user\" || helpless \"$sig\"\n}\n# PID 1 as BenchFlow's keep-alive that nothing in the sandbox could have traced\n# (see the rule above): looked at once, before anything is signalled.\npid1_inert() {\n    i1s=\n    { read -r i1s <\"$P/sys/kernel/yama/ptrace_scope\"; } 2>/dev/null\n    case \"$i1s\" in 1|2|3) ;; *) return 1 ;; esac\n    i1t=\n    i1b=\n    { while read -r key first rest || [ -n \"$key\" ]; do\n        case \"$key\" in\n            TracerPid:) i1t=$first ;;\n            CapBnd:) i1b=$first ;;\n        esac\n        key=\n    done <\"$P/1/status\"; } 2>/dev/null\n    [ \"$i1t\" = 0 ] || return 1\n    if [ \"$i1s\" != 3 ]; then\n        # CAP_SYS_PTRACE is bit 19: the high bit of the fifth hex digit from\n        # the right of the 16-digit mask.\n        case \"$i1b\" in ''|*[!0-9a-f]*) return 1 ;; esac\n        [ \"${#i1b}\" -eq 16 ] || return 1\n        i1d=${i1b%????}\n        i1d=${i1d#\"${i1d%?}\"}\n        case \"$i1d\" in [0-7]) ;; *) return 1 ;; esac\n    fi\n    i1c=$(tr '\\000' '|' <\"$P/1/cmdline\" 2>/dev/null) || return 1\n    case \"$i1c\" in 'sleep|infinity|'|'/opt/runtime/rt/bin/sleep|infinity|') return 0 ;; esac\n    return 1\n}\ninert1=\npid1_inert && inert1=1\nlive() {\n    for entry in \"$P\"/[0-9]*; do\n        pid=${entry##*/}\n        case \"$pid\" in ''|*[!0-9]*) continue ;; esac\n        [ \"$pid\" = 1 ] && [ -n \"$inert1\" ] && continue\n        state=\n        ruid=\n        euid=\n        suid=\n        threads=\n        if { while read -r key first second third rest || [ -n \"$key\" ]; do\n                case \"$key\" in\n                    State:) state=$first ;;\n                    Uid:) ruid=$first euid=$second suid=$third ;;\n                    Threads:) threads=$first ;;\n                esac\n                key=\n                # Stop once the fields the test below reads are in (Threads\n                # only for a zombie): the shell reads the file a byte at a\n                # time, and the ~45 lines after Uid made each walk cost\n                # ~15 ms in a trial's container (PERF-G).\n                if [ -n \"$state\" ] && [ -n \"$euid\" ] &&\n                    { [ \"$state\" != Z ] || [ -n \"$threads\" ]; }; then\n                    break\n                fi\n            done <\"$entry/status\"; } 2>/dev/null &&\n            [ -n \"$state\" ] && [ -n \"$euid\" ]; then\n            tag=\n            if [ \"$ruid\" != \"$uid\" ] && [ \"$suid\" != \"$uid\" ]; then\n                [ \"$euid\" = \"$uid\" ] || continue\n                tag=r\n            fi\n            if [ \"$state\" != Z ]; then\n                echo \"$tag$pid\"\n            else\n                case \"$threads\" in ''|*[!0-9]*) ;; *) [ \"$threads\" -gt 1 ] && echo \"$tag$pid\" ;; esac\n            fi\n        elif [ -d \"$entry\" ]; then\n            echo \"Cannot inspect process $pid\" >&2\n            return 2\n        fi\n    done\n    return 0\n}\n# Keeping uses numeric pids for socket and lineage lookups. Recheck their\n# signal role here, then use the same UID-constrained delivery as the plain\n# kill. Root's all-zero replacement is skipped; only the effective-UID-only\n# population needs root's residual list/signal window.\nsignal_one() {\n    sr= se= ssaved=\n    { while read -r key a b c rest || [ -n \"$key\" ]; do\n        [ \"$key\" = Uid: ] && { sr=$a; se=$b; ssaved=$c; }\n        key=\n    done <\"$P/$2/status\"; } 2>/dev/null || return 0\n    if [ \"$sr\" = \"$uid\" ] || [ \"$ssaved\" = \"$uid\" ]; then\n        each \"$1\" \"$2\"\n    elif [ \"$se\" = \"$uid\" ]; then\n        each \"$1\" \"r$2\"\n    fi\n    return 0\n}\nfreeze() {\n    everyone STOP\n    stopped=' '\n    pass=0\n    while [ \"$pass\" -lt 100 ]; do\n        pass=$((pass + 1))\n        found=$(live) || exit 2\n        new=\n        for pid in $found; do\n            case \"$stopped\" in *\" $pid \"*) continue ;; esac\n            new=\"$new $pid\"\n            stopped=\"$stopped$pid \"\n        done\n        [ -z \"$new\" ] && break\n        each STOP $new\n    done\n    found=$(live) || exit 2\n    for pid in $found; do\n        # The root/user signaling role can change during the grace without\n        # changing the process. Count its numeric pid only.\n        pid=${pid#r}\n        case \"$killed\" in *\" $pid \"*) ;; *) killed=\"$killed$pid \"; n=$((n + 1)) ;; esac\n    done\n}\nkilled=' '\nn=0\nfreeze\neach TERM $found\neach CONT $found\neveryone CONT\nif [ -n \"$found\" ]; then\n    if sleep 0.1 2>/dev/null; then tick=0.1 ticks=10; else tick=1 ticks=1; fi\n    t=0\n    while [ \"$t\" -lt \"$ticks\" ]; do\n        found=$(live) || exit 2\n        [ -z \"$found\" ] && break\n        sleep \"$tick\"\n        t=$((t + 1))\n    done\nfi\nround=0\nwhile [ \"$round\" -lt 8 ]; do\n    round=$((round + 1))\n    freeze\n    each KILL $found\n    everyone KILL\n    found=$(live) || exit 2\n    if [ -z \"$found\" ]; then\n        echo \"BF killed $n end\"\n        exit 0\n    fi\n    sleep 1\ndone\nfound=$(live) || exit 2\nif [ -z \"$found\" ]; then\n    echo \"BF killed $n end\"\n    exit 0\nfi\nnames=\nfor pid in $found; do\n    pid=${pid#r}\n    cmd=$(tr '\\000\\n' ' ?' <\"$P/$pid/cmdline\" 2>/dev/null | cut -c1-200)\n    names=\"$names $pid ($cmd)\"\ndone\necho \"Sandbox-user writers remain:$names\" >&2\nexit 1",
   "prepare_app_dir": "mkdir -p /app",
-  "purge_external_symlinks": "if [ -f /opt/benchflow/rt/RECORD ]; then if [ -x /opt/benchflow/rt/py/python3 ]; then __bf_hp_py=/opt/benchflow/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c 'import errno, os, sys, pathlib, stat\nroot = pathlib.Path(sys.argv[1]).resolve()\nroot_str = str(root) + os.sep\nbaseline = pathlib.Path('\"'\"'/testbed_verify'\"'\"')\nblocked = set()\nfor prefix in sys.argv[2:]:\n    blocked.update({prefix.rstrip('\"'\"'/'\"'\"') or '\"'\"'/'\"'\"', os.path.realpath(prefix)})\nowners = (0, os.geteuid())\ndef in_workspace(path):\n    return path == str(root) or (path + os.sep).startswith(root_str)\ndef trusted(path, strict):\n    if not path.startswith('\"'\"'/'\"'\"'):\n        return False\n    path = os.path.realpath(path)\n    if in_workspace(path):\n        return True\n    if any(path == b or path.startswith(b.rstrip('\"'\"'/'\"'\"') + '\"'\"'/'\"'\"') for b in blocked):\n        return False\n    chain = [path]\n    while chain[-1] != os.path.dirname(chain[-1]):\n        chain.append(os.path.dirname(chain[-1]))\n    for index, entry in enumerate(chain):\n        st = os.lstat(entry)\n        if st.st_uid not in owners:\n            return False\n        if st.st_mode & 0o022 and (index < strict or not st.st_mode & stat.S_ISVTX):\n            return False\n    return True\ndef homes_trusted(rel):\n    names = [rel.parent / '\"'\"'pyvenv.cfg'\"'\"']\n    if rel.parent.parts:\n        names.append(rel.parent.parent / '\"'\"'pyvenv.cfg'\"'\"')\n    for name in names:\n        data = content(root, name.parts)\n        for line in (data or b'\"'\"''\"'\"').decode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"').splitlines():\n            key, sep, value = line.partition('\"'\"'='\"'\"')\n            if sep and key.strip().lower() == '\"'\"'home'\"'\"' and not trusted(value.strip(), 2):\n                return False\n    return True\ndef real(path):\n    try:\n        os.stat(path)\n    except OSError as e:\n        if e.errno == errno.ELOOP:\n            raise\n    return os.path.realpath(path)\ndef content(top, parts):\n    fd = os.open(str(top), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)\n    try:\n        for part in parts[:-1]:\n            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)\n            os.close(fd)\n            fd = child\n        try:\n            child = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)\n        except FileNotFoundError:\n            return None\n        try:\n            if not stat.S_ISREG(os.fstat(child).st_mode):\n                raise ValueError(parts)\n            data = []\n            chunk = os.read(child, 65536)\n            while chunk:\n                data.append(chunk)\n                chunk = os.read(child, 65536)\n            return b'\"'\"''\"'\"'.join(data)\n        finally:\n            os.close(child)\n    finally:\n        os.close(fd)\ndef startup_files_recorded(rel):\n    names = [rel.parent / '\"'\"'pyvenv.cfg'\"'\"', rel.parent / (rel.name + '\"'\"'._pth'\"'\"')]\n    if rel.parent.parts:\n        names.append(rel.parent.parent / '\"'\"'pyvenv.cfg'\"'\"')\n    return all(content(root, n.parts) == content(baseline, n.parts) for n in names)\noriginal = {}\ntry:\n    st = baseline.lstat()\n    if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o077:\n        original = {p.relative_to(baseline): os.readlink(str(p))\n                    for p in baseline.rglob('\"'\"'*'\"'\"') if p.is_symlink()}\nexcept OSError:\n    original = {}\nfor p in root.rglob('\"'\"'*'\"'\"'):\n    if not p.is_symlink():\n        continue\n    previous = original.get(p.relative_to(root))\n    if previous is not None and previous == os.readlink(str(p)):\n        try:\n            recorded = pathlib.Path(real(str(baseline / p.relative_to(root))))\n            if recorded == baseline or baseline in recorded.parents:\n                recorded = root / recorded.relative_to(baseline)\n            resolved = real(str(p))\n            if (pathlib.Path(resolved) == recorded\n                    and startup_files_recorded(p.relative_to(root))\n                    and trusted(resolved, 3)\n                    and homes_trusted(p.relative_to(root))):\n                continue\n        except (OSError, RuntimeError, ValueError):\n            pass\n    try:\n        target = real(str(p))\n    except (OSError, RuntimeError):\n        p.unlink()\n        continue\n    if target != str(root) and not (target + os.sep).startswith(root_str):\n        p.unlink()\n' /app /tmp /var/tmp /logs /testbed); else :; fi",
+  "purge_external_symlinks": "if [ -f /opt/runtime/rt/RECORD ]; then if [ -x /opt/runtime/rt/py/python3 ]; then __bf_hp_py=/opt/runtime/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c 'import errno, os, sys, pathlib, stat\nroot = pathlib.Path(sys.argv[1]).resolve()\nroot_str = str(root) + os.sep\nbaseline = pathlib.Path('\"'\"'/testbed_verify'\"'\"')\nblocked = set()\nfor prefix in sys.argv[2:]:\n    blocked.update({prefix.rstrip('\"'\"'/'\"'\"') or '\"'\"'/'\"'\"', os.path.realpath(prefix)})\nowners = (0, os.geteuid())\ndef in_workspace(path):\n    return path == str(root) or (path + os.sep).startswith(root_str)\ndef trusted(path, strict):\n    if not path.startswith('\"'\"'/'\"'\"'):\n        return False\n    path = os.path.realpath(path)\n    if in_workspace(path):\n        return True\n    if any(path == b or path.startswith(b.rstrip('\"'\"'/'\"'\"') + '\"'\"'/'\"'\"') for b in blocked):\n        return False\n    chain = [path]\n    while chain[-1] != os.path.dirname(chain[-1]):\n        chain.append(os.path.dirname(chain[-1]))\n    for index, entry in enumerate(chain):\n        st = os.lstat(entry)\n        if st.st_uid not in owners:\n            return False\n        if st.st_mode & 0o022 and (index < strict or not st.st_mode & stat.S_ISVTX):\n            return False\n    return True\ndef homes_trusted(rel):\n    names = [rel.parent / '\"'\"'pyvenv.cfg'\"'\"']\n    if rel.parent.parts:\n        names.append(rel.parent.parent / '\"'\"'pyvenv.cfg'\"'\"')\n    for name in names:\n        data = content(root, name.parts)\n        for line in (data or b'\"'\"''\"'\"').decode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"').splitlines():\n            key, sep, value = line.partition('\"'\"'='\"'\"')\n            if sep and key.strip().lower() == '\"'\"'home'\"'\"' and not trusted(value.strip(), 2):\n                return False\n    return True\ndef real(path):\n    try:\n        os.stat(path)\n    except OSError as e:\n        if e.errno == errno.ELOOP:\n            raise\n    return os.path.realpath(path)\ndef content(top, parts):\n    fd = os.open(str(top), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)\n    try:\n        for part in parts[:-1]:\n            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)\n            os.close(fd)\n            fd = child\n        try:\n            child = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)\n        except FileNotFoundError:\n            return None\n        try:\n            if not stat.S_ISREG(os.fstat(child).st_mode):\n                raise ValueError(parts)\n            data = []\n            chunk = os.read(child, 65536)\n            while chunk:\n                data.append(chunk)\n                chunk = os.read(child, 65536)\n            return b'\"'\"''\"'\"'.join(data)\n        finally:\n            os.close(child)\n    finally:\n        os.close(fd)\ndef startup_files_recorded(rel):\n    names = [rel.parent / '\"'\"'pyvenv.cfg'\"'\"', rel.parent / (rel.name + '\"'\"'._pth'\"'\"')]\n    if rel.parent.parts:\n        names.append(rel.parent.parent / '\"'\"'pyvenv.cfg'\"'\"')\n    return all(content(root, n.parts) == content(baseline, n.parts) for n in names)\noriginal = {}\ntry:\n    st = baseline.lstat()\n    if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o077:\n        original = {p.relative_to(baseline): os.readlink(str(p))\n                    for p in baseline.rglob('\"'\"'*'\"'\"') if p.is_symlink()}\nexcept OSError:\n    original = {}\nfor p in root.rglob('\"'\"'*'\"'\"'):\n    if not p.is_symlink():\n        continue\n    previous = original.get(p.relative_to(root))\n    if previous is not None and previous == os.readlink(str(p)):\n        try:\n            recorded = pathlib.Path(real(str(baseline / p.relative_to(root))))\n            if recorded == baseline or baseline in recorded.parents:\n                recorded = root / recorded.relative_to(baseline)\n            resolved = real(str(p))\n            if (pathlib.Path(resolved) == recorded\n                    and startup_files_recorded(p.relative_to(root))\n                    and trusted(resolved, 3)\n                    and homes_trusted(p.relative_to(root))):\n                continue\n        except (OSError, RuntimeError, ValueError):\n            pass\n    try:\n        target = real(str(p))\n    except (OSError, RuntimeError):\n        p.unlink()\n        continue\n    if target != str(root) and not (target + os.sep).startswith(root_str):\n        p.unlink()\n' /app /tmp /var/tmp /logs /testbed); else :; fi",
+  "purge_git_controls": "if [ -f /opt/runtime/rt/RECORD ]; then if [ -x /opt/runtime/rt/py/python3 ]; then __bf_hp_py=/opt/runtime/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c 'import os, re, shutil, stat, subprocess, sys\nroot = sys.argv[1]\nbaseline = sys.argv[2] if len(sys.argv) > 2 else '\"'\"''\"'\"'\nRUNS = re.compile(\n    r'\"'\"'(filter\\..*|diff\\.[^.]+\\..+|merge\\.[^.]+\\..+|include\\..*|includeif\\..*'\"'\"'\n    r'\"'\"'|core\\.(fsmonitor|hookspath|sshcommand|gitproxy|askpass|editor|pager'\"'\"'\n    r'\"'\"'|alternaterefscommand)|alias\\..*|(diff|merge)tool\\..*'\"'\"'\n    r'\"'\"'|diff\\.external|sequence\\.editor|gpg\\..*program|credential\\..*|pager\\..*'\"'\"'\n    r'\"'\"'|uploadpack\\..*|remote\\..+\\.(uploadpack|receivepack)|interactive\\.difffilter'\"'\"'\n    r'\"'\"'|submodule\\..+\\.update)$'\"'\"', re.I)\nDEVNULL = subprocess.DEVNULL\nENV = {'\"'\"'PATH'\"'\"': '\"'\"'/usr/bin:/bin'\"'\"', '\"'\"'HOME'\"'\"': '\"'\"'/nonexistent'\"'\"', '\"'\"'LC_ALL'\"'\"': '\"'\"'C'\"'\"',\n       '\"'\"'GIT_CONFIG_NOSYSTEM'\"'\"': '\"'\"'1'\"'\"', '\"'\"'GIT_CONFIG_GLOBAL'\"'\"': '\"'\"'/dev/null'\"'\"'}\ntrusted = False\nif baseline:\n    try:\n        st = os.lstat(baseline)\n        trusted = (stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid()\n                   and not st.st_mode & 0o077)\n    except OSError:\n        trusted = False\ndef base_of(path):\n    if not trusted:\n        return None\n    candidate = os.path.join(baseline, os.path.relpath(path, root))\n    try:\n        if stat.S_ISREG(os.lstat(candidate).st_mode):\n            return candidate\n    except OSError:\n        pass\n    return None\ndef read(path):\n    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)\n    try:\n        chunks = []\n        while True:\n            chunk = os.read(fd, 65536)\n            if not chunk:\n                return b'\"'\"''\"'\"'.join(chunks)\n            chunks.append(chunk)\n    finally:\n        os.close(fd)\ngit = None\nfor candidate in ('\"'\"'/usr/bin/git'\"'\"', '\"'\"'/bin/git'\"'\"', '\"'\"'/usr/local/bin/git'\"'\"'):\n    try:\n        st = os.stat(candidate)\n    except OSError:\n        continue\n    if stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022:\n        git = candidate\n        break\ndef entries(path):\n    out = subprocess.check_output(\n        [git, '\"'\"'config'\"'\"', '\"'\"'--file'\"'\"', path, '\"'\"'--no-includes'\"'\"', '\"'\"'--null'\"'\"', '\"'\"'--list'\"'\"'],\n        env=ENV, stderr=DEVNULL)\n    pairs = []\n    for item in out.split(b'\"'\"'\\0'\"'\"'):\n        if item:\n            key, _, value = item.partition(b'\"'\"'\\n'\"'\"')\n            pairs.append((key, value))\n    return pairs\ndef put_back(path, base):\n    os.unlink(path)\n    if base is not None:\n        with open(base, '\"'\"'rb'\"'\"') as source, open(path, '\"'\"'xb'\"'\"') as target:\n            shutil.copyfileobj(source, target)\ndef config(path):\n    try:\n        st = os.lstat(path)\n    except OSError:\n        return\n    if stat.S_ISLNK(st.st_mode):\n        put_back(path, base_of(path))\n        return\n    if not stat.S_ISREG(st.st_mode):\n        return\n    base = base_of(path)\n    if base is not None and read(base) == read(path):\n        return\n    if git is None:\n        put_back(path, base)\n        return\n    try:\n        now = entries(path)\n        before = entries(base) if base is not None else []\n    except (OSError, subprocess.CalledProcessError):\n        put_back(path, base)\n        return\n    keys = []\n    for key, _ in now:\n        if RUNS.match(key.decode('\"'\"'utf-8'\"'\"', '\"'\"'surrogateescape'\"'\"')) and key not in keys:\n            keys.append(key)\n    for key in keys:\n        kept = [v for k, v in before if k == key]\n        if [v for k, v in now if k == key] == kept:\n            continue\n        code = subprocess.call([git, '\"'\"'config'\"'\"', '\"'\"'--file'\"'\"', path, '\"'\"'--unset-all'\"'\"', key],\n                               env=ENV, stdout=DEVNULL, stderr=DEVNULL)\n        if code not in (0, 5):\n            raise SystemExit('\"'\"'git config --unset-all failed: %d'\"'\"' % code)\n        for value in kept:\n            subprocess.check_call([git, '\"'\"'config'\"'\"', '\"'\"'--file'\"'\"', path, '\"'\"'--add'\"'\"', key, value],\n                                  env=ENV, stdout=DEVNULL, stderr=DEVNULL)\ndef hooks(gitdir):\n    folder = os.path.join(gitdir, '\"'\"'hooks'\"'\"')\n    try:\n        st = os.lstat(folder)\n    except OSError:\n        return\n    if not stat.S_ISDIR(st.st_mode):\n        os.unlink(folder)\n        return\n    for name in os.listdir(folder):\n        path = os.path.join(folder, name)\n        st = os.lstat(path)\n        if stat.S_ISREG(st.st_mode):\n            if name.endswith('\"'\"'.sample'\"'\"'):\n                continue\n            base = base_of(path)\n            if (base is not None and read(base) == read(path)\n                    and os.lstat(base).st_mode & 0o111 == st.st_mode & 0o111):\n                continue\n        if stat.S_ISDIR(st.st_mode):\n            shutil.rmtree(path)\n        else:\n            os.unlink(path)\nreal_root = os.path.realpath(root)\ndef follow(path, prefix):\n    try:\n        if not stat.S_ISREG(os.lstat(path).st_mode):\n            return None\n        data = read(path)\n    except OSError:\n        return None\n    if not data.startswith(prefix):\n        return None\n    target = os.fsdecode(data[len(prefix):].rstrip(b'\"'\"'\\r\\n'\"'\"'))\n    target = os.path.realpath(os.path.join(os.path.dirname(path), target))\n    if target == real_root or target.startswith(real_root.rstrip('\"'\"'/'\"'\"') + '\"'\"'/'\"'\"'):\n        return os.path.join(root, os.path.relpath(target, real_root))\n    base = base_of(path)\n    if baseline and (base is None or read(base) != read(path)):\n        os.unlink(path)\n    return None\ndef repository(gitdir):\n    config(os.path.join(gitdir, '\"'\"'config'\"'\"'))\n    config(os.path.join(gitdir, '\"'\"'config.worktree'\"'\"'))\n    hooks(gitdir)\nfor folder, dirs, files in os.walk(root):\n    names = set(dirs) | set(files)\n    if '\"'\"'.git'\"'\"' in files:\n        follow(os.path.join(folder, '\"'\"'.git'\"'\"'), b'\"'\"'gitdir: '\"'\"')\n    if '\"'\"'HEAD'\"'\"' in names and ('\"'\"'objects'\"'\"' in names or '\"'\"'commondir'\"'\"' in names):\n        repository(folder)\n        common = follow(os.path.join(folder, '\"'\"'commondir'\"'\"'), b'\"'\"''\"'\"')\n        if common is not None:\n            repository(common)\n        dirs[:] = [d for d in dirs if d not in ('\"'\"'objects'\"'\"', '\"'\"'hooks'\"'\"', '\"'\"'refs'\"'\"', '\"'\"'logs'\"'\"')]\n' /app /testbed_verify); else :; fi",
   "purge_pycache": "find /app -depth \\( -type d -o -type l \\) -name __pycache__ -exec sh -c 'workspace=${1%/}; shift; for d do if [ -h \"$d\" ]; then rm -f -- \"$d\"; continue; fi; rel=${d#\"$workspace\"/}; if [ -d \"/testbed_verify/$rel\" ] && [ ! -h \"/testbed_verify/$rel\" ]; then for f in \"$d\"/* \"$d\"/.[!.]* \"$d\"/..?*; do [ -e \"$f\" ] || [ -h \"$f\" ] || continue; b=\"/testbed_verify/$rel/${f##*/}\"; [ -f \"$f\" ] && [ ! -h \"$f\" ] && [ -f \"$b\" ] && [ ! -h \"$b\" ] && cmp -s \"$f\" \"$b\" || rm -rf -- \"$f\"; done; else rm -rf -- \"$d\"; fi; done' sh /app {} + 2>/dev/null; true",
-  "purge_workspace_python_hooks": "if [ -f /opt/benchflow/rt/RECORD ]; then if [ -x /opt/benchflow/rt/py/python3 ]; then __bf_hp_py=/opt/benchflow/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c 'import hashlib, json, locale, os, pathlib, re, shutil, stat, sys\nroot = pathlib.Path(sys.argv[1]).resolve()\nbaseline = pathlib.Path('\"'\"'/testbed_verify'\"'\"')\nSITES = ('\"'\"'site-packages'\"'\"', '\"'\"'dist-packages'\"'\"')\nMODULES = ('\"'\"'sitecustomize'\"'\"', '\"'\"'usercustomize'\"'\"')\nENCODINGS = ['\"'\"'utf-8-sig'\"'\"', '\"'\"'utf-8'\"'\"']\nfor get_encoding in (lambda: locale.getpreferredencoding(False),\n                     lambda: locale.nl_langinfo(locale.CODESET)):\n    try:\n        ENCODINGS.append(get_encoding())\n    except Exception:\n        pass\ndef summary(top, parts):\n    fd = os.open(str(top), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)\n    try:\n        for part in parts[:-1]:\n            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)\n            os.close(fd)\n            fd = child\n        child = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)\n        try:\n            mode = os.fstat(child).st_mode\n            if stat.S_ISDIR(mode):\n                return '\"'\"'dir'\"'\"', tuple(sorted(os.listdir(child)))\n            if not stat.S_ISREG(mode):\n                return None\n            digest = hashlib.sha256()\n            chunk = os.read(child, 65536)\n            while chunk:\n                digest.update(chunk)\n                chunk = os.read(child, 65536)\n            return '\"'\"'file'\"'\"', digest.digest()\n        finally:\n            os.close(child)\n    finally:\n        os.close(fd)\ntrusted = False\ntry:\n    st = baseline.lstat()\n    trusted = stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o077\nexcept OSError:\n    pass\ndef same_file(parts):\n    mine = summary(root, parts)\n    return mine is not None and mine[0] == '\"'\"'file'\"'\"' and mine == summary(baseline, parts)\ndef without_caches(top, parts):\n    found = summary(top, parts)\n    if found is None or found[0] != '\"'\"'dir'\"'\"':\n        return found\n    if '\"'\"'__pycache__'\"'\"' in found[1]:\n        cache_parts = parts + ('\"'\"'__pycache__'\"'\"',)\n        cache = summary(top, cache_parts)\n        # Only a real cache containing image files may be ignored. Check\n        # again here so a failed/omitted cache purge grants no exemption.\n        if cache is not None and cache[0] == '\"'\"'dir'\"'\"' and (\n                top == baseline or all(same_file(cache_parts + (name,)) for name in cache[1])):\n            return '\"'\"'dir'\"'\"', tuple(name for name in found[1] if name != '\"'\"'__pycache__'\"'\"')\n    return found\ndef recorded(parts):\n    if not trusted:\n        return False\n    try:\n        mine = without_caches(root, parts)\n        if mine is None or mine != without_caches(baseline, parts):\n            return False\n    except OSError:\n        return False\n    return mine[0] == '\"'\"'file'\"'\"' or all(recorded(parts + (name,)) for name in mine[1])\ndef inside(path):\n    return path == root or root in path.parents\ndef read_nofollow(path):\n    try:\n        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)\n    except OSError:\n        return None\n    try:\n        if not stat.S_ISREG(os.fstat(fd).st_mode):\n            return None\n        data = []\n        chunk = os.read(fd, 65536)\n        while chunk:\n            data.append(chunk)\n            chunk = os.read(fd, 65536)\n    finally:\n        os.close(fd)\n    raw = b'\"'\"''\"'\"'.join(data)\n    # Python 3.12+ decodes a .pth as UTF-8 with a leading BOM dropped and\n    # falls back to the locale'\"'\"'s encoding; 3.11 and older decode by the\n    # locale (UTF-8 in UTF-8 mode) and keep a BOM in the first line. Every\n    # spelling that decodes is checked, so a path one interpreter adds is\n    # never one the purge did not look at (V8-R3-B-1, V8-CONF-2). A decoding\n    # that fails adds no path in that interpreter. This process runs in the\n    # image'\"'\"'s locale, as the verifier does.\n    texts = set()\n    for encoding in ENCODINGS:\n        try:\n            texts.add(raw.decode(encoding))\n        except (UnicodeDecodeError, LookupError):\n            pass\n    # A new .pth must be UTF-8 without a BOM: no installer writes another\n    # form, and the BOM and locale spellings then all name the same paths.\n    plain_utf8 = not raw.startswith(b'\"'\"'\\xef\\xbb\\xbf'\"'\"')\n    try:\n        raw.decode('\"'\"'utf-8'\"'\"')\n    except UnicodeDecodeError:\n        plain_utf8 = False\n    return texts, plain_utf8\ndef is_import(line):\n    return line.startswith('\"'\"'import '\"'\"') or line.startswith('\"'\"'import\\t'\"'\"')\ndef listing(top, parts):\n    try:\n        found = summary(top, parts)\n    except OSError:\n        return None\n    if found is None or found[0] != '\"'\"'dir'\"'\"':\n        return None\n    return found[1]\ndef imports_recorded(site_dir, lines):\n    names = set()\n    for line in lines:\n        if is_import(line):\n            names.update(re.findall(r'\"'\"'\\w+'\"'\"', line))\n    rel = site_dir.relative_to(root).parts\n    mine = listing(root, rel)\n    if mine is None:\n        return False\n    entries = set(mine) | set(listing(baseline, rel) or ())\n    for entry in entries:\n        if entry.split('\"'\"'.'\"'\"', 1)[0] in names and not recorded(rel + (entry,)):\n            return False\n    return True\ndef purge_hooks_in(directory):\n    try:\n        entries = os.listdir(str(directory))\n    except OSError:\n        return\n    for entry in entries:\n        if entry.split('\"'\"'.'\"'\"', 1)[0] not in MODULES:\n            continue\n        if not (entry in MODULES or entry.endswith(('\"'\"'.py'\"'\"', '\"'\"'.pyc'\"'\"', '\"'\"'.so'\"'\"'))):\n            continue\n        hook = directory / entry\n        if recorded(hook.relative_to(root).parts):\n            continue\n        try:\n            if hook.is_dir() and not hook.is_symlink():\n                shutil.rmtree(str(hook))\n            else:\n                hook.unlink()\n        except OSError:\n            pass\ndef path_lines(text):\n    # Python 3.13'\"'\"'s site splits a .pth as str.splitlines does, 3.12 only at\n    # \\n and \\r, so a path line is checked under both splits.\n    for line in text.splitlines() + re.split('\"'\"'\\r\\n|\\r|\\n'\"'\"', text):\n        if not line.startswith('\"'\"'#'\"'\"') and line.strip() and not is_import(line):\n            yield line.rstrip()\ndef recorded_realpath(path):\n    # The file path resolves to in the pre-agent image: every part inside the\n    # workspace is read from the root-only baseline copy, never the live\n    # tree, so a link the agent replaced, removed or added there changes\n    # nothing. Parts outside the workspace resolve as they are. Lexical\n    # parts are taken in order (a resolved prefix has no link in it).\n    todo = list(path.parts[1:])\n    cur = pathlib.Path('\"'\"'/'\"'\"')\n    hops = 0\n    while todo:\n        name = todo.pop(0)\n        if name in ('\"'\"''\"'\"', '\"'\"'.'\"'\"'):\n            continue\n        if name == '\"'\"'..'\"'\"':\n            cur = cur.parent\n            continue\n        nxt = cur / name\n        probe = baseline.joinpath(*nxt.relative_to(root).parts) if inside(nxt) else nxt\n        if os.path.islink(str(probe)):\n            hops += 1\n            if hops > 40:\n                raise OSError('\"'\"'link loop'\"'\"')\n            target = pathlib.PurePosixPath(os.readlink(str(probe)))\n            if target.is_absolute():\n                cur = pathlib.Path('\"'\"'/'\"'\"')\n                todo = list(target.parts[1:]) + todo\n            else:\n                todo = list(target.parts) + todo\n            continue\n        cur = nxt\n    return cur\ndef recorded_entries(folder):\n    # The entries of folder as the pre-agent image has it, each as (name,\n    # the path to test for a link, its path in the image). The folder is\n    # resolved through the record first, so a venv whose bin/ is itself a\n    # link is listed where that link leads, as integ'\"'\"'s listdir does\n    # (V8-NOTE1 review A L-1). Inside the workspace the baseline copy is\n    # read; outside it, the folder as it is.\n    try:\n        where = recorded_realpath(folder)\n    except OSError:\n        return ()\n    if not inside(where):\n        try:\n            names = os.listdir(str(where))\n        except OSError:\n            return ()\n        return [(name, where / name, where / name) for name in names]\n    parts = where.relative_to(root).parts\n    if not parts:\n        # A bin/ linked to the workspace root lists the copy'\"'\"'s own root\n        # (V8-NOTE1 r2 review R2-L1); the copy is a trusted real folder.\n        try:\n            names = os.listdir(str(baseline))\n        except OSError:\n            return ()\n    else:\n        names = listing(baseline, parts) or ()\n    return [(name, baseline.joinpath(*(parts + (name,))), where / name)\n            for name in names]\ndef kept_link_leaves(site_dir):\n    # Whether site_dir belongs to a venv whose interpreter link the freeze\n    # kept and which leaves the workspace: the venv'\"'\"'s pyvenv.cfg in a folder\n    # above it, and a bin/python* there that is a link resolving outside.\n    # That venv is the route integ closes by removing the link. A venv made\n    # with --copies, or a conda install, has a real interpreter file in the\n    # workspace that integ runs with its .pth files intact (V8-NARROW-1).\n    # Only a recorded .pth asks, so the baseline is trusted, and the answer\n    # comes from it, never from the live tree: an agent that plants a\n    # pyvenv.cfg between the site folder and the venv, or replaces the\n    # venv'\"'\"'s link with a copy of the interpreter, makes no linked venv look\n    # like a copied one (V8-NARROW-R2-note1).\n    for env in site_dir.parents:\n        if env == root or not inside(env):\n            return False\n        rel = env.relative_to(root).parts\n        if os.path.lexists(str(baseline.joinpath(*(rel + ('\"'\"'pyvenv.cfg'\"'\"',))))):\n            for folder in ('\"'\"'bin'\"'\"', '\"'\"'Scripts'\"'\"'):\n                for name, probe, path in recorded_entries(env / folder):\n                    if name.startswith('\"'\"'python'\"'\"') and os.path.islink(str(probe)) and not inside(\n                            recorded_realpath(path)):\n                        return True\n            return False\n    return False\ndef path_only_kept(site_dir, text, in_record):\n    # Each line names the path site.addpackage adds, computed as it does: the\n    # line without trailing whitespace, joined to the site dir and made\n    # absolute lexically (os.path.abspath, no link resolved); Python then\n    # reads that path'\"'\"'s realpath. The caller passes each decoded spelling\n    # of the .pth. A .pth not in the record is kept only when every path is\n    # inside the workspace both lexically and resolved, is absolute or has\n    # no '\"'\"'..'\"'\"' part (site joins a relative line to the site dir as the\n    # interpreter spells it, which may run through a link), and is a\n    # directory, a missing path or a recorded file (a zip on sys.path can hold\n    # a sitecustomize; this holds for a recorded .pth too, V8-CONF-2). A kept\n    # .pth has the hook modules removed from the in-workspace directories it\n    # adds.\n    keep = True\n    for line in path_lines(text):\n        try:\n            lexical = pathlib.Path(os.path.abspath(os.path.join(str(site_dir), line)))\n            resolved = pathlib.Path(os.path.realpath(str(lexical)))\n            if not (inside(lexical) and inside(resolved)):\n                # Outside the workspace: a new or changed .pth goes. A\n                # recorded one stays, except in a venv whose kept interpreter\n                # link leaves the workspace: that interpreter would put a\n                # folder on sys.path that nothing here checks (a sitecustomize\n                # the agent planted there, or one linked to its home), a route\n                # integ closes by removing that link (V8-MERGE-3, V8-b172 sol\n                # FIX-3 / astra FIX-4). A real interpreter file in the\n                # workspace is integ'\"'\"'s case and keeps its recorded .pth\n                # (V8-NARROW-1).\n                keep = keep and in_record and not kept_link_leaves(site_dir)\n                continue\n            if not in_record and not line.startswith('\"'\"'/'\"'\"') and '\"'\"'..'\"'\"' in line.split('\"'\"'/'\"'\"'):\n                keep = False\n                continue\n            if resolved.is_dir():\n                purge_hooks_in(resolved)\n            elif os.path.lexists(str(resolved)) and not recorded(\n                    resolved.relative_to(root).parts):\n                keep = False\n        except (OSError, ValueError):\n            keep = False\n    return keep\nwalked = list(os.walk(str(root), followlinks=False))\nsites = set()\nfor directory, dirs, files in walked:\n    here = pathlib.Path(directory)\n    if here != root and here.name in SITES:\n        sites.add(here)\n    for name in dirs + files:\n        link = here / name\n        if name in SITES and link.is_symlink():\n            target = pathlib.Path(os.path.realpath(str(link)))\n            if inside(target) and target.is_dir():\n                sites.add(target)\n# A site folder PT'\"'\"'s pre-agent record covers (a folder a recorded\n# interpreter searches, or one whose hook files it recorded) is the\n# record-based clean-up'\"'\"'s: this walk keeps only workspace venvs with no\n# record (PT-R16 review B). Only a real record counts\n# (the files _image_python_paths.READ loads); with none, every site stays here.\ndef pre_agent_folders():\n    entries = []\n    try:\n        with open('\"'\"'/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json'\"'\"') as handle:\n            entries.append(json.load(handle))\n    except (OSError, ValueError):\n        return set()\n    try:\n        with open('\"'\"'/opt/benchflow/rt/IMAGE_PYTHON_PATHS.jsonl'\"'\"') as handle:\n            entries += [json.loads(line) for line in handle if line.strip()]\n    except (OSError, ValueError):\n        pass\n    out = set()\n    for entry in entries:\n        if not isinstance(entry, dict):\n            continue\n        for key in ('\"'\"'path'\"'\"', '\"'\"'user_site'\"'\"'):\n            for folder in entry.get(key) or ():\n                if isinstance(folder, str):\n                    out.add(os.path.realpath(folder))\n        for folder in entry.get('\"'\"'hooks'\"'\"') or {}:\n            if isinstance(folder, str):\n                out.add(os.path.realpath(folder))\n    return out\ncovered = pre_agent_folders()\nsites = {s for s in sites if os.path.realpath(str(s)) not in covered}\nfor directory, dirs, files in walked:\n    here = pathlib.Path(directory)\n    if not any(p in sites for p in (here,) + tuple(here.parents)):\n        continue\n    for name in dirs + files:\n        module = name.split('\"'\"'.'\"'\"', 1)[0] in MODULES and (\n            name in MODULES or name.endswith(('\"'\"'.py'\"'\"', '\"'\"'.pyc'\"'\"', '\"'\"'.so'\"'\"')))\n        is_pth = here in sites and name in files and name.endswith('\"'\"'.pth'\"'\"')\n        if not module and not is_pth:\n            continue\n        path = here / name\n        if is_pth:\n            found = None if path.is_symlink() else read_nofollow(path)\n            if found is not None:\n                texts, plain_utf8 = found\n                in_record = recorded(path.relative_to(root).parts)\n                kept = in_record or plain_utf8\n                for text in texts:\n                    lines = text.splitlines() + re.split('\"'\"'\\r\\n|\\r|\\n'\"'\"', text)\n                    if any(is_import(line) for line in lines):\n                        kept = kept and in_record and imports_recorded(here, lines)\n                    # A recorded import .pth may also add paths. Apply the\n                    # same archive and hook rules to every decoded spelling.\n                    kept = path_only_kept(here, text, in_record) and kept\n                if kept:\n                    continue\n        elif recorded(path.relative_to(root).parts):\n            continue\n        try:\n            if path.is_dir() and not path.is_symlink():\n                shutil.rmtree(str(path))\n            else:\n                path.unlink()\n        except OSError:\n            pass\n# The test runner'\"'\"'s own modules, added in the workspace: test.sh runs there,\n# and pytest started as a module puts it first on sys.path, so a pytest.py (or a\n# _pytest, pluggy, iniconfig or py module or package) the agent added would run\n# as root in place of the grader and could report a pass. Each top-level one\n# the root-only pre-agent copy has no entry for goes; the repository'\"'\"'s own\n# (an entry the copy has, changed or not) stays.\nRUNNER = ('\"'\"'pytest'\"'\"', '\"'\"'_pytest'\"'\"', '\"'\"'pluggy'\"'\"', '\"'\"'iniconfig'\"'\"', '\"'\"'py'\"'\"')\ndef had_before(name):\n    if not trusted:\n        return False\n    try:\n        os.lstat(str(baseline / name))\n    except OSError:\n        return False\n    return True\ntry:\n    top_names = os.listdir(str(root))\nexcept OSError:\n    top_names = []\nfor name in top_names:\n    stem = name.split('\"'\"'.'\"'\"', 1)[0]\n    if stem not in RUNNER or had_before(name):\n        continue\n    if not (name == stem or name.endswith(('\"'\"'.py'\"'\"', '\"'\"'.pyc'\"'\"', '\"'\"'.pyw'\"'\"', '\"'\"'.so'\"'\"'))):\n        continue\n    path = root / name\n    try:\n        if path.is_dir() and not path.is_symlink():\n            shutil.rmtree(str(path))\n        else:\n            path.unlink()\n    except OSError:\n        pass\n' /app); else :; fi",
-  "reclaim_disk": "if [ -f /opt/benchflow/rt/RECORD ]; then if [ -x /opt/benchflow/rt/py/python3 ]; then __bf_hp_py=/opt/benchflow/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c 'import glob, os, shutil, sys\n\nws = sys.argv[1]\npx = sys.argv[2] if len(sys.argv) > 2 else '\"'\"''\"'\"'\n\ndef linked(path):\n    p = px or '\"'\"''\"'\"'\n    for part in path[len(px):].strip('\"'\"'/'\"'\"').split('\"'\"'/'\"'\"'):\n        p = p + '\"'\"'/'\"'\"' + part\n        if os.path.islink(p):\n            return True\n    return False\n\nprotected = []\nfor root in (ws, px + '\"'\"'/logs'\"'\"'):\n    try:\n        if root and os.path.exists(root):\n            protected.append(os.path.realpath(root))\n    except OSError:\n        pass\n\ndef overlaps(path):\n    return any(\n        path == r or path.startswith(r + '\"'\"'/'\"'\"') or r.startswith(path + '\"'\"'/'\"'\"')\n        for r in protected\n    )\n\ncands = [\n    u + '\"'\"'/.cache/'\"'\"' + name\n    for u in [px + '\"'\"'/root'\"'\"'] + sorted(glob.glob(px + '\"'\"'/home/*'\"'\"'))\n    for name in ('\"'\"'uv'\"'\"', '\"'\"'pip'\"'\"', '\"'\"'uv_build'\"'\"')\n]\ncands += sorted(glob.glob(px + '\"'\"'/var/cache/apt/archives/*.deb'\"'\"'))\nfor c in cands:\n    try:\n        if not os.path.lexists(c) or linked(c):\n            continue\n        # linked() proved no symlink components below the prefix, so\n        # realpath only normalizes the prefix itself - consistent with\n        # the realpath'\"'\"'d protected roots.\n        if overlaps(os.path.realpath(c)):\n            continue\n        if os.path.isdir(c):\n            shutil.rmtree(c, ignore_errors=True)\n        else:\n            os.remove(c)\n    except OSError:\n        pass' /app); else :; fi 2>/dev/null; true"
+  "purge_workspace_python_hooks": "if [ -f /opt/runtime/rt/RECORD ]; then if [ -x /opt/runtime/rt/py/python3 ]; then __bf_hp_py=/opt/runtime/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c 'import hashlib, json, locale, os, pathlib, re, shutil, stat, sys\nroot = pathlib.Path(sys.argv[1]).resolve()\nbaseline = pathlib.Path('\"'\"'/testbed_verify'\"'\"')\nSITES = ('\"'\"'site-packages'\"'\"', '\"'\"'dist-packages'\"'\"')\nMODULES = ('\"'\"'sitecustomize'\"'\"', '\"'\"'usercustomize'\"'\"')\nENCODINGS = ['\"'\"'utf-8-sig'\"'\"', '\"'\"'utf-8'\"'\"']\nfor get_encoding in (lambda: locale.getpreferredencoding(False),\n                     lambda: locale.nl_langinfo(locale.CODESET)):\n    try:\n        ENCODINGS.append(get_encoding())\n    except Exception:\n        pass\ndef summary(top, parts):\n    fd = os.open(str(top), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)\n    try:\n        for part in parts[:-1]:\n            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)\n            os.close(fd)\n            fd = child\n        child = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)\n        try:\n            mode = os.fstat(child).st_mode\n            if stat.S_ISDIR(mode):\n                return '\"'\"'dir'\"'\"', tuple(sorted(os.listdir(child)))\n            if not stat.S_ISREG(mode):\n                return None\n            digest = hashlib.sha256()\n            chunk = os.read(child, 65536)\n            while chunk:\n                digest.update(chunk)\n                chunk = os.read(child, 65536)\n            return '\"'\"'file'\"'\"', digest.digest()\n        finally:\n            os.close(child)\n    finally:\n        os.close(fd)\ntrusted = False\ntry:\n    st = baseline.lstat()\n    trusted = stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o077\nexcept OSError:\n    pass\ndef same_file(parts):\n    mine = summary(root, parts)\n    return mine is not None and mine[0] == '\"'\"'file'\"'\"' and mine == summary(baseline, parts)\ndef without_caches(top, parts):\n    found = summary(top, parts)\n    if found is None or found[0] != '\"'\"'dir'\"'\"':\n        return found\n    if '\"'\"'__pycache__'\"'\"' in found[1]:\n        cache_parts = parts + ('\"'\"'__pycache__'\"'\"',)\n        cache = summary(top, cache_parts)\n        # Only a real cache containing image files may be ignored. Check\n        # again here so a failed/omitted cache purge grants no exemption.\n        if cache is not None and cache[0] == '\"'\"'dir'\"'\"' and (\n                top == baseline or all(same_file(cache_parts + (name,)) for name in cache[1])):\n            return '\"'\"'dir'\"'\"', tuple(name for name in found[1] if name != '\"'\"'__pycache__'\"'\"')\n    return found\ndef recorded(parts):\n    if not trusted:\n        return False\n    try:\n        mine = without_caches(root, parts)\n        if mine is None or mine != without_caches(baseline, parts):\n            return False\n    except OSError:\n        return False\n    return mine[0] == '\"'\"'file'\"'\"' or all(recorded(parts + (name,)) for name in mine[1])\ndef inside(path):\n    return path == root or root in path.parents\ndef read_nofollow(path):\n    try:\n        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)\n    except OSError:\n        return None\n    try:\n        if not stat.S_ISREG(os.fstat(fd).st_mode):\n            return None\n        data = []\n        chunk = os.read(fd, 65536)\n        while chunk:\n            data.append(chunk)\n            chunk = os.read(fd, 65536)\n    finally:\n        os.close(fd)\n    raw = b'\"'\"''\"'\"'.join(data)\n    # Python 3.12+ decodes a .pth as UTF-8 with a leading BOM dropped and\n    # falls back to the locale'\"'\"'s encoding; 3.11 and older decode by the\n    # locale (UTF-8 in UTF-8 mode) and keep a BOM in the first line. Every\n    # spelling that decodes is checked, so a path one interpreter adds is\n    # never one the purge did not look at (V8-R3-B-1, V8-CONF-2). A decoding\n    # that fails adds no path in that interpreter. This process runs in the\n    # image'\"'\"'s locale, as the verifier does.\n    texts = set()\n    for encoding in ENCODINGS:\n        try:\n            texts.add(raw.decode(encoding))\n        except (UnicodeDecodeError, LookupError):\n            pass\n    # A new .pth must be UTF-8 without a BOM: no installer writes another\n    # form, and the BOM and locale spellings then all name the same paths.\n    plain_utf8 = not raw.startswith(b'\"'\"'\\xef\\xbb\\xbf'\"'\"')\n    try:\n        raw.decode('\"'\"'utf-8'\"'\"')\n    except UnicodeDecodeError:\n        plain_utf8 = False\n    return texts, plain_utf8\ndef is_import(line):\n    return line.startswith('\"'\"'import '\"'\"') or line.startswith('\"'\"'import\\t'\"'\"')\ndef listing(top, parts):\n    try:\n        found = summary(top, parts)\n    except OSError:\n        return None\n    if found is None or found[0] != '\"'\"'dir'\"'\"':\n        return None\n    return found[1]\ndef imports_recorded(site_dir, lines):\n    names = set()\n    for line in lines:\n        if is_import(line):\n            names.update(re.findall(r'\"'\"'\\w+'\"'\"', line))\n    rel = site_dir.relative_to(root).parts\n    mine = listing(root, rel)\n    if mine is None:\n        return False\n    entries = set(mine) | set(listing(baseline, rel) or ())\n    for entry in entries:\n        if entry.split('\"'\"'.'\"'\"', 1)[0] in names and not recorded(rel + (entry,)):\n            return False\n    return True\ndef purge_hooks_in(directory):\n    try:\n        entries = os.listdir(str(directory))\n    except OSError:\n        return\n    for entry in entries:\n        if entry.split('\"'\"'.'\"'\"', 1)[0] not in MODULES:\n            continue\n        if not (entry in MODULES or entry.endswith(('\"'\"'.py'\"'\"', '\"'\"'.pyc'\"'\"', '\"'\"'.so'\"'\"'))):\n            continue\n        hook = directory / entry\n        if recorded(hook.relative_to(root).parts):\n            continue\n        try:\n            if hook.is_dir() and not hook.is_symlink():\n                shutil.rmtree(str(hook))\n            else:\n                hook.unlink()\n        except OSError:\n            pass\ndef path_lines(text):\n    # Python 3.13'\"'\"'s site splits a .pth as str.splitlines does, 3.12 only at\n    # \\n and \\r, so a path line is checked under both splits.\n    for line in text.splitlines() + re.split('\"'\"'\\r\\n|\\r|\\n'\"'\"', text):\n        if not line.startswith('\"'\"'#'\"'\"') and line.strip() and not is_import(line):\n            yield line.rstrip()\ndef recorded_realpath(path):\n    # The file path resolves to in the pre-agent image: every part inside the\n    # workspace is read from the root-only baseline copy, never the live\n    # tree, so a link the agent replaced, removed or added there changes\n    # nothing. Parts outside the workspace resolve as they are. Lexical\n    # parts are taken in order (a resolved prefix has no link in it).\n    todo = list(path.parts[1:])\n    cur = pathlib.Path('\"'\"'/'\"'\"')\n    hops = 0\n    while todo:\n        name = todo.pop(0)\n        if name in ('\"'\"''\"'\"', '\"'\"'.'\"'\"'):\n            continue\n        if name == '\"'\"'..'\"'\"':\n            cur = cur.parent\n            continue\n        nxt = cur / name\n        probe = baseline.joinpath(*nxt.relative_to(root).parts) if inside(nxt) else nxt\n        if os.path.islink(str(probe)):\n            hops += 1\n            if hops > 40:\n                raise OSError('\"'\"'link loop'\"'\"')\n            target = pathlib.PurePosixPath(os.readlink(str(probe)))\n            if target.is_absolute():\n                cur = pathlib.Path('\"'\"'/'\"'\"')\n                todo = list(target.parts[1:]) + todo\n            else:\n                todo = list(target.parts) + todo\n            continue\n        cur = nxt\n    return cur\ndef recorded_entries(folder):\n    # The entries of folder as the pre-agent image has it, each as (name,\n    # the path to test for a link, its path in the image). The folder is\n    # resolved through the record first, so a venv whose bin/ is itself a\n    # link is listed where that link leads, as integ'\"'\"'s listdir does\n    # (V8-NOTE1 review A L-1). Inside the workspace the baseline copy is\n    # read; outside it, the folder as it is.\n    try:\n        where = recorded_realpath(folder)\n    except OSError:\n        return ()\n    if not inside(where):\n        try:\n            names = os.listdir(str(where))\n        except OSError:\n            return ()\n        return [(name, where / name, where / name) for name in names]\n    parts = where.relative_to(root).parts\n    if not parts:\n        # A bin/ linked to the workspace root lists the copy'\"'\"'s own root\n        # (V8-NOTE1 r2 review R2-L1); the copy is a trusted real folder.\n        try:\n            names = os.listdir(str(baseline))\n        except OSError:\n            return ()\n    else:\n        names = listing(baseline, parts) or ()\n    return [(name, baseline.joinpath(*(parts + (name,))), where / name)\n            for name in names]\ndef kept_link_leaves(site_dir):\n    # Whether site_dir belongs to a venv whose interpreter link the freeze\n    # kept and which leaves the workspace: the venv'\"'\"'s pyvenv.cfg in a folder\n    # above it, and a bin/python* there that is a link resolving outside.\n    # That venv is the route integ closes by removing the link. A venv made\n    # with --copies, or a conda install, has a real interpreter file in the\n    # workspace that integ runs with its .pth files intact (V8-NARROW-1).\n    # Only a recorded .pth asks, so the baseline is trusted, and the answer\n    # comes from it, never from the live tree: an agent that plants a\n    # pyvenv.cfg between the site folder and the venv, or replaces the\n    # venv'\"'\"'s link with a copy of the interpreter, makes no linked venv look\n    # like a copied one (V8-NARROW-R2-note1).\n    for env in site_dir.parents:\n        if env == root or not inside(env):\n            return False\n        rel = env.relative_to(root).parts\n        if os.path.lexists(str(baseline.joinpath(*(rel + ('\"'\"'pyvenv.cfg'\"'\"',))))):\n            for folder in ('\"'\"'bin'\"'\"', '\"'\"'Scripts'\"'\"'):\n                for name, probe, path in recorded_entries(env / folder):\n                    if name.startswith('\"'\"'python'\"'\"') and os.path.islink(str(probe)) and not inside(\n                            recorded_realpath(path)):\n                        return True\n            return False\n    return False\ndef path_only_kept(site_dir, text, in_record):\n    # Each line names the path site.addpackage adds, computed as it does: the\n    # line without trailing whitespace, joined to the site dir and made\n    # absolute lexically (os.path.abspath, no link resolved); Python then\n    # reads that path'\"'\"'s realpath. The caller passes each decoded spelling\n    # of the .pth. A .pth not in the record is kept only when every path is\n    # inside the workspace both lexically and resolved, is absolute or has\n    # no '\"'\"'..'\"'\"' part (site joins a relative line to the site dir as the\n    # interpreter spells it, which may run through a link), and is a\n    # directory, a missing path or a recorded file (a zip on sys.path can hold\n    # a sitecustomize; this holds for a recorded .pth too, V8-CONF-2). A kept\n    # .pth has the hook modules removed from the in-workspace directories it\n    # adds.\n    keep = True\n    for line in path_lines(text):\n        try:\n            lexical = pathlib.Path(os.path.abspath(os.path.join(str(site_dir), line)))\n            resolved = pathlib.Path(os.path.realpath(str(lexical)))\n            if not (inside(lexical) and inside(resolved)):\n                # Outside the workspace: a new or changed .pth goes. A\n                # recorded one stays, except in a venv whose kept interpreter\n                # link leaves the workspace: that interpreter would put a\n                # folder on sys.path that nothing here checks (a sitecustomize\n                # the agent planted there, or one linked to its home), a route\n                # integ closes by removing that link (V8-MERGE-3, V8-b172 sol\n                # FIX-3 / astra FIX-4). A real interpreter file in the\n                # workspace is integ'\"'\"'s case and keeps its recorded .pth\n                # (V8-NARROW-1).\n                keep = keep and in_record and not kept_link_leaves(site_dir)\n                continue\n            if not in_record and not line.startswith('\"'\"'/'\"'\"') and '\"'\"'..'\"'\"' in line.split('\"'\"'/'\"'\"'):\n                keep = False\n                continue\n            if resolved.is_dir():\n                purge_hooks_in(resolved)\n            elif os.path.lexists(str(resolved)) and not recorded(\n                    resolved.relative_to(root).parts):\n                keep = False\n        except (OSError, ValueError):\n            keep = False\n    return keep\nwalked = list(os.walk(str(root), followlinks=False))\nsites = set()\nfor directory, dirs, files in walked:\n    here = pathlib.Path(directory)\n    if here != root and here.name in SITES:\n        sites.add(here)\n    for name in dirs + files:\n        link = here / name\n        if name in SITES and link.is_symlink():\n            target = pathlib.Path(os.path.realpath(str(link)))\n            if inside(target) and target.is_dir():\n                sites.add(target)\n# A site folder PT'\"'\"'s pre-agent record covers (a folder a recorded\n# interpreter searches, or one whose hook files it recorded) is the\n# record-based clean-up'\"'\"'s: this walk keeps only workspace venvs with no\n# record (PT-R16 review B). Only a real record counts\n# (the files _image_python_paths.READ loads); with none, every site stays here.\ndef pre_agent_folders():\n    entries = []\n    try:\n        with open('\"'\"'/opt/runtime/rt/IMAGE_PYTHON_PATHS.json'\"'\"') as handle:\n            entries.append(json.load(handle))\n    except (OSError, ValueError):\n        return set()\n    try:\n        with open('\"'\"'/opt/runtime/rt/IMAGE_PYTHON_PATHS.jsonl'\"'\"') as handle:\n            entries += [json.loads(line) for line in handle if line.strip()]\n    except (OSError, ValueError):\n        pass\n    out = set()\n    for entry in entries:\n        if not isinstance(entry, dict):\n            continue\n        for key in ('\"'\"'path'\"'\"', '\"'\"'user_site'\"'\"'):\n            for folder in entry.get(key) or ():\n                if isinstance(folder, str):\n                    out.add(os.path.realpath(folder))\n        for folder in entry.get('\"'\"'hooks'\"'\"') or {}:\n            if isinstance(folder, str):\n                out.add(os.path.realpath(folder))\n    return out\ncovered = pre_agent_folders()\nsites = {s for s in sites if os.path.realpath(str(s)) not in covered}\nfor directory, dirs, files in walked:\n    here = pathlib.Path(directory)\n    if not any(p in sites for p in (here,) + tuple(here.parents)):\n        continue\n    for name in dirs + files:\n        module = name.split('\"'\"'.'\"'\"', 1)[0] in MODULES and (\n            name in MODULES or name.endswith(('\"'\"'.py'\"'\"', '\"'\"'.pyc'\"'\"', '\"'\"'.so'\"'\"')))\n        is_pth = here in sites and name in files and name.endswith('\"'\"'.pth'\"'\"')\n        if not module and not is_pth:\n            continue\n        path = here / name\n        if is_pth:\n            found = None if path.is_symlink() else read_nofollow(path)\n            if found is not None:\n                texts, plain_utf8 = found\n                in_record = recorded(path.relative_to(root).parts)\n                kept = in_record or plain_utf8\n                for text in texts:\n                    lines = text.splitlines() + re.split('\"'\"'\\r\\n|\\r|\\n'\"'\"', text)\n                    if any(is_import(line) for line in lines):\n                        kept = kept and in_record and imports_recorded(here, lines)\n                    # A recorded import .pth may also add paths. Apply the\n                    # same archive and hook rules to every decoded spelling.\n                    kept = path_only_kept(here, text, in_record) and kept\n                if kept:\n                    continue\n        elif recorded(path.relative_to(root).parts):\n            continue\n        try:\n            if path.is_dir() and not path.is_symlink():\n                shutil.rmtree(str(path))\n            else:\n                path.unlink()\n        except OSError:\n            pass\n# The test runner'\"'\"'s own modules, added in the workspace: test.sh runs there,\n# and pytest started as a module puts it first on sys.path, so a pytest.py (or a\n# _pytest, pluggy, iniconfig or py module or package) the agent added would run\n# as root in place of the grader and could report a pass. Each top-level one\n# the root-only pre-agent copy has no entry for goes; the repository'\"'\"'s own\n# (an entry the copy has, changed or not) stays.\nRUNNER = ('\"'\"'pytest'\"'\"', '\"'\"'_pytest'\"'\"', '\"'\"'pluggy'\"'\"', '\"'\"'iniconfig'\"'\"', '\"'\"'py'\"'\"')\ndef had_before(name):\n    if not trusted:\n        return False\n    try:\n        os.lstat(str(baseline / name))\n    except OSError:\n        return False\n    return True\ntry:\n    top_names = os.listdir(str(root))\nexcept OSError:\n    top_names = []\nfor name in top_names:\n    stem = name.split('\"'\"'.'\"'\"', 1)[0]\n    if stem not in RUNNER or had_before(name):\n        continue\n    if not (name == stem or name.endswith(('\"'\"'.py'\"'\"', '\"'\"'.pyc'\"'\"', '\"'\"'.pyw'\"'\"', '\"'\"'.so'\"'\"'))):\n        continue\n    path = root / name\n    try:\n        if path.is_dir() and not path.is_symlink():\n            shutil.rmtree(str(path))\n        else:\n            path.unlink()\n    except OSError:\n        pass\n' /app); else :; fi",
+  "reclaim_disk": "if [ -f /opt/runtime/rt/RECORD ]; then if [ -x /opt/runtime/rt/py/python3 ]; then __bf_hp_py=/opt/runtime/rt/py/python3; else __bf_hp_py=; fi; else __bf_hp_py=${__bf_root_python-}; fi\nif [ -n \"$__bf_hp_py\" ]; then (cd / && \"$__bf_hp_py\" -I -S -B -c 'import glob, os, shutil, sys\n\nws = sys.argv[1]\npx = sys.argv[2] if len(sys.argv) > 2 else '\"'\"''\"'\"'\n\ndef linked(path):\n    p = px or '\"'\"''\"'\"'\n    for part in path[len(px):].strip('\"'\"'/'\"'\"').split('\"'\"'/'\"'\"'):\n        p = p + '\"'\"'/'\"'\"' + part\n        if os.path.islink(p):\n            return True\n    return False\n\nprotected = []\nfor root in (ws, px + '\"'\"'/logs'\"'\"'):\n    try:\n        if root and os.path.exists(root):\n            protected.append(os.path.realpath(root))\n    except OSError:\n        pass\n\ndef overlaps(path):\n    return any(\n        path == r or path.startswith(r + '\"'\"'/'\"'\"') or r.startswith(path + '\"'\"'/'\"'\"')\n        for r in protected\n    )\n\ncands = [\n    u + '\"'\"'/.cache/'\"'\"' + name\n    for u in [px + '\"'\"'/root'\"'\"'] + sorted(glob.glob(px + '\"'\"'/home/*'\"'\"'))\n    for name in ('\"'\"'uv'\"'\"', '\"'\"'pip'\"'\"', '\"'\"'uv_build'\"'\"')\n]\ncands += sorted(glob.glob(px + '\"'\"'/var/cache/apt/archives/*.deb'\"'\"'))\nfor c in cands:\n    try:\n        if not os.path.lexists(c) or linked(c):\n            continue\n        # linked() proved no symlink components below the prefix, so\n        # realpath only normalizes the prefix itself - consistent with\n        # the realpath'\"'\"'d protected roots.\n        if overlaps(os.path.realpath(c)):\n            continue\n        if os.path.isdir(c):\n            shutil.rmtree(c, ignore_errors=True)\n        else:\n            os.remove(c)\n    except OSError:\n        pass' /app); else :; fi 2>/dev/null; true"
  },
  "scenarios": {
   "chown fails with stdout and stderr (merged streams)": {
@@ -53,6 +54,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -117,6 +123,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -173,6 +184,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -237,6 +253,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -293,6 +314,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -357,6 +383,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -413,6 +444,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -483,6 +519,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -549,6 +590,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -611,6 +657,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -819,7 +870,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -866,6 +930,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -898,7 +967,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -945,6 +1027,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -981,7 +1068,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -1049,7 +1149,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -1417,6 +1530,246 @@
     "total"
    ]
   },
+  "purge_git_controls fails (merged streams)": {
+   "defense": {
+    "killed": 0,
+    "killed_total": 0,
+    "user": "agent"
+   },
+   "env_keys": null,
+   "error": "Verifier hardening failed: purging workspace git hooks and config exited with rc=7\nstdout: purge_git_controls: it went wrong",
+   "other_calls": 9,
+   "steps": [
+    [
+     "kill_sandbox_user",
+     "root",
+     180
+    ],
+    [
+     "clear_verifier_output",
+     "root",
+     180
+    ],
+    [
+     "prepare_app_dir",
+     "root",
+     180
+    ],
+    [
+     "reclaim_disk",
+     "root",
+     30
+    ],
+    [
+     "purge_external_symlinks",
+     "root",
+     180
+    ],
+    [
+     "purge_pycache",
+     "root",
+     180
+    ],
+    [
+     "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
+     "root",
+     180
+    ]
+   ],
+   "timing_keys": [
+    "kill_sandbox_user_procs",
+    "clear_verifier_output",
+    "prepare_app_dir",
+    "reclaim_disk",
+    "freeze_workspace",
+    "total"
+   ]
+  },
+  "purge_git_controls fails (separate streams)": {
+   "defense": {
+    "killed": 0,
+    "killed_total": 0,
+    "user": "agent"
+   },
+   "env_keys": null,
+   "error": "Verifier hardening failed: purging workspace git hooks and config exited with rc=7\nstderr: purge_git_controls: it went wrong",
+   "other_calls": 9,
+   "steps": [
+    [
+     "kill_sandbox_user",
+     "root",
+     180
+    ],
+    [
+     "clear_verifier_output",
+     "root",
+     180
+    ],
+    [
+     "prepare_app_dir",
+     "root",
+     180
+    ],
+    [
+     "reclaim_disk",
+     "root",
+     30
+    ],
+    [
+     "purge_external_symlinks",
+     "root",
+     180
+    ],
+    [
+     "purge_pycache",
+     "root",
+     180
+    ],
+    [
+     "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
+     "root",
+     180
+    ]
+   ],
+   "timing_keys": [
+    "kill_sandbox_user_procs",
+    "clear_verifier_output",
+    "prepare_app_dir",
+    "reclaim_disk",
+    "freeze_workspace",
+    "total"
+   ]
+  },
+  "purge_git_controls times out (merged streams)": {
+   "defense": {
+    "killed": 0,
+    "killed_total": 0,
+    "user": "agent"
+   },
+   "env_keys": null,
+   "error": "Command timed out after 180 seconds",
+   "other_calls": 9,
+   "steps": [
+    [
+     "kill_sandbox_user",
+     "root",
+     180
+    ],
+    [
+     "clear_verifier_output",
+     "root",
+     180
+    ],
+    [
+     "prepare_app_dir",
+     "root",
+     180
+    ],
+    [
+     "reclaim_disk",
+     "root",
+     30
+    ],
+    [
+     "purge_external_symlinks",
+     "root",
+     180
+    ],
+    [
+     "purge_pycache",
+     "root",
+     180
+    ],
+    [
+     "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
+     "root",
+     180
+    ]
+   ],
+   "timing_keys": [
+    "kill_sandbox_user_procs",
+    "clear_verifier_output",
+    "prepare_app_dir",
+    "reclaim_disk",
+    "freeze_workspace",
+    "total"
+   ]
+  },
+  "purge_git_controls times out (separate streams)": {
+   "defense": {
+    "killed": 0,
+    "killed_total": 0,
+    "user": "agent"
+   },
+   "env_keys": null,
+   "error": "Command timed out after 180 seconds",
+   "other_calls": 9,
+   "steps": [
+    [
+     "kill_sandbox_user",
+     "root",
+     180
+    ],
+    [
+     "clear_verifier_output",
+     "root",
+     180
+    ],
+    [
+     "prepare_app_dir",
+     "root",
+     180
+    ],
+    [
+     "reclaim_disk",
+     "root",
+     30
+    ],
+    [
+     "purge_external_symlinks",
+     "root",
+     180
+    ],
+    [
+     "purge_pycache",
+     "root",
+     180
+    ],
+    [
+     "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
+     "root",
+     180
+    ]
+   ],
+   "timing_keys": [
+    "kill_sandbox_user_procs",
+    "clear_verifier_output",
+    "prepare_app_dir",
+    "reclaim_disk",
+    "freeze_workspace",
+    "total"
+   ]
+  },
   "purge_pycache exits 1 (merged streams)": {
    "defense": {
     "killed": 0,
@@ -1429,7 +1782,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -1481,6 +1847,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -1518,7 +1889,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -1570,6 +1954,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -1927,7 +2316,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -1979,6 +2381,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -2016,7 +2423,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -2068,6 +2488,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -2105,7 +2530,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -2157,6 +2595,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -2194,7 +2637,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -2250,6 +2706,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -2283,7 +2744,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -2335,6 +2809,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -2373,7 +2852,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -2425,6 +2917,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -2497,6 +2994,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -2558,6 +3060,11 @@
      180
     ],
     [
+     "purge_git_controls",
+     "root",
+     180
+    ],
+    [
      "chown_workspace",
      "root",
      180
@@ -2585,7 +3092,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -2637,6 +3157,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],
@@ -2674,7 +3199,20 @@
     "COVERAGE_PROCESS_START",
     "DJANGO_SETTINGS_MODULE",
     "ENV",
+    "GIT_CONFIG_COUNT",
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
     "HOME",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -2726,6 +3264,11 @@
     ],
     [
      "purge_workspace_python_hooks",
+     "root",
+     180
+    ],
+    [
+     "purge_git_controls",
      "root",
      180
     ],

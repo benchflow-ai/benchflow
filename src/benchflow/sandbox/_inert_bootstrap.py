@@ -111,6 +111,20 @@ def config_receipt(config: dict) -> str:
     return base64.b64encode(json.dumps(original).encode()).decode()
 
 
+# BenchFlow's keep-alive (the compose files' command), and the same as PID 1
+# itself.
+KEEP_ALIVE = ["sh", "-c", "sleep infinity"]
+KEEP_ALIVE_AS_PID_1 = ["sh", "-c", "exec sleep infinity"]
+
+
+def _root_user(user: Any) -> bool:
+    """Whether a Config.User selector names root (no selector included)."""
+    name = str(user or "").partition(":")[0]
+    return name in ("", "root") or (
+        name.isascii() and name.isdecimal() and int(name) == 0
+    )
+
+
 def entrypoint(config: dict) -> list[str]:
     argv = (config.get("Entrypoint") or []) + (config.get("Cmd") or [])
     environment = config.get("Env") or []
@@ -121,6 +135,13 @@ def entrypoint(config: dict) -> list[str]:
         or not all(isinstance(row, str) and "=" in row for row in environment)
     ):
         raise RuntimeError("Cannot bootstrap task command; use an exec-form command")
+    if argv == KEEP_ALIVE and not _root_user(config.get("User")):
+        # PID 1 runs as the image's user, which may be the sandbox user, whose
+        # processes the kill before grading ends. A shell PID 1 would exit with
+        # its sleep, and the container with it; the kill leaves a sleep PID 1
+        # alone (lockdown._KILL_PRELUDE). A root PID 1 stays the shell, which
+        # reaps the orphans the kernel gives it; a sleep reaps none.
+        argv = KEEP_ALIVE_AS_PID_1
     return [
         "/bin/sh",
         "-c",

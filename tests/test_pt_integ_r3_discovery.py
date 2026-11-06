@@ -45,9 +45,9 @@ async def test_an_empty_record_answers_no_plugins_without_a_python(monkeypatch):
     }
     # Kit tools by absolute path, and no Python started.
     (command,) = commands
-    assert "/opt/benchflow/rt/bin/cat " in command
+    assert "/opt/runtime/rt/bin/cat " in command
     assert "python" not in command.replace("IMAGE_PYTHON_PATHS", "").replace(
-        "/opt/benchflow/rt/py/python3", ""
+        "/opt/runtime/rt/py/python3", ""
     )
 
 

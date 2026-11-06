@@ -112,7 +112,7 @@ def test_real_compose_log_staging_cannot_redirect(compose_output, tmp_path):
             "main",
             "sh",
             "-c",
-            'for d in /work-shared/.benchflow-private-*; do [ ! -d "$d" ] || ln -s "$1" "$d/published"; done; :',
+            'for d in /work-shared/.runtime-private-*; do [ ! -d "$d" ] || ln -s "$1" "$d/published"; done; :',
             "plant",
             str(marker),
         )

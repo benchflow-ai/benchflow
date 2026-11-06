@@ -34,6 +34,12 @@ def test_native_login_network_refusals_reach_check(
     result = CliRunner().invoke(
         app, [*command, str(task), "--agent", agent, "--model", model]
     )
+    if agent == "codex" and policy == "offline":
+        # #38: Codex on a ChatGPT login runs a no-web task through its
+        # model-only gate (chatgpt.com Responses requests only).
+        assert result.exit_code == 0, result.output
+        assert "native subscription" not in result.stderr.lower()
+        return
     assert result.exit_code == 1, result.output
     assert "native subscription" in result.stderr.lower()
 

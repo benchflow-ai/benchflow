@@ -47,8 +47,8 @@ SCHEMA_VERSIONS: dict[str, int] = {
 #: The trial document's version (kept for callers that imported it).
 SCHEMA_VERSION = SCHEMA_VERSIONS["trial"]
 #: Bumped when optional fields are added within a schema_version; the
-#: changelog is in docs/reference/json-export.md.
-SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 0, "comparison": 0, "run-summary": 0}
+#: changelog is in docs/train/formats.md#schema-versions.
+SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 1, "comparison": 1, "run-summary": 0}
 SCHEMA_ID_BASE = "https://benchflow.ai/schemas"
 
 
@@ -64,7 +64,10 @@ class UsageExport(_Model):
     total_tokens: int | None = None
     cost_usd: float | None = None
     usage_source: str | None = Field(
-        None, description="provider_response, agent_native_acp or unavailable"
+        None,
+        description="provider_response, agent_native_acp or unavailable; for an "
+        "agent that routes its own model calls, agent-reported or none (never "
+        "metered)",
     )
     cost_status: Literal["priced", "subscription", "unpriced", "unavailable"] | None = (
         Field(
@@ -489,6 +492,11 @@ class JobExport(_Model):
         default_factory=dict,
         description="seconds per timing phase, summed over agent runs (1.1)",
     )
+    scoring: dict[str, Any] | None = Field(
+        None,
+        description="the scoring rule's figures over every trial and the trials "
+        "split by setting, as summary.json's scoring block (2.1)",
+    )
     trials: list[TrialExport]
 
 
@@ -565,6 +573,12 @@ class ComparisonExport(_Model):
     rows: list[ComparisonRowExport]
     mismatches: list[SettingMismatchExport]
     caveats: list[str]
+    scoring: dict[str, Any] | None = Field(
+        None,
+        description="the scoring rule's figures for each side on the tasks both "
+        "ran, the gap b - a with its 95% interval paired by task, its warnings, "
+        "and each side's mixed settings (2.1)",
+    )
 
 
 class GateExport(_Model):
@@ -927,6 +941,7 @@ def job_export(
         interrupted=[_interrupted(folder) for folder in job.interrupted],
         error_categories=_error_categories(job),
         timing_totals=_timing_totals(job),
+        scoring=_safe(_job_scoring(job)),
         trials=[
             trial_export(
                 t,
@@ -936,6 +951,18 @@ def job_export(
             for t in job.trials
         ],
     )
+
+
+def _job_scoring(job: Job) -> dict[str, Any]:
+    """The scoring rule over the job's trials and its rows per setting
+    (summary.json's ``scoring`` block, read from the trials)."""
+    from benchflow.scoring import score
+    from benchflow.setting_groups import job_summaries, setting_rows
+
+    settings = setting_rows(job.trials, summaries=job_summaries(job.path, job.trials))
+    rows = settings.rows
+    figures = score([r for row in rows for r in row.records()])
+    return {**figures.to_dict(), "settings": settings.to_dict()}
 
 
 def _solve_rates(rates: Any) -> SolveRatesExport | None:
@@ -991,6 +1018,7 @@ def comparison_export(cmp: Comparison) -> ComparisonExport:
             for m in cmp.mismatches
         ],
         caveats=list(cmp.caveats),
+        scoring=_safe(cmp.scoring) if cmp.scoring is not None else None,
     )
 
 

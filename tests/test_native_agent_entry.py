@@ -57,7 +57,7 @@ async def dispatch(
     def local_path(path):
         if os.getuid() == 0:
             return path
-        return path.replace("/.benchflow-agent-env-", str(tmp_path / "env-"))
+        return path.replace("/.runtime-agent-env-", str(tmp_path / "env-"))
 
     def run(argv, env=None, stdin=None):
         argv = [local_path(arg) for arg in argv]
@@ -474,7 +474,7 @@ async def test_r17_large_environment_starts_and_restores_exactly(
         assert not Path(
             path
             if os.getuid() == 0
-            else path.replace("/.benchflow-agent-env-", str(tmp_path / "env-"))
+            else path.replace("/.runtime-agent-env-", str(tmp_path / "env-"))
         ).parent.exists()
 
 
@@ -592,7 +592,7 @@ async def test_r18_modal_upload_failure_does_not_run_command(tmp_path, monkeypat
         path = Path(
             target
             if os.getuid() == 0
-            else target.replace("/.benchflow-agent-env-", str(tmp_path / "env-"))
+            else target.replace("/.runtime-agent-env-", str(tmp_path / "env-"))
         )
         paths.append(path)
         path.write_bytes(b"incomplete dummy payload")

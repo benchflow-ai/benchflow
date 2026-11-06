@@ -39,12 +39,12 @@ SmokeStatus = Literal["pass", "fail", "error"]
 SMOKE_TASK_NAME = "hello-world"
 BUNDLED_TASK_DIR = Path(__file__).parent / "demo_task"
 
-# Cheap, fast default model per agent. Claude's is the eval default (Haiku 4.5).
+# Cheap, fast default model per agent. Claude's is the eval default (Haiku 5.5).
 # Codex's is offered on every ChatGPT plan, Free and Go included (gpt-5.5 left
 # ChatGPT sign-in on 2026-10-14). Gemini's is the stable model Google routes
 # gemini-2.5-flash to; 2.5 Flash is closed to new API keys.
 SMOKE_DEFAULT_MODELS: dict[str, str] = {
-    "claude-agent-acp": "claude-haiku-4-5-20251001",
+    "claude-agent-acp": "claude-haiku-5-5",
     "codex-acp": "gpt-6-luna",
     "gemini": "gemini-3.5-flash-lite",
 }

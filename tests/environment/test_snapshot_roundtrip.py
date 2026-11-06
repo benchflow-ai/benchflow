@@ -19,7 +19,7 @@ class LocalSandbox:
         self.snapshot_root = str(snapshot_root)
 
     async def exec(self, command, *, timeout_sec):
-        command = command.replace("/tmp/benchflow-snapshots", self.snapshot_root)
+        command = command.replace("/tmp/runtime-snapshots", self.snapshot_root)
         proc = await asyncio.create_subprocess_shell(
             command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )

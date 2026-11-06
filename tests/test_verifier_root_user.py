@@ -21,7 +21,7 @@ from tests.test_verifier_uv_state import Layout, make_task
 
 
 def guard_policy(layout: Layout) -> str:
-    (guard,) = layout.fs.glob("_benchflow_guard_*/_benchflow_guard_*.py")
+    (guard,) = layout.fs.glob("_runtime_guard_*/_runtime_guard_*.py")
     return guard.read_text()
 
 
@@ -45,7 +45,7 @@ async def test_every_spelling_of_root_gets_the_protected_uv_configuration(
         layout, task, "agent", str(layout.workspace)
     )
 
-    (directory,) = layout.fs.glob("_benchflow_verifier_*")
+    (directory,) = layout.fs.glob("_runtime_verifier_*")
     assert env.get("UV_CONFIG_FILE") == str(directory / "uv.toml")
     policy = guard_policy(layout)
     assert "_BENCHFLOW_VERIFIER_ROOT = True" in policy
@@ -92,7 +92,7 @@ async def test_a_verifier_id_says_is_not_root_gets_neither(tmp_path, monkeypatch
     )
 
     assert "UV_CONFIG_FILE" not in env
-    assert not list(layout.fs.glob("_benchflow_verifier_*"))
+    assert not list(layout.fs.glob("_runtime_verifier_*"))
     policy = guard_policy(layout)
     assert "_BENCHFLOW_VERIFIER_ROOT = False" in policy
     assert "_BENCHFLOW_RECORD = ''" in policy

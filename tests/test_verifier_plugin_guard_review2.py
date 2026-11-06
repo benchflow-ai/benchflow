@@ -259,7 +259,7 @@ def test_agent_text_in_a_refusal_cannot_make_it_unrecorded():
     """Only the guard's own opening words choose the cause."""
     error = (
         "verifier crashed: PluginGuardLoadError: the pytest plugin guard "
-        "_benchflow_guard_0123abcd refused a pytest plugin it could not trust, so "
+        "_runtime_guard_0123abcd refused a pytest plugin it could not trust, so "
         "pytest stopped and this run is not scored (Verifier plugin trust "
         "rejected: x (/app/x, with no complete record of the agent's files ))"
     )

@@ -288,8 +288,8 @@ async def test_a_cli_that_ignores_the_interrupt_is_killed_within_the_cancel_budg
     assert loop.time() - started < 2 + client_module.CANCEL_RETURN_SEC + 1
     (turn,) = _turns(tmp_path)
     assert turn["stop_reason"] == "cancelled" and turn["stopped"] is True
-    run_id = next(c for c in sandbox.exec_calls if "BENCHFLOW_NATIVE_RUN=" in c)
-    run_id = run_id.split("BENCHFLOW_NATIVE_RUN=", 1)[1][:32]
+    run_id = next(c for c in sandbox.exec_calls if "RUNTIME_NATIVE_RUN=" in c)
+    run_id = run_id.split("RUNTIME_NATIVE_RUN=", 1)[1][:32]
     assert not await _marked_alive(sandbox, run_id)
     await client.close()
 
@@ -492,7 +492,7 @@ async def test_execute_prompts_times_out_a_native_turn_like_an_acp_turn(tmp_path
         )
     assert caught.value.diagnostic.pending_tool_call_ids == ["toolu_fake_sleep_0"]
     assert [e["type"] for e in caught.value.trajectory][-1] == "agent_timeout"
-    run_ids = [c for c in sandbox.exec_calls if "BENCHFLOW_NATIVE_RUN=" in c]
+    run_ids = [c for c in sandbox.exec_calls if "RUNTIME_NATIVE_RUN=" in c]
     assert run_ids, "cancel ran the kill script"
 
 

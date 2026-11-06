@@ -25,6 +25,8 @@ from benchflow.review.evidence import (
     EvidenceExclusion,
     EvidenceManifest,
     _extract_archive,
+    _kept_tar_link,
+    _link_target,
     capture_task_evidence,
     capture_workspace,
     install_review_evidence,
@@ -253,6 +255,142 @@ async def test_daytona_session_state_never_blocks_or_enters_evidence(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_absolute_in_workspace_link_with_dotdot_is_kept(tmp_path):
+    """Guards the fix from PR #1207 for #1157: an absolute link whose '..'
+    parts stay inside the workspace is kept for the reviewer, not dropped."""
+    source = tmp_path / "source"
+    (source / "analysis" / "scripts").mkdir(parents=True)
+    (source / "analysis" / "figures").mkdir()
+    (source / "analysis" / "figures" / "fit.svg").write_text("<svg/>")
+    (source / "figs").symlink_to(
+        f"{source}/analysis/scripts/../figures", target_is_directory=True
+    )
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(transport, str(source), bundle)
+
+    assert manifest.exclusions == ()
+    assert os.readlink(bundle / "workspace" / "figs") == "analysis/figures"
+    assert (bundle / "workspace" / "figs" / "fit.svg").read_text() == "<svg/>"
+    archive = tmp_path / "upload.tar"
+    prepare_workspace_upload(bundle, archive)
+    receiving = tmp_path / "reviewer" / "workspace"
+    await install_uploaded_workspace(
+        transport, str(archive), str(receiving), str(bundle / "manifest.json")
+    )
+    validate_workspace(receiving, manifest)
+    assert (receiving / "figs" / "fit.svg").read_text() == "<svg/>"
+
+
+@pytest.mark.parametrize(
+    ("name", "linkname", "expected"),
+    [
+        ("figs", "/root/analysis/scripts/../figures", "analysis/figures"),
+        ("a/b/link", "/root/a/./c/../d", "../d"),
+        ("link", "/root/x/..", "."),
+        ("link", "/root/answer.txt", "answer.txt"),
+        ("link", "/root/../root/answer.txt", None),
+        ("link", "/root/a/../../etc/passwd", None),
+        ("link", "/root/..", None),
+    ],
+)
+def test_absolute_link_target_is_normalised_before_the_safety_check(
+    name, linkname, expected
+):
+    """Guards the fix from PR #1207 for #1157 at the unit level: '..' inside
+    the workspace is kept, '..' that climbs out still escapes."""
+    member = tarfile.TarInfo(name)
+    member.type = tarfile.SYMTYPE
+    member.linkname = linkname
+    if expected is None:
+        with pytest.raises(
+            EvidenceError, match=r"symlink escapes|Unsafe evidence path"
+        ):
+            _link_target(member, "/root")
+    else:
+        assert _link_target(member, "/root") == expected
+
+
+@pytest.mark.parametrize(
+    ("linkname", "kept"),
+    [
+        ("/root/analysis/scripts/../figures", True),
+        ("/root/../root/analysis/figures", False),
+        ("/root/analysis/../../etc", False),
+        ("/etc/passwd", False),
+    ],
+)
+def test_tar_listing_normalises_an_absolute_link_like_the_capture(linkname, kept):
+    """Guards the fix from PR #1207 for #1157 on the tar-listing path: the
+    host applies the capture script's rule to an archive, so it must keep the
+    same in-workspace absolute links."""
+    links = {"figs": linkname}
+    assert _kept_tar_link("figs", linkname, links, "/root") is kept
+
+
+def test_tar_listing_keeps_a_normalised_link_only_where_it_leads_alike():
+    """Guards the port of PR #1207 against rewriting a link's meaning: '..'
+    after a linked folder goes to that folder's parent, so /root/a/../b with
+    a -> x/y reaches x/b, not the b its normalised text names."""
+    assert _kept_tar_link("answer", "/root/a/../b", {"answer": "/root/a/../b"}, "/root")
+    links = {"a": "x/y", "answer": "/root/a/../b"}
+    assert _kept_tar_link("answer", "/root/a/../b", links, "/root") is False
+
+
+@pytest.mark.asyncio
+async def test_absolute_link_through_a_linked_folder_is_not_rewritten(tmp_path):
+    """Guards the port of PR #1207: a link kept as its normalised text must
+    lead where the agent's link leads. Here the sandbox reads x/b ('SUB')
+    through a -> x/y, while the text names b ('ROOT'), so the link stays a
+    symlink_escape exclusion instead of showing the reviewer another file."""
+    source = tmp_path / "source"
+    (source / "x" / "y").mkdir(parents=True)
+    (source / "x" / "b").write_text("SUB")
+    (source / "b").write_text("ROOT")
+    (source / "a").symlink_to("x/y", target_is_directory=True)
+    target = f"{source}/a/../b"
+    (source / "answer").symlink_to(target)
+    assert (source / "answer").read_text() == "SUB"
+
+    manifest = await capture_workspace(
+        LocalTransport(), str(source), tmp_path / "evidence"
+    )
+
+    assert [
+        (Path(exclusion.original_path).name, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ] == [("answer", "symlink_escape", target)]
+    assert "a" in {entry.path for entry in manifest.entries}
+
+
+@pytest.mark.asyncio
+async def test_absolute_link_whose_normalised_text_leaves_is_excluded(tmp_path):
+    """Guards the port of PR #1207: '..' that climbs out of the workspace in
+    the link's text still escapes, even where the link itself resolves inside
+    (l -> d1/d2, so l/../../other is the workspace's own other). The outside
+    file of that name never enters the bundle."""
+    source = tmp_path / "source"
+    (source / "d1" / "d2").mkdir(parents=True)
+    (source / "other").write_text("inside")
+    (tmp_path / "other").write_text("do not export")
+    (source / "l").symlink_to("d1/d2", target_is_directory=True)
+    target = f"{source}/l/../../other"
+    (source / "escape").symlink_to(target)
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert [
+        (Path(exclusion.original_path).name, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ] == [("escape", "symlink_escape", target)]
+    assert b"do not export" not in b"".join(
+        path.read_bytes() for path in bundle.rglob("*") if path.is_file()
+    )
+
+
+@pytest.mark.asyncio
 async def test_escaping_links_and_fifos_are_exclusions_through_reviewer_admission(
     tmp_path,
 ):
@@ -263,9 +401,10 @@ async def test_escaping_links_and_fifos_are_exclusions_through_reviewer_admissio
     symlink escapes evidence" and the trial ended with rewards null although
     the agent and verifier had finished. Every link the bundle cannot keep is
     now a symlink_escape exclusion with its target text (one leaving the root,
-    one whose text leaves it although it resolves inside, which used to pass
-    capture and then fail extraction, and a loop), and the rest of the
+    one through another escaping link, and a loop), and the rest of the
     workspace still passes the host check, packaging and reviewer admission.
+    An absolute link whose text detours through '..' but stays inside used to
+    pass capture and then fail extraction (#1157); since PR #1207 it is kept.
     """
     helper = tmp_path / "codex" / "apply_patch"
     helper.parent.mkdir()
@@ -279,13 +418,14 @@ async def test_escaping_links_and_fifos_are_exclusions_through_reviewer_admissio
         "parent-escape": "../codex/apply_patch",
         "dangling-outside": "/nonexistent/benchflow-evidence-target",
         "through-escape": "apply_patch",
-        "text-detour": str(source / "sub" / ".." / "answer.txt"),
         "loop": "loop",
     }
     for name, target in escaping.items():
         (source / name).symlink_to(target)
     (source / "kept-link").symlink_to("answer.txt")
     (source / "kept-dangling").symlink_to("sub/not-written")
+    # Its text detours through '..' but stays inside: kept since PR #1207.
+    (source / "text-detour").symlink_to(source / "sub" / ".." / "answer.txt")
     transport = LocalTransport()
     bundle = tmp_path / "evidence"
 
@@ -303,6 +443,7 @@ async def test_escaping_links_and_fifos_are_exclusions_through_reviewer_admissio
         "kept-dangling",
         "kept-link",
         "sub",
+        "text-detour",
     }
     validate_workspace(bundle / "workspace", manifest)
     archive = tmp_path / "upload.tar"
@@ -316,8 +457,10 @@ async def test_escaping_links_and_fifos_are_exclusions_through_reviewer_admissio
         "kept-dangling",
         "kept-link",
         "sub",
+        "text-detour",
     ]
     assert (receiving / "kept-link").read_text() == "solver output"
+    assert os.readlink(receiving / "text-detour") == "answer.txt"
 
 
 @pytest.mark.asyncio

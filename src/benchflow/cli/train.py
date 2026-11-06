@@ -17,14 +17,73 @@ from benchflow.cli._shared import (
     print_error,
 )
 
+# Formats written from each rollout's calls as whole conversations
+# (benchflow.trajectories.rl_conversations), for the trainer that reads them.
+_CONVERSATION_FORMATS = ("verl-sft", "skyrl-sft", "openenv-episodes")
 
-def _ensure_training_format(format_name: str) -> None:
-    if format_name not in {"prime-sft", "trl-sft", "branch-tree"}:
+
+def _ensure_training_format(format_name: str, *, convert: bool = False) -> None:
+    formats = ["prime-sft", "trl-sft", "branch-tree"]
+    if convert:
+        formats += _CONVERSATION_FORMATS
+    if format_name not in formats:
         print_error(
             f"--format {format_name!r} is not a training format",
-            next_step="pass --format prime-sft, trl-sft or branch-tree",
+            next_step=f"pass --format {', '.join(formats[:-1])} or {formats[-1]}",
         )
         raise typer.Exit(2)
+
+
+def _export_conversation_format(
+    format_name: str, jobs_dir: Path, output: Path, **options: Any
+) -> Any:
+    if format_name == "verl-sft":
+        from benchflow.trajectories.export_verl_sft import export_verl_sft_parquet
+
+        return export_verl_sft_parquet(jobs_dir, output, **options)
+    if format_name == "skyrl-sft":
+        from benchflow.trajectories.export_skyrl_sft import export_skyrl_sft_jsonl
+
+        return export_skyrl_sft_jsonl(jobs_dir, output, **options)
+    if format_name == "openenv-episodes":
+        from benchflow.trajectories.export_openenv_episodes import (
+            export_openenv_episodes_jsonl,
+        )
+
+        return export_openenv_episodes_jsonl(jobs_dir, output, **options)
+    raise ValueError(f"--format {format_name} has no exporter")
+
+
+def _consumer_hint(format_name: str, output: Path, row_mode: str) -> str:
+    """The flags of the library that reads ``output``."""
+    if format_name == "verl-sft":
+        from benchflow.trajectories.export_verl_sft import (
+            VERL_DATASET_CLASS,
+            verl_dataset_path,
+        )
+
+        return (
+            f"verl: data.train_files={output} "
+            f"data.custom_cls.path={verl_dataset_path()} "
+            f"data.custom_cls.name={VERL_DATASET_CLASS}"
+        )
+    if format_name == "skyrl-sft":
+        from benchflow.trajectories.export_skyrl_sft import skyrl_train_on_what
+
+        return (
+            f"SkyRL: train_datasets=[{output.parent}] train_dataset_splits=[train] "
+            f"train_on_what={skyrl_train_on_what(cast(Any, row_mode))} "
+            f"(the folder must hold only {output.name})"
+        )
+    if format_name == "openenv-episodes":
+        hint = (
+            f"OpenEnv: RolloutSerializer({output.parent}) reads "
+            f"{output.parent / 'results.jsonl'}"
+        )
+        if output.name != "results.jsonl":
+            hint += f"; name the file results.jsonl, not {output.name}"
+        return hint
+    return ""
 
 
 def _has_branch_trees(jobs_dir: Path) -> bool:
@@ -49,14 +108,19 @@ def register_train(app: typer.Typer) -> None:
         ],
         output: Annotated[
             Path,
-            typer.Option("--out", "-o", help="Output JSONL path"),
+            typer.Option(
+                "--out", "-o", help="Output path: JSONL, or parquet for verl-sft"
+            ),
         ],
         format_name: Annotated[
             str,
             typer.Option(
                 "--format",
-                help="Trainer format: prime-sft, trl-sft, or branch-tree (one row "
-                "per branch child: shared prefix, continuation, reward, advantage)",
+                help="Trainer format: prime-sft, trl-sft, branch-tree (one row "
+                "per branch child: shared prefix, continuation, reward, advantage), "
+                "verl-sft (parquet for verl's multi-turn SFT trainer), "
+                "skyrl-sft (rows for SkyRL's SFT trainer) or openenv-episodes "
+                "(OpenEnv episode records)",
             ),
         ] = "prime-sft",
         pairs: Annotated[
@@ -203,7 +267,7 @@ def register_train(app: typer.Typer) -> None:
         ] = "task,agent,model,job",
     ) -> None:
         """Convert BenchFlow rollout artifacts into trainer-ready data."""
-        _ensure_training_format(format_name)
+        _ensure_training_format(format_name, convert=True)
         exit_if_missing(
             jobs_dir, next_step="pass a rollout or jobs directory to convert"
         )
@@ -317,18 +381,52 @@ def register_train(app: typer.Typer) -> None:
             canonical_selection,
             next_step="pass a canonical-selection.json file to --canonical-selection",
         )
+        if format_name == "openenv-episodes":
+            from benchflow.trajectories.export_openenv_episodes import (
+                refuse_episode_options,
+            )
+
+            try:
+                refuse_episode_options(
+                    row_mode=row_mode,
+                    subagent_rows=subagent_rows,
+                    reward_vector=reward_vector,
+                    group_advantage=group_advantage,
+                )
+            except ValueError as exc:
+                print_error(
+                    str(exc),
+                    next_step="`bench train convert --help` describes each flag",
+                )
+                raise typer.Exit(2) from None
         try:
-            if format_name == "prime-sft":
-                if (
-                    context_policy != "full"
-                    or tokenizer_id is not None
-                    or tokenizer_revision is not None
-                    or max_length is not None
-                ):
-                    raise ValueError(
-                        "--context-policy/--tokenizer/--tokenizer-revision/"
-                        "--max-length are supported only with --format trl-sft"
-                    )
+            if format_name != "trl-sft" and (
+                context_policy != "full"
+                or tokenizer_id is not None
+                or tokenizer_revision is not None
+                or max_length is not None
+            ):
+                raise ValueError(
+                    "--context-policy/--tokenizer/--tokenizer-revision/"
+                    "--max-length are supported only with --format trl-sft"
+                )
+            if format_name in _CONVERSATION_FORMATS:
+                stats = _export_conversation_format(
+                    format_name,
+                    jobs_dir,
+                    output,
+                    min_reward=min_reward,
+                    row_mode=row_mode,
+                    expected_rows=expected_rows,
+                    manifest=manifest,
+                    canonical_selection=canonical_selection,
+                    redact=redact,
+                    subagent_rows=subagent_rows,
+                    reward_vector=reward_vector,
+                    group_advantage=cast(Any, group_advantage),
+                    group_by=group_keys,
+                )
+            elif format_name == "prime-sft":
                 from benchflow.trajectories.export_prime_sft import (
                     export_prime_sft_jsonl,
                 )
@@ -400,7 +498,40 @@ def register_train(app: typer.Typer) -> None:
                 if stats.skipped_control
                 else ""
             )
+            + (
+                f"; left out {unparsed} model call(s) whose tool input was not a "
+                "JSON object"
+                if (unparsed := getattr(stats, "skipped_unparsed_tool_calls", 0))
+                else ""
+            )
+            + (
+                f"; left out {stats.skipped_terminal_error} rollout(s) that did not "
+                "end cleanly (an error, a time limit or a conversation cut short; "
+                "skipped_terminal_error in the manifest)"
+                if getattr(stats, "skipped_terminal_error", 0)
+                else ""
+            )
         )
+        if format_name in _CONVERSATION_FORMATS:
+            from benchflow.trajectories.rl_conversations import context_summary
+
+            label = (
+                "listed in extra.train_message_indices"
+                if format_name == "openenv-episodes"
+                else "trained"
+            )
+            console.print(
+                context_summary(cast(Any, stats), trained_label=label) + ".",
+                soft_wrap=True,
+            )
+            if unscored := getattr(stats, "skipped_unscored", 0):
+                console.print(
+                    f"Left out {unscored} unscored rollout(s): an OpenEnv episode "
+                    "needs a reward."
+                )
+            console.print(
+                escape(_consumer_hint(format_name, output, row_mode)), soft_wrap=True
+            )
         subagents = stats.subagents
         if subagents.rollouts_with_subagents:
             hint = "" if subagent_rows else " (--subagent-rows emits them as rows)"
@@ -448,7 +579,7 @@ def register_train(app: typer.Typer) -> None:
         """Report whether each rollout's model calls carry token ids and logprobs.
 
         Reads trajectory/llm_trajectory.jsonl token_capture blocks (see
-        docs/reference/token-capture.md). A rollout is training-grade when
+        docs/train/trainer.md#token-ids-and-logprobs). A rollout is training-grade when
         every call has prompt token ids, sampled token ids and logprobs, and
         each prompt extends the previous call's prompt and sampled tokens.
         """
@@ -549,7 +680,7 @@ def register_train(app: typer.Typer) -> None:
         For a trainer that consumes a job while it runs: every line is a
         benchflow.rollout-stream.v1 record with the reward, group id and,
         when the gateway captured them, per-call token ids and logprobs
-        (docs/reference/rollout-stream.md). Status goes to stderr. Exit 0
+        (docs/train/trainer.md#stream-rollouts-while-a-job-runs). Status goes to stderr. Exit 0
         when the job finished, 1 when it was stopped or its process died
         first, 2 on bad input, 3 on --timeout.
         """
@@ -676,6 +807,13 @@ def register_train(app: typer.Typer) -> None:
     ) -> None:
         """Validate trainer-ready data."""
         exit_if_missing(jsonl, next_step="pass the trainer JSONL file to validate")
+        if format_name in _CONVERSATION_FORMATS:
+            print_error(
+                f"bench train validate does not check --format {format_name}",
+                next_step="load the file with the library it was written for "
+                "(see bench train convert in docs/reference/commands.md)",
+            )
+            raise typer.Exit(2)
         _ensure_training_format(format_name)
         try:
             if format_name == "branch-tree":

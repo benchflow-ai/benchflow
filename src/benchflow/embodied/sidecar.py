@@ -1,27 +1,33 @@
 """The simulator-sidecar wiring: embodied task folders as native BenchFlow packages.
 
-`EmbodiedTaskFormat` is a base class for task formats (see docs/task-formats.md) whose tasks run a simulator next
+`EmbodiedTaskFormat` is a base class for task formats (see docs/tasks/task-formats.md) whose tasks run a simulator next
 to the agent. A benchmark subclasses it and supplies only what is specific to it: the task.md key of its block, the
 simulator image (a Dockerfile plus its code), the episode factory, and its reference solutions. The base class
 writes the rest of every package:
 
-    <out_root>/runtime-<hash>/          simulator image build context, shared by every task built from it:
+    <out_root>/runtime-<hash>/          simulator image build context, written once and copied into each package:
       Dockerfile ...                    the benchmark's (build_runtime)
       benchflow_embodied/benchflow/     a vendored copy of benchflow.embodied under a stub benchflow package
       embodied-sim-entry                the simulator entry point
     <out_root>/tasks/<key>/<task-id>/   the native package; <key> hashes the task, the runtime and the options
       task.md                           schema 1.3; the block moves to metadata.<block_key>; verifier.service: simulator
       environment/Dockerfile, robo      agent image: python + the `robo` client (benchflow/embodied/robo.py)
+      environment/simulator/            the simulator's build context (a copy of runtime-<hash>); .dockerignore keeps
+                                        it out of the agent image's context
       environment/docker-compose.yaml   `main` + the trusted `simulator` service (embeds the task definition)
       verifier/{verifier.md,test.sh}    the physical verifier (benchflow.embodied.verifier), run in `simulator`
       oracle/                           reference solution (write_oracle), or the noop control
 
-A simulator Dockerfile must copy ``benchflow_embodied/`` to ``/opt/benchflow_embodied`` (on PYTHONPATH) and
+A simulator Dockerfile must copy ``benchflow_embodied/`` to ``/opt/runtime_embodied`` (on PYTHONPATH) and
 ``embodied-sim-entry`` to ``/usr/local/bin/``; see ``SIM_DOCKERFILE_SNIPPET``.
 
 Packages are content-addressed (task files, runtime, format settings and options) and written atomically, so
 concurrent loads are safe; each package gets its own random oracle token, so two builds are not byte-identical. Seeded
 variants (`materialize_variant(seed=...)`) are named ``<task-id>--seed-<n>``.
+
+A package is self-contained: the compose file builds the simulator from ``${CONTEXT_DIR}/simulator``, and BenchFlow
+sets ``CONTEXT_DIR`` to the package's ``environment/`` folder, on the Docker host and inside a Daytona sandbox's VM
+alike. So the folder can be copied, uploaded to a remote sandbox or published as it is, with no path outside it.
 """
 
 from __future__ import annotations
@@ -43,19 +49,25 @@ from .spec import restore_boundary
 EMBODIED_DIR = Path(__file__).resolve().parent
 TEMPLATES = EMBODIED_DIR / "templates"
 SEED_SEP = "--seed-"
+# The simulator's build context inside a package's environment/ folder, as the compose file names it. BenchFlow sets
+# CONTEXT_DIR to that environment/ folder on every backend (docker-compose-build.yaml builds `main` from it too).
+SIM_DIR = "simulator"
+SIM_CONTEXT = "${CONTEXT_DIR}/" + SIM_DIR
 _IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
 
 SIM_DOCKERFILE_SNIPPET = """\
-COPY benchflow_embodied/ /opt/benchflow_embodied/
+COPY benchflow_embodied/ /opt/runtime_embodied/
 COPY embodied-sim-entry /usr/local/bin/embodied-sim-entry
-ENV PYTHONPATH=/opt/benchflow_embodied${PYTHONPATH:+:$PYTHONPATH}
+ENV PYTHONPATH=/opt/runtime_embodied${PYTHONPATH:+:$PYTHONPATH}
 RUN chmod 755 /usr/local/bin/embodied-sim-entry && mkdir -p /rpc /episode /task /logs/verifier
 """
 
 NOOP_SOLVE = """#!/bin/bash
 # Negative control (noop oracle): look at the robot, never move it, exit without `robo done`.
 # The verifier must close the episode itself (outcome agent_exited) and the reward must be 0.
+# It looks as an agent would: without the oracle token the simulator leaves for the reference solution.
 set -euo pipefail
+export ROBO_ORACLE_TOKEN_FILE=/dev/null
 robo info
 robo observe
 """
@@ -244,8 +256,8 @@ class EmbodiedTaskFormat:
         """Write (or reuse) the native package of one task and return its folder.
 
         seed: override the task's seed (the folder is named ``<id>--seed-<n>``). noop: negative-control oracle.
-        timeout: agent timeout in seconds. flat: write ``<out_root>/tasks/<name>`` (replacing an older copy) with
-        a relative build context, for a bundle meant to be moved or published.
+        timeout: agent timeout in seconds. flat: write ``<out_root>/tasks/<name>`` (replacing an older copy) and
+        nothing else, for a bundle meant to be moved or published; the runtime is built in a scratch folder.
         """
         task_dir, out_root = Path(task_dir).resolve(), Path(out_root).resolve()
         meta, instruction = read_task_md(task_dir / "task.md")
@@ -262,7 +274,51 @@ class EmbodiedTaskFormat:
         if timeout is not None:
             meta.setdefault("agent", {})["timeout_sec"] = int(timeout)
         name = f"{tid}{SEED_SEP}{int(seed)}" if seed is not None else tid
-        runtime = self.ensure_runtime(out_root)
+        if flat:  # a movable bundle holds its packages only; each carries its own simulator context
+            with tempfile.TemporaryDirectory(prefix=".embodied-runtime-") as scratch:
+                return self._write_variant(
+                    task_dir,
+                    out_root,
+                    meta,
+                    instruction,
+                    tid,
+                    name,
+                    self.ensure_runtime(Path(scratch)),
+                    seed=seed,
+                    noop=noop,
+                    timeout=timeout,
+                    flat=True,
+                )
+        return self._write_variant(
+            task_dir,
+            out_root,
+            meta,
+            instruction,
+            tid,
+            name,
+            self.ensure_runtime(out_root),
+            seed=seed,
+            noop=noop,
+            timeout=timeout,
+            flat=False,
+        )
+
+    def _write_variant(
+        self,
+        task_dir: Path,
+        out_root: Path,
+        meta: dict,
+        instruction: str,
+        tid: str,
+        name: str,
+        runtime: Path,
+        *,
+        seed: int | None,
+        noop: bool,
+        timeout: float | None,
+        flat: bool,
+    ) -> Path:
+        block = meta[self.block_key]
         settings = json.dumps(
             {
                 "format": [
@@ -314,13 +370,12 @@ class EmbodiedTaskFormat:
                 "#!/usr/bin/env python3\n" + (EMBODIED_DIR / "robo.py").read_text()
             )
             (env / "robo").chmod(0o755)
-            # absolute in the cache (BenchFlow may stage a task copy elsewhere); relative in a movable bundle
-            context = (
-                os.path.relpath(runtime, parent / name / "environment")
-                if flat
-                else str(runtime)
+            shutil.copytree(runtime, env / SIM_DIR, ignore=_IGNORE)
+            # `main` builds from environment/ as well; the simulator's code has no business in its build context
+            (env / ".dockerignore").write_text(SIM_DIR + "\n")
+            (env / "docker-compose.yaml").write_text(
+                self.compose(meta, SIM_CONTEXT, token)
             )
-            (env / "docker-compose.yaml").write_text(self.compose(meta, context, token))
             shutil.copytree(TEMPLATES / "verifier", pkg / "verifier", ignore=_IGNORE)
             if noop:
                 (pkg / "oracle").mkdir()

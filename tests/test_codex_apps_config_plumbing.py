@@ -122,6 +122,9 @@ def test_cli_override_precedence_over_yaml(
                 "tasks_dir": str(task),
                 "jobs_dir": str(tmp_path / "jobs"),
                 "agent": "codex",
+                # Codex has no default model: a config file names one, as
+                # --model does on the command line.
+                "model": "gpt-5.5",
                 "codex_apps_policy": yaml_policy,
             }
         )

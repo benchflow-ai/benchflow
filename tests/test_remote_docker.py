@@ -240,7 +240,7 @@ async def test_every_call_targets_the_remote_host_and_mounts_nothing(
         "mkdir -p /logs/agent /logs/verifier /logs/artifacts" in e for e in execs
     )
     # No host path was sent to the remote daemon as a mount probe.
-    assert not any(".benchflow-mount-probe" in e for e in execs)
+    assert not any(".runtime-mount-probe" in e for e in execs)
 
 
 def test_remote_base_compose_file_has_no_bind_mounts_and_keeps_limits():

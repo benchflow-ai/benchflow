@@ -193,7 +193,7 @@ def effective_install_timeout(
 #: reads it before it skips that install, so a sandbox whose image does not
 #: hold this exact install (another recipe, a task that removed it) installs
 #: in the trial as before.
-LAYER_STAMP_DIR = "/opt/benchflow/layers"
+LAYER_STAMP_DIR = "/opt/runtime/layers"
 
 
 @dataclass(frozen=True)
@@ -415,7 +415,7 @@ async def install_agent(
             )
             if prepared.return_code != 0:
                 raise RuntimeError(
-                    "Agent requirements upload needs a protected /opt/benchflow"
+                    "Agent requirements upload needs a protected /opt/runtime"
                 )
             with tempfile.TemporaryDirectory(
                 prefix="benchflow-agent-requirements-"
@@ -561,7 +561,7 @@ async def _upload_skills(
     *agent_derived* skills (a learner store's: earlier agents wrote them) are
     an ingress of agent-derived bytes; the task's and the operator's are
     BenchFlow's own transfer."""
-    stage = f"/.benchflow-skills-{uuid4().hex}"
+    stage = f"/.runtime-skills-{uuid4().hex}"
 
     async def checked(command: str, user: str, phase: str) -> None:
         result = await exec_raw(env.exec, command, user=user, timeout_sec=60)

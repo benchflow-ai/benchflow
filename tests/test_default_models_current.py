@@ -11,6 +11,12 @@ Each id in RETIRED was checked on its vendor's own page on 2026-11-04:
 
 When a vendor retires a model, add its id here: the test then names every
 default and example that still uses it.
+
+LEGACY holds models a vendor still serves but has superseded, read on the
+same pages on 2026-11-04. Anthropic's models overview lists Claude Sonnet 4.6
+and Claude Haiku 4.5 under "Legacy models (still available)"; Haiku 4.5 is
+past its earliest retirement date (2026-10-15 on the deprecations page). A
+default must not name one (an example a user copies may: it still runs).
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ RETIRED = {
     "gpt-5.4": "left Codex's ChatGPT sign-in on 2026-08-31",
     "gpt-5.4-mini": "left Codex's ChatGPT sign-in on 2026-08-31",
     "gemini-3.1-flash-lite-preview": "shut down by Google",
+    "gemini-3-pro-preview": "shut down by Google on 2026-03-09",
     "gemini-2.5-flash": "deprecated by Google and closed to new API keys",
     "claude-sonnet-4-5-20250929": "deprecated; Anthropic retires it on 2026-11-30",
     "claude-opus-4-1-20250805": "retired by Anthropic on 2026-08-05",
@@ -45,6 +52,14 @@ RETIRED = {
     "claude-3-haiku-20240307": "retired by Anthropic on 2026-04-20",
 }
 
+LEGACY = {
+    "claude-sonnet-4-6": "legacy at Anthropic; the current Sonnet is claude-sonnet-5-5",
+    "claude-haiku-4-5": "legacy at Anthropic; the current Haiku is claude-haiku-5-5",
+    "claude-haiku-4-5-20251001": (
+        "legacy at Anthropic; the current Haiku is claude-haiku-5-5"
+    ),
+}
+
 REPO = Path(__file__).resolve().parents[1]
 
 # Run configs a user copies. Parity records and benchmark metadata describe
@@ -53,6 +68,12 @@ EXAMPLE_CONFIGS = [
     "benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml",
     "benchmarks/opaquetoolsbench/opaquetoolsbench-gemini-flash-lite.yaml",
     "benchmarks/programbench/programbench-gemini-flash-lite.yaml",
+    "benchmarks/harvey-lab/harvey-lab-harness-parity.yaml",
+]
+# Scripts a user runs, whose model defaults are quoted ids.
+EXAMPLE_SCRIPTS = [
+    "benchmarks/followup-bench/runner.py",
+    "benchmarks/harvey-lab/parity_test.py",
 ]
 
 
@@ -95,6 +116,12 @@ def _example_models() -> dict[str, str]:
         text = (REPO / rel).read_text(encoding="utf-8")
         for match in re.finditer(r"^\s*model:\s*(\S+)", text, re.MULTILINE):
             found[rel] = match.group(1).strip("'\"")
+    for rel in EXAMPLE_SCRIPTS:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        # Quoted ids: the defaults, not the comments that name an old model.
+        ids = re.findall(r"[\"']((?:gemini|claude|gpt)-[\w.-]+)[\"']", text)
+        for n, model in enumerate(dict.fromkeys(ids)):
+            found[f"{rel} model #{n + 1}"] = model
     return found
 
 
@@ -111,3 +138,15 @@ def test_the_readme_and_example_configs_were_scanned() -> None:
     examples = _example_models()
     assert any(k.startswith("README.md") for k in examples)
     assert set(EXAMPLE_CONFIGS) <= set(examples)
+    for rel in EXAMPLE_SCRIPTS:
+        assert any(k.startswith(rel) for k in examples), rel
+
+
+@pytest.mark.parametrize("where,model", sorted(_defaults().items()))
+def test_no_default_names_a_legacy_model(where: str, model: str) -> None:
+    """Stale-audit defaults (claude-sonnet-5-5 for judges,
+    claude-haiku-5-5 for agents): with Claude Code 2.1.316, claude-agent-acp
+    refuses claude-haiku-4-5 for a subscription login, so a legacy default
+    fails every run that omits it."""
+    reason = LEGACY.get(_bare(model))
+    assert reason is None, f"{where} is {model!r}, which is {reason}"

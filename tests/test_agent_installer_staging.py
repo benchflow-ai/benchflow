@@ -20,8 +20,8 @@ class LocalInstallerEnv:
         self.modes = []
 
     def local(self, value):
-        return value.replace("/opt/benchflow", str(self.root / "protected")).replace(
-            "/tmp/benchflow-agent-install",
+        return value.replace("/opt/runtime", str(self.root / "protected")).replace(
+            "/tmp/runtime-agent-install",
             str(self.root / "workspace/benchflow-agent-install"),
         )
 
@@ -29,10 +29,10 @@ class LocalInstallerEnv:
         self.commands.append(command)
         result = run_sh(self.local(command), text=True, capture_output=True)
         stdout = result.stdout.replace(
-            str(self.root / "protected"), "/opt/benchflow"
+            str(self.root / "protected"), "/opt/runtime"
         ).replace(
             str(self.root / "workspace/benchflow-agent-install"),
-            "/tmp/benchflow-agent-install",
+            "/tmp/runtime-agent-install",
         )
         return ExecResult(
             return_code=result.returncode, stdout=stdout, stderr=result.stderr
@@ -68,7 +68,7 @@ async def test_staged_script_uses_protected_parent_and_cleans_up(tmp_path, outco
     assert len(env.uploads) == 1
     assert env.modes == [0o700]
     assert (tmp_path / "protected").stat().st_mode & 0o777 == 0o755
-    assert env.uploads[0].startswith("/opt/benchflow/agent-install/"), (
+    assert env.uploads[0].startswith("/opt/runtime/agent-install/"), (
         "staging has an agent-replaceable parent"
     )
     assert not Path(env.local(env.uploads[0])).parent.exists()
@@ -100,10 +100,10 @@ async def test_staging_refuses_untrusted_parent_before_upload(tmp_path, path, ki
 @pytest.mark.parametrize(
     "receipt",
     [
-        "/tmp/benchflow-agent-install.ABC123xyz0",
-        "/opt/benchflow/agent-install/../agent-install.ABC",
-        "/opt/benchflow/agent-install/install.ABC/extra",
-        "/opt/benchflow/agent-install/install.ABC\n/tmp/other",
+        "/tmp/runtime-agent-install.ABC123xyz0",
+        "/opt/runtime/agent-install/../agent-install.ABC",
+        "/opt/runtime/agent-install/install.ABC/extra",
+        "/opt/runtime/agent-install/install.ABC\n/tmp/other",
     ],
 )
 async def test_invalid_staging_receipt_never_uploads_or_cleans(receipt):

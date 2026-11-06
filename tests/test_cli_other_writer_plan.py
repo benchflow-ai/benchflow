@@ -2,7 +2,9 @@
 
 Run the shipped writer prefixes against dummy files; substitute only the
 final third-party executable. These are contained filesystem tests, not live
-provider or benchmark trials.
+provider or benchmark trials. Each writer runs as the sandbox runs it since
+#80: its deployed bytes and the launch environment under the agent's
+neutral names, and the image's values under those names too.
 """
 
 import base64
@@ -28,6 +30,11 @@ from benchflow.agents.registry import (
     AGENTS,
     CODEX_ACP_BUILTIN_LAUNCH,
     _opencode_family_proxy_wrapper_install,
+)
+from benchflow.agents.visible_runtime import (
+    visible_env,
+    visible_launch,
+    visible_script,
 )
 from tests.test_cli_other_confirm3 import LocalSandbox
 from tests.test_sweep_credential_lifecycle import (
@@ -122,9 +129,9 @@ CASES = (
 )
 
 
-def writer_command(agent):
+def writer_command(agent, tmp_path):
     if agent == "mimo":
-        return _MIMO_MANIFEST_LAUNCHER.rsplit("exec /opt/benchflow/node", 1)[0]
+        return _MIMO_MANIFEST_LAUNCHER.rsplit("exec /opt/runtime/node", 1)[0]
     if agent == "codex-acp":
         return CODEX_ACP_BUILTIN_LAUNCH.rsplit("exec ", 1)[0] + "true"
     if agent == "openhands":
@@ -135,7 +142,10 @@ def writer_command(agent):
             + "true"
         )
     if agent == "pi-acp":
-        script = f"import runpy; runpy.run_path({pi_acp_launcher.__file__!r})['setup_provider']()"
+        # The launcher as _install_python_script deploys it.
+        launcher = tmp_path / "pi_acp_launcher.py"
+        launcher.write_text(visible_script(Path(pi_acp_launcher.__file__).read_text()))
+        script = f"import runpy; runpy.run_path({str(launcher)!r})['setup_provider']()"
         return shlex.join([sys.executable, "-I", "-c", script])
     node = shutil.which("node")
     if node is None:
@@ -145,7 +155,7 @@ def writer_command(agent):
     )
     wrapper = base64.b64decode(shlex.split(install)[2]).decode()
     return wrapper.split('if [ "$(head -c2', 1)[0].replace(
-        "/opt/benchflow/node/bin/node", shlex.quote(node)
+        "/opt/runtime/node/bin/node", shlex.quote(node)
     )
 
 
@@ -207,9 +217,9 @@ async def test_ledger_matches_actual_writer_with_inherited_environment(
     )
     launch = agent_launch_env(name, None, values)
     done = subprocess.run(
-        ["sh", "-c", writer_command(agent)],
+        ["sh", "-c", visible_launch(writer_command(agent, tmp_path))],
         cwd=trial._agent_cwd,
-        env={"PATH": os.defpath, **inherited, **launch},
+        env={"PATH": os.defpath, **visible_env(inherited), **visible_env(launch)},
         capture_output=True,
         text=True,
     )
@@ -273,12 +283,12 @@ async def test_mimo_inherited_endpoint_never_writes_through_old_alias(
         disallow_hosted_search=False,
     )
     subprocess.run(
-        ["sh", "-c", writer_command("mimo")],
+        ["sh", "-c", visible_launch(writer_command("mimo", tmp_path))],
         cwd=tmp_path,
         env={
             "PATH": os.defpath,
             "OPENAI_BASE_URL": BASE,
-            **agent_launch_env("mimo", None, values),
+            **visible_env(agent_launch_env("mimo", None, values)),
         },
         check=True,
     )

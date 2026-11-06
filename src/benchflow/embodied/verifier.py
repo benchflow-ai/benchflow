@@ -5,15 +5,23 @@ agent container. `verifier/test.sh` runs ``python3 -m benchflow.embodied.verifie
    has already judged it and exits on its own. Otherwise (the agent stopped without `robo done`) send `shutdown`;
    the server scores that as outcome `agent_exited` after the usual settle period.
 2. Wait for the server to exit (it writes the video on the way out; ``serve.exit`` marks the end).
-3. Copy the episode record to ``/logs/verifier/episode`` and write ``reward.txt`` (1 if the server judged success,
-   else 0), ``reward.json`` (reward, success_ever, budget_used) and ``reward-details.json``.
-4. Copy the video and the camera images the agent saw to ``/logs/artifacts``.
+3. Copy the episode record (the video and the camera images included) to ``/logs/verifier/episode`` and write
+   ``reward.txt`` (1 if the server judged success, else 0), ``reward.json`` (reward, success_ever, budget_used) and
+   ``reward-details.json``. The details carry ``evidence``: the sha256 of every file of the record (the video, the
+   request trace, the steps, the result, the camera images), read here in the trusted container, so a copy of any of
+   them can be checked against the verdict it came with; and ``runtime``: the Python, OS and package versions the
+   verdict was computed with.
+
+The verifier writes nothing anywhere the agent's container can reach. BenchFlow places the trial's
+``artifacts/recording.mp4`` and ``artifacts/observations/`` on the host afterwards, from the record this verifier
+wrote (:func:`benchflow.embodied.export.place_episode_artifacts`), on every backend.
 
 A missing result.json is an infrastructure error (exit 1, no reward), not a zero score. Standard library only.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -30,20 +38,53 @@ def _env(name: str, default: str) -> str:
     )
 
 
-def _copy_artifacts(episode: Path, workspace: Path, artifacts: Path) -> None:
-    if not artifacts.is_dir():
-        return
+# The record files every episode writes; evidence covers these and every other file of the record.
+EVIDENCE_FILES = (
+    "recording.mp4",
+    "trace.jsonl",
+    "steps.jsonl",
+    "result.json",
+    "episode.json",
+)
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def evidence(episode: Path) -> dict[str, str]:
+    """The sha256 of every regular file of the episode record, by path relative to it (the video, the trace, the
+    steps, the result, the camera images, ...). Links are left out: the record holds none of its own."""
+    files = sorted(p for p in episode.rglob("*") if p.is_file() and not p.is_symlink())
+    return {p.relative_to(episode).as_posix(): _sha256(p) for p in files}
+
+
+def runtime() -> dict:
+    """What the verdict was computed with: Python, the OS image, and every installed distribution's version."""
+    import platform
+    from importlib import metadata
+
+    os_name = None
     try:
-        video = episode / "recording.mp4"
-        if video.exists():
-            shutil.copy2(video, artifacts / "recording.mp4")
-        images = sorted((workspace / "observations").glob("*.png"))
-        if images:
-            (artifacts / "observations").mkdir(exist_ok=True)
-            for f in images:
-                shutil.copy2(f, artifacts / "observations" / f.name)
-    except OSError as e:  # artifacts are a convenience copy; the evidence is in /logs/verifier/episode
-        print(f"warning: could not copy artifacts: {e}", file=sys.stderr)
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if line.startswith("PRETTY_NAME="):
+                os_name = line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    packages = {
+        d.metadata["Name"].lower(): d.version
+        for d in metadata.distributions()
+        if d.metadata["Name"]
+    }
+    return {
+        "python": platform.python_version(),
+        "os": os_name,
+        "packages": dict(sorted(packages.items())),
+    }
 
 
 def rewards_from_result(r: dict) -> dict:
@@ -61,8 +102,6 @@ def main() -> int:
     episode = Path(_env("EPISODE_DIR", "/episode"))
     sock = _env("SOCKET", "/rpc/episode.sock")
     out = Path(_env("VERIFIER_DIR", "/logs/verifier"))
-    artifacts = Path(_env("ARTIFACTS_DIR", "/logs/artifacts"))
-    workspace = Path(_env("WORKSPACE_DIR", "/rpc/ws"))
     wait_s = float(_env("VERIFIER_WAIT_S", "240"))
     out.mkdir(parents=True, exist_ok=True)
     exit_marker = episode / "serve.exit"
@@ -79,8 +118,7 @@ def main() -> int:
         time.sleep(0.5)
     result_path = episode / "result.json"
     if episode.exists():
-        shutil.copytree(episode, out / "episode", dirs_exist_ok=True)
-    _copy_artifacts(episode, workspace, artifacts)
+        shutil.copytree(episode, out / "episode", dirs_exist_ok=True, symlinks=True)
     if not result_path.exists():
         print(
             f"error: no episode result at {result_path} (episode server did not finish)",
@@ -98,6 +136,9 @@ def main() -> int:
         if exit_marker.exists()
         else None,
         **{k: v for k, v in r.items() if k != "reward"},
+        "evidence": evidence(episode),
+        "evidence_scope": "record",  # every file of the record; older verdicts named five
+        "runtime": runtime(),
     }
     (out / "reward-details.json").write_text(json.dumps(details, indent=2))
     print(

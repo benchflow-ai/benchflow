@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +19,9 @@ from benchflow.agents.registry import (
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox.lockdown import build_priv_drop_cmd
 
-_ADAPTER = "/opt/benchflow/bin/codex-acp"
-_NODE = "/opt/benchflow/node/bin/node"
-_NODE_MODULES = "/opt/benchflow/js-agents/lib/node_modules"
+_ADAPTER = "/opt/runtime/bin/codex-acp"
+_NODE = "/opt/runtime/node/bin/node"
+_NODE_MODULES = "/opt/runtime/js-agents/lib/node_modules"
 # The adapter must be the registry pin. Native Codex is whatever that adapter
 # resolves within its declared `@openai/codex` range (^0.159.1 for 2.0.1); the
 # `features list` probe below is the behavioral check for every admitted build.
@@ -111,6 +112,7 @@ async def enforce_codex_apps_policy(
     rollout_dir: Path,
     timeout_sec: int = 60,
     harness: str = "acp",
+    mcp_servers: Sequence[Any] = (),
 ) -> dict[str, str]:
     """Fail before ACP initialization unless the supported native policy holds.
 
@@ -118,10 +120,24 @@ async def enforce_codex_apps_policy(
     proves configuration enforcement only, never authenticated tool absence.
     With ``harness="native"`` the checks run against the pinned Codex CLI the
     native harness launches instead of the ACP adapter; the managed
-    requirements file is the same, since every Codex build reads it.
+    requirements file is the same, since every Codex build reads it. Any
+    other agent gets Claude Code's connector policy, which refuses a task
+    with *mcp_servers* (the task's MCP servers) on either harness.
     """
     if agent != "codex-acp":
-        return agent_env
+        from benchflow.agents.claude_connector_policy import (
+            enforce_claude_connector_policy,
+        )
+
+        return await enforce_claude_connector_policy(
+            env,
+            agent=agent,
+            agent_launch=agent_launch,
+            agent_env=agent_env,
+            sandbox_user=sandbox_user,
+            mcp_servers=mcp_servers,
+            timeout_sec=timeout_sec,
+        )
     # A failed reconnect must not leave a previous successful receipt current.
     (rollout_dir / "codex_apps_policy.json").unlink(missing_ok=True)
     receipt: dict[str, Any] = {

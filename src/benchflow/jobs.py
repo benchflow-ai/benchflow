@@ -113,12 +113,60 @@ def _read_text(path: Path | ReachablePath) -> str | None:
 
 def _normalize_legacy(data: dict[str, Any]) -> dict[str, Any]:
     data = dict(data)
+    if "verifier_result" in data or "exception_info" in data:
+        data = _from_trial_result(data)
     if data.get("rewards") is None and isinstance(data.get("reward"), (int, float)):
         data["rewards"] = {"reward": float(data["reward"])}
     if not data.get("rollout_name") and data.get("trial_name"):
         data["rollout_name"] = data["trial_name"]
     if not data.get("task_name"):
         data["task_name"] = data.get("task_id") or ""
+    return data
+
+
+def _from_trial_result(data: dict[str, Any]) -> dict[str, Any]:
+    """A trial ``result.json`` written by a task.toml-package runner, read as
+    BenchFlow's, so an old run's job folder works with ``bench eval metrics``,
+    ``inspect`` and ``compare``.
+
+    Its reward is ``verifier_result.rewards``; its error is ``exception_info``,
+    which becomes BenchFlow's ``error``, so the trial counts as BenchFlow
+    counts an errored trial (``bench eval metrics`` lists it under Errors)
+    whatever the runner's own summary did with it. Its task name is the trial
+    folder's (``<task>__<id>``), as BenchFlow names a trial's task; the
+    runner's own (``org/task``) stays in ``source_task_name``.
+    """
+    verifier = data.get("verifier_result")
+    if data.get("rewards") is None and isinstance(verifier, dict):
+        rewards = verifier.get("rewards")
+        if isinstance(rewards, dict):
+            data["rewards"] = rewards
+    failure = data.get("exception_info")
+    if not data.get("error") and isinstance(failure, dict):
+        kind = failure.get("exception_type") or "Error"
+        data["error"] = f"{kind}: {failure.get('exception_message') or ''}".strip()
+    agent = data.get("agent_info")
+    if isinstance(agent, dict):
+        data.setdefault("agent_name", agent.get("name") or "")
+        data.setdefault("agent_version", agent.get("version"))
+        model = agent.get("model_info")
+        if isinstance(model, dict) and model.get("name"):
+            provider = model.get("provider")
+            data.setdefault(
+                "model", f"{provider}/{model['name']}" if provider else model["name"]
+            )
+    usage = data.get("agent_result")
+    if isinstance(usage, dict) and "n_cache_tokens" in usage:
+        usage = dict(usage)
+        usage.setdefault("n_cache_read_tokens", usage.get("n_cache_tokens"))
+        data["agent_result"] = usage
+    trial = data.get("trial_name")
+    if isinstance(trial, str) and "__" in trial:
+        data["source_task_name"] = data.get("task_name")
+        data["task_name"] = trial.rsplit("__", 1)[0]
+    if data.get("verifier_environment_mode"):
+        data.setdefault("verifier_isolation", data["verifier_environment_mode"])
+    data.setdefault("source_format", "task-toml-trial-result")
     return data
 
 
@@ -244,7 +292,7 @@ class Trial:
 
     @property
     def attempts(self) -> list[Trial]:
-        """Every rollout of this trial, oldest first, this one included.
+        """List this trial's rollouts in the order they ran; the list includes this one.
 
         An Evaluation job retries a task in its own folder (and a resume
         re-runs it there), so a trial can take several rollouts: this lists
@@ -558,6 +606,21 @@ def load_trial(path: str | Path) -> Trial:
             "(jobs/<job>/<task>__<id>) or use bf.load_job for a job directory"
         )
     data = _normalize_legacy(data)
+    config = _read_json(trial_dir / "config.json") or {}
+    fields = data
+    if data.get("no_rollout_folder") is True and isinstance(config, dict):
+        # A trial that failed before its own folder existed (a full disk) has
+        # its agent and model only in the config.json the job wrote for it.
+        # Without them it never joins its rerun's attempts and is counted as
+        # one more trial than the job's summary.json has.
+        fields = {
+            **data,
+            **{
+                k: config[k]
+                for k in ("agent", "model")
+                if config.get(k) and not data.get(k)
+            },
+        }
     timing = _read_json(trial_dir / "timing.json")
     try:
         checkpoints = load_checkpoints(trial_dir)
@@ -565,9 +628,9 @@ def load_trial(path: str | Path) -> Trial:
         checkpoints = []
     return Trial(
         path=trial_dir,
-        result=RolloutResult.from_dict(data, rollout_dir=trial_dir),
+        result=RolloutResult.from_dict(fields, rollout_dir=trial_dir),
         raw=data,
-        config=_read_json(trial_dir / "config.json") or {},
+        config=config,
         timing=timing if isinstance(timing, dict) else (data.get("timing") or {}),
         verifier=VerifierOutput.read(ReachablePath.rollout(trial_dir, "verifier")),
         forks=_forks(_read_json(trial_dir / "tree.json")),
@@ -752,6 +815,10 @@ class Denominators:
     integration_failures: int = 0
     mean_reward_scored_only: float | None = None
     mean_reward_caveat: str | None = None
+    # The attempted runs per outcome of the scoring rule (benchflow.scoring:
+    # passed, failed, refused, errored, verifier_errored, unscored), the
+    # classes every reader names the same way (scoring.no_score_text).
+    outcomes: dict[str, int] = field(default_factory=dict)
 
     @property
     def pass_rate_scored(self) -> float | None:
@@ -772,8 +839,11 @@ class Denominators:
     def of(cls, trials: Iterable[Trial], *, controls_excluded: int = 0) -> Denominators:
         """Count ``trials`` (see the class docstring for each count)."""
         from benchflow._utils.scoring import below_zero_caveat
+        from benchflow.scoring import OUTCOMES
+        from benchflow.setting_groups import record_of
 
         items = list(trials)
+        kinds = [record_of(t)["outcome"] for t in items]
         scored = [t for t in items if t.assessment == "scored"]
         rewards = [t.reward for t in scored if t.reward is not None]
         clean = [t for t in scored if t.execution == "completed"]
@@ -795,6 +865,7 @@ class Denominators:
             clean_passed=sum(t.passed for t in clean),
             controls_excluded=controls_excluded,
             integration_failures=sum(t.integration_failure is not None for t in items),
+            outcomes={kind: kinds.count(kind) for kind in OUTCOMES},
         )
 
 
@@ -833,6 +904,9 @@ class Job:
     # crash, a kill or a cancelled run. Their sandbox.json, when present, names
     # a sandbox that may not have been deleted.
     interrupted: list[Path] = field(default_factory=list, repr=False)
+    # Trial folders whose result.json is there but could not be read: not
+    # in any figure, which every reader says (never a silent exclusion).
+    unreadable: list[Path] = field(default_factory=list, repr=False)
 
     def __repr__(self) -> str:
         return f"Job(path={str(self.path)!r}, trials={len(self.trials)}, kind={self.kind!r})"
@@ -867,34 +941,53 @@ class Job:
             + (f"; {shown}" if shown else "")
             + (" (only control runs, so they are counted)" if only_controls else "")
         ]
-        rates = self.solve_rates(ks=[1], include_controls=only_controls)
-        # Every trial counted (an unscored one as a fail); with unscored
-        # trials, the rate over the scored ones (0.7's rule) follows.
-        lines.append(
-            _solve_rate_line(
-                "Solve rate",
-                rates.solve_rate,
-                rates.trials,
-                "trials",
-                rates.interval,
-                rates.interval_method,
-                f", {rates.success_rule}",
-            )
+        from benchflow.setting_groups import job_summaries, setting_rows
+
+        settings = setting_rows(
+            self.trials, summaries=job_summaries(self.path, self.trials)
         )
-        if rates.unscored:
+        rates = self.solve_rates(ks=[1], include_controls=only_controls)
+        if settings.split:
+            # Over several settings no rate is pooled: each setting has its
+            # own line, by the scoring rule.
+            lines.append(
+                f"- Solve rate: none for the whole folder: it holds "
+                f"{len(settings.counted())} settings, one line each below"
+            )
+        else:
+            # Every trial counted (an unscored one as a fail); with unscored
+            # trials, the rate over the scored ones (0.7's rule) follows.
             lines.append(
                 _solve_rate_line(
-                    "Solve rate, scored only",
-                    rates.solve_rate_scored_only,
-                    rates.scored,
-                    "scored trials",
-                    rates.interval_scored_only,
-                    rates.interval_method_scored_only,
+                    "Solve rate",
+                    rates.solve_rate,
+                    rates.trials,
+                    "trials",
+                    rates.interval,
+                    rates.interval_method,
+                    f", {rates.success_rule}",
                 )
             )
-        if rates.max_trials_per_task > 1:
-            many = self.solve_rates(include_controls=only_controls)
-            lines += [f"- {line}" for line in many.lines()]
+            if rates.unscored:
+                lines.append(
+                    _solve_rate_line(
+                        "Solve rate, scored only",
+                        rates.solve_rate_scored_only,
+                        rates.scored,
+                        "scored trials",
+                        rates.interval_scored_only,
+                        rates.interval_method_scored_only,
+                    )
+                )
+            if rates.max_trials_per_task > 1:
+                many = self.solve_rates(include_controls=only_controls)
+                lines += [f"- {line}" for line in many.lines()]
+        if settings.mixed:
+            # One figure over several settings mixes them: each its own line.
+            lines.append(f"- Warning: {settings.warning()}")
+            lines += [f"  - {row.line()}" for row in settings.counted()]
+        if self.unreadable:
+            lines.append(f"- Warning: {unreadable_warning(self.unreadable)}")
         unscored = [t for t in agents if t.assessment != "scored"]
         if unscored:
             reasons: dict[str, list[str]] = {}
@@ -1127,12 +1220,12 @@ class Job:
 
     def branch_views(self) -> list[dict[str, Any]]:
         """The ``benchflow.branch-view/1`` document of every trial that
-        branched (see docs/reference/branch-view.md)."""
+        branched (see docs/train/environment.md)."""
         return [trial.branch_view for trial in self.trials if trial.forks]
 
     def to_records(self) -> list[dict[str, Any]]:
-        """One flat dict per trial, sorted by task, each labelled with ``job``
-        (this job's path, so rows from several jobs stay distinguishable)."""
+        """Return one flat dict per trial, sorted by task. Each has a ``job`` key with
+        this job's path, so rows from several jobs stay distinguishable."""
         return [
             {"job": str(self.path), **t.to_record()}
             for t in sorted(self.trials, key=lambda t: (t.task_name, str(t.path)))
@@ -1160,6 +1253,15 @@ class Job:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(r) + "\n" for r in self.to_records()))
         return path
+
+
+def unreadable_warning(folders: list[Path]) -> str:
+    """The warning for trial folders :func:`load_job` could not read."""
+    return (
+        f"{len(folders)} trial folder{'' if len(folders) == 1 else 's'} could not "
+        f"be read (first: {folders[0]}), so {'it is' if len(folders) == 1 else 'they are'} "
+        "in none of these figures"
+    )
 
 
 def _unscored_reason(trial: Trial) -> str:
@@ -1297,7 +1399,7 @@ def load_job(
     """
     import os
 
-    from benchflow._utils.result_paths import iter_task_result_paths
+    from benchflow._utils.result_paths import is_job_summary, iter_task_result_paths
 
     roots = [Path(path)] if isinstance(path, (str, Path)) else [Path(p) for p in path]
     if not roots:
@@ -1311,7 +1413,9 @@ def load_job(
             )
         if root.is_file():  # a results.jsonl file, read below
             continue
-        if (root / "result.json").is_file():
+        if (root / "result.json").is_file() and not is_job_summary(
+            root / "result.json"
+        ):
             paths.append(root / "result.json")
         else:
             paths.extend(iter_task_result_paths(root))
@@ -1319,11 +1423,13 @@ def load_job(
     if path.is_file():
         path = path.parent
     trials = []
+    unreadable: list[Path] = []
     for result_path in paths:
         try:
             trials.append(load_trial(result_path.parent))
         except (FileNotFoundError, ValueError, TypeError) as exc:
             logger.warning("Skipping unreadable trial %s: %s", result_path.parent, exc)
+            unreadable.append(result_path.parent)
     if not trials:
         # No trial folders: read results.jsonl rows (a copied-out results
         # file or a Verifiers-style export).
@@ -1358,6 +1464,7 @@ def load_job(
         summary=_read_json(path / "summary.json"),
         evaluation=_read_json(path / "evaluation.json"),
         interrupted=[p for root in roots if root.is_dir() for p in _interrupted(root)],
+        unreadable=unreadable,
     )
 
 
@@ -1418,6 +1525,40 @@ SETTINGS = (
 )
 
 
+# The settings bf.compare also checks from what each trial's records say ran
+# (benchflow.setting_groups), never from its labels: the effort its main
+# calls carried, the model that served them, the route they took, the
+# harness's installed version and the BenchFlow version.
+RAN_SETTINGS = (
+    "effort_sent",
+    "model_served",
+    "route",
+    "harness_version",
+    "benchflow_version",
+)
+# A declared difference that also covers these: comparing two efforts
+# compares the efforts sent, two models their served ids and routes, two
+# harnesses their versions.
+_COVERS = {
+    "reasoning_effort": ("effort_sent",),
+    "model": ("model_served", "route"),
+    "harness": ("harness_version",),
+}
+
+
+def _ran_value(setting: Any, name: str) -> Any:
+    """One of :data:`RAN_SETTINGS` for a trial's ``Setting``."""
+    if setting is None:
+        return None
+    if name == "effort_sent":
+        return setting.value("effort")
+    if name == "model_served":
+        return setting.model if setting.model_source == "served" else None
+    if name == "harness_version":
+        return setting.value("harness_versions") if setting.harness_versions else None
+    return getattr(setting, name)
+
+
 @dataclass(frozen=True)
 class SettingCheck:
     """One setting compared across a paired task's trials.
@@ -1467,12 +1608,23 @@ def _group_value(trial: Trial, key: str) -> Any:
     return trial.settings().get(key)
 
 
-def _setting_checks(ta: list[Trial], tb: list[Trial]) -> list[SettingCheck]:
+def _setting_checks(
+    ta: list[Trial], tb: list[Trial], ran: dict[int, Any] | None = None
+) -> list[SettingCheck]:
+    """Each of :data:`SETTINGS` compared across the two sides' trials, then
+    each of :data:`RAN_SETTINGS` from ``ran`` (each trial's ``Setting`` by
+    ``id(trial)``)."""
+
     def values(trials: list[Trial], name: str) -> set[str]:
+        if name in RAN_SETTINGS:
+            return {
+                json.dumps(_ran_value((ran or {}).get(id(t)), name), sort_keys=True)
+                for t in trials
+            }
         return {json.dumps(t.settings().get(name), sort_keys=True) for t in trials}
 
     checks = []
-    for name in SETTINGS:
+    for name in (*SETTINGS, *(RAN_SETTINGS if ran is not None else ())):
         va, vb = values(ta, name), values(tb, name)
         if va | vb == {"null"}:
             checks.append(SettingCheck(name, None))
@@ -1555,6 +1707,11 @@ class Comparison:
     # Lines a report puts first: how control runs were counted or why a side
     # pairs nothing.
     notes: list[str] = field(default_factory=list)
+    # The scoring rule over each side's trials on the tasks both ran, the gap
+    # B - A with its 95% interval paired by task, and the comparison's
+    # warnings (benchflow.scoring.Gap.to_dict, with each side's mixed
+    # settings under "mixed").
+    scoring: dict[str, Any] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         """The comparison as a ``benchflow.comparison`` document.
@@ -1586,15 +1743,18 @@ class Comparison:
         """A short report: denominators, the per-task table and the caveats."""
 
         def rate(d: Denominators) -> str:
-            # Every attempted run counted first, then scored runs only.
+            # Every attempted run counted first, then scored runs only; the
+            # runs with no score in the scoring rule's classes.
+            from benchflow.scoring import no_score_text
+
             pa, pr = d.pass_rate_attempted, d.pass_rate_scored
             return (
                 f"{d.passed}/{d.attempted} attempted passed"
                 + (f" ({pa:.0%})" if pa is not None else "")
                 + f", {d.passed}/{d.scored} scored passed"
                 + (f" ({pr:.0%})" if pr is not None else "")
-                + f", {d.assessment_errors} verifier errors, "
-                f"{d.unscored} unscored, {d.controls_excluded} control runs left out"
+                + f", {no_score_text(d.outcomes)}, "
+                f"{d.controls_excluded} control runs left out"
             )
 
         def num(x: float | None) -> str:
@@ -1605,10 +1765,34 @@ class Comparison:
         paired_line = []
         if self.a_paired is not None and self.b_paired is not None:
             paired_line = [
-                f"On the {s.paired} tasks both sides ran: {la} {rate(self.a_paired)}; "
+                f"On the {s.paired} task{'' if s.paired == 1 else 's'} both sides ran: "
+                f"{la} {rate(self.a_paired)}; "
                 f"{lb} {rate(self.b_paired)}.",
                 "",
                 "All tasks each side ran:",
+            ]
+        scored = []
+        if self.scoring and self.scoring.get("gap") is not None:
+            from benchflow.scoring import Score
+
+            sa = Score.from_dict(self.scoring["a"])
+            sb = Score.from_dict(self.scoring["b"])
+            low, high = self.scoring["gap_ci95"] or (None, None)
+            interval = (
+                f"95% interval {low * 100:+.1f} to {high * 100:+.1f} points, paired "
+                "by task"
+                if low is not None and high is not None
+                else "no interval: fewer than two paired tasks"
+            )
+            scored = [
+                f"Score by {sa.rule} on the {self.scoring['tasks']} task"
+                f"{'' if self.scoring['tasks'] == 1 else 's'} both sides ran: "
+                f"{la} {sa.score or 0.0:.1%} ({sa.passed} of {sa.n} trials; "
+                f"{sa.interval_text()}), {lb} {sb.score or 0.0:.1%} ({sb.passed} of "
+                f"{sb.n} trials; {sb.interval_text()}); {lb} - {la} = "
+                f"{self.scoring['gap'] * 100:+.1f} points ({interval}).",
+                *(f"Warning: {w}." for w in self.scoring.get("warnings") or []),
+                "",
             ]
         lines = [
             *self.notes,
@@ -1617,6 +1801,7 @@ class Comparison:
             f"{la}: {self.job_a.path} — {rate(self.a)}",
             f"{lb}: {self.job_b.path} — {rate(self.b)}",
             "",
+            *scored,
             f"{s.paired} tasks paired ({s.both_scored} scored on both sides): {lb} higher "
             f"on {s.b_higher}, lower on {s.b_lower}, same on {s.same_reward}; mean delta "
             f"({lb} - {la}) {num(s.mean_delta) or 'n/a'}. {s.only_a} only in {la}, "
@@ -1715,7 +1900,10 @@ def compare(
 
     Rewards per side are means over that side's scored trials; a task scored
     on one side only has no delta. Control runs are left out unless
-    ``include_controls=True``. No significance test is computed.
+    ``include_controls=True``. ``scoring`` holds the scoring rule's figures
+    for each side on the tasks both ran, the gap B - A with its 95% interval
+    paired by task, and a warning when the gap is inside that interval or
+    under 3 points, or a side has fewer than 3 trials per task.
 
     ``solve_rates_a`` / ``solve_rates_b`` hold each side's pass@k, pass^k
     and solve rate (:meth:`Job.solve_rates` with ``ks`` and
@@ -1724,11 +1912,11 @@ def compare(
     vary = tuple(vary)
     by = tuple(by)
     _check_group_keys(by)
-    unknown = sorted(set(vary) - set(SETTINGS))
+    unknown = sorted(set(vary) - set(SETTINGS) - set(RAN_SETTINGS))
     if unknown:
         raise ValueError(
             f"unknown setting(s) in vary: {', '.join(unknown)}; "
-            f"choose from {', '.join(SETTINGS)}"
+            f"choose from {', '.join((*SETTINGS, *RAN_SETTINGS))}"
         )
     if on_mismatch not in ("warn", "raise", "ignore"):
         raise ValueError("on_mismatch is 'warn', 'raise' or 'ignore'")
@@ -1761,6 +1949,9 @@ def compare(
                 out.setdefault(key, []).append(t)
         return out
 
+    from benchflow.setting_groups import trial_settings
+
+    ran = {id(t): setting for t, setting, _ in trial_settings([*a.trials, *b.trials])}
     left, right = keyed(a), keyed(b)
     paired_a: list[Trial] = []
     paired_b: list[Trial] = []
@@ -1788,24 +1979,27 @@ def compare(
                 scored_b=len(sb),
                 reward_a=_mean(sa),
                 reward_b=_mean(sb),
-                checks=_setting_checks(ta, tb) if ta and tb else [],
+                checks=_setting_checks(ta, tb, ran) if ta and tb else [],
                 group={k: json.loads(v) for k, v in zip(by, key[1:], strict=True)},
             )
         )
     # A side that holds several models or harnesses on one task: its reward
     # for the task is an average over them, which "differ" would misdescribe.
+    mixable = ("model", "harness", *RAN_SETTINGS)
     mixed: list[tuple[str, str, str, list[Any]]] = []
     for r in rows:
         for c in r.checks:
-            if c.setting in ("model", "harness") and c.match is False:
+            if c.setting in mixable and c.match is False:
                 for side, values in (("A", c.a or []), ("B", c.b or [])):
                     if len(values) > 1:
                         mixed.append((r.task, c.setting, side, values))
     mixed_tasks = {m[0] for m in mixed}
     # A harness or model sets its own agent variables (ANTHROPIC_MODEL, ...),
     # so declaring either also covers agent_variable_names.
-    covered = set(vary) | (
-        {"agent_variable_names"} if {"harness", "model"} & set(vary) else set()
+    covered = (
+        set(vary)
+        | ({"agent_variable_names"} if {"harness", "model"} & set(vary) else set())
+        | {name for v in vary for name in _COVERS.get(v, ())}
     )
     mismatches = [
         SettingMismatch(r.task, c.setting, c.a or [], c.b or [])
@@ -1814,9 +2008,7 @@ def compare(
         if c.match is False
         and c.setting not in covered
         # the same set of models on both sides is mixing, reported below
-        and not (
-            r.task in mixed_tasks and c.setting in ("model", "harness") and c.a == c.b
-        )
+        and not (r.task in mixed_tasks and c.setting in mixable and c.a == c.b)
         and not (
             r.task in control_pairs and c.setting in ("harness", "agent_variable_names")
         )
@@ -1847,7 +2039,9 @@ def compare(
         )
         if one_each
         else "Some tasks have several runs per side; per-side rewards are means over scored runs.",
-        "No statistical significance is computed or implied.",
+        "The gap between the sides' scores has a 95% interval over the tasks both "
+        "ran, paired by task (the scoring rule's); a gap inside it, or under 3 "
+        "points, does not say which side is better. No other test is computed.",
     ]
     if not include_controls:
         caveats.append("Control runs (oracle, empty/nop) are left out.")
@@ -1878,20 +2072,50 @@ def compare(
         caveats.append(f"Declared differences: {', '.join(vary)}.")
     if mixed:
         task, setting, side, values = mixed[0]
-        what = "models" if setting == "model" else "harnesses"
+        what = {
+            "model": "models",
+            "harness": "harnesses",
+            "effort_sent": "efforts sent",
+            "model_served": "served models",
+            "route": "routes",
+            "harness_version": "harness versions",
+            "benchflow_version": "BenchFlow versions",
+        }[setting]
         mix_message = (
             f"A side mixes several {what} on {len(mixed_tasks)} task(s) (e.g. "
             f"{side} on {task}: {values}), so its reward there is an average over "
-            "them; pass by=('agent', 'model') to pair like with like"
+            "them; "
+            + (
+                "pass by=('agent', 'model') to pair like with like"
+                if setting in ("model", "harness")
+                else "compare one setting's job folders (mixed settings)"
+            )
         )
         caveats.append(mix_message + ".")
         if on_mismatch == "warn":
             warnings.warn(f"bf.compare: {mix_message}.", UserWarning, stacklevel=2)
+    from benchflow.scoring import gap as rule_gap
+    from benchflow.setting_groups import job_summaries, record_of, setting_rows
+
+    paired_gap = rule_gap(
+        [record_of(t) for t in paired_a], [record_of(t) for t in paired_b]
+    )
+    scoring = paired_gap.to_dict(labels)
+    scoring["mixed"] = {}
+    for label, job in zip(labels, (a, b), strict=True):
+        settings = setting_rows(
+            job.trials if include_controls else job.agents() or job.trials,
+            summaries=job_summaries(job.path, job.trials),
+        )
+        if settings.mixed:
+            scoring["mixed"][label] = settings.warning()
+            caveats.append(f"{label}: {settings.warning()}.")
     return Comparison(
         job_a=a,
         job_b=b,
         rows=rows,
         summary=summary,
+        scoring=scoring,
         a=a.denominators(include_controls=include_controls),
         b=b.denominators(include_controls=include_controls),
         caveats=caveats,

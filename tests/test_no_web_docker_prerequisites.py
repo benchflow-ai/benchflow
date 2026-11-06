@@ -97,7 +97,7 @@ def test_no_web_claude_setup_names_the_missing_runtime(tmp_path):
             "/usr/bin/python3", "/missing/dummy-python3"
         )
         .replace("/usr/local/bin/python3", "/missing/dummy-local-python3")
-        .replace("/opt/benchflow/node/bin/node", "/missing/dummy-node")
+        .replace("/opt/runtime/node/bin/node", "/missing/dummy-node")
     )
     result = subprocess.run(
         ["/bin/bash", "-c", command],

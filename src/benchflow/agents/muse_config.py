@@ -9,7 +9,7 @@ the registry entry needs on the host:
 
 - the pinned Muse Code release (version, per-architecture download URL,
   SHA-256 and size) and the POSIX ``sh`` snippet that installs it under
-  ``/opt/benchflow``. Meta's own installer follows the ``muse-stable`` channel
+  ``/opt/runtime``. Meta's own installer follows the ``muse-stable`` channel
   and has no version pin, so the release manifest is read once here instead;
 - the credential paths the agent uses.
 """
@@ -19,7 +19,7 @@ from __future__ import annotations
 import shlex
 
 MUSE_VERSION = "1.4.7-R6101.1"
-MUSE_DIR = "/opt/benchflow/muse"
+MUSE_DIR = "/opt/runtime/muse"
 MUSE_BIN = f"{MUSE_DIR}/muse"
 _MUSE_DOWNLOAD = (
     "https://lookaside.facebook.com/lookaside/muse/download/"
@@ -92,7 +92,7 @@ def validate_muse_roles(
 
 
 def muse_install_cmd(apt_install_curl: str) -> str:
-    """POSIX ``sh`` snippet installing the pinned Muse Code binary under /opt/benchflow.
+    """POSIX ``sh`` snippet installing the pinned Muse Code binary under /opt/runtime.
 
     Idempotent: a binary already there is kept only when its bytes match the
     manifest SHA-256 (AG-R2-2: a version string is no proof, and an installer

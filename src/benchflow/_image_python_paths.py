@@ -45,12 +45,12 @@ folders root-owned ``.pth`` files name are on the search path already: the
 capture runs after site.
 """
 
-IMAGE_PYTHON_PATHS = "/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json"
-IMAGE_PYTHON_PATHS_EACH = "/opt/benchflow/rt/IMAGE_PYTHON_PATHS.jsonl"
+IMAGE_PYTHON_PATHS = "/opt/runtime/rt/IMAGE_PYTHON_PATHS.json"
+IMAGE_PYTHON_PATHS_EACH = "/opt/runtime/rt/IMAGE_PYTHON_PATHS.jsonl"
 # The pytest guard's search path per interpreter (GUARD_SEARCH), taken before
 # the agent's turn so the guard installer never starts the image's Python as
 # root after it (PT-C8-CONF-2b).
-IMAGE_PYTHON_GUARD = "/opt/benchflow/rt/IMAGE_PYTHON_GUARD"
+IMAGE_PYTHON_GUARD = "/opt/runtime/rt/IMAGE_PYTHON_GUARD"
 # The folders the guard capture reads besides PID 1's PATH: the verifier's
 # PATH when the image's cannot be judged (_hardening_python.TRUSTED_SYSTEM_PATH).
 GUARD_SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -359,12 +359,12 @@ with open(sys.argv[1], 'a') as handle:
 
 READ = r"""
 import json, os, site, sys, sysconfig
-_bf_record = '/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json'
-_bf_each = '/opt/benchflow/rt/IMAGE_PYTHON_PATHS.jsonl'
+_bf_record = '/opt/runtime/rt/IMAGE_PYTHON_PATHS.json'
+_bf_each = '/opt/runtime/rt/IMAGE_PYTHON_PATHS.jsonl'
 if os.path.isfile(_bf_record):
     with open(_bf_record) as _bf_handle:
         _bf_paths = json.load(_bf_handle)
-elif os.path.isfile('/opt/benchflow/rt/RECORD'):
+elif os.path.isfile('/opt/runtime/rt/RECORD'):
     raise RuntimeError('missing pre-agent Python search paths; start a fresh sandbox')
 else:
     # No kit means no sandbox-user turn. Keep this fallback isolated too;
@@ -535,7 +535,7 @@ GUARD_ID_SH = (
 GUARD_DIRS_SH = (
     'bf_guard_dirs() { bf_gdirs=; bf_gall="$1:' + GUARD_SYSTEM_PATH + '"; '
     "IFS=:; set -f; for bf_gdir in $bf_gall; do unset IFS; set +f; "
-    'case "$bf_gdir" in /opt/benchflow|/opt/benchflow/*) continue;; /*) ;; *) continue;; esac; '
+    'case "$bf_gdir" in /opt/runtime|/opt/runtime/*) continue;; /*) ;; *) continue;; esac; '
     'case ":$bf_gdirs:" in *":$bf_gdir:"*) continue;; esac; '
     'bf_gdirs="$bf_gdirs${bf_gdirs:+:}$bf_gdir"; done; unset IFS; set +f; }'
 )

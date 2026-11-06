@@ -839,14 +839,14 @@ async def test_script_startup_settings_match_native_bash(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-@pytest.mark.parametrize("workdir", ["/opt/benchflow", "/tmp/work", "/app/link"])
+@pytest.mark.parametrize("workdir", ["/opt/runtime", "/tmp/work", "/app/link"])
 @pytest.mark.parametrize("runner", ["legacy", "discovered"])
 async def test_script_cannot_replace_runner_through_workspace_parent(
     box, tmp_path, workdir, runner
 ):
     """Guards the fix at 90d0c606 with a dummy private marker."""
     prepared = await box.exec(
-        "mkdir -p /opt/benchflow /tmp/work; chown agent:agent /opt/benchflow /tmp/work; "
+        "mkdir -p /opt/runtime /tmp/work; chown agent:agent /opt/runtime /tmp/work; "
         "ln -s /tmp/work /app/link; "
         "printf dt2-private-marker > /root/dt2-private; chmod 600 /root/dt2-private"
     )
@@ -855,9 +855,9 @@ async def test_script_cannot_replace_runner_through_workspace_parent(
         box,
         tmp_path,
         (
-            "r=/opt/benchflow/operator-script\n"
+            "r=/opt/runtime/operator-script\n"
             if runner == "legacy"
-            else 'for r in /.benchflow-script-* /opt/benchflow/operator-script; do [ -d "$r" ] && break; done\n'
+            else 'for r in /.runtime-script-* /opt/runtime/operator-script; do [ -d "$r" ] && break; done\n'
         )
         + 'if mv "$r" "$PWD/saved-runner" 2>/dev/null; then\n'
         'mkdir "$r"; printf 1 > "$r/started"; '
@@ -875,7 +875,7 @@ async def test_script_inaccessible_legacy_parent_does_not_score_unattempted(
     box, tmp_path
 ):
     """Prepare before start proof."""
-    prepared = await box.exec("mkdir -p /opt/benchflow; chmod 700 /opt/benchflow")
+    prepared = await box.exec("mkdir -p /opt/runtime; chmod 700 /opt/runtime")
     assert prepared.return_code == 0
     result = await run_scored(box, tmp_path, "printf ran > /app/ran\n")
     ran = await box.exec("test -f /app/ran")
@@ -912,7 +912,7 @@ async def test_script_agent_setup_failure_has_no_start_receipt(box, tmp_path, fi
         async def break_setup(self, command):
             if "su -s /bin/bash" in command:
                 directory = re.search(
-                    r"/\.benchflow-script-[0-9a-f]{32}|/opt/benchflow/operator-script",
+                    r"/\.runtime-script-[0-9a-f]{32}|/opt/runtime/operator-script",
                     command,
                 )[0]
                 await super().exec(f"chmod 600 {directory}/{filename}")

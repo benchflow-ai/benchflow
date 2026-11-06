@@ -62,6 +62,11 @@ def exec_violations(source, filename="reader.py"):
         }:
             continue  # External SDK: no BenchFlow result redactor.
         if (
+            filename == "sandbox/daytona_channel.py"
+            and receiver == "self.provider.process"
+        ):
+            continue  # the captured provider's raw SDK, not sandbox.exec.
+        if (
             filename in {"sandbox/modal_impl.py", "sandbox/process/modal.py"}
             and receiver == "self._sandbox"
             and isinstance(parent, ast.Attribute)
@@ -138,6 +143,19 @@ def test_every_harness_exec_uses_the_raw_api():
             f"{name}:{line}" for line in exec_violations(path.read_text(), name)
         )
     assert not violations, "Harness exec bypasses exec_raw:\n" + "\n".join(violations)
+
+
+def test_channel_sdk_inventory_does_not_exempt_harness_readers():
+    """The new transport's SDK exception cannot hide a harness reader."""
+    name = "sandbox/daytona_channel.py"
+    assert not exec_violations(
+        'async def read(self):\n    return await self.provider.process.exec("cat journal")',
+        name,
+    )
+    assert exec_violations(
+        'async def read(self):\n    return await self.sandbox.exec("cat journal")',
+        name,
+    )
 
 
 @pytest.mark.parametrize(

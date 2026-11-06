@@ -396,7 +396,9 @@ async def run_sweep(
     cells = expand_sweep_grid(models, loops)
     results: list[CellResult] = []
     for cell in cells:
-        cfg = replace(base_config, model=cell.model, loop_strategy=cell.loop)
+        cfg = replace(
+            base_config, model=cell.model, model_given=True, loop_strategy=cell.loop
+        )
         cell_dir = jobs_dir / cell.job_name
         evaluation = Evaluation(
             tasks_dir=tasks_dir,

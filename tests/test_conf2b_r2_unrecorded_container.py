@@ -158,7 +158,7 @@ RECORD_LINE = (
 )
 RECORDER = dedent(f"""\
     set -e
-    find / -xdev \\( -path /proc -o -path /opt/benchflow \\) -prune -o \\
+    find / -xdev \\( -path /proc -o -path /opt/runtime \\) -prune -o \\
         -path '*/encodings/__init__.py' -print > /var/tmp/conf2b-r2-stdlibs
     while IFS= read -r f; do printf %s {shlex.quote(RECORD_LINE)} >> "$f"; done \\
         < /var/tmp/conf2b-r2-stdlibs

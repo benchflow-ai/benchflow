@@ -10,4 +10,4 @@ Dated internal reports, kept for the record. They are not maintained, so their c
 ## Next steps
 
 - How each release is tested: [How releases are tested](../how-releases-are-tested.md).
-- The task format these reports cover: [Task package reference](../../reference/task-package.md).
+- The task format these reports cover: [Task package reference](../../tasks/task-format.md).

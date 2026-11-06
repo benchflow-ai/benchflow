@@ -195,6 +195,7 @@ from benchflow.task.paths import RolloutPaths, SandboxPaths
 from benchflow.trust import state as trust_state
 
 if TYPE_CHECKING:
+    from benchflow.sandbox.egress_denylist import TaskService
     from benchflow.sandbox.process import LiveProcess
     from benchflow.task.compose_env import ComposeLaunch
     from benchflow.task.staging import StagedEnvironment
@@ -421,7 +422,7 @@ _DOCKER_CONNECTION_ENV = frozenset(
 
 _DOCKER_KEEPS_CONTAINERS = frozenset(
     {"exec", "cp", "inspect", "ps", "logs", "top", "port", "diff", "info"}
-    | {"version", "image", "images", "commit", "events", "stats"}
+    | {"version", "image", "images", "commit", "events", "stats", "network"}
 )
 _CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}")
 # A stream cut short by its producer: the exit status is the real error.
@@ -429,6 +430,21 @@ _TRANSPORT_EOF = (tarfile.TarError, EOFError)
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 # Each docker volume call of a teardown (as _remove_project_volumes's).
 _VOLUME_CALL_TIMEOUT_SEC = 30
+# Each docker call of the force-kill fallback (ps, rm -f, network prune).
+_FORCE_KILL_CALL_TIMEOUT_SEC = 10
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Kill a docker CLI call that outlived its timeout and wait for it inside
+    the loop: one left running keeps a transport that closes only after the
+    loop has ended, and asyncio then prints ``Event loop is closed``."""
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=5)
+
+
 # How many times a sandbox restarts an exec channel whose helper died.
 _EXEC_CHANNEL_RESTARTS = 3
 
@@ -1240,7 +1256,7 @@ class DockerSandbox(BaseSandbox):
         if self.rollout_paths is None:
             return
 
-        probe_name = f".benchflow-mount-probe-{uuid.uuid4().hex}"
+        probe_name = f".runtime-mount-probe-{uuid.uuid4().hex}"
         host_probe = self.rollout_paths.verifier_dir / probe_name
         sandbox_probe = SandboxPaths.verifier_dir / probe_name
         host_probe.parent.mkdir(parents=True, exist_ok=True)
@@ -2839,7 +2855,7 @@ class DockerSandbox(BaseSandbox):
             if entry.tar is not None:
                 # Its stage goes in now, beside the rest of the start: one
                 # archive upload to /, of a fresh folder only root may enter.
-                name = f".benchflow-kit-{uuid.uuid4().hex}"
+                name = f".runtime-kit-{uuid.uuid4().hex}"
                 data = await asyncio.to_thread(_kit_cache.staged_tar, entry.tar, name)
                 await direct.client.call(
                     "PUT",
@@ -2865,7 +2881,7 @@ class DockerSandbox(BaseSandbox):
         self._kit_staged = None
         if staged is not None and staged[0] == entry.key:
             return staged[1]
-        stage = f"/.benchflow-kit-{uuid.uuid4().hex}"
+        stage = f"/.runtime-kit-{uuid.uuid4().hex}"
         try:
             made = await exec_raw(
                 self.exec, f"mkdir -m 700 {stage}", user="root", timeout_sec=30
@@ -4201,7 +4217,15 @@ class DockerSandbox(BaseSandbox):
                 listing if listing is not None else self._list_built_images(),
                 timeout=30,
             )
-        except (TimeoutError, OSError) as e:
+        except TimeoutError:
+            # str(TimeoutError()) is empty: say what happened and what stays.
+            self.logger.warning(
+                f"Listing the images {project} built gave no answer within 30 s "
+                "(Docker is busy), so they stay: `docker image ls --filter "
+                f"label=com.docker.compose.project={project}` lists them"
+            )
+            return
+        except OSError as e:
             self.logger.warning(f"Listing the images {project} built failed: {e}")
             return
         if listed.return_code != 0:
@@ -4474,6 +4498,8 @@ class DockerSandbox(BaseSandbox):
         self._main_container = None
         project = self.compose_project_name
         label = f"label=com.docker.compose.project={project}"
+        started: list[asyncio.subprocess.Process] = []
+        step = "docker ps"
         try:
             proc = await asyncio.create_subprocess_exec(
                 "docker",
@@ -4485,9 +4511,13 @@ class DockerSandbox(BaseSandbox):
                 stderr=asyncio.subprocess.DEVNULL,
                 env=self._docker_client_env(),
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            started.append(proc)
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_FORCE_KILL_CALL_TIMEOUT_SEC
+            )
             cids = stdout.decode().split()
             for cid in cids:
+                step = f"docker rm -f {cid[:12]}"
                 rm_proc = await asyncio.create_subprocess_exec(
                     "docker",
                     "rm",
@@ -4497,7 +4527,11 @@ class DockerSandbox(BaseSandbox):
                     stderr=asyncio.subprocess.DEVNULL,
                     env=self._docker_client_env(),
                 )
-                await asyncio.wait_for(rm_proc.wait(), timeout=10)
+                started.append(rm_proc)
+                await asyncio.wait_for(
+                    rm_proc.wait(), timeout=_FORCE_KILL_CALL_TIMEOUT_SEC
+                )
+            step = "docker network prune"
             net_proc = await asyncio.create_subprocess_exec(
                 "docker",
                 "network",
@@ -4509,9 +4543,21 @@ class DockerSandbox(BaseSandbox):
                 stderr=asyncio.subprocess.DEVNULL,
                 env=self._docker_client_env(),
             )
-            await asyncio.wait_for(net_proc.wait(), timeout=10)
+            started.append(net_proc)
+            await asyncio.wait_for(
+                net_proc.wait(), timeout=_FORCE_KILL_CALL_TIMEOUT_SEC
+            )
+        except TimeoutError:
+            self.logger.warning(
+                f"Force-kill of compose project {project} stopped: {step} gave no "
+                f"answer within {_FORCE_KILL_CALL_TIMEOUT_SEC} s (Docker is busy); "
+                "the job's leftover sweep removes what is left"
+            )
         except Exception as e:
             self.logger.warning(f"Force-kill of compose project {project} failed: {e}")
+        finally:
+            for started_proc in started:
+                await _reap(started_proc)
 
     async def upload_file(
         self, source_path: Path | str, target_path: str, *, mode: str | None = None
@@ -5292,6 +5338,79 @@ class DockerSandbox(BaseSandbox):
             return None
         return ids[0]
 
+    async def egress_task_services(self) -> list[TaskService]:
+        """The project's running services but ``main``, as ``network_mode = "allowlist"`` sees them.
+
+        Read from the daemon at connection time, not from the compose files:
+        names and addresses on the networks each shares with ``main``, and any
+        route out (``_docker_task_services``). A project the daemon cannot
+        describe raises, so an allowlist never runs on a guess.
+        """
+        from benchflow.sandbox._docker_task_services import (
+            TaskServiceInspectError,
+            task_services_from_inspect,
+        )
+
+        def refused(why: str) -> RuntimeError:
+            return RuntimeError(
+                "sandbox startup refused: network_mode='allowlist' could not "
+                f"check the task's services: {why}"
+            )
+
+        listed = await self._docker_cli(
+            [
+                "ps",
+                "-q",
+                "--no-trunc",
+                "--filter",
+                f"label=com.docker.compose.project={self.compose_project_name}",
+            ],
+            check=False,
+            raw_output=True,
+        )
+        ids = [line.strip() for line in (listed.stdout or "").splitlines()]
+        ids = [i for i in ids if i]
+        if listed.return_code != 0 or not all(_CONTAINER_ID.fullmatch(i) for i in ids):
+            raise refused(f"docker ps failed (rc={listed.return_code})")
+        if not ids:
+            raise refused("docker ps lists no running container of the project")
+        inspected = await self._docker_cli(
+            ["inspect", *ids], check=False, raw_output=True
+        )
+        if inspected.return_code != 0:
+            raise refused(f"docker inspect failed (rc={inspected.return_code})")
+        try:
+            containers = json.loads(inspected.stdout or "")
+            network_ids = sorted(
+                {
+                    str(net.get("NetworkID"))
+                    for container in containers
+                    for net in (
+                        (container.get("NetworkSettings") or {}).get("Networks") or {}
+                    ).values()
+                    if net.get("NetworkID")
+                }
+            )
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise refused(f"docker inspect gave no container records ({exc})") from exc
+        records: dict[str, Any] = {}
+        if network_ids:
+            nets = await self._docker_cli(
+                ["network", "inspect", *network_ids], check=False, raw_output=True
+            )
+            if nets.return_code != 0:
+                raise refused(f"docker network inspect failed (rc={nets.return_code})")
+            try:
+                records = {str(n["Id"]): n for n in json.loads(nets.stdout or "")}
+            except (ValueError, KeyError, TypeError) as exc:
+                raise refused(
+                    f"docker network inspect gave no records ({exc})"
+                ) from exc
+        try:
+            return task_services_from_inspect(containers, records)
+        except TaskServiceInspectError as exc:
+            raise refused(str(exc)) from exc
+
     async def _engine_info_json(self) -> str:
         """The daemon's ``docker info`` as JSON (empty when it cannot say)."""
         result = await self._docker_cli(
@@ -5343,7 +5462,14 @@ class DockerSandbox(BaseSandbox):
             stderr=asyncio.subprocess.PIPE,
             env=client_env,
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        try:
+            stdout_bytes, stderr_bytes = await proc.communicate()
+        except BaseException:
+            # A caller's timeout cancelled the call (teardown's image listing
+            # on a busy daemon): the docker client must not outlive it, or its
+            # transport closes after the loop has ended ("Event loop is closed").
+            await _reap(proc)
+            raise
         result = ExecResult(
             stdout=(stdout_bytes or b"").decode(errors="replace"),
             stderr=(stderr_bytes or b"").decode(errors="replace"),
@@ -6057,6 +6183,11 @@ class DockerSandbox(BaseSandbox):
             state = None if state.cancelled() or state.exception() else state.result()
         if isinstance(state, (ExecChannel, WarmExecPool)):
             await state.close()
+
+    async def detach(self) -> None:
+        """Close this process's exec channels to a sandbox that stays up
+        (``--keep-sandbox``). The containers keep running."""
+        await self._close_exec_channels()
 
     async def _close_exec_channels(self) -> None:
         """Close every channel (the sandbox stops)."""

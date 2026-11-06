@@ -17,7 +17,11 @@ import time
 import uuid
 from typing import Any
 
-from benchflow.sandbox.daytona_delete import delete_sandbox_sync
+from benchflow.sandbox.daytona_delete import (
+    delete_sandbox_sync,
+    sandbox_state,
+    still_building,
+)
 
 logger = logging.getLogger("benchflow")
 
@@ -73,6 +77,9 @@ _OUT_OF_SERVICE_STATES = frozenset({"STOPPED", "ARCHIVED", "ERROR", "BUILD_FAILE
 # sandbox of a run that still holds it from being deleted early.
 _BENCHFLOW_RUN_LABEL = "benchflow.run"
 _BENCHFLOW_LEASE_LABEL = "benchflow.lease"
+# A sandbox kept with --keep-sandbox (rollout/_keep_sandbox): no reaper deletes
+# it by age, lease or --all; `bench sandbox release` (or --id) does.
+KEPT_LABEL = "benchflow.kept"
 _LEASE_SEC = 3600
 _LEASE_RENEW_SEC = 600
 _LEASE_GRACE_SEC = 600
@@ -96,14 +103,6 @@ def lease_state(sb: Any, now: float | None = None) -> str:
         return "none"
     now = time.time() if now is None else now
     return "lapsed" if now > int(raw) + _LEASE_GRACE_SEC else "live"
-
-
-def sandbox_state(sb: Any) -> str:
-    """The sandbox's state name in upper case (``STARTED``, ``STOPPED`` ...),
-    whether the SDK gives an enum, its value or its repr."""
-    raw = getattr(sb, "state", None)
-    raw = getattr(raw, "value", raw)
-    return str(raw or "").rsplit(".", 1)[-1].upper()
 
 
 def out_of_service(sb: Any) -> bool:
@@ -292,10 +291,14 @@ def reap_stale_sandboxes(
     STARTED and has no live lease, whatever its age or activity (the ``bench
     sandbox cleanup --all`` teardown step for CI; the ownership scope still
     applies). A sandbox whose id is in *names* is deleted whatever its state,
-    age, activity or lease. *on_skip* (sandbox, reason) is called for each
-    sandbox left alone, with reason ``foreign`` (not owned), ``leased`` (a
-    live lease), ``started`` (STARTED, under ``ignore_age``), ``no_created_at``, ``young`` (under its TTL) or ``active`` (the activity
-    guard).
+    age, activity or lease, but for one state: a sandbox whose image Daytona
+    is still building is never deleted (``daytona_delete.still_building``),
+    since the delete would make Daytona keep its build as failed for every
+    later create of the image. *on_skip* (sandbox, reason) is called for each
+    sandbox left alone, with reason ``foreign`` (not owned), ``building``
+    (still building), ``leased`` (a live lease), ``started`` (STARTED, under
+    ``ignore_age``), ``no_created_at``, ``young`` (under its TTL) or
+    ``active`` (the activity guard).
 
     Ownership-scoped: only sandboxes benchflow created — those carrying the
     ``benchflow.managed`` label (see :func:`_is_benchflow_owned`) — are ever
@@ -343,6 +346,7 @@ def reap_stale_sandboxes(
         client = build_sync_client()
     now = datetime.now(UTC)
     counts = {"found": 0, "deleted": 0, "skipped": 0, "failed": 0}
+    orphans: list[str] = []
     for sb in client.list():
         counts["found"] += 1
         if not _is_benchflow_owned(sb):
@@ -351,20 +355,27 @@ def reap_stale_sandboxes(
             if _is_benchflow_label_orphan(sb):
                 # Read-only orphan-leak guard: a sandbox carrying the benchflow
                 # namespace but missing the exact ownership label will never be
-                # reaped by age. Surface it so an operator can reclaim it by
-                # hand; we deliberately do not delete unlabeled sandboxes.
-                logger.warning(
-                    "Daytona sandbox %s carries a benchflow label namespace but "
-                    "is missing the %s=%s ownership label; the age-based reaper "
-                    "will never reclaim it (possible orphan leak). Not deleting — "
-                    "verify and remove it manually if it is stale.",
-                    getattr(sb, "id", "?"),
-                    _BENCHFLOW_MANAGED_LABEL,
-                    _benchflow_managed_value(),
-                )
+                # reaped by age. It is reported after the sweep, so an operator
+                # can reclaim it by hand; we deliberately do not delete
+                # unlabeled sandboxes.
+                orphans.append(str(getattr(sb, "id", "?")))
             counts["skipped"] += 1
             if on_skip is not None:
                 on_skip(sb, "foreign")
+            continue
+        if still_building(sb):
+            # Left to Daytona, whose auto-stop and auto-delete remove it once
+            # it has started; a later cleanup can delete it then.
+            logger.warning(
+                "Not deleting Daytona sandbox %s: it is still building (%s), "
+                "and a delete now would make Daytona keep its build as failed "
+                '("context canceled") for every later create of the image',
+                getattr(sb, "id", "?"),
+                sandbox_state(sb),
+            )
+            counts["skipped"] += 1
+            if on_skip is not None:
+                on_skip(sb, "building")
             continue
         lease = lease_state(sb, now.timestamp())
         if getattr(sb, "id", None) in names:
@@ -372,6 +383,12 @@ def reap_stale_sandboxes(
             if on_decision is not None:
                 on_decision(sb, _age_minutes(sb, now), True)
             _delete_counted(client, sb, counts, dry_run)
+            continue
+        labels = getattr(sb, "labels", None)
+        if isinstance(labels, dict) and labels.get(KEPT_LABEL) == "1":
+            counts["skipped"] += 1
+            if on_skip is not None:
+                on_skip(sb, "kept")
             continue
         if lease == "live":
             # Its run still renews it: never deleted by age, nor by --all.
@@ -451,7 +468,34 @@ def reap_stale_sandboxes(
         except Exception:
             logger.warning("Failed to delete sandbox %s", getattr(sb, "id", "?"))
             counts["failed"] += 1
+    _warn_label_orphans(orphans)
     return counts
+
+
+_ORPHAN_IDS_SHOWN = 5
+
+
+def _warn_label_orphans(ids: list[str]) -> None:
+    """One warning for every sandbox the sweep found with benchflow labels but
+    no ownership label. A shared account can hold hundreds of them, and one
+    line each buried the sweep's summary. On a shared API key they may be
+    other users' sandboxes, so the warning must not invite deleting them."""
+    if not ids:
+        return
+    shown = ", ".join(ids[:_ORPHAN_IDS_SHOWN])
+    if len(ids) > _ORPHAN_IDS_SHOWN:
+        shown += f" and {len(ids) - _ORPHAN_IDS_SHOWN} more"
+    logger.warning(
+        "%d Daytona sandbox(es) carry a benchflow label namespace but not the "
+        "%s=%s ownership label, so the age-based reaper will never reclaim them "
+        "(possible orphan leak): %s. Not deleting. They may belong to other "
+        "users of this API key: delete one only if you started it, with "
+        "`bench sandbox cleanup --id <sandbox id>`.",
+        len(ids),
+        _BENCHFLOW_MANAGED_LABEL,
+        _benchflow_managed_value(),
+        shown,
+    )
 
 
 def _age_minutes(sb: Any, now: Any) -> float:

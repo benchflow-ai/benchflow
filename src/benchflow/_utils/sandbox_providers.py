@@ -44,6 +44,15 @@ class SandboxProvider:
     #: Whether the backend can run a task's docker-compose side services.
     #: ``False`` means a multi-service task must be refused, not run partially.
     supports_compose: bool = False
+    #: Whether the backend can run the verifier in a compose service other
+    #: than ``main`` (``verifier.service``): exec, upload and download in that
+    #: service, as an embodied task's trusted ``simulator`` needs. Docker does
+    #: it on the host; Daytona inside the sandbox's VM (its DinD strategy).
+    runs_verifier_in_service: bool = False
+    #: Whether the backend has the trusted root runner an operator script
+    #: (``--agent script:<file>``) needs. Elsewhere the plan refuses the
+    #: script before any sandbox starts.
+    runs_operator_scripts: bool = False
     #: Whether the backend can enforce ``network_mode = "denylist"`` (a
     #: root-owned loopback proxy behind the uid firewall).
     enforces_denylist: bool = False
@@ -51,6 +60,11 @@ class SandboxProvider:
     #: proxy in allow mode, plus the DNS filter and CIDR rules on the uid
     #: firewall). Set only for backends validated by a live check.
     enforces_allowlist: bool = False
+    #: Whether, under an allowlist, the backend reads the task's running
+    #: compose services: admits the ones the list names at their addresses and
+    #: refuses a run where one has a route out. Elsewhere an allowlist
+    #: task with compose services is refused.
+    checks_allowlist_services: bool = False
     #: Whether an agent can hold an interactive ACP stdio transport.
     supports_live_process: bool = False
     #: Whether the backend runs a task's verifier in a fresh sandbox of its own
@@ -84,8 +98,11 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         runs_separate_verifier=True,
         separate_verifier_start="prestart",
         supports_compose=True,
+        runs_verifier_in_service=True,
+        runs_operator_scripts=True,
         enforces_denylist=True,
         enforces_allowlist=True,
+        checks_allowlist_services=True,
         agent_container_no_new_privs="always",
     ),
     SandboxProvider(
@@ -99,8 +116,11 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         runs_separate_verifier=True,
         separate_verifier_start="prestart",
         supports_compose=True,
+        runs_verifier_in_service=True,
+        runs_operator_scripts=True,
         enforces_denylist=True,
         enforces_allowlist=True,
+        checks_allowlist_services=True,
         agent_container_no_new_privs="always",
     ),
     SandboxProvider(
@@ -112,8 +132,10 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         # unable to reach an idle verifier sandbox.
         runs_separate_verifier=True,
         separate_verifier_start="after_stop",
-        # The DinD strategy runs compose inside the sandbox VM.
+        # The DinD strategy runs compose inside the sandbox VM, and execs,
+        # uploads and downloads in any of its services.
         supports_compose=True,
+        runs_verifier_in_service=True,
         enforces_denylist=True,
         enforces_allowlist=True,
         # Only the DinD strategy's compose services; a direct sandbox has none.
@@ -171,6 +193,14 @@ OFF_BOX_MODEL_PROVIDERS = SANDBOX_MODEL_PROXY_PROVIDERS
 SINGLE_CONTAINER_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.supports_compose
 )
+#: Providers that can run the verifier in a compose service other than main.
+VERIFIER_SERVICE_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.runs_verifier_in_service
+)
+#: Providers that run operator scripts (``--agent script:<file>``).
+OPERATOR_SCRIPT_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.runs_operator_scripts
+)
 #: Providers that cannot enforce ``network_mode = "no-network"``.
 NO_NETWORK_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_no_network
@@ -183,6 +213,10 @@ DENYLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
 #: Providers that cannot enforce ``network_mode = "allowlist"``.
 ALLOWLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_allowlist
+)
+#: Providers that check an allowlist task's compose services.
+ALLOWLIST_SERVICE_CHECK_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.checks_allowlist_services
 )
 #: Providers that run a separate verifier sandbox.
 SEPARATE_VERIFIER_PROVIDERS: frozenset[str] = frozenset(

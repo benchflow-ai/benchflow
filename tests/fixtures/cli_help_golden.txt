@@ -16,42 +16,46 @@
 │ --help                          Show this message and exit.                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Tasks ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ new       Scaffold a new benchmark task.                                                         │
-│ check     Validate task structure and the run's plan without starting a sandbox.                 │
-│ import    Convert task.toml + instruction.md into the unified task.md format.                    │
+│ new           Scaffold a new benchmark task.                                                     │
+│ check         Validate task structure and the run's plan without starting a sandbox.             │
+│ import        Convert task.toml + instruction.md into the unified task.md format.                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Runs ───────────────────────────────────────────────────────────────────────────────────────────╮
-│ run       Run an agent on tasks and score them; without -a, the oracle.                          │
-│ branch    Fork an agent run at a checkpoint into labelled children.                              │
-│ results   Summarize jobs; with two, compare them.                                                │
-│ view      View a trial or session trajectory in the browser.                                     │
-│ regrade   Re-run the task's current verifier on each trial's frozen workspace.                   │
-│ export    Export a task to a compatibility split layout with a loss report.                      │
+│ run           Run an agent on tasks and score them; without -a, the oracle.                      │
+│ branch        Fork an agent run at a checkpoint into labelled children.                          │
+│ results       Summarize jobs; with two, compare them.                                            │
+│ view          View a trial or session trajectory in the browser.                                 │
+│ regrade       Re-run the task's current verifier on each trial's frozen workspace.               │
+│ export        Export a task to a compatibility split layout with a loss report.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ This machine ───────────────────────────────────────────────────────────────────────────────────╮
-│ doctor    Check this machine can run evals: Python/uv, sandbox, agent credentials, network.      │
-│ agents    List the agents, or show one in detail.                                                │
-│ explain   Explain why a trial has no score: what happened, whose problem, what next.             │
-│ cache     List or clean what BenchFlow keeps: cached layers, build records, snapshots.           │
+│ doctor        Check this machine can run evals: Python/uv, sandbox, agent credentials, network.  │
+│ agents        List the agents, or show one in detail.                                            │
+│ explain       Explain why a trial has no score: what happened, whose problem, what next.         │
+│ cache         List or clean what BenchFlow keeps: cached layers, build records, snapshots.       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ More ───────────────────────────────────────────────────────────────────────────────────────────╮
-│ eval      Run agents on tasks (smoke, run) and read the results (metrics, view, inspect,         │
-│           compare).                                                                              │
-│ tasks     Task authoring commands.                                                               │
-│ agent     Agent management commands.                                                             │
-│ review    Grade finished rollouts against a rubric with a reviewer agent.                        │
-│ skills    Skill discovery and evaluation.                                                        │
-│ traj      Trajectory commands.                                                                   │
-│ train     Training data commands.                                                                │
-│ hub       External environment hubs: browse a hub's environments (list/show/inspect) and check   │
-│           registry tasks (check).                                                                │
-│ daemon    Manage the opt-in warm local runtime.                                                  │
-│ sandbox   Daytona sandboxes: create, list and clean up (cleanup also removes leftover Docker     │
-│           containers).                                                                           │
+│ eval          Run agents on tasks (smoke, run) and read the results (metrics, view, inspect,     │
+│               compare).                                                                          │
+│ tasks         Task authoring commands.                                                           │
+│ agent         Agent management commands.                                                         │
+│ review        Grade finished rollouts against a rubric with a reviewer agent.                    │
+│ assess        Blind pairwise human assessments of saved outputs, kept in an opt-in sidecar.      │
+│ preferences   Human preferences and rubric scores on finished trials.                            │
+│ bundle        Write one zip of a run's evidence to share, redacted.                              │
+│ skills        Skill discovery and evaluation.                                                    │
+│ traj          Trajectory commands.                                                               │
+│ train         Training data commands.                                                            │
+│ hub           Environment hubs: browse a hub's environments (list/show/inspect), check registry  │
+│               tasks (check), and publish datasets and push runs to a BenchFlow Hub               │
+│               (publish/push).                                                                    │
+│ daemon        Manage the opt-in warm local runtime.                                              │
+│ sandbox       Daytona sandboxes: create, list and clean up (cleanup also removes leftover Docker │
+│               containers).                                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                     
  New here? Run bench doctor, then follow                                                            
- https://github.com/benchflow-ai/benchflow/blob/main/docs/getting-started/quick-start.md            
+ https://github.com/benchflow-ai/benchflow/blob/main/docs/start/quick-start.md                      
                                                                                                     
 
 
@@ -192,12 +196,16 @@
 │                                                                   agent; left out by default, as │
 │                                                                   in BenchFlow 0.8               │
 │                                                                   [default: no-task-skills]      │
-│ --dataset                        -d                      TEXT     A registry dataset,            │
-│                                                                   name@version, instead of a     │
-│                                                                   target                         │
+│ --dataset                        -d                      TEXT     A dataset instead of a target: │
+│                                                                   name@version from a registry,  │
+│                                                                   or org/name@version from a     │
+│                                                                   BenchFlow Hub                  │
 │ --registry                                               TEXT     The registry for --dataset: a  │
-│                                                                   URL or a file (default: the    │
-│                                                                   skillsbench registry)          │
+│                                                                   URL, a file or hub:<url>       │
+│                                                                   (default: BenchFlow's          │
+│                                                                   registry, then                 │
+│                                                                   $BENCHFLOW_HUB_URL for an      │
+│                                                                   org/name dataset)              │
 │ --include                        -i                      TEXT     Only tasks whose names match:  │
 │                                                                   a name, or a glob pattern such │
 │                                                                   as 'hard-*' (comma-separated   │
@@ -224,10 +232,10 @@
 │ --timeout-multiplier                                     FLOAT    Scale every task's agent       │
 │                                                                   timeout, e.g. 2.0              │
 │ --idle-timeout,--agent-idle-ti…                          TEXT     Abort a prompt when the agent  │
-│                                                                   is silent this long: seconds,  │
-│                                                                   or 90s, 10m, 1h; 0, none or    │
-│                                                                   null turns it off (default:    │
-│                                                                   10m)                           │
+│                                                                   is silent this long: seconds   │
+│                                                                   or 90s, 10m, 1h; 0 or none     │
+│                                                                   turns it off (default: 10m,    │
+│                                                                   30m at effort xhigh or max)    │
 │ --fail-under                                             FLOAT    Exit 1 when the pass rate over │
 │                                                                   the planned tasks is below     │
 │                                                                   this (0 to 1)                  │
@@ -251,7 +259,11 @@
 │ --fresh                                                           Start a new job instead of     │
 │                                                                   resuming the latest one in     │
 │                                                                   --jobs-dir                     │
-│ --dry-run                                                         Print the plan and run nothing │
+│ --dry-run                                                         Print the plan as JSON and the │
+│                                                                   run card on stderr, and run    │
+│                                                                   nothing; for a local folder or │
+│                                                                   run config, exits 1 when the   │
+│                                                                   run card would refuse the run  │
 │ --quiet                          -q                               Print only warnings, errors    │
 │                                                                   and the final score            │
 │ --config,--run-config                                    PATH     YAML run-config file (the      │
@@ -260,16 +272,50 @@
 │                                                                   org/repo (e.g.                 │
 │                                                                   benchflow-ai/skillsbench)      │
 │ --source-path                                            TEXT     Folder in the repo: one task   │
-│                                                                   (tasks/citation-check) or a    │
-│                                                                   folder of tasks (tasks). Only  │
-│                                                                   this folder is downloaded      │
+│                                                                   (tasks/econ-detrending-correl… │
+│                                                                   or a folder of tasks (tasks).  │
+│                                                                   Only this folder is downloaded │
+│ --keep-sandbox                                           TEXT     Keep a trial's sandbox:        │
+│                                                                   on-failure, always or never    │
+│                                                                   (default). `bench sandbox      │
+│                                                                   attach <trial>` opens a shell  │
+│                                                                   in it; `bench sandbox release  │
+│                                                                   <trial>` deletes it.           │
+│ --accept-deviations                                      TEXT     Why this run differs from its  │
+│                                                                   task set's run-reference.toml  │
+│                                                                   (a strict one refuses the run  │
+│                                                                   without it); kept in           │
+│                                                                   run-card.json.                 │
+│ --integrity                                              TEXT     off, audit (record what the    │
+│                                                                   agent did and check it against │
+│                                                                   the task) or strict (audit,    │
+│                                                                   and the verifier in a separate │
+│                                                                   sandbox). The verdict is in    │
+│                                                                   integrity/claim_verdict.json;  │
+│                                                                   rewards never change.          │
+│ --max-cost-usd                                           FLOAT    Job budget in USD, checked     │
+│                                                                   between starts, so a job can   │
+│                                                                   pass it by about one rollout's │
+│                                                                   cost; at the cap running       │
+│                                                                   rollouts are cancelled. With   │
+│                                                                   --trials, each repeat has its  │
+│                                                                   own cap                        │
+│ --max-tokens                                             INTEGER  Job budget in tokens, checked  │
+│                                                                   between starts like            │
+│                                                                   --max-cost-usd. With --trials, │
+│                                                                   each repeat has its own cap    │
+│ --trials                                                 INTEGER  Run every task N times         │
+│                                                                   (pass@k); each repeat is a job │
+│                                                                   of its own, in <jobs           │
+│                                                                   dir>/<agent>/trial-NN          │
+│                                                                   [default: 1]                   │
 │ --help-all                                                        Show every flag, the run       │
 │                                                                   settings --help leaves out     │
 │                                                                   included                       │
 │ --help                                                            Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                     
- 81 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
+ 85 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
  run --help-all                                                                                     
                                                                                                     
 
@@ -304,8 +350,8 @@
 │                                                          --from-checkpoint, else                 │
 │                                                          claude-agent-acp.                       │
 │ --model                    -m      TEXT                  Model id for the agent, e.g.            │
-│                                                          claude-haiku-4-5-20251001 (none for     │
-│                                                          oracle and nop)                         │
+│                                                          claude-haiku-5-5 (none for oracle and   │
+│                                                          nop)                                    │
 │ --reasoning-effort                 TEXT                  Agent reasoning effort (e.g. max)       │
 │ --harness                          TEXT                  How the agent runs: acp (default, its   │
 │                                                          ACP adapter) or native (its own CLI in  │
@@ -462,14 +508,51 @@
 │ *    path      PATH  A job folder, or one trial folder inside it [required]                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir          PATH                  Folder of task folders (or one task folder) holding   │
-│                                            the changed verifiers. Default: the task path each    │
-│                                            trial recorded.                                       │
-│ --sandbox            TEXT                  Backend for the fresh sandboxes (default: as run)     │
-│ --concurrency        INTEGER RANGE [x>=1]  Trials regraded at once [default: 4]                  │
-│ --reason             TEXT                  Why the verifier changed; kept in each block          │
-│ --json                                     Print the summary as JSON                             │
-│ --help                                     Show this message and exit.                           │
+│ --tasks-dir                        PATH                  Folder of task folders (or one task     │
+│                                                          folder) holding the changed verifiers.  │
+│                                                          Default: the task path each trial       │
+│                                                          recorded.                               │
+│ --sandbox                          TEXT                  Backend for the fresh sandboxes         │
+│                                                          (default: as run)                       │
+│ --concurrency                      INTEGER RANGE [x>=1]  Trials regraded at once [default: 4]    │
+│ --reason                           TEXT                  Why the verifier changed; kept in each  │
+│                                                          block                                   │
+│ --json                                                   Print the summary as JSON               │
+│ --review                                                 Also rerun each trial's rubric review   │
+│                                                          on its saved outputs, gated by the new  │
+│                                                          test, and compare the combined score.   │
+│                                                          The reviewer is the one the trial       │
+│                                                          recorded, changed by --reviewer-*       │
+│ --reviewer-agent                   TEXT                  Rubric reviewer harness                 │
+│ --reviewer-model                   TEXT                  Rubric reviewer model                   │
+│ --reviewer-reasoning-effort        TEXT                  Rubric reviewer reasoning effort        │
+│ --reviewer-sandbox                 TEXT                  Rubric reviewer sandbox backend         │
+│ --reviewer-timeout-sec             INTEGER RANGE [x>=1]  Reviewer execution budget in seconds    │
+│ --reviewer-idle-timeout            TEXT                  Abort a reviewer prompt after this many │
+│                                                          idle seconds (default: 600). Pass 0 or  │
+│                                                          'none' to disable the idle watchdog and │
+│                                                          leave --reviewer-timeout-sec in charge. │
+│ --reviewer-storage-mb              INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB (default:   │
+│                                                          the evidence it holds plus 2048, at     │
+│                                                          least 4096, at most the sandbox         │
+│                                                          backend's limit)                        │
+│ --reviewer-memory-mb               INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB (default: │
+│                                                          2048)                                   │
+│ --reviewer-setup-timeout           INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's      │
+│                                                          setup, its model proxy install among it │
+│                                                          (default: the run's                     │
+│                                                          --sandbox-setup-timeout)                │
+│ --reviewer-evidence-timeout        INTEGER RANGE [x>=1]  Seconds to unpack, and again to check,  │
+│                                                          the workspace evidence in the reviewer  │
+│                                                          sandbox (default: 1 per MiB, at least   │
+│                                                          600)                                    │
+│ --reviewer-concurrency             INTEGER RANGE [x>=1]  Max concurrent rubric reviewers         │
+│ --reviewer-image                   TEXT                  Rubric reviewer container image         │
+│ --reviewer-agent-env               TEXT                  Reviewer environment variable           │
+│                                                          (KEY=VALUE)                             │
+│ --reviewer-open-network                                  Allow unrestricted reviewer network     │
+│                                                          access                                  │
+│ --help                                                   Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -705,9 +788,9 @@
 │                                                                 org/repo (e.g.                   │
 │                                                                 benchflow-ai/skillsbench)        │
 │ --source-path                             TEXT                  Folder in the repo: one task     │
-│                                                                 (tasks/citation-check) or a      │
-│                                                                 folder of tasks (tasks). Only    │
-│                                                                 this folder is downloaded        │
+│                                                                 (tasks/econ-detrending-correlat… │
+│                                                                 or a folder of tasks (tasks).    │
+│                                                                 Only this folder is downloaded   │
 │ --source-ref                              TEXT                  Branch, tag or full commit SHA   │
 │                                                                 to fetch (e.g. main)             │
 │ --source-env                              TEXT                  Hosted environment source (e.g.  │
@@ -722,7 +805,8 @@
 │ --source-env-max-tokens                   INTEGER               Max tokens for hosted env run    │
 │                                                                 [default: 1024]                  │
 │ --source-env-temperature                  FLOAT                 Temperature for hosted env run   │
-│                                                                 [default: 0.0]                   │
+│                                                                 (default: none sent, so the      │
+│                                                                 provider's own)                  │
 │ --source-env-sampling-arg                 TEXT                  Hosted env sampling arg as       │
 │                                                                 KEY=VALUE; repeatable (e.g.      │
 │                                                                 reasoning_effort=minimal)        │
@@ -741,8 +825,8 @@
 │                                                                 task's reference solution) or    │
 │                                                                 nop (does nothing)               │
 │ --model                           -m      TEXT                  Model id for the agent, e.g.     │
-│                                                                 claude-haiku-4-5-20251001 (none  │
-│                                                                 for oracle and nop)              │
+│                                                                 claude-haiku-5-5 (none for       │
+│                                                                 oracle and nop)                  │
 │ --reasoning-effort                        TEXT                  Agent reasoning/thinking effort  │
 │                                                                 when the agent exposes one (e.g. │
 │                                                                 max)                             │
@@ -834,7 +918,8 @@
 │                                                                 90s, 10m, 1h; 0, none or null    │
 │                                                                 turns it off and leaves the      │
 │                                                                 task's wall-clock timeout        │
-│                                                                 (default: 10m)                   │
+│                                                                 (default: 10m, 30m at effort     │
+│                                                                 xhigh or max)                    │
 │ --checkpoints                             TEXT                  Keep a sandbox snapshot after    │
 │                                                                 these prompts: every-prompt or   │
 │                                                                 prompt:N[,M]. Later `bench       │
@@ -842,7 +927,7 @@
 │                                                                 <trial>` forks from one. Docker, │
 │                                                                 or Daytona direct; each is a     │
 │                                                                 full filesystem image. See       │
-│                                                                 docs/jobs/branching-reference.md │
+│                                                                 docs/train/environment.md        │
 │ --checkpoint-keep                         INTEGER RANGE [x>=1]  Keep at most this many           │
 │                                                                 checkpoints per trial (default   │
 │                                                                 3, or a run config's             │
@@ -854,6 +939,17 @@
 │                                                                 before the verifier runs, so     │
 │                                                                 `bench regrade` can re-score it  │
 │                                                                 with a changed verifier.         │
+│ --keep-sandbox                            TEXT                  Keep a trial's sandbox:          │
+│                                                                 on-failure, always or never      │
+│                                                                 (default). `bench sandbox attach │
+│                                                                 <trial>` opens a shell in it;    │
+│                                                                 `bench sandbox release <trial>`  │
+│                                                                 deletes it.                      │
+│ --accept-deviations                       TEXT                  Why this run differs from its    │
+│                                                                 task set's run-reference.toml (a │
+│                                                                 strict one refuses the run       │
+│                                                                 without it); kept in             │
+│                                                                 run-card.json.                   │
 │ --fresh-install                                                 Install the model proxy and the  │
 │                                                                 agent in every trial instead of  │
 │                                                                 starting from their cached image │
@@ -867,28 +963,20 @@
 │                                                                 allow_cloud_metadata = true, the │
 │                                                                 agent starts only once the block │
 │                                                                 is proven on                     │
-│ --integrity                               TEXT                  Reward integrity: off, audit or  │
-│                                                                 strict. audit records what the   │
-│                                                                 agent did and checks it against  │
-│                                                                 the task's contract (every       │
-│                                                                 sandbox); strict also runs the   │
-│                                                                 verifier in a separate verifier  │
-│                                                                 sandbox. Each trial gets         │
-│                                                                 integrity/claim_verdict.json:    │
-│                                                                 Checked, VectorExposed,          │
-│                                                                 AgentViolation or Rejected.      │
-│                                                                 Rewards are never changed.       │
-│ --verifier-sandbox                        TEXT                  task or separate. separate runs  │
-│                                                                 every task's verifier in a fresh │
-│                                                                 sandbox that gets only the       │
-│                                                                 workspace and declared           │
-│                                                                 artifacts, so nothing the agent  │
-│                                                                 left elsewhere can change the    │
-│                                                                 score; a task it cannot run      │
-│                                                                 there refuses the whole run      │
-│                                                                 before anything starts. task     │
-│                                                                 (default) keeps each task's own  │
-│                                                                 choice.                          │
+│ --integrity                               TEXT                  off, audit (record what the      │
+│                                                                 agent did and check it against   │
+│                                                                 the task) or strict (audit, and  │
+│                                                                 the verifier in a separate       │
+│                                                                 sandbox). The verdict is in      │
+│                                                                 integrity/claim_verdict.json;    │
+│                                                                 rewards never change.            │
+│ --verifier-sandbox                        TEXT                  task (default: each task's own   │
+│                                                                 choice) or separate: every       │
+│                                                                 verifier in a fresh sandbox with │
+│                                                                 only the workspace and the       │
+│                                                                 declared artifacts; a task that  │
+│                                                                 cannot run there refuses the     │
+│                                                                 run.                             │
 │ --retry-from-checkpoint                   TEXT                  on-failure, on-timeout, or both: │
 │                                                                 when a trial fails or times out, │
 │                                                                 fork one retry from its last     │
@@ -905,32 +993,41 @@
 │                                                                 '@verifier_feedback' the failed  │
 │                                                                 trial's reward and verifier      │
 │                                                                 output tail.                     │
-│ --max-cost-usd                            FLOAT                 Job budget in USD over rollouts  │
-│                                                                 that report a cost (retries      │
-│                                                                 included). USD is known when a   │
-│                                                                 rollout finishes, so it is       │
-│                                                                 checked between starts: a        │
-│                                                                 rollout waits while the running  │
-│                                                                 ones would reach the cap at the  │
-│                                                                 mean so far, and the job can     │
+│ --max-cost-usd                            FLOAT                 Job budget in USD, checked       │
+│                                                                 between starts, so a job can     │
 │                                                                 pass it by about one rollout's   │
-│                                                                 cost. At the cap no rollout      │
-│                                                                 starts and running ones are      │
-│                                                                 cancelled (summary.json budget,  │
-│                                                                 not failures)                    │
+│                                                                 cost; at the cap running         │
+│                                                                 rollouts are cancelled. With     │
+│                                                                 --trials, each repeat has its    │
+│                                                                 own cap                          │
 │ --max-sandbox-seconds                     FLOAT                 Job budget in trial wall-clock   │
 │                                                                 seconds, running trials included │
 │                                                                 and re-checked as they run; same │
 │                                                                 stop/cancel behaviour as         │
 │                                                                 --max-cost-usd                   │
-│ --max-tokens                              INTEGER               Job budget in total tokens over  │
-│                                                                 finished rollouts (retries       │
-│                                                                 included); checked between       │
-│                                                                 starts, like --max-cost-usd      │
+│ --max-tokens                              INTEGER               Job budget in tokens, checked    │
+│                                                                 between starts like              │
+│                                                                 --max-cost-usd. With --trials,   │
+│                                                                 each repeat has its own cap      │
 │ --max-rollouts                            INTEGER               Job budget in rollouts started,  │
 │                                                                 retries included: at the cap no  │
 │                                                                 rollout starts and running ones  │
 │                                                                 finish                           │
+│ --token-budget                            INTEGER               Per-trial budget in tokens       │
+│                                                                 (input, cached included, plus    │
+│                                                                 output), subagents' calls        │
+│                                                                 included: BenchFlow's model      │
+│                                                                 proxy refuses the next model     │
+│                                                                 call once it is spent, the agent │
+│                                                                 is stopped and its work graded.  │
+│                                                                 Replaces a task's  token_budget  │
+│ --turn-budget                             INTEGER               Per-trial budget in turns, one   │
+│                                                                 turn being one model call        │
+│                                                                 through BenchFlow's model proxy  │
+│                                                                 (subagents' and side calls       │
+│                                                                 included); enforced like         │
+│                                                                 --token-budget. Replaces a       │
+│                                                                 task's  turn_budget              │
 │ --retry-resume-session                                          The retry resumes the failed     │
 │                                                                 trial's conversation at the      │
 │                                                                 checkpoint (ACP session/load;    │
@@ -951,6 +1048,10 @@
 │                                                                 reuses its finished tasks)       │
 │ --job-name                                TEXT                  Job folder name under --jobs-dir │
 │                                                                 (resumed if it exists)           │
+│ --restart-changed                                               When the named job ran with      │
+│                                                                 other settings or task files,    │
+│                                                                 set those trials aside and run   │
+│                                                                 them again (default: refuse)     │
 │ --fail-under                              FLOAT                 Exit 1 when the pass rate        │
 │                                                                 (passed / planned tasks; one a   │
 │                                                                 budget kept from running counts  │
@@ -989,7 +1090,8 @@
 │                                                                 as if every task set             │
 │                                                                 [verifier].sandbox_mode =        │
 │                                                                 'separate'. Docker,              │
-│                                                                 remote-docker and Daytona only.  │
+│                                                                 remote-docker, Daytona and       │
+│                                                                 Modal.                           │
 │ --separate-verifier-include               TEXT                  A path outside the workspace     │
 │                                                                 that a separate verifier sandbox │
 │                                                                 receives too, at the same path,  │
@@ -1028,6 +1130,21 @@
 │                                                                 disable the idle watchdog and    │
 │                                                                 leave --reviewer-timeout-sec in  │
 │                                                                 charge.                          │
+│ --reviewer-storage-mb                     INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB      │
+│                                                                 (default: the evidence it holds  │
+│                                                                 plus 2048, at least 4096, at     │
+│                                                                 most the sandbox backend's       │
+│                                                                 limit)                           │
+│ --reviewer-memory-mb                      INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB    │
+│                                                                 (default: 2048)                  │
+│ --reviewer-setup-timeout                  INTEGER RANGE [x>=1]  Seconds for the reviewer         │
+│                                                                 sandbox's setup, its model proxy │
+│                                                                 install among it (default: the   │
+│                                                                 run's --sandbox-setup-timeout)   │
+│ --reviewer-evidence-timeout               INTEGER RANGE [x>=1]  Seconds to unpack, and again to  │
+│                                                                 check, the workspace evidence in │
+│                                                                 the reviewer sandbox (default: 1 │
+│                                                                 per MiB, at least 600)           │
 │ --reviewer-concurrency                    INTEGER RANGE [x>=1]  Max concurrent rubric reviewers  │
 │ --reviewer-image                          TEXT                  Rubric reviewer container image  │
 │ --reviewer-agent-env                      TEXT                  Reviewer environment variable    │
@@ -1056,9 +1173,11 @@
 │                                                                 pinned snapshot and verifies     │
 │                                                                 task content digests.            │
 │ --registry                                TEXT                  Dataset registry JSON URL or     │
-│                                                                 local file (default: BenchFlow's │
-│                                                                 registry). Only valid with       │
-│                                                                 --dataset.                       │
+│                                                                 local file, or a BenchFlow Hub   │
+│                                                                 as hub:<url> (default:           │
+│                                                                 BenchFlow's registry, then       │
+│                                                                 $BENCHFLOW_HUB_URL). Only valid  │
+│                                                                 with --dataset.                  │
 │ --ignore-bench-version                                          Run a dataset even when this     │
 │                                                                 bench version is outside the     │
 │                                                                 range it was validated against.  │
@@ -1102,11 +1221,10 @@
 │                                                                 each alias to a model, or to     │
 │                                                                 {model, agent, agent_env};       │
 │                                                                 {agent: oracle} for a control    │
-│                                                                 (docs/reference/pass-at-k.md)    │
-│ --trials                                  INTEGER               Run every task N times, each     │
-│                                                                 trial a job in <jobs dir>/<agent │
-│                                                                 or matrix alias>/trial-NN, for   │
-│                                                                 pass@k                           │
+│                                                                 (docs/audit/compare-runs.md#cho… │
+│ --trials                                  INTEGER               Run every task N times (pass@k); │
+│                                                                 each repeat is a job of its own, │
+│                                                                 in <jobs dir>/<agent>/trial-NN   │
 │                                                                 [default: 1]                     │
 │ --n-tasks,--limit                 -n      INTEGER               Run at most N tasks after        │
 │                                                                 --include/--exclude: the first   │
@@ -1122,7 +1240,9 @@
 │                                                                 recorded per rollout)            │
 │ --dry-run                                                       Resolve the plan (agent, model,  │
 │                                                                 selected tasks, seeds, budgets)  │
-│                                                                 and print it without running     │
+│                                                                 and print it without running;    │
+│                                                                 exits 1 when the run card would  │
+│                                                                 refuse the run                   │
 │ --seeds                                   TEXT                  Seeded rollouts: run every task  │
 │                                                                 once per seed, e.g. 0-4 or 0,3,7 │
 │                                                                 (tasks in a task format that     │
@@ -1148,9 +1268,9 @@
 │                                                                 org/repo (e.g.                   │
 │                                                                 benchflow-ai/skillsbench)        │
 │ --source-path                             TEXT                  Folder in the repo: one task     │
-│                                                                 (tasks/citation-check) or a      │
-│                                                                 folder of tasks (tasks). Only    │
-│                                                                 this folder is downloaded        │
+│                                                                 (tasks/econ-detrending-correlat… │
+│                                                                 or a folder of tasks (tasks).    │
+│                                                                 Only this folder is downloaded   │
 │ --source-ref                              TEXT                  Branch, tag or full commit SHA   │
 │                                                                 to fetch (e.g. main)             │
 │ --source-env                              TEXT                  Hosted environment source (e.g.  │
@@ -1165,7 +1285,8 @@
 │ --source-env-max-tokens                   INTEGER               Max tokens for hosted env run    │
 │                                                                 [default: 1024]                  │
 │ --source-env-temperature                  FLOAT                 Temperature for hosted env run   │
-│                                                                 [default: 0.0]                   │
+│                                                                 (default: none sent, so the      │
+│                                                                 provider's own)                  │
 │ --source-env-sampling-arg                 TEXT                  Hosted env sampling arg as       │
 │                                                                 KEY=VALUE; repeatable (e.g.      │
 │                                                                 reasoning_effort=minimal)        │
@@ -1184,8 +1305,8 @@
 │                                                                 task's reference solution) or    │
 │                                                                 nop (does nothing)               │
 │ --model                           -m      TEXT                  Model id for the agent, e.g.     │
-│                                                                 claude-haiku-4-5-20251001 (none  │
-│                                                                 for oracle and nop)              │
+│                                                                 claude-haiku-5-5 (none for       │
+│                                                                 oracle and nop)                  │
 │ --reasoning-effort                        TEXT                  Agent reasoning/thinking effort  │
 │                                                                 when the agent exposes one (e.g. │
 │                                                                 max)                             │
@@ -1277,7 +1398,8 @@
 │                                                                 90s, 10m, 1h; 0, none or null    │
 │                                                                 turns it off and leaves the      │
 │                                                                 task's wall-clock timeout        │
-│                                                                 (default: 10m)                   │
+│                                                                 (default: 10m, 30m at effort     │
+│                                                                 xhigh or max)                    │
 │ --checkpoints                             TEXT                  Keep a sandbox snapshot after    │
 │                                                                 these prompts: every-prompt or   │
 │                                                                 prompt:N[,M]. Later `bench       │
@@ -1285,7 +1407,7 @@
 │                                                                 <trial>` forks from one. Docker, │
 │                                                                 or Daytona direct; each is a     │
 │                                                                 full filesystem image. See       │
-│                                                                 docs/jobs/branching-reference.md │
+│                                                                 docs/train/environment.md        │
 │ --checkpoint-keep                         INTEGER RANGE [x>=1]  Keep at most this many           │
 │                                                                 checkpoints per trial (default   │
 │                                                                 3, or a run config's             │
@@ -1297,6 +1419,17 @@
 │                                                                 before the verifier runs, so     │
 │                                                                 `bench regrade` can re-score it  │
 │                                                                 with a changed verifier.         │
+│ --keep-sandbox                            TEXT                  Keep a trial's sandbox:          │
+│                                                                 on-failure, always or never      │
+│                                                                 (default). `bench sandbox attach │
+│                                                                 <trial>` opens a shell in it;    │
+│                                                                 `bench sandbox release <trial>`  │
+│                                                                 deletes it.                      │
+│ --accept-deviations                       TEXT                  Why this run differs from its    │
+│                                                                 task set's run-reference.toml (a │
+│                                                                 strict one refuses the run       │
+│                                                                 without it); kept in             │
+│                                                                 run-card.json.                   │
 │ --fresh-install                                                 Install the model proxy and the  │
 │                                                                 agent in every trial instead of  │
 │                                                                 starting from their cached image │
@@ -1310,28 +1443,20 @@
 │                                                                 allow_cloud_metadata = true, the │
 │                                                                 agent starts only once the block │
 │                                                                 is proven on                     │
-│ --integrity                               TEXT                  Reward integrity: off, audit or  │
-│                                                                 strict. audit records what the   │
-│                                                                 agent did and checks it against  │
-│                                                                 the task's contract (every       │
-│                                                                 sandbox); strict also runs the   │
-│                                                                 verifier in a separate verifier  │
-│                                                                 sandbox. Each trial gets         │
-│                                                                 integrity/claim_verdict.json:    │
-│                                                                 Checked, VectorExposed,          │
-│                                                                 AgentViolation or Rejected.      │
-│                                                                 Rewards are never changed.       │
-│ --verifier-sandbox                        TEXT                  task or separate. separate runs  │
-│                                                                 every task's verifier in a fresh │
-│                                                                 sandbox that gets only the       │
-│                                                                 workspace and declared           │
-│                                                                 artifacts, so nothing the agent  │
-│                                                                 left elsewhere can change the    │
-│                                                                 score; a task it cannot run      │
-│                                                                 there refuses the whole run      │
-│                                                                 before anything starts. task     │
-│                                                                 (default) keeps each task's own  │
-│                                                                 choice.                          │
+│ --integrity                               TEXT                  off, audit (record what the      │
+│                                                                 agent did and check it against   │
+│                                                                 the task) or strict (audit, and  │
+│                                                                 the verifier in a separate       │
+│                                                                 sandbox). The verdict is in      │
+│                                                                 integrity/claim_verdict.json;    │
+│                                                                 rewards never change.            │
+│ --verifier-sandbox                        TEXT                  task (default: each task's own   │
+│                                                                 choice) or separate: every       │
+│                                                                 verifier in a fresh sandbox with │
+│                                                                 only the workspace and the       │
+│                                                                 declared artifacts; a task that  │
+│                                                                 cannot run there refuses the     │
+│                                                                 run.                             │
 │ --retry-from-checkpoint                   TEXT                  on-failure, on-timeout, or both: │
 │                                                                 when a trial fails or times out, │
 │                                                                 fork one retry from its last     │
@@ -1348,32 +1473,41 @@
 │                                                                 '@verifier_feedback' the failed  │
 │                                                                 trial's reward and verifier      │
 │                                                                 output tail.                     │
-│ --max-cost-usd                            FLOAT                 Job budget in USD over rollouts  │
-│                                                                 that report a cost (retries      │
-│                                                                 included). USD is known when a   │
-│                                                                 rollout finishes, so it is       │
-│                                                                 checked between starts: a        │
-│                                                                 rollout waits while the running  │
-│                                                                 ones would reach the cap at the  │
-│                                                                 mean so far, and the job can     │
+│ --max-cost-usd                            FLOAT                 Job budget in USD, checked       │
+│                                                                 between starts, so a job can     │
 │                                                                 pass it by about one rollout's   │
-│                                                                 cost. At the cap no rollout      │
-│                                                                 starts and running ones are      │
-│                                                                 cancelled (summary.json budget,  │
-│                                                                 not failures)                    │
+│                                                                 cost; at the cap running         │
+│                                                                 rollouts are cancelled. With     │
+│                                                                 --trials, each repeat has its    │
+│                                                                 own cap                          │
 │ --max-sandbox-seconds                     FLOAT                 Job budget in trial wall-clock   │
 │                                                                 seconds, running trials included │
 │                                                                 and re-checked as they run; same │
 │                                                                 stop/cancel behaviour as         │
 │                                                                 --max-cost-usd                   │
-│ --max-tokens                              INTEGER               Job budget in total tokens over  │
-│                                                                 finished rollouts (retries       │
-│                                                                 included); checked between       │
-│                                                                 starts, like --max-cost-usd      │
+│ --max-tokens                              INTEGER               Job budget in tokens, checked    │
+│                                                                 between starts like              │
+│                                                                 --max-cost-usd. With --trials,   │
+│                                                                 each repeat has its own cap      │
 │ --max-rollouts                            INTEGER               Job budget in rollouts started,  │
 │                                                                 retries included: at the cap no  │
 │                                                                 rollout starts and running ones  │
 │                                                                 finish                           │
+│ --token-budget                            INTEGER               Per-trial budget in tokens       │
+│                                                                 (input, cached included, plus    │
+│                                                                 output), subagents' calls        │
+│                                                                 included: BenchFlow's model      │
+│                                                                 proxy refuses the next model     │
+│                                                                 call once it is spent, the agent │
+│                                                                 is stopped and its work graded.  │
+│                                                                 Replaces a task's  token_budget  │
+│ --turn-budget                             INTEGER               Per-trial budget in turns, one   │
+│                                                                 turn being one model call        │
+│                                                                 through BenchFlow's model proxy  │
+│                                                                 (subagents' and side calls       │
+│                                                                 included); enforced like         │
+│                                                                 --token-budget. Replaces a       │
+│                                                                 task's  turn_budget              │
 │ --retry-resume-session                                          The retry resumes the failed     │
 │                                                                 trial's conversation at the      │
 │                                                                 checkpoint (ACP session/load;    │
@@ -1394,6 +1528,10 @@
 │                                                                 reuses its finished tasks)       │
 │ --job-name                                TEXT                  Job folder name under --jobs-dir │
 │                                                                 (resumed if it exists)           │
+│ --restart-changed                                               When the named job ran with      │
+│                                                                 other settings or task files,    │
+│                                                                 set those trials aside and run   │
+│                                                                 them again (default: refuse)     │
 │ --fail-under                              FLOAT                 Exit 1 when the pass rate        │
 │                                                                 (passed / planned tasks; one a   │
 │                                                                 budget kept from running counts  │
@@ -1432,7 +1570,8 @@
 │                                                                 as if every task set             │
 │                                                                 [verifier].sandbox_mode =        │
 │                                                                 'separate'. Docker,              │
-│                                                                 remote-docker and Daytona only.  │
+│                                                                 remote-docker, Daytona and       │
+│                                                                 Modal.                           │
 │ --separate-verifier-include               TEXT                  A path outside the workspace     │
 │                                                                 that a separate verifier sandbox │
 │                                                                 receives too, at the same path,  │
@@ -1471,6 +1610,21 @@
 │                                                                 disable the idle watchdog and    │
 │                                                                 leave --reviewer-timeout-sec in  │
 │                                                                 charge.                          │
+│ --reviewer-storage-mb                     INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB      │
+│                                                                 (default: the evidence it holds  │
+│                                                                 plus 2048, at least 4096, at     │
+│                                                                 most the sandbox backend's       │
+│                                                                 limit)                           │
+│ --reviewer-memory-mb                      INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB    │
+│                                                                 (default: 2048)                  │
+│ --reviewer-setup-timeout                  INTEGER RANGE [x>=1]  Seconds for the reviewer         │
+│                                                                 sandbox's setup, its model proxy │
+│                                                                 install among it (default: the   │
+│                                                                 run's --sandbox-setup-timeout)   │
+│ --reviewer-evidence-timeout               INTEGER RANGE [x>=1]  Seconds to unpack, and again to  │
+│                                                                 check, the workspace evidence in │
+│                                                                 the reviewer sandbox (default: 1 │
+│                                                                 per MiB, at least 600)           │
 │ --reviewer-concurrency                    INTEGER RANGE [x>=1]  Max concurrent rubric reviewers  │
 │ --reviewer-image                          TEXT                  Rubric reviewer container image  │
 │ --reviewer-agent-env                      TEXT                  Reviewer environment variable    │
@@ -1499,9 +1653,11 @@
 │                                                                 pinned snapshot and verifies     │
 │                                                                 task content digests.            │
 │ --registry                                TEXT                  Dataset registry JSON URL or     │
-│                                                                 local file (default: BenchFlow's │
-│                                                                 registry). Only valid with       │
-│                                                                 --dataset.                       │
+│                                                                 local file, or a BenchFlow Hub   │
+│                                                                 as hub:<url> (default:           │
+│                                                                 BenchFlow's registry, then       │
+│                                                                 $BENCHFLOW_HUB_URL). Only valid  │
+│                                                                 with --dataset.                  │
 │ --ignore-bench-version                                          Run a dataset even when this     │
 │                                                                 bench version is outside the     │
 │                                                                 range it was validated against.  │
@@ -1545,11 +1701,10 @@
 │                                                                 each alias to a model, or to     │
 │                                                                 {model, agent, agent_env};       │
 │                                                                 {agent: oracle} for a control    │
-│                                                                 (docs/reference/pass-at-k.md)    │
-│ --trials                                  INTEGER               Run every task N times, each     │
-│                                                                 trial a job in <jobs dir>/<agent │
-│                                                                 or matrix alias>/trial-NN, for   │
-│                                                                 pass@k                           │
+│                                                                 (docs/audit/compare-runs.md#cho… │
+│ --trials                                  INTEGER               Run every task N times (pass@k); │
+│                                                                 each repeat is a job of its own, │
+│                                                                 in <jobs dir>/<agent>/trial-NN   │
 │                                                                 [default: 1]                     │
 │ --n-tasks,--limit                 -n      INTEGER               Run at most N tasks after        │
 │                                                                 --include/--exclude: the first   │
@@ -1565,7 +1720,9 @@
 │                                                                 recorded per rollout)            │
 │ --dry-run                                                       Resolve the plan (agent, model,  │
 │                                                                 selected tasks, seeds, budgets)  │
-│                                                                 and print it without running     │
+│                                                                 and print it without running;    │
+│                                                                 exits 1 when the run card would  │
+│                                                                 refuse the run                   │
 │ --seeds                                   TEXT                  Seeded rollouts: run every task  │
 │                                                                 once per seed, e.g. 0-4 or 0,3,7 │
 │                                                                 (tasks in a task format that     │
@@ -1666,6 +1823,20 @@
 │                                                             Pass 0 or 'none' to disable the idle │
 │                                                             watchdog and leave                   │
 │                                                             --reviewer-timeout-sec in charge.    │
+│    --reviewer-storage-mb              INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB          │
+│                                                             (default: the evidence it holds plus │
+│                                                             2048, at least 4096, at most the     │
+│                                                             sandbox backend's limit)             │
+│    --reviewer-memory-mb               INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB        │
+│                                                             (default: 2048)                      │
+│    --reviewer-setup-timeout           INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's   │
+│                                                             setup, its model proxy install among │
+│                                                             it (default: the run's               │
+│                                                             --sandbox-setup-timeout)             │
+│    --reviewer-evidence-timeout        INTEGER RANGE [x>=1]  Seconds to unpack, and again to      │
+│                                                             check, the workspace evidence in the │
+│                                                             reviewer sandbox (default: 1 per     │
+│                                                             MiB, at least 600)                   │
 │    --reviewer-concurrency             INTEGER RANGE [x>=1]  Max concurrent rubric reviewers      │
 │    --reviewer-image                   TEXT                  Rubric reviewer container image      │
 │    --reviewer-agent-env               TEXT                  Reviewer environment variable        │
@@ -1690,14 +1861,51 @@
 │ *    path      PATH  A job folder, or one trial folder inside it [required]                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir          PATH                  Folder of task folders (or one task folder) holding   │
-│                                            the changed verifiers. Default: the task path each    │
-│                                            trial recorded.                                       │
-│ --sandbox            TEXT                  Backend for the fresh sandboxes (default: as run)     │
-│ --concurrency        INTEGER RANGE [x>=1]  Trials regraded at once [default: 4]                  │
-│ --reason             TEXT                  Why the verifier changed; kept in each block          │
-│ --json                                     Print the summary as JSON                             │
-│ --help                                     Show this message and exit.                           │
+│ --tasks-dir                        PATH                  Folder of task folders (or one task     │
+│                                                          folder) holding the changed verifiers.  │
+│                                                          Default: the task path each trial       │
+│                                                          recorded.                               │
+│ --sandbox                          TEXT                  Backend for the fresh sandboxes         │
+│                                                          (default: as run)                       │
+│ --concurrency                      INTEGER RANGE [x>=1]  Trials regraded at once [default: 4]    │
+│ --reason                           TEXT                  Why the verifier changed; kept in each  │
+│                                                          block                                   │
+│ --json                                                   Print the summary as JSON               │
+│ --review                                                 Also rerun each trial's rubric review   │
+│                                                          on its saved outputs, gated by the new  │
+│                                                          test, and compare the combined score.   │
+│                                                          The reviewer is the one the trial       │
+│                                                          recorded, changed by --reviewer-*       │
+│ --reviewer-agent                   TEXT                  Rubric reviewer harness                 │
+│ --reviewer-model                   TEXT                  Rubric reviewer model                   │
+│ --reviewer-reasoning-effort        TEXT                  Rubric reviewer reasoning effort        │
+│ --reviewer-sandbox                 TEXT                  Rubric reviewer sandbox backend         │
+│ --reviewer-timeout-sec             INTEGER RANGE [x>=1]  Reviewer execution budget in seconds    │
+│ --reviewer-idle-timeout            TEXT                  Abort a reviewer prompt after this many │
+│                                                          idle seconds (default: 600). Pass 0 or  │
+│                                                          'none' to disable the idle watchdog and │
+│                                                          leave --reviewer-timeout-sec in charge. │
+│ --reviewer-storage-mb              INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB (default:   │
+│                                                          the evidence it holds plus 2048, at     │
+│                                                          least 4096, at most the sandbox         │
+│                                                          backend's limit)                        │
+│ --reviewer-memory-mb               INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB (default: │
+│                                                          2048)                                   │
+│ --reviewer-setup-timeout           INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's      │
+│                                                          setup, its model proxy install among it │
+│                                                          (default: the run's                     │
+│                                                          --sandbox-setup-timeout)                │
+│ --reviewer-evidence-timeout        INTEGER RANGE [x>=1]  Seconds to unpack, and again to check,  │
+│                                                          the workspace evidence in the reviewer  │
+│                                                          sandbox (default: 1 per MiB, at least   │
+│                                                          600)                                    │
+│ --reviewer-concurrency             INTEGER RANGE [x>=1]  Max concurrent rubric reviewers         │
+│ --reviewer-image                   TEXT                  Rubric reviewer container image         │
+│ --reviewer-agent-env               TEXT                  Reviewer environment variable           │
+│                                                          (KEY=VALUE)                             │
+│ --reviewer-open-network                                  Allow unrestricted reviewer network     │
+│                                                          access                                  │
+│ --help                                                   Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -1729,9 +1937,14 @@
  a fail; with unscored trials, the scored-only figures (unscored trials                             
  left out, as BenchFlow 0.7's mean_reward was) follow with their own n. Control runs are left out   
  of the solve rates                                                                                 
- unless --include-controls, or unless the folder holds nothing else. When                           
- the pooled trials differ in agent, model or a setting bench eval compare                           
- checks, a warning names it and a table splits the trials by agent.                                 
+ unless --include-controls, or unless the folder holds nothing else. The                            
+ score follows the scoring rule benchflow.score.v1, with a 95% interval                             
+ over tasks. The trials are split by what ran: agent, harness version,                              
+ served model, route, effort sent, task set and BenchFlow version. A                                
+ folder of several settings gets one line per setting and no pooled                                 
+ score, since one number would mix them. When the pooled trials differ                              
+ in agent, model or a setting bench eval compare checks, a warning names                            
+ it and a table splits the trials by agent.                                                         
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │ *    jobs_dir      PATH  Jobs directory to analyze [required]                                    │
@@ -1892,8 +2105,8 @@
 │                                                          --from-checkpoint, else                 │
 │                                                          claude-agent-acp.                       │
 │ --model                    -m      TEXT                  Model id for the agent, e.g.            │
-│                                                          claude-haiku-4-5-20251001 (none for     │
-│                                                          oracle and nop)                         │
+│                                                          claude-haiku-5-5 (none for oracle and   │
+│                                                          nop)                                    │
 │ --reasoning-effort                 TEXT                  Agent reasoning effort (e.g. max)       │
 │ --harness                          TEXT                  How the agent runs: acp (default, its   │
 │                                                          ACP adapter) or native (its own CLI in  │
@@ -2061,16 +2274,22 @@
  Reads the tasks directory and config the job recorded in evaluation.json                           
  (no agent_env value that looks secret, so pass those again with                                    
  --agent-env), then runs the tasks with no finished result. A job that is still running is          
- refused. Exit codes as for bench eval run; 2 when the folder is not a job.                         
+ refused. Exit codes as for bench eval run; 2 when the folder is not a job,                         
+ or when its trials ran with other settings or task files than this                                 
+ resume has (an --agent-env value, an edited task): --restart-changed                               
+ runs them again.                                                                                   
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │ *    job_dir      PATH  The job folder to finish [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --agent-env          TEXT     KEY=VALUE for the agent (repeatable); values that look secret are  │
-│                               never stored in the job                                            │
-│ --concurrency        INTEGER  Override the job's concurrency                                     │
-│ --help                        Show this message and exit.                                        │
+│ --agent-env              TEXT     KEY=VALUE for the agent (repeatable); values that look secret  │
+│                                   are never stored in the job                                    │
+│ --concurrency            INTEGER  Override the job's concurrency                                 │
+│ --restart-changed                 When the job's trials ran with other settings or task files    │
+│                                   than this resume, set them aside in <job>/.set-aside/ and run  │
+│                                   them again (default: refuse)                                   │
+│ --help                            Show this message and exit.                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -2086,7 +2305,7 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --json          Print the benchflow.branch-view/1 documents (a JSON list, one per branched       │
-│                 trial); see docs/reference/branch-view.md.                                       │
+│                 trial); see docs/train/environment.md.                                           │
 │ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -2500,6 +2719,428 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+==> bench assess --help <==
+                                                                                                    
+ Usage: bench assess [OPTIONS] COMMAND [ARGS]...                                                    
+                                                                                                    
+ Blind pairwise human assessments of saved outputs, kept in an opt-in sidecar.                      
+                                                                                                    
+ Two completed attempts of one task, a frozen rubric and judge protocol, a recorded release of      
+ every runtime, the review collector's blind assignment and vote, then a deterministic label: 1 (A  
+ preferred), 0 (B preferred), 0.5 (tie) or withheld (abstention). Rewards, result.json,             
+ regrade.json and rollout streams are never read or changed. See docs/jobs/assessment.md.           
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ attempt-ref   Hash a completed rollout into a saved-attempt reference (JSON).                    │
+│ create        Start an assessment of two saved attempts of one task.                             │
+│ release       Record that every runtime of both attempts was observed released.                  │
+│ assign        Bind the collector's persisted blind assignment (after the release).               │
+│ import-vote   Bind the collector's vote on the assignment (a skip becomes abstain).              │
+│ correct       Replace the effective answer with a corrected one.                                 │
+│ retract       Retract the effective answer; its history stays in the log.                        │
+│ reduce        Record the deterministic label the log calls for, and refresh the label file.      │
+│ consume       Record that a consumer used one exact ready label revision.                        │
+│ withdraw      Bar a corrected or retracted label revision from future use.                       │
+│ show          Verify the sidecar's log and print its state.                                      │
+│ verify        Verify the hash chain, the label file and, optionally, the evidence.               │
+│ label         Print the label rebuilt from the sidecar's log alone (JSON).                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess attempt-ref --help <==
+                                                                                                    
+ Usage: bench assess attempt-ref [OPTIONS] ROLLOUT                                                  
+                                                                                                    
+ Hash a completed rollout into a saved-attempt reference (JSON).                                    
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    rollout      PATH  A completed rollout folder (holds result.json). [required]               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --output                  PATH  The output to compare: a folder or one file. [required]       │
+│ *  --review-artifact         PATH  The file a reviewer sees (e.g. a preview image). [required]   │
+│    --sandbox-provider        TEXT  Provider of result.json's sandbox_id (daytona, docker, modal, │
+│                                    ...).                                                         │
+│    --sandbox-role            TEXT  solver, verifier or shared (one sandbox for both).            │
+│                                    [default: solver]                                             │
+│    --runtime                 TEXT  Another allocation of this attempt:                           │
+│                                    PROVIDER:RUNTIME_ID[:ROLE]. Repeatable.                       │
+│    --media-type              TEXT  The review artifact's media type.                             │
+│    --out                     PATH  Write the reference here (a new file) instead of stdout.      │
+│    --help                          Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess create --help <==
+                                                                                                    
+ Usage: bench assess create [OPTIONS] SIDECAR                                                       
+                                                                                                    
+ Start an assessment of two saved attempts of one task.                                             
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --attempt                PATH  A saved-attempt reference file. Give exactly two. [required]   │
+│ *  --rubric                 PATH  The frozen rubric file. [required]                             │
+│ *  --rubric-id              TEXT  The rubric's id. [required]                                    │
+│ *  --rubric-version         TEXT  The rubric's frozen version. [required]                        │
+│ *  --protocol               PATH  The frozen judge protocol                                      │
+│                                   (benchflow.assessment-judge-protocol.v1).                      │
+│                                   [required]                                                     │
+│    --idempotency-key        TEXT  Key for this write (default: derived from its inputs). A retry │
+│                                   with the same key and payload returns the original event.      │
+│    --json                         Print JSON instead of one line.                                │
+│    --help                         Show this message and exit.                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess release --help <==
+                                                                                                    
+ Usage: bench assess release [OPTIONS] SIDECAR                                                      
+                                                                                                    
+ Record that every runtime of both attempts was observed released.                                  
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --proof                  PATH  Observations that every runtime is gone                        │
+│                                   (benchflow.assessment-release-proof.v1).                       │
+│                                   [required]                                                     │
+│    --idempotency-key        TEXT  Key for this write (default: derived from its inputs). A retry │
+│                                   with the same key and payload returns the original event.      │
+│    --json                         Print JSON instead of one line.                                │
+│    --help                         Show this message and exit.                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess assign --help <==
+                                                                                                    
+ Usage: bench assess assign [OPTIONS] SIDECAR                                                       
+                                                                                                    
+ Bind the collector's persisted blind assignment (after the release).                               
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --collector-db           PATH  The collector's workspace.sqlite3 (a `cli.py backup` copy),    │
+│                                   read-only.                                                     │
+│                                   [required]                                                     │
+│ *  --collector-code         PATH  The collector's code folder (design-bench/prototype).          │
+│                                   [required]                                                     │
+│ *  --assignment             TEXT  The collector's assignment id. [required]                      │
+│    --idempotency-key        TEXT  Key for this write (default: derived from its inputs). A retry │
+│                                   with the same key and payload returns the original event.      │
+│    --json                         Print JSON instead of one line.                                │
+│    --help                         Show this message and exit.                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess import-vote --help <==
+                                                                                                    
+ Usage: bench assess import-vote [OPTIONS] SIDECAR                                                  
+                                                                                                    
+ Bind the collector's vote on the assignment (a skip becomes abstain).                              
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --collector-db          PATH  The collector's workspace.sqlite3, read-only. [required]        │
+│ *  --collector-code        PATH  The collector's code folder. [required]                         │
+│    --json                        Print JSON instead of one line.                                 │
+│    --help                        Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess correct --help <==
+                                                                                                    
+ Usage: bench assess correct [OPTIONS] SIDECAR                                                      
+                                                                                                    
+ Replace the effective answer with a corrected one.                                                 
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --supersedes               TEXT  The current effective answer's event id. [required]          │
+│ *  --choice                   TEXT  left (A), right (B), tie or abstain. [required]              │
+│ *  --reason                   TEXT  The new answer's rationale. [required]                       │
+│ *  --correction-reason        TEXT  Why the answer changed. [required]                           │
+│ *  --actor                    TEXT  Who records this (the reviewer's collector name, or an       │
+│                                     operator).                                                   │
+│                                     [required]                                                   │
+│    --actor-role               TEXT  reviewer (the answer's own) or operator. [default: reviewer] │
+│    --tag                      TEXT  A feedback tag. Repeatable.                                  │
+│    --idempotency-key          TEXT  Key for this write (default: derived from its inputs). A     │
+│                                     retry with the same key and payload returns the original     │
+│                                     event.                                                       │
+│    --json                           Print JSON instead of one line.                              │
+│    --help                           Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess retract --help <==
+                                                                                                    
+ Usage: bench assess retract [OPTIONS] SIDECAR                                                      
+                                                                                                    
+ Retract the effective answer; its history stays in the log.                                        
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --target                 TEXT  The current effective answer's event id. [required]            │
+│ *  --reason                 TEXT  Why it is retracted. [required]                                │
+│ *  --actor                  TEXT  Who records this (the reviewer's collector name, or an         │
+│                                   operator).                                                     │
+│                                   [required]                                                     │
+│    --actor-role             TEXT  reviewer (the answer's own) or operator. [default: reviewer]   │
+│    --idempotency-key        TEXT  Key for this write (default: derived from its inputs). A retry │
+│                                   with the same key and payload returns the original event.      │
+│    --json                         Print JSON instead of one line.                                │
+│    --help                         Show this message and exit.                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess reduce --help <==
+                                                                                                    
+ Usage: bench assess reduce [OPTIONS] SIDECAR                                                       
+                                                                                                    
+ Record the deterministic label the log calls for, and refresh the label file.                      
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --json          Print JSON instead of one line.                                                  │
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess consume --help <==
+                                                                                                    
+ Usage: bench assess consume [OPTIONS] SIDECAR                                                      
+                                                                                                    
+ Record that a consumer used one exact ready label revision.                                        
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --revision               INTEGER  The label revision used. [required]                         │
+│ *  --consumer               TEXT     The consumer's id. [required]                               │
+│ *  --receipt                TEXT     The consumer's immutable receipt (e.g. a ledger row).       │
+│                                      [required]                                                  │
+│    --idempotency-key        TEXT     Key for this write (default: derived from its inputs). A    │
+│                                      retry with the same key and payload returns the original    │
+│                                      event.                                                      │
+│    --json                            Print JSON instead of one line.                             │
+│    --help                            Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess withdraw --help <==
+                                                                                                    
+ Usage: bench assess withdraw [OPTIONS] SIDECAR                                                     
+                                                                                                    
+ Bar a corrected or retracted label revision from future use.                                       
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --revision               INTEGER  The superseded label revision. [required]                   │
+│ *  --reason                 TEXT     Why it is withdrawn. [required]                             │
+│ *  --disposition            TEXT     not_applicable, queued_compensation or compensated: what    │
+│                                      its consumers do.                                           │
+│                                      [required]                                                  │
+│ *  --actor                  TEXT     Who records this (the reviewer's collector name, or an      │
+│                                      operator).                                                  │
+│                                      [required]                                                  │
+│    --actor-role             TEXT     operator or reducer. [default: operator]                    │
+│    --idempotency-key        TEXT     Key for this write (default: derived from its inputs). A    │
+│                                      retry with the same key and payload returns the original    │
+│                                      event.                                                      │
+│    --json                            Print JSON instead of one line.                             │
+│    --help                            Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess show --help <==
+                                                                                                    
+ Usage: bench assess show [OPTIONS] SIDECAR                                                         
+                                                                                                    
+ Verify the sidecar's log and print its state.                                                      
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --events          List every event.                                                              │
+│ --json            Print JSON instead of one line.                                                │
+│ --help            Show this message and exit.                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess verify --help <==
+                                                                                                    
+ Usage: bench assess verify [OPTIONS] SIDECAR                                                       
+                                                                                                    
+ Verify the hash chain, the label file and, optionally, the evidence.                               
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --evidence                  Also hash both attempts, the rubric and the protocol again.          │
+│ --expect-event        TEXT  An event SHA-256 a receipt holds; the log must still contain it.     │
+│ --json                      Print JSON instead of one line.                                      │
+│ --help                      Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench assess label --help <==
+                                                                                                    
+ Usage: bench assess label [OPTIONS] SIDECAR                                                        
+                                                                                                    
+ Print the label rebuilt from the sidecar's log alone (JSON).                                       
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    sidecar      PATH  The assessment's sidecar directory, e.g. <completed-rollout>/assessment. │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --write          Rewrite the label file from the log.                                            │
+│ --check          Exit 1 unless the label file equals the log's label.                            │
+│ --help           Show this message and exit.                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench preferences --help <==
+                                                                                                    
+ Usage: bench preferences [OPTIONS] COMMAND [ARGS]...                                               
+                                                                                                    
+ Human preferences and rubric scores on finished trials.                                            
+                                                                                                    
+ `pairs` makes blind pairs of trial outputs (same task version, different agent or model) for a     
+ rater's tool, `import` takes the votes and rubric scores it collected, and `rank` gives            
+ Bradley-Terry ratings on the Elo scale with rater checks. Votes are never rewards: no trial file   
+ is changed. See docs/tasks/human-preferences.md.                                                   
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ pairs    Make the store and the blind assignment.                                                │
+│ import   Check every vote in the file, then add the new ones to the store.                       │
+│ rank     Ratings from the store's votes (also written to ratings.v1.json).                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench preferences pairs --help <==
+                                                                                                    
+ Usage: bench preferences pairs [OPTIONS] JOBS...                                                   
+                                                                                                    
+ Make the store and the blind assignment.                                                           
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    jobs      JOBS...  Job or trial folders whose outputs to pair. [required]                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --store             PATH     A new folder for the preference store. [required]                │
+│ *  --out               PATH     The file to write the blind pairs to, for the raters' tool.      │
+│                                 [required]                                                       │
+│    --output            TEXT     Which folder of each trial the raters compare, relative to the   │
+│                                 trial (artifacts, or evidence/workspace with                     │
+│                                 --freeze-workspace).                                             │
+│                                 [default: artifacts]                                             │
+│    --per-task          INTEGER  At most this many pairs per task.                                │
+│    --seed              INTEGER  Seed for sampling and sides (default: random, recorded).         │
+│    --rubric            PATH     A rubric JSON file to freeze for aspects and scores.             │
+│    --bundle            PATH     Where to copy the outputs under their opaque ids for the rating  │
+│                                 tool (default: <store>-outputs beside the store).                │
+│    --keep-sides                 Do not shuffle which output is shown on the left.                │
+│    --help                       Show this message and exit.                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench preferences import --help <==
+                                                                                                    
+ Usage: bench preferences import [OPTIONS] STORE                                                    
+                                                                                                    
+ Check every vote in the file, then add the new ones to the store.                                  
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    store      PATH  The preference store `bench preferences pairs` made. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --votes         PATH  Votes as JSON lines or CSV (see the docs for the fields). [required]    │
+│    --source        TEXT  The tool that collected them, recorded on each vote.                    │
+│    --help                Show this message and exit.                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench preferences rank --help <==
+                                                                                                    
+ Usage: bench preferences rank [OPTIONS] STORE                                                      
+                                                                                                    
+ Ratings from the store's votes (also written to ratings.v1.json).                                  
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    store      PATH  The preference store `bench preferences pairs` made. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --by                     TEXT     Rate each agent, model or agent+model. [default: agent+model]  │
+│ --bootstrap              INTEGER  Resamples for the 95% intervals (0: none). [default: 1000]     │
+│ --seed                   INTEGER  Seed for the resampling. [default: 0]                          │
+│ --min-agreement          FLOAT    Raw agreement (not kappa) to check the raters against (0 to    │
+│                                   1); rank says whether it is met.                               │
+│ --raters-per-pair        INTEGER  Raters each pair should have.                                  │
+│ --json                            Print JSON.                                                    │
+│ --help                            Show this message and exit.                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench bundle --help <==
+                                                                                                    
+ Usage: bench bundle [OPTIONS] PATH                                                                 
+                                                                                                    
+ Write one zip of a run's evidence to share, redacted.                                              
+                                                                                                    
+ Per trial the result, trajectory, verifier output, reviews, regrades,                              
+ artifacts and saved workspace; for a job its run card, summary and report.                         
+ Every text file is redacted as a trajectory upload is. bundle.json lists                           
+ each file with its SHA-256 and what was masked, and what was left out.                             
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    path      PATH  A job folder, or one trial folder inside it [required]                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --out        -o                    PATH  Where to write the zip (default: <PATH>.bundle.zip)     │
+│ --workspace      --no-workspace          Include each trial's saved workspace (evidence/) when   │
+│                                          it has one                                              │
+│                                          [default: workspace]                                    │
+│ --help                                   Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
 ==> bench skills --help <==
                                                                                                     
  Usage: bench skills [OPTIONS] COMMAND [ARGS]...                                                    
@@ -2569,7 +3210,7 @@
  SkillEvaluator Tier 1 checks schema, version, PII, license, code                                   
  integrity, dependencies, Unicode smuggling, quality score and script                               
  lint. SkillSpector scans for security issues. Both run without LLM                                 
- calls; install them separately (see docs/skill-eval.md). Exit 1 when a                             
+ calls; install them separately (see docs/judging/skill-evals.md). Exit 1 when a                    
  schema, security or dependency finding reaches --fail-on, or a checker                             
  fails to run.                                                                                      
                                                                                                     
@@ -2726,12 +3367,20 @@
 │ *    jobs_dir      PATH  BenchFlow rollout or jobs directory [required]                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *  --out                  -o                 PATH                   Output JSONL path [required] │
+│ *  --out                  -o                 PATH                   Output path: JSONL, or       │
+│                                                                     parquet for verl-sft         │
+│                                                                     [required]                   │
 │    --format                                  TEXT                   Trainer format: prime-sft,   │
-│                                                                     trl-sft, or branch-tree (one │
+│                                                                     trl-sft, branch-tree (one    │
 │                                                                     row per branch child: shared │
 │                                                                     prefix, continuation,        │
-│                                                                     reward, advantage)           │
+│                                                                     reward, advantage), verl-sft │
+│                                                                     (parquet for verl's          │
+│                                                                     multi-turn SFT trainer),     │
+│                                                                     skyrl-sft (rows for SkyRL's  │
+│                                                                     SFT trainer) or              │
+│                                                                     openenv-episodes (OpenEnv    │
+│                                                                     episode records)             │
 │                                                                     [default: prime-sft]         │
 │    --pairs                                   PATH                   branch-tree only: also write │
 │                                                                     one row per sibling pair     │
@@ -2828,7 +3477,7 @@
  Report whether each rollout's model calls carry token ids and logprobs.                            
                                                                                                     
  Reads trajectory/llm_trajectory.jsonl token_capture blocks (see                                    
- docs/reference/token-capture.md). A rollout is training-grade when                                 
+ docs/train/trainer.md#token-ids-and-logprobs). A rollout is training-grade when                    
  every call has prompt token ids, sampled token ids and logprobs, and                               
  each prompt extends the previous call's prompt and sampled tokens.                                 
                                                                                                     
@@ -2850,7 +3499,7 @@
  For a trainer that consumes a job while it runs: every line is a                                   
  benchflow.rollout-stream.v1 record with the reward, group id and,                                  
  when the gateway captured them, per-call token ids and logprobs                                    
- (docs/reference/rollout-stream.md). Status goes to stderr. Exit 0                                  
+ (docs/train/trainer.md#stream-rollouts-while-a-job-runs). Status goes to stderr. Exit 0            
  when the job finished, 1 when it was stopped or its process died                                   
  first, 2 on bad input, 3 on --timeout.                                                             
                                                                                                     
@@ -3068,8 +3717,8 @@
                                                                                                     
  Usage: bench hub [OPTIONS] COMMAND [ARGS]...                                                       
                                                                                                     
- External environment hubs: browse a hub's environments (list/show/inspect) and check registry      
- tasks (check).                                                                                     
+ Environment hubs: browse a hub's environments (list/show/inspect), check registry tasks (check),   
+ and publish datasets and push runs to a BenchFlow Hub (publish/push).                              
                                                                                                     
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
@@ -3078,6 +3727,9 @@
 │ list      List a hub's datasets or environments (benchflow or primeintellect).                   │
 │ show      Show a dataset's tasks, or a hosted environment's metadata.                            │
 │ inspect   Inspect a file from a hub environment package.                                         │
+│ publish   Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub.          │
+│ push      Push a finished run (traces, results, an embodied trial's record and video) to a       │
+│           BenchFlow Hub.                                                                         │
 │ check     Inventory or structurally check representative registry tasks.                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -3107,16 +3759,22 @@
  Show a dataset's tasks, or a hosted environment's metadata.                                        
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    source_env      TEXT  A dataset of BenchFlow's registry as name@version (e.g.               │
-│                            terminal-bench@2.0), or a hosted environment (e.g.                    │
-│                            primeintellect/general-agent)                                         │
+│ *    source_env      TEXT  A dataset on a BenchFlow Hub as org/name@version (e.g.                │
+│                            robouse/metaworld-sample@0.6.1; read from --hub, or from              │
+│                            $BENCHFLOW_HUB_URL when no --provider is given), a dataset of         │
+│                            BenchFlow's registry as name@version (e.g. terminal-bench@2.0), or a  │
+│                            hosted environment (e.g. primeintellect/general-agent)                │
 │                            [required]                                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --version         TEXT  Version (of the dataset or hosted environment)                           │
-│ --provider        TEXT  Hub: 'benchflow' (lists the dataset's tasks) or 'primeintellect'         │
-│                         (default: benchflow for name@version, primeintellect for owner/name)     │
-│ --json                  Emit the dataset's registry entry as JSON                                │
+│ --provider        TEXT  Where to read it without a Hub: 'benchflow' (BenchFlow's registry; lists │
+│                         the dataset's tasks) or 'primeintellect' (default: benchflow for         │
+│                         name@version, primeintellect for owner/name)                             │
+│ --json                  Print the dataset's entry as JSON (for a Hub version, the version and    │
+│                         its controls)                                                            │
+│ --hub             TEXT  A BenchFlow Hub to read org/name@version from, with its control results  │
+│                         (default: $BENCHFLOW_HUB_URL when set)                                   │
 │ --help                  Show this message and exit.                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -3133,6 +3791,52 @@
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --version        TEXT  Hosted environment version                                                │
 │ --path           TEXT  File inside the hosted environment package [default: README.md]           │
+│ --help                 Show this message and exit.                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench hub publish --help <==
+                                                                                                    
+ Usage: bench hub publish [OPTIONS] TASKS_DIR                                                       
+                                                                                                    
+ Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub.                      
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    tasks_dir      PATH  Folder holding one folder per task [required]                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --name                 TEXT  The version to publish, as org/name@version (e.g.                │
+│                                 robouse/metaworld-sample@0.6.1)                                  │
+│                                 [required]                                                       │
+│    --hub                  TEXT  Hub address (default: $BENCHFLOW_HUB_URL)                        │
+│    --description          TEXT  One line on what it is                                           │
+│    --license              TEXT  The tasks' license, as an SPDX expression (e.g. Apache-2.0 AND   │
+│                                 MIT)                                                             │
+│    --kind                 TEXT  What its tasks are, e.g. embodied                                │
+│    --source-repo          TEXT  Where the tasks came from (a repository URL)                     │
+│    --source-commit        TEXT  The commit they came from                                        │
+│    --exporter             TEXT  What wrote the packages, e.g. 'robouse-export@d05027fb' (the     │
+│                                 tool and its commit)                                             │
+│    --help                       Show this message and exit.                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench hub push --help <==
+                                                                                                    
+ Usage: bench hub push [OPTIONS] JOB_DIR                                                            
+                                                                                                    
+ Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub.    
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    job_dir      PATH  A job folder (jobs/<job>) holding one finished run, or the run           │
+│                         (jobs/<job>/<time>)                                                      │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --hub            TEXT  Hub address (default: $BENCHFLOW_HUB_URL)                                 │
+│ --dataset        TEXT  The dataset version the job ran, org/name@version (default: what the job  │
+│                        recorded)                                                                 │
+│ --label          TEXT  A label for the run on the Hub                                            │
 │ --help                 Show this message and exit.                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -3200,16 +3904,22 @@
  Show a dataset's tasks, or a hosted environment's metadata.                                        
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    source_env      TEXT  A dataset of BenchFlow's registry as name@version (e.g.               │
-│                            terminal-bench@2.0), or a hosted environment (e.g.                    │
-│                            primeintellect/general-agent)                                         │
+│ *    source_env      TEXT  A dataset on a BenchFlow Hub as org/name@version (e.g.                │
+│                            robouse/metaworld-sample@0.6.1; read from --hub, or from              │
+│                            $BENCHFLOW_HUB_URL when no --provider is given), a dataset of         │
+│                            BenchFlow's registry as name@version (e.g. terminal-bench@2.0), or a  │
+│                            hosted environment (e.g. primeintellect/general-agent)                │
 │                            [required]                                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --version         TEXT  Version (of the dataset or hosted environment)                           │
-│ --provider        TEXT  Hub: 'benchflow' (lists the dataset's tasks) or 'primeintellect'         │
-│                         (default: benchflow for name@version, primeintellect for owner/name)     │
-│ --json                  Emit the dataset's registry entry as JSON                                │
+│ --provider        TEXT  Where to read it without a Hub: 'benchflow' (BenchFlow's registry; lists │
+│                         the dataset's tasks) or 'primeintellect' (default: benchflow for         │
+│                         name@version, primeintellect for owner/name)                             │
+│ --json                  Print the dataset's entry as JSON (for a Hub version, the version and    │
+│                         its controls)                                                            │
+│ --hub             TEXT  A BenchFlow Hub to read org/name@version from, with its control results  │
+│                         (default: $BENCHFLOW_HUB_URL when set)                                   │
 │ --help                  Show this message and exit.                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -3297,7 +4007,11 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
 │ create    Create an environment from a task directory (does not start it).                       │
-│ list      List active sandboxes (Daytona; Docker sandboxes are ephemeral).                       │
+│ list      List active Daytona sandboxes (kept Docker sandboxes: their trial folders hold         │
+│           kept-sandbox.json).                                                                    │
+│ attach    Open a root shell in a kept sandbox; with a command after --, run it there and exit    │
+│           with its status.                                                                       │
+│ release   Delete a sandbox kept with --keep-sandbox.                                             │
 │ cleanup   Clean up orphaned sandboxes and stale shared runtimes.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -3323,11 +4037,42 @@
                                                                                                     
  Usage: bench sandbox list [OPTIONS]                                                                
                                                                                                     
- List active sandboxes (Daytona; Docker sandboxes are ephemeral).                                   
+ List active Daytona sandboxes (kept Docker sandboxes: their trial folders hold kept-sandbox.json). 
                                                                                                     
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --all           Every sandbox on the account, not only BENCHFLOW_DAYTONA_OWNER's                 │
 │ --json          Print the sandboxes as JSON                                                      │
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench sandbox attach --help <==
+                                                                                                    
+ Usage: bench sandbox attach [OPTIONS] TRIAL                                                        
+                                                                                                    
+ Open a root shell in a kept sandbox; with a command after --, run it there and exit with its       
+ status.                                                                                            
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    trial      PATH  The trial folder of a run with --keep-sandbox, or its kept-sandbox.json    │
+│                       [required]                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench sandbox release --help <==
+                                                                                                    
+ Usage: bench sandbox release [OPTIONS] TRIAL                                                       
+                                                                                                    
+ Delete a sandbox kept with --keep-sandbox.                                                         
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    trial      PATH  The trial folder of a run with --keep-sandbox, or its kept-sandbox.json    │
+│                       [required]                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -3356,7 +4101,7 @@
                                                                                                     
  Usage: bench embodied [OPTIONS] COMMAND [ARGS]...                                                  
                                                                                                     
- Embodied rollouts (robots and simulators): reports, export, specs.                                 
+ Embodied rollouts (robots and simulators): reports, evidence checks, export, specs.                
                                                                                                     
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
@@ -3365,6 +4110,8 @@
 │ report       Per task: rewards by seed, mean, std, pass@k and reset reproducibility.             │
 │ export       Write every trial's per-step transitions and episode index (steps.jsonl,            │
 │              episodes.jsonl).                                                                    │
+│ verify       Check each trial's files against its verdict now: record hashes, video copies,      │
+│              reward vs the record.                                                               │
 │ check-spec   Validate an embodiment spec.                                                        │
 │ robo-path    Print the path of the agent-side `robo` script (standard library only).             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -3397,6 +4144,27 @@
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *  --out   -o      PATH  Output directory [required]                                             │
 │    --help                Show this message and exit.                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench embodied verify --help <==
+                                                                                                    
+ Usage: bench embodied verify [OPTIONS] JOB_DIR                                                     
+                                                                                                    
+ Check each trial's files against its verdict now: record hashes, video copies, reward vs the       
+ record.                                                                                            
+                                                                                                    
+ It catches files edited, added or mixed up after the trial. It doesn't re-run the simulator, and   
+ it can't tell who wrote the folder.                                                                
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    job_dir      PATH  A job folder (jobs/<job>: every run in it) or one run                    │
+│                         (jobs/<job>/<time>)                                                      │
+│                         [required]                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --json          Print the checks as JSON                                                         │
+│ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 

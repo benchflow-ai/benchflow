@@ -11,6 +11,7 @@ from benchflow.sandbox.egress_denylist import (
     denylist_agent_env,
     egress_denylist_for,
     start_egress_denylist,
+    task_service_policy,
 )
 from benchflow.sandbox.lockdown import (
     enforce_agent_egress_firewall,
@@ -28,7 +29,8 @@ async def prepare_recovery_network(
     are copied, and no model gateway is created. Any setup/probe failure aborts
     recovery rather than permitting verification with omitted policy (GH1136).
     """
-    policy = egress_denylist_for(sandbox_config)
+    # As in the original run, an allowlist's named task services are admitted.
+    policy = await task_service_policy(env, egress_denylist_for(sandbox_config))
     no_web = getattr(sandbox_config, "allow_internet", True) is False
     if policy is None and not no_web:
         return

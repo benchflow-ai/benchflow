@@ -86,6 +86,10 @@ def rollout_result_payload(
         "verifier_error": result.verifier_error,
         "verifier_error_category": result.verifier_error_category,
         "export_error": result.export_error,
+        # How the trial ended when its model refused or its budget stopped it
+        # (benchflow.scoring counts both beside the score).
+        "model_refusal": result.model_refusal,
+        "trial_budget": result.trial_budget,
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": n_skill_invocations,
         "agent_result": agent_result_from_rollout(result),
@@ -146,6 +150,102 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
             round(total_cost / len(costs), 10) if total_cost is not None else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
+    }
+
+
+def model_call_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """The ``model_calls`` block of summary.json, from each trial's own record
+    of its model calls (its result.json, ``model-calls.json`` behind it).
+
+    ``tool_surfaces`` lists each set of tools the agents' first requests
+    offered, by hash, with how many trials had it (a job whose trials ran on
+    two surfaces shows two) and ``fallback`` from the trials'
+    ``tool_surface``; ``fallback_tool_trials`` counts the trials on an agent's
+    fallback surface; ``effort_mismatches`` the trials whose recorded effort
+    differs from the one asked for (``effort.matches`` false).
+
+    From each trial's ``agent_outcome``: ``http_errors`` and
+    ``http_status_counts`` total the calls by status over the trials that
+    recorded one (``trials_with_status``), the failures the agents survived
+    among them; ``trials_with_http_errors`` counts the trials with any;
+    ``agent_retries`` the failed calls an agent followed with another,
+    ``upstream_retries`` the proxy's own extra attempts upstream, and
+    ``terminal_provider_errors`` the trials whose agent's last call failed
+    with 429 or a 5xx. From ``input_delivery``: ``input_reads`` the agents'
+    reads of files they had not written, ``input_stubs`` the files whose read
+    reached the model as a stub and ``input_stub_trials`` the trials with
+    one. Empty when no trial recorded any of it.
+    """
+    surfaces: dict[str, dict[str, Any]] = {}
+    fallback = mismatches = 0
+    statuses: dict[str, int] = {}
+    http = {
+        "trials_with_status": 0,
+        "http_errors": 0,
+        "trials_with_http_errors": 0,
+        "agent_retries": 0,
+        "upstream_retries": 0,
+        "terminal_provider_errors": 0,
+    }
+    inputs = {"input_reads": 0, "input_stubs": 0, "input_stub_trials": 0}
+    for result in results.values():
+        delivery = result.get("input_delivery")
+        if isinstance(delivery, dict) and isinstance(delivery.get("reads"), int):
+            inputs["input_reads"] += delivery["reads"]
+            stubs = (
+                delivery.get("stubs") if isinstance(delivery.get("stubs"), int) else 0
+            )
+            inputs["input_stubs"] += stubs
+            inputs["input_stub_trials"] += stubs > 0
+        outcome = result.get("agent_outcome")
+        if isinstance(outcome, dict) and isinstance(outcome.get("http_errors"), int):
+            http["trials_with_status"] += 1
+            http["http_errors"] += outcome["http_errors"]
+            http["trials_with_http_errors"] += outcome["http_errors"] > 0
+            for key in ("agent_retries", "upstream_retries"):
+                if isinstance(outcome.get(key), int):
+                    http[key] += outcome[key]
+            http["terminal_provider_errors"] += (
+                outcome.get("terminal_provider_error") is True
+            )
+            counts = outcome.get("http_status_counts")
+            for status, count in counts.items() if isinstance(counts, dict) else ():
+                if isinstance(count, int):
+                    statuses[str(status)] = statuses.get(str(status), 0) + count
+        surface = result.get("tool_surface")
+        if isinstance(surface, dict) and isinstance(surface.get("sha256"), str):
+            entry = surfaces.setdefault(
+                surface["sha256"],
+                {
+                    "sha256": surface["sha256"],
+                    "count": surface.get("count"),
+                    "names": surface.get("names"),
+                    "fallback": surface.get("fallback"),
+                    "trials": 0,
+                },
+            )
+            entry["trials"] += 1
+            fallback += surface.get("fallback") is True
+        effort = result.get("effort")
+        mismatches += isinstance(effort, dict) and effort.get("matches") is False
+    if (
+        not surfaces
+        and not mismatches
+        and not http["trials_with_status"]
+        and not inputs["input_reads"]
+    ):
+        return {}
+    return {
+        "model_calls": {
+            **http,
+            **inputs,
+            "http_status_counts": dict(sorted(statuses.items())),
+            "tool_surfaces": sorted(
+                surfaces.values(), key=lambda entry: -int(entry["trials"])
+            ),
+            "fallback_tool_trials": fallback,
+            "effort_mismatches": mismatches,
+        }
     }
 
 

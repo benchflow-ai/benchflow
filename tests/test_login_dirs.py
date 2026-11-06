@@ -141,6 +141,33 @@ def test_the_crash_log_redacts_the_moved_login_files(moved):
     assert CODEX_FILE in found
 
 
+def test_a_login_files_mode_and_plan_are_not_masked(moved):
+    """A Codex login with "auth_mode": "apikey" masked the word everywhere,
+    doctor's own Google AI Studio link included; its tokens stay masked."""
+    from benchflow._diagnostics import redact
+    from benchflow.cli._errors import _secrets
+    from benchflow.doctor import secret_values
+
+    found = secret_values(
+        {
+            "CODEX_AUTH_JSON": json.dumps(
+                {
+                    "auth_mode": "apikey",
+                    "OPENAI_API_KEY": "sk-fake-codex-0123456789abcdef",
+                    "last_refresh": "2026-11-04T10:00:00Z",
+                }
+            )
+        }
+    )
+    assert "sk-fake-codex-0123456789abcdef" in found
+    assert "apikey" not in found and "2026-11-04T10:00:00Z" not in found
+    secrets = _secrets([])
+    link = "Google AI Studio: https://aistudio.google.com/apikey (login chatgpt)"
+    assert redact(link, secrets) == link
+    leaked = "access codex-access-fake-0123456789abcdef"
+    assert "codex-access-fake" not in redact(leaked, secrets)
+
+
 def test_login_paths_resolve_against_a_given_home_and_environment(tmp_path):
     from benchflow.agents.login_dirs import login_display, login_path
 

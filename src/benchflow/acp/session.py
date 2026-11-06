@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -173,6 +174,25 @@ _TERMINAL_TOOL_STATUSES = frozenset(
 )
 
 
+def live_output_note(chars: int) -> str:
+    """What the live trajectory holds in place of a tool output of *chars*."""
+    return (
+        f"[{chars} characters of tool output are not in the live trajectory; "
+        "the final trajectory has them]"
+    )
+
+
+def _without_long_strings(value: object, limit: int) -> object:
+    """*value* with a note in place of each string longer than *limit*."""
+    if isinstance(value, str):
+        return live_output_note(len(value)) if len(value) > limit else value
+    if isinstance(value, dict):
+        return {key: _without_long_strings(item, limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_without_long_strings(item, limit) for item in value]
+    return value
+
+
 class _RecordedOutputState:
     """Compare serialized output without joining the growing stream per update.
 
@@ -239,6 +259,7 @@ class ToolCallRecord:
         self.raw_input: object | None = None
         self._raw_output: object | None = None
         self._terminal_output: list[str] = []
+        self._terminal_output_chars = 0
         self._terminal_exit: dict | None = None
         self.parent_tool_call_id: str | None = None
         # The agent's own tool name (Claude ACP: _meta.claudeCode.toolName),
@@ -339,6 +360,35 @@ class ToolCallRecord:
     def raw_output(self, value: object | None) -> None:
         self._raw_output = value
 
+    def live_raw_output(self, limit: int) -> object | None:
+        """:attr:`raw_output` for the live trajectory file: each output
+        string longer than *limit* characters gives way to a note.
+
+        A live write serializes and redacts a changed tool call whole, and a
+        command's output grows with every chunk, so one printing tens of MB
+        made each write slower than the chunks came and stalled the runner.
+        The streamed output is measured here, never joined; the final
+        trajectory keeps it whole.
+        """
+        raw = self._raw_output
+        streamed = bool(self._terminal_output or self._terminal_exit is not None)
+        if (
+            streamed
+            and (
+                raw is None or (isinstance(raw, dict) and "formatted_output" not in raw)
+            )
+            and self._terminal_output_chars > limit
+        ):
+            folded = {
+                "formatted_output": live_output_note(self._terminal_output_chars),
+                **(raw or {}),
+            }
+            if self._terminal_exit is not None:
+                folded["exit_code"] = self._terminal_exit.get("exit_code")
+            folded.setdefault("exit_code", None)
+            return _without_long_strings(folded, limit)
+        return _without_long_strings(self.raw_output, limit)
+
     def absorb_raw_io(self, update: dict) -> None:
         """Keep the latest ``rawInput`` / ``rawOutput`` and the terminal chunks an update carries."""
         if update.get("rawInput") is not None:
@@ -351,6 +401,7 @@ class ToolCallRecord:
         chunk = meta.get("terminal_output_delta")
         if isinstance(chunk, dict) and isinstance(chunk.get("data"), str):
             self._terminal_output.append(chunk["data"])
+            self._terminal_output_chars += len(chunk["data"])
         terminal_exit = meta.get("terminal_exit")
         if isinstance(terminal_exit, dict):
             self._terminal_exit = terminal_exit
@@ -447,6 +498,10 @@ class ACPSession:
         self.agent_capabilities: AgentCapabilities | None = None
         self.model_state: dict | None = None
         self.config_options: list[dict] = []
+        # The reasoning effort the session runs at, by its own word (the
+        # model[effort] id it took, the effort option it answered with), set
+        # when the connection is configured; None when nothing said.
+        self.effort_applied: str | None = None
         self.message_chunks: list[str] = []
         self.thought_chunks: list[str] = []
         # Chunk lists count all received activity for the idle watchdog. These
@@ -467,8 +522,14 @@ class ACPSession:
         # IPython tool — a constant "last: IPython cell" carries no
         # information) in O(1) at render time.
         self._seen_tool_titles: set[str] = set()
-        self.stop_reason: StopReason | None = None
+        # Each prompt turn's stop reason, in order: None for a turn that has
+        # not ended (a timeout or an error ended the prompt instead).
+        self.stop_reasons: list[str | None] = []
+        self._turn_open = False
+        self._stop_reason: StopReason | None = None
         self.usage_snapshots: list[ACPUsageSnapshot] = []
+        self.usage_update_count = 0
+        self._last_usage_update: dict | None = None
         self.created_at = datetime.now()
         self.events: list[dict] = []
         self._pending_text: list[dict] = []
@@ -485,6 +546,24 @@ class ACPSession:
         self._progress_enabled = _console_progress_enabled()
         self._prompt_started_at: float | None = None
         self._last_progress_at = 0.0
+
+    @property
+    def stop_reason(self) -> StopReason | None:
+        """How the last prompt ended, as the agent reported it."""
+        return self._stop_reason
+
+    @stop_reason.setter
+    def stop_reason(self, reason: StopReason | None) -> None:
+        # Every client sets it when a prompt ends; that ends the open turn.
+        self._stop_reason = reason
+        if reason is None:
+            return
+        value = str(getattr(reason, "value", reason))
+        if self._turn_open:
+            self.stop_reasons[-1] = value
+            self._turn_open = False
+        else:
+            self.stop_reasons.append(value)
 
     def _notify_change(self, *, final: bool = False) -> None:
         self._maybe_log_progress()
@@ -538,6 +617,9 @@ class ACPSession:
 
     def record_user_prompt(self, text: str) -> None:
         """Record a user prompt. Call before sending each ACP prompt."""
+        self.stop_reason = None
+        self.stop_reasons.append(None)
+        self._turn_open = True
         self._events_active = True
         self._prompt_started_at = time.monotonic()
         # Grace period: the first heartbeat waits a full interval so short
@@ -694,6 +776,7 @@ class ACPSession:
             "agent_thought",
             "agent_thought_chunk",
             "notice",
+            "usage_update",
         }
     )
 
@@ -837,6 +920,17 @@ class ACPSession:
             if content.get("type") == "text":
                 text = content.get("text", "")
                 self._record_text(text, "agent_thought", update, receipt)
+
+        elif update_type == "usage_update":
+            # Context/cost reports are activity, not prompt token totals.
+            # Repeated reports must not keep a stalled session alive (#1203).
+            payload = {
+                key: value for key, value in update.items() if key != "sessionUpdate"
+            }
+            if not payload or payload == self._last_usage_update:
+                return
+            self._last_usage_update = deepcopy(payload)
+            self.usage_update_count += 1
 
         elif update_type == "notice":
             self._record_notice(update, receipt)

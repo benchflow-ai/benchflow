@@ -220,14 +220,23 @@ def run(
         typer.Option(
             "--dataset",
             "-d",
-            help="A registry dataset, name@version, instead of a target",
+            help="A dataset instead of a target: name@version from a registry, or org/name@version from a BenchFlow Hub",
         ),
     ] = None,
     registry: Annotated[
         str | None,
         typer.Option(
             "--registry",
-            help="The registry for --dataset: a URL or a file (default: the skillsbench registry)",
+            help="The registry for --dataset: a URL, a file or hub:<url> (default: "
+            "BenchFlow's registry, then $BENCHFLOW_HUB_URL for an org/name dataset)",
+        ),
+    ] = None,
+    hub: Annotated[
+        str | None,
+        typer.Option(
+            "--hub",
+            help="Read --dataset from this BenchFlow Hub, as the bench hub commands' --hub does "
+            "(the same as --registry hub:<url>)",
         ),
     ] = None,
     include: Annotated[
@@ -306,8 +315,9 @@ def run(
             "--idle-timeout",
             "--agent-idle-timeout",
             help=(
-                "Abort a prompt when the agent is silent this long: seconds, or "
-                "90s, 10m, 1h; 0, none or null turns it off (default: 10m)"
+                "Abort a prompt when the agent is silent this long: seconds or "
+                "90s, 10m, 1h; 0 or none turns it off (default: 10m, 30m at "
+                "effort xhigh or max)"
             ),
         ),
     ] = None,
@@ -364,7 +374,12 @@ def run(
     ] = False,
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help="Print the plan and run nothing"),
+        typer.Option(
+            "--dry-run",
+            help="Print the plan as JSON and the run card on stderr, and run "
+            "nothing; for a local folder or run config, exits 1 when the run "
+            "card would refuse the run",
+        ),
     ] = False,
     quiet: Annotated[
         bool,
@@ -434,6 +449,18 @@ def run(
             f"bench run takes a target or {flag}, not both",
             f"drop {flag} (the target names the tasks) or drop the target",
         )
+    if hub is not None:
+        if registry is not None:
+            raise _usage(
+                "--hub and --registry both name where --dataset comes from",
+                "keep one: --hub <url> is --registry hub:<url>",
+            )
+        if dataset is None:
+            raise _usage(
+                "--hub reads a --dataset from the Hub, and none was given",
+                f"bench run -d <org/name@version> --hub {hub}",
+            )
+        registry = f"hub:{hub}"
     if target is None and dataset is None and not whole_run:
         raise _usage(
             "bench run needs a target: a task folder, a folder of tasks, or a repository",
@@ -696,9 +723,24 @@ class RunCommand(TyperCommand):
         "n_tasks": "limit",
     }
     # bench eval run flags that --help shows too: the README's first command
-    # uses the source flags (dogfood p5-1), and --config is a whole run.
+    # uses the source flags (dogfood p5-1), and --config is a whole run. The
+    # run card and its refusal name --trials, --integrity, --accept-deviations
+    # and the budget caps, so --help lists them.
+    # bench run's own options that only --help-all lists: --hub is
+    # --registry hub:<url>, which the short page names.
+    OWN_MORE: ClassVar[frozenset[str]] = frozenset({"hub"})
     SHOWN: ClassVar[frozenset[str]] = frozenset(
-        {"config_file", "source_repo", "source_path"}
+        {
+            "config_file",
+            "source_repo",
+            "source_path",
+            "keep_sandbox",
+            "trials",
+            "integrity",
+            "accept_deviations",
+            "max_cost_usd",
+            "max_tokens",
+        }
     )
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -710,6 +752,12 @@ class RunCommand(TyperCommand):
         # The hidden ones (--help-all shows them), and all that pass through.
         self.more: list[str] = []
         self.given: list[str] = []
+        for own in self.params:
+            if isinstance(own, click.Option) and own.name in self.OWN_MORE:
+                own.hidden = True
+                if hasattr(own, "rich_help_panel"):
+                    setattr(own, "rich_help_panel", MORE_RUN_PANEL)  # noqa: B010
+                self.more.append(own.name)
         # Typer's own conversions of eval run's values (a Path, a list), as
         # its command applies them before it calls eval_run.
         _, self.convert, _ = (

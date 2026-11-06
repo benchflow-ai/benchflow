@@ -66,6 +66,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import stat
@@ -79,6 +80,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 from benchflow._root_python import root_python_command
+from benchflow._runtime_tree import RUNTIME_ROOT
 from benchflow._utils import timing_spans
 from benchflow._utils.reachable_write import (
     ReachablePath,
@@ -97,6 +99,7 @@ from benchflow.review.evidence import (
     python_missing,
 )
 from benchflow.rollout._artifact_links import plain_link_targets
+from benchflow.rollout._collect_hooks import install_sidecar_artifacts
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox._exec_receipt import receipt_exec
 from benchflow.task.paths import RolloutPaths
@@ -661,6 +664,21 @@ def _check_resolved_roots(
             )
         if folder is not None:
             system = _system_landing(landed, folder)
+            # Tasks may edit an installed Python package. Only an explicit
+            # package subtree at its declared spelling crosses; never the
+            # library/search root or a redirect into it. Root helpers use
+            # the sealed stdlib-only runtime, and these transferred paths
+            # remain excluded from verifier plugin/tool discovery.
+            if (
+                label == "declared artifact"
+                and landed == declared
+                and re.fullmatch(
+                    r"/usr/(?:local/)?lib(?:64)?/python[0-9]+\.[0-9]+/"
+                    r"(?:site|dist)-packages/[^/]+(?:/.*)?",
+                    landed,
+                )
+            ):
+                system = None
         elif landed != declared:
             system = (landed, s) if (s := _system_overlap(landed)) else None
         else:
@@ -928,7 +946,14 @@ def _logs_entries(collected: dict[str, Any], root: Path) -> list[dict[str, Any]]
     )
 
 
-def _add_bundle(payload: _Payload, bundle: Path, manifest: Any) -> None:
+def _add_bundle(
+    payload: _Payload,
+    bundle: Path,
+    manifest: Any,
+    only: Sequence[PurePosixPath] | None = None,
+) -> None:
+    """Pack *bundle*'s frozen tree; with *only*, just the entries at or under
+    those paths (relative to its workspace)."""
     root = _absolute(manifest.workspace)
     payload.root = str(root)
     tree = bundle / "workspace"
@@ -941,7 +966,12 @@ def _add_bundle(payload: _Payload, bundle: Path, manifest: Any) -> None:
     # directories get the permission bits the solver left, as a regrade
     # restores them (older manifests without modes keep the executable bit).
     for entry in entries:
-        target = root / _safe_relative(entry.path)
+        relative = _safe_relative(entry.path)
+        if only is not None and not any(
+            relative == kept or kept in relative.parents for kept in only
+        ):
+            continue
+        target = root / relative
         mode = None if entry.mode is None else entry.mode & 0o777
         if entry.kind == "directory":
             payload.directory(target, mode)
@@ -949,6 +979,33 @@ def _add_bundle(payload: _Payload, bundle: Path, manifest: Any) -> None:
             payload.file(target, tree / entry.path, mode)
         elif entry.link_target is not None:
             payload.symlink(target, entry.link_target)
+
+
+def _declared_in_workspace(
+    manifest: Any,
+) -> tuple[list[PurePosixPath], list[str]] | None:
+    """The declared artifacts inside the frozen workspace, as paths relative
+    to it, and the folders among them (absolute); None when one is the
+    workspace itself, which then crosses whole."""
+    root = _absolute(manifest.workspace)
+    kinds = {_safe_relative(e.path): e.kind for e in manifest.entries}
+    kept: list[PurePosixPath] = []
+    folders: list[str] = []
+    for artifact in manifest.artifacts:
+        if artifact.status != "in_workspace":
+            continue
+        try:
+            relative = PurePosixPath(posixpath.normpath(artifact.source)).relative_to(
+                root
+            )
+        except ValueError:
+            continue
+        if relative == PurePosixPath("."):
+            return None
+        kept.append(relative)
+        if kinds.get(relative) == "directory":
+            folders.append(str(root / relative))
+    return kept, folders
 
 
 def build_transfer_payload(
@@ -959,8 +1016,16 @@ def build_transfer_payload(
     capture_over_limit: bool = False,
     artifacts: Sequence[Any] | None = None,
     workspace: str | None = None,
+    artifacts_only: bool = False,
 ) -> dict[str, Any]:
     """Pack the frozen workspace, declared artifacts and ``/logs/artifacts``.
+
+    With ``artifacts_only`` (a task.toml task's verifier built from
+    ``tests/Dockerfile``: :func:`_format_verifier`) the workspace contributes
+    only its declared artifacts: that format's verifier keeps the files its
+    own image put in the workspace and gets each declared artifact over them
+    at its path. The inventory's ``artifacts_only`` says which happened, and
+    ``emptied`` lists the declared folders the install empties first.
 
     Every byte is checked against the manifest written when it was captured.
     Returns the transfer inventory; raises :class:`SeparateVerifierError`
@@ -1057,6 +1122,8 @@ def build_transfer_payload(
 
     logs_entries = _logs_entries(collected, Path(rollout_dir) / "artifacts")
     logs_files = [f for f in logs_entries if f["kind"] == "file"]
+    declared = _declared_in_workspace(manifest) if artifacts_only else None
+    kept, emptied = declared if declared is not None else (None, [])
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.unlink(missing_ok=True)
@@ -1066,7 +1133,7 @@ def build_transfer_payload(
     try:
         with tarfile.open(dest, "x", format=tarfile.PAX_FORMAT) as archive:
             payload = _Payload(archive)
-            _add_bundle(payload, bundle, manifest)
+            _add_bundle(payload, bundle, manifest, only=kept)
             for sub, sub_manifest in subs:
                 _add_bundle(payload, sub, sub_manifest)
             logs_root = PurePosixPath(LOGS_ARTIFACTS)
@@ -1097,17 +1164,22 @@ def build_transfer_payload(
         sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     return {
         "workspace": manifest.workspace,
-        # The roots this transfer writes under in the verifier sandbox (a
-        # declared file's bundle root is its directory). There the plugin guard
-        # distrusts these alone (with /logs): nothing else in that sandbox came
-        # from the agent's run.
+        # Only the paths whose contents crossed came from the agent. Parent
+        # directories of individual files, and the rest of an artifacts-only
+        # workspace, still contain the verifier image's own tools.
         "agent_paths": [
-            manifest.workspace,
-            *(sub_manifest.workspace for _, sub_manifest in subs),
+            *(
+                [manifest.workspace]
+                if kept is None
+                else [str(PurePosixPath(manifest.workspace) / p) for p in kept]
+            ),
+            *(a.source for a in manifest.artifacts if a.status == "captured"),
             LOGS_ARTIFACTS,
         ],
         "files": payload.files,
         "bytes": payload.bytes,
+        "artifacts_only": kept is not None,
+        "emptied": emptied,
         "declared_artifacts": len(subs),
         "missing_artifacts": [
             a.source for a in manifest.artifacts if a.status == "missing"
@@ -1176,15 +1248,32 @@ def _warn_left_out(summary: dict[str, Any], includes: Sequence[str]) -> None:
         )
 
 
+def _capture_declarations(rollout: Any) -> list[Any]:
+    """What capture read beside the workspace, in its order: the task's
+    artifacts, then each ``--separate-verifier-include`` path none of them
+    holds whole (``capture_terminal_workspace``)."""
+    from benchflow.rollout._review import _uncovered_includes
+    from benchflow.task.config import ArtifactConfig
+
+    artifacts = list(rollout._task.config.artifacts)
+    includes = getattr(rollout._config, "separate_verifier_include", ())
+    return [
+        *artifacts,
+        *(
+            ArtifactConfig(source=path)
+            for path in _uncovered_includes(includes, artifacts)
+        ),
+    ]
+
+
 # --- agent sandbox: what does not cross -------------------------------------
 
 # Runs in the agent's sandbox as root after the agent stops, before hardening.
 # Advisory only: it lists regular files created or changed during the agent
 # phase outside everything that crosses (the workspace, include paths), so a
 # verifier that reads them does not silently score 0. Software, scratch,
-# provider and harness trees (/oracle, /tests, BenchFlow's own /opt/benchflow*
-# installs such as the egress proxy, and its root-only /.benchflow tree) are
-# skipped, as are package caches and the
+# provider and harness trees (/oracle, /tests, BenchFlow's own trees in
+# _HARNESS_TREES) are skipped, as are package caches and the
 # agent's own home.
 # Folders the outside-writes listing never walks: the system's, and what the
 # verifier gets anyway.
@@ -1213,15 +1302,25 @@ _OUTSIDE_WRITES_SYSTEM = (
     "/tests",
     "/verifier",
 )
+# BenchFlow's own trees in the agent's sandbox, skipped by both listings (the
+# script below and its find form): each name, what is under it, and its
+# siblings that start with the name and "-" or "_" (the egress proxy's
+# /opt/runtime-egress, the OpenTelemetry receiver's /opt/runtime-otel,
+# /opt/runtime_agentcore_shim.py; root's stages /.runtime-kit-<hex>,
+# /.runtime-credential-<hex>, /.runtime_build_snapshot and the like).
+_HARNESS_TREES = (RUNTIME_ROOT, "/.runtime")
+_HARNESS_SEPARATORS = ("/", "-", "_")
 _OUTSIDE_WRITES_SCRIPT = r"""
 import json, os, stat, sys
 root, since, limit = sys.argv[1], float(sys.argv[2]), int(sys.argv[5])
 keep, components = json.loads(sys.argv[3]), json.loads(sys.argv[4])
 system = tuple(json.loads(sys.argv[6]))
 skip = [os.path.join(root, p.lstrip("/")).rstrip("/") for p in (*system, *keep)]
-harness = (os.path.join(root, "opt", "benchflow"), os.path.join(root, ".benchflow"))
+harness, separators = json.loads(sys.argv[7]), json.loads(sys.argv[8])
+harness = [os.path.join(root, p.lstrip("/")) for p in harness]
+harness_prefixes = tuple(h + s for h in harness for s in separators)
 def skipped(path):
-    return path.startswith(harness) or any(
+    return path in harness or path.startswith(harness_prefixes) or any(
         path == s or path.startswith(s + "/") for s in skip) or any(
         path.endswith("/" + c) for c in components)
 device = os.lstat(root).st_dev
@@ -1293,6 +1392,8 @@ async def scan_outside_workspace_writes(
             json.dumps(components),
             str(_OUTSIDE_WRITES_LIMIT),
             json.dumps(_OUTSIDE_WRITES_SYSTEM),
+            json.dumps(_HARNESS_TREES),
+            json.dumps(_HARNESS_SEPARATORS),
         )
         result = await exec_raw(env.exec, command, user="root", timeout_sec=timeout_sec)
         if python_missing(result):
@@ -1355,7 +1456,6 @@ def _outside_writes_find(
         return posixpath.join(root, path.lstrip("/")).rstrip("/") or "/"
 
     pruned = [under(p) for p in (*_OUTSIDE_WRITES_SYSTEM, *keep)]
-    pruned += [under("opt/benchflow"), under(".benchflow")]
     tests: list[str] = []
     for path in pruned:
         tests += [
@@ -1366,6 +1466,10 @@ def _outside_writes_find(
             _find_glob(path) + "/*",
             "-o",
         ]
+    for tree in _HARNESS_TREES:
+        tests += ["-path", _find_glob(under(tree)), "-o"]
+        for separator in _HARNESS_SEPARATORS:
+            tests += ["-path", _find_glob(under(tree)) + separator + "*", "-o"]
     for component in components:
         tests += ["-path", "*/" + _find_glob(component.strip("/")), "-o"]
     stamp = f"@{since:.6f}"
@@ -1424,10 +1528,22 @@ def _outside_writes_report(root: str, stdout: str) -> dict[str, Any]:
 # --- sandbox side ------------------------------------------------------------
 
 
-def _install_script(remote: str, workspace: str, sha256: str, root: str = "/") -> str:
+def _install_script(
+    remote: str,
+    workspace: str,
+    sha256: str,
+    root: str = "/",
+    *,
+    keep_workspace: bool = False,
+    emptied: Sequence[str] = (),
+) -> str:
     """Unpack the transfer at ``root`` (the sandbox's ``/``; a test's folder).
 
-    Shell and tar only: a verifier image may have no Python.
+    With ``keep_workspace`` (an artifacts-only transfer) the workspace keeps
+    what the verifier image put there and only the declared folders in
+    ``emptied`` are emptied first, as the task.toml format's verifier
+    receives its artifacts. Shell and tar only: a verifier image may have no
+    Python.
     """
     quoted = shlex.quote(remote)
     # Directories this creates (a missing workspace, /logs/artifacts) get the
@@ -1443,7 +1559,15 @@ def _install_script(remote: str, workspace: str, sha256: str, root: str = "/") -
     )
     path = PurePosixPath(workspace)
     target = shlex.quote(posixpath.join(root, workspace.lstrip("/")))
-    if str(path) not in _SHARED_DIRS:
+    if keep_workspace:
+        for folder in emptied:
+            declared = shlex.quote(posixpath.join(root, folder.lstrip("/")))
+            lines.append(f"if [ -L {declared} ]; then rm -f -- {declared}; fi")
+            lines.append(
+                f"if [ -d {declared} ]; then rm -rf -- {declared}/* "
+                f"{declared}/.[!.]* {declared}/..?*; fi"
+            )
+    elif str(path) not in _SHARED_DIRS:
         # A dedicated task directory: the agent's final state replaces what
         # the verifier image put there. The directory itself stays (a shell
         # whose cwd it is keeps a valid cwd, as in a regrade); its contents,
@@ -1471,23 +1595,29 @@ _DESTINATIONS_DONE = "BENCHFLOW_DESTINATIONS_DONE"
 
 
 def _destination_paths(
-    names: Sequence[str], roots: Sequence[str], workspace: str
+    names: Sequence[str],
+    roots: Sequence[str],
+    workspace: str,
+    emptied: Sequence[str] | None = None,
 ) -> list[str]:
     """Every folder the unpack walks through or creates on the way to a member.
 
     ``names`` are the archive's members as absolute paths, folders included;
     ``roots`` the transfer roots (an empty one is still created or emptied).
     A dedicated workspace's own folder and everything under it are left out:
-    the install script removes a link there and empties it first.
+    the install script removes a link there and empties it first. With
+    ``emptied`` (an artifacts-only transfer, which keeps the workspace) the
+    folders the install empties are left out instead.
     """
-    dedicated = None if workspace in _SHARED_DIRS else PurePosixPath(workspace)
+    if emptied is None:
+        cleared = [] if workspace in _SHARED_DIRS else [PurePosixPath(workspace)]
+    else:
+        cleared = [PurePosixPath(folder) for folder in emptied]
     paths: dict[str, None] = {}
     for name in (*roots, *names):
         path = PurePosixPath(name)
         for folder in (*reversed(path.parents[:-1]), path):
-            if dedicated is not None and (
-                folder == dedicated or dedicated in folder.parents
-            ):
+            if any(folder == c or c in folder.parents for c in cleared):
                 break
             paths.setdefault(str(folder))
     return list(paths)
@@ -1565,10 +1695,15 @@ async def _check_destinations(
             # A folder is walked into; a file or link only replaced.
             walked.append(name if member.isdir() else posixpath.dirname(name))
     roots = [str(PurePosixPath(r)) for r in summary["agent_paths"]]
-    paths = _destination_paths(walked, roots, summary["workspace"])
+    paths = _destination_paths(
+        walked,
+        roots,
+        summary["workspace"],
+        summary.get("emptied", []) if summary.get("artifacts_only") else None,
+    )
     script = archive.with_name(archive.name + ".destinations.sh")
     script.write_text(_destination_script(paths))
-    remote = f"/tmp/benchflow-verifier-destinations-{uuid.uuid4().hex}.sh"
+    remote = f"/tmp/runtime-verifier-destinations-{uuid.uuid4().hex}.sh"
     quoted = shlex.quote(remote)
     # The script names paths taken from the transfer's member names.
     admission = admit(env, "main", IngressKind.SEPARATE_VERIFIER_TRANSFER)
@@ -1616,11 +1751,17 @@ async def _install_payload(
 
     None when the script's report is missing from its output.
     """
-    remote = f"/tmp/benchflow-verifier-transfer-{uuid.uuid4().hex}.tar"
+    remote = f"/tmp/runtime-verifier-transfer-{uuid.uuid4().hex}.tar"
     admission = admit(env, "main", IngressKind.SEPARATE_VERIFIER_TRANSFER)
     try:
         await env.upload_file(archive, remote, admission=admission)
-        script = _install_script(remote, summary["workspace"], summary["sha256"])
+        script = _install_script(
+            remote,
+            summary["workspace"],
+            summary["sha256"],
+            keep_workspace=bool(summary.get("artifacts_only")),
+            emptied=summary.get("emptied", ()),
+        )
         result = await exec_raw(
             env.exec,
             shlex.join(["sh", "-c", script]),
@@ -1650,6 +1791,21 @@ async def _install_payload(
     return None
 
 
+def _format_verifier(task: Any, plan: VerifierImage) -> bool:
+    """A task.toml task's verifier built from ``tests/Dockerfile``.
+
+    That format bundles the tests in the verifier image and gives the
+    verifier the declared artifacts, each at its path over what the image
+    put there: Terminal-Bench 4.1's live-database-cutover bakes its pristine
+    ``/app/api`` git baseline into the image and grades the agent's
+    ``/tmp/agent.patch`` against it.
+    """
+    return (
+        plan.source == "tests/Dockerfile"
+        and getattr(task.paths, "uses_native_verifier_dir", False) is not True
+    )
+
+
 def _verifier_task(task: Any, plan: VerifierImage) -> Any:
     """``task`` as the verifier sandbox sees it: its image, a shared verifier."""
     view = copy.copy(task)
@@ -1662,9 +1818,16 @@ def _verifier_task(task: Any, plan: VerifierImage) -> Any:
     config.agent.network_mode = None
     config.agent.allowed_hosts = None
     config.artifacts = []
+    # Collect hooks ran in the agent's sandbox before the freeze
+    # (_collect_hooks); the verifier sandbox never runs them again.
+    config.verifier.collect = []
     view.config = config
     if getattr(view, "document", None) is not None:
         view.document = None
+    # The task.toml format bundles a separate verifier's tests in the image
+    # built from tests/: the verifier uses /tests as that Dockerfile left it
+    # (Verifier._bundled_tests).
+    view._benchflow_bundled_tests = _format_verifier(task, plan)
     return view
 
 
@@ -1710,18 +1873,27 @@ def _stage_context(
 
 
 def _trajectory_record(rollout: Any, paths: RolloutPaths) -> dict[str, Any] | None:
-    """The trajectory published to the verifier's ``/logs/agent``, if any."""
+    """The trajectory published to the verifier's ``/logs/agent``, if any.
+
+    It is read after the verifier ran, as root, in a sandbox it may lock
+    down: Terminal-Bench 4.1's distributed-dedup makes every world-writable
+    folder root's and 0700, the bind-mounted ``/logs/agent`` among them. A
+    copy the host can no longer read is recorded as such; it never costs
+    the score the verifier already gave.
+    """
     # agent/ is a held capability: read through its no-follow handles.
     published = paths.agent_dir / "acp_trajectory.jsonl"
-    if not published.is_file():
-        return None
-    data = published.read_bytes()
-    return {
+    record = {
         "source": getattr(rollout, "_trajectory_source", None) or "acp",
         "path": "/logs/agent/acp_trajectory.jsonl",
-        "bytes": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
     }
+    try:
+        if not published.is_file():
+            return None
+        data = published.read_bytes()
+    except OSError as exc:
+        return {**record, "unreadable": f"{type(exc).__name__}: {exc.strerror or exc}"}
+    return {**record, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
 CreateEnvironment = Callable[[Any, Path, RolloutPaths], Any]
@@ -1745,12 +1917,15 @@ def _default_create(rollout: Any) -> CreateEnvironment:
     return create
 
 
-def _default_verify(rollout: Any, trajectory: list[dict] | None = None) -> Verify:
+def _default_verify(
+    rollout: Any, trajectory: list[dict] | None = None, *, agent: str | None = None
+) -> Verify:
     """The normal verifier path in the verifier sandbox.
 
     ``trajectory`` is what the verifier reads at ``/logs/agent``: the snapshot
     taken before the agent's sandbox was released, or, in the serial order,
-    the rollout's trajectory as it stands.
+    the rollout's trajectory as it stands. ``agent`` is the agent that wrote
+    it (a regrade's trial agent); by default the rollout's.
     """
 
     async def verify(
@@ -1760,7 +1935,7 @@ def _default_verify(rollout: Any, trajectory: list[dict] | None = None) -> Verif
         timing: dict,
         *,
         workspace: str,
-        agent_paths: tuple[str, ...] = (),
+        agent_paths: tuple[str, ...] | None = None,
     ) -> tuple[dict | None, str | None]:
         from benchflow.agents.registry import is_scripted_agent
         from benchflow.rollout._setup import (
@@ -1772,7 +1947,7 @@ def _default_verify(rollout: Any, trajectory: list[dict] | None = None) -> Verif
             env,
             rollout._trajectory if trajectory is None else trajectory,
             paths.agent_dir,
-            publish_reply=not is_scripted_agent(rollout._config.primary_agent),
+            publish_reply=not is_scripted_agent(agent or rollout._config.primary_agent),
         )
         with recording_trial_warnings() as warnings:
             try:
@@ -1786,7 +1961,7 @@ def _default_verify(rollout: Any, trajectory: list[dict] | None = None) -> Verif
                     # what the transfer wrote came from the agent.
                     sandbox_user=None,
                     workspace=workspace,
-                    agent_paths=(workspace, *agent_paths),
+                    agent_paths=(workspace,) if agent_paths is None else agent_paths,
                 )
             finally:
                 kept = vars(rollout).setdefault("_warnings", [])
@@ -1963,6 +2138,9 @@ def _publish_verifier_outputs(
     still moves the agent's folder aside, leaves ``verifier/`` empty, and then
     raises.
     """
+    # Use the same lexical absolute spelling as the already-pinned output root.
+    # Do not resolve mutable links or relax destination traversal checks.
+    rollout_dir = Path(os.path.abspath(rollout_dir))
     canonical = rollout_dir / "verifier"
     failure: BaseException | None = None
     # The copy is staged in a folder proven unreachable from every sandbox, on
@@ -2266,6 +2444,10 @@ class VerifierSandboxRun:
     :meth:`finish` does all of it in the base order. The sandbox is deleted
     exactly once: by :meth:`finish`, or by :meth:`discard` when the trial fails
     before it; ``verifier-sandbox.json`` is written then.
+
+    ``source_dir`` is the trial folder whose saved outputs cross (a regrade's
+    stored trial); by default the rollout's own. The record and the published
+    ``verifier/`` are always the rollout's.
     """
 
     def __init__(
@@ -2274,11 +2456,13 @@ class VerifierSandboxRun:
         *,
         order: str = SERIAL,
         create_environment: CreateEnvironment | None = None,
+        source_dir: Path | None = None,
     ) -> None:
         self.rollout = rollout
         self.order = order
         self._create = create_environment
         self.rollout_dir = Path(rollout._rollout_dir)
+        self.source_dir = Path(source_dir) if source_dir else self.rollout_dir
         self.root = self.rollout_dir / RECORD_DIR
         self.root.mkdir(parents=True, exist_ok=True)
         self.timing: dict[str, Any] = rollout._timing
@@ -2483,14 +2667,20 @@ class VerifierSandboxRun:
                 )
                 summary = await asyncio.to_thread(
                     build_transfer_payload,
-                    self.rollout_dir,
+                    self.source_dir,
                     archive,
                     pristine=record["pristine"],
                     capture_over_limit=getattr(rollout, "_capture_over_limit", False),
-                    artifacts=list(task.config.artifacts),
+                    artifacts=_capture_declarations(rollout),
                     workspace=str(rollout._agent_cwd)
                     if getattr(rollout, "_agent_cwd", None)
                     else None,
+                    # A task that declares no artifacts gets its workspace,
+                    # as BenchFlow always sent it: the format's verifier
+                    # would get nothing from the agent.
+                    artifacts_only=self.plan is not None
+                    and _format_verifier(task, self.plan)
+                    and bool(task.config.artifacts),
                 )
             except SolutionTransferRefused:
                 raise
@@ -2540,6 +2730,17 @@ class VerifierSandboxRun:
                     archive,
                     summary,
                     int(rollout._config.sandbox_setup_timeout or 600),
+                )
+                # Sidecar artifacts land at their source paths, as the
+                # task.toml format's verifier reads them (_collect_hooks).
+                await install_sidecar_artifacts(env, self.rollout_dir, custody)
+                # They are agent input too, even when no main-container
+                # artifact happens to share their parent directory.
+                # The transfer record shares this list with the inventory.
+                summary["agent_paths"].extend(
+                    path
+                    for path in custody.get("sidecar_artifacts", {}).get("crossed", [])
+                    if path not in summary["agent_paths"]
                 )
             except SeparateVerifierError as exc:
                 raise SeparateVerifierError(f"transfer failed: {exc}") from exc

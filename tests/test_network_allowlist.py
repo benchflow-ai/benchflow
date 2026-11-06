@@ -719,7 +719,7 @@ class TestStart:
         await start_egress_denylist(
             env, "agent", policy, model_gateway_url="http://127.0.0.1:4000"
         )
-        data = json.loads(uploaded["/opt/benchflow-egress/policy.json"])
+        data = json.loads(uploaded["/opt/runtime-egress/policy.json"])
         assert data["allowed_hosts"] == ["example.com"]
         assert data["model_gateway_port"] == 4000
         setup = env.exec.await_args_list[2].args[0]

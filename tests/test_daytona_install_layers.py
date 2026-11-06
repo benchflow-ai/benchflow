@@ -197,13 +197,13 @@ async def test_recipe_carries_the_proxy_and_agent_layers_with_their_keys(
     assert scripts[1].endswith(AGENT_INSTALLERS[AGENT] + "\n")
     keys = sandbox._install_layer_keys
     assert set(keys) == {"proxy-litellm", f"agent-{AGENT}"}
-    assert "> /opt/benchflow/daytona-proxy/proxy.key" in recipe
+    assert "> /opt/runtime/daytona-proxy/proxy.key" in recipe
     assert f"printf '%s\\n' {keys['proxy-litellm']} >" in recipe
     assert f"printf '%s\\n' {keys[f'agent-{AGENT}']} >" in recipe
     # The create may also take the time the layers need to build.
     assert client.timeouts == [600 + sandbox._install_layers.build_allowance_sec]
     # Package caches never reach the image.
-    assert "rm -rf /tmp/benchflow-layer.sh /tmp/benchflow-layer-cache" in recipe
+    assert "rm -rf /tmp/runtime-layer.sh /tmp/runtime-layer-cache" in recipe
 
     record = json.loads((tmp_path / "trial-1" / "sandbox.json").read_text())
     layers = record["install_layers"]
@@ -472,7 +472,7 @@ async def test_install_agent_skips_the_install_when_the_layer_is_there(tmp_path)
 
     await install_agent(sandbox, AGENT, tmp_path)
 
-    assert sandbox.exec_calls == [f"cat /opt/benchflow/layers/agent-{AGENT}.key"]
+    assert sandbox.exec_calls == [f"cat /opt/runtime/layers/agent-{AGENT}.key"]
     assert sandbox.notes == [("agent", AGENT, "used")]
     log = (tmp_path / "agent" / "install-stdout.txt").read_text()
     assert "cached image layer" in log
@@ -533,8 +533,8 @@ async def test_proxy_uses_the_layer_venv_without_installing(monkeypatch):
             if path.endswith("launch_config.json")
         )
     )
-    assert launch["python"] == "/opt/benchflow/daytona-proxy/venv/bin/python"
-    assert launch["litellm"] == "/opt/benchflow/daytona-proxy/venv/bin/litellm"
+    assert launch["python"] == "/opt/runtime/daytona-proxy/venv/bin/python"
+    assert launch["litellm"] == "/opt/runtime/daytona-proxy/venv/bin/litellm"
     assert sandbox.notes == [("proxy", "litellm", "used")]
 
 
@@ -812,7 +812,7 @@ async def test_rollout_keeps_daytona_installs_after_preinstall_mutators(
     if mutator == "hook":
         extra["pre_agent_hooks"] = [AsyncMock()]
     elif mutator == "upload":
-        extra["uploads"] = {"fixture": "/opt/benchflow/bin/fixture"}
+        extra["uploads"] = {"fixture": "/opt/runtime/bin/fixture"}
     elif mutator == "plane":
         extra["planes"] = rollout_planes.DefaultRolloutPlanes()
     elif mutator == "manifest":
@@ -898,3 +898,57 @@ def test_daytona_replanning_leaves_borrowed_and_snapshot_sandboxes_alone(
     setattr(rollout, flag, True)
     rollout._configure_daytona_layers()
     assert sandbox.plans == []
+
+
+@pytest.fixture
+def own_route_agent(monkeypatch):
+    """A custom agent that routes its own model calls (model_route = "agent")."""
+    from benchflow.agents.registry import (
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+        AgentConfig,
+    )
+
+    name = "en191-own-route"
+    monkeypatch.setitem(
+        AGENTS,
+        name,
+        AgentConfig(
+            name=name,
+            install_cmd="true",
+            launch_cmd=f"{name} --acp",
+            model_route="agent",
+        ),
+    )
+    monkeypatch.setitem(AGENT_INSTALLERS, name, "true")
+    monkeypatch.setitem(AGENT_LAUNCH, name, f"{name} --acp")
+    return name
+
+
+@pytest.mark.parametrize("model", [None, MODEL], ids=["no-label", "label"])
+async def test_own_model_route_has_no_proxy_layer_or_proxy_disk(
+    client, tmp_path, own_route_agent, model
+):
+    """An agent with model_route = "agent" gets no proxy layer
+    in the recipe and no 1024 MB proxy footprint on its disk, with or without
+    a model label (test_1169 is the same task with the proxy: 2304 MB)."""
+    from benchflow.sandbox.daytona_layers import (
+        AGENT_FOOTPRINT_MB,
+        plan_install_layers,
+    )
+
+    plan = plan_install_layers(agent=own_route_agent, model=model, agent_env=AGENT_ENV)
+    assert plan.proxy is None
+    assert plan.footprint_mb == AGENT_FOOTPRINT_MB
+
+    sandbox = await _start(
+        client, tmp_path / "trial-1", agent=own_route_agent, model=model
+    )
+    assert sandbox._install_layers.proxy is None
+    recipe = client.requests[0].image.dockerfile()
+    assert all("litellm" not in script for script in _scripts(recipe))
+    record = json.loads((tmp_path / "trial-1" / "sandbox.json").read_text())
+    assert record["install_layers"]["footprint_mb"] == AGENT_FOOTPRINT_MB
+    # 1024 MB of task storage plus the agent's install: one GiB less.
+    assert client.requests[0].resources.disk == 3

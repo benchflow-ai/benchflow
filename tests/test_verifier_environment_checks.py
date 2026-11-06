@@ -210,7 +210,7 @@ async def test_guard_stays_off_pythonpath_when_every_python_has_a_copy(
 
     assert env["PYTHONPATH"] == image_pythonpath
     guard = pytest_plugin_guard_name(env["PYTEST_ADDOPTS"])
-    assert guard is not None and guard.startswith("_benchflow_guard_")
+    assert guard is not None and guard.startswith("_runtime_guard_")
 
 
 @pytest.mark.asyncio
@@ -597,7 +597,7 @@ def _receipt_sandbox(tmp_path: Path, rollout_paths: RolloutPaths) -> _MappedSand
         {
             "/logs/verifier": on_disk(rollout_paths.verifier_dir),
             "/tests": tmp_path / "sandbox-tests",
-            "/run/benchflow": tmp_path / "sandbox-run-benchflow",
+            "/run/runtime": tmp_path / "sandbox-run-benchflow",
         }
     )
 
@@ -642,7 +642,7 @@ async def test_recovery_start_receipt_lives_outside_the_output_dir(tmp_path):
     assert verifier.execution_receipt is not None
     receipt, service = verifier.execution_receipt
     assert service == "main"
-    assert receipt.startswith("/run/benchflow/")
+    assert receipt.startswith("/run/runtime/")
     assert not receipt.startswith("/logs/")
     assert sorted(p.name for p in rollout_paths.verifier_dir.iterdir()) == [
         "reward.txt",
@@ -663,7 +663,7 @@ async def test_unwritable_receipt_dir_leaves_start_unknown(tmp_path):
         {
             "/logs/verifier": on_disk(rollout_paths.verifier_dir),
             "/tests": tmp_path / "sandbox-tests",
-            "/run/benchflow": blocker / "run",
+            "/run/runtime": blocker / "run",
         }
     )
 

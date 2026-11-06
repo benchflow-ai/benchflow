@@ -167,6 +167,7 @@ class DefaultRolloutPlanes:
         sandbox_user: str,
         *,
         workspace: str,
+        agents: list[str] | None = None,
         timeout_sec: int = 120,
         guard_daemon: bool = True,
     ) -> str:
@@ -174,6 +175,7 @@ class DefaultRolloutPlanes:
             env,
             sandbox_user,
             workspace=workspace,
+            agents=agents,
             timeout_sec=timeout_sec,
             guard_daemon=guard_daemon,
         )
@@ -238,6 +240,9 @@ class DefaultRolloutPlanes:
     ) -> None:
         await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
 
+    async def enforce_offline_uid_egress(self, env: Any, sandbox_user: str) -> None:
+        await enforce_sandbox_uid_egress(env, sandbox_user, refuse_dns=True)
+
     async def install_agent(
         self,
         env: Any,
@@ -290,12 +295,13 @@ class DefaultRolloutPlanes:
         *,
         model_gateway_url: str | None = None,
     ) -> None:
-        if denylist.native_claude_model_only and sandbox_user is None:
+        native = denylist.native_claude_model_only or denylist.native_codex_model_only
+        if native and sandbox_user is None:
             raise ValueError("Native OAuth transport requires a sandbox user")
         await start_egress_denylist(
             env, sandbox_user, denylist, model_gateway_url=model_gateway_url
         )
-        if denylist.native_claude_model_only:
+        if native:
             assert sandbox_user is not None
             await enforce_sandbox_uid_egress(env, sandbox_user)
 

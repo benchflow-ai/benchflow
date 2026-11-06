@@ -55,8 +55,11 @@ def frozen_permissions(monkeypatch, inspector_tools):
     monkeypatch.setattr(
         lockdown,
         "_trusted_path_extras_cmd",
-        lambda path, blocked, agent=None: original(
-            path, dataclasses.replace(blocked, inspector=inspector_tools), agent
+        lambda path, blocked, agent=None, **kwargs: original(
+            path,
+            dataclasses.replace(blocked, inspector=inspector_tools),
+            agent,
+            **kwargs,
         ),
     )
     monkeypatch.setattr(lockdown, "_path_inspector", lambda env: inspector_tools)

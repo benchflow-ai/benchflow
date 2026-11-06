@@ -303,7 +303,7 @@ async def test_proxy_serves_the_selected_family_login(
     assert await _proxy_key(monkeypatch, "claude-agent-acp", model, explicit) == served
 
 
-RAW = "/opt/benchflow/bin/claude-agent-acp"
+RAW = "/opt/runtime/bin/claude-agent-acp"
 
 
 @pytest.mark.asyncio

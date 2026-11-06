@@ -436,7 +436,7 @@ def _stdout_tail_failure_line(stdout_path: Path | ReachablePath) -> FailureLine 
             refused = line.split(_GUARD_REFUSAL_MARKER, 1)[1].strip()
             return FailureLine(
                 "pytest did not run: the verifier guard refused pytest plugin "
-                f"{refused} (see docs/sandboxes/threat-model.md#pytest-plugin-guard)"
+                f"{refused} (see docs/tasks/reward-hacking.md)"
             )
         bare = line.strip().strip("=").strip()
         if _PYTEST_SUMMARY_RE.match(bare):

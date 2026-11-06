@@ -1,6 +1,6 @@
 """BenchFlow: run agents on benchmark tasks in sandboxes and score them.
 
-Entry points (see docs/reference/python-api.md; runnable examples in
+Entry points (see docs/reference/python.md; runnable examples in
 docs/examples/python-sdk/, starting with quickstart.py):
 
 - One rollout: ``run_sync(RolloutConfig(task_path=..., agent=..., model=...,
@@ -20,7 +20,7 @@ docs/examples/python-sdk/, starting with quickstart.py):
   captured token ids (``bench train stream``).
 - Re-score stored trials with a changed verifier: ``regrade(job, tasks_dir=...)``.
 - Save configs for the CLI: ``Evaluation.to_yaml`` and ``RolloutConfig.to_yaml``
-  (``bench eval run --config``); docs/reference/cli-python-parity.md maps every
+  (``bench eval run --config``); docs/reference/cli-python.md maps every
   ``bench eval run`` / ``bench eval branch`` flag to Python.
 """
 
@@ -210,6 +210,7 @@ if TYPE_CHECKING:
         stream_rollouts,
     )
     from benchflow.trajectories.types import Trajectory
+    from benchflow.trial_budget import TrialBudget
 
 
 # Public API surface. Anything not in this list is implementation detail and
@@ -270,6 +271,7 @@ __all__ = [
     "Evaluation",
     "EvaluationConfig",
     "Budget",
+    "TrialBudget",
     "EvaluationResult",
     "RetryConfig",
     "BenchmarkMetrics",
@@ -409,6 +411,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "branch",
     ),
     "benchflow.budget": ("Budget",),
+    "benchflow.trial_budget": ("TrialBudget",),
     "benchflow.contracts.user": (
         "BaseUser",
         "DocumentNudgeUser",

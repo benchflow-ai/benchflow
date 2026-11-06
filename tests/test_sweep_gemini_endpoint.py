@@ -23,7 +23,7 @@ async def test_native_gemini_uses_resolved_endpoint_and_key(
     base, key_name, monkeypatch
 ):
     async def layer(*args, **kwargs):
-        return "/opt/benchflow/litellm/bin/python", None
+        return "/opt/runtime/litellm/bin/python", None
 
     monkeypatch.setattr(runtime, "_proxy_from_layer", layer)
     env = {

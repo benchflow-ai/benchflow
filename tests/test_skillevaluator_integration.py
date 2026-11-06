@@ -2,11 +2,12 @@
 
 Neither NVIDIA tool is a benchflow dependency, so most tests drive the adapter
 through fake ``skillevaluator`` and ``skillspector`` executables that replay
-reports recorded from SkillEvaluator 0.5.0 and SkillSpector 2.12.0 (trimmed;
-paths made relative). Both real CLIs exit 0 or 1 with a JSON report and exit 2
-on a run error, SkillSpector after writing a report that says so; the fakes do
-the same. The last tests run the real CLIs and are skipped unless both are on
-``PATH``.
+reports recorded from SkillEvaluator 0.6.0 (``tests/fixtures/skillevaluator_0_6_0``)
+and 0.5.0 and from SkillSpector 2.12.0 (trimmed; paths made relative). Both real
+CLIs exit 0 or 1 with a JSON report and exit 2 on a run error, SkillSpector after
+writing a report that says so; the fakes do the same. SkillEvaluator 0.6.0 also
+refuses a report directory inside the skill it checks, and its fake does too.
+The last tests run the real CLIs and are skipped unless both are on ``PATH``.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import pytest
 from benchflow.integrations.skillevaluator import (
     BIN_ENV,
     DEFAULT_TIER1_CHECKS,
+    INSTALL_COMMANDS,
     SKILLEVALUATOR,
     SKILLSPECTOR,
     Finding,
@@ -39,6 +41,14 @@ from benchflow.integrations.skillevaluator import (
     parse_tier1_report,
     tool_version,
 )
+
+_RECORDED_060 = Path(__file__).parent / "fixtures" / "skillevaluator_0_6_0"
+
+
+def _recorded_060(name: str) -> dict:
+    """A report recorded from SkillEvaluator 0.6.0 and trimmed (see the folder)."""
+    return json.loads((_RECORDED_060 / f"{name}.json").read_text(encoding="utf-8"))
+
 
 _BANDIT_B314 = (
     "Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known "
@@ -221,6 +231,15 @@ TIER1_CVE_REPORT = {
     "quality_summary": [],
 }
 
+# The same two commands under SkillEvaluator 0.6.0, recorded and trimmed the
+# same way (the same four validators, the same findings, the same three CVE
+# strings). 0.6.0 adds keys to every report (``publication*``, ``skipped``,
+# ``success_details``, ``dependency_coverage``) and mirrors each passed check
+# into ``legacy.messages`` as ``[OK] <check>: <message>``, so the pip-audit
+# outcome line is ``[OK] pip_audit: requirements.txt: Found 37 ...``.
+TIER1_REPORT_060 = _recorded_060("tier1-citation-management")
+TIER1_CVE_REPORT_060 = _recorded_060("tier1-requirements-cve")
+
 # `skillspector scan <skill> --no-llm --format json` (2.12.0) on the same
 # skill, trimmed to two of its eleven issues.
 SKILLSPECTOR_REPORT = {
@@ -285,6 +304,13 @@ with log.open("a") as fh:
 if tool == "skillevaluator":
     target = Path(args[2])
     out = Path(args[args.index("-o") + 1])
+    # SkillEvaluator 0.6.0 will not write a report inside the skill it checks.
+    if {refuse_inside!r} and target.resolve() in (out.resolve(), *out.resolve().parents):
+        sys.stderr.write(
+            "Error: Report output must be outside the publication target; "
+            "use an external --output-dir: " + str(out) + "\\n"
+        )
+        sys.exit(1)
 else:
     target = Path(args[1])
     out = Path(args[args.index("--output") + 1])
@@ -330,12 +356,24 @@ def _install_fakes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     versions: dict[str, str] | None = None,
+    *,
+    evaluator: str = "0.6.0",
 ) -> Path:
-    """Put fake CLIs behind the BENCHFLOW_*_BIN overrides; return the argv log."""
+    """Put fake CLIs behind the BENCHFLOW_*_BIN overrides; return the argv log.
+
+    *evaluator* picks which SkillEvaluator the fake plays: it replays that
+    version's recorded reports and, from 0.6.0 on, refuses a report directory
+    inside the skill.
+    """
     versions = versions or {
-        SKILLEVALUATOR: "skillevaluator, version 0.5.0",
+        SKILLEVALUATOR: f"skillevaluator, version {evaluator}",
         SKILLSPECTOR: "SkillSpector v2.12.0",
     }
+    tier1, cve = (
+        (TIER1_REPORT_060, TIER1_CVE_REPORT_060)
+        if evaluator == "0.6.0"
+        else (TIER1_REPORT, TIER1_CVE_REPORT)
+    )
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
     log = tmp_path / "argv.log"
@@ -343,12 +381,13 @@ def _install_fakes(
     script.write_text(
         textwrap.dedent(
             _FAKE_CLI.format(
-                tier1=json.dumps(TIER1_REPORT),
-                cve=json.dumps(TIER1_CVE_REPORT),
+                tier1=json.dumps(tier1),
+                cve=json.dumps(cve),
                 spector=json.dumps(SKILLSPECTOR_REPORT),
                 safe=json.dumps(SAFE_SKILLSPECTOR_REPORT),
                 versions=versions,
                 log=str(log),
+                refuse_inside=evaluator == "0.6.0",
             )
         )
     )
@@ -424,12 +463,27 @@ class TestTools:
         )
         evaluator, spector = _tools()
         assert evaluator.version == "0.4.2"
-        assert "older than 0.5.0" in (evaluator.warning() or "")
+        assert "older than 0.6.0" in (evaluator.warning() or "")
         assert spector.version is None
         assert "could not read" in (spector.warning() or "")
         assert Tool(SKILLSPECTOR, "x", "2.12.0").warning() is None
         assert Tool(SKILLSPECTOR, "x", "2.13.1").warning() is None
         assert tool_version(str(tmp_path / "missing")) is None
+
+    def test_skillevaluator_0_6_0_is_the_supported_release(self):
+        """BenchFlow moved from SkillEvaluator 0.5.0 to 0.6.0.
+
+        0.6.0 pins SkillSpector to 2.12.0 itself, so that pin stays.
+        """
+        assert "SkillEvaluator.git@v0.6.0" in INSTALL_COMMANDS[SKILLEVALUATOR]
+        assert "SkillSpector.git@v2.12.0" in INSTALL_COMMANDS[SKILLSPECTOR]
+        assert Tool(SKILLEVALUATOR, "x", "0.6.0").warning() is None
+        assert Tool(SKILLEVALUATOR, "x", "0.6.1").warning() is None
+        # 0.5.0 still parses, but audits its own environment for a skill's
+        # pyproject.toml, so it is told to upgrade.
+        assert "older than 0.6.0" in (
+            Tool(SKILLEVALUATOR, "x", "0.5.0").warning() or ""
+        )
 
 
 class TestParsing:
@@ -549,6 +603,65 @@ class TestParsing:
         assert (r.findings, r.incomplete_scans) == ([], ["pip-audit"])
         audited = parse_tier1_report(TIER1_CVE_REPORT, tmp_path)
         assert audited.incomplete_scans == []
+
+    def test_tier1_report_0_6_0_reads_like_0_5_0(self, tmp_path):
+        """A skill's result does not change with SkillEvaluator 0.6.0.
+
+        0.6.0 adds keys to every report (``publication*``, ``success_details``)
+        and ``[OK]`` lines to ``legacy.messages``; none may change what is read.
+        """
+        skill = tmp_path / "citation-management"
+        assert parse_tier1_report(TIER1_REPORT_060, skill) == parse_tier1_report(
+            TIER1_REPORT, skill
+        )
+        cve = tmp_path / "cve-skill"
+        audited = parse_tier1_report(TIER1_CVE_REPORT_060, cve)
+        assert audited == parse_tier1_report(TIER1_CVE_REPORT, cve)
+        assert audited.incomplete_scans == []
+
+    @pytest.mark.parametrize(
+        "recorded",
+        ["requirements-cve", "requirements-clean", "pyproject-cve"],
+    )
+    def test_completed_audit_is_not_incomplete_in_0_6_0(self, tmp_path, recorded):
+        """0.6.0 writes the pip-audit outcome as ``[OK] pip_audit: ...``.
+
+        Looking only for the bare ``requirements.txt: Found ...`` line of 0.5.0
+        listed every completed audit as an unverified ``pip-audit`` scan.
+        """
+        report = _recorded_060(f"tier1-{recorded}")
+        messages = report["results"][0]["legacy"]["messages"]
+        assert any(m.startswith("[OK] pip_audit: ") for m in messages), messages
+        r = parse_tier1_report(report, tmp_path / "s")
+        assert r.incomplete_scans == []
+
+    def test_pip_audit_that_cannot_finish_is_incomplete_once_in_0_6_0(self, tmp_path):
+        # Recorded: requests==2.19.0 with urllib3==2.0.0 cannot be resolved
+        # together. 0.5.0 passed that audit silently; 0.6.0 marks the scan
+        # incomplete itself, and benchflow's own check agrees with it.
+        conflict = parse_tier1_report(
+            _recorded_060("tier1-requirements-conflict"), tmp_path / "s"
+        )
+        assert (conflict.status, conflict.passed) == ("incomplete", False)
+        assert (conflict.findings, conflict.incomplete_scans) == ([], ["pip-audit"])
+        # A pyproject.toml range cannot be audited either: 0.6.0 wants exact pins.
+        ranged = parse_tier1_report(
+            _recorded_060("tier1-pyproject-range"), tmp_path / "s"
+        )
+        assert (ranged.status, ranged.failed_checks) == ("incomplete", [])
+        assert (ranged.findings, ranged.incomplete_scans) == ([], ["pip-audit"])
+
+    def test_pyproject_pins_are_audited_in_0_6_0(self, tmp_path):
+        # 0.5.0 audited its own environment for a skill's pyproject.toml and
+        # reported that environment's CVEs (litellm, ...) as the skill's. 0.6.0
+        # audits the pins the skill declares.
+        r = parse_tier1_report(_recorded_060("tier1-pyproject-cve"), tmp_path / "s")
+        assert r.failed_checks == ["Dependency Vulnerability Audit"]
+        assert r.findings
+        assert all(f.message.startswith("requests==2.19.0: ") for f in r.findings)
+        assert {(f.severity, f.category, f.check) for f in r.findings} == {
+            ("high", "DEPENDENCY", "CVE")
+        }
 
     def test_structured_dependency_findings_are_not_doubled(self, tmp_path):
         structured = {
@@ -695,6 +808,42 @@ class TestCheckSkill:
         tools = [call[0] for call in _calls(fakes)]
         assert tools == [SKILLEVALUATOR, SKILLSPECTOR]
 
+    def test_report_directory_inside_the_skill(self, tmp_path, fakes):
+        """SkillEvaluator 0.6.0 refuses a report directory inside the skill.
+
+        ``-o skill/reports`` worked with 0.5.0. Passed through to 0.6.0 it left
+        the skill with "exited 1 with no usable report", so the tool now writes
+        to a private directory and the report is copied to the one asked for.
+        """
+        evaluator, spector = _tools()
+        skill = _write_skill(tmp_path, "citation-management")
+        out = skill / "reports"
+        r = check_skill(
+            skill, skillevaluator=evaluator, skillspector=spector, output_dir=out
+        )
+        assert r.errors == []
+        assert r.tier1 and r.tier1.status == "incomplete"
+        kept = out / "skillevaluator" / "skillevaluator-tier1.json"
+        assert r.tier1.report_path == kept and kept.is_file()
+        assert json.loads(kept.read_text()) == TIER1_REPORT_060
+        (call,) = [c for c in _calls(fakes) if c[0] == SKILLEVALUATOR]
+        written = Path(call[call.index("-o") + 1]).resolve()
+        assert skill.resolve() not in (written, *written.parents)
+        assert not written.exists()  # the private directory is removed
+
+    def test_error_names_a_report_that_is_still_there(self, tmp_path, fakes):
+        # The private directory is gone by the time the error is shown, so a
+        # report the tool wrote before failing is named where it was kept.
+        evaluator, _ = _tools()
+        skill = _write_skill(tmp_path, "s-odd")
+        out = tmp_path / "out"
+        r = check_skill(
+            skill, skillevaluator=evaluator, skillspector=None, output_dir=out
+        )
+        kept = out / "skillevaluator" / "skillevaluator-tier1.json"
+        assert r.tier1 is None and kept.is_file()
+        assert str(kept) in r.errors[0]
+
     def test_temp_reports_are_discarded(self, tmp_path, fakes):
         evaluator, spector = _tools()
         skill = _write_skill(tmp_path, "s-clean")
@@ -785,7 +934,7 @@ class TestCli:
         result = self._invoke(runner, str(skill))
         assert result.exit_code == 1, result.output
         out = result.output
-        assert "SkillEvaluator 0.5.0" in out and "SkillSpector 2.12.0" in out
+        assert "SkillEvaluator 0.6.0" in out and "SkillSpector 2.12.0" in out
         assert "C 78.5" in out and "DO_NOT_INSTALL" in out
         assert "author_missing" in out and "AR2" in out
         assert "assets/citation_checklist.md:203" in out
@@ -799,7 +948,7 @@ class TestCli:
         result = self._invoke(runner, str(tasks), "--json")
         assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout)
-        assert payload["tools"][SKILLEVALUATOR]["version"] == "0.5.0"
+        assert payload["tools"][SKILLEVALUATOR]["version"] == "0.6.0"
         assert [s["skill_name"] for s in payload["skills"]] == ["a-clean", "b-skill"]
         assert [s["blocking"] for s in payload["skills"]] == [False, True]
         assert payload["blocking"] == 1
@@ -827,6 +976,28 @@ class TestCli:
             out / "s-clean" / "skillevaluator" / "skillevaluator-tier1.json"
         ).is_file()
         assert (out / "s-clean" / "skillspector.json").is_file()
+
+    def test_output_dir_inside_the_skill(self, tmp_path, fakes, runner):
+        """``-o`` inside the skill failed under SkillEvaluator 0.6.0."""
+        skill = _write_skill(tmp_path, "s-clean")
+        out = skill / "reports"
+        result = self._invoke(runner, str(skill), "-o", str(out))
+        assert result.exit_code == 0, result.output
+        assert "exited 1 with no usable report" not in result.output
+        kept = out / "s-clean" / "skillevaluator" / "skillevaluator-tier1.json"
+        assert kept.is_file()
+        assert (out / "s-clean" / "skillspector.json").is_file()
+
+    def test_older_skillevaluator_is_warned_and_still_read(
+        self, tmp_path, runner, monkeypatch
+    ):
+        _install_fakes(tmp_path, monkeypatch, evaluator="0.5.0")
+        skill = _write_skill(tmp_path, "citation-management")
+        result = self._invoke(runner, str(skill))
+        assert result.exit_code == 1, result.output
+        assert "older than 0.6.0" in result.output
+        assert "SkillEvaluator 0.5.0" in result.output
+        assert "author_missing" in result.output and "C 78.5" in result.output
 
     def test_one_tool_missing_runs_the_other(
         self, tmp_path, fakes, runner, monkeypatch
@@ -926,6 +1097,29 @@ def test_real_tools_contract(tmp_path, monkeypatch):
     assert r.security.analysis_status
     assert r.security.findings, "SkillSpector found nothing in a planted injection"
     assert r.is_blocking()
+
+
+@pytest.mark.skipif(
+    not _real_tools_on_path(),
+    reason="real skillevaluator and skillspector executables not on PATH",
+)
+def test_real_report_directory_inside_the_skill(tmp_path, monkeypatch):
+    """Real SkillEvaluator, reports kept inside the skill itself."""
+    monkeypatch.delenv(BIN_ENV[SKILLEVALUATOR], raising=False)
+    evaluator = locate_tool(SKILLEVALUATOR)
+    assert evaluator is not None
+    skill = _write_skill(tmp_path, "inside-skill")
+    out = skill / "reports"
+    r = check_skill(
+        skill,
+        skillevaluator=evaluator,
+        skillspector=None,
+        checks=("schema",),
+        output_dir=out,
+    )
+    assert r.errors == [] and r.tier1 is not None
+    assert r.tier1.report_path == out / "skillevaluator" / "skillevaluator-tier1.json"
+    assert r.tier1.report_path.is_file()
 
 
 @pytest.mark.skipif(

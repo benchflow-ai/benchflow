@@ -153,6 +153,32 @@ def test_sandbox_cleanup_degrades_cleanly_when_daytona_sdk_absent(monkeypatch):
     assert "sandbox-daytona" in result.output
 
 
+def test_sandbox_cleanup_without_a_daytona_key_skips_daytona_and_exits_zero(
+    monkeypatch,
+):
+    """The Daytona extra installed but no key (a Docker-only machine or CI):
+    there is no Daytona account to clean, so the teardown step passes."""
+    from benchflow.cli import sandbox as sandbox_cli
+    from benchflow.sandbox import daytona as daytona_sandbox
+
+    def _no_key():
+        raise RuntimeError(
+            "Authentication credentials not found. Set DAYTONA_API_KEY, or both "
+            "DAYTONA_JWT_TOKEN and DAYTONA_ORGANIZATION_ID."
+        )
+
+    _install_fake_daytona(monkeypatch, [])
+    monkeypatch.setattr(daytona_sandbox, "build_sync_client", _no_key)
+    monkeypatch.setattr(sandbox_cli, "cleanup_docker_snapshots", lambda **_: None)
+    monkeypatch.setattr(sandbox_cli, "cleanup_docker_leftovers", lambda **_: True)
+
+    result = CliRunner().invoke(app, ["sandbox", "cleanup"])
+
+    assert result.exit_code == 0, result.output
+    assert "Daytona: no key set (DAYTONA_API_KEY)" in result.output
+    assert "Daytona cleanup failed" not in result.output
+
+
 def test_cleanup_summary_does_not_call_other_owners_sandboxes_young(monkeypatch):
     """With --max-age 0 and only another owner's
     sandboxes listed, cleanup printed "0 sandboxes deleted (1 skipped, younger

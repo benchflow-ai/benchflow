@@ -7,13 +7,13 @@ in the order rollouts finish, until the job ends. ``bench train stream
 trainer can read them while the job is still running (online RL): each record
 carries the rollout's reward and group id and, when the gateway captured
 them, the token ids and logprobs of every model call
-(``BENCHFLOW_CAPTURE_TOKEN_LOGPROBS=1``, see ``docs/reference/token-capture.md``).
+(``BENCHFLOW_CAPTURE_TOKEN_LOGPROBS=1``, see ``docs/train/trainer.md#token-ids-and-logprobs``).
 
 The record is ``benchflow.rollout-stream.v1``; its JSON Schema is
 :data:`SCHEMA`, committed as
 ``docs/reference/schemas/benchflow-rollout-stream.v1.schema.json``
 (``python -m benchflow.trajectories.rollout_stream docs/reference/schemas``).
-See ``docs/reference/rollout-stream.md``.
+See ``docs/train/trainer.md#stream-rollouts-while-a-job-runs``.
 
 A rollout counts as finished when its ``result.json`` exists: BenchFlow
 writes it atomically and last, after the trajectory and the gateway log. The

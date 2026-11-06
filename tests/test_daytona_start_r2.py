@@ -773,7 +773,7 @@ def test_cleanup_keeps_a_live_lease_and_deletes_a_lapsed_one(monkeypatch, capsys
     )
     from benchflow.cli import main as cli_main
 
-    monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda: server)
+    monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda **_: server)
     monkeypatch.setattr(cli_main, "_cleanup_daytona_snapshots", lambda *a, **k: None)
 
     cli_main._cleanup_daytona_sandboxes(dry_run=False, max_age_minutes=1440)

@@ -47,8 +47,17 @@ class PreparedReview:
         }
 
 
-def prepare_review(task_path: Path, reviewer: ReviewerConfig) -> PreparedReview | None:
-    """Detect the task rubric and reject missing reviewer auth before solving."""
+def prepare_review(
+    task_path: Path,
+    reviewer: ReviewerConfig,
+    *,
+    sandbox_setup_timeout: int | None = None,
+) -> PreparedReview | None:
+    """Detect the task rubric and reject missing reviewer auth before solving.
+
+    A reviewer without its own setup timeout takes the reviewed run's
+    *sandbox_setup_timeout*.
+    """
     from benchflow._utils.task_authoring import task_digest
     from benchflow.agents.env import resolve_agent_env
     from benchflow.evaluation import effective_model
@@ -85,6 +94,8 @@ def prepare_review(task_path: Path, reviewer: ReviewerConfig) -> PreparedReview 
     except ValueError as exc:
         raise ValueError(f"Reviewer preflight for {rubric_path}: {exc}") from exc
     config = reviewer.model_copy(update={"model": model, "agent_env": resolved_env})
+    if config.setup_timeout_sec is None and sandbox_setup_timeout is not None:
+        config = config.model_copy(update={"setup_timeout_sec": sandbox_setup_timeout})
     validate_reviewer_backend(config)
     return PreparedReview(
         task_path=task_path,

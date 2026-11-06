@@ -1,7 +1,7 @@
 """Node-scoped scoring — the Reward plane's ``score(node)`` path.
 
 The architecture's ``Reward`` contract is ``score(node) -> VerifyResult``
-(``docs/architecture.md`` § "The four contracts"). :func:`score_node` is the
+(``docs/start/how-it-works.md`` § "The four contracts"). :func:`score_node` is the
 contract-shaped entry point: it runs a set of per-dimension scorers over a
 ``RolloutNode`` and aggregates their tagged events into a ``VerifyResult``.
 

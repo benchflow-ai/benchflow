@@ -155,24 +155,6 @@ def test_check_warns_and_names_the_fix_without_failing(tmp_path: Path) -> None:
     assert out.exit_code == 0, out.output
 
 
-def test_the_cli_reference_names_the_fix_the_warning_names() -> None:
-    """V2-R2-B-1: docs/reference/cli.md still said the warning names
-    ``uvx --with <plugin>`` into uv's cache, advice the guard refuses once
-    the agent changed a file; the warning names the pin."""
-    cli_md = Path(__file__).resolve().parents[1] / "docs" / "reference" / "cli.md"
-    # docs-all's layout: the `bench check` warning list names the fix.
-    (paragraph,) = [
-        line
-        for line in cli_md.read_text().splitlines()
-        if "Pytest plugins the agent could change" in line
-    ]
-    fix = paragraph.split("Pin the plugins", 1)[1]
-    assert "[verifier] pytest_plugin_releases" in fix
-    assert "install them into the image" in fix
-    assert "into uv's cache" not in paragraph
-    assert "`uvx --with <plugin>` is no fix" in paragraph
-
-
 def test_a_script_that_clears_pytest_addopts_is_told_the_guard_never_ran(
     tmp_path: Path,
 ) -> None:

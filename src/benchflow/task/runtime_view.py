@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
 
@@ -51,8 +52,18 @@ class TaskRuntimeView:
     oracle_dir: Path
     environment_dir: Path
     scenes: tuple[Scene, ...]
-    source_hashes: Mapping[str, str]
     compatibility: TaskRuntimeCompatibility
+
+    @cached_property
+    def source_hashes(self) -> Mapping[str, str]:
+        """SHA-256 of each source file, by task-relative POSIX path.
+
+         Read on first use, not when the view is built: the launch checks
+         build a view twice per trial for its paths and capabilities alone,
+         and hashing a large ``environment/`` there cost seconds each time
+        .
+        """
+        return _source_hashes(TaskPaths(self.task_dir))
 
     @classmethod
     def from_task_dir(cls, task_dir: str | Path) -> TaskRuntimeView:
@@ -134,7 +145,6 @@ class TaskRuntimeView:
             oracle_dir=paths.solution_dir,
             environment_dir=paths.environment_dir,
             scenes=tuple(scenes),
-            source_hashes=_source_hashes(paths),
             compatibility=TaskRuntimeCompatibility(
                 has_task_md=paths.task_document_path.exists(),
                 has_legacy_definition=(

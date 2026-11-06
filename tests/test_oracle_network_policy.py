@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from benchflow.rollout._setup import ORACLE_IMAGE_PATH
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.egress_denylist import EGRESS_PORT
 
@@ -89,7 +90,7 @@ def _is_proxy_start(cmd: str) -> bool:
 
 
 def _is_proxy_stop(cmd: str) -> bool:
-    return "rm -rf /opt/benchflow-egress" in cmd
+    return "rm -rf /opt/runtime-egress" in cmd
 
 
 def _task(root: Path, network: str = "", extra: str = "") -> Path:
@@ -157,7 +158,7 @@ async def test_an_open_task_arms_nothing(tmp_path):
 
     assert not any(_is_arm(c) or _is_proxy_start(c) for _, c, _ in env.calls)
     _, solve_cmd, solve_kwargs = env.calls[env.index(_is_solve)]
-    assert solve_cmd.startswith("bash /solution/solve.sh")
+    assert solve_cmd.startswith(ORACLE_IMAGE_PATH + "bash /solution/solve.sh")
     assert "HTTPS_PROXY" not in solve_kwargs["env"]
 
 
@@ -215,7 +216,7 @@ async def test_an_image_whose_user_is_not_root_is_matched_by_its_uid(tmp_path):
     assert "user" not in uid_call[2]
     assert "--uid-owner 1000" in env.calls[env.index(_is_arm)][1]
     solve_cmd = env.calls[env.index(_is_solve)][1]
-    assert solve_cmd.startswith("bash /solution/solve.sh")
+    assert solve_cmd.startswith(ORACLE_IMAGE_PATH + "bash /solution/solve.sh")
     assert "setgroups" not in solve_cmd
 
 

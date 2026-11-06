@@ -41,7 +41,7 @@ from benchflow.sandbox.env_layers import (
 RECIPE = AgentLayerRecipe(
     agent="fake-agent",
     version="1.2.3",
-    install_cmd="mkdir -p /opt/benchflow/bin && echo fake > /opt/benchflow/bin/fake-agent",
+    install_cmd="mkdir -p /opt/runtime/bin && echo fake > /opt/runtime/bin/fake-agent",
 )
 BASE = BaseImage(
     ref="bf__task",
@@ -548,13 +548,13 @@ class TestBuildAndReuse:
     @pytest.mark.parametrize(
         "config",
         [
-            {"Entrypoint": ["sh", "-c", "echo changed > /opt/benchflow/bin/gemini"]},
+            {"Entrypoint": ["sh", "-c", "echo changed > /opt/runtime/bin/gemini"]},
             {
                 "Healthcheck": {
-                    "Test": ["CMD-SHELL", "echo changed > /opt/benchflow/bin/gemini"]
+                    "Test": ["CMD-SHELL", "echo changed > /opt/runtime/bin/gemini"]
                 }
             },
-            {"Volumes": {"/opt/benchflow/bin": {}}},
+            {"Volumes": {"/opt/runtime/bin": {}}},
         ],
         ids=["entrypoint", "healthcheck", "volume"],
     )
@@ -746,6 +746,7 @@ class TestBuildAndReuse:
         )
         assert result.image == "bf__layer__trial-1"
         assert docker.tags["bf__layer__trial-1"] is docker.tags[result.tag]
+        assert result.daemon_id is not None
         assert DockerLayers._claims[(result.daemon_id, result.key)] == 1
         DockerLayers.release(result.key, daemon=result.daemon_id)
         assert (result.daemon_id, result.key) not in DockerLayers._claims
@@ -1170,3 +1171,29 @@ class TestPrune:
         spec = env_layers._marker_filter(AGENT, key)
         assert spec == f'description~="benchflow[.]layer=agent key={key};"'
         assert shlex.split(spec) == [f"description~=benchflow[.]layer=agent key={key};"]
+
+
+@pytest.mark.asyncio
+async def test_low_disk_prunes_before_build(docker, monkeypatch):
+    """Guards PR #66: reclaim a full disk before building."""
+    docker.add_image("bf__low-disk")
+    layers = DockerLayers()
+    events = []
+
+    async def free():
+        return 4 * env_layers._GB
+
+    async def prune(*args, **kwargs):
+        events.append("prune")
+        return env_layers.PruneReport()
+
+    original = layers._build_agent_layer
+
+    async def build(*args, **kwargs):
+        assert events == ["prune"], "build started before low-disk cleanup"
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(layers, "_free_bytes", free)
+    monkeypatch.setattr(layers, "prune", prune)
+    monkeypatch.setattr(layers, "_build_agent_layer", build)
+    await layers.ensure_agent_layer(RECIPE, "bf__low-disk")

@@ -20,6 +20,10 @@ Authoring vs. consuming, on purpose:
   acp_model_config_id, acp_effort_config_id, disallow_web_tools_*); they keep
   their AgentConfig defaults because they are logic the shim owns, not data
   (see _SHIM_ONLY and the partition test).
+
+Contract 1.1 adds one data field, ``model_route``. A 1.0 manifest
+loads exactly as before; one that declares a 1.1 field is refused rather than
+guessed at, because the field changes who carries the agent's model calls.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
-from benchflow.agents.registry import AgentConfig
+from benchflow.agents.registry import MODEL_ROUTES, AgentConfig
 from benchflow.errors import UserError
 
 # This loader speaks contract major version 1. A manifest declaring a different
@@ -82,7 +86,13 @@ _FIELD_MAP = {
     "default_model": "default_model",
     "skill_paths": "skill_paths",
     "home_dirs": "home_dirs",
+    "model_route": "model_route",
 }
+
+# Data fields a later contract minor added -> that minor. Every other key of
+# _FIELD_MAP is contract 1.0. A manifest declaring an older minor may not use
+# them: its author schema had no such field.
+_FIELD_SINCE_MINOR = {"model_route": 1}
 
 # AgentConfig fields the contract deliberately does NOT carry: logic/credential
 # concerns the SHIM owns (credential-file emission, subscription auth, config-file
@@ -129,7 +139,7 @@ def _merge_core_shim_only(
     (subscription_auth, credential_files, acp_model_config_id, disallow_web_tools_*,
     ...); when a manifest overrides an EXISTING core agent in additive/compatible
     mode, those host-side/credential concerns are preserved from the core entry so
-    the merged config equals the original — the agents repo owns the 14 data fields,
+    the merged config equals the original — the agents repo owns the 15 data fields,
     core retains the un-shimmable host-side bits (e.g. subscription OAuth copy)."""
     merged = replace(
         manifest_config, **{f: getattr(core_config, f) for f in _SHIM_ONLY}
@@ -170,18 +180,20 @@ class LoadedManifest:
     aliases: tuple[str, ...]
 
 
-def _check_contract_version(raw: object) -> None:
+def _check_contract_version(raw: object) -> int:
+    """Validate ``contract_version`` and return its minor."""
     if not isinstance(raw, str) or not _VERSION_RE.match(raw):
         raise AgentManifestError(
             f"contract_version must look like MAJOR.MINOR[.PATCH]; got {raw!r}"
         )
-    major = int(raw.split(".", 1)[0])
+    major, minor = (int(part) for part in raw.split(".")[:2])
     if major != SUPPORTED_CONTRACT_MAJOR:
         raise AgentManifestError(
             f"contract_version {raw!r} declares major {major}; this loader speaks "
             f"contract {SUPPORTED_CONTRACT_MAJOR}.x",
             kind=ManifestIssueKind.INCOMPATIBLE,
         )
+    return minor
 
 
 def load_agent_manifest(path: str | Path) -> LoadedManifest:
@@ -210,7 +222,19 @@ def load_agent_manifest(path: str | Path) -> LoadedManifest:
         raise AgentManifestError(
             f"manifest {path}: aliases must be an array of strings"
         )
-    _check_contract_version(data["contract_version"])
+    minor = _check_contract_version(data["contract_version"])
+    for key, since in _FIELD_SINCE_MINOR.items():
+        if key in data and minor < since:
+            raise AgentManifestError(
+                f"manifest {path}: {key} needs contract_version "
+                f"{SUPPORTED_CONTRACT_MAJOR}.{since} or later; it declares "
+                f"{data['contract_version']!r}"
+            )
+    if data.get("model_route", MODEL_ROUTES[0]) not in MODEL_ROUTES:
+        raise AgentManifestError(
+            f"manifest {path}: model_route must be one of "
+            f"{', '.join(MODEL_ROUTES)}; got {data['model_route']!r}"
+        )
 
     protocol = data.get("protocol", "acp")
     if protocol not in _SUPPORTED_PROTOCOLS:

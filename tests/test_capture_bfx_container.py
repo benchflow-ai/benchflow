@@ -122,3 +122,17 @@ async def test_a_linked_workspace_path_is_captured_as_before(box, tmp_path):
     with_bfx.bfx_delivery = "bind"
     manifest = await capture_workspace(with_bfx, "/work", tmp_path / "bfx")
     assert manifest.workspace == "/app"
+
+
+@pytest.mark.asyncio
+async def test_a_single_file_is_captured_with_the_real_bfx(box, tmp_path):
+    """The pinned bfx scans a single-file root as `not-directory`; the
+    capture hands it to today's path and takes the file, as a declared
+    artifact `/app/answer.txt` needs (Terminal-Bench 4.1's artifacts)."""
+    plain = _sandbox(box)
+    before = await capture_workspace(plain, "/app/answer.txt", tmp_path / "python")
+    with_bfx = _sandbox(box)
+    with_bfx.bfx_delivery = "bind"
+    after = await capture_workspace(with_bfx, "/app/answer.txt", tmp_path / "bfx")
+    assert _entries(after) == _entries(before)
+    assert [(e.kind, e.size) for e in after.entries] == [("file", 3)]

@@ -121,7 +121,13 @@ def call_llm(prompt: str) -> str:
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text
+            text = "".join(
+                block.text for block in response.content
+                if isinstance(getattr(block, "text", None), str)
+            )
+            if not text.strip():
+                raise JudgeUnavailableError("Anthropic judge returned no text")
+            return text
         except ImportError:
             pass
         except Exception as e:
@@ -185,7 +191,7 @@ def judge_exact_match() -> float:
             content = stream.read(100_001)
             if len(content) > 100_000:
                 return 0.0
-            return float(bool(re.search(r'\b' + re.escape(ground_truth) + r'\b', content)))
+            return float(bool(re.search(r'(?<!\w)' + re.escape(ground_truth) + r'(?!\w)', content)))
     except (OSError, UnicodeError):
         return 0.0
     finally:

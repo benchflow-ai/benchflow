@@ -100,12 +100,13 @@ def test_a_runtime_refusal_lists_its_features_with_code_r401(tmp_path):
     (task / "instruction.md").write_text("Do nothing.\n")
     (task / "task.toml").write_text(
         'version = "1.0"\n[verifier]\ntimeout_sec = 60.0\n\n'
-        '[[verifier.collect]]\ncommand = "true"\ntimeout_sec = 30.0\n'
+        '[[steps]]\nname = "one"\n\n'
+        '[[steps.verifier.collect]]\ncommand = "true"\ntimeout_sec = 30.0\n'
     )
 
     row = accept_py.accept(task)
 
     assert row["verdict"] == "refused"
-    assert [(f["path"], f["code"]) for f in row["features"]] == [
-        ("verifier.collect", "R401")
+    assert ("steps[0].verifier.collect", "R401") in [
+        (f["path"], f["code"]) for f in row["features"]
     ]

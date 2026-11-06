@@ -19,7 +19,7 @@ ModelOption = Annotated[
     typer.Option(
         "--model",
         "-m",
-        help="Model id for the agent, e.g. claude-haiku-4-5-20251001 (none for oracle and nop)",
+        help="Model id for the agent, e.g. claude-haiku-5-5 (none for oracle and nop)",
     ),
 ]
 SandboxOption = Annotated[

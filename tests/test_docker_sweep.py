@@ -85,6 +85,9 @@ class FakeDaemon:
             return self._rm_containers(ids, force="--force" in args)
         if args[:2] == ["network", "rm"]:
             return self._rm_networks(args[2:])
+        if args[:4] == ["volume", "ls", "--filter", "label=benchflow.kept"]:
+            # Kept sandboxes' markers on the daemon: none in these scenarios.
+            return subprocess.CompletedProcess(args, 0, "", "")
         if args[:2] == ["volume", "ls"]:
             assert args[2:4] == ["--filter", f"label={TRIAL_VOLUME_LABEL}"]
             rows = [

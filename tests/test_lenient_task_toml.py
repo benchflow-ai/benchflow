@@ -214,15 +214,14 @@ def test_a_wrong_type_still_fails(tmp_path: Path) -> None:
 # ── task.toml verifier.collect keeps its own runtime refusal ─────────────────
 
 
-def test_verifier_collect_is_refused_at_run_time_not_at_load(tmp_path: Path) -> None:
+def test_verifier_collect_loads_and_is_honoured(tmp_path: Path) -> None:
     toml = TOML_EXAMPLE + (
         '\n[[verifier.collect]]\nservice = "main"\ncommand = "cat /tmp/x"\n'
     )
-    # Loads (its semantic refusal is the capability check's, with a clear reason).
     task = Task(_task(tmp_path, toml))
-    issues = validate_task_runtime_support(task.config, sandbox="daytona")
-    assert [i.path for i in issues] == ["verifier.collect"]
-    assert "not executed" in issues[0].reason
+    assert validate_task_runtime_support(task.config, sandbox="daytona") == []
+    (hook,) = task.config.verifier.collect
+    assert (hook.service, hook.command) == ("main", "cat /tmp/x")
 
 
 # ── Run path and TaskRuntimeView agree ────────────────────────────────────
@@ -278,13 +277,20 @@ def test_tasks_check_fails_on_a_typo(tmp_path: Path) -> None:
     assert any("did you mean 'allow_internet'" in i for i in issues)
 
 
-def test_tasks_check_names_the_unhonoured_key(tmp_path: Path) -> None:
+def test_tasks_check_names_the_unhonoured_key(tmp_path: Path, monkeypatch) -> None:
+    """The escape hatch for a foreign key BenchFlow cannot honour: it loads,
+    and both checks name it. No key is listed today, so the test lists one."""
     from benchflow._utils.task_authoring import check_task, check_task_warnings
+    from benchflow.task import imports
 
-    toml = TOML_EXAMPLE + '\n[[verifier.collect]]\ncommand = "true"\n'
+    monkeypatch.setitem(
+        imports.UNHONOURED_FOREIGN_KEYS, "verifier.future_hooks", "not executed"
+    )
+    toml = TOML_EXAMPLE.replace("[verifier]\n", "[verifier]\nfuture_hooks = 1\n")
+    assert toml != TOML_EXAMPLE
     d = _task(tmp_path, toml)
     assert any(
-        "verifier.collect" in w and "refused" in w for w in check_task_warnings(d)
+        "verifier.future_hooks" in w and "refused" in w for w in check_task_warnings(d)
     )
     issues = check_task(d, sandbox_type="docker")
-    assert any("verifier.collect" in i for i in issues)
+    assert any("verifier.future_hooks" in i for i in issues)

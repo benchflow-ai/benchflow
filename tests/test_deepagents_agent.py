@@ -48,12 +48,12 @@ def test_deepagents_install_deploys_shim_and_isolated_venv():
     # but task base images ship Python as old as 3.6/3.8, so a system-python venv
     # would make pip report "No matching distribution found for deepagents").
     assert (
-        "uv venv -q --clear --python 3.12.15 /opt/benchflow/agents/deepagents-venv"
+        "uv venv -q --clear --python 3.12.15 /opt/runtime/agents/deepagents-venv"
         in install
     )
     # Packages are installed into that pinned venv via uv pip.
     assert (
-        "uv pip install -q --require-hashes --python /opt/benchflow/agents/deepagents-venv/bin/python"
+        "uv pip install -q --require-hashes --python /opt/runtime/agents/deepagents-venv/bin/python"
         in install
     )
     # Both required pip packages: deepagents pulls langchain*, but langchain-openai
@@ -72,7 +72,7 @@ def test_deepagents_install_deploys_shim_and_isolated_venv():
     # `uv pip install` surfaces as rc!=0 instead of being masked by the
     # non-fatal chmod / shim-deploy's trailing `chmod +x`.
     assert (
-        "cd / && /opt/benchflow/agents/deepagents-venv/bin/python -I -c "
+        "cd / && /opt/runtime/agents/deepagents-venv/bin/python -I -c "
         "'from deepagents import create_deep_agent; " in install
     )
 
@@ -80,7 +80,7 @@ def test_deepagents_install_deploys_shim_and_isolated_venv():
 def test_deepagents_launch_runs_shim_with_venv_python():
     """Launch invokes the shim through the isolated venv interpreter."""
     launch = AGENTS["deepagents"].launch_cmd
-    assert launch.startswith("/opt/benchflow/agents/deepagents-venv/bin/python ")
+    assert launch.startswith("/opt/runtime/agents/deepagents-venv/bin/python ")
     assert launch.endswith(f"{_AGENT_UV_BIN}/deepagents-acp-shim")
 
 

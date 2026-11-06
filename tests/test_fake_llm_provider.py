@@ -110,6 +110,10 @@ def test_every_script_step_is_well_formed():
     for name, steps in SCRIPTS.items():
         assert steps, name
         for step in steps:
+            if step.get("refusal"):
+                # The model refusing (fake_llm.plan_reply): no text, no tool.
+                assert step == {"refusal": True}, (name, step)
+                continue
             assert set(step) <= {"text", "tool", "input", "delay_sec"}, (name, step)
             # Text on every step: the scenario checks count one agent
             # message per model call.

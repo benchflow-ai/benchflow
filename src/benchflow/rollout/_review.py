@@ -14,7 +14,7 @@ from benchflow._root_python import root_python_sh
 from benchflow._utils import kill_record
 from benchflow._utils.text import describe_exception
 from benchflow.agents.credentials import credential_evidence_overrides
-from benchflow.models import RolloutResult
+from benchflow.models import RolloutResult, rollout_time
 from benchflow.review.automatic import finish_review, prepare_review
 from benchflow.review.evidence import EvidenceLimitError, capture_task_evidence
 from benchflow.review.evidence_runtime import (
@@ -41,7 +41,9 @@ def prepare_terminal_review(rollout: Rollout) -> None:
     cfg = rollout._config
     if cfg.purpose == "reviewer" or cfg.skip_verify:
         return
-    rollout._review_plan = prepare_review(cfg.task_path, cfg.reviewer)
+    rollout._review_plan = prepare_review(
+        cfg.task_path, cfg.reviewer, sandbox_setup_timeout=cfg.sandbox_setup_timeout
+    )
     if rollout._review_plan is not None:
         digest = rollout._review_plan.task_digest
         if cfg.task_digest is not None and cfg.task_digest != digest:
@@ -91,7 +93,9 @@ async def prepare_capture_runtime(rollout: Rollout) -> None:
         await record_pristine_outputs(rollout)
 
 
-async def _quiesce_and_record(rollout: Rollout, sandbox_user: str) -> None:
+async def _quiesce_and_record(
+    rollout: Rollout, sandbox_user: str, *, again: bool = False
+) -> None:
     """Kill the agent's processes before the capture and keep the count (K1).
 
     This is the first kill before grading in this verify, so the hardening
@@ -100,8 +104,14 @@ async def _quiesce_and_record(rollout: Rollout, sandbox_user: str) -> None:
     ``_verify_rollout`` so that kill adds to it instead of writing a zero. The
     record is written now as well: a separate verifier runs no kill of its
     own, so this is the only one such a trial has.
+
+    *again* is the same kill after the task's ``main`` collect hooks, which
+    run as the agent's account: it adds to the turn-end record, and a kept
+    service stays kept as the first kill left it.
     """
-    record: dict[str, Any] = {}
+    record: dict[str, Any] = (
+        rollout._kill_record if again and isinstance(rollout._kill_record, dict) else {}
+    )
     rollout._kill_record = record
     try:
         with kill_record.recording_into(record):
@@ -112,11 +122,12 @@ async def _quiesce_and_record(rollout: Rollout, sandbox_user: str) -> None:
                 outcome = await rollout._planes.quiesce_agent(
                     rollout._env, sandbox_user, keep_ports=keep.ports
                 )
-                keep_services.mark_waited(rollout._task)
-                keep_services.note_turn_end(rollout._task, outcome)
+                if not again:
+                    keep_services.mark_waited(rollout._task)
+                    keep_services.note_turn_end(rollout._task, outcome)
     finally:
         if record:
-            record["quiesce_killed"] = record["killed"]
+            record["quiesce_killed"] = record.get("killed_total", record["killed"])
             try:
                 kill_record.write_kill_record(rollout._require_rollout_dir(), record)
             except Exception:
@@ -127,13 +138,25 @@ def _separate(rollout: Rollout) -> bool:
     return separate_verifier_requested(getattr(rollout._task, "config", None))
 
 
+def _lists_outside_writes(rollout: Rollout) -> bool:
+    """Whether files the agent writes outside the workspace are listed: with a
+    separate verifier (they do not cross) and whenever the workspace is saved
+    as evidence (they are not in it)."""
+    return (
+        _separate(rollout)
+        or bool(getattr(getattr(rollout, "_config", None), "freeze_workspace", False))
+        or getattr(rollout, "_review_plan", None) is not None
+    )
+
+
 async def mark_agent_phase_start(rollout: Rollout) -> None:
     """Read the sandbox clock as harness setup ends and the agent phase begins.
 
-    Only for a separate verifier: files written after this instant outside
-    everything that crosses are listed when the workspace is frozen.
+    Files written after this instant outside the workspace (and, for a
+    separate verifier, everything else that crosses) are listed when the
+    workspace is saved (:func:`_lists_outside_writes`).
     """
-    if not _separate(rollout):
+    if not _lists_outside_writes(rollout):
         return
     try:
         # date first, then root's protected Python (_CLOCK_COMMAND).
@@ -182,25 +205,50 @@ def _parse_clock(stdout: str) -> float:
 
 async def _list_outside_workspace_writes(rollout: Rollout) -> None:
     since = getattr(rollout, "_agent_phase_started", None)
-    if since is None or not _separate(rollout):
+    if since is None or not _lists_outside_writes(rollout):
         return
     cfg = rollout._config
-    keep = [rollout._agent_cwd, *getattr(cfg, "separate_verifier_include", ())]
+    separate = _separate(rollout)
+    keep = [rollout._agent_cwd]
+    if separate:
+        keep += getattr(cfg, "separate_verifier_include", ())
+    # Declared artifacts outside the workspace are captured beside it.
+    keep += [
+        source
+        for item in rollout._task.config.artifacts
+        if (source := item if isinstance(item, str) else item.source).startswith("/")
+    ]
     if cfg.sandbox_user:
         keep.append(f"/home/{cfg.sandbox_user}")
     report = await scan_outside_workspace_writes(rollout._env, since=since, keep=keep)
     rollout._outside_workspace_writes = report
-    if report and report.get("count"):
+    if not (report and report.get("count")):
+        return
+    where = (
+        report["count"],
+        rollout._agent_cwd,
+        report.get("by_directory"),
+        ", ".join(report.get("sample", [])[:5]),
+    )
+    if separate:
         logger.warning(
             "%d file(s) written outside the workspace %s during the agent phase "
             "will not reach the separate verifier (by directory: %s; e.g. %s). "
             "If the verifier reads them, pass --separate-verifier-include for "
             "their directory.",
-            report["count"],
-            rollout._agent_cwd,
-            report.get("by_directory"),
-            ", ".join(report.get("sample", [])[:5]),
+            *where,
         )
+        return
+    # result.json's warning names folders and counts, never the agent's paths.
+    warning = (
+        f"{where[0]} file(s) written outside the workspace {where[1]} during the "
+        "agent phase are not in the saved evidence, so a rubric review or a "
+        f"regrade does not see them (by directory: {where[2]}). Declare them in "
+        "the task's [[artifacts]], or set [environment].workdir to the folder "
+        "the task writes to"
+    )
+    logger.warning("%s; e.g. %s", warning, where[3])
+    vars(rollout).setdefault("_warnings", []).append(warning)
 
 
 def _uncovered_includes(
@@ -242,6 +290,15 @@ async def capture_terminal_workspace(rollout: Rollout) -> None:
     await rollout.disconnect()
     if rollout._config.sandbox_user:
         await _quiesce_and_record(rollout, rollout._config.sandbox_user)
+    # The task's [[verifier.collect]] hooks for main, once the agent's
+    # processes are stopped and before anything is frozen. They run as the
+    # agent's account (_collect_hooks.agent_account), and what one runs there
+    # can be the agent's (its repository's git config), so that account's
+    # processes are stopped again before the capture.
+    from benchflow.rollout._collect_hooks import run_collect_hooks
+
+    if await run_collect_hooks(rollout, main=True) and rollout._config.sandbox_user:
+        await _quiesce_and_record(rollout, rollout._config.sandbox_user, again=True)
     from benchflow.rollout._verifier_recovery import recovery_ineligible_reason
 
     freeze = _freeze_requested(rollout)
@@ -332,7 +389,7 @@ async def finish_terminal_review(
     rollout._rewards = result.rewards = payload.get("rewards")
     rollout._verifier_error = result.verifier_error = payload.get("verifier_error")
     result.verifier_error_category = payload.get("verifier_error_category")
-    result.finished_at = datetime.fromisoformat(payload["finished_at"])
+    result.finished_at = rollout_time(payload["finished_at"])
     rollout._timing = payload["timing"]
     rollout._phase = "cleaned"
     return result

@@ -10,7 +10,11 @@ from benchflow._utils.config_redaction import (
     _inline_config_structure,
     _should_record_env_entry,
 )
-from benchflow.evaluation import _check_resume_mismatch, _recorded_run_differs
+from benchflow.evaluation import (
+    ResumeMismatchError,
+    _check_resume_mismatch,
+    _recorded_run_differs,
+)
 from tests.test_resume_settings_match import (
     _config,
     _evaluation,
@@ -108,7 +112,7 @@ def test_jsonc_policy_resume(tmp_path, caplog, syntax, owner, scope, policy, bac
     assert _evaluation(tmp_path, same_json).job_dir == first.job_dir
     assert _check_resume_mismatch(first.job_dir, same_json) is None
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(first.job_dir, changed)
+        dest = _check_resume_mismatch(first.job_dir, changed, restart_changed=True)
     assert dest is not None
     reason = (dest / "set-aside.json").read_text()
     assert NAME in reason
@@ -214,7 +218,8 @@ def test_jsonc_legacy_record_needs_known_policy(tmp_path, owner, has_secret, syn
     if has_secret:
         assert _recorded_run_differs(first.job_dir, config, None) is not None
         assert _evaluation(tmp_path, config).job_dir != first.job_dir
-        assert _check_resume_mismatch(first.job_dir, config) is not None
+        with pytest.raises(ResumeMismatchError):
+            _check_resume_mismatch(first.job_dir, config)
     else:
         # A public legacy value is sufficient to reconstruct its identity.
         assert _recorded_run_differs(first.job_dir, config, None) is None

@@ -848,10 +848,10 @@ def test_guard_reads_the_command_line_on_pytest_before_invocation_params(
 
 
 def _armed_markers(monkeypatch, tmp_path):
-    prefix = tmp_path / "markers" / "_benchflow_guard_test"
+    prefix = tmp_path / "markers" / "_runtime_guard_test"
     prefix.parent.mkdir()
     key = tmp_path / "key"
-    key.write_text(lockdown.pytest_plugin_guard_key("_benchflow_guard_test"))
+    key.write_text(lockdown.pytest_plugin_guard_key("_runtime_guard_test"))
     monkeypatch.setattr(guard, "_BENCHFLOW_MARKERS", str(prefix))
     monkeypatch.setattr(guard, "_BENCHFLOW_KEY_FILE", str(key))
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
@@ -1105,8 +1105,8 @@ def test_verifier_keeps_only_markers_this_guard_signed():
     guard name; a line signed for another guard, unsigned, of an unknown kind
     or with a body that is not a string is dropped.
     """
-    guard = "_benchflow_guard_" + "a" * 32
-    other = "_benchflow_guard_" + "b" * 32
+    guard = "_runtime_guard_" + "a" * 32
+    other = "_runtime_guard_" + "b" * 32
     crashed = f"{guard}.12-0123abcd.crashed"
     output = "\n".join(
         [
@@ -1132,7 +1132,7 @@ def test_verifier_keeps_only_markers_this_guard_signed():
 def test_marker_read_back_skips_links_and_fifos_and_is_bounded(tmp_path, monkeypatch):
     """Guards the marker read-back against files that could hang or flood it."""
     monkeypatch.setattr(lockdown, "_PYTEST_PLUGIN_GUARD_PARENT", str(tmp_path))
-    guard = "_benchflow_guard_" + "c" * 32
+    guard = "_runtime_guard_" + "c" * 32
     markers = tmp_path / guard / ".markers"
     markers.mkdir(parents=True)
     # A marker file holds its signature and body; its name is the file name.
@@ -1169,7 +1169,7 @@ def test_guard_writes_its_loading_marker_only_under_pytests_plugin_loader(tmp_pa
     Python, leave a ``loading`` marker that no pytest ever removes, and make
     its run unscored.
     """
-    guard_name = "_benchflow_guard_" + "d" * 32
+    guard_name = "_runtime_guard_" + "d" * 32
     guard_dir = tmp_path / guard_name
     markers = guard_dir / ".markers"
     markers.mkdir(parents=True)

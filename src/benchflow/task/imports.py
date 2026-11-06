@@ -43,23 +43,16 @@ KNOWN_IGNORABLE_KEYS: dict[str, str] = {}
 
 # Escape hatch: set to a truthy value to restore the old drop-everything
 # leniency (no typo or sensitive-table refusals). Documented in
-# docs/datasets/benchmarks.md; for corpora BenchFlow does not control.
+# docs/evaluate/find-a-benchmark.md; for corpora BenchFlow does not control.
 LENIENT_OPT_OUT_ENV = "BENCHFLOW_TASK_TOML_ALLOW_UNKNOWN_KEYS"
 
 # Foreign task.toml keys BenchFlow does not model and whose semantics it
 # cannot honour: a lenient load keeps them out of the config, and the runtime
 # capability check refuses the task instead of running it without them.
 # Keys are dotted paths with list indices removed.
-UNHONOURED_FOREIGN_KEYS: dict[str, str] = {
-    "verifier.collect": (
-        "task.toml verifier collect hooks (commands run in a service before "
-        "verification) are not executed"
-    ),
-    "steps.verifier.collect": (
-        "task.toml verifier collect hooks (commands run in a service before "
-        "verification) are not executed"
-    ),
-}
+# None today: ``verifier.collect`` hooks are modelled and run, and a step's
+# are modelled and refused by the runtime capability check.
+UNHONOURED_FOREIGN_KEYS: dict[str, str] = {}
 
 
 _WARNED: set[tuple[str, tuple[str, ...]]] = set()

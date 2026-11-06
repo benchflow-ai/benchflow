@@ -31,7 +31,7 @@ def named_task(tmp_path, request):
 
 @pytest.mark.verifier_runtime
 async def test_named_runner_is_prepared_before_the_agent(named_task, monkeypatch):
-    expected = {"runner": "/opt/benchflow/verifier/bin/pytest"}
+    expected = {"runner": "/opt/runtime/verifier/bin/pytest"}
     prepare = AsyncMock(return_value=expected)
     monkeypatch.setattr(runtime, "prepare_verifier_runtime", prepare)
     sandbox = SimpleNamespace()
@@ -46,7 +46,7 @@ async def test_named_runner_is_prepared_before_the_agent(named_task, monkeypatch
 async def test_named_runner_manifest_is_checked_after_the_agent(
     named_task, monkeypatch
 ):
-    expected = {"runner": "/opt/benchflow/verifier/bin/pytest"}
+    expected = {"runner": "/opt/runtime/verifier/bin/pytest"}
     read = AsyncMock(
         return_value=ExecResult(stdout=json.dumps(expected), return_code=0)
     )
@@ -62,7 +62,7 @@ async def test_named_runner_manifest_is_checked_after_the_agent(
 
 async def test_named_runner_reaches_the_runtime_builder(named_task, monkeypatch):
     expected = {
-        "runner": "/opt/benchflow/verifier/bin/pytest",
+        "runner": "/opt/runtime/verifier/bin/pytest",
         "image_sites": [],
         "plugins": {},
     }

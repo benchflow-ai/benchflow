@@ -23,6 +23,8 @@ import contextlib
 import logging
 import shlex
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
 from benchflow._utils.artifact_names import agent_log_name
 from benchflow._utils.reachable_write import ReachablePath
@@ -55,6 +57,7 @@ from benchflow.agents.registry import (
     routes_gemini_natively,
 )
 from benchflow.diagnostics import (
+    AgentEffortNotOfferedError,
     AgentModelNotOfferedError,
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
@@ -62,6 +65,7 @@ from benchflow.diagnostics import (
     TransportClosedDiagnostic,
     TransportClosedError,
 )
+from benchflow.native_harness.claude_code import THINKING_DISPLAY
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox.lockdown import (
     build_priv_drop_cmd,
@@ -119,7 +123,7 @@ async def _prepare_openhands_direct_execution(
     """Patch OpenHands as root before a sandbox-user privilege drop.
 
     OpenHands is installed as a uv tool in BenchFlow's protected tree
-    (``/opt/benchflow/uv-tools``, its entry point in ``/opt/benchflow/bin``),
+    (``/opt/runtime/uv-tools``, its entry point in ``/opt/runtime/bin``),
     which the sandbox user may read but not write, so the opt-in patch runs
     here as root rather than from the sandbox user's launch command.
 
@@ -138,14 +142,14 @@ async def _prepare_openhands_direct_execution(
     # found under a HOME (PT-R8-SIB-1).
     patch_cmd = (
         runtime_custody_check(
-            ("/opt/benchflow/uv-tools", "/opt/benchflow/bin", "/opt/benchflow/python"),
+            ("/opt/runtime/uv-tools", "/opt/runtime/bin", "/opt/runtime/python"),
             "OpenHands' runtime",
         )
         + " && cd / && "
-        "OH_BIN=/opt/benchflow/bin/openhands; "
+        "OH_BIN=/opt/runtime/bin/openhands; "
         '[ -x "$OH_BIN" ] || { echo "Cannot locate OpenHands executable" >&2; exit 127; }; '
         'OH_PY="$(dirname "$(readlink -f "$OH_BIN")")/python"; '
-        'case "$OH_PY" in /opt/benchflow/uv-tools/*) ;; *) '
+        'case "$OH_PY" in /opt/runtime/uv-tools/*) ;; *) '
         'echo "OpenHands tool interpreter is outside the protected tree" >&2; exit 127;; esac; '
         '[ -x "$OH_PY" ] || { '
         'echo "Cannot locate OpenHands tool interpreter" >&2; exit 127; }; '
@@ -281,14 +285,22 @@ def _codex_session_model_id(
             raise AgentModelNotOfferedError("codex-acp", requested_name, offered)
         return model
 
-    # A requested reasoning effort rides the codex model id: codex-acp
-    # declares no ACP effort config option, and its session/set_model
-    # validates ``model[effort]`` ids, so picking the matching advertised
-    # variant is the only way the run's effort actually reaches the agent.
-    preferred_efforts: tuple[str, ...] = ("medium", "high", "low", "minimal", "none")
+    # A requested reasoning effort rides the codex model id: codex-acp's
+    # session/set_model validates ``model[effort]`` ids, so picking the
+    # matching advertised variant is the only way the run's effort reaches the
+    # agent. No such variant: the model does not take that effort here, and
+    # another variant would run it at an effort the run did not ask for.
     if reasoning_effort:
-        preferred_efforts = (reasoning_effort, *preferred_efforts)
-    for effort in preferred_efforts:
+        for candidate in candidates:
+            if _codex_reasoning_effort(candidate) == reasoning_effort:
+                return candidate
+        offered_efforts = list(
+            dict.fromkeys(e for c in candidates if (e := _codex_reasoning_effort(c)))
+        )
+        raise AgentEffortNotOfferedError(
+            "codex-acp", requested_name, reasoning_effort, offered_efforts
+        )
+    for effort in ("medium", "high", "low", "minimal", "none"):
         for candidate in candidates:
             if _codex_reasoning_effort(candidate) == effort:
                 return candidate
@@ -329,12 +341,13 @@ def _format_acp_model(model: str, agent: str) -> str:
         bare = model.removeprefix("google/")
     if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":
         # Proxy mode: BenchFlow's LiteLLM proxy serves the model under the alias
-        # "benchflow-…", which the pi-acp launcher registers under the "litellm"
-        # provider (BENCHFLOW_PROVIDER_NAME) in models.json. The alias carries no
-        # provider prefix, so sending it bare leaves Pi unable to resolve it — the
-        # model calls then bypass the proxy and no llm_trajectory.jsonl is written.
+        # "runtime-…" (older releases: "benchflow-…"), which the pi-acp launcher
+        # registers under the "litellm" provider (BENCHFLOW_PROVIDER_NAME) in
+        # models.json. The alias carries no provider prefix, so sending it bare
+        # leaves Pi unable to resolve it — the model calls then bypass the proxy
+        # and no llm_trajectory.jsonl is written.
         # Send the registered-provider-qualified id so Pi hits the gateway route.
-        if model.startswith("benchflow-"):
+        if model.startswith(("runtime-", "benchflow-")):
             return f"litellm/{model}"
         return model if find_provider(model) else bare
     if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
@@ -350,8 +363,9 @@ def _format_acp_model(model: str, agent: str) -> str:
     # through the chat-completions path. It must NOT be the built-in ``openai``
     # id: OpenCode hard-codes the Responses API there (``provider.responses(id)``)
     # which the gateway/DeepSeek cannot serve (the model call then crashes or
-    # 404s with zero tool calls). Aliases are always "benchflow-…".
-    if bare.startswith("benchflow-"):
+    # 404s with zero tool calls). Aliases are always "runtime-…" (older
+    # releases: "benchflow-…").
+    if bare.startswith(("runtime-", "benchflow-")):
         return f"{OPENCODE_PROXY_PROVIDER_ID}/{bare}"
     # Provider ownership lives in the registry: if a ProviderConfig claims this
     # bare model family via its declared model_prefixes, route through it
@@ -435,6 +449,38 @@ def _model_selection_owned_by_env(
     return strip_provider_prefix(model) == override
 
 
+def _model_left_to_env(
+    agent_cfg: object | None,
+    agent_env: dict[str, str],
+    model_id: str,
+    offered: list[str],
+) -> str | None:
+    """The agent-native variable that already names a model the agent does not
+    list, when the agent talks to a provider's own endpoint; else None.
+
+    Claude Code straight against a third-party Anthropic-compatible API (MiMo,
+    Kimi): the model is the provider's own id in ``ANTHROPIC_MODEL``, which is
+    the adapter's ``default``, and claude-agent-acp 0.81 refuses that id as a
+    value of its model option (with ``ANTHROPIC_MODEL`` set, its session lists
+    no model values at all). Against Anthropic itself, or a model the agent
+    lists, the option is set as before, so a model a login does not offer
+    still fails as ``agent_model``.
+    """
+    mapping = getattr(agent_cfg, "env_mapping", None) or {}
+    model_env = mapping.get("BENCHFLOW_PROVIDER_MODEL")
+    if model_id in offered or not model_env:
+        return None
+    if agent_env.get(model_env) != model_id:
+        return None
+    url = agent_env.get(
+        mapping.get("BENCHFLOW_PROVIDER_BASE_URL") or ""
+    ) or agent_env.get("BENCHFLOW_PROVIDER_BASE_URL", "")
+    host = (urlparse(url).hostname or "").lower()
+    if not host or host == "anthropic.com" or host.endswith(".anthropic.com"):
+        return None
+    return model_env
+
+
 def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
     """Pick the model string that should be sent through ACP model config."""
     litellm_alias = agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS")
@@ -494,6 +540,15 @@ def _resolve_acp_model_option_id(
         return None
     if "model" in _session_config_option_ids(session):
         return "model"
+    return None
+
+
+def _config_option_current(session: object | None, config_id: str) -> str | None:
+    """A config option's ``currentValue`` in the session, or None."""
+    for option in getattr(session, "config_options", None) or ():
+        if isinstance(option, dict) and option.get("id") == config_id:
+            current = option.get("currentValue")
+            return current if isinstance(current, str) else None
     return None
 
 
@@ -569,7 +624,8 @@ async def _set_acp_config_option(
     config_id: str,
     value: str,
     label: str,
-) -> None:
+) -> Any:
+    """Set one session config option; return the agent's answer."""
     option_ids = _session_config_option_ids(session)
     if option_ids and config_id not in option_ids:
         raise RuntimeError(
@@ -577,10 +633,11 @@ async def _set_acp_config_option(
             f"{config_id!r}; available options: {sorted(option_ids)!r}"
         )
     try:
-        await asyncio.wait_for(
+        answer = await asyncio.wait_for(
             acp_client.set_config_option(config_id, value), timeout=60
         )
         logger.info(f"ACP {label} config option {config_id!r} set to: {value}")
+        return answer
     except UsageLimitError:
         raise
     except Exception as e:
@@ -620,9 +677,19 @@ async def _configure_acp_session(
     agent_env: dict[str, str],
     reasoning_effort: str | None,
     launch_config_owns_model: bool = False,
-) -> None:
+) -> str | None:
+    """Select the session's model and effort; return the effort it applied.
+
+    The applied effort is the session's own word where it has one: the
+    ``model[effort]`` id codex-acp took (its default when none was asked
+    for), or the effort option's value the agent answered with after it was
+    set (an adapter may map a value onto its own scale, as the Antigravity
+    shim maps ``max`` to ``high``). With the launch config owning the model
+    it is the effort that config carries. None when nothing says.
+    """
     agent_cfg = AGENTS.get(agent)
     effort_configured = False
+    applied: str | None = None
 
     if model and _model_selection_owned_by_env(
         agent,
@@ -631,6 +698,8 @@ async def _configure_acp_session(
         launch_config_owns_model=launch_config_owns_model,
     ):
         effort_configured = bool(reasoning_effort and launch_config_owns_model)
+        if effort_configured:
+            applied = reasoning_effort
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
@@ -639,13 +708,35 @@ async def _configure_acp_session(
         acp_model_id = _select_acp_model_id(
             acp_model_input, agent, session, reasoning_effort
         )
-        effort_configured = bool(
-            reasoning_effort
-            and agent == "codex-acp"
-            and _codex_reasoning_effort(acp_model_id) == reasoning_effort
-        )
+        if agent == "codex-acp":
+            applied = _codex_reasoning_effort(acp_model_id) or None
+        effort_configured = bool(reasoning_effort and applied == reasoning_effort)
         model_option_id = _resolve_acp_model_option_id(agent_cfg, session)
-        if model_option_id:
+        model_env = (
+            _model_left_to_env(
+                agent_cfg,
+                agent_env,
+                acp_model_id,
+                _config_option_values(session, model_option_id),
+            )
+            if model_option_id
+            else None
+        )
+        if model_env:
+            logger.info(
+                f"{agent} does not list model {acp_model_id!r}; leaving it to "
+                f"{model_env}, which names it for the provider's own endpoint"
+            )
+        elif model_option_id and (
+            _config_option_current(session, model_option_id) == acp_model_id
+        ):
+            # Already the session's model (claude-agent-acp 0.81 starts on
+            # ANTHROPIC_MODEL, and refuses to set a provider's id it does not
+            # list even when that id is the current one).
+            logger.info(
+                f"ACP model config option {model_option_id!r} is already {acp_model_id}"
+            )
+        elif model_option_id:
             # Capability-first: the agent advertises a model config option (or
             # the registry declares one), so configure the model through it —
             # this is how the @agentclientprotocol family is replacing
@@ -667,24 +758,26 @@ async def _configure_acp_session(
                 f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
             )
 
+    effort_config_id = getattr(agent_cfg, "acp_effort_config_id", "") or (
+        "effort" if "effort" in _session_config_option_ids(session) else None
+    )
     if not reasoning_effort:
-        return
+        if applied is None and effort_config_id:
+            applied = _config_option_current(session, effort_config_id)
+        return applied
     if effort_configured:
         # The effort already rides the selected ``model[effort]`` id (codex),
         # or its launch config, so there is nothing further to configure.
         logger.info(
             f"Reasoning effort {reasoning_effort!r} applied with model selection for {agent}"
         )
-        return
-    effort_config_id = getattr(agent_cfg, "acp_effort_config_id", "") or (
-        "effort" if "effort" in _session_config_option_ids(session) else None
-    )
+        return applied
     if not effort_config_id:
         raise RuntimeError(
             f"reasoning_effort={reasoning_effort!r} was requested for agent "
             f"{agent!r}, but that agent does not declare or advertise an ACP effort config option"
         )
-    await _set_acp_config_option(
+    answer = await _set_acp_config_option(
         acp_client,
         session,
         agent=agent,
@@ -692,6 +785,11 @@ async def _configure_acp_session(
         value=reasoning_effort,
         label="reasoning effort",
     )
+    if isinstance(answer, dict) and "configOptions" in answer:
+        # The options the agent answered with (the client keeps them on the
+        # session): what it set, on its own scale.
+        return _config_option_current(session, effort_config_id) or reasoning_effort
+    return reasoning_effort
 
 
 async def connect_acp(
@@ -730,6 +828,12 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
+    if agent == "claude-agent-acp" and mcp_servers:
+        # The connector policy refused it already on a rollout's path; a
+        # direct caller of connect_acp gets the same refusal.
+        from benchflow.agents.claude_connector_policy import MCP_REFUSAL
+
+        raise RuntimeError(MCP_REFUSAL)
     agent_env, launch_config_owns_model = apply_codex_launch_config(
         agent,
         agent_env,
@@ -774,6 +878,9 @@ async def connect_acp(
         f"export BENCHFLOW_ACP_LINE_LIMIT={line_limit() or 0}; {agent_launch}"
     )
 
+    from benchflow.agents.visible_runtime import visible_env, visible_launch
+
+    agent_launch = visible_launch(agent_launch)
     if sandbox_user:
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
         logger.info(f"Agent sandboxed as: {sandbox_user}")
@@ -810,7 +917,7 @@ async def connect_acp(
             transport = ContainerTransport(
                 container_process=live_proc,
                 command=agent_launch,
-                env=agent_env,
+                env=visible_env(agent_env),
                 cwd=agent_cwd,
                 agent_log_path=agent_log,
             )
@@ -821,6 +928,21 @@ async def connect_acp(
                     agent_config and agent_config.acp_subagent_transcript
                 ),
                 typed_failures=bool(getattr(agent_config, "acp_typed_failures", False)),
+                # The pinned adapter forwards these SDK options on both new
+                # and resumed sessions. Set only display: retain the agent's
+                # adaptive/disabled mode and any MAX_THINKING_TOKENS budget.
+                # The native harness passes the same display to print mode.
+                session_meta=(
+                    {
+                        "claudeCode": {
+                            "options": {
+                                "extraArgs": {"thinking-display": THINKING_DISPLAY}
+                            }
+                        }
+                    }
+                    if agent == "claude-agent-acp"
+                    else None
+                ),
             )
             await acp_client.connect()
 
@@ -881,7 +1003,7 @@ async def connect_acp(
         raise RuntimeError("ACP connection did not initialize")
 
     try:
-        await _configure_acp_session(
+        session.effort_applied = await _configure_acp_session(
             acp_client,
             session,
             agent=agent,

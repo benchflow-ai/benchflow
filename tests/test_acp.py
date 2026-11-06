@@ -1506,7 +1506,9 @@ class TestConnectAcpModelSelection:
         assert "openhands_cli.utils" in patch_call.args[0]
         assert patch_call.kwargs == {"user": "root", "timeout_sec": 30}
         transport_env = mock_transport.call_args.kwargs["env"]
-        assert transport_env["BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
+        # The agent's process sees the neutral name (the host keeps its own).
+        assert transport_env["RUNTIME_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
+        assert "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS" not in transport_env
         transport_command = mock_transport.call_args.kwargs["command"]
         assert "--reuid=agent" in transport_command
 

@@ -85,8 +85,24 @@ class BfxSandbox(LocalSandbox):
         if self.failure is not None:
             raise self.failure
         entries = []
+        errors = []
         for walk in args["walks"]:
             root = Path(walk["root"])
+            # As bfx/src/scan.rs answers a walk: a root that is no directory
+            # is an error of the walk, spelled by errno_name; a missing root
+            # is an entry that does not exist.
+            if not root.exists() and not root.is_symlink():
+                entries.append({"path": str(root), "exists": False})
+                continue
+            if not root.is_dir() or root.is_symlink():
+                errors.append(
+                    {
+                        "path": str(root),
+                        "op": "walk",
+                        "error": "link" if root.is_symlink() else "not-directory",
+                    }
+                )
+                continue
             paths = [root, *sorted(root.iterdir())] if walk["depth"] else [root]
             for path in paths:
                 info = path.lstat()
@@ -113,7 +129,7 @@ class BfxSandbox(LocalSandbox):
                 entries.append(item)
         if len(entries) > args["max_entries"]:
             raise BfxError("too-many", "metadata entries exceed capture limit")
-        return {"entries": entries, "errors": []}
+        return {"entries": entries, "errors": errors}
 
     async def bfx_tar_out(self, args, destination: Path, *, timeout_sec: int):
         self.tar_outs.append(dict(args))
@@ -219,6 +235,20 @@ async def test_where_bfx_cannot_archive_the_workspace_today_capture_runs(
     manifest = await capture_workspace(box, str(workspace), tmp_path / "b")
     assert any("python3" in c for c in box.commands)
     assert manifest.workspace == str(workspace)
+
+
+async def test_a_single_file_bfx_scans_as_not_a_directory_is_captured(tmp_path):
+    """A declared artifact that is one file (Terminal-Bench 4.1's
+    `artifacts = ["/app/cracker.py"]`): bfx's scan answers its root with a
+    `not-directory` error, and today's capture takes the file."""
+    workspace = _tree(tmp_path / "box").resolve()
+    box = BfxSandbox()
+    manifest = await capture_workspace(
+        box, str(workspace / "answer.txt"), tmp_path / "b"
+    )
+    assert [(e.kind, e.size) for e in manifest.entries] == [("file", 3)]
+    assert any("python3" in c for c in box.commands)
+    assert box.tar_outs == []
 
 
 @pytest.mark.parametrize(

@@ -25,7 +25,7 @@ from benchflow.agents.registry import (
     pinned_npm_package,
 )
 
-NODE = "/opt/benchflow/node/bin/node"
+NODE = "/opt/runtime/node/bin/node"
 
 
 def _fake(path: Path, body: str) -> Path:
@@ -39,15 +39,15 @@ def test_pins_name_the_adapter_and_the_cli_apart():
         "@agentclientprotocol/claude-agent-acp",
         "0.81.2",
     )
-    assert pinned_npm_package("claude-code") == ("@anthropic-ai/claude-code", "2.1.280")
+    assert pinned_npm_package("claude-code") == ("@anthropic-ai/claude-code", "2.1.316")
 
 
 def test_install_adds_the_pinned_cli_beside_the_adapter():
     cmd = AGENTS["claude-agent-acp"].install_cmd
-    npm = "/opt/benchflow/node/bin/npm install -g --prefix /opt/benchflow/js-agents"
+    npm = "/opt/runtime/node/bin/npm install -g --prefix /opt/runtime/js-agents"
     adapter = f"{npm} @agentclientprotocol/claude-agent-acp@0.81.2 )"
     # Its own npm call: the package's postinstall places the native binary.
-    cli = f"{npm} @anthropic-ai/claude-code@2.1.280 )"
+    cli = f"{npm} @anthropic-ai/claude-code@2.1.316 )"
     assert adapter in cmd
     assert cli in cmd
     launcher = cmd.index("printf '%s\\n'")
@@ -60,8 +60,8 @@ def test_other_js_agents_keep_their_launcher_byte_for_byte():
     """The launcher generalization must not rewrite any other agent's install."""
     cmd = AGENTS["gemini"].install_cmd
     assert (
-        "printf '%s\\n' '#!/bin/sh' 'exec /opt/benchflow/node/bin/node "
-        '/opt/benchflow/js-agents/bin/gemini "$@"\' > /opt/benchflow/bin/gemini'
+        "printf '%s\\n' '#!/bin/sh' 'exec /opt/runtime/node/bin/node "
+        '/opt/runtime/js-agents/bin/gemini "$@"\' > /opt/runtime/bin/gemini'
     ) in cmd
     assert "CLAUDE_CODE_EXECUTABLE" not in cmd
 
@@ -84,7 +84,7 @@ def test_launcher_hands_the_pinned_cli_to_the_adapter(tmp_path):
     ).stdout.splitlines()
     assert out == [
         CLAUDE_CODE_EXECUTABLE_PATH,
-        "/opt/benchflow/js-agents/bin/claude-agent-acp",
+        "/opt/runtime/js-agents/bin/claude-agent-acp",
         "--flag",
         "two words",
     ]
@@ -93,7 +93,9 @@ def test_launcher_hands_the_pinned_cli_to_the_adapter(tmp_path):
 @pytest.mark.parametrize(
     "output,ok",
     [
-        ("2.1.280 (Claude Code)", True),
+        ("2.1.316 (Claude Code)", True),
+        # The pin before 2.1.316, which lists neither Sonnet 5.5 nor Haiku 5.5.
+        ("2.1.280 (Claude Code)", False),
         ("2.1.257 (Claude Code)", False),
         # The package's bin placeholder, left when postinstall did not run.
         ("Error: claude native binary not installed.", False),
@@ -105,13 +107,13 @@ def test_install_fails_unless_the_cli_reports_its_pin(tmp_path, output, ok):
     result = subprocess.run(["sh", "-c", check], capture_output=True, text=True)
     assert (result.returncode == 0) is ok
     if not ok:
-        assert "is not Claude Code 2.1.280" in result.stderr
+        assert "is not Claude Code 2.1.316" in result.stderr
         assert output in result.stderr
 
 
 @pytest.mark.skipif(shutil.which("dash") is None, reason="dash not installed")
 def test_version_check_runs_under_dash(tmp_path):
-    cli = _fake(tmp_path / "claude", 'echo "2.1.280 (Claude Code)"\n')
+    cli = _fake(tmp_path / "claude", 'echo "2.1.316 (Claude Code)"\n')
     check = _claude_code_version_check().replace(CLAUDE_CODE_EXECUTABLE_PATH, str(cli))
     assert subprocess.run(["dash", "-c", check]).returncode == 0
 

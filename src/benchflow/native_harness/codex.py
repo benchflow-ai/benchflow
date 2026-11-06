@@ -38,8 +38,10 @@ from benchflow.native_harness.spec import (
 )
 
 CLI = "codex"
-# model_reasoning_effort values Codex accepts.
-CODEX_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+# model_reasoning_effort values Codex accepts. Codex 0.159.3 sends each as the
+# request's reasoning.effort, max too (its gpt-6 models list max), as codex-acp
+# does with the same CODEX_CONFIG.
+CODEX_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 _FLAGS = (
     "--json",

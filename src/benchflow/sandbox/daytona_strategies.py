@@ -25,6 +25,7 @@ import json
 import os
 import shlex
 from abc import abstractmethod
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +51,7 @@ from benchflow.sandbox.daytona_layers import (
     build_record_outcome,
     claim_layer_build,
     disk_gib,
+    layer_build_failed,
     layer_build_finished,
     layered_recipe,
 )
@@ -63,6 +65,7 @@ from benchflow.sandbox.daytona_reaper import (
     benchflow_snapshot_name,
 )
 from benchflow.sandbox.protocol import (
+    ExecTimeoutError,
     SandboxImage,
     SandboxSnapshotNotSupported,
 )
@@ -80,6 +83,11 @@ _SandboxParams = Any
 # sandbox deletion is asynchronous on the provider, so the snapshot can stay
 # "in use" for a few seconds after the sandbox created from it was deleted.
 _DELETE_RETRY_DELAYS = (3, 10)
+
+# Waits (seconds) before each new try of an upload's destination mkdir that
+# timed out: a loaded sandbox can answer it late, which failed the launch
+# before the agent ran. The mkdir is idempotent.
+_UPLOAD_PREP_RETRY_DELAYS = (15, 15)
 
 
 async def _delete_provider_snapshot(ref: str) -> None:
@@ -447,21 +455,35 @@ class _DaytonaDirect(_DaytonaStrategy):
             if plan is not None and plan.layers:
                 base_recipe = image.dockerfile()
                 layered = layered_recipe(plan, base_recipe)
+                failed_before = layer_build_failed(layered.keys)
                 if (
                     layered.lines
+                    and not failed_before
                     and plan.only_if_reused
                     and not content_snapshots.enabled()
                 ):
                     claim_keys = dict(layered.keys)
                     layer_claim = claim_layer_build(claim_keys)
                     if layer_claim is None:
-                        layered = LayeredRecipe()
+                        # The small guard install is cached for single trials
+                        # too; only the proxy and agent need planned reuse.
+                        plan = replace(plan, proxy=None, agent=None)
+                        layered = layered_recipe(plan, base_recipe)
                         if env._install_layers_record is not None:
-                            env._install_layers_record["mode"] = "fresh"
+                            env._install_layers_record["mode"] = (
+                                "layers" if layered.lines else "fresh"
+                            )
                             env._install_layers_record["fresh_reason"] = (
                                 "not built in this run, and the run starts no "
                                 "other trial of this image"
                             )
+                if failed_before or layer_build_failed(layered.keys):
+                    layered = LayeredRecipe()
+                    if env._install_layers_record is not None:
+                        env._install_layers_record["mode"] = "fresh"
+                        env._install_layers_record["fallback"] = (
+                            "layer build failed earlier in this process"
+                        )
             if layered.lines:
                 # The proxy and agent installs as cached layers on top of the
                 # task image (daytona_layers); Daytona reuses an unchanged
@@ -541,6 +563,8 @@ class _DaytonaDirect(_DaytonaStrategy):
                 "build_failed" in str(e).lower() or timed_out
             ):
                 raise env._startup_failure(e) from e
+            if env._layer_build_failure_confirmed:
+                layer_build_finished(layered.keys, built=False, failed=True)
             # A layer that does not build on this image (no bash or base64, a
             # non-root image user) must not cost the trial: build the task
             # image alone and install in the sandbox, as without layers.
@@ -644,6 +668,9 @@ class _DaytonaDirect(_DaytonaStrategy):
         if force_build:
             off("force_build")
             return None
+        context_stage = getattr(env, "_daytona_contexts", None)
+        if context_stage is not None:
+            await context_stage.complete()
         # A content snapshot builds this same image recipe. Preserve the
         # planned installs' budgets, just as the ordinary image create does;
         # a recipe without install layers needs only the task build budget.
@@ -705,23 +732,28 @@ class _DaytonaDirect(_DaytonaStrategy):
             )
 
         try:
-            if not env._sandbox:
+            sandbox = env._sandbox
+            if not sandbox:
                 env._log_no_sandbox_to_stop()
             else:
                 try:
-                    await env._stop_sandbox()
+                    await env._stop_sandbox(sandbox)
                 except BaseException as e:
                     # Cancelled too (a caller's stop bound): the delete may be
                     # in flight, so the ledger confirms it.
-                    env._log_sandbox_left_behind(e)
+                    env._log_sandbox_left_behind(
+                        e, sandbox=sandbox, release_channels=True
+                    )
                     if not isinstance(e, Exception):
                         raise
                 finally:
-                    env._sandbox = None
+                    if env._sandbox is sandbox:
+                        env._sandbox = None
             self._snapshot_credentials.clear()
             await self._delete_deferred_snapshots()
         finally:
-            env._client_manager = None
+            if env._sandbox is None:
+                env._client_manager = None
 
     async def _delete_deferred_snapshots(self) -> None:
         """Delete snapshots that were in use when their fork finished."""
@@ -796,12 +828,22 @@ class _DaytonaDirect(_DaytonaStrategy):
         self, source_dir: Path | str, target_dir: str, service: str = "main"
     ) -> None:
         _reject_non_main_service(service)
-        prep_result = await self._env._sandbox_exec(
-            f"mkdir -p {shlex.quote(target_dir)}",
-            timeout_sec=30,
-            user="root",
-            route=await system_shell_route(self._env),
-        )
+        for delay in (*_UPLOAD_PREP_RETRY_DELAYS, None):
+            try:
+                prep_result = await self._env._sandbox_exec(
+                    f"mkdir -p {shlex.quote(target_dir)}",
+                    timeout_sec=30,
+                    user="root",
+                    route=await system_shell_route(self._env),
+                )
+            except ExecTimeoutError:
+                if delay is None:
+                    raise
+            else:
+                # The in-sandbox `timeout` ends a late mkdir with status 124.
+                if prep_result.return_code != 124 or delay is None:
+                    break
+            await asyncio.sleep(delay)
         if prep_result.return_code != 0:
             raise RuntimeError(
                 "Daytona direct upload_dir destination prep failed: "
@@ -951,13 +993,16 @@ class _DaytonaDirect(_DaytonaStrategy):
         # Validate before deleting the live sandbox. Legacy checkpoints have
         # no pre-agent startup evidence and must not be probed as root.
         startup_env = _sdk._checkpoint_startup_env(image)
-        if env._sandbox is not None:
+        sandbox = env._sandbox
+        if sandbox is not None:
             try:
-                await delete_sandbox(env._sandbox)
+                await delete_sandbox(sandbox)
             except BaseException as e:
-                env._log_sandbox_left_behind(e, when="before restore")
+                env._log_sandbox_left_behind(e, when="before restore", sandbox=sandbox)
                 raise
-            env._sandbox = None
+            env._release_command_channels(sandbox)
+            if env._sandbox is sandbox:
+                env._sandbox = None
 
         params = _sdk.CreateSandboxFromSnapshotParams(
             auto_delete_interval=env._auto_delete_interval,

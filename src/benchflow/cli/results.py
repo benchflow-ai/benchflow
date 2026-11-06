@@ -2,7 +2,7 @@
 ``bf.load_job`` / ``bf.load_trial`` / ``bf.compare``.
 
 Both call the Python functions directly; ``--json`` prints the versioned
-documents of ``benchflow.job_export`` (docs/reference/json-export.md), the
+documents of ``benchflow.job_export`` (docs/train/formats.md#schema-versions), the
 same bytes ``Job.to_json()`` / ``Comparison.to_json()`` produce. Warnings go
 to stderr so ``--json`` output stays machine-readable.
 """
@@ -80,25 +80,93 @@ def _rate(d, *, controls_counted: bool = False) -> str:
     # Every attempted run counted first (an unscored one as a fail), then the
     # scored runs only, each with its n. ``controls_counted``: the trials are
     # control runs and are the count (a job of only control runs).
+    from benchflow.scoring import no_score_text
+
     pa, pr = d.pass_rate_attempted, d.pass_rate_scored
     controls = (
         ", only control runs, so they are counted"
         if controls_counted
         else f", {d.controls_excluded} control runs left out"
     )
+    # The runs with no score in the scoring rule's classes, the words the
+    # run's own Outcomes line uses (scoring.no_score_text).
     return (
         f"{d.passed}/{d.attempted} attempted passed"
         + (f" ({pa:.0%})" if pa is not None else "")
         + f", {d.passed}/{d.scored} scored passed"
         + (f" ({pr:.0%})" if pr is not None else "")
-        + f", {d.assessment_errors} verifier errors, {d.unscored} unscored"
-        + (
-            f" ({d.integration_failures} integration failure"
-            f"{'' if d.integration_failures == 1 else 's'}: the agent did nothing)"
+        + ", "
+        + no_score_text(
+            d.outcomes,
+            errored_notes=[
+                f"{d.integration_failures} integration failure"
+                f"{'' if d.integration_failures == 1 else 's'}: the agent did nothing"
+            ]
             if d.integration_failures
-            else ""
+            else [],
         )
         + controls
+    )
+
+
+def _print_scoring(job: Any) -> None:
+    """The job's score by the scoring rule, with its interval over tasks and
+    its warnings; one line per setting instead when its trials ran several
+    (benchflow.setting_groups), with the mixed-settings warning."""
+    from benchflow.setting_groups import job_summaries, setting_rows
+
+    settings = setting_rows(job.trials, summaries=job_summaries(job.path, job.trials))
+    rows = settings.counted()
+    if not rows:
+        return
+    for warning in settings.effort_warnings():
+        err_console.print(
+            f"[yellow]Warning:[/yellow] {escape(warning)}",
+            highlight=False,
+            soft_wrap=True,
+        )
+    if job.unreadable:
+        from benchflow.jobs import unreadable_warning
+
+        err_console.print(
+            f"[yellow]Warning:[/yellow] {escape(unreadable_warning(job.unreadable))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+    if not settings.split:
+        figures = rows[0].score()
+        console.print(
+            f"  Score by {figures.rule}: {figures.score or 0.0:.1%} ({figures.passed} "
+            f"of {figures.n} trials; {escape(figures.interval_text())}), "
+            f"{figures.n_tasks} task{'' if figures.n_tasks == 1 else 's'}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        for text in (figures.model_refusals_text(), figures.budget_stops_text()):
+            if text:
+                console.print(f"  {escape(text)}", highlight=False, soft_wrap=True)
+        for warning in figures.warnings():
+            console.print(
+                f"  [yellow]{escape(warning)}[/yellow]", highlight=False, soft_wrap=True
+            )
+        if settings.mixed:
+            err_console.print(
+                f"[yellow]Warning:[/yellow] {escape(settings.warning() or '')}",
+                highlight=False,
+                soft_wrap=True,
+            )
+        return
+    console.print(
+        f"  By setting, each counted by {rows[0].score().rule}:",
+        highlight=False,
+        soft_wrap=True,
+    )
+    for row in rows:
+        console.print(f"    {escape(row.line())}", highlight=False, soft_wrap=True)
+    err_console.print(
+        f"[yellow]Warning:[/yellow] {escape(settings.warning() or '')}",
+        highlight=False,
+        soft_wrap=True,
     )
 
 
@@ -247,15 +315,35 @@ def register_eval_results(eval_app: typer.Typer) -> None:
             return
         only_controls = bool(job.trials) and not job.agents()
         counted = include_controls or only_controls
+        denominators = job.denominators(include_controls=counted)
         headline = _rate(
-            job.denominators(include_controls=counted),
+            denominators,
             controls_counted=only_controls and not include_controls,
         )
+        from benchflow.setting_groups import job_summaries, setting_rows
+
+        split = setting_rows(
+            job.trials, summaries=job_summaries(job.path, job.trials)
+        ).counted()
+        if len(split) > 1:
+            # One rate over several settings would mix them: each setting's
+            # line follows (mixed settings).
+            headline = (
+                f"{sum(len(row.trials) for row in split)} trials in {len(split)} "
+                "settings, so no pooled score: one line per setting below"
+            )
+            if failures := denominators.integration_failures:
+                # A count of trials whose agent did nothing, not a score.
+                headline += (
+                    f"; {failures} integration failure"
+                    f"{'' if failures == 1 else 's'}: the agent did nothing"
+                )
         console.print(
             f"{escape(str(job.path))} ({job.kind}): {headline}",
             highlight=False,
             soft_wrap=True,
         )
+        _print_scoring(job)
         from benchflow._utils.command_hints import command_arg
 
         left = unfinished_line(job, command_arg(job.path, "<job dir>"))
@@ -465,13 +553,27 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
             int | None,
             typer.Option("--concurrency", help="Override the job's concurrency"),
         ] = None,
+        restart_changed: Annotated[
+            bool,
+            typer.Option(
+                "--restart-changed",
+                help=(
+                    "When the job's trials ran with other settings or task files "
+                    "than this resume, set them aside in <job>/.set-aside/ and run "
+                    "them again (default: refuse)"
+                ),
+            ),
+        ] = False,
     ) -> None:
         """Finish an interrupted job from its folder: rerun only the unfinished tasks.
 
         Reads the tasks directory and config the job recorded in evaluation.json
         (no agent_env value that looks secret, so pass those again with
         --agent-env), then runs the tasks with no finished result. A job that is still running is
-        refused. Exit codes as for bench eval run; 2 when the folder is not a job.
+        refused. Exit codes as for bench eval run; 2 when the folder is not a job,
+        or when its trials ran with other settings or task files than this
+        resume has (an --agent-env value, an edited task): --restart-changed
+        runs them again.
         """
         from benchflow.agents.errors import UsageLimitError
         from benchflow.cli._errors import expected_error_parts
@@ -482,14 +584,17 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
             _report_eval_result,
             stopped_run_result,
         )
-        from benchflow.evaluation import Evaluation
+        from benchflow.evaluation import Evaluation, ResumeMismatchError
 
         overrides: dict[str, Any] = (
             {"concurrency": concurrency} if concurrency is not None else {}
         )
         try:
             evaluation = Evaluation.resume(
-                job_dir, agent_env=_parse_agent_env(agent_env) or None, **overrides
+                job_dir,
+                agent_env=_parse_agent_env(agent_env) or None,
+                restart_changed=restart_changed,
+                **overrides,
             )
         except (FileNotFoundError, ValueError) as exc:
             message, hint = expected_error_parts(exc)
@@ -514,6 +619,8 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
         except (RuntimeError, ValueError) as exc:
             message, hint = expected_error_parts(exc)
             print_error(message, next_step=hint or RUN_FAILED_NEXT)
-            raise typer.Exit(1) from None
+            # 2 for trials that ran with other settings: nothing ran.
+            code = exc.exit_code if isinstance(exc, ResumeMismatchError) else 1
+            raise typer.Exit(code) from None
         _report_eval_result(result, Path(job_dir))
         _exit_if_evaluation_had_errors(result)

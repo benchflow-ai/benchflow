@@ -162,9 +162,9 @@ LAYER_LABELS = (
 # Where the proxy layer leaves its venv and the stamp of what it installed,
 # and where its build reads the requirement file. The trial uses the venv
 # only when the stamp names the install it would have run itself.
-PROXY_LAYER_VENV = "/opt/benchflow/litellm-proxy/venv"
-PROXY_LAYER_STAMP = "/opt/benchflow/layers/litellm-proxy.stamp"
-PROXY_LAYER_REQUIREMENTS_DIR = "/run/benchflow-proxy-layer"
+PROXY_LAYER_VENV = "/opt/runtime/litellm-proxy/venv"
+PROXY_LAYER_STAMP = "/opt/runtime/layers/litellm-proxy.stamp"
+PROXY_LAYER_REQUIREMENTS_DIR = "/run/runtime-proxy-layer"
 # The proxy layer's build keeps no uv cache: uv runs with ``UV_NO_CACHE=1``
 # (a temporary cache it removes before the step ends), and the build mounts
 # no BuildKit cache (U2b-R1-B-1). A cache mount's id is one
@@ -1595,6 +1595,15 @@ class DockerLayers:
                 info = None
             status = "hit" if info is not None else "miss"
             if info is None:
+                # A failed build never reaches the post-build prune. Reclaim
+                # idle layers first when the daemon is already low on space.
+                floor = agent_layer_min_free_bytes()
+                if prune and floor is not None:
+                    free = await self._free_bytes()
+                    if free is not None and free < floor:
+                        await self.prune(
+                            kind, keep=keep, max_bytes=max_bytes, min_free=floor
+                        )
                 build_started = time.monotonic()
                 built_id = await build()
                 build_sec = time.monotonic() - build_started

@@ -64,10 +64,10 @@ async def test_a_test_sh_that_never_starts_pytest_is_scored(
     )
 
     # The guard was armed: the task's ctrf comes from the protected runtime.
-    assert "_benchflow_guard_" in env.get("PYTEST_ADDOPTS", ""), env
+    assert "_runtime_guard_" in env.get("PYTEST_ADDOPTS", ""), env
     assert error is None, error
     assert rewards == {"reward": float(reward)}
-    assert list(layout.paths.verifier_dir.glob("_benchflow_guard_*")) == []
+    assert list(layout.paths.verifier_dir.glob("_runtime_guard_*")) == []
 
 
 @pytest.mark.parametrize("published", [True, False], ids=["runtime", "no-runtime"])

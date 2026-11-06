@@ -427,7 +427,7 @@ def test_path_config_without_a_pre_agent_record_keeps_nothing_in_the_workspace()
 FLAKY_CP = r"""
 RUN mv /usr/bin/cp /usr/bin/cp.real \
  && printf '%s\n' '#!/bin/sh' \
-    'for a in "$@"; do case "$a" in /opt/benchflow/rt/lib/python*) if [ ! -e /var/lib/accrun2-cp-failed ]; then : > /var/lib/accrun2-cp-failed; echo "accrun2: cp failed once" >&2; exit 1; fi;; esac; done' \
+    'for a in "$@"; do case "$a" in /opt/runtime/rt/lib/python*) if [ ! -e /var/lib/accrun2-cp-failed ]; then : > /var/lib/accrun2-cp-failed; echo "accrun2: cp failed once" >&2; exit 1; fi;; esac; done' \
     'exec /usr/bin/cp.real "$@"' > /usr/bin/cp \
  && chmod 755 /usr/bin/cp
 """
@@ -471,7 +471,7 @@ def test_benchflow_wrote_no_copy_of_the_image_site_packages():
     import subprocess
 
     out = subprocess.run(
-        ["du", "-sk", "/opt/benchflow/verifier"], capture_output=True, text=True
+        ["du", "-sk", "/opt/runtime/verifier"], capture_output=True, text=True
     ).stdout
     assert int(out.split()[0]) < 16 * 1024, out
 """

@@ -210,7 +210,7 @@ async def test_dind_log_download_dir_falls_back_to_compose_when_host_path_fails(
 
     async def sdk_download_dir(source: str, target: Path | str) -> None:
         sdk_calls.append((source, target))
-        if source == "/benchflow/logs/verifier":
+        if source == "/runtime/logs/verifier":
             raise RuntimeError("host log export failed")
         target_path = Path(target)
         target_path.mkdir(parents=True, exist_ok=True)
@@ -226,7 +226,7 @@ async def test_dind_log_download_dir_falls_back_to_compose_when_host_path_fails(
     await strategy.download_dir("/logs/verifier", tmp_path, service="main")
 
     assert len(sdk_calls) == 1
-    assert sdk_calls[0][0].startswith("/tmp/benchflow_")
+    assert sdk_calls[0][0].startswith("/tmp/runtime_")
     assert sdk_calls[0][1] == tmp_path
     assert compose_calls == [["cp", "main:/logs/verifier/.", sdk_calls[0][0]]]
     assert (tmp_path / "reward.txt").read_text() == "0"
@@ -243,7 +243,7 @@ async def test_dind_log_download_file_falls_back_to_compose_when_host_path_fails
 
     async def sdk_download_file(source: str, target: Path | str) -> None:
         sdk_calls.append((source, target))
-        if source == "/benchflow/logs/verifier/reward.txt":
+        if source == "/runtime/logs/verifier/reward.txt":
             raise RuntimeError("host log file export failed")
         Path(target).write_text("0")
 
@@ -258,7 +258,7 @@ async def test_dind_log_download_file_falls_back_to_compose_when_host_path_fails
     await strategy.download_file("/logs/verifier/reward.txt", target)
 
     assert len(sdk_calls) == 1
-    assert sdk_calls[0][0].startswith("/tmp/benchflow_")
+    assert sdk_calls[0][0].startswith("/tmp/runtime_")
     assert sdk_calls[0][1] == target
     assert compose_calls == [["cp", "main:/logs/verifier/reward.txt", sdk_calls[0][0]]]
     assert target.read_text() == "0"

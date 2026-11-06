@@ -315,3 +315,49 @@ class TestMeanScoredReward:
         # validation — a non-dict rewards must not crash the aggregation.
         results = [{"rewards": ["not", "a", "dict"]}, {"rewards": {"reward": 0.4}}]
         assert mean_scored_reward(results) == pytest.approx(0.4)
+
+
+# The guard's name now, and as trials saved by older releases recorded it.
+@pytest.mark.parametrize("guard", ["_runtime_guard_0a1b2c", "_benchflow_guard_0a1b2c"])
+@pytest.mark.parametrize("wrapper", ["", "ValueError: "])
+def test_a_guard_refusal_stays_a_failure_in_a_reviewed_trial(wrapper, guard):
+    """A rubric-reviewed trial's scoring block keeps the verifier error its
+    review refused as ``ValueError: <error>``. A guard refusal there is still
+    the guard's: never infrastructure, never retried, and a failure in the
+    error-excluding rate, whatever words a refused path holds (V2-R1-A-1)."""
+    from benchflow._utils.scoring import (
+        VERIFIER_FAILED,
+        classify_verifier_error,
+        is_guard_refusal,
+        score_summary_fields,
+    )
+    from benchflow.evaluation import RetryConfig
+
+    error = wrapper + (
+        "verifier crashed: PluginGuardLoadError: the pytest plugin guard "
+        f"{guard} refused a pytest plugin it could not trust: "
+        "/app/.venv/lib/connection reset"
+    )
+    row = {"rewards": None, "verifier_error": error}
+    if wrapper:
+        row["scoring"] = {"status": "error", "error": error}
+    assert is_guard_refusal(error)
+    assert classify_verifier_error(error) == VERIFIER_FAILED
+    assert not RetryConfig().should_retry_verifier_error(error)
+    summary = score_summary_fields([row, {"rewards": {"reward": 1.0}}])
+    assert summary["score_excl_errors_ratio"] == 0.5
+
+
+@pytest.mark.parametrize("guard", ["_runtime_guard_0a1b2c", "_benchflow_guard_0a1b2c"])
+def test_a_failed_read_of_the_guards_markers_is_infrastructure(guard):
+    """BenchFlow's failed read of the guard's markers is the sandbox's failure
+    under either guard name, with no transport words in its detail. Guards the
+    merge of the guard's neutral name with a4590aac3 (the markers read
+    and its retry), which matched only the old name."""
+    from benchflow._utils.scoring import VERIFIER_INFRA, classify_verifier_error
+
+    error = (
+        "verifier crashed: VerifierInfrastructureError: the pytest plugin guard "
+        f"{guard}'s markers could not be read in 3 tries: exit status 1"
+    )
+    assert classify_verifier_error(error) == VERIFIER_INFRA

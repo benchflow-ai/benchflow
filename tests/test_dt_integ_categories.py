@@ -35,6 +35,7 @@ ERROR_FAMILIES = {
     "registry_auth": "sandbox",
     "task_config": "other",
     "disk_full": "other",
+    "trial_budget": "agent_budget",
     "other": "other",
 }
 VERIFIER_FAMILIES = {

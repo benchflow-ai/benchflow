@@ -8,6 +8,8 @@ sandbox-orchestration, Bedrock-patch, and embedded-callback-logger code paths.
 from __future__ import annotations
 
 import asyncio
+import base64
+import functools
 import json
 import re
 from datetime import datetime
@@ -119,8 +121,8 @@ def test_mimo_litellm_alias_formats_to_dedicated_provider_route():
 
     # Proxy-mode aliases route to the dedicated chat-completions provider id,
     # not the built-in "openai" id (Responses-API crash) nor a guessed provider.
-    out = _format_acp_model("benchflow-deepseek-deepseek-v4-flash", "mimo")
-    assert out == f"{OPENCODE_PROXY_PROVIDER_ID}/benchflow-deepseek-deepseek-v4-flash"
+    out = _format_acp_model("runtime-deepseek-deepseek-v4-flash", "mimo")
+    assert out == f"{OPENCODE_PROXY_PROVIDER_ID}/runtime-deepseek-deepseek-v4-flash"
     assert not out.startswith("openai/")
 
 
@@ -400,7 +402,11 @@ class _FakeSandbox:
         fail_install: bool = False,
         fail_preflight: bool = False,
         log_content: str = _SUCCESS_LOG,
+        marks: tuple[str, str] | None = None,
     ):
+        # ``marks``: the callback's (".requests", ".logged") files, or None
+        # when no request reached the proxy (no ".requests" file at all).
+        self.marks = marks
         self.uploaded: dict[str, str] = {}
         self.uploaded_modes: dict[str, str | None] = {}
         self.exec_calls: list[str] = []
@@ -424,6 +430,14 @@ class _FakeSandbox:
         self.exec_timeouts.append(timeout_sec)
         if "pip install" in command and "litellm" in command and self.fail_install:
             return _ExecResult(1, stderr="install failed")
+        if "stat -c %s" in command and ".requests" in command:
+            head = f"{len(self.log_content)}\n"
+            if self.marks is None:
+                return _ExecResult(0, stdout=head + "N\n")
+            requests, logged = (
+                base64.b64encode(t.encode()).decode() for t in self.marks
+            )
+            return _ExecResult(0, stdout=f"{head}R\n{requests}\n{logged}\n")
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
@@ -630,6 +644,124 @@ async def test_sandbox_litellm_stop_imports_usage_and_cleans_up():
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 11
     assert any("&& rm -rf" in call for call in sandbox.exec_calls)
+
+
+async def _started_sandbox_proxy(sandbox: _FakeSandbox):
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    return await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        session_id="s",
+        agent_name="openhands",
+    )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_proxy_stops_at_once_when_no_request_reached_it():
+    """The in-sandbox proxy's stop() ignored the request marks
+    the host proxy reads (py8/perf-trial), so on Daytona an agent that never
+    called it held every trial's teardown for the whole 12 s settle deadline:
+    12 of the 17.8 s cleanup median in the 2026-10-28 live run."""
+    sandbox = _FakeSandbox(log_content="")
+    proc = await _started_sandbox_proxy(sandbox)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await proc.stop()
+    assert loop.time() - start < 3.0
+    assert any(".requests" in c and "base64 -w 0" in c for c in sandbox.exec_calls)
+    assert any("&& rm -rf" in c for c in sandbox.exec_calls)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_proxy_stops_at_first_check_when_every_request_is_logged(
+    monkeypatch,
+):
+    """Every marked request has its whole record, so the log is final
+    at once, without the quiet window (the host's PERF-B rule)."""
+    monkeypatch.setattr(
+        runtime_mod,
+        "_await_log_stable",
+        functools.partial(runtime_mod._await_log_stable, deadline_s=8.0, quiet_s=5.0),
+    )
+    sandbox = _FakeSandbox(marks=("c1\nc2\n", "c2\nc1\n"))
+    proc = await _started_sandbox_proxy(sandbox)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await proc.stop()
+    assert loop.time() - start < 2.0
+    assert proc.trajectory is not None
+
+
+@pytest.mark.asyncio
+async def test_sandbox_proxy_waits_while_a_marked_request_has_no_record(monkeypatch):
+    """The safe case is kept: a request reached the proxy but its record
+    has not landed, so the stop still waits (to the deadline) for it."""
+    monkeypatch.setattr(
+        runtime_mod,
+        "_await_log_stable",
+        functools.partial(runtime_mod._await_log_stable, deadline_s=0.8, quiet_s=0.2),
+    )
+    sandbox = _FakeSandbox(log_content="", marks=("c1\n", ""))
+    proc = await _started_sandbox_proxy(sandbox)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await proc.stop()
+    assert loop.time() - start >= 0.8
+
+
+class _MarksProbeFailsSandbox(_FakeSandbox):
+    async def exec(self, command: str, timeout_sec: int | None = None, user=None):
+        if ".requests" in command and "base64 -w 0" in command:
+            self.exec_calls.append(command)
+            raise RuntimeError("exec channel lost")
+        return await super().exec(command, timeout_sec=timeout_sec, user=user)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_proxy_keeps_the_old_wait_when_the_marks_probe_fails(monkeypatch):
+    """An unreadable probe is read as "a request may be in flight",
+    so an empty log keeps today's wait instead of being declared final."""
+    monkeypatch.setattr(
+        runtime_mod,
+        "_await_log_stable",
+        functools.partial(runtime_mod._await_log_stable, deadline_s=0.8, quiet_s=0.2),
+    )
+    sandbox = _MarksProbeFailsSandbox(log_content="")
+    proc = await _started_sandbox_proxy(sandbox)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await proc.stop()
+    assert loop.time() - start >= 0.8
+
+
+def test_parse_remote_marks_reads_the_host_rule():
+    """The sandbox probe applies the host proxy's rule exactly."""
+    parse = runtime_mod._parse_remote_marks
+
+    def b64(text: str) -> str:
+        return base64.b64encode(text.encode()).decode()
+
+    none = parse("-1\nN\n")
+    assert (none.size, none.requested, none.all_logged) == (-1, False, False)
+    whole = parse(f"42\nR\n{b64('a\nb\n')}\n{b64('b\na\n')}\n")
+    assert (whole.size, whole.requested, whole.all_logged) == (42, True, True)
+    assert not parse(f"42\nR\n{b64('a\nb\n')}\n{b64('a\n')}\n").all_logged
+    # A request without a call id never counts as logged.
+    assert not parse(f"42\nR\n{b64('?\n')}\n{b64('?\n')}\n").all_logged
+    # A mark file still being written (no final newline) is not complete.
+    assert not parse(f"42\nR\n{b64('a')}\n{b64('a\n')}\n").all_logged
+    # Unreadable output keeps waiting.
+    for garbled in ("", "x", "42\nR\n!!\n\n", "42\nQ\n"):
+        marks = parse(garbled)
+        assert marks.requested and not marks.all_logged
 
 
 @pytest.mark.asyncio
@@ -938,7 +1070,7 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
         "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
     }
     kwargs = {
-        "model": "benchflow-openai-gpt-4.1-mini",
+        "model": "runtime-openai-gpt-4.1-mini",
         "messages": [{"role": "user", "content": "hi"}],
         "litellm_params": {"model": "openai/gpt-4.1-mini"},
         "optional_params": {},

@@ -149,6 +149,19 @@ class TestInitTask:
         with pytest.raises(FileExistsError):
             init_task("dupe", parent_dir=tmp_path)
 
+    def test_oracle_comment_gives_the_documented_run_command(
+        self, tmp_path, monkeypatch
+    ):
+        """The scaffolded solve.sh told authors to run
+        `bench eval run --agent oracle --tasks-dir tasks/<name>`, while the
+        docs use `bench run <task> -a oracle`; a first-run reader noted the
+        mismatch. The comment names the folder the task was written to."""
+        monkeypatch.chdir(tmp_path)
+        task = init_task("my-task")
+        solve = (task / "oracle" / "solve.sh").read_text()
+        assert "# Check it: bench run tasks/my-task -a oracle" in solve
+        assert "eval run" not in solve and "--tasks-dir" not in solve
+
     @pytest.mark.parametrize(
         "bad",
         ["../escape", "foo/bar", "my task", "..", ".hidden", " lead", "back\\slash"],

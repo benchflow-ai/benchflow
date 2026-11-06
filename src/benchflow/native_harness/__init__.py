@@ -4,7 +4,7 @@
 ``claude -p --output-format stream-json`` and Codex through ``codex exec
 --json`` instead of their ACP adapters, as a run option of the existing
 ``claude-agent-acp`` and ``codex-acp`` entries. ACP stays the default. See
-``docs/native-harness.md``.
+``docs/agents/harness.md``.
 
 Layout: :mod:`.spec` is the extension point (a command builder and a parser
 per CLI), :mod:`.claude_code` and :mod:`.codex` implement it,

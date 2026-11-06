@@ -293,7 +293,7 @@ def uv_lock_seal_command(*folders: str) -> str:
     Run it as root after a recipe's last uv step and before anything checks
     the runtime tree: uv makes the lock files it creates (one per cached
     wheel among them) writable by everyone, which the root-only check of
-    ``/opt/benchflow`` refuses. A lock file holds no data; only its mode
+    ``/opt/runtime`` refuses. A lock file holds no data; only its mode
     changes. Folders that do not exist are skipped (DET-R1). An agent uv
     installs from git (openhands) left a git lock writable, and the
     in-sandbox model proxy then refused the cache.

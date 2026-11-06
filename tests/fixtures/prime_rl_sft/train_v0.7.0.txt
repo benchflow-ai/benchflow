@@ -1,0 +1,88 @@
+# PrimeIntellect-ai/prime-rl src/prime_rl/trainer/sft/train.py
+# at release v0.7.0 (2026-07-14),
+# commit d334ea52940b47f426293a7d146239e3fbf91caa:
+# https://github.com/PrimeIntellect-ai/prime-rl/blob/d334ea52940b47f426293a7d146239e3fbf91caa/src/prime_rl/trainer/sft/train.py
+#
+# Copyright the prime-rl authors. Licensed under the Apache License,
+# Version 2.0; a copy of the license is in LICENSE next to this file.
+#
+# Modified by BenchFlow as a test fixture: only upstream lines 61-62, 245-279,
+# 346, 372, 380-391 and 409-420 are kept, verbatim and at their original
+# indentation, because BenchFlow's sample-mean loss shim anchors on them;
+# "# [...]" marks cut upstream code. The future import and the clean_exit
+# stand-in are BenchFlow's, so the excerpt imports without prime-rl or torch.
+from __future__ import annotations
+
+
+def clean_exit(train):
+    return train
+
+
+@clean_exit
+def train(config: SFTConfig):
+    # [...]
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        input_ids = micro_batch["input_ids"].to("cuda")
+        position_ids = micro_batch["position_ids"].to("cuda")
+        target_ids = micro_batch["target_ids"].to("cuda")
+        loss_mask = micro_batch["loss_mask"].to("cuda")
+
+        if cp_enabled:
+            input_ids, position_ids = setup_cp_params(
+                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            )
+            target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+            loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+        if config.model.lora is not None:
+            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+
+        token_count = loss_mask.sum(dtype=torch.int64)
+
+        with maybe_activation_offloading(config.model.ac_offloading):
+            if config.loss_impl in ("liger_fused", "quack_fused"):
+                masked_target_ids = target_ids.clone()
+                masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
+                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                loss_sum = out["loss"] * token_count
+            else:
+                out = forward(model, input_ids, position_ids)
+                logits = out["logits"]
+                B, L, V = logits.shape
+                token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                loss_sum = token_loss[loss_mask].sum()
+                del logits
+
+        del out
+        return loss_sum, token_count
+    # [...]
+    while True:
+        # [...]
+        for micro_step in range(grad_accum_steps):
+            # [...]
+            with maybe_record_function("forward"):
+                local_loss_sum, local_token_count = compute_loss(micro_batch)
+
+            step_local_token_count += local_token_count
+
+            if torch.isnan(local_loss_sum.detach()):
+                nan_loss_count += 1
+                logger.warning("Local loss is nan, excluding this micro step from backward")
+                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) / grad_accum_steps
+            else:
+                step_loss_sum += local_loss_sum.detach()
+                scaled_loss = local_loss_sum / grad_accum_steps
+        # [...]
+        # All-reduce token counts and rescale gradients to get a global token-weighted mean.
+        # FSDP already divided grads by fsdp_gradient_divide_factor, so we undo that and
+        # divide by the true global token count instead.
+        global_step_token_count = step_local_token_count.clone()
+        dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        global_token_count_val = global_step_token_count.item()
+
+        if global_token_count_val > 0:
+            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+            for param in model.parameters():
+                if param.grad is not None:
+                    param.grad.mul_(grad_scale)

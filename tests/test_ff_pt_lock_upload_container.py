@@ -2,7 +2,7 @@
 container (merge wave batch 32).
 
 A live install uploads a Python agent's hash lock (PT b179) into
-``/opt/benchflow/agents``, which FF-install's recipe checks root's alone
+``/opt/runtime/agents``, which FF-install's recipe checks root's alone
 before uv reads anything there. Docker's upload keeps a non-root host's uid
 (FF-INSTALL-ON-PT-R1), so the upload is made root's before the recipe runs.
 The recipe here is the guard and the lock step the registry's agents use,

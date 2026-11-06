@@ -8,6 +8,17 @@
 # can run the verifier in it. Extra arguments go to `python -m benchflow.embodied.serve` (e.g. --seed N).
 umask 000                     # the agent runs as another user; it must be able to connect to the socket
 mkdir -p /rpc/ws /episode
+# The oracle token unlocks privileged state (true object poses in vision tasks) for the reference solution only.
+# Unless the task's compose gives one, mint a fresh one for this episode and leave it in a root-only file on the
+# `oracle` volume, which `main` mounts read-only: the reference solution runs as root and reads it, an agent runs as
+# the unprivileged sandbox user and cannot. No package and no host environment holds it.
+if [ -z "${ROBO_ORACLE_TOKEN:-}" ] && [ -d /run/runtime-oracle ]; then
+    ROBO_ORACLE_TOKEN=$(python -c 'import secrets; print(secrets.token_hex(16))')
+    export ROBO_ORACLE_TOKEN
+fi
+if [ -n "${ROBO_ORACLE_TOKEN:-}" ] && [ -d /run/runtime-oracle ]; then
+    (umask 077 && chmod 700 /run/runtime-oracle && printf '%s' "$ROBO_ORACLE_TOKEN" > /run/runtime-oracle/token)
+fi
 rm -f /episode/serve.exit
 TASK_DIR=/task
 if [ -n "${ROBO_TASK_MD:-}" ]; then

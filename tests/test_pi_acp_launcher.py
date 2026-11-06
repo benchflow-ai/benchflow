@@ -335,10 +335,10 @@ class TestSetupProviderNameDerivation:
 
         config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
         assert "custom" not in config["providers"]
-        assert "benchflow-Qwen" in config["providers"]
+        assert "runtime-Qwen" in config["providers"]
 
     def test_derive_provider_name_empty_model(self, monkeypatch, tmp_path):
-        """Empty model string → 'benchflow-custom' (no slash to slug, no name to embed)."""
+        """Empty model string → 'runtime-custom' (no slash to slug, no name to embed)."""
         monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://a/v1")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "")
@@ -348,7 +348,7 @@ class TestSetupProviderNameDerivation:
         setup_provider()
 
         config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
-        assert "benchflow-custom" in config["providers"]
+        assert "runtime-custom" in config["providers"]
 
     def test_explicit_name_wins_over_derivation(self, monkeypatch, tmp_path):
         monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
@@ -362,7 +362,7 @@ class TestSetupProviderNameDerivation:
 
         config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
         assert "vllm" in config["providers"]
-        assert "benchflow-Qwen" not in config["providers"]
+        assert "runtime-Qwen" not in config["providers"]
 
 
 @pytest.mark.usefixtures("_pi_env")
@@ -400,9 +400,9 @@ class TestMainExecv:
         with pytest.raises(RuntimeError, match="stop"):
             launcher.main()
 
-        assert captured["path"] == "/opt/benchflow/bin/pi-acp"
-        assert captured["argv"][0] == "/opt/benchflow/bin/pi-acp"
+        assert captured["path"] == "/opt/runtime/bin/pi-acp"
+        assert captured["argv"][0] == "/opt/runtime/bin/pi-acp"
         path_entries = captured["PATH"].split(":")
-        assert path_entries[:2] == ["/opt/benchflow/bin", "/usr/bin"]
-        assert "/opt/benchflow/node/bin" not in path_entries
-        assert "/opt/benchflow/js-agents/bin" not in path_entries
+        assert path_entries[:2] == ["/opt/runtime/bin", "/usr/bin"]
+        assert "/opt/runtime/node/bin" not in path_entries
+        assert "/opt/runtime/js-agents/bin" not in path_entries

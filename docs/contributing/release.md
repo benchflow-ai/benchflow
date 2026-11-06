@@ -1,12 +1,13 @@
 # Publishing a release
 
-This page is for maintainers. To install a stable or preview release, see [Install](../getting-started/install.md).
+This page is for maintainers. To install a stable or preview release, see [Install](../start/install.md).
 
 BenchFlow publishes two kinds of release to PyPI, both under the name `benchflow`:
 
 | Channel | Published | Version | Workflow |
 | --- | --- | --- | --- |
 | Stable | when a maintainer pushes a `vX.Y.Z` tag | `X.Y.Z` | `public-release.yml` |
+| Pre-release | when a maintainer pushes a `vX.Y.ZrcN` (or `aN`, `bN`) tag | `X.Y.ZrcN` | `public-release.yml` |
 | Preview | after every push to `main` whose tests and integration check pass | `X.Y.Z.devN` | `internal-preview-release.yml` |
 
 ## Version model
@@ -25,7 +26,9 @@ The preview build replaces `.dev0` with `.devN`, where N is the run number of th
 
 Previews sort before the stable release they lead to, so `pip install benchflow` still gets the latest stable.
 
-If `main` carries a final version during a release, the preview workflow skips publishing. The tag-driven stable workflow handles that commit.
+If `main` carries a final or a/b/rc version during a release, the preview workflow skips publishing. The tag-driven stable workflow handles that commit.
+
+A pre-release such as `0.10.0rc2` goes through the same stable steps below, with its own acceptance record. pip installs it only when asked for it (`pip install --pre benchflow` or `benchflow==0.10.0rc2`), and its GitHub release is marked as a pre-release. `.dev` and local versions never publish through `public-release.yml`.
 
 ## Preview releases
 
@@ -109,5 +112,5 @@ The workflows build with `uv build --no-sources`, check distributions with `twin
 
 ## Next steps
 
-- [Install](../getting-started/install.md): the stable and preview install commands.
-- [What's new in 0.9](../whats-new-0.9.md): the changes in this release line.
+- [Install](../start/install.md): the stable and preview install commands.
+- [What's new in 0.9](../versions/upgrade-from-0.7.md): the changes in this release line.

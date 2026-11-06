@@ -113,7 +113,13 @@ class ContainerTransport(Transport):
             env=process_env,
             cwd=self._cwd,
         )
-        logger.info(f"ContainerTransport: agent started ({self._command})")
+        # The launch command is a long shell script: its head at INFO, all of
+        # it at DEBUG (BENCHFLOW_LOG_LEVEL=DEBUG).
+        shown = self._command
+        if len(shown) > 160:
+            shown = f"{shown[:120]}... ({len(self._command)} characters)"
+        logger.info(f"ContainerTransport: agent started ({shown})")
+        logger.debug(f"ContainerTransport: agent command: {self._command}")
 
     def expect_silence(self, seconds: float) -> None:
         """Pass the prompt's silence budget to the live process's read guard."""

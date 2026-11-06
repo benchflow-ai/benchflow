@@ -96,7 +96,7 @@ def root_only_tree_check(path: str, what: str) -> str:
     everything in it is owned by root and nobody else may write it; a link
     in it passes the same hop-by-hop walk, or names a missing file only root
     could create (uv's shared ``.lock`` files excepted, below). BenchFlow's
-    runtimes under /opt/benchflow and /tmp are reused across roles in one
+    runtimes under /opt/runtime and /tmp are reused across roles in one
     sandbox, and root runs what they hold.
     """
     q = shlex.quote(path)

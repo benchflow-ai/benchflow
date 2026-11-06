@@ -159,14 +159,30 @@ def _config_payload(
         "sandbox_setup_timeout": config.sandbox_setup_timeout,
         "skip_agent_install": config.skip_agent_install,
         "agent_idle_timeout": config.agent_idle_timeout,
+        # Whether the run set its idle limit: a worker given 600 at effort
+        # max would otherwise take it for BenchFlow's default and raise it.
+        "agent_idle_timeout_given": config.agent_idle_timeout_given,
         "timeout_multiplier": config.timeout_multiplier,
+        # Each trial's token and turn budget: a worker without it would run
+        # its trials unbounded.
+        "trial_budget": (
+            config.trial_budget.to_dict() if config.trial_budget is not None else None
+        ),
         "extra_instruction": config.extra_instruction,
         "checkpoints": config.checkpoints,
         "checkpoint_keep": config.checkpoint_keep,
         "freeze_workspace": config.freeze_workspace,
+        "keep_sandbox": config.keep_sandbox,
         "fresh_install": config.fresh_install,
         "allow_cloud_metadata": config.allow_cloud_metadata,
         "integrity": config.integrity,
+        # The run card each worker writes: a strict reference's accepted
+        # reason, the --trials plan it counts, and whether the run named its
+        # model.
+        "accept_deviations": config.accept_deviations,
+        "planned_trials": config.planned_trials,
+        "trial_number": config.trial_number,
+        "model_given": config.model_given,
         "verifier_sandbox": effective_verifier_sandbox(
             config.verifier_sandbox, config.separate_verifier
         ),
@@ -387,15 +403,39 @@ def _aggregate_result(
     shard_results: list[dict[str, Any]],
     elapsed_sec: float,
 ) -> EvaluationResult:
+    # The workers' run checks are judged together, as one job's would be
+    # (benchflow.run_checks.pool): a worker alone sees only its shard. Each
+    # worker's lines and trials go by its shard's name (its folder under
+    # worker-shards/), not by its job's timestamped one.
+    from benchflow.run_checks import pool
+
+    aligned = len(shard_results) == len(plan.shards)
+    run_checks = pool(
+        (
+            str(
+                r.get("shard")
+                or (f"shard-{plan.shards[i].index:03d}" if aligned else None)
+                or r.get("job_name")
+                or f"shard-{i:03d}"
+            ),
+            r.get("run_checks"),
+        )
+        for i, r in enumerate(shard_results)
+    )
     result = EvaluationResult(
         job_name="worker-sharded",
         config=config,
+        run_checks=run_checks,
         total=sum(int(r.get("total", 0)) for r in shard_results),
         passed=sum(int(r.get("passed", 0)) for r in shard_results),
         failed=sum(int(r.get("failed", 0)) for r in shard_results),
         errored=sum(int(r.get("errored", 0)) for r in shard_results),
         verifier_errored=sum(int(r.get("verifier_errored", 0)) for r in shard_results),
         guard_refused=sum(int(r.get("guard_refused", 0)) for r in shard_results),
+        unusable_rewards=sum(int(r.get("unusable_rewards", 0)) for r in shard_results),
+        # Planned trials a worker never finished: a run check, a budget or a
+        # usage limit kept them from running.
+        not_run=sum(int(r.get("not_run", 0)) for r in shard_results),
         elapsed_sec=elapsed_sec,
     )
     summary = {
@@ -411,13 +451,17 @@ def _aggregate_result(
         "score_excl_errors_ratio": pass_rate_excl_errors(
             passed=result.passed,
             failed=result.failed,
-            refused=result.guard_refused,
+            refused=result.guard_refused + result.unusable_rewards,
         ),
+        "planned": result.planned,
+        "not_run": result.not_run,
+        "score_of_plan": result.score_of_plan,
         "elapsed_sec": result.elapsed_sec,
         "concurrency": plan.total_concurrency,
         "worker_concurrency": plan.worker_concurrency,
         "worker_count": plan.worker_count,
         "shards": shard_results,
+        "run_checks": run_checks,
     }
     jobs_dir.mkdir(parents=True, exist_ok=True)
     summary_text = json.dumps(summary, indent=2)
@@ -465,6 +509,12 @@ async def run_sharded_evaluation(
     _refuse_unnamed_task_env(
         task_dirs, manifest=config.environment_manifest, sandbox=config.environment
     )
+    # A strict run-reference.toml refuses a run that differs once, here,
+    # before any worker starts (benchflow.run_card); each worker's card checks
+    # its own shard too, with the same accepted reason.
+    from benchflow.run_card import build_run_card, check_card
+
+    check_card(build_run_card(discovery, task_dirs))
 
     # Check the complete selection before launching any worker; each worker
     # then validates its own credential context before starting a solver.
@@ -549,15 +599,18 @@ async def run_sharded_evaluation(
         log_path = shard_dir / "worker.log"
         worker_tasks.append((shard, private_payload_path, log_path))
 
-    async def run_one(offset: int, payload_path: Path, log_path: Path):
+    async def run_one(
+        offset: int, shard: EvalShard, payload_path: Path, log_path: Path
+    ):
         if worker_start_stagger_sec > 0:
             await asyncio.sleep(offset * worker_start_stagger_sec)
         try:
-            return await _run_worker_with_retries(
+            result = await _run_worker_with_retries(
                 payload_path,
                 log_path,
                 max_retries=worker_retries,
             )
+            return {**result, "shard": f"shard-{shard.index:03d}"}
         finally:
             with suppress(FileNotFoundError):
                 payload_path.unlink()
@@ -565,8 +618,8 @@ async def run_sharded_evaluation(
     started = datetime.now(UTC)
     results_or_errors = await asyncio.gather(
         *[
-            run_one(offset, payload_path, log_path)
-            for offset, (_shard, payload_path, log_path) in enumerate(worker_tasks)
+            run_one(offset, shard, payload_path, log_path)
+            for offset, (shard, payload_path, log_path) in enumerate(worker_tasks)
         ],
         return_exceptions=True,
     )

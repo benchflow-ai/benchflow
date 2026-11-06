@@ -589,8 +589,9 @@ def test_cli_exits_1_with_the_resume_step_for_a_stopped_job(tmp_path):
 
 
 def test_the_docs_exit_code_table_has_the_stopped_row():
-    doc = Path(__file__).resolve().parents[2] / "docs/reference/rollout-stream.md"
-    rows = [line for line in doc.read_text().splitlines() if line.startswith("| Job ")]
-    (stopped,) = [r for r in rows if r.startswith("| Job was stopped")]
-    assert '`"stopped": true`' in stopped and "exit 1" in stopped
-    assert "`bench eval resume <job>`" in stopped and "`JobProcessGone`" in stopped
+    # Docs v2 moved docs/reference/rollout-stream.md to this section,
+    # which gives the exit codes in one sentence.
+    doc = Path(__file__).resolve().parents[2] / "docs/train/trainer.md"
+    section = doc.read_text().split("## Stream rollouts while a job runs", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    assert "1 when it was stopped or its process died first" in section

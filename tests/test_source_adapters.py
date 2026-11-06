@@ -186,7 +186,7 @@ params:
     assert "rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/" in dockerfile
     assert "global_configs_example.py" in dockerfile
     assert "global_configs.py" in dockerfile
-    assert "cp /opt/benchflow/uv/0.13.4/uv /usr/local/bin/uv" in dockerfile
+    assert "cp /opt/runtime/uv/0.13.4/uv /usr/local/bin/uv" in dockerfile
     assert "chmod -R a+rwX /workspace/utils/local_servers" in dockerfile
     assert "chmod -R a+rwX /workspace/agent_workspace" in task_toml
     assert 'chmod -R go-rwx "$private"' in setup_command

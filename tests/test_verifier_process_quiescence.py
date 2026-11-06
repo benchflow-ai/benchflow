@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from benchflow._runtime_tree import KIT_BIN
 from benchflow.sandbox.lockdown import _SAFE_VERIFIER_PATH, _kill_sandbox_user_procs
 
 UID = "1234"
@@ -126,6 +127,20 @@ class _FakeProc:
             (entry / "term_status").write_text(term_status)
         return pid
 
+    def add_init(self, status, cmdline, *, ptrace_scope=None):
+        """PID 1, the PID namespace's init: kill(-1) skips it and it drops
+        every signal sent from inside (a stand-in for the kernel's rule).
+        *ptrace_scope* is Yama's setting, None for a kernel without Yama."""
+        entry = self.root / "1"
+        entry.mkdir()
+        (entry / "status").write_text(status)
+        (entry / "cmdline").write_text(cmdline.replace(" ", "\x00") + "\x00")
+        (entry / "init").touch()
+        if ptrace_scope is not None:
+            yama = self.root / "sys/kernel/yama"
+            yama.mkdir(parents=True)
+            (yama / "ptrace_scope").write_text(f"{ptrace_scope}\n")
+
     def add_hopper(self):
         pid = self._pid
         self._pid += 1
@@ -175,6 +190,7 @@ _everyone() {{ bsig=$1; echo "$bsig -1" >> "$SIGLOG"
     esac
   done
   for be in "$PROC"/[0-9]*; do bp=${{be##*/}}
+    [ -e "$be/init" ] && continue
     bu=$(awk '/^Uid:/{{print $2}}' "$be/status" 2>/dev/null); [ "$bu" = {UID} ] || continue
     bs=$(awk '/^State:/{{print $2}}' "$be/status" 2>/dev/null); bt=$(awk '/^Threads:/{{print $2}}' "$be/status" 2>/dev/null)
     [ "$bs" = Z ] && [ "$bt" = 1 ] && continue
@@ -192,6 +208,8 @@ _deliver() {{ sig=$1; pid=$2; quiet=$3
     _everyone "$sig"; return 0
   fi
   e="$PROC/$pid"
+  # The PID namespace's init drops every signal sent from inside it.
+  [ -e "$e/init" ] && {{ echo "$sig $pid dropped" >> "$SIGLOG"; return 0; }}
   # As the user, only a process whose real or saved UID is the user's.
   if [ -n "$AS_USER" ] && [ -d "$e" ]; then
     set -- $(awk '/^Uid:/{{print $2, $4}}' "$e/status" 2>/dev/null)
@@ -1138,3 +1156,98 @@ async def test_controller_uid_rejected_before_any_signal(tmp_path):
     with pytest.raises(RuntimeError, match="identity check"):
         await _kill_sandbox_user_procs(ShellEnv(), "root")
     assert not sentinel.exists()
+
+
+# PID 1 as the image's user. On Docker PID 1 runs as the image's USER, and a
+# task image whose USER is the sandbox user's account (Terminal-Bench 4.1's
+# rs-archive-clone: ``USER agent``) gives PID 1 that UID. Docker's default
+# bounding set (CapBnd), which has no CAP_SYS_PTRACE (bit 19), and one with it.
+_BOUND = "00000000a80425fb"
+_BOUND_PTRACE = "00000000a80c25fb"
+
+
+def _init_status(tracer="0", bound=_BOUND):
+    return (
+        f"State:\tS (sleeping)\nTracerPid:\t{tracer}\n"
+        f"Uid:\t{UID}\t{UID}\t{UID}\t{UID}\nThreads:\t1\nCapBnd:\t{bound}\n"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope", "bound", "keep_alive"),
+    [
+        (1, _BOUND, "sleep infinity"),
+        (2, _BOUND, "sleep infinity"),
+        (3, _BOUND_PTRACE, "sleep infinity"),
+        (1, _BOUND, f"{KIT_BIN}/sleep infinity"),
+    ],
+    ids=["yama-1", "yama-2", "yama-3-ptrace-bounded", "kit-sleep-restored"],
+)
+async def test_the_keep_alive_init_is_left_alone_and_every_agent_process_dies(
+    tmp_path, scope, bound, keep_alive
+):
+    """Guards the kill's PID 1 rule against the regression of the kill before
+    grading (c5ab45031, 74c0e84eb) meeting the compose keep-alive (7a479e9f4,
+    #294) in an image whose USER is the sandbox user: the kill ended the
+    keep-alive's sleep, PID 1 (a shell waiting on it) exited, and the
+    container went down with BenchFlow's root command helper (the trial
+    errored: "the sandbox's command channel stopped: the helper closed its
+    output"). With the keep-alive as PID 1 itself, the kill counted it, could
+    not end it, and failed. Now an untraceable ``sleep infinity`` PID 1 is left
+    alone and every other process of the user dies: one whose command line is
+    the keep-alive's too, and an orphan (which the kernel reparents to PID 1)."""
+    proc = _FakeProc(tmp_path)
+    proc.add_init(_init_status(bound=bound), keep_alive, ptrace_scope=scope)
+    mimic = proc.add(_LIVE, cmdline="sleep infinity")
+    orphan = proc.add(_RUNNING, cmdline="python3 -c daemon")
+    worker = proc.add(_LIVE, regen=True)
+    killed = await _kill_sandbox_user_procs(proc, "agent")
+    assert proc.live_pids() == ["1"]
+    assert killed == 3
+    assert not any(line.split()[1:2] == ["1"] for line in proc.signalled())
+    assert {mimic, orphan, worker}.isdisjoint(int(p) for p in proc.live_pids())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope", "tracer", "bound", "cmdline"),
+    [
+        (0, "0", _BOUND, "sleep infinity"),
+        (None, "0", _BOUND, "sleep infinity"),
+        (1, "0", _BOUND_PTRACE, "sleep infinity"),
+        (2, "0", _BOUND_PTRACE, "sleep infinity"),
+        (1, "0", "a80425fb", "sleep infinity"),
+        (1, "4242", _BOUND, "sleep infinity"),
+        (1, "0", _BOUND, "sh -c sleep infinity"),
+        (1, "0", _BOUND, "sleep infinity now"),
+        (1, "0", _BOUND, "/bin/sleep infinity"),
+    ],
+    ids=[
+        "yama-0",
+        "no-yama",
+        "ptrace-bounded-1",
+        "ptrace-bounded-2",
+        "short-mask",
+        "traced",
+        "shell-keep-alive",
+        "other-command",
+        "snapshot-sleep",
+    ],
+)
+async def test_an_init_that_may_act_for_the_agent_still_fails_the_kill(
+    tmp_path, scope, tracer, bound, cmdline
+):
+    """The other half: a PID 1 of the user's that some process of the user's
+    could have traced (Yama off or absent, CAP_SYS_PTRACE in the bounding set
+    where Yama lets its holder attach, a tracer now) or that is not the
+    keep-alive is counted as before (so is a restored snapshot's own
+    ``/bin/sleep``, a file of the image the agent worked in). No kill from
+    inside can end it, so the kill fails and the trial is not graded; every
+    other process still dies."""
+    proc = _FakeProc(tmp_path)
+    proc.add_init(_init_status(tracer, bound), cmdline, ptrace_scope=scope)
+    proc.add(_LIVE)
+    with pytest.raises(RuntimeError, match=r"writers remain: 1 \("):
+        await _kill_sandbox_user_procs(proc, "agent")
+    assert proc.live_pids() == ["1"]

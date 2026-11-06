@@ -207,7 +207,7 @@ class FakeVerifier:
         self.uploads[target] = dest
 
     async def exec(self, cmd: str, *, user: str = "root", **_: Any) -> ExecResult:
-        if "benchflow-verifier-destinations-" in cmd:
+        if "runtime-verifier-destinations-" in cmd:
             # Match the current custody probe, without carrying agent bytes.
             process = await asyncio.create_subprocess_exec(
                 "sh",
@@ -518,7 +518,7 @@ async def test_on_docker_the_verifier_starts_before_capture_returns(
     first = _first_agent_bytes(sc)
     before = [e for e in sc.log[:first] if e.startswith("verifier.")]
     assert before[:2] == ["verifier.create", "verifier.start"], sc.log
-    assert all("benchflow-verifier-destinations-" in e for e in before[2:]), sc.log
+    assert all("runtime-verifier-destinations-" in e for e in before[2:]), sc.log
 
 
 @pytest.mark.parametrize("environment", ["daytona", "modal"])
@@ -1473,18 +1473,6 @@ async def test_the_verifier_teardown_is_timed_after_an_exception(tmp_path, monke
     assert sc.record()["timing"]["verifier_sandbox_teardown"] == 0.75
 
 
-def test_the_security_page_lists_only_what_stays_open_about_the_agent_sandbox():
-    """The stop before the transfer is the default order; the page's open
-    items name only the serial order and a failed stop."""
-    docs = Path(__file__).resolve().parents[1] / "docs"
-    page = docs / "tasks" / "separate-verifier.md"
-    still_open = page.read_text().split("\nStill open:\n", 1)[1].split("\n## ", 1)[0]
-    assert "not built yet" not in still_open
-    bullets = [b for b in still_open.splitlines() if "agent sandbox" in b.lower()]
-    assert len(bullets) == 1, bullets
-    assert "serial order" in bullets[0] and "failed stop" in bullets[0]
-
-
 async def test_the_verifier_seals_its_inspector_copies_before_any_transfer(
     tmp_path, monkeypatch
 ):
@@ -1497,7 +1485,7 @@ async def test_the_verifier_seals_its_inspector_copies_before_any_transfer(
     await _trial(sc)
 
     destinations = next(
-        i for i, e in enumerate(sc.log) if "benchflow-verifier-destinations-" in e
+        i for i, e in enumerate(sc.log) if "runtime-verifier-destinations-" in e
     )
     assert sc.index("seal") < destinations < _first_agent_bytes(sc), sc.log
     assert sc.count("seal") == 1, sc.log

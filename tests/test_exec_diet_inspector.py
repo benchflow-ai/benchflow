@@ -51,7 +51,7 @@ async def test_the_manifest_rides_in_the_inspector_exec(box_factory):  # noqa: F
     # The inspectors are ready, root's alone, after the merged steps.
     inspector = sandbox._benchflow_bash_env_inspector
     assert isinstance(inspector, str)
-    assert inspector.startswith("/etc/.benchflow-bash-env-")
+    assert inspector.startswith("/etc/.runtime-bash-env-")
     assert as_root(box, f"stat -c '%u %a' {inspector}").split() == ["0", "711"]
     assert set(as_root(box, f"ls {inspector}").split()) >= {
         "before",
@@ -86,7 +86,7 @@ async def test_the_inspectors_run_when_the_copy_fails(box_factory):  # noqa: F81
 
     inspector = sandbox._benchflow_bash_env_inspector
     assert isinstance(inspector, str)
-    assert inspector.startswith("/etc/.benchflow-bash-env-")
+    assert inspector.startswith("/etc/.runtime-bash-env-")
     assert as_root(box, f"stat -c '%u %a' {inspector}").split() == ["0", "711"]
     # The first exec is the inspectors' with the merged prefix; the host's
     # own manifest echo follows, because the script's write failed.

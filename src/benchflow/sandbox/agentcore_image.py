@@ -115,7 +115,7 @@ _STARTUP_NAMES_CHECK = (
 # subshell, so only the shim has them, not PID 1: the ``/bin/sh`` that
 # passes a stop on to the shim. Every command the runtime starts later still
 # begins with them empty (the ENV line above).
-_SHIM_PATH = "/opt/benchflow_agentcore_shim.py"
+_SHIM_PATH = "/opt/runtime_agentcore_shim.py"
 _SHIM_START = (
     f"({restore_image_env()}exec python3 {_SHIM_PATH}) & "
     'pid=$!; trap \'kill "$pid"\' TERM INT; wait "$pid"'

@@ -69,7 +69,7 @@ async def capture_submission(rollout: Any) -> None:
     identity = _identity(rollout)
     bundle = root.resolve() / "submission-evidence"
     bundle.mkdir(mode=0o700)  # An incomplete previous capture fails closed.
-    remote = "/tmp/benchflow-submission-" + uuid.uuid4().hex
+    remote = "/tmp/runtime-submission-" + uuid.uuid4().hex
     result = await exec_raw(
         rollout._env.exec,
         await _command(rollout._env, "capture", remote, identity["paths"]),
@@ -100,7 +100,7 @@ async def restore_submission(rollout: Any, env: Any) -> None:
     paths = list(
         files.validate_contract(rollout._task.config.verifier.submission_files)
     )
-    remote = "/tmp/benchflow-submission-" + uuid.uuid4().hex
+    remote = "/tmp/runtime-submission-" + uuid.uuid4().hex
     admission = admit(env, "main", IngressKind.RECOVERY_TRANSFER)
     await env.upload_dir(bundle, remote, admission=admission)
     result = await exec_raw(

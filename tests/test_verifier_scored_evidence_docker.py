@@ -22,7 +22,7 @@ def needs_docker():
 
 PRELUDE = """import hashlib, hmac, json, os, pathlib, shlex, time
 args = shlex.split(os.environ['PYTEST_ADDOPTS'])
-guard = next(n for f, n in zip(args, args[1:]) if f == '-p' and n.startswith('_benchflow_guard_'))
+guard = next(n for f, n in zip(args, args[1:]) if f == '-p' and n.startswith('_runtime_guard_'))
 def mark(kind):
     root = pathlib.Path('/') / guard
     name = guard + '.1-deadbeef.' + kind
@@ -45,14 +45,9 @@ def mark(kind):
         ),
         ('mark("checking")', "guard not confirmed"),
         ('mark("crashed")', "guard not confirmed"),
-        (
-            'pathlib.Path("/logs/verifier/reward.json").write_text(\'{"reward": "x"}\')',
-            "reward.json",
-        ),
-        ('pathlib.Path("/logs/verifier/reward.json").mkdir()', "reward.json"),
         ("time.sleep(40)", "timed out"),
         (
-            '[p.unlink() for p in pathlib.Path("/run/benchflow").glob("verifier-started-*")]\ntime.sleep(40)',
+            '[p.unlink() for p in pathlib.Path("/run/runtime").glob("verifier-started-*")]\ntime.sleep(40)',
             "Verifier scored 0",
         ),
     ],
@@ -61,8 +56,6 @@ def mark(kind):
         "forged-registered",
         "checking",
         "crashed",
-        "malformed-json",
-        "directory-json",
         "timeout",
         "deleted-receipt",
     ],
@@ -92,3 +85,48 @@ async def test_verifier_user_cannot_drop_the_trial(tmp_path, attack, reason):
         "warnings", []
     )
     assert any(reason in warning for warning in warnings), warnings
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        'pathlib.Path("/logs/verifier/reward.json").write_text(\'{"reward": "x"}\')',
+        'pathlib.Path("/logs/verifier/reward.json").mkdir()',
+    ],
+    ids=["malformed-json", "directory-json"],
+)
+async def test_a_reward_file_test_sh_breaks_is_an_error_that_still_fails(
+    tmp_path, attack
+):
+    """A reward.json the code test.sh ran broke is no usable reward: the
+    verifier's error, never retried, and still a failure in every
+    score, so the trial is not dropped."""
+    from benchflow._utils.scoring import (
+        NO_USABLE_REWARD,
+        VERIFIER_FAILED,
+        classify_verifier_error,
+        score_summary_fields,
+    )
+
+    task = _task(
+        tmp_path,
+        "fix49-r4-evidence",
+        dockerfile=BASE,
+        solve="cat > /app/check.py <<'PY'\n"
+        + PRELUDE
+        + attack
+        + "\nraise SystemExit(1)\nPY\n",
+        test=(
+            "#!/bin/bash\ncd /app\n"
+            "if python3 check.py; then echo 1; else echo 0; fi > /logs/verifier/reward.txt\n"
+        ),
+    )
+    result = await _run(task, "oracle")
+    assert result.error is None, result.error
+    assert result.rewards is None
+    assert result.verifier_error.startswith(NO_USABLE_REWARD), result.verifier_error
+    assert "reward.json" in result.verifier_error
+    assert classify_verifier_error(result.verifier_error) == VERIFIER_FAILED
+    row = json.loads((result.rollout_dir / "result.json").read_text())
+    summary = score_summary_fields([row])
+    assert (summary["unusable_rewards"], summary["score_excl_errors_ratio"]) == (1, 0.0)

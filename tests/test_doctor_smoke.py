@@ -71,7 +71,7 @@ def test_default_plan_runs_ready_agents_and_explains_the_rest():
     assert [(t.agent, t.model, t.auth) for t in targets] == [
         (
             "claude-agent-acp",
-            "claude-haiku-4-5-20251001",
+            "claude-haiku-5-5",
             "CLAUDE_CODE_OAUTH_TOKEN (env)",
         ),
         ("codex-acp", "gpt-6-luna", "~/.codex/auth.json"),
@@ -123,7 +123,7 @@ def test_explicit_agents_always_run_in_order_without_duplicates():
     assert skipped == []
     assert [(t.agent, t.model, t.auth, t.explicit) for t in targets] == [
         ("codex-acp", "gpt-5.6-sol", "~/.codex/auth.json", True),
-        ("claude-agent-acp", "claude-haiku-4-5-20251001", "none found", True),
+        ("claude-agent-acp", "claude-haiku-5-5", "none found", True),
     ]
 
 

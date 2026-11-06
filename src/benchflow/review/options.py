@@ -19,6 +19,10 @@ REVIEWER_AGENT_TIMEOUT_SEC = 1800
 # The reviewer's ACP idle watchdog: 600 s, the rollout default reviewers used
 # to inherit with no way to change it (#1143). 0 disables it.
 REVIEWER_IDLE_TIMEOUT_SEC = 600
+# The reviewer sandbox's memory, and the least disk it gets: the fixed sizes
+# every reviewer had before they could be set (#1205).
+REVIEWER_MEMORY_MB = 2048
+REVIEWER_STORAGE_MB = 4096
 
 
 class ReviewerConfig(BaseModel):
@@ -38,6 +42,17 @@ class ReviewerConfig(BaseModel):
     # Idle seconds before a reviewer prompt is aborted; 0 disables the
     # watchdog and leaves timeout_sec in charge.
     idle_timeout_sec: int = Field(default=REVIEWER_IDLE_TIMEOUT_SEC, ge=0)
+    # The reviewer sandbox's disk in MB; None sizes it from the evidence the
+    # review puts there (wrapper.reviewer_storage_mb).
+    storage_mb: int | None = Field(default=None, gt=0)
+    memory_mb: int = Field(default=REVIEWER_MEMORY_MB, gt=0)
+    # Seconds for the reviewer sandbox's setup, its model proxy and agent
+    # installs among it; None takes the reviewed run's sandbox_setup_timeout.
+    setup_timeout_sec: int | None = Field(default=None, gt=0)
+    # Seconds for each step that unpacks or checks the evidence in the
+    # reviewer sandbox; None scales them with the evidence
+    # (evidence.evidence_install_timeout_sec).
+    evidence_timeout_sec: int | None = Field(default=None, gt=0)
     concurrency: int = Field(default=4, gt=0)
     image: str = REVIEWER_IMAGE
     agent_env: dict[str, str] = Field(default_factory=dict, repr=False)

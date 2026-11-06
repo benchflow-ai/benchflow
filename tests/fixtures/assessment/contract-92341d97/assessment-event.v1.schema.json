@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://benchflow.ai/schemas/benchflow-assessment-event.v1.schema.json",
+  "title": "One append-only event for a hash-bound blinded pairwise assessment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "assessment_id",
+    "event_id",
+    "event_seq",
+    "created_at",
+    "kind",
+    "actor",
+    "idempotency_key",
+    "expected_previous_event_sha256",
+    "previous_event_sha256",
+    "payload",
+    "event_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "benchflow.assessment-event.v1"},
+    "assessment_id": {"type": "string", "format": "uuid"},
+    "event_id": {"type": "string", "format": "uuid"},
+    "event_seq": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "kind": {
+      "enum": [
+        "assessment.created",
+        "compute.released",
+        "assignment.issued",
+        "review.submitted",
+        "review.corrected",
+        "review.retracted",
+        "label.reduced",
+        "label.consumed",
+        "label.withdrawn"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "subject"],
+      "properties": {
+        "role": {"enum": ["bridge", "collector", "reviewer", "reducer", "consumer", "operator"]},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 512},
+    "expected_previous_event_sha256": {"$ref": "#/$defs/optionalDigest"},
+    "previous_event_sha256": {"$ref": "#/$defs/optionalDigest"},
+    "payload": {"type": "object"},
+    "event_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "optionalDigest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+  }
+}

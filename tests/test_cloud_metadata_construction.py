@@ -13,6 +13,12 @@ import pytest
 from tests._receipt_fakes import receipt_aware
 from tests.test_cloud_metadata_block import AGENT_REFUSED, ROOT_OK, FakeEnv
 
+# The delegate inventory's report from PT's protected Python on a clean image.
+PYTHON_CLEAN = (
+    "BF metadata-delegates-scan reader=python3 complete=1 files=812 vanished=0 "
+    "errors=0 why=-\n"
+)
+
 SAFE = (
     "BF metadata-construction uid=1000 nnp=1 "
     "bnd=0000000000000000 amb=0000000000000000\n"
@@ -121,7 +127,10 @@ async def test_construction_is_mandatory_before_every_install_and_reconnect(
 @pytest.mark.parametrize("system_shell", [True, False])
 @pytest.mark.parametrize("missing", ["getcap", "readlink", "find", "all"])
 async def test_missing_optional_tools_keep_tcp_proof_and_startup(system_shell, missing):
-    """Guards batch 8 at 70400f55: honest images need no capability inventory."""
+    """Guards batch 8 at 70400f55: the agent check's missing tools keep the
+    TCP proof and startup. Now the separate delegate inventory must
+    still finish: here PT's protected Python reads the file capabilities of
+    an image without getcap, readlink or find, and finds nothing."""
     from benchflow.sandbox.lockdown import block_cloud_metadata
 
     class Env(FakeEnv):
@@ -134,7 +143,7 @@ async def test_missing_optional_tools_keep_tcp_proof_and_startup(system_shell, m
                 assert kwargs.get("system_shell", False) is system_shell
                 return SimpleNamespace(stdout=SAFE, return_code=0)
             if "BF metadata-delegates" in command:
-                return SimpleNamespace(stdout="", return_code=7)
+                return SimpleNamespace(stdout=PYTHON_CLEAN, return_code=0)
             if "BF metadata-connect" in command:
                 assert user == "root"
                 assert "--no-new-privs" in command
@@ -159,4 +168,5 @@ async def test_missing_optional_tools_keep_tcp_proof_and_startup(system_shell, m
         )
         assert record["state"] == "on"
         assert record["agent_privilege_audit"] == "unavailable"
-        assert record["delegate_privilege_audit"] == "unavailable"
+        assert record["delegate_privilege_audit"] == "complete"
+        assert record["delegate_inventory"]["reader"] == "python3"

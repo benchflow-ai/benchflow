@@ -1,0 +1,139 @@
+{
+  "id": "02446a1d-775d-4b48-979a-ef4634b8fd08",
+  "task_name": "hello-world-task",
+  "trial_name": "hello-world-task__fZWhoPQ",
+  "trial_uri": "file:///jobs/2026-11-04__21-20-47/hello-world-task__fZWhoPQ",
+  "task_id": {
+    "path": "tele/hello-world-task"
+  },
+  "source": null,
+  "task_checksum": "85a7a46e774c77878823f8c6bcbb0f989e0866e5d2f175e280faaf88114875ef",
+  "config": {
+    "task": {
+      "path": "tele/hello-world-task",
+      "git_url": null,
+      "git_commit_id": null,
+      "name": null,
+      "ref": null,
+      "overwrite": false,
+      "download_dir": null,
+      "source": null
+    },
+    "trial_name": "hello-world-task__fZWhoPQ",
+    "trials_dir": "peer-jobs-atif/2026-11-04__21-20-47",
+    "install_only": false,
+    "timeout_multiplier": 1.0,
+    "agent_timeout_multiplier": null,
+    "verifier_timeout_multiplier": null,
+    "agent_setup_timeout_multiplier": null,
+    "environment_build_timeout_multiplier": null,
+    "agent": {
+      "name": "terminus-2",
+      "import_path": null,
+      "model_name": "openai/mimo-v2.6-flash",
+      "base_url": null,
+      "model_api_key_name": null,
+      "model_api_format": null,
+      "skip_model_parsing": false,
+      "n_concurrent": null,
+      "concurrency_group": null,
+      "skills": [],
+      "override_timeout_sec": null,
+      "override_setup_timeout_sec": null,
+      "max_timeout_sec": null,
+      "resume_trajectory": false,
+      "load_trajectory": null,
+      "extra_allowed_hosts": [],
+      "kwargs": {},
+      "mcp_servers": []
+    },
+    "user_agent": null,
+    "environment": {
+      "type": "docker",
+      "import_path": null,
+      "force_build": false,
+      "delete": true,
+      "stream": false,
+      "cpu_enforcement_policy": "auto",
+      "memory_enforcement_policy": "auto",
+      "override_cpus": null,
+      "override_memory_mb": null,
+      "override_storage_mb": null,
+      "override_gpus": null,
+      "override_tpu": null,
+      "mounts": null,
+      "extra_docker_compose": [],
+      "kwargs": {},
+      "extra_allowed_hosts": []
+    },
+    "verifier": {
+      "override_timeout_sec": null,
+      "max_timeout_sec": null,
+      "disable": false
+    },
+    "artifacts": [],
+    "extra_instruction_paths": [],
+    "extra_instructions": [],
+    "job_id": "e4dfc96a-5a7c-409e-b084-82467d54a591",
+    "source_trial": null
+  },
+  "agent_info": {
+    "name": "terminus-2",
+    "version": "2.0.0",
+    "model_info": {
+      "name": "mimo-v2.6-flash",
+      "provider": "openai"
+    }
+  },
+  "agent_result": {
+    "n_input_tokens": 4561,
+    "n_cache_tokens": 2880,
+    "n_output_tokens": 648,
+    "cost_usd": null,
+    "model_usage": {
+      "mimo-v2.6-flash": {
+        "n_input_tokens": 4561,
+        "n_cache_tokens": 2880,
+        "n_output_tokens": 648,
+        "cost_usd": null
+      }
+    },
+    "rollout_details": [],
+    "metadata": {
+      "n_episodes": 4,
+      "api_request_times_msec": [
+        5160.5799198150635,
+        5030.587911605835,
+        3682.4707984924316,
+        9872.472286224365
+      ],
+      "summarization_count": 0
+    }
+  },
+  "verifier_result": {
+    "rewards": {
+      "reward": 1.0
+    }
+  },
+  "verifier_environment_mode": "shared",
+  "exception_info": null,
+  "started_at": "2026-11-04T21:20:52.616965Z",
+  "finished_at": "2026-11-04T21:21:52.054805Z",
+  "environment_setup": {
+    "started_at": "2026-11-04T21:20:52.791563Z",
+    "finished_at": "2026-11-04T21:21:03.202571Z"
+  },
+  "agent_setup": {
+    "started_at": "2026-11-04T21:21:03.202618Z",
+    "finished_at": "2026-11-04T21:21:14.172013Z"
+  },
+  "agent_execution": {
+    "started_at": "2026-11-04T21:21:14.172247Z",
+    "finished_at": "2026-11-04T21:21:39.584777Z"
+  },
+  "verifier": {
+    "started_at": "2026-11-04T21:21:39.893927Z",
+    "finished_at": "2026-11-04T21:21:40.344630Z"
+  },
+  "step_results": null
+}

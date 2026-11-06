@@ -353,7 +353,7 @@ async def test_environment_outside_a_task_folder_uploads_only_itself(
 
     await sandbox._strategy.start(force_build=True)
 
-    assert vm.files_under("/benchflow/task") == {"environment/docker-compose.yaml"}
+    assert vm.files_under("/runtime/task") == {"environment/docker-compose.yaml"}
 
 
 @pytest.mark.asyncio
@@ -371,7 +371,7 @@ async def test_symlinks_in_the_task_folder_are_not_followed(
 
     await sandbox._strategy.start(force_build=True)
 
-    uploaded = vm.files_under("/benchflow/task")
+    uploaded = vm.files_under("/runtime/task")
     assert "linked.txt" not in uploaded
     assert not any(name.startswith("linked_dir/") for name in uploaded)
 
@@ -389,7 +389,7 @@ async def test_symlinked_environment_cannot_expand_the_upload(tmp_path, monkeypa
     sandbox = _dind_sandbox(selected / "environment", vm, monkeypatch)
     with pytest.raises(ValueError, match="symlink"):
         await sandbox._strategy._upload_task_folder()
-    assert not vm.files_under("/benchflow/task")
+    assert not vm.files_under("/runtime/task")
 
 
 @pytest.mark.asyncio
@@ -409,7 +409,7 @@ async def test_materialized_private_package_is_not_uploaded(tmp_path, monkeypatc
     sandbox = _dind_sandbox(task / "environment", vm, monkeypatch)
     sandbox._sandbox = vm
     await sandbox._strategy._upload_task_folder()
-    assert not any(p.startswith(".taskmd/") for p in vm.files_under("/benchflow/task"))
+    assert not any(p.startswith(".taskmd/") for p in vm.files_under("/runtime/task"))
 
 
 @pytest.mark.asyncio
@@ -434,7 +434,7 @@ async def test_task_git_database_is_not_uploaded(tmp_path, monkeypatch):
     sandbox = _dind_sandbox(task / "environment", vm, monkeypatch)
     sandbox._sandbox = vm
     await sandbox._strategy._upload_task_folder()
-    assert not any(p.startswith(".git/") for p in vm.files_under("/benchflow/task"))
+    assert not any(p.startswith(".git/") for p in vm.files_under("/runtime/task"))
 
 
 @pytest.mark.asyncio

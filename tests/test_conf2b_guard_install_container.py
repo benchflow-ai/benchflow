@@ -96,7 +96,7 @@ RECORD_LINE = (
 RECORDER = dedent(f"""\
     set -e
     : > {STARTS}; chmod 666 {STARTS}
-    find / -xdev \\( -path /proc -o -path /opt/benchflow \\) -prune -o \\
+    find / -xdev \\( -path /proc -o -path /opt/runtime \\) -prune -o \\
         -path '*/encodings/__init__.py' -print > /var/tmp/conf2b-stdlibs
     while IFS= read -r f; do printf %s {shlex.quote(RECORD_LINE)} >> "$f"; done \\
         < /var/tmp/conf2b-stdlibs
@@ -191,7 +191,7 @@ async def test_the_guard_installer_starts_no_image_python_as_root(tmp_path: Path
         # No image Python started after the agent's turn, as any uid.
         assert starts == [], starts
         # The kit's record, taken before the agent's turn, held the answers.
-        record = await _root(sandbox, "cat /opt/benchflow/rt/IMAGE_PYTHON_GUARD")
+        record = await _root(sandbox, "cat /opt/runtime/rt/IMAGE_PYTHON_GUARD")
         assert record.return_code == 0, record.stderr
         assert ("py3 1" in record.stdout) is has_python, record.stdout
         if kind == "system":

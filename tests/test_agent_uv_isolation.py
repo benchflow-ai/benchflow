@@ -35,7 +35,7 @@ def test_agent_uv_drops_workspace_catalog_and_inherited_settings(tmp_path, agent
     command = AGENTS[agent].install_cmd.replace(_uv_pin.uv_install_command(), ":")
     command = command.replace(_uv_pin.UV_DIR, str(tools))
     command = command.replace(
-        getattr(_uv_pin, "BENCHFLOW_ROOT", "/opt/benchflow"),
+        getattr(_uv_pin, "BENCHFLOW_ROOT", "/opt/runtime"),
         str(tmp_path / "protected"),
     )
     result = run_sh(

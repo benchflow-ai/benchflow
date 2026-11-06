@@ -88,9 +88,29 @@ def test_doctor_all_pass_exits_zero_and_points_at_smoke(fake_doctor):
     assert result.exit_code == 0, out
     assert "Runtime" in out and "Sandbox" in out and "Agent credentials" in out
     assert "PASS" in out
-    assert "Next: bench run --source-repo benchflow-ai/skillsbench" in out
+    assert (
+        "Next: bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation"
+        in out
+    )
     assert "then bench eval smoke" in out
     assert calls == [{"sandbox": "docker", "offline": False}]
+
+
+def test_doctor_with_only_a_provider_key_names_a_smoke_that_runs(fake_doctor):
+    # A bare `bench eval smoke` tries the logged-in agents and has none.
+    providers = Check(
+        "auth.providers",
+        "agents",
+        "provider keys",
+        "pass",
+        "DEEPSEEK_API_KEY (env): set, not tested against the provider",
+        details={"sources": [{"name": "DEEPSEEK_API_KEY", "usable": True}]},
+    )
+    fake_doctor(_report(OK_CHECKS[0], OK_CHECKS[1], providers))
+    out = " ".join(_out(runner.invoke(app, ["doctor"])).split())
+    assert (
+        "then bench eval smoke --agent openhands=deepseek/<model> runs a model" in out
+    )
 
 
 def test_doctor_failure_exits_one_with_fix_line(fake_doctor):
@@ -228,7 +248,7 @@ def test_smoke_runs_credentialed_agents_and_prints_the_table(
     assert "skip codex-acp: no credential found" in out
     assert "skip gemini: no credential found" in out
     assert "Smoke results" in out
-    assert "claude-haiku-4-5-20251001" in out
+    assert "claude-haiku-5-5" in out
     assert "Trajectory" in out
     assert "acp_trajectory.jsonl" in out  # printed unwrapped, stays copyable
     summary = json.loads(next(tmp_path.glob("*/smoke-summary.json")).read_text())
@@ -248,10 +268,10 @@ def test_smoke_next_steps_stay_on_one_line_and_name_the_viewer(
     out = _out(result)
     assert result.exit_code == 0, out
     next_lines = [line for line in out.splitlines() if line.startswith("Next:")]
-    assert next_lines and all("getting-started" not in n for n in next_lines)
+    assert next_lines and all("quick-start" not in n for n in next_lines)
     assert any("bench view " in line for line in out.splitlines())
     assert any(
-        "https://github.com/benchflow-ai/benchflow/blob/main/docs/getting-started/quick-start.md"
+        "https://github.com/benchflow-ai/benchflow/blob/main/docs/start/quick-start.md"
         in line
         for line in out.splitlines()
     )
@@ -329,7 +349,7 @@ def test_smoke_failure_exits_one_and_explains(fake_doctor, fake_runner, tmp_path
     out = _out(result)
     assert result.exit_code == 1
     assert [(j.target.agent, j.target.model) for j in jobs] == [
-        ("claude-agent-acp", "claude-haiku-4-5-20251001"),
+        ("claude-agent-acp", "claude-haiku-5-5"),
         ("codex-acp", "gpt-5.6-sol"),
     ]
     assert "agent_error: model not available" in out
@@ -356,12 +376,12 @@ def test_smoke_rejects_bad_agent_spec(fake_doctor, fake_runner, tmp_path):
     assert "unknown agent 'nope'" in _out(result)
 
 
-# ── docs/reference/cli.md stays in sync ────────────────────────────────
+# ── docs/reference/commands.md stays in sync ───────────────────────────
 
 
 @pytest.mark.parametrize(
     ("path", "header"),
-    [(["doctor"], "## bench doctor"), (["eval", "smoke"], "### bench eval smoke")],
+    [(["doctor"], "## bench doctor"), (["eval", "smoke"], "## bench eval smoke")],
 )
 def test_cli_md_documents_exactly_the_live_flags(path, header):
     from tests.test_cli_docs_drift import _cli_long_flags, _doc_flags

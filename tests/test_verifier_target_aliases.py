@@ -105,6 +105,7 @@ async def test_target_path_excludes_shared_agent_content_before_freeze(
     target_info = mount("/", "/", "0:2", 1) + mount("/volume/work", alias)
     events = []
     selected = []
+    fresh = []
 
     @receipt_aware
     async def answer(command, **kwargs):
@@ -129,8 +130,9 @@ async def test_target_path_excludes_shared_agent_content_before_freeze(
             )
         return ExecResult(stdout="", return_code=0)
 
-    async def judge(env, raw, blocked, agent):
+    async def judge(env, raw, blocked, agent, *, fresh_image=False):
         assert isinstance(blocked, lockdown.PathExclusions)
+        fresh.append(fresh_image)
         blocked = blocked.paths()
         entries = lockdown._path_entries_to_judge(raw)
         dropped = [
@@ -149,7 +151,7 @@ async def test_target_path_excludes_shared_agent_content_before_freeze(
             dropped=tuple(dropped),
         )
 
-    async def freeze(*args):
+    async def freeze(*args, **kwargs):
         events.append(("freeze", "main"))
 
     async def check_tools(env, report, verifier):
@@ -202,6 +204,8 @@ async def test_target_path_excludes_shared_agent_content_before_freeze(
     )
     assert alias not in selected[0].split(":"), selected
     assert alias + suffix not in selected[0].split(":"), selected
+    # A separate verifier's image is judged as fresh (#69); the alias stays out.
+    assert fresh and set(fresh) == {separate}
     assert ("mounts", "target") in events
     assert events.index(("mounts", "target")) < events.index(("freeze", "main"))
 

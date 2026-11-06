@@ -247,6 +247,17 @@ async def test_missing_task_and_tampered_workspace_are_not_regradable(job):
 
 
 @pytest.mark.asyncio
+async def test_a_multi_step_trial_is_not_regraded(job):
+    # Its reward comes from each step's tests; one verifier on the
+    # final workspace would score something else.
+    job, tasks = job
+    (job / "t1__a" / "steps.json").write_text("{}")
+    summary = await aregrade(job / "t1__a", tasks_dir=tasks, runner=_runner({}, []))
+    [row] = summary.trials
+    assert row.status == "not_regradable" and "multi-step" in row.reason
+
+
+@pytest.mark.asyncio
 async def test_without_tasks_dir_an_unrecorded_task_is_not_guessed(job):
     job, _ = job
     summary = await aregrade(job / "t1__a", runner=_runner({}, []))
@@ -270,6 +281,296 @@ async def test_a_sandbox_failure_is_recorded_not_scored(job):
     assert json.loads((job / "t1__a" / "result.json").read_text())["rewards"] == {
         "reward": 0.0
     }
+
+
+@pytest.mark.asyncio
+async def test_a_reviewed_trial_compares_the_test_with_the_test(tmp_path):
+    """A rubric review gates the reward, and a regrade reruns only the test.
+
+    Comparing the reviewed reward (0, the blocker failed) with the new test's
+    reward called a trial the review had failed fail->pass, and hid a test
+    that went from passing a wrong answer to failing it.
+    """
+    tasks = tmp_path / "tasks"
+    _task(tasks, "t1", "#!/bin/bash\nexit 0\n")
+    job = tmp_path / "jobs" / "counter"
+    scoring = {"policy": "tests-blockers-quality-v1", "passed": False}
+    for name, verifier_reward in (("t1__right", 1.0), ("t1__wrong", 1.0)):
+        trial = await _trial(job, name, "t1", 0.0, frozen=True, tmp=tmp_path)
+        (trial / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "t1",
+                    "rewards": {
+                        "reward": 0.0,
+                        "verifier_reward": verifier_reward,
+                        "rubric_reward": 0.0,
+                    },
+                    "scoring": scoring,
+                    "verifier_error": None,
+                }
+            )
+        )
+
+    summary = await aregrade(
+        job,
+        tasks_dir=tasks,
+        runner=_runner(
+            {"t1__right": {"reward": 1.0}, "t1__wrong": {"reward": 0.0}}, []
+        ),
+    )
+
+    rows = {row.trial: row for row in summary.trials}
+    assert {
+        name: (row.original_reward, row.new_reward, row.change)
+        for name, row in rows.items()
+    } == {
+        "t1__right": (1.0, 1.0, "same"),
+        "t1__wrong": (1.0, 0.0, "pass->fail"),
+    }
+    assert {row.compared for row in rows.values()} == {"verifier_reward"}
+    [block] = json.loads((job / "t1__wrong" / REGRADE_FILE).read_text())["regrades"]
+    assert block["compared"] == "verifier_reward" and block["original_reward"] == 1.0
+    assert block["original_rewards"]["reward"] == 0.0
+
+
+# --- --review: the rubric review again ---------------------------------------
+
+from unittest.mock import Mock  # noqa: E402
+
+from benchflow.review.outcome import ScoringResult  # noqa: E402
+from benchflow.review.prompts import TRIAL_MOUNT  # noqa: E402
+from tests.test_review_runtime import (  # noqa: E402
+    WEIGHTED_RUBRIC,
+    FakeRun,
+    good_weighted_review,
+)
+
+
+@pytest.fixture
+def reviewer_auth(monkeypatch):
+    monkeypatch.setattr(
+        "benchflow.agents.env.resolve_agent_env",
+        Mock(return_value={"AZURE_API_KEY": "test-secret"}),
+    )
+    monkeypatch.setattr("benchflow.review.preflight.validate_reviewer_backend", Mock())
+
+
+async def _reviewed_job(tmp_path: Path, *, rubric: bool = True):
+    """A reviewed trial, scored 0.8 by its run: test 1, blockers
+    passed, quality 0.8 from its recorded reviewer. The fixed task keeps its
+    weighted rubric (tests/rubric.json)."""
+    tasks = tmp_path / "tasks"
+    task = _task(tasks, "t1", "#!/bin/bash\nexit 1\n")
+    if rubric:
+        (task / "tests" / "rubric.json").write_text(json.dumps(WEIGHTED_RUBRIC))
+    job = tmp_path / "jobs" / "fp"
+    trial = await _trial(job, "t1__a", "t1", 0.8, frozen=True, tmp=tmp_path)
+    solver = {
+        "task_name": "t1",
+        "agent": "codex",
+        "task_digest": "sha256:old",
+        "rewards": {"reward": 1.0},
+        "verifier_error": None,
+    }
+    scoring = ScoringResult(
+        status="complete",
+        passed=True,
+        tests_pass=True,
+        all_blockers_pass=True,
+        verifier_reward=1.0,
+        rubric_reward=0.8,
+        reviewer_run="reviews/a/runtime",
+    )
+    (trial / "solver.json").write_text(json.dumps(solver))
+    (trial / "result.json").write_text(
+        json.dumps(
+            {
+                **solver,
+                "rewards": scoring.numeric_rewards(),
+                "scoring": scoring.to_dict(),
+            }
+        )
+    )
+    config = json.loads((trial / "config.json").read_text())
+    config["review"] = {
+        "rubric_sha256": "rubric-the-run-used",
+        "reviewer": {
+            "agent": "codex",
+            "model": "azure/recorded-reviewer",
+            "environment": "docker",
+            "agent_env_keys": ["AZURE_API_KEY"],
+        },
+    }
+    (trial / "config.json").write_text(json.dumps(config))
+    (trial / "verifier").mkdir()
+    (trial / "verifier" / "reward.txt").write_text("1\n")
+    return job, tasks, trial
+
+
+async def _fixed_test_fails(trial, task_dir, attempt, *, sandbox=None):
+    (attempt / "verifier").mkdir()
+    (attempt / "verifier" / "reward.txt").write_text("0\n")
+    return {"reward": 0.0}, None
+
+
+class _ReviewerSees(FakeRun):
+    """FakeRun that also keeps the trial records the reviewer was given."""
+
+    async def __call__(self, config):
+        [trial_copy] = [Path(h) for h, s in config.uploads.items() if s == TRIAL_MOUNT]
+        self.seen = {
+            p.relative_to(trial_copy).as_posix(): p.read_text()
+            for p in trial_copy.rglob("*")
+            if p.is_file()
+        }
+        return await super().__call__(config)
+
+
+@pytest.mark.asyncio
+async def test_review_reruns_on_the_saved_outputs_gated_by_the_new_test(
+    tmp_path, monkeypatch, reviewer_auth
+):
+    """A grading fix reaches a reviewed run.
+
+    The fixed test fails the trial its run passed (a counterexample). With
+    --review the rubric review runs again on the same frozen workspace, with
+    the recorded reviewer; it sees the new test's outputs and rewards, never
+    the run's score or the regrade's own folder; and the combined score is
+    what is compared: 0.8 -> 0 (the test gate fails), beside the old one.
+    """
+    import benchflow
+    from benchflow._utils.task_authoring import task_digest
+
+    job, tasks, trial = await _reviewed_job(tmp_path)
+    fake = _ReviewerSees(review_payload=good_weighted_review("t1__a"))
+    monkeypatch.setattr(benchflow, "run", fake)
+    before = {p.name: p.read_bytes() for p in trial.iterdir() if p.is_file()}
+
+    summary = await aregrade(
+        job, tasks_dir=tasks, runner=_fixed_test_fails, review=True
+    )
+
+    [row] = summary.trials
+    assert (row.status, row.compared, row.original_reward, row.new_reward) == (
+        "regraded",
+        "reward",
+        0.8,
+        0.0,
+    )
+    assert row.change == "reward 0.8 -> 0"
+    [block] = json.loads((trial / REGRADE_FILE).read_text())["regrades"]
+    review = block["review"]
+    assert review["rewards"] == {
+        "reward": 0.0,
+        "verifier_reward": 0.0,
+        "rubric_reward": 0.8,
+    }
+    assert review["scoring"]["status"] == "complete"
+    assert review["scoring"]["tests_pass"] is False
+    assert review["original_rubric_sha256"] == "rubric-the-run-used"
+    assert review["rubric_sha256"] != review["original_rubric_sha256"]
+    assert review["reviewer"]["model"] == "azure/recorded-reviewer"
+    assert "test-secret" not in json.dumps(block)
+    assert block["new_rewards"] == {"reward": 0.0}
+    [reviewer] = fake.configs
+    assert (reviewer.purpose, reviewer.parent_rollout) == ("reviewer", "t1__a")
+    # The recorded reviewer (its "codex" alias resolves to codex-acp).
+    assert (reviewer.agent, reviewer.model) == (
+        "codex-acp",
+        "azure/recorded-reviewer",
+    )
+    # The reviewer read the regrade's test stage, not the run's score.
+    assert fake.seen["verifier/reward.txt"] == "0\n"
+    solver = json.loads(fake.seen["solver.json"])
+    assert solver["rewards"] == {"reward": 0.0}
+    assert solver["task_digest"] == task_digest(tasks / "t1")
+    assert not any(
+        name.startswith(("result.json", "regrade", "reviews/", "scoring/"))
+        for name in fake.seen
+    )
+    assert {p.name: p.read_bytes() for p in trial.iterdir() if p.is_file()} == {
+        **before,
+        REGRADE_FILE: (trial / REGRADE_FILE).read_bytes(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_review_without_a_rubric_fails_before_any_sandbox(
+    tmp_path, reviewer_auth
+):
+    """--review on a task with no review rubric is a failed
+    regrade with the reason, and no verifier sandbox runs for it."""
+    job, tasks, _ = await _reviewed_job(tmp_path, rubric=False)
+    calls: list = []
+
+    summary = await aregrade(
+        job, tasks_dir=tasks, runner=_runner({}, calls), review=True
+    )
+
+    [row] = summary.trials
+    assert row.status == "failed" and "has no review rubric" in row.reason
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_review_without_a_verdict_is_a_failed_regrade(
+    tmp_path, monkeypatch, reviewer_auth
+):
+    """A reviewer that writes no review leaves no combined
+    score; the regrade fails (as the run would be unscored), keeping the new
+    test's own reward and the scoring error."""
+    import benchflow
+
+    job, tasks, trial = await _reviewed_job(tmp_path)
+    monkeypatch.setattr(benchflow, "run", FakeRun(review_payload=None))
+
+    summary = await aregrade(
+        job, tasks_dir=tasks, runner=_fixed_test_fails, review=True
+    )
+
+    [row] = summary.trials
+    assert row.status == "failed" and row.reason.startswith("review failed: ")
+    [block] = json.loads((trial / REGRADE_FILE).read_text())["regrades"]
+    assert (block["status"], block["new_reward"], block["change"]) == (
+        "failed",
+        None,
+        None,
+    )
+    assert block["new_rewards"] == {"reward": 0.0}
+    assert block["review"]["scoring"]["status"] == "error"
+
+
+def test_the_cli_passes_review_and_refuses_reviewer_flags_without_it(
+    tmp_path, monkeypatch
+):
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+    from benchflow.eval_regrade import RegradeSummary
+
+    calls: list = []
+
+    def fake_regrade(path, **kwargs):
+        calls.append(kwargs)
+        return RegradeSummary(
+            path=str(path), regrade_id="r", tasks_dir=None, reason=None
+        )
+
+    monkeypatch.setattr("benchflow.eval_regrade.regrade", fake_regrade)
+    job = tmp_path / "job"
+    job.mkdir()
+
+    refused = CliRunner().invoke(
+        app, ["eval", "regrade", str(job), "--reviewer-model", "azure/x"]
+    )
+    assert refused.exit_code == 2 and not calls
+    result = CliRunner().invoke(
+        app, ["eval", "regrade", str(job), "--review", "--reviewer-model", "azure/x"]
+    )
+    assert result.exit_code == 0, result.output
+    [kwargs] = calls
+    assert kwargs["review"] is True and kwargs["reviewer"].model == "azure/x"
 
 
 def test_verdict_change():

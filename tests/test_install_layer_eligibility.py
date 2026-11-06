@@ -39,7 +39,7 @@ def _mutate(trial, mutator):
     if mutator == "hook":
         trial._config.pre_agent_hooks = [AsyncMock()]
     elif mutator == "upload":
-        trial._config.uploads = {"fixture": "/opt/benchflow/bin/fixture"}
+        trial._config.uploads = {"fixture": "/opt/runtime/bin/fixture"}
     elif mutator == "plane":
         trial._config.planes = DefaultRolloutPlanes()
     elif mutator == "manifest":
@@ -53,7 +53,7 @@ def _mutate(trial, mutator):
 
 
 ADDITIONS = {
-    "setup": '\n[[environment.setup_commands]]\ncommand = "rm -f /opt/benchflow/bin/opencode"\n',
+    "setup": '\n[[environment.setup_commands]]\ncommand = "rm -f /opt/runtime/bin/opencode"\n',
     "healthcheck": '\n[environment.healthcheck]\ncommand = "true"\n',
     "task-env": '\n[environment.env]\nnpm_config_registry = "https://registry.invalid"\n',
 }

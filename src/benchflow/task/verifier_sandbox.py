@@ -68,8 +68,8 @@ def effective_verifier_sandbox(setting: object, separate_verifier: object) -> st
 #: (or ``/verifier``) without clearing it and the plugin-guard sweep skips
 #: both, ``/logs/verifier`` and ``/logs/agent`` hold the verifier's outputs
 #: and the published trajectory, and the last two are hardening's own scratch
-#: files (``sandbox/lockdown.py``: the verifier's ``/_benchflow_verifier_*``
-#: and the plugin guard's ``/_benchflow_guard_*``). A workspace or declared
+#: files (``sandbox/lockdown.py``: the verifier's ``/_runtime_verifier_*``
+#: and the plugin guard's ``/_runtime_guard_*``). A workspace or declared
 #: artifact that equals, lies under or contains one of them is refused: at
 #: launch when the task or run declares it, at transfer time otherwise.
 # PT's protected runtime contract reserves this tree before its route merges.
@@ -79,9 +79,9 @@ VERIFIER_OWNED_PATHS: tuple[str, ...] = (
     "/verifier",
     "/logs/verifier",
     "/logs/agent",
-    "/_benchflow_verifier_*",
-    "/_benchflow_guard_*",
-    "/opt/benchflow",
+    "/_runtime_verifier_*",
+    "/_runtime_guard_*",
+    "/opt/runtime",
 )
 
 
@@ -140,8 +140,8 @@ _INCLUDE_FORBIDDEN_TREES = (
     "/oracle",
     "/solution",
     "/verifier",
-    "/opt/benchflow",
-    "/.benchflow",
+    "/opt/runtime",
+    "/.runtime",
 )
 _INCLUDE_FORBIDDEN_ROOTS = frozenset(
     {
@@ -180,7 +180,7 @@ def normalize_include_paths(paths: Iterable[str]) -> tuple[str, ...]:
                 f"--separate-verifier-include path {raw!r} must not contain '..'"
             )
         path = "/" + posixpath.normpath(value).lstrip("/")
-        # A refused tree inside the path counts too: /opt carries /opt/benchflow.
+        # A refused tree inside the path counts too: /opt carries /opt/runtime.
         if path in _INCLUDE_FORBIDDEN_ROOTS or any(
             path == tree or path.startswith(tree + "/") or tree.startswith(path + "/")
             for tree in _INCLUDE_FORBIDDEN_TREES

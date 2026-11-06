@@ -603,7 +603,9 @@ def test_the_docs_promise_no_hook_opt_in_the_code_lacks():
 
     source = Path(module.__file__).parents[1]
     code = "".join(p.read_text() for p in source.rglob("*.py"))
-    page = (source.parents[1] / "docs" / "sandboxes" / "remote-docker.md").read_text()
+    # Docs v2: docs/sandboxes/remote-docker.md is this section.
+    sandboxes = (source.parents[1] / "docs" / "scale" / "sandboxes.md").read_text()
+    page = sandboxes.split("\n## Remote Docker\n", 1)[1].split("\n## ", 1)[0]
     if "ALLOW_TASK_HOST_ACCESS" not in code:
         # No opt-in gates the pre-compose hook: nothing may say one does.
         assert "opt-in" not in page

@@ -26,8 +26,16 @@ from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.login_dirs import login_display, login_path
 from benchflow.agents.muse_config import validate_muse_model
-from benchflow.agents.registry import AGENTS, infer_env_key_for_model, is_vertex_model
+from benchflow.agents.registry import (
+    AGENTS,
+    infer_env_key_for_model,
+    is_vertex_model,
+    routed_model,
+)
 from benchflow.errors import MissingCredentialError
+
+# Claude Code's output cap, which BenchFlow sets for every agent unless the operator does (the run card names it).
+CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT = "128000"
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +173,9 @@ def unroutable_agent_model(agent: str, model: str | None) -> str | None:
     agent name is (REPORT B11: the refusal came inside the job, as an errored
     trial). Only a model of a registered provider is checked, and only
     against a registered agent (or its alias) that declares its protocol.
+    An agent that routes its own model calls has no route here to check.
     """
+    model = routed_model(agent, model)
     if not model:
         return None
     from benchflow.agents.providers import find_provider, find_provider_for_bare_model
@@ -472,6 +482,42 @@ def uses_native_vertex_login(agent: str, model: str | None) -> bool:
     """True for the one native Vertex route: Gemini CLI on a google-vertex/ model."""
     return agent in _VERTEX_NATIVE_AGENTS and bool(
         model and model.lower().startswith("google-vertex/")
+    )
+
+
+def uses_direct_anthropic_endpoint(
+    agent: str, model: str | None, agent_env: dict[str, str]
+) -> bool:
+    """An explicit Claude Code token/URL pair for a non-Claude model.
+
+    Provider-generated environments and proxy reconnects retain their route.
+    This is not fallback on a proxy error or a subscription login.
+    """
+    cfg = AGENTS.get(agent)
+    # An agent config without a subscription login (a custom one) has no
+    # direct route.
+    login = getattr(cfg, "subscription_auth", None)
+    if (
+        cfg is None
+        or login is None
+        or login.replaces_env != "ANTHROPIC_API_KEY"
+        or not model
+        or infer_env_key_for_model(model) == "ANTHROPIC_API_KEY"
+        or not agent_env.get("ANTHROPIC_AUTH_TOKEN")
+        or agent_env.get("ANTHROPIC_API_KEY")
+        or agent_env.get("BENCHFLOW_PROVIDER_NAME")
+        or any(agent_env.get(key) for key in _LITELLM_RUNTIME_MARKER_KEYS)
+    ):
+        return False
+    url = urlparse(agent_env.get("ANTHROPIC_BASE_URL") or "")
+    host = (url.hostname or "").lower()
+    return bool(
+        url.scheme in {"http", "https"}
+        and host
+        and host != "anthropic.com"
+        and not host.endswith(".anthropic.com")
+        and not url.username
+        and not url.password
     )
 
 
@@ -996,6 +1042,7 @@ def inherit_agent_auth_env(
     Plan inspection and execution must choose the same native/proxy route,
     including agent-specific aliases. Provider validation belongs to execution.
     """
+    model = routed_model(agent, model)
     inherited = dict(agent_env or {})
     auto_inherit_env(inherited, source_env=load_dotenv_env())
     auto_inherit_env(inherited)
@@ -1018,10 +1065,18 @@ def resolve_agent_env(
     model: str | None,
     agent_env: dict[str, str] | None,
 ) -> dict[str, str]:
-    """Resolve agent environment from explicit overrides, then .env defaults."""
+    """Resolve agent environment from explicit overrides, then .env defaults.
+
+    An agent that routes its own model calls resolves as with no model: its
+    label selects no provider, and it gets only its own declared credentials.
+    """
+    model = routed_model(agent, model)
     if agent == _MUSE_AGENT:
         validate_muse_model(model)
-    explicit_agent_env_keys = set(agent_env or {})
+    from benchflow.agents.visible_runtime import host_env_aliases
+
+    agent_env = host_env_aliases(agent_env or {})
+    explicit_agent_env_keys = set(agent_env)
     agent_env = inherit_agent_auth_env(agent, model, agent_env)
     # This is a decision for this resolution, never an input carried from a
     # previous role/account. Only the host-file fallback below may set it.
@@ -1058,6 +1113,7 @@ def resolve_agent_env(
         model
         and not is_scripted_agent(agent)
         and not uses_native_subscription_auth(agent, model, agent_env)
+        and not uses_direct_anthropic_endpoint(agent, model, agent_env)
     ):
         inject_vertex_credentials(agent_env, model)
         resolve_provider_env(agent_env, model, agent)
@@ -1221,7 +1277,9 @@ def resolve_agent_env(
                         req_key,
                     )
     # Increase output token limit to avoid truncation errors
-    agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+    agent_env.setdefault(
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS", CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT
+    )
     # Disable telemetry/non-essential traffic in container
     agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     _record_credential_policy(agent, model, agent_env, explicit_agent_env_keys)

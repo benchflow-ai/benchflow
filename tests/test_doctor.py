@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from benchflow import doctor
-from benchflow.doctor import CommandResult, DoctorProbes, run_doctor
+from benchflow.doctor import HEADROOM_MODEL, CommandResult, DoctorProbes, run_doctor
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 GIB = 1024**3
@@ -513,6 +513,22 @@ def test_codex_api_key_overrides_login_with_note(tmp_path):
     assert OPENAI_KEY not in all_output(report)
 
 
+def test_codex_api_key_in_its_login_file_is_an_api_key(tmp_path):
+    """Round 5 of the release review: a key stored in ~/.codex/auth.json counted
+    as a ChatGPT login, so doctor probed chatgpt.com, not the API it uses."""
+    probes = make_probes(
+        tmp_path,
+        files={
+            ".codex/auth.json": {"auth_mode": "apikey", "OPENAI_API_KEY": OPENAI_KEY}
+        },
+    )
+    report = run_doctor(probes=probes, offline=True)
+    auth = report.agents["codex-acp"]
+    assert auth.effective.kind == "api-key"
+    assert auth.endpoints == ("https://api.openai.com/v1/",)
+    assert OPENAI_KEY not in all_output(report)
+
+
 def test_codex_inline_auth_json_env_is_detected(tmp_path):
     probes = make_probes(tmp_path, env={"CODEX_AUTH_JSON": json.dumps(_codex_auth())})
     report = run_doctor(probes=probes, offline=True)
@@ -602,10 +618,12 @@ def test_bedrock_token_without_region_warns(tmp_path):
 
 
 def test_provider_keys_report_missing_base_url_and_ignore_github_token(tmp_path):
+    """Kimi has no default base URL, so its key alone is not usable. (This
+    test used DeepSeek until DeepSeek got a default endpoint in #805.)"""
     probes = make_probes(
         tmp_path,
         env={
-            "DEEPSEEK_API_KEY": "ds-SECRET-value-123456",
+            "KIMI_API_KEY": "kimi-SECRET-value-123456",
             "AZURE_API_KEY": "az-SECRET-value-123456",
             "AZURE_API_ENDPOINT": "https://res.openai.azure.com/",
             "GITHUB_TOKEN": "ghp_SECRETvalue123456",
@@ -614,12 +632,24 @@ def test_provider_keys_report_missing_base_url_and_ignore_github_token(tmp_path)
     report = run_doctor(probes=probes, offline=True)
     check = by_id(report)["auth.providers"]
     assert check.status == "pass"
-    assert (
-        "DEEPSEEK_API_KEY (env): deepseek/ also needs DEEPSEEK_BASE_URL"
-        in check.summary
-    )
+    assert "KIMI_API_KEY (env): kimi/ also needs KIMI_BASE_URL" in check.summary
     assert "AZURE_API_KEY (env): for azure-foundry-openai/" in check.summary
     assert "GITHUB_TOKEN" not in check.summary
+    assert "SECRET" not in all_output(report)
+
+
+def test_deepseek_key_alone_is_usable_through_its_default_base_url(tmp_path):
+    """With only DEEPSEEK_API_KEY set, doctor said "deepseek/
+    also needs DEEPSEEK_BASE_URL" and that no model agent could run, although
+    the provider's default endpoint (url_param_defaults, #805) makes the run
+    work. Two first-run readers hit it on the 0.9.0 build."""
+    probes = make_probes(tmp_path, env={"DEEPSEEK_API_KEY": "ds-SECRET-value-123456"})
+    report = run_doctor(probes=probes, offline=True)
+    providers = by_id(report)["auth.providers"]
+    assert "DEEPSEEK_API_KEY (env): for deepseek/" in providers.summary
+    assert "DEEPSEEK_BASE_URL" not in providers.summary
+    # The "no model agent can run" warning is only added when nothing is usable.
+    assert "auth.any" not in by_id(report)
     assert "SECRET" not in all_output(report)
 
 
@@ -690,7 +720,7 @@ def test_versions_show_sandbox_pin_and_host_cli(tmp_path):
     assert claude.status == "pass"
     assert (
         "@agentclientprotocol/claude-agent-acp@0.81.2 + "
-        "@anthropic-ai/claude-code@2.1.280" in claude.summary
+        "@anthropic-ai/claude-code@2.1.316" in claude.summary
     )
     assert "host claude 2.1.280" in claude.summary
     assert "host codex 0.155.1" in checks["version.codex-acp"].summary
@@ -955,7 +985,7 @@ def test_the_claude_login_reports_its_windows(tmp_path):
     assert check.summary.startswith("CLAUDE_CODE_OAUTH_TOKEN (env) accepted: ")
     assert "5-hour window 12% used, resets 2026-09-30 10:00 UTC" in check.summary
     assert "7-day window 36% used, resets 2026-10-03 19:00 UTC" in check.summary
-    assert "one 8-token claude-haiku-4-5-20251001 request" in check.summary
+    assert f"one 8-token {HEADROOM_MODEL} request" in check.summary
     # One request, to the API, and it comes right after the credential line.
     assert calls.count(("headroom", "https://api.anthropic.com")) == 1
     ids = [c.id for c in report.checks]

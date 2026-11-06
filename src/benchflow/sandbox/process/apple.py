@@ -45,7 +45,7 @@ class AppleContainerProcess(SubprocessLiveProcess):
         self._container_name = container_name
         # A fresh name, created exclusively; in BenchFlow's private staging
         # folder once the sandbox has its protected kit (C8, PT-C8-R3-8).
-        self._env_path = f"/tmp/.benchflow_agent_env_{uuid.uuid4().hex[:16]}"
+        self._env_path = f"/tmp/.runtime_agent_env_{uuid.uuid4().hex[:16]}"
         # The sandbox whose exec route gives root's launch its shell and PATH.
         self._sandbox = sandbox
         self._route: Any = None

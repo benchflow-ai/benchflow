@@ -95,7 +95,7 @@ def test_gateway_launcher_preserves_existing_codex_settings(tmp_path):
             "sh",
             "-c",
             registry.CODEX_ACP_BUILTIN_LAUNCH.replace(
-                "/opt/benchflow/bin/codex-acp", str(fake)
+                "/opt/runtime/bin/codex-acp", str(fake)
             ),
         ],
         env=env,
@@ -104,7 +104,7 @@ def test_gateway_launcher_preserves_existing_codex_settings(tmp_path):
         check=True,
     )
     assert config.read_text() == original
-    assert done.stdout == "/opt/benchflow/bin/codex-app-server"
+    assert done.stdout == "/opt/runtime/bin/codex-app-server"
 
 
 def test_venv_shim_deployment_has_no_system_python_dependency(tmp_path):

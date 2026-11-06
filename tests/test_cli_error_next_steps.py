@@ -99,6 +99,10 @@ STATUS: dict[tuple[str, str, str], str] = {
     ("eval_regrade.py", "eval_regrade", "1"): (
         "after the regrade table, which names each failed trial's reason"
     ),
+    ("embodied.py", "register_embodied.embodied_verify", "1"): (
+        "after the verify report, which names each failed check and counts the "
+        "trials by status"
+    ),
     ("monitor.py", "_monitor_not_implemented", "2"): (
         "after 'not implemented yet' and the issue to follow"
     ),

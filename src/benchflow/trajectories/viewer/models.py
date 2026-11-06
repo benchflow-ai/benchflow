@@ -570,7 +570,7 @@ class RecoveryAttempt:
 
 @dataclass(frozen=True)
 class VerifierRecovery:
-    """Verifier-only recovery evidence (docs/tasks/verifier-recovery.md).
+    """Verifier-only recovery evidence (docs/tasks/verifiers.md).
 
     ``pointer`` is ``verification.json``'s admitted attempt; ``attempts``
     lists the admitted receipt first, then any other receipts.

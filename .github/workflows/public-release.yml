@@ -114,10 +114,14 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber
           else
+            pre=()
+            if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+              pre=(--prerelease --latest=false)
+            fi
             gh release create "$tag" dist/* \
               --title "benchflow ${{ steps.version.outputs.version }}" \
               --generate-notes \
-              --verify-tag
+              --verify-tag "${pre[@]}"
           fi
 
       - name: Summarize release

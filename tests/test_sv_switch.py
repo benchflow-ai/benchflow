@@ -34,7 +34,7 @@ from typer.testing import CliRunner
 
 import benchflow as bf
 from benchflow.cli import main as cli_main
-from benchflow.evaluation import Evaluation, EvaluationConfig
+from benchflow.evaluation import Evaluation, EvaluationConfig, ResumeMismatchError
 from benchflow.models import RolloutResult
 from benchflow.rollout import Rollout, RolloutConfig
 
@@ -100,7 +100,7 @@ _REFUSED: dict[str, tuple[dict[str, Any], str]] = {
     ),
     "multi-step": (
         {"tail": '[[steps]]\nname = "one"\n[[steps]]\nname = "two"\n'},
-        "multi-step tasks are not supported",
+        "cannot use a separate verifier sandbox",
     ),
     "tests-artifact": (
         {"artifacts": 'artifacts = ["/tests/conftest.py"]\n'},
@@ -446,6 +446,27 @@ def test_the_shard_payload_carries_the_switch() -> None:
     payload = _config_payload(config, shard=shard)
     assert payload.get("verifier_sandbox") == "separate"
     assert _evaluation_config(payload).verifier_sandbox == "separate"
+
+
+def test_the_run_card_fields_reach_sharded_workers() -> None:
+    """A sharded worker builds its own run card: without the accepted reason
+    a strict reference refused every worker of a run that had given one."""
+    from benchflow.eval_sharding import EvalShard, _config_payload
+    from benchflow.eval_worker import _evaluation_config
+
+    config = EvaluationConfig(
+        agent="oracle",
+        accept_deviations="a harness check",
+        planned_trials=4,
+        trial_number=2,
+    )
+    shard = EvalShard(index=0, task_names=("task",), concurrency=1)
+    worker = _evaluation_config(_config_payload(config, shard=shard))
+    assert (worker.accept_deviations, worker.planned_trials, worker.trial_number) == (
+        "a harness check",
+        4,
+        2,
+    )
 
 
 #: EvaluationConfig fields that do not cross the shard payload, each reviewed:
@@ -930,7 +951,7 @@ def test_a_named_job_sets_aside_trials_of_the_other_setting(
 
     monkeypatch.setattr(Evaluation, "_run_single_task", fake_single)
 
-    def run(setting: str) -> None:
+    def run(setting: str, restart_changed: bool = False) -> None:
         config = EvaluationConfig(agent="oracle", environment="docker")
         config.verifier_sandbox = setting
         asyncio.run(
@@ -940,13 +961,19 @@ def test_a_named_job_sets_aside_trials_of_the_other_setting(
                 config=config,
                 job_name="named",
                 preflight=False,
+                restart_changed=restart_changed,
             ).run()
         )
 
     run("task")
     run("task")  # unchanged: the finished trial is reused
     assert ran == ["task"]
-    run("separate")  # changed: the finished trial does not count for this run
+    # Changed: the finished trial does not count for this run, which is
+    # refused unless it restarts the job's trials.
+    with pytest.raises(ResumeMismatchError, match="verifier_sandbox='task'"):
+        run("separate")
+    assert ran == ["task"]
+    run("separate", restart_changed=True)
     assert ran == ["task", "separate"]
 
 

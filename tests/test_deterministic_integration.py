@@ -63,6 +63,9 @@ DRAFT_PROMPT = f"Write a draft first. {h.marker('draft')}"
 PASS_CHILD = f"label=pass,prompt=Write the final answer. {h.marker('hello-pass')}"
 WRONG_CHILD = f"label=wrong,prompt=Write a different answer. {h.marker('hello-wrong')}"
 RETRY_PROMPT = f"Your answer was wrong; fix hello.txt. {h.marker('hello-pass')}"
+# Every request the host fake provider received (after the proxy), when the
+# proxy runs on the host.
+UPSTREAM_WIRE = "host-fake-wire.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +89,21 @@ def fake_url(det_root) -> Any:
     if SANDBOX is None or h.proxy_runs_in_sandbox(SANDBOX):
         yield None
         return
-    with h.host_fake_llm(det_root / "host-fake-llm.jsonl") as url:
+    with h.host_fake_llm(
+        det_root / "host-fake-llm.jsonl", det_root / UPSTREAM_WIRE
+    ) as url:
         yield url
 
 
 def _run(
-    det_root: Path, name: str, subcommand, variants, fake_url, extra=(), route="proxy"
+    det_root: Path,
+    name: str,
+    subcommand,
+    variants,
+    fake_url,
+    extra=(),
+    route="proxy",
+    model=None,
 ):
     # Session fixtures are set up before the function-scoped require_sandbox.
     if SANDBOX is None:
@@ -109,6 +121,7 @@ def _run(
         host_fake_url=fake_url,
         route=route,
         extra=extra,
+        model=model,
     )
     (det_root / name / "seconds.txt").write_text(f"{run.seconds:.1f}\n")
     return run
@@ -465,24 +478,26 @@ def test_eval_job_summary(eval_job):
         k: summary[k]
         for k in ("passed", "failed", "errored", "verifier_errored", "unscored")
     }
-    # timeout-pass counts as passed (it has a reward); agent-crash is the error.
+    # timeout-pass counts as passed (it has a reward); agent-crash is the error;
+    # a verifier that wrote no reward is a verifier error, never a silent 0.
     assert counts == {
         "passed": 2,
-        "failed": 2,
+        "failed": 1,
         "errored": 1,
-        "verifier_errored": 0,
+        "verifier_errored": 1,
         "unscored": 0,
     }
     assert summary["error_categories"] == {"acp_error": 1, "timeout": 1}
-    assert summary["verifier_error_categories"] is None
+    assert summary["verifier_error_categories"] == {"verifier_failure": 1}
+    assert summary["unusable_rewards"] == 1
     # usage_summary totals the scored trials (a reward, no verifier error):
-    # hello-pass, wrong-answer, the scored timeout and the missing-reward zero;
-    # agent-crash has no score.
+    # hello-pass, wrong-answer and the scored timeout; agent-crash and the
+    # missing reward have no score.
     results = [h.read_json(t / "result.json") for t in eval_job.trial_dirs()]
     completed = [
         r for r in results if r["rewards"] is not None and not r["verifier_error"]
     ]
-    assert len(completed) == 4
+    assert len(completed) == 3
     for field in ("input", "output"):
         assert summary[f"total_{field}_tokens"] == sum(
             r["agent_result"][f"n_{field}_tokens"] for r in completed
@@ -576,21 +591,18 @@ def test_a_subscription_run_is_priced_from_claude_codes_session_log(native_eval)
 
 
 @needs_sandbox
-def test_a_verifier_exit_without_rewards_scores_zero(eval_job):
+def test_a_verifier_exit_without_rewards_is_a_verifier_error(eval_job):
     trial = eval_job.trial("verifier-error")
     facts = _check_trial(trial, "eval-verifier-error")
     assert facts["outcome"] == {
         "execution": "completed",
-        "assessment": "scored",
-        "reward": 0.0,
+        "assessment": "error",
+        "reward": None,
     }
-    assert facts["result"]["rewards"] == {"reward": 0.0}
-    assert facts["result"]["verifier_error_category"] is None
+    assert facts["result"]["rewards"] is None
+    assert facts["result"]["verifier_error_category"] == "verifier_failure"
     result = h.read_json(trial / "result.json")
-    assert result["verifier_error"] is None
-    assert any(
-        "rc=3" in warning and "reward.txt" in warning for warning in result["warnings"]
-    )
+    assert result["verifier_error"].startswith("verifier wrote no usable reward: ")
 
 
 # ---------------------------------------------------------------------------
@@ -1091,13 +1103,13 @@ def test_native_eval_job_summary_matches_acp(native_eval_job):
     }
     assert counts == {
         "passed": 2,
-        "failed": 2,
+        "failed": 1,
         "errored": 1,
-        "verifier_errored": 0,
+        "verifier_errored": 1,
         "unscored": 0,
     }
     assert summary["error_categories"] == {"acp_error": 1, "timeout": 1}
-    assert summary["verifier_error_categories"] is None
+    assert summary["verifier_error_categories"] == {"verifier_failure": 1}
 
 
 @needs_sandbox
@@ -1196,17 +1208,37 @@ WIRE_EXPECTED_DIFFERENCES: dict[str, list[tuple[str, str]]] = {
             "the same entrypoint in the billing line (cc_entrypoint)",
         ),
         (
-            "body.tools",
-            "the ACP session starts in the default permission mode, whose "
-            "EnterPlanMode and ExitPlanMode tools bypassPermissions does not "
-            "offer; the other tool definitions are identical, in order",
-        ),
-        (
-            "body.messages[*].content[*].content",
+            "body.messages[*].content[*].content, body.messages[*] (system)",
             "the adapter hands the SDK the session directory as an additional "
             "working directory, which adds an 'Environment update' reminder "
             "(Additional working directories added: /app) to the first tool "
-            "result",
+            "result; on a model Claude Code sends system messages for "
+            "(claude-opus-5-5), a system message of its own after that tool "
+            "result, which then holds the request's cache breakpoint",
+        ),
+        (
+            "body.messages[*].content",
+            "the ACP session starts in the default permission mode, whose "
+            "deferred-tools reminder (Claude Code 2.1.316) also lists "
+            "EnterPlanMode and ExitPlanMode, which bypassPermissions does not "
+            "offer (in the first user message, or the environment system "
+            "message)",
+        ),
+        (
+            "body.messages[*].content, body.tools[Bash].description",
+            "each permission mode's own guidance, in Claude Code 2.1.316's "
+            "claude-opus-5-5 prompt (the claude-haiku-4-5 one has neither): "
+            "bypassPermissions adds 'While bypass permissions mode is active: "
+            "You can do much of your work through the Bash tool ...' to the "
+            "environment message, and the default mode keeps 'IMPORTANT: Avoid "
+            "using this tool to run cat, head, tail, sed, awk, or echo ...' in "
+            "the Bash tool",
+        ),
+        (
+            "body.tools[Bash].description, "
+            "body.tools[Bash].input_schema.properties.run_in_background",
+            "a background command's default time limit: 1,800,000 ms in the "
+            "Agent SDK session, 600,000 ms in print mode",
         ),
     ],
     "codex": [
@@ -1221,14 +1253,56 @@ _CLAUDE_UA_ENTRYPOINT = re.compile(
     r"\(external, sdk-(?:ts|cli)(?:, agent-sdk/[\w.]+)?\)"
 )
 _CLAUDE_BILLING_ENTRYPOINT = re.compile(r"cc_entrypoint=sdk-(?:ts|cli);")
-_ACP_ONLY_TOOLS = ["EnterPlanMode", "ExitPlanMode"]
+# Claude Code 2.1.280's ACP session (default permission mode) also offered
+# EnterPlanMode and ExitPlanMode as tools, which bypassPermissions does not;
+# 2.1.316 defers them (a ToolSearch reminder in the first user message) in
+# the ACP session and leaves them out in print mode.
+_ACP_ONLY_TOOLS: list[str] = []
+_ACP_ONLY_DEFERRED_TOOLS = ["EnterPlanMode", "ExitPlanMode"]
+_DEFERRED_TOOLS_REMINDER = "The following deferred tools are now available"
+# "(default 1800000ms / 30 minutes, ...)" in the description, "(default 1800000
+# ms, ...)" in the parameter's; "in the background (default 1800000, max ...)"
+# in claude-opus-5-5's description.
+_BACKGROUND_DEFAULT = re.compile(r"default \d+ ?ms(?: / \d+ minutes)?")
+_BACKGROUND_DEFAULT_BARE = re.compile(r"in the background \(default \d+,")
 _ACP_ENVIRONMENT_UPDATE = re.compile(
     r"\n\n<system-reminder>\n# Environment update\n"
     r" - Additional working directories added:\n(?:  - [^\n]*\n)+</system-reminder>"
 )
+_ACP_ENVIRONMENT_UPDATE_MESSAGE = re.compile(
+    r"# Environment update\n - Additional working directories added:"
+    r"(?:\n  - [^\n]*)+"
+)
+_BYPASS_MODE_GUIDANCE = re.compile(
+    r"While bypass permissions mode is active:\n\n"
+    r"You can do much of your work through the Bash tool [^\n]*\n\n"
+)
+_DEFAULT_MODE_BASH_GUIDANCE = re.compile(
+    r"\n- IMPORTANT: Avoid using this tool to run `cat`, [^\n]*"
+)
 _CODEX_CLIENT_NAME = re.compile(
     r"^(?:benchflow|codex_exec)/|\((?:benchflow|codex_exec); [\w.]+\)$"
 )
+
+
+def _without_acp_only_deferred_tools(text: str) -> str:
+    if _DEFERRED_TOOLS_REMINDER not in text:
+        return text
+    for name in _ACP_ONLY_DEFERRED_TOOLS:
+        assert f"\n{name}\n" in text, name
+        text = text.replace(f"\n{name}\n", "\n")
+    return text
+
+
+def _is_environment_update_message(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return (
+        message.get("role") == "system"
+        and isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0].get("text"), str)
+        and _ACP_ENVIRONMENT_UPDATE_MESSAGE.fullmatch(content[0]["text"]) is not None
+    )
 
 
 def _normalize_claude(request: dict[str, Any], *, acp: bool) -> dict[str, Any]:
@@ -1243,20 +1317,73 @@ def _normalize_claude(request: dict[str, Any], *, acp: bool) -> dict[str, Any]:
         system[0]["text"] = _CLAUDE_BILLING_ENTRYPOINT.sub(
             "cc_entrypoint=<entrypoint>;", system[0].get("text", "")
         )
+    messages = body.get("messages") or []
     if acp:
         tools = body.get("tools") or []
         assert [t["name"] for t in tools if t["name"] in _ACP_ONLY_TOOLS] == (
             _ACP_ONLY_TOOLS
         )
         body["tools"] = [t for t in tools if t["name"] not in _ACP_ONLY_TOOLS]
-        for message in body.get("messages") or []:
-            content = message.get("content")
-            for block in content if isinstance(content, list) else []:
-                if block.get("type") == "tool_result" and isinstance(
-                    block.get("content"), str
-                ):
-                    block["content"] = _ACP_ENVIRONMENT_UPDATE.sub("", block["content"])
+        for index in reversed(range(len(messages))):
+            if not _is_environment_update_message(messages[index]):
+                continue
+            # The cache breakpoint goes back to the message before it.
+            (block,) = messages.pop(index)["content"]
+            previous = messages[index - 1].get("content") if index else None
+            if "cache_control" in block and isinstance(previous, list) and previous:
+                previous[-1]["cache_control"] = block["cache_control"]
+
+    def edit(text: str) -> str:
+        if acp:
+            return _without_acp_only_deferred_tools(text)
+        return _BYPASS_MODE_GUIDANCE.sub("", text)
+
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = edit(content)
+        for block in content if isinstance(content, list) else []:
+            if (
+                acp
+                and block.get("type") == "tool_result"
+                and isinstance(block.get("content"), str)
+            ):
+                block["content"] = _ACP_ENVIRONMENT_UPDATE.sub("", block["content"])
+            if isinstance(block.get("text"), str):
+                block["text"] = edit(block["text"])
+    for tool in body.get("tools") or []:
+        if tool.get("name") != "Bash":
+            continue
+        description = _BACKGROUND_DEFAULT.sub(
+            "default <n>", tool.get("description", "")
+        )
+        description = _BACKGROUND_DEFAULT_BARE.sub(
+            "in the background (default <n>,", description
+        )
+        if acp:
+            description = _DEFAULT_MODE_BASH_GUIDANCE.sub("", description)
+        tool["description"] = description
+        background = ((tool.get("input_schema") or {}).get("properties") or {}).get(
+            "run_in_background"
+        ) or {}
+        if isinstance(background.get("description"), str):
+            background["description"] = _BACKGROUND_DEFAULT.sub(
+                "default <n>", background["description"]
+            )
     return request
+
+
+def _message_texts(body: dict[str, Any]) -> list[str]:
+    """Every text in a Claude request's messages, string contents too."""
+    texts: list[str] = []
+    for message in body.get("messages") or []:
+        content = message.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block.get("text"), str):
+                texts.append(block["text"])
+    return texts
 
 
 def _tool_results(request: dict[str, Any]) -> list[str]:
@@ -1283,9 +1410,12 @@ def _normalize_codex(request: dict[str, Any]) -> dict[str, Any]:
 
 # Codex's exec tool output carries its own timing ("Wall time: 0.1639
 # seconds"): 0.0000 on an idle machine, more under pytest -n auto's load.
+# Claude Code's Agent tool result names the sub-agent's random id and its
+# run time.
 _WIRE_VOLATILE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|"
-    r"[0-9a-f]{64}|Chunk ID: [0-9a-f]+|Wall time: [0-9.]+ seconds"
+    r"[0-9a-f]{64}|Chunk ID: [0-9a-f]+|Wall time: [0-9.]+ seconds|"
+    r"agentId: [0-9a-f]+|to: '[0-9a-f]+'|duration_ms: \d+"
 )
 
 
@@ -1328,20 +1458,21 @@ def _drop_volatile_keys(request: dict[str, Any]) -> dict[str, Any]:
     return request
 
 
-@needs_sandbox
-@pytest.mark.parametrize("variant", ["hello-pass", "wrong-answer"])
-def test_claude_code_wire_parity(eval_job, native_eval_job, variant):
-    """Both harnesses send the proxy the same requests, bar the written list."""
-    marker = h.marker(EVAL_VARIANTS[variant].script)
-    acp = [_drop_volatile_keys(r) for r in _wire(eval_job, marker)]
-    native = [_drop_volatile_keys(r) for r in _wire(native_eval_job, marker)]
+def _check_claude_wire_parity(
+    acp_job: h.CliRun, native_job: h.CliRun, marker: str
+) -> None:
+    acp = [_drop_volatile_keys(r) for r in _wire(acp_job, marker)]
+    native = [_drop_volatile_keys(r) for r in _wire(native_job, marker)]
     # The session-title side call is a race on the ACP side; compare the loop.
     acp = [r for r in acp if r["body"].get("tools")]
     native = [r for r in native if r["body"].get("tools")]
     assert len(acp) == len(native) > 0
-    # The adapter's reminder is really there, in a tool result.
+    # The adapter's reminder is really there, in a tool result or a system
+    # message of its own.
     assert any(
         _ACP_ENVIRONMENT_UPDATE.search(text) for r in acp for text in _tool_results(r)
+    ) or any(
+        _is_environment_update_message(m) for r in acp for m in r["body"]["messages"]
     )
     for a, n in zip(acp, native, strict=True):
         assert (
@@ -1350,12 +1481,11 @@ def test_claude_code_wire_parity(eval_job, native_eval_job, variant):
         )
 
 
-@needs_sandbox
-@pytest.mark.parametrize("variant", ["codex-hello-pass", "codex-wrong-answer"])
-def test_codex_wire_parity(codex_acp_job, codex_native_job, variant):
-    marker = h.marker(CODEX_VARIANTS[variant].script)
-    acp = [_drop_volatile_keys(r) for r in _wire(codex_acp_job, marker)]
-    native = [_drop_volatile_keys(r) for r in _wire(codex_native_job, marker)]
+def _check_codex_wire_parity(
+    acp_job: h.CliRun, native_job: h.CliRun, marker: str
+) -> None:
+    acp = [_drop_volatile_keys(r) for r in _wire(acp_job, marker)]
+    native = [_drop_volatile_keys(r) for r in _wire(native_job, marker)]
     # codex-acp's session-title side call (no tools) races the end of the
     # turn, as Claude's does (it reached the proxy for codex-wrong-answer in
     # a pytest -n auto run). Compare the loop.
@@ -1364,6 +1494,250 @@ def test_codex_wire_parity(codex_acp_job, codex_native_job, variant):
     assert len(acp) == len(native) > 0
     for a, n in zip(acp, native, strict=True):
         assert _json_diff(_normalize_codex(a), _normalize_codex(n)) == []
+
+
+@needs_sandbox
+@pytest.mark.parametrize("variant", ["hello-pass", "wrong-answer"])
+def test_claude_code_wire_parity(eval_job, native_eval_job, variant):
+    """Both harnesses send the proxy the same requests, bar the written list."""
+    marker = h.marker(EVAL_VARIANTS[variant].script)
+    _check_claude_wire_parity(eval_job, native_eval_job, marker)
+
+
+@needs_sandbox
+@pytest.mark.parametrize("variant", ["codex-hello-pass", "codex-wrong-answer"])
+def test_codex_wire_parity(codex_acp_job, codex_native_job, variant):
+    marker = h.marker(CODEX_VARIANTS[variant].script)
+    _check_codex_wire_parity(codex_acp_job, codex_native_job, marker)
+
+
+# ----- a requested model and effort, and the sub-agent tool -----------------
+
+# Each pair again, at a model and an effort set the way a run sets them
+# (--model, --reasoning-effort), on both harnesses. A benchmark's lesson:
+# codex-acp took no effort on BenchFlow 0.7.5, and its xhigh Codex
+# rows ran with no apply_patch and no sub-agents.
+# Claude Code 2.1.316 sends an effort only for a model it knows takes one, as
+# output_config.effort with adaptive thinking (beta effort-2025-11-24).
+# claude-opus-5-5 (the benchmark's Opus 5.5 rows, at max) takes one.
+# claude-haiku-4-5, the tier's model, does not: the CLI ignores --effort, and
+# over ACP the adapter offers no effort option, so BenchFlow refuses the run.
+CLAUDE_EFFORT_MODEL = "claude-opus-5-5"
+CLAUDE_EFFORT = "max"
+# The Claude Code task hands the file to a general-purpose sub-agent (its
+# Agent tool, in the foreground), whose own requests carry the child marker.
+CLAUDE_SUBAGENT_MARKER = h.marker("subagent-child")
+# Codex sends it as reasoning.effort and in its turn metadata. The native
+# harness used to refuse max.
+CODEX_EFFORT = "max"
+# Side calls: Claude Code's session title names the run's model; codex-acp's
+# (TitleGenerator.ts, 2.0.1) runs one tool-less turn on a hard-wired model,
+# whichever model the run has (see codex_config.codex_home_config).
+CODEX_ACP_TITLE_MODEL = "gpt-5.6-luna"
+CLAUDE_EFFORT_VARIANT = h.TaskVariant("claude-effort", "subagent")
+CODEX_EFFORT_VARIANT = h.TaskVariant("codex-effort", "hello-pass")
+
+
+def _effort_jobs(
+    det_root, fake_url, variant: h.TaskVariant, route: str, model: str, effort: str
+) -> dict[str, h.CliRun]:
+    return {
+        harness: _run(
+            det_root,
+            f"{variant.name}-{harness}",
+            ["eval", "run"],
+            [variant],
+            fake_url,
+            route=route,
+            model=model,
+            extra=[
+                "--retry-attempts",
+                "0",
+                "--harness",
+                harness,
+                "--reasoning-effort",
+                effort,
+            ],
+        )
+        for harness in ("acp", "native")
+    }
+
+
+@pytest.fixture(scope="session")
+def claude_effort_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
+    return _effort_jobs(
+        det_root,
+        fake_url,
+        CLAUDE_EFFORT_VARIANT,
+        "proxy",
+        CLAUDE_EFFORT_MODEL,
+        CLAUDE_EFFORT,
+    )
+
+
+@pytest.fixture(scope="session")
+def codex_effort_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
+    return _effort_jobs(
+        det_root, fake_url, CODEX_EFFORT_VARIANT, "codex", h.CODEX_MODEL, CODEX_EFFORT
+    )
+
+
+def _requests(job: h.CliRun) -> list[dict[str, Any]]:
+    """Every request the job's harness sent the proxy, side calls too."""
+    return [
+        r for p in sorted(job.wire_dir.glob("wire-*.jsonl")) for r in h.read_jsonl(p)
+    ]
+
+
+def _check_effort_trial(
+    job: h.CliRun, variant: h.TaskVariant, model: str, effort: str
+) -> None:
+    """The trial passed, its config records the setting, and BenchFlow's own
+    record of every agent call (model-calls.jsonl) names the effort."""
+    trial = job.trial(variant.name)
+    result = h.read_json(trial / "result.json")
+    assert result["rewards"] == {"reward": 1.0}, (
+        result.get("error"),
+        job.output[-4000:],
+    )
+    config = h.read_json(trial / "config.json")
+    assert (config["model"], config["reasoning_effort"]) == (model, effort)
+    calls = h.read_jsonl(trial / "trajectory" / "model-calls.jsonl")
+    # The agent's turns: a session title it asks the same model for offers
+    # no tools and carries the default effort, and is a side call.
+    agent_calls = [c for c in calls if c["purpose"] == "agent" and c["tools"]]
+    assert agent_calls and {c["effort"] for c in agent_calls} == {effort}, calls
+    # The session's word and the calls' agree with the request.
+    assert config["reasoning_effort_applied"] == effort
+    assert result["effort"] == {
+        "requested": effort,
+        "applied": effort,
+        "route": None,
+        "sent": {effort: len(agent_calls)},
+        "sent_source": "proxy",
+        "matches": True,
+    }, result["effort"]
+
+
+@needs_sandbox
+@pytest.mark.parametrize("harness", ["acp", "native"])
+def test_claude_code_sends_the_requested_model_and_effort(
+    claude_effort_jobs, det_root, harness
+):
+    """Every request names the run's model (BenchFlow's proxy alias for it;
+    the session-title call too), every agent-loop request carries the
+    effort, and the sub-agent tool (Agent) is offered, through the adapter
+    and through the CLI alike. The sub-agent the task delegates to inherits
+    both: its own requests name the same model and effort."""
+    from benchflow.providers.litellm_config import safe_model_alias
+
+    job = claude_effort_jobs[harness]
+    _check_effort_trial(job, CLAUDE_EFFORT_VARIANT, CLAUDE_EFFORT_MODEL, CLAUDE_EFFORT)
+    requests = _requests(job)
+    assert {r["body"]["model"] for r in requests} == {
+        safe_model_alias(CLAUDE_EFFORT_MODEL)
+    }
+    loop = [r for r in requests if r["body"].get("tools")]
+    assert any(
+        CLAUDE_SUBAGENT_MARKER in json.dumps(r["body"]["messages"][0]) for r in loop
+    ), "the sub-agent sent no request"
+    for request in loop:
+        body = request["body"]
+        assert body["output_config"] == {"effort": CLAUDE_EFFORT}, body
+        assert body["thinking"]["type"] == "adaptive", body["thinking"]
+        assert "effort-2025-11-24" in request["headers"]["anthropic-beta"].split(",")
+        assert "Agent" in {tool["name"] for tool in body["tools"]}
+    # The provider got the effort too, past the proxy.
+    upstream = det_root / UPSTREAM_WIRE
+    if upstream.is_file():
+        received = [
+            r["body"]
+            for r in h.read_jsonl(upstream)
+            if r["body"].get("model") == CLAUDE_EFFORT_MODEL and r["body"].get("tools")
+        ]
+        assert received
+        assert all(
+            b.get("output_config") == {"effort": CLAUDE_EFFORT} for b in received
+        )
+
+
+@needs_sandbox
+@pytest.mark.parametrize("harness", ["acp", "native"])
+def test_codex_sends_the_requested_model_and_effort(
+    codex_effort_jobs, det_root, harness
+):
+    """Every agent-loop request names the run's model and carries the
+    effort, in reasoning.effort and in Codex's own turn metadata; the one
+    other model a request may name is codex-acp's session title's. The tool
+    surface is the catalogued one: apply_patch, and the multi-agent tools,
+    which Codex 0.159.3 defers behind tool_search for this model."""
+    job = codex_effort_jobs[harness]
+    _check_effort_trial(job, CODEX_EFFORT_VARIANT, h.CODEX_MODEL, CODEX_EFFORT)
+    requests = _requests(job)
+    loop = [r for r in requests if r["body"].get("tools")]
+    assert loop
+    for body in (r["body"] for r in requests):
+        if body["model"] != h.CODEX_MODEL:
+            assert (harness, body["model"], bool(body.get("tools"))) == (
+                "acp",
+                CODEX_ACP_TITLE_MODEL,
+                False,
+            )
+    for request in loop:
+        body = request["body"]
+        assert body["reasoning"]["effort"] == CODEX_EFFORT, body["reasoning"]
+        turn = json.loads(body["client_metadata"]["x-codex-turn-metadata"])
+        assert (turn["model"], turn["reasoning_effort"]) == (
+            h.CODEX_MODEL,
+            CODEX_EFFORT,
+        )
+        tools = {t.get("name") or t.get("type"): t for t in body["tools"]}
+        assert tools["apply_patch"]["type"] == "custom"
+        assert "Multi-agent tools" in tools["tool_search"]["description"]
+    # The trial's record of that surface: Codex's own, not its fallback.
+    surface = h.read_json(job.trial(CODEX_EFFORT_VARIANT.name) / "result.json")[
+        "tool_surface"
+    ]
+    assert "apply_patch" in surface["names"] and surface["fallback"] is False
+    upstream = det_root / UPSTREAM_WIRE
+    if upstream.is_file():
+        threads = {r["body"].get("prompt_cache_key") for r in loop}
+        received = [
+            r["body"]
+            for r in h.read_jsonl(upstream)
+            if r["body"].get("prompt_cache_key") in threads
+        ]
+        assert received
+        assert {b["reasoning"]["effort"] for b in received} == {CODEX_EFFORT}
+
+
+@needs_sandbox
+def test_claude_code_wire_parity_at_the_requested_model_and_effort(
+    claude_effort_jobs,
+):
+    acp_job, native_job = claude_effort_jobs["acp"], claude_effort_jobs["native"]
+    marker = h.marker(CLAUDE_EFFORT_VARIANT.script)
+    # This model's prompt really carries each permission mode's guidance, on
+    # its own side only (WIRE_EXPECTED_DIFFERENCES).
+    for job, ours, theirs in (
+        (acp_job, _DEFAULT_MODE_BASH_GUIDANCE, _BYPASS_MODE_GUIDANCE),
+        (native_job, _BYPASS_MODE_GUIDANCE, _DEFAULT_MODE_BASH_GUIDANCE),
+    ):
+        body = next(r["body"] for r in _wire(job, marker) if r["body"].get("tools"))
+        bash = next(t["description"] for t in body["tools"] if t["name"] == "Bash")
+        texts = [bash, *_message_texts(body)]
+        found = [any(p.search(t) for t in texts) for p in (ours, theirs)]
+        assert found == [True, False], found
+    _check_claude_wire_parity(acp_job, native_job, marker)
+
+
+@needs_sandbox
+def test_codex_wire_parity_at_the_requested_model_and_effort(codex_effort_jobs):
+    _check_codex_wire_parity(
+        codex_effort_jobs["acp"],
+        codex_effort_jobs["native"],
+        h.marker(CODEX_EFFORT_VARIANT.script),
+    )
 
 
 # ----- Codex: both harnesses on the same scenarios -------------------------
@@ -1471,9 +1845,11 @@ def test_codex_warning_is_a_notice_not_a_reply(codex_uncatalogued_job):
     """On a model its catalog lacks, Codex warns as soon as the turn starts.
 
     codex-acp sends that warning as a session notice, recorded apart from the
-    agent's words: with no model reply before the agent timeout the trial is
-    an integration failure, as on a catalogued model, never a scored 0 (the
-    warning used to arrive as agent text and read as the agent's work).
+    agent's words (it used to arrive as agent text and read as the agent's
+    work). The client stops the trial there rather than run the model on
+    Codex's fallback tools, and the trial is an unscored
+    agent_model_catalog integration failure: the setup's, not an ACP error of
+    the agent's that a retry repeats, and never a scored 0.
     """
     trial = codex_uncatalogued_job.trial("codex-slow-model")
     facts = _trial_facts(trial)
@@ -1483,10 +1859,7 @@ def test_codex_warning_is_a_notice_not_a_reply(codex_uncatalogued_job):
         "reward": None,
     }
     events = facts["acp_trajectory"]
-    assert [e["type"] for e in events if e["type"] != "notice"] == [
-        "user_message",
-        "agent_timeout",
-    ]
+    assert [e["type"] for e in events if e["type"] != "notice"] == ["user_message"]
     notices = [e for e in events if e["type"] == "notice"]
     assert any(
         n["severity"] == "warning"
@@ -1497,8 +1870,13 @@ def test_codex_warning_is_a_notice_not_a_reply(codex_uncatalogued_job):
     # counts an integration failure, not a scored 0.
     result = h.read_json(trial / "result.json")
     assert result["error_category"] == "agent_integration"
-    assert result["integration_failure_info"]["cause"] == "no_activity"
-    assert result["agent_timeout_info"]["reason"] == "wall_clock_timeout"
+    assert result["error"].startswith(
+        "agent integration failure [agent_model_catalog]: codex-acp ran "
+        f"{h.CODEX_UNCATALOGUED_MODEL} on fallback model metadata: Model metadata "
+        f"for `{h.CODEX_UNCATALOGUED_MODEL}` not found"
+    ), result["error"]
+    assert result["integration_failure_info"]["cause"] == "agent_model_catalog"
+    assert result["agent_timeout_info"] is None
     summary = h.read_json(trial.parent / "summary.json")
     assert summary["integration_failures"]["total"] == 1, summary
 
@@ -1636,3 +2014,182 @@ def test_in_sandbox_proxy_records_its_locked_install(codex_allowlist_jobs):
         "requirements_sha256": reqs.requirements_sha256(reqs.PROXY_GROUP),
         "extra_requirements": [],
     }
+
+
+# ----- a model refusal, and a trial budget (0.10.0rc2) ---------------------
+
+# The model looks around once, then refuses: Anthropic's stop_reason refusal
+# to Claude Code on the proxy route, OpenAI's content filter to Codex on its
+# Responses route (an incomplete answer whose reason is content_filter), and a
+# Chat Completions content_filter to Claude Code through the proxy's Messages
+# bridge (the vllm route). All run under the default retry policy: a refusal
+# must not be retried away.
+REFUSAL_VARIANT = h.TaskVariant("refusal", "refuse-after-look")
+REFUSAL_ROUTES = ("proxy", "codex", "vllm")
+# Eight steps before the one that writes hello.txt: four turns stop the agent
+# long before it.
+TURN_BUDGET_VARIANT = h.TaskVariant("turn-budget", "many-steps")
+TURN_BUDGET = 4
+# The agent hands the look around to a sub-agent first; each main or sub-agent
+# call is 1,050 tokens (the fake's usage), so 3,000 tokens are spent by the
+# sub-agent's second call, and its third is refused before hello.txt exists.
+TOKEN_BUDGET_VARIANT = h.TaskVariant("token-budget", "subagent-explore")
+TOKEN_BUDGET = 3000
+SUBAGENT_CHILD_MARKER = h.marker("subagent-explore-child")
+
+
+@pytest.fixture(scope="session")
+def refusal_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
+    return {
+        route: _run(
+            det_root,
+            f"refusal-{route}",
+            ["eval", "run"],
+            [REFUSAL_VARIANT],
+            fake_url,
+            route=route,
+        )
+        for route in REFUSAL_ROUTES
+    }
+
+
+@pytest.fixture(scope="session")
+def budget_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
+    return {
+        "turns": _run(
+            det_root,
+            "budget-turns",
+            ["eval", "run"],
+            [TURN_BUDGET_VARIANT],
+            fake_url,
+            extra=["--turn-budget", str(TURN_BUDGET)],
+        ),
+        "tokens": _run(
+            det_root,
+            "budget-tokens",
+            ["eval", "run"],
+            [TOKEN_BUDGET_VARIANT],
+            fake_url,
+            extra=["--token-budget", str(TOKEN_BUDGET)],
+        ),
+    }
+
+
+def _proxy_rows(trial: Path) -> list[dict[str, Any]]:
+    return h.read_jsonl(trial / "trajectory" / "llm_trajectory.jsonl")
+
+
+@needs_sandbox
+@pytest.mark.parametrize("route", REFUSAL_ROUTES)
+def test_a_model_refusal_is_its_own_ending_counted_beside_the_score(
+    refusal_jobs, route
+):
+    """The trial's result names the refused call and its reason, it counts 0
+    (a scored failure: the agent never wrote hello.txt), it ran once under a
+    policy that retries, and summary.json, the run card and the end-of-run
+    lines count it as a model refusal with its rate."""
+    job = refusal_jobs[route]
+    # job.trial asserts one trial folder: the refusal was never retried.
+    trial = job.trial(REFUSAL_VARIANT.name)
+    result = h.read_json(trial / "result.json")
+    assert result["agent_outcome"]["status"] == "refusal", result["agent_outcome"]
+    ending = result["model_refusal"]
+    assert ending is not None, job.output[-4000:]
+    calls = h.read_jsonl(trial / "trajectory" / "model-calls.jsonl")
+    agent_calls = [c for c in calls if c["purpose"] == "agent" and c["tools"]]
+    assert ending["call"]["index"] == agent_calls[-1]["index"], (ending, calls)
+    assert ending["call"]["source"] == "proxy"
+    # LiteLLM records Anthropic's refusal, as OpenAI's filter, content_filter.
+    assert ending["call"]["finish_reason"] == "content_filter", ending
+    assert ending["refused_calls"] >= 1
+    # Graded on what the agent left (hello.txt never written): a failure,
+    # whatever the agent reported after the refusal.
+    assert result["rewards"] == {"reward": 0.0}, result.get("error")
+    assert _verifier_ran(trial)
+    if route == "proxy":
+        # Claude Code ends its turn with ACP's refusal stop reason.
+        assert (ending["by"], ending["stop_reason"]) == ("stop_reason", "refusal")
+        assert result["error"] is None
+    (job_dir,) = job.job_dirs()
+    summary = h.read_json(job_dir / "summary.json")
+    assert summary["model_refusals"] == 1, summary
+    assert summary["model_refusal_rate"] == 1.0
+    assert summary["scoring"]["model_refusals"] == 1
+    assert summary["scoring"]["outcomes"]["failed"] == 1
+    assert summary["guard_refusals"] == 0
+    card = h.read_json(job_dir / "run-card.json")
+    assert card["after_run"]["scoring"]["model_refusals"] == 1
+    output = " ".join(job.output.split())
+    assert "1 of 1 trials (100.0%) ended on a model refusal" in output, output[-4000:]
+    assert "Refusals: 1 of 1 trials" in output
+    assert "1 ended on a model refusal or a content filter" in output
+
+
+def _check_budget_stop(job: h.CliRun, trial: Path, measure: str, limit: int) -> dict:
+    result = h.read_json(trial / "result.json")
+    budget = result["trial_budget"]
+    assert budget is not None, job.output[-4000:]
+    assert budget["budget"][measure] == limit
+    assert budget["source"] == {measure: "run"}
+    assert budget["stopped_by"] == measure, (budget, job.output[-4000:])
+    assert budget["stopped_at"][measure] >= limit
+    assert budget["refused_calls"] >= 1
+    assert result["error_category"] == "trial_budget", result["error"]
+    outcome = result["agent_outcome"]
+    assert (outcome["ended_by"], outcome["harness_cause"]) == (
+        "harness",
+        "trial_budget",
+    )
+    # Stopped before hello.txt: graded like a timeout, and it counts 0.
+    assert result["rewards"] == {"reward": 0.0}
+    assert _verifier_ran(trial)
+    (job_dir,) = job.job_dirs()
+    summary = h.read_json(job_dir / "summary.json")
+    assert (summary["budget_stops"], summary["budget_stop_rate"]) == (1, 1.0)
+    checks = summary["run_checks"]["trial_budget"]
+    assert checks["stopped_by"][measure] == 1
+    card = h.read_json(job_dir / "run-card.json")
+    assert card["trial_budget"][measure] == {"min": limit, "max": limit}
+    assert card["after_run"]["trial_budget"]["trials"] == 1
+    output = " ".join(job.output.split())
+    unit = "token" if measure == "tokens" else "turn"
+    assert f"Per trial: budget {limit:,} {unit}s (the run's)" in output, output[-4000:]
+    assert "1 of 1 trials stopped at it" in output
+    assert "1 stopped at their trial budget" in output
+    return result
+
+
+@needs_sandbox
+def test_a_turn_budget_stops_a_real_agent_mid_trial(budget_jobs):
+    """Four model calls allowed: the proxy forwards four and refuses the
+    fifth, the agent is stopped eight steps short of hello.txt, and the
+    trial's record says so."""
+    job = budget_jobs["turns"]
+    trial = job.trial(TURN_BUDGET_VARIANT.name)
+    result = _check_budget_stop(job, trial, "turns", TURN_BUDGET)
+    assert result["trial_budget"]["used"]["turns"] == TURN_BUDGET
+    assert len(_proxy_rows(trial)) == TURN_BUDGET
+    assert result["trial_budget"]["stopped_at"]["turns"] == TURN_BUDGET
+
+
+@needs_sandbox
+def test_a_token_budget_counts_the_subagents_calls_and_stops_the_agent(budget_jobs):
+    """The sub-agent's calls go through the proxy and count: they spend the
+    budget, its next call is refused, and the record gives the sub-agents'
+    share from Claude Code's own log."""
+    job = budget_jobs["tokens"]
+    trial = job.trial(TOKEN_BUDGET_VARIANT.name)
+    result = _check_budget_stop(job, trial, "tokens", TOKEN_BUDGET)
+    rows = _proxy_rows(trial)
+    child = [
+        row
+        for row in rows
+        if SUBAGENT_CHILD_MARKER
+        in json.dumps(((row.get("request") or {}).get("body") or {}).get("messages"))
+    ]
+    assert len(child) >= 1, rows
+    used = result["trial_budget"]["used"]
+    assert used["tokens"] == result["agent_result"]["total_tokens"] >= TOKEN_BUDGET
+    subagents = result["trial_budget"]["subagents"]
+    assert subagents is not None and subagents["source"] == "claude-code-session-log"
+    assert subagents["turns"] >= 1 and subagents["tokens"] > 0, subagents

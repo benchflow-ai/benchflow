@@ -21,7 +21,7 @@ from benchflow.task.paths import RolloutPaths
 from benchflow.task.verifier import Verifier
 from benchflow.task.verifier_errors import PluginGuardMarkersUnreadableError
 
-GUARD = "_benchflow_guard_fix49r4"
+GUARD = "_runtime_guard_fix49r4"
 
 
 async def run(
@@ -105,8 +105,6 @@ async def run(
         ({"reward.txt": ""}, "reward.txt"),
         ({"reward.txt": "1 passed\n1\n"}, "reward.txt"),
         ({"reward.txt": "NaN"}, "reward.txt"),
-        ({"reward.txt": "2"}, "reward.txt"),
-        ({"reward.txt": "-1"}, "reward.txt"),
         ({"reward.txt": "<directory>"}, "reward.txt"),
         ({"reward.txt": "<fifo>"}, "reward.txt"),
         ({"reward.txt": "<symlink>"}, "reward.txt"),
@@ -117,11 +115,51 @@ async def run(
         ({"reward.txt": "1", "reward.json": "{"}, "reward.json"),
         ({"reward.txt": "0", "reward.json": '{"reward": 1}'}, "reward.json"),
         ({"reward.txt": "broken", "reward.json": '{"reward": 1}'}, "reward.txt"),
-        ({"reward.json": '{"reward": 2}'}, "reward.json"),
         ({"reward.json": "[]"}, "reward.json"),
     ],
 )
-async def test_bad_reward_evidence_scores_zero(tmp_path, monkeypatch, files, reason):
+async def test_bad_reward_evidence_is_an_error_that_counts_as_a_failure(
+    tmp_path, monkeypatch, files, reason
+):
+    """No usable reward is the verifier's error, never a silent 0 (a
+    benchmark's oracle scored 0 that way). The reward files are evidence
+    the agent can reach, so the error is never retried and counts as a
+    failure in every score, as a guard refusal does."""
+    from benchflow._utils.scoring import (
+        NO_USABLE_REWARD,
+        VERIFIER_FAILED,
+        classify_verifier_error,
+        mean_scored_reward,
+        score_summary_fields,
+    )
+    from benchflow.evaluation import RetryConfig
+
+    rewards, error, _warnings, _ = await run(tmp_path, monkeypatch, files)
+    assert rewards is None
+    assert error is not None and error.startswith(NO_USABLE_REWARD)
+    assert reason in error
+    assert classify_verifier_error(error) == VERIFIER_FAILED
+    assert not RetryConfig().should_retry_verifier_error(error)
+    assert not RetryConfig().reruns_verifier_error_on_resume(error)
+    unusable = {"rewards": None, "verifier_error": error}
+    passed = {"rewards": {"reward": 1.0}}
+    assert mean_scored_reward([unusable, passed]) == 0.5
+    summary = score_summary_fields([unusable, passed])
+    assert summary["score_excl_errors_ratio"] == 0.5
+    assert summary["unusable_rewards"] == 1
+
+
+@pytest.mark.parametrize(
+    "files,reason",
+    [
+        ({"reward.txt": "2"}, "reward.txt"),
+        ({"reward.txt": "-1"}, "reward.txt"),
+        ({"reward.json": '{"reward": 2}'}, "reward.json"),
+    ],
+)
+async def test_an_out_of_range_reward_scores_zero(tmp_path, monkeypatch, files, reason):
+    """A number outside the task's range is the verifier's verdict, named and
+    scored 0 (#1178), not an unusable file."""
     rewards, error, warnings, _ = await run(tmp_path, monkeypatch, files)
     assert error is None
     assert rewards == {"reward": 0.0}

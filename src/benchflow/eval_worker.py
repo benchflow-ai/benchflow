@@ -21,6 +21,7 @@ from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.loop_strategies import LoopStrategySpec
 from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
+from benchflow.trial_budget import TrialBudget
 from benchflow.usage_tracking import UsageTrackingConfig
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -73,14 +74,21 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         sandbox_setup_timeout=int(raw.get("sandbox_setup_timeout") or 120),
         skip_agent_install=bool(raw.get("skip_agent_install", False)),
         agent_idle_timeout=raw.get("agent_idle_timeout"),
+        agent_idle_timeout_given=raw.get("agent_idle_timeout_given"),
         timeout_multiplier=raw.get("timeout_multiplier"),
+        trial_budget=TrialBudget.coerce(raw.get("trial_budget")),
         extra_instruction=raw.get("extra_instruction"),
         checkpoints=raw.get("checkpoints"),
         checkpoint_keep=int(raw.get("checkpoint_keep") or 3),
         freeze_workspace=bool(raw.get("freeze_workspace", False)),
+        keep_sandbox=str(raw.get("keep_sandbox") or "never"),
         fresh_install=bool(raw.get("fresh_install", False)),
         allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
         integrity=raw.get("integrity") or "off",
+        accept_deviations=raw.get("accept_deviations"),
+        planned_trials=int(raw.get("planned_trials") or 1),
+        trial_number=raw.get("trial_number"),
+        model_given=raw.get("model_given"),
         verifier_sandbox=raw.get("verifier_sandbox", "task"),
         retry_from_checkpoint=raw.get("retry_from_checkpoint"),
         retry_prompt=raw.get("retry_prompt"),
@@ -119,9 +127,16 @@ def _result_payload(result) -> dict[str, Any]:
         "errored": result.errored,
         "verifier_errored": result.verifier_errored,
         "guard_refused": getattr(result, "guard_refused", 0),
+        "unusable_rewards": getattr(result, "unusable_rewards", 0),
+        # Planned trials the worker never finished (a run check, a budget or
+        # a usage limit kept them from running): the parent counts them.
+        "not_run": getattr(result, "not_run", 0),
         "elapsed_sec": result.elapsed_sec,
         "score": result.score,
         "score_excl_errors": result.score_excl_errors,
+        # The worker's run checks (benchflow.run_checks): the parent fails
+        # the run when one failed.
+        "run_checks": getattr(result, "run_checks", None),
     }
 
 

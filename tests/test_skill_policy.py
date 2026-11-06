@@ -133,12 +133,12 @@ def test_with_skill_honors_declared_sandbox_path(tmp_path: Path) -> None:
         task_path=task,
         skill_mode=SKILL_MODE_WITH_SKILL,
         runtime_skills_dir=None,
-        declared_sandbox_skills_dir="/opt/benchflow/skill-eval",
+        declared_sandbox_skills_dir="/opt/runtime/skill-eval",
     )
 
     assert policy.enabled is True
     assert policy.host_dir == skills_root
-    assert policy.sandbox_dir == "/opt/benchflow/skill-eval"
+    assert policy.sandbox_dir == "/opt/runtime/skill-eval"
     assert policy.strip_bundled_dir_from_copy is False
 
 
@@ -160,7 +160,7 @@ def test_with_skill_rejects_unsafe_sandbox_path(tmp_path: Path) -> None:
     "path",
     [
         "/skills",
-        "/opt/benchflow/skill-eval",
+        "/opt/runtime/skill-eval",
         "/a/b_c.d-1",
     ],
 )

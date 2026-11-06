@@ -574,13 +574,27 @@ def _validate_prime_rl_loss_normalization(
     loss_normalization = _normalize_loss_normalization(spec.loss_normalization)
     if loss_normalization in {None, _TOKEN_MEAN_LOSS_NORMALIZATION}:
         return
+    # prime-rl 0.5-0.7 need stack packing (one example per row; the shim
+    # refuses their cat default at startup). prime-rl 0.10 has no
+    # pack_function: it packs with cat and records each example's length in
+    # seq_lens, which the shim uses, so the key stays unset there.
     pack_function = _string_or_none(
         _resolve_effective_value(config, effective_overrides, "data.pack_function")
     )
-    if pack_function != "stack":
+    if pack_function not in {None, "stack"}:
         raise ValueError(
             "--loss-normalization sample_mean requires data.pack_function=stack "
-            "so each batch row remains one original training example"
+            "on prime-rl 0.5-0.7 so each batch row remains one original "
+            "training example; on prime-rl 0.10 leave data.pack_function unset"
+        )
+    offload = _string_or_none(
+        _resolve_effective_value(config, effective_overrides, "model.offload")
+    )
+    if offload == "full":
+        raise ValueError(
+            "--loss-normalization sample_mean does not support model.offload=full: "
+            "Prime-RL then scales gradients by the token count before the loss "
+            "is computed"
         )
     model_cp = _resolve_effective_positive_int(
         config, effective_overrides, "model.cp", default=1
@@ -832,6 +846,7 @@ BenchFlow pre-tokenized tensor rows bypass Prime-RL message rendering.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.abc
 import importlib.machinery
 import os
@@ -845,6 +860,21 @@ _LOSS_TARGET = "prime_rl.trainer.sft.train"
 _DATA_TARGET = "prime_rl.trainer.sft.data"
 _TRANSFORMERS_IMPORT_UTILS_TARGET = "transformers.utils.import_utils"
 
+# Sample-mean loss. Prime-RL has no SFT loss hook, so BenchFlow rewrites the
+# loss block of prime_rl/trainer/sft/train.py as it is imported. Each known
+# layout lists the exact upstream text it rewrites ("patches") and the
+# untouched step-loop lines the new arithmetic relies on ("requires"): Prime-RL
+# sums compute_loss's second return value over the step and divides the
+# gradients by that total, so returning a sample count makes the step a
+# per-sample mean. Every anchor must occur exactly once; a train.py that
+# matches no layout is refused. The anchors quote prime-rl's train.py
+# (Copyright the prime-rl authors, Apache License 2.0).
+_SUPPORTED_PRIME_RL = (
+    "prime-rl v0.5.0 to v0.7.0, and v0.10.0 (checked through prime-rl main "
+    "at 14ef9140, 2026-10-27)"
+)
+
+# prime-rl v0.5.0 to v0.7.0: data.pack_function=stack keeps one sample per row.
 _EXPECTED = """\
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
@@ -910,6 +940,252 @@ _REPLACEMENT = """\
 
 _COMMENT_EXPECTED = "        # All-reduce token counts and rescale gradients to get a global token-weighted mean."
 _COMMENT_REPLACEMENT = "        # All-reduce sample counts and rescale gradients to get a global sample-weighted mean."
+
+# These versions default to cat packing, which joins samples in one row with
+# no boundaries, so refuse anything but stack before the model loads.
+_TRAIN_SIGNATURE = "def train(config: SFTConfig):\n"
+_LEGACY_TRAIN_SIGNATURE_GUARD = """\
+def train(config: SFTConfig):
+    if config.data.pack_function != "stack":
+        raise ValueError(
+            "BenchFlow sample-mean loss needs data.pack_function=stack on this "
+            "Prime-RL: cat packing joins samples in one row without boundaries."
+        )
+"""
+
+_LEGACY_STEP_LOOP = (
+    """\
+            with maybe_record_function("forward"):
+                local_loss_sum, local_token_count = compute_loss(micro_batch)
+
+            step_local_token_count += local_token_count
+""",
+    "                scaled_loss = local_loss_sum / grad_accum_steps\n",
+    """\
+        global_step_token_count = step_local_token_count.clone()
+        dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        global_token_count_val = global_step_token_count.item()
+
+        if global_token_count_val > 0:
+            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+""",
+)
+
+# prime-rl v0.10 (prime-rl #3673): the LM head returns the summed loss, and cat
+# packing records each packed sample's length in seq_lens. The rewrite asks the
+# head for per-token logprobs instead (the path #3673 documents for per-token
+# weights) and averages each sample at its seq_lens boundaries.
+_V010_EXPECTED_HEAD = """\
+        token_count = loss_mask.sum(dtype=torch.int64)
+
+        # Labels without a temperature make the LM head return the summed cross-entropy directly.
+        labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)
+
+"""
+_V010_EXPECTED_TAIL = """\
+            out = forward(
+                model,
+                input_ids,
+                position_ids,
+                seq_lens=seq_lens,
+                labels=labels,
+                mm_kwargs=mm_kwargs,
+                mm_token_type_ids=mm_type_ids,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            )
+            loss_sum = out["loss"]
+
+        del out
+        return loss_sum, token_count
+"""
+_V010_REPLACEMENT_HEAD = """\
+        if cp_enabled:
+            raise RuntimeError(
+                "BenchFlow sample-mean loss requires model.cp=1; context parallel "
+                "sequence shards cannot preserve per-sample means."
+            )
+        if gradient_manager is not None:
+            raise RuntimeError(
+                "BenchFlow sample-mean loss does not support model.offload=full: "
+                "Prime-RL scales those gradients by the token count up front."
+            )
+        if input_ids.shape[0] != 1:
+            raise RuntimeError(
+                "BenchFlow sample-mean loss expects one packed row per "
+                f"micro-batch, got {input_ids.shape[0]}."
+            )
+
+        # Given a temperature, the LM head returns per-token logprobs (fused
+        # head) or logits (vanilla head) instead of one summed loss.
+        temperature = torch.ones_like(target_ids, dtype=torch.float32)
+
+"""
+_V010_REPLACEMENT_TAIL = """\
+            out = forward(
+                model,
+                input_ids,
+                position_ids,
+                seq_lens=seq_lens,
+                labels=target_ids,
+                temperature=temperature,
+                mm_kwargs=mm_kwargs,
+                mm_token_type_ids=mm_type_ids,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            )
+            if out.get("logprobs") is not None:
+                token_loss = -out["logprobs"]
+            elif out.get("logits") is not None:
+                logits = out["logits"]
+                B, L, V = logits.shape
+                token_loss = torch.nn.functional.cross_entropy(
+                    logits.view(-1, V), target_ids.view(-1), reduction="none"
+                ).view(B, L)
+                del logits
+            else:
+                raise RuntimeError(
+                    "BenchFlow sample-mean loss got neither logprobs nor logits "
+                    "from the Prime-RL LM head."
+                )
+
+            # seq_lens holds the length of each sample packed into the row. The
+            # row's padding is counted in the last sample and is never trained.
+            sample_lens = seq_lens.tolist()
+            if sum(sample_lens) != token_loss.shape[1]:
+                raise RuntimeError(
+                    f"BenchFlow sample-mean loss: seq_lens sum to {sum(sample_lens)} "
+                    f"tokens, but the packed row has {token_loss.shape[1]}."
+                )
+            row_loss = token_loss[0] * loss_mask[0].to(token_loss.dtype)
+            row_mask = loss_mask[0].to(torch.int64)
+            per_sample_loss_sum = torch.stack(
+                [part.sum() for part in torch.split(row_loss, sample_lens)]
+            )
+            per_sample_token_count = torch.stack(
+                [part.sum() for part in torch.split(row_mask, sample_lens)]
+            )
+            valid_sample_mask = per_sample_token_count > 0
+            if not torch.any(valid_sample_mask):
+                raise RuntimeError(
+                    "BenchFlow sample-mean loss received a batch with no "
+                    "trainable samples."
+                )
+            loss_sum = (
+                per_sample_loss_sum[valid_sample_mask]
+                / per_sample_token_count[valid_sample_mask].to(token_loss.dtype)
+            ).sum()
+            sample_count = valid_sample_mask.sum(dtype=torch.int64)
+
+        del out
+        return loss_sum, sample_count
+"""
+# The one line between the two halves differs between the v0.10.0 release and
+# later main (prime-rl #4237); both are kept verbatim.
+_V010_ACTIVATION_OFFLOADING = (
+    ("v0.10.0", "        with maybe_activation_offloading(config.model.ac_offloading):\n"),
+    (
+        "v0.10 main after #4237",
+        "        with maybe_activation_offloading(config.model.ac_offloading, model):\n",
+    ),
+)
+_V010_STEP_LOOP = (
+    """\
+            with maybe_record_function("forward"):
+                local_loss_sum, batch_token_count = compute_loss(micro_batch)
+
+            if gradient_manager is None:
+                step_local_token_count += batch_token_count
+""",
+    "                scaled_loss = local_loss_sum / grad_accum_steps\n",
+    """\
+        if gradient_manager is None:
+            global_step_token_count = step_local_token_count.clone()
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item()
+            if global_token_count_val > 0:
+                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                scale_gradients_(None, model, grad_scale)
+""",
+)
+
+_SAMPLE_MEAN_LAYOUTS = (
+    {
+        "name": "prime-rl v0.5.0 to v0.7.0",
+        "patches": (
+            (_EXPECTED, _REPLACEMENT),
+            (_TRAIN_SIGNATURE, _LEGACY_TRAIN_SIGNATURE_GUARD),
+        ),
+        "cosmetic": ((_COMMENT_EXPECTED, _COMMENT_REPLACEMENT),),
+        "requires": _LEGACY_STEP_LOOP,
+    },
+    *(
+        {
+            "name": f"prime-rl {label}",
+            "patches": (
+                (
+                    _V010_EXPECTED_HEAD + offloading + _V010_EXPECTED_TAIL,
+                    _V010_REPLACEMENT_HEAD + offloading + _V010_REPLACEMENT_TAIL,
+                ),
+            ),
+            "cosmetic": (),
+            "requires": _V010_STEP_LOOP,
+        }
+        for label, offloading in _V010_ACTIVATION_OFFLOADING
+    ),
+)
+
+
+def _first_difference(source, anchor):
+    """Return the first line of ``anchor`` at which ``source`` stops matching."""
+    matched = ""
+    for line in anchor.splitlines(keepends=True):
+        if matched + line not in source:
+            return line.strip() or "a blank line"
+        matched += line
+    return anchor.strip().splitlines()[0]
+
+
+def _layout_problems(source, layout):
+    problems = []
+    anchors = (*(old for old, _ in layout["patches"]), *layout["requires"])
+    for anchor in anchors:
+        count = source.count(anchor)
+        if count == 0:
+            problems.append(f"differs at {_first_difference(source, anchor)!r}")
+        elif count > 1:
+            first_line = anchor.strip().splitlines()[0]
+            problems.append(f"{first_line!r} occurs {count} times")
+    return problems
+
+
+def _patch_sample_mean_loss(source, origin, version):
+    """Rewrite a known train.py for a per-sample mean loss, or refuse it."""
+    nearest = None
+    for layout in _SAMPLE_MEAN_LAYOUTS:
+        problems = _layout_problems(source, layout)
+        if not problems:
+            patched = source
+            for old, new in (*layout["patches"], *layout["cosmetic"]):
+                patched = patched.replace(old, new, 1)
+            return patched, layout["name"]
+        if nearest is None or len(problems) < len(nearest[1]):
+            nearest = (layout["name"], problems)
+    raise RuntimeError(
+        f"BenchFlow Prime-RL sample-mean loss shim: {origin} (prime-rl "
+        f"{version}) matches no layout BenchFlow has verified, so it refuses "
+        "to train with an unverified loss. Supported: "
+        f"{_SUPPORTED_PRIME_RL}. Nearest: {nearest[0]}, which "
+        f"{'; '.join(nearest[1])}. Use --loss-normalization token_mean, or "
+        "install a supported prime-rl."
+    )
+
+
+def _installed_prime_rl_version():
+    try:
+        from importlib.metadata import version
+
+        return version("prime-rl")
+    except Exception:
+        return "version unknown"
 
 
 def _stubbed_flash_attn(*args, **kwargs):
@@ -987,15 +1263,18 @@ class _BenchFlowSampleMeanLoader(importlib.machinery.SourceFileLoader):
 
     def source_to_code(self, data, path, *, _optimize=-1):
         source = data.decode("utf-8") if isinstance(data, bytes) else data
-        if _EXPECTED not in source:
-            raise RuntimeError(
-                "BenchFlow Prime-RL sample-mean shim could not find the expected "
-                f"loss block in {path}. Refusing to run against an unknown "
-                "Prime-RL train loop."
-            )
-        patched = source.replace(_EXPECTED, _REPLACEMENT, 1)
-        patched = patched.replace(_COMMENT_EXPECTED, _COMMENT_REPLACEMENT, 1)
+        version = _installed_prime_rl_version()
+        patched, self.benchflow_layout = _patch_sample_mean_loss(source, path, version)
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+        sys.stderr.write(
+            f"BenchFlow Prime-RL sample-mean loss shim patched {path} as "
+            f"{self.benchflow_layout} (prime-rl {version}, train.py sha256 {digest})\n"
+        )
         return super().source_to_code(patched, path, _optimize=_optimize)
+
+    def exec_module(self, module):
+        super().exec_module(module)
+        module.__benchflow_sample_mean_layout__ = self.benchflow_layout
 
 
 class _BenchFlowSampleMeanFinder(importlib.abc.MetaPathFinder):
@@ -1118,7 +1397,7 @@ class _BenchFlowPretokenizedDataLoader(importlib.machinery.SourceFileLoader):
             )
 
         module.setup_dataloader = benchflow_setup_dataloader
-        sys.stderr.write("BenchFlow Prime-RL pretokenized SFT data shim enabled\\n")
+        sys.stderr.write("BenchFlow Prime-RL pretokenized SFT data shim enabled\n")
 
 
 class _BenchFlowPretokenizedDataFinder(importlib.abc.MetaPathFinder):
@@ -1141,13 +1420,13 @@ class _BenchFlowPretokenizedDataFinder(importlib.abc.MetaPathFinder):
 
 if os.environ.get(_LOSS_ENV) == "1":
     sys.meta_path.insert(0, _BenchFlowSampleMeanFinder())
-    sys.stderr.write("BenchFlow Prime-RL sample-mean loss shim enabled\\n")
+    sys.stderr.write("BenchFlow Prime-RL sample-mean loss shim enabled\n")
 if os.environ.get(_DATA_ENV) == "1":
     sys.meta_path.insert(0, _BenchFlowPretokenizedDataFinder())
 if os.environ.get(_FLASH_ATTN_ENV) == "1":
     _install_flash_attn_stub()
     sys.meta_path.insert(0, _BenchFlowTransformersFlashAttnMapFinder())
-    sys.stderr.write("BenchFlow Prime-RL flash-attn import stub enabled for SDPA\\n")
+    sys.stderr.write("BenchFlow Prime-RL flash-attn import stub enabled for SDPA\n")
 '''
 
 
@@ -1170,11 +1449,17 @@ def _write_prime_rl_sft_compat_shim(
         env[_SAMPLE_MEAN_SHIM_ENV] = "1"
         guards.extend(
             [
-                "Prime-RL train.py loss block must match the known token-mean source",
-                "data.pack_function=stack",
+                "Prime-RL sft/train.py must match a verified layout (prime-rl "
+                "v0.5.0 to v0.7.0, or v0.10.0 through main at 14ef9140); any "
+                "other train.py is refused at import",
+                "prime-rl v0.5.0 to v0.7.0: data.pack_function=stack, so each "
+                "row is one example",
+                "prime-rl v0.10: each packed row is split into its examples at "
+                "seq_lens",
                 "model.cp=1",
-                "loss_impl=torch or loss_impl=liger",
-                "every effective batch must contain at least one trainable row",
+                "loss_impl=torch or loss_impl=liger (prime-rl v0.5.0 to v0.7.0)",
+                "model.offload is not full (prime-rl v0.10)",
+                "every effective batch must contain at least one trainable example",
             ]
         )
     if pretokenized_data:

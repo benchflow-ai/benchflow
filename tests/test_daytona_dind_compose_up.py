@@ -203,11 +203,11 @@ async def test_pre_compose_hook_runs_inside_uploaded_environment():
     assert captured == [
         {
             "command": (
-                "if [ -f /benchflow/task/environment/benchflow-pre-compose.sh ]; then "
-                "chmod +x /benchflow/task/environment/benchflow-pre-compose.sh && "
-                "/benchflow/task/environment/benchflow-pre-compose.sh; fi"
+                "if [ -f /runtime/task/environment/benchflow-pre-compose.sh ]; then "
+                "chmod +x /runtime/task/environment/benchflow-pre-compose.sh && "
+                "/runtime/task/environment/benchflow-pre-compose.sh; fi"
             ),
-            "cwd": "/benchflow/task/environment",
+            "cwd": "/runtime/task/environment",
             "env": {"MAIN_IMAGE_NAME": "bf_task"},
             "timeout_sec": 3600,
         }

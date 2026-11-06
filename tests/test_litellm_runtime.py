@@ -73,13 +73,13 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
     assert updated["OPENAI_BASE_URL"] == "http://host.docker.internal:32123/v1"
     assert updated["OPENAI_API_KEY"] == provider_runtime.master_key
     assert updated[LITELLM_MODEL_ALIAS_ENV] == (
-        "benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"
+        "runtime-aws-bedrock-us.anthropic.claude-opus-4-8"
     )
     # Codex is handed the bare slug, not the proxy alias: it resolves model
     # metadata by slug and falls back to a reduced tool surface otherwise
     # (#1145). The proxy serves both names.
     assert '"model":"us.anthropic.claude-opus-4-8"' in updated["CODEX_CONFIG"]
-    assert "benchflow-aws-bedrock" not in json.loads(updated["CODEX_CONFIG"])["model"]
+    assert "runtime-aws-bedrock" not in json.loads(updated["CODEX_CONFIG"])["model"]
     auth_request = json.loads(updated[CODEX_DEFAULT_AUTH_REQUEST_ENV])
     assert auth_request == {
         "methodId": "gateway",
@@ -139,8 +139,8 @@ async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypat
     )
 
     assert updated["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
-    assert updated["ANTHROPIC_AUTH_TOKEN"].startswith("sk-benchflow-")
-    assert updated["ANTHROPIC_MODEL"] == "benchflow-claude-sonnet-4-6"
+    assert updated["ANTHROPIC_AUTH_TOKEN"].startswith("sk-runtime-")
+    assert updated["ANTHROPIC_MODEL"] == "runtime-claude-sonnet-4-6"
     assert "CLAUDE_CODE_USE_BEDROCK" not in updated
 
 
@@ -172,7 +172,7 @@ async def test_daytona_uses_sandbox_local_litellm(monkeypatch):
     assert provider_runtime is not None
     assert provider_runtime.base_url == "http://127.0.0.1:45678"
     assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
-    assert updated["LLM_MODEL"].startswith("openai/benchflow-aws-bedrock")
+    assert updated["LLM_MODEL"].startswith("openai/runtime-aws-bedrock")
 
 
 @pytest.mark.asyncio
@@ -238,10 +238,8 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
     assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
     assert updated["LLM_BASE_URL"] == "http://172.17.0.1:45678/v1"
     assert updated["LLM_API_KEY"] == provider_runtime.master_key
-    assert updated["LLM_MODEL"] == "openai/benchflow-deepseek-deepseek-v4-flash"
-    assert updated["BENCHFLOW_PROVIDER_MODEL"] == (
-        "benchflow-deepseek-deepseek-v4-flash"
-    )
+    assert updated["LLM_MODEL"] == "openai/runtime-deepseek-deepseek-v4-flash"
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == ("runtime-deepseek-deepseek-v4-flash")
 
 
 @pytest.mark.asyncio
@@ -283,14 +281,14 @@ async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
     )
 
     assert provider_runtime is not None
-    assert updated["BENCHFLOW_PROVIDER_MODEL"] == "benchflow-vllm-Qwen-Qwen3-4B"
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == "runtime-vllm-Qwen-Qwen3-4B"
     models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
     assert models == [
         provider_models[0],
         {
             **provider_models[0],
-            "id": "benchflow-vllm-Qwen-Qwen3-4B",
-            "name": "benchflow-vllm-Qwen-Qwen3-4B",
+            "id": "runtime-vllm-Qwen-Qwen3-4B",
+            "name": "runtime-vllm-Qwen-Qwen3-4B",
         },
     ]
 
@@ -366,6 +364,8 @@ async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch):
         "model": "openai/glm-5.3",
         "api_base": "https://api.z.ai/api/coding/paas/v4",
         "api_key": "os.environ/ZAI_API_KEY",
+        # An OpenAI-compatible route passes the agent's effort on (#55).
+        "allowed_openai_params": ["reasoning_effort"],
     }
     assert starts[0]["agent_env"]["ZAI_API_KEY"] == "native-key"
     assert starts[0]["route"].litellm_params == expected_params
@@ -957,3 +957,71 @@ def test_unknown_proxy_metadata_keeps_existing_behavior(monkeypatch, outcome):
     monkeypatch.setattr(litellm, "get_model_info", Mock(side_effect=[outcome]))
     route = runtime_mod.resolve_litellm_route("openai/custom-model", {})
     assert runtime_mod._provider_models_for_proxy_alias(raw=None, route=route) is None
+
+
+@pytest.fixture
+def own_route_agent(monkeypatch):
+    """A custom agent that routes its own model calls (model_route = "agent")."""
+    from benchflow.agents.registry import AGENTS, AgentConfig
+
+    name = "en191-own-route"
+    monkeypatch.setitem(
+        AGENTS,
+        name,
+        AgentConfig(
+            name=name,
+            install_cmd="true",
+            launch_cmd=f"{name} --acp",
+            model_route="agent",
+        ),
+    )
+    return name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["docker", "daytona"])
+@pytest.mark.parametrize("label", [None, "openai/gpt-4.1-mini"])
+async def test_own_model_route_starts_no_litellm(
+    monkeypatch, own_route_agent, environment, label
+):
+    """An agent with model_route = "agent" gets no proxy on the
+    host or in the sandbox, with or without a model label, and its env is
+    handed back untouched (no proxy key, no rewritten endpoint)."""
+
+    async def fail_start(**_kwargs):
+        raise AssertionError("LiteLLM must not start for model_route = 'agent'")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fail_start)
+    env = {"OPENAI_API_KEY": "sk-openai", "EN191_ENDPOINT_KEY": "own-key"}
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent=own_route_agent,
+        agent_env=dict(env),
+        model=label,
+        runtime=None,
+        environment=environment,
+        sandbox=SimpleNamespace(),
+    )
+
+    assert updated == env
+    assert provider_runtime is None
+    assert runtime_mod.needs_litellm_runtime(own_route_agent, label) is False
+    assert runtime_mod.needs_litellm_runtime("openhands", "openai/gpt-4.1-mini")
+
+
+def test_own_model_route_has_no_proxy_install_record(monkeypatch, own_route_agent):
+    """config.json gets no litellm_proxy block for an agent that
+    routes its own model calls, and the proxy's extras are not checked: the
+    same conflicting extra refuses a proxied agent."""
+    from benchflow.providers.proxy_requirements import ProxyExtraRequirementError
+
+    monkeypatch.setenv("BENCHFLOW_LITELLM_EXTRA_REQUIREMENTS", "litellm==1.80.0")
+    kwargs = {
+        "model": "anthropic/claude-haiku-4-5",
+        "agent_env": {"ANTHROPIC_API_KEY": "k"},
+        "environment": "daytona",
+    }
+    with pytest.raises(ProxyExtraRequirementError):
+        runtime_mod.proxy_install_record(agent="openhands", **kwargs)
+    assert runtime_mod.proxy_install_record(agent=own_route_agent, **kwargs) is None

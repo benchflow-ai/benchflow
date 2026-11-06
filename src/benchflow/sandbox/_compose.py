@@ -31,9 +31,9 @@ COMPOSE_KEPT_FREEZER_PATH = COMPOSE_DIR / "docker-compose-kept-freezer.yaml"
 COMPOSE_NO_NEW_PRIVILEGES_PATH = COMPOSE_DIR / "docker-compose-no-new-privileges.yaml"
 
 # Keep DinD's upload and preflight in the same VM coordinate space.
-DIND_TASK_DIR = "/benchflow/task"
+DIND_TASK_DIR = "/runtime/task"
 DIND_ENVIRONMENT_DIR = f"{DIND_TASK_DIR}/environment"
-DIND_LOGS_DIR = "/benchflow/logs"
+DIND_LOGS_DIR = "/runtime/logs"
 
 # Back-off delays for retrying a `compose up` that hit a daemon-side network
 # create/attach race. Shared by the host docker.py path and the Daytona DinD

@@ -110,7 +110,7 @@ PROBE = dedent("""\
         pass
     # A non-root client must not obtain the dynamic certificate signing key.
     try:
-        with open('/opt/benchflow-egress/ca.key', 'rb') as secret:
+        with open('/opt/runtime-egress/ca.key', 'rb') as secret:
             secret.read()
     except PermissionError:
         pass

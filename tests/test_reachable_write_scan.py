@@ -484,9 +484,10 @@ def outside(rollout_dir):
 def test_archive_extractors_share_component_preflight():
     """Guards R7-1 at a2052fa6: all three extraction paths use one inventory validator."""
     expected = {
-        ("review/evidence.py", "_extract_archive"),
+        ("review/evidence.py", "_admit_members"),
         ("taskmd/verify.py", "unpack_kept"),
         ("sandbox/_bounded_tar.py", "extract_download"),
+        ("hub/datasets.py", "unpack_task"),
     }
     found = set()
     for module in _load().values():
@@ -513,7 +514,11 @@ def test_backend_downloads_and_exports_use_shared_boundary():
         "sandbox/apple_container.py": {"download_file", "download_dir"},
         "sandbox/modal_impl.py": {"download_file", "download_dir"},
         "sandbox/agentcore.py": {"download_file", "download_dir"},
-        "sandbox/daytona.py": {"_sdk_download_file", "_sdk_download_dir"},
+        "sandbox/daytona.py": {
+            "_sdk_download_file",
+            "_sdk_download_dir",
+            "_sdk_download_files",
+        },
     }
     for rel, methods in backend_methods.items():
         tree = ast.parse((SRC / rel).read_text())

@@ -1,0 +1,4 @@
+{"id": "repair-cafe-critique", "version": "2026-11-04.1", "criteria": [
+  {"id": "layout", "scale": [1, 5], "description": "On a phone, can you find what, when and where at a glance?"},
+  {"id": "copy", "scale": [1, 5], "description": "Does it say plainly what happens, what to bring, when and where?"}
+]}

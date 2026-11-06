@@ -115,7 +115,7 @@ def _shell_path_match(path: str, pattern: str) -> str:
 
 def service_log_path(service_name: str) -> str:
     """In-sandbox path collecting a started service's stdout+stderr."""
-    return f"/tmp/benchflow-env-{service_name}.log"
+    return f"/tmp/runtime-env-{service_name}.log"
 
 
 def service_start_command(svc: ServiceSpec) -> str:
@@ -356,7 +356,7 @@ class ManifestEnvironment:
         spec = self._manifest.state
         assert spec is not None  # caller checks
         snap_id = uuid4().hex[:12]
-        snap_dir = f"/tmp/benchflow-snapshots/{snap_id}"
+        snap_dir = f"/tmp/runtime-snapshots/{snap_id}"
         cmds = [f"mkdir -p {shlex.quote(snap_dir)}"]
         paths: list[str] = []
         for pattern in spec.paths:

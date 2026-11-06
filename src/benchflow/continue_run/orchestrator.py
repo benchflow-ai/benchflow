@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # of a real provider. The model name is irrelevant (the proxy serves by index),
 # but litellm needs an ``openai/`` prefix to treat LLM_BASE_URL as an
 # OpenAI-compatible endpoint.
-_REPLAY_API_KEY = "sk-benchflow-replay"
+_REPLAY_API_KEY = "sk-runtime-replay"
 _REPLAY_MODEL = "openai/replay"
 # Providers whose replay and model proxies must run inside the sandbox. This is
 # the same placement contract used by the normal LiteLLM runtime.
@@ -279,6 +279,7 @@ def build_rollout_config(
         usage_tracking="off",
         timeout=timeout,
         agent_idle_timeout=run.agent_idle_timeout_sec,
+        agent_idle_timeout_given=True,  # the limit the recorded run had
         jobs_dir=str(output_dir),
         rollout_name=rollout_name,
         source_provenance={
@@ -636,7 +637,7 @@ async def continue_run(
     """Resume ``folder`` to completion via record-replay + live continuation.
 
     ``model`` overrides the live-continuation model (tests pass
-    ``gemini-3.1-flash-lite-preview``); defaults to the original run's model.
+    ``gemini-3.5-flash-lite``); defaults to the original run's model.
     ``replay_only`` skips the live leg (rebuild-and-stop) — useful for testing
     the replay without provider credentials.
     """

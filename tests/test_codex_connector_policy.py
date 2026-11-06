@@ -357,10 +357,10 @@ asyncio.run(main())
 
 
 def test_policy_doc_names_the_registry_pin():
-    """Guards the codex-acp 1.13.1 bump (#1145, #1146): the operator
-    doc states the pinned adapter and its declared native range; a bump that
-    leaves it naming the old pin misstates what admission accepts."""
-    doc = (Path(__file__).parents[1] / "docs" / "agents" / "codex-apps.md").read_text()
+    """Guards the codex-acp 1.13.1 bump (#1145, #1146): the docs state the
+    pinned adapter; a bump that leaves them naming the old pin misstates what
+    admission accepts. Docs v2 names it on the agents page, which
+    took over docs/agents/codex-apps.md, without the declared native range."""
+    doc = (Path(__file__).parents[1] / "docs" / "evaluate" / "agents.md").read_text()
     _, version = registry.pinned_npm_package("codex-acp")
-    assert f"currently {version})" in doc
-    assert f"(`{PINNED_DECLARED}` for {version}" in doc
+    assert f"`codex-acp` {version}" in doc

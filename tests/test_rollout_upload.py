@@ -397,7 +397,7 @@ def _published(env: FakeUploadEnv) -> dict[str, str]:
     """What publishing staged for /logs/agent, by file name."""
     staged = {}
     for content, target in env.uploaded_file_contents:
-        assert target.startswith("/logs/.benchflow-publish-"), target
+        assert target.startswith("/logs/.runtime-publish-"), target
         staged[target.rsplit("/", 1)[1]] = content
     return staged
 
@@ -773,6 +773,38 @@ def test_persist_sandbox_info_writes_sandbox_json(tmp_path: Path) -> None:
     assert info["sandbox_id"] == "sb-abc123"
     assert info["provider"] == "FakeDaytonaSandbox"
     assert "created_at" in info
+
+
+def test_persist_sandbox_info_names_each_sandbox_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Daytona rewrites sandbox.json after creation (install
+    layers), and each rewrite logged "Sandbox <id> (DaytonaSandbox)" again,
+    three lines per trial that a first-run reader took for three creates.
+    A new id, as after a retried create, is still named."""
+
+    class FakeDaytonaSandbox:
+        sandbox_id = "sb-first"
+
+    sandbox = FakeDaytonaSandbox()
+    with caplog.at_level("INFO", logger="benchflow.sandbox.metadata"):
+        persist_sandbox_info(sandbox, tmp_path)
+        persist_sandbox_info(sandbox, tmp_path)
+        persist_sandbox_info(sandbox, tmp_path)
+        sandbox.sandbox_id = "sb-retried"
+        persist_sandbox_info(sandbox, tmp_path)
+
+    named = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("Sandbox ")
+    ]
+    assert named == [
+        "Sandbox sb-first (FakeDaytonaSandbox)",
+        "Sandbox sb-retried (FakeDaytonaSandbox)",
+    ]
+    assert (
+        json.loads((tmp_path / "sandbox.json").read_text())["sandbox_id"]
+        == "sb-retried"
+    )
 
 
 def test_persist_sandbox_info_skips_when_no_sandbox_id(tmp_path: Path) -> None:

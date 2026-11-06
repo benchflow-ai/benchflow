@@ -251,6 +251,60 @@ _ITERATION_RECORD_KEYS = (
 )
 
 
+_ROUND_OUTPUT_MAX_BYTES = 1024 * 1024
+
+
+def _soft_check_stdout(rollout: Rollout) -> str | None:
+    """The last MB of test.sh's output from the soft check that just ran
+    (``verifier/test-stdout.txt``, which the next check overwrites).
+
+    Code the tests ran could have left a link or a FIFO there: only a regular
+    file is read, through the trial folder's capability, as the verifier's
+    own scan reads it (rollout/_setup.py)."""
+    import stat
+
+    from benchflow._utils.reachable_write import destination
+
+    path = getattr(getattr(rollout, "_rollout_paths", None), "test_stdout_path", None)
+    if path is None or rollout._rollout_dir is None:
+        return None
+    try:
+        # The trial folder is BenchFlow's own; below it nothing is followed.
+        with destination(path, root=rollout._rollout_dir).open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                return None
+            stream.seek(max(0, opened.st_size - _ROUND_OUTPUT_MAX_BYTES))
+            data = stream.read(_ROUND_OUTPUT_MAX_BYTES)
+    except (OSError, ValueError):
+        return None
+    return data.decode("utf-8", errors="replace") or None
+
+
+def _keep_round_output(
+    rollout: Rollout, round_num: int, output: str | None, error: str | None
+) -> str | None:
+    """Write a round's soft-check output beside the trial and return its path
+    relative to the trial folder: test.sh's output (or, without it, the
+    verifier's logs) and any error. The next check overwrites them, and the
+    round log keeps only the reward."""
+    if rollout._rollout_dir is None:
+        return None
+    stdout = _soft_check_stdout(rollout)
+    text = "\n".join(part.rstrip("\n") for part in (error, stdout or output) if part)
+    if not text:
+        return None
+    relative = Path("rounds") / f"round-{round_num}-check.txt"
+    try:
+        path = rollout._rollout_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n")
+    except OSError as exc:
+        logger.warning(f"Could not keep round {round_num}'s check output: {exc}")
+        return None
+    return relative.as_posix()
+
+
 def _persist_round_logs(
     rollout: Rollout, rounds_log: list[dict], *, loop_active: bool
 ) -> None:
@@ -267,7 +321,11 @@ def _persist_round_logs(
     with log_path.open("w") as f:
         for entry in rounds_log:
             f.write(json.dumps(entry) + "\n")
-    logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
+    # A multi-step task's steps.json says the same per step (task/steps.py).
+    steps_user = getattr(rollout, "_active_steps_user", None)
+    (logger.debug if callable(steps_user) and steps_user() else logger.info)(
+        f"[User] {len(rounds_log)} rounds → {log_path}"
+    )
     if not loop_active:
         return
     loop_dir = rollout._rollout_dir / "loop"
@@ -376,11 +434,22 @@ async def _run_user_loop(rollout: Rollout) -> None:
             handoff_from: str | None = None,
         ) -> RoundResult:
             round_started = time.monotonic()
+            # A multi-step task's round is one of its steps: that step's
+            # tests score it, under its own agent timeout (task/steps.py).
+            task_for_round = getattr(user, "task_for_round", None)
+            step_view = task_for_round(round_num) if callable(task_for_round) else None
+            shown = f"{prompt[:80]!r}..." if len(prompt) > 80 else repr(prompt)
+            step_label = getattr(step_view, "step_label", None)
             logger.info(
-                f"[User] round {round_num}: prompt={prompt[:80]!r}..."
-                if len(prompt) > 80
-                else f"[User] round {round_num}: prompt={prompt!r}"
+                f"{step_label[0].upper()}{step_label[1:]}: prompt={shown}"
+                if step_label
+                else f"[User] round {round_num}: prompt={shown}"
             )
+            saved_timeout = rollout._timeout
+            if step_view is not None:
+                rollout._verify_task = step_view
+                if step_view.config.agent.timeout_sec:
+                    rollout._timeout = int(step_view.config.agent.timeout_sec)
 
             # Fresh ACP session each round — agent starts clean but sees
             # its previous workspace changes in the shared sandbox.
@@ -389,6 +458,7 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 await rollout.connect_as(role)
                 await rollout.execute(prompts=[prompt])
             finally:
+                rollout._timeout = saved_timeout
                 await rollout.disconnect()
 
             round_trajectory = rollout._trajectory[traj_before:]
@@ -402,6 +472,9 @@ async def _run_user_loop(rollout: Rollout) -> None:
             # next round. Verifiers never read the solution, so nothing is
             # restored for them while the agent's processes are alive.
             rewards, verifier_output, verifier_error = await rollout.soft_verify()
+            check_output = _keep_round_output(
+                rollout, round_num, verifier_output, verifier_error
+            )
 
             handoff_from_role = (
                 handoff_from if handoff_from and handoff_from != role.name else None
@@ -421,6 +494,7 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 "prompt": prompt,
                 "rewards": rewards,
                 "verifier_error": verifier_error,
+                "check_output": check_output,
                 "n_tool_calls": round_tools,
                 "n_trajectory_events": len(round_trajectory),
                 "wall_sec": round(time.monotonic() - round_started, 1),
@@ -486,7 +560,8 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 handoff_to=handoff_to_role,
             )
 
-            logger.info(
+            # A step's line comes from StepsUser.record, with its reward.
+            (logger.debug if step_label else logger.info)(
                 f"[User] round {round_num} done: rewards={rewards}, tools={round_tools}"
             )
             return result
@@ -540,7 +615,11 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 break
 
             if prompt is None:
-                logger.info(f"[User] stopped at round {round_num}")
+                (
+                    logger.debug
+                    if getattr(user, "task_for_round", None)
+                    else logger.info
+                )(f"[User] stopped at round {round_num}")
                 break
 
             round_result = await run_round(

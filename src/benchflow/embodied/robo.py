@@ -42,14 +42,32 @@ def _socket_path() -> str | None:
     return None
 
 
+# Where the simulator leaves the episode's oracle token: a root-only file on a volume `main` mounts read-only. The
+# reference solution runs as root and reads it; an agent runs as the unprivileged sandbox user and cannot.
+ORACLE_TOKEN_FILE = "/run/runtime-oracle/token"
+
+
+def oracle_token() -> str | None:
+    """The token that unlocks privileged state: the environment's (an operator's choice), else the simulator's
+    file when this process may read it (the reference solution), else None (an agent)."""
+    token = os.environ.get("ROBO_ORACLE_TOKEN") or os.environ.get(
+        "ROBOUSE_ORACLE_TOKEN"
+    )
+    if token:
+        return token
+    try:
+        with open(os.environ.get("ROBO_ORACLE_TOKEN_FILE") or ORACLE_TOKEN_FILE) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 def _send(req: dict) -> dict:
     path = _socket_path()
     if not path:
         return {"ok": False, "error": "no episode: ROBO_SOCKET is not set"}
-    token = os.environ.get("ROBO_ORACLE_TOKEN") or os.environ.get(
-        "ROBOUSE_ORACLE_TOKEN"
-    )
-    if token:  # set only for the reference solution
+    token = oracle_token()
+    if token:  # only the reference solution has one
         req = {**req, "token": token}
     role = os.environ.get("ROBO_ROLE")
     if role and "role" not in req:

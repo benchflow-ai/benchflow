@@ -165,6 +165,9 @@ def build_chat_model(model_id: str, env: Mapping[str, str] | None = None):
     max_tokens = _int_env(env, "BENCHFLOW_MODEL_MAX_TOKENS")
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    seed = _int_env(env, "BENCHFLOW_MODEL_SEED")
+    if seed is not None:
+        kwargs["seed"] = seed
 
     return ChatOpenAI(**kwargs)
 

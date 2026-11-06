@@ -305,7 +305,7 @@ def test_a_sandbox_daytona_stopped_with_a_lapsed_lease_is_reaped(monkeypatch, st
 def _cleanup(monkeypatch, server, **kwargs) -> None:
     from benchflow.cli import main as cli_main
 
-    monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda: server)
+    monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda **_: server)
     monkeypatch.setattr(cli_main, "_cleanup_daytona_snapshots", lambda *a, **k: None)
     cli_main._cleanup_daytona_sandboxes(dry_run=False, max_age_minutes=0, **kwargs)
 

@@ -339,6 +339,10 @@ class TransportClosedDiagnostic(Diagnostic):
     sandbox_probe_error: str | None = None
     sandbox_probe_error_type: str | None = None
     sandbox_probe_traceback: str | None = None
+    # The kills the sandbox cgroup's OOM killer counted (memory.events
+    # oom_kill), read by the same probe; None when it could not say. An exit
+    # is named a memory kill only with this evidence.
+    oom_kills: int | None = None
 
     field: ClassVar[str] = "transport_error_info"
     category: ClassVar[str | None] = "pipe_closed"
@@ -347,6 +351,7 @@ class TransportClosedDiagnostic(Diagnostic):
         ("process_exit_code", "integer"),
         ("sandbox_reachable", "bool"),
         ("sandbox_probe_rc", "integer"),
+        ("oom_kills", "nonnegative_integer"),
     )
 
     def format_issue(self, task_name: str) -> str:
@@ -376,6 +381,7 @@ class TransportClosedDiagnostic(Diagnostic):
                 "sandbox_probe_error",
                 "sandbox_probe_error_type",
                 "sandbox_probe_traceback",
+                "oom_kills",
             }:
                 continue
             if k == "raw_message" and not v:
@@ -413,12 +419,23 @@ class VerifierTimeoutDiagnostic(Diagnostic):
     the timeout is the submission's); False, unscored (``verifier_error``
     names why: the command never started, or the sandbox did not answer
     whether its tests had ended). Records from before ``scored`` read False.
+
+    A scored timeout kills the tests' process tree and keeps what they wrote
+    in ``verifier/``, with each reward file renamed ``timeout-<name>``:
+    ``processes_killed`` counts the processes killed (None when the sandbox
+    did not say), ``partial_output_files`` and ``partial_output_bytes`` the
+    regular files in ``verifier/`` afterwards, and ``partial_output_error``
+    says why keeping them failed. All four stay None on an unscored timeout.
     """
 
     timeout_budget_sec: float = 0.0
     elapsed_sec: float = 0.0
     task_name: str = ""
     scored: bool = False
+    processes_killed: int | None = None
+    partial_output_files: int | None = None
+    partial_output_bytes: int | None = None
+    partial_output_error: str | None = None
 
     field: ClassVar[str] = "verifier_timeout_info"
     category: ClassVar[str | None] = "verifier_timeout"
@@ -493,8 +510,10 @@ class RewardOutOfRangeDiagnostic(Diagnostic):
 class ProviderApiErrorDiagnostic(Diagnostic):
     """Every captured provider API request failed — no model response ever
     reached the agent (rate limit, auth rejection, quota, model-not-found,
-    5xx). Proxy-proven: built from the usage proxy's captured exchange status
-    codes only (#546/#564 — bodies/headers are never read)."""
+    5xx) — or the agent's turn ended on a call that failed with 429 or a 5xx
+    (its model never answered that call). Proxy-proven: built from the usage
+    proxy's captured exchange status codes only (#546/#564 — bodies/headers
+    are never read)."""
 
     subcategory: str = "provider_error"
     transient: bool = False
@@ -503,6 +522,9 @@ class ProviderApiErrorDiagnostic(Diagnostic):
     total_requests: int = 0
     failed_requests: int = 0
     fingerprint: str = ""
+    # What the verifier gave a trial whose agent's last call failed: the
+    # model never answered it, so that reward is not the model's score.
+    reward_withheld: dict[str, Any] | None = None
 
     field: ClassVar[str] = "api_error_info"
     category: ClassVar[str | None] = "api_error"
@@ -606,6 +628,10 @@ class AgentModelNotOfferedError(RuntimeError):
     that is not retried; the message names the offered models.
     """
 
+    cause = "agent_model"
+    #: What says so: the session's own list of the models it offers.
+    evidence_source = "session/new availableModels"
+
     def __init__(self, agent: str, model: str, offered: list[str]) -> None:
         self.agent = agent
         self.model = model
@@ -614,6 +640,31 @@ class AgentModelNotOfferedError(RuntimeError):
             f"agent integration failure [agent_model]: {agent} does not offer "
             f"model {model!r} for this login; it offers: {', '.join(offered)}"
         )
+
+
+class AgentEffortNotOfferedError(AgentModelNotOfferedError):
+    """The agent's session offers the model, but not at the requested effort.
+
+    codex-acp lists one ``model[effort]`` id per effort a model takes, and its
+    ``session/set_model`` refuses any other effort. BenchFlow used to pick the
+    model's ``medium`` variant instead, so a run asked for ``xhigh`` ran at
+    ``medium``. Raised before the prompt: an unscored ``agent_effort``
+    integration failure, not retried; ``offered`` holds the efforts.
+    """
+
+    cause = "agent_effort"
+
+    def __init__(self, agent: str, model: str, effort: str, offered: list[str]) -> None:
+        RuntimeError.__init__(
+            self,
+            f"agent integration failure [agent_effort]: {agent} does not offer "
+            f"reasoning effort {effort!r} for model {model!r}; it offers: "
+            f"{', '.join(offered) or 'no effort'}",
+        )
+        self.agent = agent
+        self.model = model
+        self.effort = effort
+        self.offered = tuple(offered)
 
 
 @dataclass

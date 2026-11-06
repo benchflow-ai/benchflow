@@ -538,6 +538,29 @@ def test_quiet_root_logging_replays_warnings_not_info(monkeypatch):
     assert "per-task chatter" not in blob
 
 
+def test_the_run_card_prints_above_the_dashboard_at_once(monkeypatch):
+    """On a terminal the live dashboard dropped every INFO
+    line, so the run card reached only run-card.json and a non-strict
+    reference's differences came after the job. Marked lines print at once."""
+    import benchflow.cli._live_progress as lp
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        lp.console, "print", lambda msg, *a, **k: printed.append(str(msg))
+    )
+    log = logging.getLogger("benchflow.test.card")
+    monkeypatch.setattr(log, "level", logging.INFO)
+    show = {lp.SHOW_LIVE: True}
+    with quiet_root_logging():
+        log.info("Run card (jobs/j/run-card.json):", extra=show)
+        assert printed == ["Run card (jobs/j/run-card.json):"]
+        log.warning("The run differs from its reference setup:", extra=show)
+        assert len(printed) == 2 and "reference setup" in printed[1]
+        log.info("per-task chatter")
+    # Printed once, not replayed again after the dashboard; chatter dropped.
+    assert len(printed) == 2
+
+
 def test_quiet_root_logging_restores_on_exception():
     root = logging.getLogger()
     before = root.handlers[:]
@@ -1254,8 +1277,8 @@ def test_failure_reason_names_a_plugin_the_verifier_guard_refused(tmp_path):
         tmp_path / "citation-check__00000001" / "verifier",
         "Installed 6 packages in 9ms\n"
         "Traceback (most recent call last):\n"
-        '  File "/_benchflow_guard_x/_benchflow_guard_x.py", line 251\n'
-        "_benchflow_guard_x.Rejected: Verifier plugin trust rejected: ctrf\n",
+        '  File "/_runtime_guard_x/_runtime_guard_x.py", line 251\n'
+        "_runtime_guard_x.Rejected: Verifier plugin trust rejected: ctrf\n",
     )
     out = _reported(
         _failed_result([_failure("citation-check", "citation-check__00000001")]),

@@ -123,7 +123,8 @@ async def test_the_verifier_path_probe_sees_the_persistent_path(monkeypatch):
     sandbox = _docker(monkeypatch, {"PATH": task_path})
     seen = []
 
-    def extras_cmd(raw_path, blocked, agent=None):
+    def extras_cmd(raw_path, blocked, agent=None, *, fresh_image=False):
+        assert fresh_image is False  # the agent's own sandbox
         seen.append(raw_path.strip())
         return "printf '[]'"
 

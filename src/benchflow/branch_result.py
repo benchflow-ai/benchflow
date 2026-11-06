@@ -45,6 +45,10 @@ RESULT_STATE_FIELDS = (
     "_active_role",
     "_rollout_name",
     "_started_at",
+    # How each prompt turn ended and the compactions counted: a child's are
+    # its own, and the parent's come back when the fork restores it.
+    "_turn_stop_reasons",
+    "_compactions",
 )
 
 
@@ -76,6 +80,8 @@ def scope_child_result_state(rollout: Any) -> None:
     rollout._branch_cleanup_unquiesced = False
     rollout._timing = {}
     rollout._user_rounds_log = []
+    rollout._turn_stop_reasons = []
+    rollout._compactions = None
     # Deferred: benchflow.rollout imports this module.
     from benchflow.rollout import _zero_native_acp_usage_metrics
 

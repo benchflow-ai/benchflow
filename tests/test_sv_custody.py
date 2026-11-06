@@ -663,8 +663,8 @@ async def test_a_logs_workspace_carrying_logs_agent_never_crosses(
         ("/logs/agent/x", "/logs/agent"),
         ("/logs", "/logs/verifier"),
         ("/", "/tests"),
-        ("/_benchflow_verifier_env", "/_benchflow_verifier_*"),
-        ("/_benchflow_guard_123/x", "/_benchflow_guard_*"),
+        ("/_runtime_verifier_env", "/_runtime_verifier_*"),
+        ("/_runtime_guard_123/x", "/_runtime_guard_*"),
         ("/app/../tests/x", "/tests"),
         ("//tests", "/tests"),
         ("/app", None),
@@ -1348,7 +1348,7 @@ async def test_the_trajectory_still_reaches_logs_agent(
     original_exec = box.exec
 
     async def publish_exec(command, **kwargs):
-        if command == "mkdir -p /logs/agent" or "/logs/.benchflow-publish-" in command:
+        if command == "mkdir -p /logs/agent" or "/logs/.runtime-publish-" in command:
             local = command.replace("/logs/", shlex.quote(str(box.root / "logs")) + "/")
             process = await asyncio.create_subprocess_exec(
                 "/bin/sh",
@@ -1388,6 +1388,32 @@ async def test_the_trajectory_still_reaches_logs_agent(
         "bytes": len(sent),
         "sha256": hashlib.sha256(sent).hexdigest(),
     }
+
+
+@pytest.mark.asyncio
+async def test_an_include_path_crosses_as_capture_declared_it(tmp_path: Path) -> None:
+    """Found regrading a benchmark's trials: a
+    --separate-verifier-include path no declared artifact holds never crossed.
+
+    Capture reads it after the task's artifacts, but the transfer was judged
+    against the task's artifacts alone, so every such trial failed "captured
+    artifact ... has no declaration": the root check (1f0b858e7) and the
+    include capture (916636747, #1188) landed apart.
+    """
+    include = str(tmp_path / "box" / "tmp")
+    _, workspace, trial = await _agent_trial(tmp_path, artifacts=[include])
+    task = _task_dir(tmp_path, SEPARATE)
+    rollout = _fake_rollout(tmp_path, trial, task, str(workspace))
+    rollout._config.separate_verifier_include = (include,)
+    box = FakeVerifierSandbox(tmp_path / "verifier-box")
+
+    rewards, error = await run_separate_verifier(
+        rollout, create_environment=lambda *a: box, verify=_writes_reward("1")
+    )
+
+    assert (rewards, error) == ({"reward": 1.0}, None)
+    assert (box.root / include.lstrip("/") / "agent-only.txt").is_file()
+    assert _record(trial)["status"] == "complete"
 
 
 # --- 4. the custody record ---------------------------------------------------
@@ -1443,10 +1469,12 @@ async def test_the_record_says_exactly_what_crossed(tmp_path: Path) -> None:
         if f["collection"] == 0 and f["kind"] == "file"
     )
     by_root = {group["root"]: group for group in custody["members"]}
-    assert set(by_root) == {str(workspace), str(box / "tmp"), "/logs/artifacts"}
-    assert by_root[str(workspace)]["members"] == sorted(
-        e["path"] for e in evidence["entries"]
-    )
+    # A task.toml verifier built from tests/Dockerfile gets only the declared
+    # artifacts: this one lies outside the workspace, so nothing of the
+    # workspace crosses (test_separate_verifier_format_transfer.py).
+    assert _record(trial)["transfer"]["artifacts_only"] is True
+    assert evidence["entries"] and str(workspace) not in by_root
+    assert set(by_root) == {str(box / "tmp"), "/logs/artifacts"}
     assert by_root[str(box / "tmp")]["members"] == sorted(
         e["path"] for e in sub["entries"]
     )
@@ -1609,14 +1637,6 @@ def test_a_trial_with_a_separate_verifier_record_is_not_recoverable(
     assert recovery.recovery_ineligible_reason(rollout) == (SEPARATE_INELIGIBLE)
 
 
-SEPARATE_NOT_REGRADABLE = (
-    "separate verifier trials cannot be regraded yet: a regrade runs the "
-    "verifier in a sandbox built from the agent's environment, not in the "
-    "separate verifier sandbox; re-run the trial with `bench run` to grade "
-    "it again"
-)
-
-
 async def _regrade_job(tmp_path: Path, toml: str, *, config: dict[str, Any]):
     """A finished trial with a frozen workspace, scored 1, of a task whose
     agent image (environment/Dockerfile, python:3.12-slim) and verifier image
@@ -1656,6 +1676,64 @@ def _no_regrade_sandbox(monkeypatch) -> list[Any]:
     return started
 
 
+async def _saved_separate_trial(tmp_path: Path, toml: str, config: dict[str, Any]):
+    """A finished trial's folder as a separate verifier run saves it, scored 1:
+    the frozen workspace, one declared artifact and ``/logs/artifacts``
+    (``_agent_trial``). Its task's agent image (environment/Dockerfile,
+    python:3.12-slim) and verifier image (tests/Dockerfile, ubuntu:24.04)
+    differ."""
+    declared = str(tmp_path / "box" / "tmp" / "configured.txt")
+    # The task.toml format transfers only declared artifacts (abcf2781c).
+    # This regrade fixture intentionally tests both the workspace and the
+    # external file, so its contract must name both.
+    artifacts = [str(tmp_path / "box" / "app"), declared]
+    _, workspace, saved = await _agent_trial(tmp_path, artifacts=artifacts)
+    tasks = tmp_path / "tasks"
+    _task_dir(tasks, f"artifacts = {json.dumps(artifacts)}\n{toml}")
+    trial = tmp_path / "job" / "task__a"
+    trial.parent.mkdir()
+    saved.rename(trial)
+    (trial / "config.json").write_text(
+        json.dumps({"task_path": "task", "environment": "docker", **config})
+    )
+    (trial / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "agent": "codex",
+                "rewards": {"reward": 1.0},
+                "verifier_error": None,
+            }
+        )
+    )
+    return trial, tasks, workspace
+
+
+def _verifier_sandbox_only(monkeypatch, root: Path) -> tuple[list, list]:
+    """Fail any start of the regrade's own (agent environment) sandbox, and
+    give the separate verifier a local one; returns (agent starts, verifier
+    build contexts)."""
+    from benchflow.rollout import Rollout, _separate_verifier
+
+    started: list[Any] = []
+    contexts: list[Path] = []
+
+    async def start(self) -> None:
+        started.append(self)
+        raise RuntimeError("the regrade started a sandbox from the agent's image")
+
+    def create(rollout):
+        def make(vtask, context_path, vpaths):
+            contexts.append(context_path)
+            return FakeVerifierSandbox(root)
+
+        return make
+
+    monkeypatch.setattr(Rollout, "start", start)
+    monkeypatch.setattr(_separate_verifier, "_default_create", create)
+    return started, contexts
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("toml", "config", "record"),
@@ -1663,50 +1741,114 @@ def _no_regrade_sandbox(monkeypatch) -> list[Any]:
         pytest.param(SEPARATE, {}, False, id="task-separate"),
         pytest.param("", {}, True, id="separate-record"),
         pytest.param("", {"integrity": "strict"}, False, id="strict-run"),
+        pytest.param("", {"verifier_sandbox": "separate"}, False, id="run-flag"),
     ],
 )
-async def test_a_separate_trial_is_not_regraded_in_the_agents_environment(
+async def test_a_separate_trial_is_regraded_by_the_separate_verifier(
     tmp_path: Path, monkeypatch, toml: str, config: dict[str, Any], record: bool
 ) -> None:
-    """bench eval regrade re-ran a separate trial's verifier in a sandbox
-    built from the task's agent environment (python:3.12-slim here, not the
-    verifier's ubuntu:24.04), with no transfer and no custody record: a
-    verifier that needs its own image turned the run's 1 into a 0. Separate
-    trials are now not regradable, before any sandbox, with a next step."""
-    from benchflow.eval_regrade import aregrade
+    """Found in a benchmark's regrade: a separate trial is regraded
+    from its saved outputs through the separate verifier, never in the agent's
+    environment.
 
-    trial, tasks = await _regrade_job(tmp_path, toml, config=config)
+    bench eval regrade once re-ran such a verifier in a sandbox built from the
+    task's agent environment (python:3.12-slim here, not ubuntu:24.04), with
+    no transfer and no custody record; then it refused them. Now the verifier
+    sandbox is built from tests/Dockerfile, gets the transfer the run packed
+    (workspace, declared artifact, /logs/artifacts) from the trial folder, and
+    its record lands beside the new verifier/. No other sandbox starts, and
+    nothing the run wrote changes.
+    """
+    from benchflow.eval_regrade import REGRADE_FILE, aregrade
+    from benchflow.rollout import _setup
+
+    trial, tasks, workspace = await _saved_separate_trial(tmp_path, toml, config)
     if record:
         (trial / RECORD).parent.mkdir()
         (trial / RECORD).write_text("{}")
-    started = _no_regrade_sandbox(monkeypatch)
+    box = tmp_path / "verifier-box"
+    started, contexts = _verifier_sandbox_only(monkeypatch, box)
 
-    summary = await aregrade(trial.parent, tasks_dir=tasks)
+    async def changed_verifier(env, task, paths, timing, planes, **kwargs):
+        # The agent's work, where it left it; nothing planted elsewhere.
+        assert (box / str(workspace).lstrip("/") / "src/answer.txt").is_file()
+        assert (box / "logs/artifacts/mode.txt").is_file()
+        assert (box / str(tmp_path / "box/tmp/configured.txt").lstrip("/")).is_file()
+        assert not (box / str(tmp_path / "box/tmp/agent-only.txt").lstrip("/")).exists()
+        assert not (box / str(tmp_path / "box/tests").lstrip("/")).exists()
+        paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        (paths.verifier_dir / "reward.txt").write_text("0\n")
+        return {"reward": 0.0}, None, None
+
+    monkeypatch.setattr(_setup, "_verify_rollout", changed_verifier)
+    before = {path: path.read_bytes() for path in trial.rglob("*") if path.is_file()}
+
+    summary = await aregrade(trial.parent, tasks_dir=tasks, reason="verifier fix")
 
     [row] = summary.trials
+    assert (row.status, row.original_reward, row.new_reward, row.change) == (
+        "regraded",
+        1.0,
+        0.0,
+        "pass->fail",
+    )
     assert not started
-    assert (row.status, row.reason) == ("not_regradable", SEPARATE_NOT_REGRADABLE)
-    assert not (trial / "regrade").exists()
+    [context] = contexts
+    assert (
+        (context / "environment/Dockerfile").read_text().startswith("FROM ubuntu:24.04")
+    )
+    attempt = trial / "regrade" / summary.regrade_id
+    sandbox = json.loads((attempt / "verifier-sandbox.json").read_text())
+    assert (sandbox["status"], sandbox["image_source"]) == (
+        "complete",
+        "tests/Dockerfile",
+    )
+    assert {group["root"] for group in sandbox["custody"]["members"]} == {
+        str(workspace),
+        str(tmp_path / "box/tmp"),
+        "/logs/artifacts",
+    }
+    assert sandbox["agent_sandbox_alive_during_verify"] is False
+    assert (attempt / "verifier/reward.txt").read_text() == "0\n"
+    [block] = json.loads((trial / REGRADE_FILE).read_text())["regrades"]
+    assert block["verifier_sandbox"] == {
+        "image_source": "tests/Dockerfile",
+        "status": "complete",
+    }
+    assert before == {
+        path: path.read_bytes()
+        for path in trial.rglob("*")
+        if path.is_file()
+        and "regrade" not in path.relative_to(trial).parts
+        and path.name != REGRADE_FILE
+    }
 
 
 @pytest.mark.asyncio
-async def test_the_regrade_runner_refuses_a_separate_trial_itself(
+async def test_a_separate_regrade_without_the_runs_collection_is_unscored(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A caller that skips the gate and calls the runner directly gets the
-    same refusal, before a sandbox is built."""
+    """A separate trial whose folder lacks what the run packs
+    (here the /logs/artifacts collection record) is unscored by the separate
+    verifier's own transfer check, called through the runner directly. No
+    verifier sandbox starts, and none from the agent's image."""
     from benchflow.eval_regrade import run_verifier_on_frozen_trial
 
     trial, tasks = await _regrade_job(tmp_path, SEPARATE, config={})
-    started = _no_regrade_sandbox(monkeypatch)
+    started, contexts = _verifier_sandbox_only(monkeypatch, tmp_path / "box")
     attempt = trial / "regrade" / "direct"
     attempt.mkdir(parents=True)
 
-    with pytest.raises(Exception, match="separate verifier trials") as caught:
-        await run_verifier_on_frozen_trial(trial, tasks / "task", attempt)
+    rewards, error = await run_verifier_on_frozen_trial(trial, tasks / "task", attempt)
 
-    assert str(caught.value) == SEPARATE_NOT_REGRADABLE
-    assert not started
+    assert rewards is None
+    assert error == (
+        "separate verifier transfer failed: artifact collection manifest is "
+        "missing or incomplete"
+    )
+    assert not started and not contexts
+    sandbox = json.loads((attempt / "verifier-sandbox.json").read_text())
+    assert sandbox["status"] == "transfer_failed"
 
 
 @pytest.mark.asyncio
@@ -1830,15 +1972,25 @@ VERIFIER_TASK_FIELDS: dict[str, str] = {
     "verifier.memory.expected_skills": "carried",
     "verifier.hardening": "carried",
     "verifier.hardening.cleanup_conftests": "carried",
+    "verifier.hardening.cleanup_git": "carried",
     "verifier.pytest_plugins": "carried",
     "verifier.pytest_plugin_releases": "carried",
     # The trusted task's tool contract must be checked in the verifier's
     # own image too; it is not an agent environment value.
     "verifier.required_tools": "carried",
     "verifier.optional_tools": "carried",
+    "verifier.collect": "cleared",
+    "verifier.collect.command": "cleared",
+    "verifier.collect.service": "cleared",
+    "verifier.collect.timeout_sec": "cleared",
+    "verifier.collect.user": "cleared",
     "agent": "carried",
     "agent.prompt_prefix": "carried",
     "agent.timeout_sec": "carried",
+    # A trial's budget is read where its agent's model proxy starts; the
+    # verifier's sandbox runs neither.
+    "agent.token_budget": "carried",
+    "agent.turn_budget": "carried",
     "agent.user": "carried",
     "agent.network_mode": "cleared",
     "agent.allowed_hosts": "cleared",
@@ -1907,9 +2059,13 @@ VERIFIER_TASK_FIELDS: dict[str, str] = {
     # Multi-step tasks are refused at launch; the list is carried untouched.
     "steps": "carried",
     "artifacts": "cleared",
+    # The task's own preference table is for bench preferences; grading never
+    # reads it.
+    "preference": "carried",
     "artifacts.source": "cleared",
     "artifacts.destination": "cleared",
     "artifacts.exclude": "cleared",
+    "artifacts.service": "cleared",
 }
 
 
@@ -2064,3 +2220,93 @@ async def test_the_verifier_env_never_gets_a_layer_hook_call(
     assert (rewards, error) == ({"reward": 1.0}, None)
     assert env.started
     assert _LayeredVerifierSandbox.calls == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_package_subtree_crosses_but_is_still_agent_input(tmp_path):
+    """A declared installed package can be edited."""
+    package = "/usr/local/lib/python3.11/site-packages/nemo/lightning"
+    trial, rollout, box = await _linked_trial(
+        tmp_path,
+        package,
+        files={f"{package}/parallel.py": "answer = 42\n"},
+        links={},
+        resolved={package: package},
+    )
+    rewards, error = await run_separate_verifier(
+        rollout, create_environment=lambda *a: box, verify=_writes_reward("1")
+    )
+    assert (rewards, error) == ({"reward": 1.0}, None)
+    assert (
+        box.root / package.lstrip("/") / "parallel.py"
+    ).read_text() == "answer = 42\n"
+    assert package in _record(trial)["transfer"]["agent_paths"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/usr/local/lib/python3.11/site-packages",
+        "/usr/local/lib/python3.11",
+        "/usr/local/lib",
+    ],
+)
+async def test_package_transfer_does_not_allow_library_roots(tmp_path, source):
+    """Declaring a library root remains invalid."""
+    _, rollout, box = await _linked_trial(
+        tmp_path,
+        source,
+        files={f"{source}/planted.py": "answer = 42\n"},
+        links={},
+        resolved={source: source},
+    )
+    rewards, error = await run_separate_verifier(
+        rollout, create_environment=lambda *a: box, verify=_writes_reward("1")
+    )
+    assert rewards is None
+    assert "system folder /usr/local/lib" in error
+
+
+@pytest.mark.asyncio
+async def test_sidecar_files_are_marked_as_transferred_input(tmp_path):
+    """Narrowing main artifacts must still distrust sidecar files."""
+    trial, rollout, box = await _separate_trial(tmp_path)
+    services = trial / "artifacts/services"
+    services.mkdir(parents=True)
+    body = b"print('agent code')\n"
+    (services / "plugin.py").write_bytes(body)
+    source = "/shared/plugin.py"
+    (services / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "artifacts": [
+                    {
+                        "files": [
+                            {
+                                "path": source,
+                                "local": "plugin.py",
+                                "mode": 0o755,
+                                "sha256": hashlib.sha256(body).hexdigest(),
+                            }
+                        ]
+                    }
+                ],
+            }
+        )
+    )
+
+    async def verify(env, task, paths, timing, *, workspace, agent_paths):
+        assert source in agent_paths
+        assert "/shared" not in agent_paths
+        assert (box.root / source.lstrip("/")).read_bytes() == body
+        return await _writes_reward("0")(
+            env, task, paths, timing, workspace=workspace, agent_paths=agent_paths
+        )
+
+    rewards, error = await run_separate_verifier(
+        rollout, create_environment=lambda *a: box, verify=verify
+    )
+    assert (rewards, error) == ({"reward": 0.0}, None)
+    assert source in _record(trial)["transfer"]["agent_paths"]

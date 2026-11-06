@@ -92,8 +92,9 @@ class TestRolloutResultOnDisk:
         assert loaded.n_input_tokens == 10
         assert loaded.total_tokens == 30
         assert loaded.trajectory_source == "acp"
-        assert loaded.started_at == built.started_at
-        assert loaded.finished_at == built.finished_at
+        assert built.started_at is not None and built.finished_at is not None
+        assert loaded.started_at == built.started_at.astimezone()
+        assert loaded.finished_at == built.finished_at.astimezone()
         assert loaded.rollout_dir == rollout_dir
         assert [e["type"] for e in loaded.trajectory] == [
             "user_message",

@@ -75,7 +75,7 @@ class _NetProc(_FakeProc):
         # Model a root-owned cgroup-v2 delegation. The signals still use
         # K1's stand-in /proc; only kernel cgroup file semantics are stubbed.
         self.cgroups = tmp_path / "cgroup"
-        self.freezer = self.cgroups / "benchflow-kept"
+        self.freezer = self.cgroups / "runtime-kept"
         self.freezer.mkdir(parents=True)
         (self.cgroups / "cgroup.procs").touch()
         (self.freezer / "cgroup.procs").touch()
@@ -343,6 +343,77 @@ async def test_the_kill_before_grading_keeps_named_listeners(tmp_path):
     assert record["killed"] == 4
 
 
+def _env_restoring(proc):
+    """``_env_on``, answering the restore of what the cloud metadata block
+    disarmed (nothing left to put back)."""
+    manifest = _manifest_env(_blank_manifest())
+
+    def side_effect(cmd, **kwargs):
+        if "BF killed" in cmd or "BF released" in cmd:
+            return proc.run(cmd)
+        if "' restore /" in cmd:
+            return MagicMock(
+                stdout="BF metadata-delegates-restore-done 0 0 0\n",
+                stderr="",
+                exit_code=0,
+            )
+        return manifest(cmd, **kwargs)
+
+    return _make_env(side_effect=side_effect)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disarmed", [True, False])
+async def test_a_listener_outside_no_new_privs_is_not_kept_where_files_go_back(
+    tmp_path, disarmed
+):
+    """Review 1(a): where the cloud metadata block disarmed
+    files for the agent's turn, a listener on a kept port that runs without
+    no_new_privs (not the agent's launch: an sshd session, a service started
+    through su) is killed like any other process of the user's and recorded,
+    so nothing outside no_new_privs is alive when the files go back. The
+    agent's own service (under no_new_privs) is kept. With nothing disarmed
+    (the oracle, which starts services through su) both are kept as before."""
+    from benchflow._utils import kill_record
+    from benchflow.sandbox import _delegate_disarm
+
+    proc = _NetProc(tmp_path)
+    launched = proc.add(_LIVE + "NoNewPrivs:\t1\n", cmdline="python3 app.py")
+    proc.hold(launched, proc.listen(5000))
+    outside = proc.add(_LIVE + "NoNewPrivs:\t0\n", cmdline="sshd: agent")
+    proc.hold(outside, proc.listen(8080))
+    env = _env_restoring(proc)
+    if disarmed:
+        setattr(
+            env,
+            _delegate_disarm.DISARMED_ATTR,
+            {
+                "python": "/opt/runtime/rt/py/python3",
+                "tree": None,
+                "stripped": [{"path": "/usr/bin/su", "inode": 1}],
+            },
+        )
+    record: dict = {}
+
+    with kill_record.recording_into(record):
+        await harden_before_verify(
+            env, _task([{"port": 5000}, {"port": 8080}]), "agent", workspace="/app"
+        )
+
+    live = proc.live_pids()
+    assert str(launched) in live
+    assert (str(outside) in live) is not disarmed
+    kept = sorted(r["pid"] for r in record["kept_services"])
+    if disarmed:
+        assert kept == [launched]
+        assert record["kept_services_not_nnp"] == [
+            {"port": 8080, "pid": outside, "command": "sshd: agent "}
+        ]
+    else:
+        assert kept == sorted([launched, outside])
+        assert "kept_services_not_nnp" not in record
+
+
 @pytest.mark.asyncio
 async def test_root_that_cannot_read_fd_links_still_keeps(tmp_path):
     """In Docker root cannot read another user's fd links; the agent user's
@@ -497,7 +568,7 @@ async def test_hardening_closes_logs_and_the_workspace_while_keeping(tmp_path):
     clear = next(i for i, c in enumerate(cmds) if "find /logs/verifier" in c)
     logs = next(i for i, c in enumerate(cmds) if "chmod 700 /logs" in c)
     chown = next(
-        i for i, c in enumerate(cmds) if "-exec chown -h root:root" in c and "/app" in c
+        i for i, c in enumerate(cmds) if "chown -h root:root" in c and "/app" in c
     )
     ws = cmds.index(close[0])
     assert clear < logs and chown < ws

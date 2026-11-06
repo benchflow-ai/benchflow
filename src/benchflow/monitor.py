@@ -1,6 +1,6 @@
 """Monitor mode — score a rollout in production.
 
-Architecture (``docs/architecture.md``) names three first-class modes on the
+Architecture (``docs/start/how-it-works.md``) names three first-class modes on the
 single ``scored rollout`` engine:
 
 - **Eval**    — score it and stop.
@@ -100,7 +100,7 @@ class MonitorConfig:
         jobs_dir:
             Output root for monitor artifacts. Defaults to
             ``jobs/monitor`` so monitor evidence is separable from eval
-            release evidence (see ``docs/architecture.md`` §Lifecycles).
+            release evidence (see ``docs/start/how-it-works.md`` §Lifecycles).
         run_name:
             Optional human-readable name for the monitor run; defaults
             to a timestamped id.

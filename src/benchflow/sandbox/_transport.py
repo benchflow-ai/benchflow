@@ -41,7 +41,7 @@ COMMAND_BOUND = 64 * 1024
 #: The folder root's staged payloads go in, one fresh folder each
 #: (``benchflow._runtime_tree.RUN_DIR``: root's, mode 700, made before the
 #: agent's first turn).
-STAGE_ROOT = "/opt/benchflow/run"
+STAGE_ROOT = "/opt/runtime/run"
 
 #: Exit status of a staged command whose payload could not be read.
 READ_FAILED = 126
@@ -196,14 +196,14 @@ def _stage_root_setup(root: str) -> str:
 
     run = shlex.quote(root)
     parents = ""
-    if root.startswith("/opt/benchflow/"):
+    if root.startswith("/opt/runtime/"):
         parents = (
             "[ ! -L /opt ] && mkdir -p /opt && "
             "{ bfc_dir /opt s || { chown -h 0:0 /opt && [ ! -L /opt ] && "
             "chmod 1777 /opt; }; } && "
-            "[ ! -L /opt/benchflow ] && mkdir -p /opt/benchflow && "
-            "chown -h 0:0 /opt/benchflow && [ ! -L /opt/benchflow ] && "
-            "chmod go-w /opt/benchflow && "
+            "[ ! -L /opt/runtime ] && mkdir -p /opt/runtime && "
+            "chown -h 0:0 /opt/runtime && [ ! -L /opt/runtime ] && "
+            "chmod go-w /opt/runtime && "
         )
     return (
         f"{parents}[ ! -L {run} ] && mkdir -p {run} && chown -h 0:0 {run} && "
@@ -241,10 +241,10 @@ def stage_proof(
     subshell, on *shell* by absolute path with PATH *path* (the route's
     tools), so nothing it sets reaches the command.
 
-    Under ``/opt/benchflow`` the folders above *root* are first made safe
-    the way the kit's preparation makes them (``/opt`` and ``/opt/benchflow``
+    Under ``/opt/runtime`` the folders above *root* are first made safe
+    the way the kit's preparation makes them (``/opt`` and ``/opt/runtime``
     no link; ``/opt`` root's or sticky, else root's and 1777;
-    ``/opt/benchflow`` root's, nobody else may write): the kit's own build
+    ``/opt/runtime`` root's, nobody else may write): the kit's own build
     is a staged command, so an honest image whose ``/opt`` another user owns
     is made safe here first, as the kit would make it, and is not refused.
 

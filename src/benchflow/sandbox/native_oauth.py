@@ -7,6 +7,7 @@ import shlex
 from dataclasses import replace
 from typing import Any
 
+from benchflow.agents.codex_config import CODEX_CONFIG_ENV
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import (
     CLAUDE_AGENT_ACP_LAUNCHER,
@@ -16,7 +17,7 @@ from benchflow.agents.registry import (
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox.egress_denylist import EgressDenylist
 
-_LAUNCHER = "/opt/benchflow/bin/claude-agent-acp"
+_LAUNCHER = "/opt/runtime/bin/claude-agent-acp"
 
 _ROUTING_CONFLICTS = (
     "BENCHFLOW_PROVIDER_BASE_URL",
@@ -31,6 +32,17 @@ _ROUTING_CONFLICTS = (
     "CLAUDE_LOCAL_OAUTH_APPS_BASE",
     "CLAUDE_LOCAL_OAUTH_CONSOLE_BASE",
 )
+# Native Codex: what would send it to an endpoint other than its ChatGPT one.
+# A custom OPENAI_BASE_URL or a provider key already selects the API route
+# (agents/env.py); the canonical OpenAI URL reaches this check.
+_CODEX_ROUTING_CONFLICTS = ("OPENAI_BASE_URL",)
+_CODEX_CONFIG_ROUTES = (
+    "chatgpt_base_url",
+    "openai_base_url",
+    "model_provider",
+    "model_providers",
+)
+_CODEX_MODEL_PATH = "/backend-api/codex/responses"
 _ROUTING_SWITCHES = (
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
@@ -47,9 +59,12 @@ def native_oauth_egress_policy(
 ) -> EgressDenylist | None:
     if not no_web or not uses_native_subscription_auth(agent, model, agent_env):
         return None
+    if agent == "codex-acp":
+        return _native_codex_policy(agent_env)
     if agent != "claude-agent-acp":
         raise ValueError(
-            "Native subscription no-web transport is supported only for direct Claude ACP"
+            "Native subscription no-web transport is supported only for direct "
+            "Claude ACP and Codex ACP"
         )
     for key in _ROUTING_CONFLICTS:
         if agent_env.get(key):
@@ -65,6 +80,35 @@ def native_oauth_egress_policy(
             "Native Claude no-web transport requires the canonical first-party origin"
         )
     return EgressDenylist((), (), native_claude_model_only=True)
+
+
+def _native_codex_policy(agent_env: dict[str, str]) -> EgressDenylist:
+    """Codex on a ChatGPT login under no-web: only its ChatGPT model endpoint.
+
+    The proxy admits POST /backend-api/codex/responses on chatgpt.com and
+    refuses a body that would have OpenAI run or fetch anything (the model
+    gateway's own web-restriction rules). Settings that route Codex anywhere
+    else are refused here, before a sandbox exists.
+    """
+    for key in _CODEX_ROUTING_CONFLICTS:
+        if agent_env.get(key):
+            raise ValueError(f"Native Codex no-web transport conflicts with {key}")
+    raw = agent_env.get(CODEX_CONFIG_ENV)
+    if raw:
+        try:
+            config = json.loads(raw)
+        except ValueError:
+            config = None
+        if not isinstance(config, dict):
+            raise ValueError(
+                f"Native Codex no-web transport needs {CODEX_CONFIG_ENV} as a JSON object"
+            )
+        for key in _CODEX_CONFIG_ROUTES:
+            if key in config:
+                raise ValueError(
+                    f"Native Codex no-web transport conflicts with {CODEX_CONFIG_ENV}.{key}"
+                )
+    return EgressDenylist((), (), native_codex_model_only=True)
 
 
 def allowlist_model_transport(
@@ -130,7 +174,7 @@ async def validate_native_oauth_transport(
     )
     package, pinned = pinned_npm_package("claude-agent-acp")
     cli_package, cli_pinned = pinned_npm_package("claude-code")
-    modules = "/opt/benchflow/js-agents/lib/node_modules"
+    modules = "/opt/runtime/js-agents/lib/node_modules"
     script = (
         inherited_guard
         + "const acp="
@@ -153,7 +197,7 @@ console.log(JSON.stringify({acp:a.version,acp_sdk:(a.dependencies||{})[sdkName],
     )
     result = await exec_raw(
         env.exec,
-        'test -z "${NODE_OPTIONS-}" && test -z "${NODE_PATH-}" && env -u NODE_OPTIONS -u NODE_PATH /opt/benchflow/node/bin/node -e '
+        'test -z "${NODE_OPTIONS-}" && test -z "${NODE_PATH-}" && env -u NODE_OPTIONS -u NODE_PATH /opt/runtime/node/bin/node -e '
         + shlex.quote(script),
         user="root",
         timeout_sec=30,
@@ -185,10 +229,12 @@ console.log(JSON.stringify({acp:a.version,acp_sdk:(a.dependencies||{})[sdkName],
     }
 
 
-async def _sandbox_uid(env: Any, sandbox_user: str | None) -> int:
+async def _sandbox_uid(
+    env: Any, sandbox_user: str | None, client: str = "Claude"
+) -> int:
     if not sandbox_user:
         raise ValueError(
-            "Native Claude no-web transport requires a nonroot sandbox user"
+            f"Native {client} no-web transport requires a nonroot sandbox user"
         )
     uid = await exec_raw(
         env.exec, f"id -u {shlex.quote(sandbox_user)}", user="root", timeout_sec=30
@@ -196,9 +242,52 @@ async def _sandbox_uid(env: Any, sandbox_user: str | None) -> int:
     value = (uid.stdout or "").strip()
     if uid.return_code != 0 or not value.isdecimal() or int(value) == 0:
         raise ValueError(
-            "Native Claude no-web transport requires a verified nonzero sandbox UID"
+            f"Native {client} no-web transport requires a verified nonzero sandbox UID"
         )
     return int(value)
+
+
+async def validate_native_codex_transport(
+    env: Any, sandbox_user: str | None
+) -> dict[str, Any]:
+    """Admission for Codex ACP on a ChatGPT login: a verified nonroot UID (the
+    UID firewall sends only it through the model-only proxy) and the pinned
+    adapter, with the Codex release it runs recorded."""
+    uid = await _sandbox_uid(env, sandbox_user, client="Codex")
+    package, pinned = pinned_npm_package("codex-acp")
+    script = (
+        "const fs=require('fs'),p=require('path');const acp="
+        + json.dumps(f"/opt/runtime/js-agents/lib/node_modules/{package}")
+        + ";const a=JSON.parse(fs.readFileSync(p.join(acp,'package.json')));"
+        "let c=null;try{c=JSON.parse(fs.readFileSync(require.resolve("
+        "'@openai/codex/package.json',{paths:[acp]}))).version}catch(e){}"
+        "console.log(JSON.stringify({acp:a.version,codex:c}));"
+    )
+    result = await exec_raw(
+        env.exec,
+        "env -u NODE_OPTIONS -u NODE_PATH /opt/runtime/node/bin/node -e "
+        + shlex.quote(script),
+        user="root",
+        timeout_sec=30,
+    )
+    try:
+        found = json.loads(result.stdout or "")
+    except ValueError:
+        found = None
+    if (
+        result.return_code != 0
+        or not isinstance(found, dict)
+        or found.get("acp") != pinned
+    ):
+        raise ValueError("Native Codex no-web transport client version is not verified")
+    return {
+        "mechanism": "root_owned_tls_model_only_proxy",
+        "versions": {"acp": found["acp"], "codex": found.get("codex")},
+        "sandbox_uid": uid,
+        "origin": "https://chatgpt.com",
+        "method": "POST",
+        "paths": [_CODEX_MODEL_PATH],
+    }
 
 
 async def _validate_native_cli_transport(
@@ -207,7 +296,7 @@ async def _validate_native_cli_transport(
     """Admission for the native harness: BenchFlow runs the pinned CLI directly."""
     uid = await _sandbox_uid(env, sandbox_user)
     cli_package, cli_pinned = pinned_npm_package("claude-code")
-    modules = "/opt/benchflow/js-agents/lib/node_modules"
+    modules = "/opt/runtime/js-agents/lib/node_modules"
     script = (
         "const conflict="
         + json.dumps((*_ROUTING_CONFLICTS, "ANTHROPIC_API_KEY"))
@@ -230,7 +319,7 @@ console.log(JSON.stringify({cli:c.version,native:r.stdout.trim(),inside:real.sta
     )
     result = await exec_raw(
         env.exec,
-        'test -z "${NODE_OPTIONS-}" && test -z "${NODE_PATH-}" && env -u NODE_OPTIONS -u NODE_PATH /opt/benchflow/node/bin/node -e '
+        'test -z "${NODE_OPTIONS-}" && test -z "${NODE_PATH-}" && env -u NODE_OPTIONS -u NODE_PATH /opt/runtime/node/bin/node -e '
         + shlex.quote(script),
         user="root",
         timeout_sec=30,

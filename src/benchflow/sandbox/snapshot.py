@@ -29,7 +29,7 @@ from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 
 logger = logging.getLogger(__name__)
 
-_SNAP_DIR = "/tmp/.benchflow_snapshots"
+_SNAP_DIR = "/tmp/.runtime_snapshots"
 
 
 async def workspace_snapshot(env: Any, name: str, workspace: str = "/app") -> str:

@@ -44,7 +44,7 @@ class ReceiptVerifier:
         self.attempts += 1
         self.execution_receipt = None
         await asyncio.sleep(self.upload_sec)
-        path = f"/run/benchflow/verifier-started-{self.attempts}"
+        path = f"/run/runtime/verifier-started-{self.attempts}"
         self.execution_receipt = (path, "main")
         self.issued_at[path] = asyncio.get_running_loop().time()
         run = self.runs[min(self.attempts, len(self.runs)) - 1]
@@ -131,10 +131,11 @@ async def test_a_command_that_never_starts_is_retried_once_then_a_wedge(
     assert "Verifier scored 0" in caplog.text
     assert "start receipt" in caplog.text
     assert env.abandoned == {
-        "/run/benchflow/verifier-started-1",
-        "/run/benchflow/verifier-started-2",
+        "/run/runtime/verifier-started-1",
+        "/run/runtime/verifier-started-2",
     }
-    assert any("pkill" in c.args[0] for c in env.exec.await_args_list)
+    # The first attempt's whole process tree goes before the retry.
+    assert any("kill -s KILL" in c.args[0] for c in env.exec.await_args_list)
 
 
 @pytest.mark.usefixtures("short_grace")
@@ -157,7 +158,7 @@ async def test_a_started_quiet_verifier_is_a_timeout_and_never_replayed(
     """Before, a timeout with an empty test-stdout.txt was replayed for a whole
     second budget; a receipt proves the command ran."""
     verifier = ReceiptVerifier(["hang"])
-    env = _env({"/run/benchflow/verifier-started-1"})
+    env = _env({"/run/runtime/verifier-started-1"})
     rewards, error, diagnostic = await _verify_rollout(
         env,
         _task(0.3),
@@ -265,7 +266,7 @@ async def test_a_command_starting_after_the_probe_gave_up_runs_no_tests(
     paths.mkdir()
     sandbox = _receipt_sandbox(tmp_path, paths)
     (tmp_path / "sandbox-run-benchflow").mkdir()
-    receipt = "/run/benchflow/verifier-started-late"
+    receipt = "/run/runtime/verifier-started-late"
     # The probe runs before the command: no receipt yet, so it gives up.
     assert (
         await _verifier_started(sandbox, NS(execution_receipt=(receipt, "main")))

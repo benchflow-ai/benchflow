@@ -43,6 +43,7 @@ container ... is already in progress".
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import socket
@@ -103,6 +104,103 @@ def release_project(project: str) -> None:
 def live_projects() -> frozenset[str]:
     with _live_lock:
         return frozenset(_live_projects)
+
+
+# A sandbox kept with ``--keep-sandbox`` outlives the process that made it, so
+# every later sweep would take it for a leftover. Its compose project is
+# listed until ``bench sandbox release`` removes it, and the sweep never
+# removes a listed project's containers, networks or volumes, whatever its
+# process. It is listed twice: one empty file per project in this user's state
+# folder, and a marker volume on the Docker daemon (``bf-kept-<project>``,
+# labelled ``benchflow.kept``). A sweep run with another HOME (another user of
+# a shared machine, CI, a test run) cannot read the file, and found the kept
+# sandbox's process gone: it removed the sandbox. The marker is on
+# the daemon that holds the sandbox, so every sweep of that daemon sees it.
+_KEPT_ENV = "BENCHFLOW_KEPT_SANDBOXES_DIR"
+KEPT_MARKER_LABEL = "benchflow.kept"
+_PROJECT_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
+
+
+def kept_dir() -> Path:
+    configured = os.environ.get(_KEPT_ENV, "").strip()
+    if configured:
+        return Path(configured)
+    state = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = Path(state) if state else Path.home() / ".local" / "state"
+    return base / "benchflow" / "kept-sandboxes"
+
+
+def _kept_name(project: str) -> str:
+    if not project or not set(project) <= _PROJECT_NAME_CHARS:
+        raise ValueError(f"not a compose project name: {project!r}")
+    return project
+
+
+def _marker(project: str) -> str:
+    return f"bf-kept-{_kept_name(project)}"
+
+
+def _mark_on_daemon(project: str) -> bool:
+    return (
+        _docker(
+            [
+                "volume",
+                "create",
+                "--label",
+                f"{KEPT_MARKER_LABEL}={project}",
+                _marker(project),
+            ]
+        )
+        is not None
+    )
+
+
+def _unmark_on_daemon(project: str) -> None:
+    _docker(["volume", "rm", _marker(project)])
+
+
+def _marked_on_daemon() -> frozenset[str]:
+    listing = _docker(
+        [
+            "volume",
+            "ls",
+            "--filter",
+            f"label={KEPT_MARKER_LABEL}",
+            "--format",
+            '{{.Label "' + KEPT_MARKER_LABEL + '"}}',
+        ]
+    )
+    names = (line.strip() for line in (listing or "").splitlines())
+    return frozenset(n for n in names if n and set(n) <= _PROJECT_NAME_CHARS)
+
+
+def keep_project(project: str) -> None:
+    """List *project* as kept, so no sweep removes it."""
+    folder = kept_dir()
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (folder / _kept_name(project)).touch()
+    if not _mark_on_daemon(project):
+        logger.warning(
+            "Could not mark the kept sandbox %s on the Docker daemon: a BenchFlow "
+            "run with another HOME may remove it as a leftover",
+            project,
+        )
+
+
+def unkeep_project(project: str) -> None:
+    """*project* was released: sweeps may remove what is left of it."""
+    with contextlib.suppress(FileNotFoundError):
+        (kept_dir() / _kept_name(project)).unlink()
+    _unmark_on_daemon(project)
+
+
+def kept_projects() -> frozenset[str]:
+    try:
+        names = os.listdir(kept_dir())
+    except OSError:
+        names = []
+    listed = frozenset(n for n in names if n and set(n) <= _PROJECT_NAME_CHARS)
+    return listed | _marked_on_daemon()
 
 
 # ---------------------------------------------------------------------------
@@ -451,9 +549,12 @@ def sweep_leftovers(*, dry_run: bool = False) -> SweepResult:
     # Read after listing: a sandbox claims its project before Compose creates
     # anything, so a resource in the listing is never newer than its claim.
     live = live_projects()
+    kept = kept_projects()
     result = SweepResult()
     projects: set[str] = set()
     for resource_id, token, project in _rows(stopped):
+        if project in kept:
+            continue
         if is_leftover(token, project, live):
             result.containers.append(resource_id)
             projects.add(project)
@@ -463,6 +564,9 @@ def sweep_leftovers(*, dry_run: bool = False) -> SweepResult:
     orphan_projects: set[str] = set()
     names: dict[str, str] = {}
     for resource_id, token, project, _state, name in _rows(running, 5):
+        if project in kept:
+            still_running.add(project)
+            continue
         if is_dead_running(token):
             result.running.append(resource_id)
             names[resource_id] = name or resource_id
@@ -474,6 +578,8 @@ def sweep_leftovers(*, dry_run: bool = False) -> SweepResult:
             result.orphans.append(name or resource_id)
             orphan_projects.add(project)
     for resource_id, token, project in _rows(networks):
+        if project in kept:
+            continue
         if project in still_running:
             if project in orphan_projects and is_leftover(token, project, live):
                 result.held_networks.append(resource_id)

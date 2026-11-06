@@ -104,7 +104,8 @@ class ScoringConfig:
 class JudgeConfig:
     """The ``[judge]`` section of a rubric."""
 
-    model: str = "claude-sonnet-4-6"
+    # The current Sonnet; Sonnet 4.6 is legacy (Anthropic, read 2026-11-04).
+    model: str = "claude-sonnet-5-5"
     mode: Literal["batched", "individual"] = "individual"
     files: list[str] = field(default_factory=list)
     timeout: int = 120
@@ -135,7 +136,7 @@ def _parse_criterion(raw: dict) -> Criterion:
 
 def _parse_judge(raw: dict) -> JudgeConfig:
     return JudgeConfig(
-        model=raw.get("model", "claude-sonnet-4-6"),
+        model=raw.get("model", JudgeConfig.model),
         mode=raw.get("mode", "individual"),
         files=raw.get("files", []),
         timeout=raw.get("timeout", 120),

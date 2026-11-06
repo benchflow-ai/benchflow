@@ -1,7 +1,7 @@
 """Root never runs a BenchFlow tool that someone else can change (PY8 U1, U2b).
 
 BenchFlow installs uv, a managed CPython and the model proxy's cached venv
-under ``/opt/benchflow`` and runs them as root, sometimes after the agent has
+under ``/opt/runtime`` and runs them as root, sometimes after the agent has
 had a turn (a second role's proxy). A workspace at or above one of those
 folders (``WORKDIR /opt``) is given to the agent by ``chown -R``, and an
 agent that owns a folder can rename it and put anything in its place: the
@@ -76,7 +76,7 @@ def _planted_uv(folder: Path, witness: Path) -> None:
 @needs_sh
 def test_a_uv_under_a_folder_others_can_change_is_never_run(tmp_path):
     """The agent owns /opt (here: /opt is 0777), replaces
-    /opt/benchflow/uv/0.13.4/uv with a program that prints the pinned
+    /opt/runtime/uv/0.13.4/uv with a program that prints the pinned
     version; the next root install used to run it to read that version."""
     opt = tmp_path / "opt"
     opt.mkdir()
@@ -249,11 +249,11 @@ class _RecordingEnv:
 @pytest.mark.parametrize(
     "workspace",
     [
-        "/opt/benchflow",
-        "/opt/benchflow/litellm-proxy",
-        "/opt/benchflow/python/cpython-3.12.15-linux-x86_64-gnu/bin",
-        "/./opt/benchflow/x/..",
-        "//opt/./benchflow",
+        "/opt/runtime",
+        "/opt/runtime/litellm-proxy",
+        "/opt/runtime/python/cpython-3.12.15-linux-x86_64-gnu/bin",
+        "/./opt/runtime/x/..",
+        "//opt/./runtime",
     ],
 )
 async def test_a_workspace_inside_benchflows_folder_is_refused(workspace):
@@ -266,7 +266,7 @@ async def test_a_workspace_inside_benchflows_folder_is_refused(workspace):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("workspace", ["/opt/benchflow-app", "/opt", "/app"])
+@pytest.mark.parametrize("workspace", ["/opt/runtime-app", "/opt", "/app"])
 async def test_other_workspaces_are_set_up_as_before(workspace):
     env = _RecordingEnv()
 
@@ -274,10 +274,9 @@ async def test_other_workspaces_are_set_up_as_before(workspace):
 
     if workspace == "/opt":
         # /opt holds the runtime tree: it stays root's and sticky, and every
-        # entry but /opt/benchflow is granted (PT's workspace grant).
+        # entry but /opt/runtime is granted (PT's workspace grant).
         assert any(
-            "chmod 1777 /opt" in c and "! -path /opt/benchflow" in c
-            for c in env.commands
+            "chmod 1777 /opt" in c and "! -path /opt/runtime" in c for c in env.commands
         )
     else:
         assert any(f"chown -R agent:agent {workspace}" in c for c in env.commands)

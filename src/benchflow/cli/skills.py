@@ -305,7 +305,7 @@ def register_skills(app: typer.Typer) -> None:
         SkillEvaluator Tier 1 checks schema, version, PII, license, code
         integrity, dependencies, Unicode smuggling, quality score and script
         lint. SkillSpector scans for security issues. Both run without LLM
-        calls; install them separately (see docs/skill-eval.md). Exit 1 when a
+        calls; install them separately (see docs/judging/skill-evals.md). Exit 1 when a
         schema, security or dependency finding reaches --fail-on, or a checker
         fails to run.
 

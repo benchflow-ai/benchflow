@@ -36,6 +36,9 @@ from benchflow.task.verifier_errors import RewardFileEmptyError as RewardFileEmp
 from benchflow.task.verifier_errors import (
     RewardFileNotFoundError as RewardFileNotFoundError,
 )
+from benchflow.task.verifier_errors import (
+    RewardFileParseError as RewardFileParseError,
+)
 from benchflow.task.verifier_errors import RubricNotFoundError as RubricNotFoundError
 from benchflow.task.verifier_errors import (
     UnsupportedVerifierStrategyError as UnsupportedVerifierStrategyError,

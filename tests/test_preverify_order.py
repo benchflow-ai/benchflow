@@ -340,7 +340,7 @@ def _rollout(sandbox_user, *, keep=None, monkeypatch):
         _muse_credentials_staged=False,
         _task=SimpleNamespace(config=SimpleNamespace()),
         _planes=SimpleNamespace(quiesce_agent=quiesce),
-        _agent_launch="/opt/benchflow/bin/claude-agent-acp",
+        _agent_launch="/opt/runtime/bin/claude-agent-acp",
         _env=SimpleNamespace(exec=exec_),
         _credential_ledger=[],
         _phase="running",
@@ -673,7 +673,7 @@ async def test_a_failed_upload_still_fails_publication(tmp_path):
     commands = [c for c, _ in env.execs]
     # Nothing was copied into place, and the stage was removed.
     assert not any(c.startswith("rc=0;") for c in commands)
-    assert commands[-1].startswith("rm -rf /logs/.benchflow-publish-")
+    assert commands[-1].startswith("rm -rf /logs/.runtime-publish-")
 
 
 # --- publication beside the artifact collection ----------------------------------

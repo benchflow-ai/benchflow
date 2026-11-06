@@ -55,7 +55,7 @@ HOME = "/home/agent"
 ADC_TOKEN = "dummy-host-adc"
 CLAUDE_FILE_TOKEN = "dummy-host-claude-login-file"
 CODEX_FILE_TOKEN = "dummy-host-codex-login-file"
-RAW = "/opt/benchflow/bin/raw-acp"
+RAW = "/opt/runtime/bin/raw-acp"
 TWO_PART = "matrix-two-part"
 CLAUDE_WRAPPER = "matrix-claude-wrapper"
 SETTINGS = (
@@ -543,3 +543,56 @@ NAMED = {
 async def test_named_rows(tmp_path, monkeypatch, cell):
     """C8-C19 and the native, no-model and raw routes: exactly the table."""
     await _check(tmp_path, monkeypatch, cell)
+
+
+# ── An agent that routes its own model calls (model_route = "agent") ──
+
+OWN_ROUTE = "matrix-own-route"
+
+
+@pytest.fixture
+def own_route_agent():
+    register_agent(
+        OWN_ROUTE,
+        "true",
+        f"{OWN_ROUTE} --acp",
+        requires_env=["CLIENT_ID", "CLIENT_SECRET"],
+        model_route="agent",
+    )
+    yield OWN_ROUTE
+    for registry in (AGENTS, AGENT_INSTALLERS, AGENT_LAUNCH):
+        registry.pop(OWN_ROUTE, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "label",
+    [None, *(model for model, _keys, _settings in FAMILIES.values())],
+    ids=["no-label", *FAMILIES],
+)
+async def test_own_model_route_admits_only_its_declared_credentials(
+    tmp_path, monkeypatch, own_route_agent, label
+):
+    """An agent with model_route = "agent" is on the direct
+    route whatever model label it carries. With every host credential
+    exported, only its own declared parts reach the sandbox: the label never
+    selects a provider, a login or a proxy key."""
+    cell = Cell(
+        own_route_agent,
+        label,
+        ("CLIENT_ID", "CLIENT_SECRET"),
+        host="all",
+        names=frozenset({"CLIENT_ID", "CLIENT_SECRET"}),
+        tokens=frozenset({token_of("CLIENT_ID"), token_of("CLIENT_SECRET")}),
+    )
+    policy, files, launch, refused = await _run(tmp_path, monkeypatch, cell)
+    assert refused is None, f"refused: {refused}"
+    assert policy is not None and policy.route == "direct"
+    assert _tokens(files, launch) == set(cell.tokens), (sorted(files), launch)
+    assert _table_names(policy) == set(cell.names), policy
+    for name in (
+        "BENCHFLOW_LITELLM_MASTER_KEY",
+        "BENCHFLOW_PROVIDER_MODEL",
+        "BENCHFLOW_PROVIDER_NAME",
+    ):
+        assert name not in launch, name

@@ -359,6 +359,56 @@ class TestDaytonaDirectFileTransfer:
         ]
 
     @pytest.mark.asyncio
+    async def test_upload_dir_tries_a_late_destination_prep_again(
+        self, monkeypatch
+    ) -> None:
+        """Guards a reported case: a loaded Daytona
+        sandbox answered the upload's 30 s mkdir late and the launch failed
+        before the agent ran; the mkdir is idempotent, so it runs again."""
+        pytest.importorskip("daytona")  # sandbox-daytona optional dependency
+        from benchflow.sandbox import daytona_strategies
+        from benchflow.sandbox.daytona import _DaytonaDirect
+        from benchflow.sandbox.protocol import ExecTimeoutError
+
+        monkeypatch.setattr(
+            daytona_strategies, "_UPLOAD_PREP_RETRY_DELAYS", (0, 0), raising=False
+        )
+        strategy = _DaytonaDirect.__new__(_DaytonaDirect)
+        strategy._env = MagicMock()
+        outcomes = [ExecTimeoutError(30), ExecTimeoutError(30), 0]
+        tries: list[str] = []
+
+        async def fake_exec(command, cwd=None, env=None, timeout_sec=None, **_):
+            tries.append(command)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return ExecResult(stdout="", stderr="", return_code=outcome)
+
+        strategy._env._sandbox_exec = fake_exec
+        strategy._env._sdk_upload_dir = AsyncMock()
+
+        await strategy.upload_dir("/host/skills", "/app/skills")
+
+        assert tries == ["mkdir -p /app/skills"] * 3
+        strategy._env._sdk_upload_dir.assert_awaited_once_with(
+            "/host/skills", "/app/skills"
+        )
+
+        outcomes[:] = [ExecTimeoutError(30)] * 3
+        strategy._env._sdk_upload_dir.reset_mock()
+        with pytest.raises(ExecTimeoutError):
+            await strategy.upload_dir("/host/skills", "/app/skills")
+        strategy._env._sdk_upload_dir.assert_not_awaited()
+
+        # The in-sandbox `timeout` ends a late mkdir with status 124.
+        tries.clear()
+        outcomes[:] = [124, 0]
+        await strategy.upload_dir("/host/skills", "/app/skills")
+        assert tries == ["mkdir -p /app/skills"] * 2
+        strategy._env._sdk_upload_dir.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_upload_dir_reports_destination_prep_failure(self) -> None:
         """Guards the follow-up to f7d382b against hidden direct Daytona mkdir failures."""
         pytest.importorskip("daytona")  # sandbox-daytona optional dependency

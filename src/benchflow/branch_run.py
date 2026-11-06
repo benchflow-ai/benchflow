@@ -1,7 +1,7 @@
 """``bench eval branch``: branch an agent run from the command line.
 
 One *branch trial* per task drives the rollout lifecycle that
-``docs/jobs/branching-reference.md`` describes by hand::
+``docs/train/environment.md`` describes by hand::
 
     setup -> start -> install_agent
           -> connect -> execute(prompts[:N])            (the checkpoint)

@@ -30,7 +30,7 @@ from benchflow.failures import cause_of, describe
 # fixtures e-build, missing-hub and missing-image), cut to what matters.
 _COMPOSE = (
     "Docker compose command failed for environment e-build. Command: docker "
-    "--config /tmp/benchflow-docker-config-x compose --project-name e-build "
+    "--config /tmp/runtime-docker-config-x compose --project-name e-build "
     "-f docker-compose-base.yaml -f docker-compose-build.yaml build. Return "
     "code: 1. Stdout: "
 )

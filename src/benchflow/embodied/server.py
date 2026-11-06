@@ -5,7 +5,7 @@ One `EpisodeServer` owns one simulator (a `SimBackend`), answers one JSON reques
 state/action/reward trace, and decides success itself when the episode ends. The agent only sees what `observe`
 returns.
 
-Files written to the run directory (see docs/reference/embodied.md):
+Files written to the run directory (see docs/tasks/task-format.md#other-task-formats):
   episode.json      header: task, seed, embodiment, observation mode, initial state
   steps.jsonl       one line per simulator step: action by group, reward, success, state after the step, frame
   trace.jsonl       every request and response (images referenced by path; never the oracle token)

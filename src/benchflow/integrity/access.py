@@ -16,7 +16,7 @@ with ``exec_route``, which starts ``/bin/sh`` by absolute path and sources the
 task's persistent env without its PATH or loader variables). Nothing in it is
 resolved from any PATH: the agent user's ids come from /etc/passwd and
 /etc/group read with shell builtins, and ``stat`` and ``ls`` are taken by
-absolute path from PT's protected kit (``/opt/benchflow/rt/bin``, root's
+absolute path from PT's protected kit (``/opt/runtime/rt/bin``, root's
 copies made before the agent's turn) when the sandbox has one, from fixed
 system paths only when it has none, and started through ``env -i`` (an
 environment built from scratch). A backend without that route is not probed: the run is unattested,

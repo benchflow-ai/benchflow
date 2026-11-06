@@ -45,6 +45,7 @@ from .scaffolding import (
 from .structural_checks import (
     _check_compatibility_alias_drift,
     _check_ctrf_path,
+    _check_grade_time_downloads,
     _check_publication_grade,
     _check_runtime_capabilities,
     _check_task_document,
@@ -96,21 +97,28 @@ def task_digest(task_dir: Path) -> str:
     if not task_dir.is_dir():
         raise NotADirectoryError(f"Not a directory: {task_dir}")
     files: list[tuple[str, Path]] = []
+    top = str(task_dir)
     # os.walk never descends into symlinked directories (unlike pre-3.13
     # Path.rglob), keeping "symlinks are excluded" true for whole subtrees.
-    for dirpath, _dirnames, filenames in os.walk(task_dir):
+    for dirpath, _dirnames, filenames in os.walk(top):
+        # The folder below the task's that os.walk joined onto its string: a
+        # Path.relative_to per file took most of the time on a large task
+        # .
+        below = dirpath[len(top) :].lstrip("/")
+        prefix = f"{below}/" if below else ""
         for filename in filenames:
             if filename == ".benchflow-source.json":
                 continue
-            path = Path(dirpath) / filename
+            path = Path(dirpath, filename)
             if path.is_symlink() or not path.is_file():
                 continue
-            files.append((path.relative_to(task_dir).as_posix(), path))
+            files.append((prefix + filename, path))
     digest = hashlib.sha256()
     for rel, path in sorted(files):
         digest.update(rel.encode("utf-8"))
         digest.update(b"\x00")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        with path.open("rb") as f:
+            digest.update(hashlib.file_digest(f, "sha256").digest())
     return f"sha256:{digest.hexdigest()}"
 
 
@@ -138,6 +146,29 @@ def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str
     except ReviewRubricError as e:
         return [f"{verifier_label}/rubric.json invalid: {e}"]
     return []
+
+
+def _step_file_issues(task_dir: Path) -> list[str]:
+    """Each step of a multi-step task has its prompt, and tests to score it
+    (its own steps/<name>/tests, or the task's)."""
+    from benchflow.task import Task
+    from benchflow.task.steps import StepPaths
+
+    try:
+        task = Task(task_dir)
+    except Exception:
+        return []  # the task.toml checks below report it
+    issues = []
+    for step in task.config.steps or ():
+        paths = StepPaths(task.task_dir, task.task_dir / "steps" / step.name)
+        if not paths.instruction_path.is_file():
+            issues.append(f"Missing required file: steps/{step.name}/instruction.md")
+        if not paths.test_path.is_file():
+            issues.append(
+                f"Step {step.name!r} has no tests: add steps/{step.name}/tests/test.sh "
+                "(or the task's tests/test.sh)"
+            )
+    return issues
 
 
 def _declares_steps(toml_path: Path) -> bool:
@@ -366,11 +397,12 @@ def check_task(
         multi_step = _declares_steps(task_dir / "task.toml")
         for f in LEGACY_REQUIRED_FILES:
             if f == "instruction.md" and multi_step:
-                # task.toml multi-step prompts live under steps/<name>/; the
-                # runtime capability check reports the ``steps`` refusal.
+                # task.toml multi-step prompts live under steps/<name>/.
                 continue
             if not (task_dir / f).exists():
                 issues.append(f"Missing required file: {f}")
+        if multi_step:
+            issues.extend(_step_file_issues(task_dir))
 
     # Validate task.toml
     # Note: [agent] and [agent].timeout_sec are optional at runtime
@@ -448,7 +480,9 @@ def check_task(
             )
         )
         issues.extend(_check_review_rubric(verifier_dir, verifier_label=verifier_label))
-    else:
+    elif not (not has_task_md and _declares_steps(task_dir / "task.toml")):
+        # A multi-step task may verify every step with its own tests; the
+        # step check above names a step that has none.
         issues.append(
             "Missing verifier/ directory (or legacy tests/; verifier needs "
             "test.sh or a verifier.md selected strategy)"
@@ -603,6 +637,11 @@ def check_task_warnings(task_dir: Path) -> list[str]:
                 paths.tests_dir,
                 label=_logical_dir_label(paths, kind="verifier"),
                 workspace=task_workspace(task_dir),
+            )
+        )
+        warnings.extend(
+            _check_grade_time_downloads(
+                paths.tests_dir, label=_logical_dir_label(paths, kind="verifier")
             )
         )
     image_only = _image_only_runner_warning(task_dir, paths)

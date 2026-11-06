@@ -368,13 +368,25 @@ def test_every_start_path_admits_the_image_environment(path, function, call):
 def test_daytona_creates_only_through_the_admission():
     """A sandbox of the task's image is created only inside the admission,
     which probes it before any other exec. The DinD VM is BenchFlow's own
-    DinD image; the task's image runs in its inner containers."""
+    DinD image; the task's image runs in its inner containers. The rebuild
+    of an image whose build key cannot start (``_create_or_rebuild``)
+    creates for those two alone."""
+
+    def admitted(name: str, source: str) -> bool:
+        return name.endswith("_create_sandbox_without_toolbox_bash_env") or (
+            name == "_DaytonaDinD.start" and "dind_image" in source
+        )
+
     for path in sorted((SRC / "sandbox").glob("daytona*.py")):
         for name, source in _qualified(ast.parse(path.read_text())).items():
             if "._create_sandbox(" in source:
-                assert name.endswith("_create_sandbox_without_toolbox_bash_env") or (
-                    name == "_DaytonaDinD.start" and "dind_image" in source
+                assert admitted(name, source) or name.endswith(
+                    "DaytonaSandbox._create_or_rebuild"
                 ), f"{path.name}:{name} creates a sandbox without the admission"
+            if "._create_or_rebuild(" in source:
+                assert admitted(name, source), (
+                    f"{path.name}:{name} rebuilds a sandbox without the admission"
+                )
 
 
 _IMPORTED = '() { echo BF-IMAGE-FUNCTION-RAN >&2; command sed "$@"; }'
@@ -502,7 +514,7 @@ def test_the_stage_proof_makes_no_link_root_s():
     import re
 
     proof = _transport.stage_proof(
-        ["/opt/benchflow/run/stage-x/cmd"], shell="/bin/sh", path="/usr/bin:/bin"
+        ["/opt/runtime/run/stage-x/cmd"], shell="/bin/sh", path="/usr/bin:/bin"
     )
     owners = re.findall(r"chown (\S+) 0:0 (\S+) && (\[ ! -L \S+ \]) && chmod", proof)
     assert len(owners) == 3 and all(flag == "-h" for flag, _, _ in owners), proof

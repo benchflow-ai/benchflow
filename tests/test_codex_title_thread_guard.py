@@ -223,7 +223,7 @@ def _run(tmp_path: Path, adapter: Path, *, fixed: bool) -> list[dict]:
     work = home / "work"
     work.mkdir(parents=True)
     launcher = CODEX_ACP_BUILTIN_LAUNCH.replace(
-        "/opt/benchflow/bin/codex-acp", str(adapter)
+        "/opt/runtime/bin/codex-acp", str(adapter)
     )
     if fixed:
         wrapper = home / "codex-app-server"

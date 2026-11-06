@@ -126,6 +126,11 @@ _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC = 900.0
 # launch before the agent started (#1208). 24 h still outlives the longest
 # agent budgets in use (50400 s).
 _DAYTONA_SSH_ACCESS_TTL_MINUTES = 24 * 60
+# What Daytona's PTY session gives the agent process and its ssh command does
+# not (read in the reviewer's image: PATH, HOME and the user are the same). A
+# launch moved from the PTY to ssh carries them, under the image's and the
+# agent env's own values.
+PTY_SESSION_ENV = {"TERM": "xterm-256color", "SHELL": "/bin/bash"}
 _DAYTONA_SSH_SERVER_ALIVE_INTERVAL_SEC = 30
 _DAYTONA_SSH_SERVER_ALIVE_COUNT_MAX = 12
 
@@ -314,8 +319,12 @@ class DaytonaProcess(SubprocessLiveProcess):
         compose_cmd_base: str = "",
         route: Any = None,
         bf_env: Any = None,
+        terminal_env: dict[str, str] | None = None,
     ):
         self._bootstrap_env: dict[str, str] = {}
+        # PTY_SESSION_ENV for a launch moved from the PTY (a reviewer's), on a
+        # direct sandbox: compose's exec gives the agent no terminal either way.
+        self._terminal_env = {} if is_dind else dict(terminal_env or {})
         self._sandbox = sandbox
         # BenchFlow's sandbox (its exec route), for the terminal check.
         self._bf_env = bf_env
@@ -384,7 +393,9 @@ class DaytonaProcess(SubprocessLiveProcess):
         self._unlink_ssh_config(path)
 
     @classmethod
-    async def from_sandbox_env(cls, env: Any) -> DaytonaProcess:
+    async def from_sandbox_env(
+        cls, env: Any, *, terminal_env: dict[str, str] | None = None
+    ) -> DaytonaProcess:
         """Create from a sandbox environment (DaytonaSandbox)."""
         sandbox = env._sandbox
         if not sandbox:
@@ -414,6 +425,7 @@ class DaytonaProcess(SubprocessLiveProcess):
             compose_cmd_base=compose_cmd_base,
             route=await launch_route(env),
             bf_env=env,
+            terminal_env=terminal_env,
         )
         from benchflow.sandbox._inert_bootstrap import restored_env
 
@@ -496,7 +508,13 @@ class DaytonaProcess(SubprocessLiveProcess):
     ) -> None:
         # The launch env's loader and start-up values travel under inert
         # names and become real only after the drop (C8, PT-C8-3).
-        env = inert_task_env({**getattr(self, "_bootstrap_env", {}), **(env or {})})
+        env = inert_task_env(
+            {
+                **getattr(self, "_terminal_env", {}),
+                **getattr(self, "_bootstrap_env", {}),
+                **(env or {}),
+            }
+        )
         # Lines over the ACP limit are rewritten in the sandbox: Daytona
         # closes the PTY websocket (1008) on a multi-MB message (#1138). The
         # filter runs after the privilege drop (root_launch_script).
@@ -517,7 +535,7 @@ class DaytonaProcess(SubprocessLiveProcess):
             # does not accept --env-file, and `--env KEY=value` would leak
             # provider values into the remote command line.
             if env:
-                remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
+                remote_env_path = f"/tmp/runtime_env_{uuid.uuid4().hex[:16]}.env"
                 await self._bootstrap_env_file(
                     remote_env_path=remote_env_path,
                     env=env,
@@ -567,7 +585,7 @@ class DaytonaProcess(SubprocessLiveProcess):
                 # Python-generated unique suffix; see DinD branch above for why
                 # $$ shell expansion is fragile across quoting boundaries.
                 remote_env_path = _stage_path(
-                    self._file_route, f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
+                    self._file_route, f"/tmp/runtime_env_{uuid.uuid4().hex[:16]}.env"
                 )
                 await self._bootstrap_env_file(
                     remote_env_path=remote_env_path,
@@ -774,7 +792,7 @@ class DaytonaPtyProcess(LiveProcess):
 
             if env:
                 remote_env_path = _stage_path(
-                    self._file_route, f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
+                    self._file_route, f"/tmp/runtime_env_{uuid.uuid4().hex[:16]}.env"
                 )
                 self._remote_env_path = remote_env_path
                 await self._bootstrap_env_file(
@@ -826,7 +844,7 @@ class DaytonaPtyProcess(LiveProcess):
 
             remote_script_path = _stage_path(
                 self._file_route,
-                f"/tmp/benchflow_pty_exec_{uuid.uuid4().hex[:16]}.sh",
+                f"/tmp/runtime_pty_exec_{uuid.uuid4().hex[:16]}.sh",
             )
             self._remote_script_path = remote_script_path
             await _bootstrap_daytona_script_file(

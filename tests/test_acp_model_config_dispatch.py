@@ -102,8 +102,8 @@ async def test_codex_litellm_config_mismatch_uses_bare_model_for_set_model(tmp_p
         },
     )
     agent_env = {
-        "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
-        LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
+        "BENCHFLOW_PROVIDER_MODEL": "runtime-openai-gpt-5.4-mini",
+        LITELLM_MODEL_ALIAS_ENV: "runtime-openai-gpt-5.4-mini",
         LITELLM_MODEL_VIA_ENV: "1",
         "CODEX_CONFIG": '{"model":"another-model"}',
     }
@@ -123,7 +123,7 @@ async def test_codex_litellm_config_mismatch_uses_bare_model_for_set_model(tmp_p
 @pytest.mark.parametrize("reasoning_effort", [None, "high"])
 async def test_codex_litellm_config_owns_model_selection(tmp_path, reasoning_effort):
     """Guards PR #1076: exact launch config owns Codex model and effort."""
-    alias = "benchflow-openai-gpt-5.4"
+    alias = "runtime-openai-gpt-5.4"
     mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
     transport = await _connect(
         mock_acp,
@@ -257,8 +257,8 @@ async def test_env_owned_model_skips_advertised_model_option(tmp_path, monkeypat
         tmp_path=tmp_path,
         agent_env={
             LITELLM_MODEL_VIA_ENV: "1",
-            LITELLM_MODEL_ALIAS_ENV: "benchflow-deepseek-deepseek-v4-flash",
-            "OPENAI_MODEL": "benchflow-deepseek-deepseek-v4-flash",
+            LITELLM_MODEL_ALIAS_ENV: "runtime-deepseek-deepseek-v4-flash",
+            "OPENAI_MODEL": "runtime-deepseek-deepseek-v4-flash",
         },
     )
     mock_acp.set_config_option.assert_not_awaited()
@@ -322,3 +322,40 @@ async def test_effort_advertisement_and_registry_override(
         reasoning_effort="low",
     )
     mock_acp.set_config_option.assert_awaited_once_with(declared or "effort", "low")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supports", [True, False])
+async def test_own_route_label_is_sent_only_where_the_agent_takes_a_model(
+    tmp_path, monkeypatch, supports
+):
+    """The model label of an agent with model_route = "agent"
+    goes out with session/set_model when the agent supports it and never
+    otherwise; with no label nothing is sent and the agent uses its own."""
+    from benchflow.agents.registry import AGENTS, AgentConfig
+
+    monkeypatch.setitem(
+        AGENTS,
+        "en191-own-route",
+        AgentConfig(
+            name="en191-own-route",
+            install_cmd="true",
+            launch_cmd="en191-own-route --acp",
+            model_route="agent",
+            supports_acp_set_model=supports,
+        ),
+    )
+    mock_acp = _make_mocks()
+    await _connect(
+        mock_acp, agent="en191-own-route", model="deepseek-v4-flash", tmp_path=tmp_path
+    )
+    if supports:
+        mock_acp.set_model.assert_awaited_once_with("deepseek-v4-flash")
+    else:
+        mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+    mock_acp = _make_mocks()
+    await _connect(mock_acp, agent="en191-own-route", model=None, tmp_path=tmp_path)
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()

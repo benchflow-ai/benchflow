@@ -1,0 +1,20 @@
+[judge]
+files = ["poem.txt"]
+
+[[criterion]]
+name = "about_the_sea"
+type = "binary"
+description = """PASS when poem.txt holds a poem whose subject is the sea or the ocean \
+(its water, waves, tides, shore, depths or sea life), not a poem about something else \
+that mentions the sea in passing. FAIL when poem.txt is missing or empty, or when the poem is about another subject."""
+
+[[criterion]]
+name = "haiku_form"
+type = "binary"
+description = """PASS when poem.txt holds exactly three non-empty lines of verse with about \
+5, 7 and 5 syllables (count the syllables of every word; allow a difference of at most one \
+syllable per line). FAIL when poem.txt is missing or empty, has more or fewer than three lines \
+of verse, or contains anything besides the poem, such as a title, a note or an explanation."""
+
+[scoring]
+aggregation = "all_pass"

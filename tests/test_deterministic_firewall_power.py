@@ -16,8 +16,12 @@ would hand the agent user the firewall that refuses the endpoints:
   commands, so the trial stops before the agent starts.
 - ``fw-rootsh``: a setuid-root copy of bash, setpriv there. Without
   NET_ADMIN it would still make the agent uid 0, whose traffic none of the
-  uid rules match (S3-R1-A-1); under the drop's no_new_privs it gives
-  nothing, and the trial scores as usual.
+  uid rules match (S3-R1-A-1); under the drop's no_new_privs it gives the
+  agent nothing, so S3 disarms. Any process outside that launch could still
+  run it as root, so S2's metadata inventory takes its setuid bit off for
+  the agent's turn and puts it back before grading; the
+  trial scores as usual. Earlier that inventory needed getcap, which
+  this image does not have, and never looked.
 - ``fw-pycap``: ``cap_setuid+ep`` on a copy of python3, then libcap's tools
   and setpriv removed (no getcap, no drop). Root's python3 reads the
   capability, and the trial stops before the agent starts (S3-R1-A-2).
@@ -489,13 +493,27 @@ def test_a_setuid_helper_without_setpriv_is_refused_before_the_agent(firewall_jo
     assert record["drop"] is None
 
 
-def test_a_setuid_root_shell_gives_the_agent_no_uid_0_and_the_trial_runs(firewall_job):
+def test_a_setuid_root_shell_is_disarmed_for_the_agents_turn_and_put_back(
+    firewall_job,
+):
+    """Option A against S2's fail-open (with no getcap in the
+    image the metadata inventory never looked, and a setuid-root bash sat
+    beside the agent) and against refusing the image: S3 disarms the
+    agent's own launch, S2 takes rootsh's setuid bit off for the agent's
+    turn and puts it back before grading, and the trial scores as usual."""
     trial = firewall_job.trial("fw-rootsh")
     probes = _probes(trial)
     assert probes.get("euid") not in (None, "0"), (probes, firewall_job.output[-3000:])
     record = h.read_json(trial / "firewall-power.json")
     assert record["state"] == "disarmed", record
     assert [e["path"] for e in record["found"]] == ["/usr/local/bin/rootsh"]
+    metadata = h.read_json(trial / "cloud-metadata.json")
+    assert metadata["state"] == "on", metadata
+    assert metadata["delegate_inventory"]["python"] == "kit", metadata
+    disarmed = {d["path"]: d["why"] for d in metadata["delegates_disarmed"]}
+    assert disarmed["/usr/local/bin/rootsh"] == "setuid root", disarmed
+    restored = {r["path"]: r["outcome"] for r in metadata["delegates_restored"]}
+    assert restored["/usr/local/bin/rootsh"] == "restored", restored
     assert _result(trial)["rewards"]["reward"] == 1.0
 
 

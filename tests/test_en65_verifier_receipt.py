@@ -17,7 +17,7 @@ async def test_invalid_receipt_retries_then_stays_unknown(response):
         exec=AsyncMock(return_value=ExecResult(stdout=response, return_code=0))
     )
     verifier = SimpleNamespace(
-        execution_receipt=("/run/benchflow/receipt", "main"),
+        execution_receipt=("/run/runtime/receipt", "main"),
         test_command_finishable=True,
     )
     with pytest.raises(_TestEndUnknown, match="incomplete or invalid"):
@@ -34,7 +34,7 @@ async def test_valid_receipt_preserves_running_and_exit_states(response, expecte
         exec=AsyncMock(return_value=ExecResult(stdout=response, return_code=0))
     )
     verifier = SimpleNamespace(
-        execution_receipt=("/run/benchflow/receipt", "main"),
+        execution_receipt=("/run/runtime/receipt", "main"),
         test_command_finishable=True,
     )
     assert await _verifier_finished(sandbox, verifier) == expected

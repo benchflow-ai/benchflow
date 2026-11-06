@@ -34,6 +34,12 @@ PRICE_SOURCE = "agent_session_log"
 SESSION_DIR = "claude-sessions"  # under the trial's agent/ folder
 # Where Claude Code keeps its session logs, under the agent's home.
 CLAUDE_SESSION_LOGS = ".claude/projects"
+CODEX_SESSION_DIR = "codex-sessions"  # under the trial's agent/ folder
+# Where Codex keeps its session rollouts, under its home (CODEX_HOME).
+CODEX_SESSION_LOGS = "sessions"
+#: Keep the agent's session log even when the proxy saw its calls (a check
+#: of the proxy's records against the agent's own).
+KEEP_SESSION_LOGS_ENV = "BENCHFLOW_KEEP_AGENT_SESSION_LOGS"
 _MAX_BYTES = 64 * 1024 * 1024
 _MAX_ENTRIES = 5000
 _TIMEOUT_SEC = 120
@@ -47,6 +53,18 @@ def _home(cfg: Any) -> str:
 def _runs_claude_code(agent: str) -> bool:
     name = agent.rsplit("/", 1)[-1]
     return name in ("claude-agent-acp", "claude")
+
+
+def _runs_codex(agent: str) -> bool:
+    name = agent.rsplit("/", 1)[-1]
+    return name in ("codex-acp", "codex")
+
+
+def _contributors(rollout: Any) -> set[str]:
+    """The primary agent and every native role that made the trial's calls."""
+    return {rollout._config.primary_agent or ""} | getattr(
+        rollout, "_native_usage_agents", set()
+    )
 
 
 def _secrets(rollout: Any) -> list[str]:
@@ -153,9 +171,7 @@ async def price_from_session_log(rollout: Any) -> None:
     # other roles or deduplicate their provider subtotal in mixed usage.
     if metrics.get("usage_source") == "provider_response":
         return
-    contributors = {cfg.primary_agent or ""} | getattr(
-        rollout, "_native_usage_agents", set()
-    )
+    contributors = _contributors(rollout)
     if not contributors or any(not _runs_claude_code(agent) for agent in contributors):
         return
     if metrics.get("cost_usd") is not None or not _runs_claude_code(
@@ -216,3 +232,151 @@ async def price_from_session_log(rollout: Any) -> None:
         estimate["usd"],
         estimate["method"],
     )
+
+
+async def keep_session_logs(rollout: Any) -> None:
+    """Copy the agent's own session log when the proxy saw none of its calls
+    and that agent made every call in the trial.
+
+    Claude Code's (``~/.claude/projects``) goes to ``agent/claude-sessions/``
+    and Codex's (``$CODEX_HOME/sessions``, ``~/.codex/sessions`` by default)
+    to ``agent/codex-sessions/``, redacted like the price's copy, so a run
+    around the proxy, with no OpenTelemetry from the agent, still has a
+    record of each model call (``trajectories/model_calls.py``). With
+    ``BENCHFLOW_KEEP_AGENT_SESSION_LOGS=1`` the log is kept for proxied runs
+    too, and for a trial with a token or turn budget, whose subagents' share
+    of it only the agent's own log tells (``trial_budget.subagents``). Never
+    fails the rollout.
+    """
+    import os
+
+    metrics = getattr(rollout, "_usage_metrics", None) or {}
+    proxied = metrics.get("usage_source") == "provider_response"
+    if (
+        proxied
+        and os.environ.get(KEEP_SESSION_LOGS_ENV) != "1"
+        and getattr(rollout, "_trial_budget", None) is None
+    ):
+        return
+    cfg = rollout._config
+    paths = getattr(rollout, "_rollout_paths", None)
+    if rollout._env is None or paths is None:
+        return
+    if (
+        getattr(rollout, "_branch_child_active", False)
+        or getattr(rollout, "_branch_forks", None)
+        or getattr(rollout, "_from_branch_snapshot", False)
+    ):
+        # The sandbox holds another rollout's turns (see price_from_session_log).
+        return
+    # A log is the trial's record only when its agent made every call: with
+    # another agent's turns in the trial, Claude's log would give its calls,
+    # and its cost, as the trial's (the price above refuses the same).
+    agents = _contributors(rollout)
+    if all(_runs_claude_code(agent) for agent in agents):
+        source, target = (
+            f"{_home(cfg)}/{CLAUDE_SESSION_LOGS}",
+            paths.agent_dir / SESSION_DIR,
+        )
+    elif all(_runs_codex(agent) for agent in agents):
+        env = getattr(rollout, "_agent_env", None) or {}
+        home = env.get("CODEX_HOME") or f"{_home(cfg)}/.codex"
+        source, target = (
+            f"{home}/{CODEX_SESSION_LOGS}",
+            paths.agent_dir / CODEX_SESSION_DIR,
+        )
+    else:
+        return
+    if target.exists():
+        return
+    try:
+        await asyncio.wait_for(
+            _copy_out(rollout._env, source, target, _secrets(rollout)),
+            timeout=_TIMEOUT_SEC + 60,
+        )
+    except Exception as exc:  # the sandbox may be gone; the calls stay unrecorded
+        logger.info("Could not copy the agent's session log: %s", exc)
+
+
+def compactions_in(lines: list[str]) -> dict[str, Any]:
+    """The compactions Claude Code's session log records: each line it
+    writes at a compaction (``"subtype": "compact_boundary"``), with what
+    triggered it and the context's tokens before it (``compactMetadata``)."""
+    pre_tokens: list[int] = []
+    count = auto = manual = subagent = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("subtype") != "compact_boundary":
+            continue
+        if row.get("isSidechain") is True:
+            subagent += 1
+            continue
+        count += 1
+        meta = row.get("compactMetadata")
+        meta = meta if isinstance(meta, dict) else {}
+        trigger = meta.get("trigger")
+        auto += trigger == "auto"
+        manual += trigger == "manual"
+        tokens = meta.get("preTokens")
+        if isinstance(tokens, int) and not isinstance(tokens, bool):
+            pre_tokens.append(tokens)
+    return {
+        "count": count,
+        "auto": auto,
+        "manual": manual,
+        "subagent": subagent,
+        "pre_tokens": pre_tokens,
+        "source": "claude-code-session-log",
+    }
+
+
+async def count_compactions(rollout: Any) -> None:
+    """Count Claude Code's compactions in this trial (``_compactions``, for
+    result.json): from the log copied into ``agent/claude-sessions/`` when
+    there is one, else the lines that mark them, read in the sandbox while
+    it is up. Left None when another agent made calls, the sandbox holds
+    another rollout's turns, or the log cannot be read. Never fails the
+    rollout."""
+    agents = _contributors(rollout)
+    paths = getattr(rollout, "_rollout_paths", None)
+    if (
+        not agents
+        or not all(_runs_claude_code(agent) for agent in agents)
+        or rollout._env is None
+        or paths is None
+        or getattr(rollout, "_branch_child_active", False)
+        or getattr(rollout, "_branch_forks", None)
+        or getattr(rollout, "_from_branch_snapshot", False)
+    ):
+        return
+    copied = paths.agent_dir / SESSION_DIR
+    lines: list[str] = []
+    try:
+        if copied.is_dir():
+            for path in sorted(copied.rglob("*.jsonl")):
+                if path.is_file() and not path.is_symlink():
+                    lines += [
+                        line
+                        for line in path.read_text(errors="replace").splitlines()
+                        if "compact_boundary" in line
+                    ]
+        else:
+            source = f"{_home(rollout._config)}/{CLAUDE_SESSION_LOGS}"
+            found = await exec_raw(
+                rollout._env.exec,
+                f"test -d {shlex.quote(source)} || exit 3; "
+                f"grep -rhs --include='*.jsonl' compact_boundary {shlex.quote(source)}"
+                " || true",
+                user="root",
+                timeout_sec=30,
+            )
+            if found.return_code == 3:
+                return
+            lines = str(found.stdout or "").splitlines()
+    except Exception as exc:  # the sandbox may be gone; the count stays unknown
+        logger.info("Could not count Claude Code's compactions: %s", exc)
+        return
+    rollout._compactions = compactions_in(lines)

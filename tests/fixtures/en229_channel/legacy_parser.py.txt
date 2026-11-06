@@ -1,0 +1,40 @@
+"""Frozen earlier parser for the equivalence tests."""
+import re
+from benchflow._runtime_tree import KIT
+
+#: The two wrappers ``kit_prepare_command`` writes at ``KIT_PYTHON``: the
+#: kit's Python, through the system loader with the kit's libraries when the
+#: interpreter loads one from outside the system folders, or directly.
+_WRAPPER_WITH_LOADER = re.compile(
+    rf"#!{re.escape(KIT)}/bin/sh\n"
+    r"exec (?P<ld>/(?:lib|lib64|usr/lib|usr/lib64)/ld-(?:linux[-.\w]*\.so\.\d+|musl-\w+\.so\.1))"
+    rf" --library-path {re.escape(KIT)}/lib {re.escape(KIT)}/libexec/python3"
+    r' -I -S -B "\$@"\n?'
+)
+_WRAPPER_DIRECT = re.compile(
+    rf"#!{re.escape(KIT)}/bin/sh\n"
+    rf"exec {re.escape(KIT)}/libexec/python3"
+    r' -I -S -B "\$@"\n?'
+)
+
+
+def helper_python_argv(wrapper: str) -> list[str] | None:
+    """The kit Python's argv without its shell wrapper, or None.
+
+    *wrapper* is the text of :data:`KIT_PYTHON`; only the two forms
+    ``kit_prepare_command`` writes are accepted.
+    """
+    match = _WRAPPER_WITH_LOADER.fullmatch(wrapper)
+    if match is not None:
+        return [
+            match["ld"],
+            "--library-path",
+            f"{KIT}/lib",
+            f"{KIT}/libexec/python3",
+            "-I",
+            "-S",
+            "-B",
+        ]
+    if _WRAPPER_DIRECT.fullmatch(wrapper) is not None:
+        return [f"{KIT}/libexec/python3", "-I", "-S", "-B"]
+    return None

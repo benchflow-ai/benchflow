@@ -18,11 +18,15 @@ from benchflow.cli.reviewer_options import (
     ReviewerConcurrencyOption,
     ReviewerEffortOption,
     ReviewerEnvOption,
+    ReviewerEvidenceTimeoutOption,
     ReviewerIdleTimeoutOption,
     ReviewerImageOption,
+    ReviewerMemoryOption,
     ReviewerModelOption,
     ReviewerNetworkOption,
     ReviewerSandboxOption,
+    ReviewerSetupTimeoutOption,
+    ReviewerStorageOption,
     ReviewerTimeoutOption,
     reviewer_from_cli,
     reviewer_idle_timeout,
@@ -55,11 +59,18 @@ def _refresh_job_artifacts(job_dir: Path) -> None:
         json.loads((trial.path / "result.json").read_text()) for trial in job.trials
     ]
     summary.update(score_summary_fields(rows))
+    from benchflow.setting_groups import setting_rows
+
+    summary["scoring"]["settings"] = setting_rows(
+        job.trials, summaries=[summary]
+    ).to_dict()
     if "planned" in summary:
         from benchflow._utils.scoring import pass_rate
 
+        # The scoring rule's passes, as the run's own score_of_plan counts
+        # them (summary.json's "passed" is the audit count).
         summary["score_of_plan"] = pass_rate(
-            passed=summary["passed"], total=summary["planned"]
+            passed=summary["scoring"]["passed"], total=summary["planned"]
         )
     previous_rates = summary.get("solve_rates") or {}
     summary["solve_rates"] = job.solve_rates(
@@ -93,6 +104,10 @@ def eval_score(
     reviewer_sandbox: ReviewerSandboxOption = None,
     reviewer_timeout_sec: ReviewerTimeoutOption = None,
     reviewer_idle_timeout_sec: ReviewerIdleTimeoutOption = None,
+    reviewer_storage_mb: ReviewerStorageOption = None,
+    reviewer_memory_mb: ReviewerMemoryOption = None,
+    reviewer_setup_timeout_sec: ReviewerSetupTimeoutOption = None,
+    reviewer_evidence_timeout_sec: ReviewerEvidenceTimeoutOption = None,
     reviewer_concurrency: ReviewerConcurrencyOption = None,
     reviewer_image: ReviewerImageOption = None,
     reviewer_agent_env: ReviewerEnvOption = None,
@@ -107,6 +122,10 @@ def eval_score(
         environment=reviewer_sandbox,
         timeout_sec=reviewer_timeout_sec,
         idle_timeout_sec=reviewer_idle_timeout(reviewer_idle_timeout_sec),
+        storage_mb=reviewer_storage_mb,
+        memory_mb=reviewer_memory_mb,
+        setup_timeout_sec=reviewer_setup_timeout_sec,
+        evidence_timeout_sec=reviewer_evidence_timeout_sec,
         concurrency=reviewer_concurrency,
         image=reviewer_image,
         agent_env=_parse_agent_env(reviewer_agent_env) if reviewer_agent_env else None,

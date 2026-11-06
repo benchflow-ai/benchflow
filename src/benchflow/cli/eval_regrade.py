@@ -12,9 +12,28 @@ from rich.table import Table
 
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
+    _parse_agent_env,
     console,
     exit_if_missing,
     print_error,
+)
+from benchflow.cli.reviewer_options import (
+    ReviewerAgentOption,
+    ReviewerConcurrencyOption,
+    ReviewerEffortOption,
+    ReviewerEnvOption,
+    ReviewerEvidenceTimeoutOption,
+    ReviewerIdleTimeoutOption,
+    ReviewerImageOption,
+    ReviewerMemoryOption,
+    ReviewerModelOption,
+    ReviewerNetworkOption,
+    ReviewerSandboxOption,
+    ReviewerSetupTimeoutOption,
+    ReviewerStorageOption,
+    ReviewerTimeoutOption,
+    reviewer_from_cli,
+    reviewer_idle_timeout,
 )
 
 
@@ -52,6 +71,31 @@ def eval_regrade(
     as_json: Annotated[
         bool, typer.Option("--json", help="Print the summary as JSON")
     ] = False,
+    review: Annotated[
+        bool,
+        typer.Option(
+            "--review",
+            help=(
+                "Also rerun each trial's rubric review on its saved outputs, "
+                "gated by the new test, and compare the combined score. The "
+                "reviewer is the one the trial recorded, changed by --reviewer-*"
+            ),
+        ),
+    ] = False,
+    reviewer_agent: ReviewerAgentOption = None,
+    reviewer_model: ReviewerModelOption = None,
+    reviewer_reasoning_effort: ReviewerEffortOption = None,
+    reviewer_sandbox: ReviewerSandboxOption = None,
+    reviewer_timeout_sec: ReviewerTimeoutOption = None,
+    reviewer_idle_timeout_sec: ReviewerIdleTimeoutOption = None,
+    reviewer_storage_mb: ReviewerStorageOption = None,
+    reviewer_memory_mb: ReviewerMemoryOption = None,
+    reviewer_setup_timeout_sec: ReviewerSetupTimeoutOption = None,
+    reviewer_evidence_timeout_sec: ReviewerEvidenceTimeoutOption = None,
+    reviewer_concurrency: ReviewerConcurrencyOption = None,
+    reviewer_image: ReviewerImageOption = None,
+    reviewer_agent_env: ReviewerEnvOption = None,
+    reviewer_open_network: ReviewerNetworkOption = None,
 ) -> None:
     """Re-run the task's current verifier on each trial's frozen workspace.
 
@@ -65,6 +109,29 @@ def eval_regrade(
         path, next_step="pass a job or trial folder of a run with --freeze-workspace"
     )
     _apply_dotenv_to_process_env()
+    reviewer = reviewer_from_cli(
+        agent=reviewer_agent,
+        model=reviewer_model,
+        reasoning_effort=reviewer_reasoning_effort,
+        environment=reviewer_sandbox,
+        timeout_sec=reviewer_timeout_sec,
+        idle_timeout_sec=reviewer_idle_timeout(reviewer_idle_timeout_sec),
+        storage_mb=reviewer_storage_mb,
+        memory_mb=reviewer_memory_mb,
+        setup_timeout_sec=reviewer_setup_timeout_sec,
+        evidence_timeout_sec=reviewer_evidence_timeout_sec,
+        concurrency=reviewer_concurrency,
+        image=reviewer_image,
+        agent_env=_parse_agent_env(reviewer_agent_env) if reviewer_agent_env else None,
+        open_network=reviewer_open_network,
+    )
+    if reviewer is not None and not review:
+        print_error(
+            "the reviewer options (--reviewer-model and the rest) apply only "
+            "with --review",
+            next_step="add --review to rerun each trial's rubric review",
+        )
+        raise typer.Exit(2)
     try:
         summary = regrade(
             path,
@@ -72,6 +139,8 @@ def eval_regrade(
             sandbox=sandbox,
             concurrency=concurrency,
             reason=reason,
+            review=review,
+            reviewer=reviewer,
         )
     except (FileNotFoundError, ValueError) as exc:
         # stderr, like every error: under --json it becomes the one JSON object.
@@ -110,13 +179,24 @@ def eval_regrade(
             f"{counts['not_regradable']} not regradable. "
             f"Summary: {escape(str(Path(summary.path) / 'regrade-summary.json'))}"
         )
+        if any(row.compared == "verifier_reward" for row in summary.trials):
+            console.print(
+                "Trials with a rubric review compare the test's own reward "
+                "(verifier_reward): a regrade reruns the test, not the review "
+                "(--review reruns it too)."
+            )
+        if review:
+            console.print(
+                "Rubric reviews ran again: rewards are the combined score "
+                "(tests, blockers and quality)."
+            )
         flipped = [row for row in summary.changed if row.task_changed is False]
         if flipped:
             console.print(
                 f"[yellow]{len(flipped)} changed verdict(s) on an unchanged "
                 "task: the verifier read state a regrade does not restore "
                 "(packages installed system-wide, services, files outside the "
-                "workspace) or is nondeterministic. See docs/jobs/regrade.md.[/yellow]"
+                "workspace) or is nondeterministic. See docs/scale/resume.md#regrade-saved-work.[/yellow]"
             )
     if summary.failed:
         raise typer.Exit(1)

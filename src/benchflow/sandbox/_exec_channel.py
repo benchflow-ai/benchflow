@@ -115,11 +115,14 @@ _WRAPPER_DIRECT = re.compile(
 )
 
 
-def helper_python_argv(wrapper: str) -> list[str] | None:
+def helper_python_argv(
+    wrapper: str, *, channel_python: bool = False
+) -> list[str] | None:
     """The kit Python's argv without its shell wrapper, or None.
 
     *wrapper* is the text of :data:`KIT_PYTHON`; only the two forms
-    ``kit_prepare_command`` writes are accepted.
+    ``kit_prepare_command`` writes are accepted. Daytona may also opt into
+    the separate, authenticated channel interpreter's exact wrapper.
     """
     match = _WRAPPER_WITH_LOADER.fullmatch(wrapper)
     if match is not None:
@@ -134,6 +137,12 @@ def helper_python_argv(wrapper: str) -> list[str] | None:
         ]
     if _WRAPPER_DIRECT.fullmatch(wrapper) is not None:
         return [f"{KIT}/libexec/python3", "-I", "-S", "-B"]
+    if channel_python:
+        from benchflow.sandbox._channel_python import CHANNEL_BINARY
+        from benchflow.sandbox._channel_python import wrapper as channel_wrapper
+
+        if wrapper == channel_wrapper():
+            return [CHANNEL_BINARY, "-I", "-S", "-B"]
     return None
 
 
@@ -173,6 +182,8 @@ def verdict_argv(bfx: str) -> list[str]:
 HELPER_SOURCE = r"""
 import errno, json, os, selectors, signal, struct, subprocess, sys, time
 GRACE = 2.0
+# A provider that waits for stream EOF has no post-exit grace limit.
+GRACE = globals().get('BF_STREAM_GRACE', GRACE)
 # Children inherit the environment Docker gave this exec, byte for byte:
 # Python itself adds to its own (PEP 538 sets LC_CTYPE under a C locale,
 # and -I cannot stop it), so undo whatever differs from the block the
@@ -180,6 +191,7 @@ GRACE = 2.0
 with open('/proc/self/environ', 'rb') as f:
     given = [e.split(b'=', 1) for e in f.read().split(b'\0') if b'=' in e]
 given = dict((k, v) for k, v in given)
+given = globals().get('BF_GIVEN_ENV', given)
 for k in list(os.environb):
     if k not in given:
         del os.environb[k]
@@ -194,6 +206,7 @@ signal.signal(signal.SIGCHLD, lambda *a: None)
 os.set_blocking(0, False)
 inbuf = b''
 jobs = {}
+queries = set()
 # The write-ahead start record: a step is listed here before it can exist,
 # so after a death the host reads which steps may have run. Root's alone, a
 # new file per helper; no journal (a local test) means none is written.
@@ -229,8 +242,10 @@ def start(head, body):
     # may have started.
     out(b'S', i, b'')
     try:
-        p = subprocess.Popen(head['a'], cwd=head['d'],
-            stdin=subprocess.PIPE if head['n'] >= 0 else subprocess.DEVNULL,
+        cwd = head['d'] if head['d'] is not None else globals().get('BF_WORKDIR')
+        p = subprocess.Popen(head['a'], cwd=cwd,
+            stdin=subprocess.PIPE if head['n'] >= 0 or globals().get('BF_KEEP_STDIN')
+                else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True, close_fds=True)
     except BaseException as e:
@@ -244,7 +259,7 @@ def start(head, body):
         os.set_blocking(p.stdin.fileno(), False)
         if body:
             sel.register(p.stdin, selectors.EVENT_WRITE, (i, b'I'))
-        else:
+        elif head['n'] >= 0 or not globals().get('BF_KEEP_STDIN'):
             p.stdin.close()
 def feed(i, job):
     p = job['p']
@@ -280,7 +295,8 @@ def reap():
     for i, job in list(jobs.items()):
         if job['end'] is None and job['p'].poll() is not None:
             job['end'] = now
-        if job['end'] is not None and (job['open'] == 0 or now - job['end'] >= GRACE):
+        if job['end'] is not None and (job['open'] == 0 or
+                (GRACE is not None and now - job['end'] >= GRACE)):
             finish(i, job)
 def take():
     # Every whole frame in, then the steps no cancel frame withdrew: a
@@ -298,6 +314,22 @@ def take():
             break
         body = inbuf[4 + size:4 + size + n]
         inbuf = inbuf[4 + size + n:]
+        if head.get('q') is not None:
+            queries.add(head['q'])
+            continue
+        if head.get('p') is not None:
+            out(b'H', 0, b'')
+            continue
+        if head.get('k') is not None:
+            job = jobs.get(head['k'])
+            # A reaped leader no longer reserves its process-group id.
+            if job is not None and job['p'].returncode is None:
+                try:
+                    os.killpg(job['p'].pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            out(b'K', head['k'], b'')
+            continue
         if head.get('c') is not None:
             cancelled.add(head['c'])
             continue
@@ -315,7 +347,7 @@ out(b'R', 0, str(os.getpid()).encode())
 while True:
     wait = None
     ends = [j['end'] for j in jobs.values() if j['end'] is not None]
-    if ends:
+    if ends and GRACE is not None:
         wait = max(0.0, min(ends) + GRACE - time.monotonic())
     for key, ev in sel.select(wait):
         i, kind = key.data
@@ -360,6 +392,10 @@ while True:
                 key.fileobj.close()
                 job['open'] -= 1
     reap()
+    for i in queries:
+        if i in jobs:
+            out(b'T', i, b'')
+    queries.clear()
 """
 
 

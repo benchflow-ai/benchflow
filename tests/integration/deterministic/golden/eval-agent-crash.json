@@ -21,11 +21,11 @@
       "kind": "execute",
       "observation_id": "obs-1",
       "raw_input": {
-        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/benchflow/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/runtime/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
         "description": "Kill the Claude Code CLI"
       },
       "status": "in_progress",
-      "title": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/benchflow/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+      "title": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/runtime/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
       "tool_call_id": "toolu_fake_crash_0",
       "tool_name": "Bash",
       "type": "tool_call"
@@ -78,7 +78,7 @@
             "arguments": {},
             "extra": {
               "status": "in_progress",
-              "title": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/benchflow/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30"
+              "title": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/runtime/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30"
             },
             "function_name": "execute",
             "tool_call_id": "toolu_fake_crash_0"
@@ -98,7 +98,7 @@
       "tool_calls": [
         {
           "arguments": {
-            "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/benchflow/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+            "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/runtime/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
             "description": "Kill the Claude Code CLI"
           },
           "id": "toolu_fake_crash_0",

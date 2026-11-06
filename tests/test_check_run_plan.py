@@ -64,6 +64,7 @@ def _run_refusal(
     resolved_env=None,
     agent="claude-agent-acp",
     sandbox_user="agent",
+    **config,
 ) -> str | None:
     """Run the real setup; stop at the factory, without constructing a sandbox."""
     planes = MagicMock()
@@ -88,14 +89,17 @@ def _run_refusal(
     planes.create_environment.side_effect = boundary
     try:
         native = materialize_task_dir(task_dir)
+        # Explicit scenes bypass from_legacy, which builds the single scene.
+        build = RolloutConfig if "scenes" in config else RolloutConfig.from_legacy
+        if "scenes" not in config:
+            config.update(agent=agent, model=model)
         rollout = Rollout(
-            RolloutConfig.from_legacy(
+            build(
                 task_path=native,
-                agent=agent,
-                model=model,
                 sandbox_user=sandbox_user,
                 jobs_dir=tmp_path / "jobs",
                 planes=planes,
+                **config,
             )
         )
         asyncio.run(rollout.setup())
@@ -110,7 +114,8 @@ def _run_refusal(
 @pytest.mark.parametrize(
     "config, marker",
     [
-        ('[[steps]]\nname = "first"\n', "steps:"),
+        # Multi-step tasks now run; a step's artifacts are still refused.
+        ('[[steps]]\nname = "first"\nartifacts = ["/app/x"]\n', "steps[0].artifacts:"),
         (
             '[verifier]\nnetwork_mode = "allowlist"\nallowed_hosts = ["example.invalid"]\n',
             "verifier.network_mode:",
@@ -303,13 +308,13 @@ def test_task_folder_checks_every_child_and_fails_if_any_is_bad(tmp_path):
     """Guards D3/REPORT B18: continue past one refusal to check its siblings."""
     root = tmp_path / "tasks"
     _task(root / "a-good")
-    _task(root / "b-refused", '[[steps]]\nname = "first"\n')
+    _task(root / "b-refused", '[[steps]]\nname = "first"\nartifacts = ["/app/x"]\n')
     _task(root / "c-good")
     result = CliRunner().invoke(app, ["check", str(root)])
     assert result.exit_code == 1, result.output
     assert "a-good — valid" in result.stdout
     assert "c-good — valid" in result.stdout
-    assert "steps:" in result.stderr
+    assert "steps[0].artifacts:" in result.stderr
     assert "Missing required file: task.toml" not in result.output
 
 
@@ -379,3 +384,219 @@ def test_dry_run_reports_registry_pin_without_fetching_tasks(
     if expected:
         assert output["bench_version_issue"] in result.stderr
         assert "--ignore-bench-version" in result.stderr
+
+
+# --- an agent that routes its own model calls (model_route = "agent") ----------
+
+_OWN_ROUTE = "en191-own-route"
+
+
+@pytest.fixture
+def own_route_agent(monkeypatch):
+    from benchflow.agents.registry import (
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+        AgentConfig,
+    )
+
+    monkeypatch.setitem(
+        AGENTS,
+        _OWN_ROUTE,
+        AgentConfig(
+            name=_OWN_ROUTE,
+            install_cmd="true",
+            launch_cmd=f"{_OWN_ROUTE} --acp",
+            model_route="agent",
+        ),
+    )
+    monkeypatch.setitem(AGENT_INSTALLERS, _OWN_ROUTE, "true")
+    monkeypatch.setitem(AGENT_LAUNCH, _OWN_ROUTE, f"{_OWN_ROUTE} --acp")
+    monkeypatch.delenv("BENCHFLOW_USAGE_TRACKING", raising=False)
+    return _OWN_ROUTE
+
+
+def _check_args(task: Path, agent: str, label: str | None) -> list[str]:
+    return ["check", str(task), "--agent", agent] + (
+        ["--model", label] if label else []
+    )
+
+
+@pytest.mark.parametrize(
+    "config, marker",
+    [
+        ('[environment]\nnetwork_mode = "no-network"\n', "sandbox has no network"),
+        ('[agent]\nnetwork_mode = "no-network"\n', "keeps the agent offline"),
+        (
+            '[environment]\nnetwork_mode = "allowlist"\nallowed_hosts = ["pypi.org"]\n',
+            "cannot check that they include the agent's model endpoint",
+        ),
+        (
+            '[agent]\nnetwork_mode = "allowlist"\nallowed_hosts = ["pypi.org"]\n',
+            "cannot check that they include the agent's model endpoint",
+        ),
+    ],
+    ids=["sandbox-offline", "agent-offline", "allowlist", "agent-allowlist"],
+)
+@pytest.mark.parametrize("label", [None, "deepseek/deepseek-v4-flash"])
+def test_own_model_route_is_refused_on_a_network_that_holds_the_agent(
+    tmp_path, own_route_agent, config, marker, label
+):
+    """Under no network, an offline agent or an allowlist only
+    BenchFlow's proxy carries model calls, so an agent that routes its own is
+    refused at plan time, before a sandbox exists, by run and check alike."""
+    task = _task(tmp_path / "restricted", config)
+    reason = _run_refusal(task, tmp_path, agent=own_route_agent, model=label)
+    assert reason is not None and marker in reason, reason
+    assert 'routes its own model calls (model_route = "agent")' in reason
+    result = CliRunner().invoke(app, _check_args(task, own_route_agent, label))
+    assert result.exit_code == 1, result.output
+    assert reason in result.stderr
+
+
+def test_own_model_route_is_refused_when_the_run_turns_the_web_off(
+    tmp_path, own_route_agent
+):
+    """The run's own no-web policy (--self-gen-no-internet)
+    holds the agent like an offline task, so it is refused before a sandbox."""
+    task = _task(tmp_path / "no-web")
+    reason = _run_refusal(
+        task, tmp_path, agent=own_route_agent, self_gen_no_internet=True
+    )
+    assert reason is not None and "turns the agent's internet access off" in reason
+
+
+@pytest.mark.parametrize(
+    "config",
+    ["", '[environment]\nnetwork_mode = "denylist"\nblocked_hosts = ["example.com"]\n'],
+    ids=["open", "denylist"],
+)
+@pytest.mark.parametrize("label", [None, "deepseek/deepseek-v4-flash"])
+def test_own_model_route_runs_where_its_endpoint_is_reachable(
+    tmp_path, own_route_agent, config, label
+):
+    """An open network, or a denylist (which leaves every other
+    host reachable through the egress proxy), is not refused."""
+    task = _task(tmp_path / "open", config)
+    assert _run_refusal(task, tmp_path, agent=own_route_agent, model=label) is None
+    result = CliRunner().invoke(app, _check_args(task, own_route_agent, label))
+    assert result.exit_code == 0, result.output
+
+
+def test_own_model_route_refuses_required_usage_tracking(
+    tmp_path, own_route_agent, monkeypatch
+):
+    """--usage-tracking required is refused at plan time for an
+    agent that routes its own model calls, not after its sandbox is paid for;
+    BENCHFLOW_USAGE_TRACKING=required counts too. A proxied agent is not."""
+    task = _task(tmp_path / "metered")
+    reason = _run_refusal(
+        task, tmp_path, agent=own_route_agent, usage_tracking="required"
+    )
+    assert reason is not None
+    assert "BenchFlow cannot meter an agent that routes its own model calls" in reason
+    assert _run_refusal(task, tmp_path, agent=own_route_agent) is None
+    assert (
+        _run_refusal(
+            task,
+            tmp_path,
+            model="anthropic/claude-haiku-4-5",
+            usage_tracking="required",
+        )
+        is None
+    )
+    monkeypatch.setenv("BENCHFLOW_USAGE_TRACKING", "required")
+    assert _run_refusal(task, tmp_path, agent=own_route_agent) == reason
+    result = CliRunner().invoke(app, _check_args(task, own_route_agent, None))
+    assert result.exit_code == 1, result.output
+    assert reason in result.stderr
+
+
+def test_sdk_runtime_refuses_an_own_route_agent_before_its_sandbox_starts(
+    tmp_path, own_route_agent
+):
+    """The Agent + Environment form of bf.run starts the
+    caller's sandbox before the rollout's setup gate, so it refuses an agent
+    that routes its own model calls first: the sandbox never starts."""
+    from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig
+
+    started: list[bool] = []
+
+    class _Inner:
+        async def start(self, *_args, **_kwargs) -> None:
+            started.append(True)
+
+        async def stop(self, *_args, **_kwargs) -> None:
+            return None
+
+    offline = _task(
+        tmp_path / "offline", '[environment]\nnetwork_mode = "no-network"\n'
+    )
+    env = Environment(inner=_Inner(), task_path=offline, sandbox="docker")
+    with pytest.raises(ValueError, match="sandbox has no network"):
+        asyncio.run(Runtime(env, Agent(own_route_agent, None)).execute())
+    env = Environment(
+        inner=_Inner(), task_path=_task(tmp_path / "open"), sandbox="docker"
+    )
+    with pytest.raises(ValueError, match="BenchFlow cannot meter an agent"):
+        asyncio.run(
+            Runtime(
+                env,
+                Agent(own_route_agent, "deepseek-v4-flash"),
+                RuntimeConfig(usage_tracking="required"),
+            ).execute()
+        )
+    assert started == []
+
+
+def test_a_scene_role_that_routes_its_own_calls_is_refused_too(
+    tmp_path, own_route_agent
+):
+    """A scene's other role shares the sandbox's network, so a
+    role agent that routes its own model calls is refused at plan time even
+    when the primary agent goes through the proxy."""
+    from benchflow._types import Role, Scene, Turn
+
+    def scenes(helper: str) -> list[Scene]:
+        return [
+            Scene(
+                roles=[
+                    Role("solver", "claude-agent-acp", "anthropic/claude-haiku-4-5"),
+                    Role("helper", helper),
+                ],
+                turns=[Turn("solver"), Turn("helper", "check the answer")],
+            )
+        ]
+
+    offline = _task(
+        tmp_path / "offline", '[environment]\nnetwork_mode = "no-network"\n'
+    )
+    reason = _run_refusal(offline, tmp_path, scenes=scenes(own_route_agent))
+    assert reason is not None and "sandbox has no network" in reason
+    assert repr(own_route_agent) in reason
+    assert _run_refusal(offline, tmp_path, scenes=scenes("oracle")) is None
+
+
+def test_an_evaluation_refuses_required_usage_once_before_any_trial(
+    tmp_path, own_route_agent
+):
+    """A job (YAML config or SDK Evaluation) that asks for
+    required usage with an agent that routes its own model calls is refused
+    once, before any trial starts, as an expected error with no traceback."""
+    from unittest.mock import AsyncMock
+
+    from benchflow.errors import UserError
+    from benchflow.task.plan_validation import OwnModelRouteError
+
+    task = _task(tmp_path / "metered")
+    job = Evaluation(
+        tasks_dir=task,
+        jobs_dir=tmp_path / "jobs",
+        config=EvaluationConfig(agent=own_route_agent, usage_tracking="required"),
+        job_name="run",
+    )
+    job._run_single_task = AsyncMock()
+    with pytest.raises(OwnModelRouteError, match="BenchFlow cannot meter") as info:
+        asyncio.run(job.run())
+    assert isinstance(info.value, UserError)
+    job._run_single_task.assert_not_called()

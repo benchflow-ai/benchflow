@@ -16,6 +16,15 @@ with a named cause:
   required``, command not found, Cannot find module, npm ERR!).
 - ``agent_model``: the agent's session does not offer the requested model
   (raised before the prompt by :mod:`benchflow.acp.runtime`).
+- ``agent_effort``: the agent's session offers the model, but not at the
+  requested reasoning effort (raised before the prompt, as above).
+- ``agent_budget``: the trial has a token or turn budget, but the agent's
+  model calls go around BenchFlow's model proxy, which enforces it (raised
+  before the prompt by the rollout, :mod:`benchflow.trial_budget`).
+- ``agent_model_catalog``: the agent's model catalog has no entry for the
+  model, so it ran on fallback tools (Codex's warning, or the tools its first
+  request offered; judged by the rollout, see
+  ``rollout._classify_model_catalog_fallback``).
 - ``truncated_trajectory``: the trajectory file has unparseable lines.
 - ``empty_trajectory``: nothing at all after the prompt.
 - ``immediate_exit``: the agent phase lasted under 10 seconds.
@@ -54,6 +63,9 @@ IntegrationCause = Literal[
     "agent_auth",
     "agent_install",
     "agent_model",
+    "agent_effort",
+    "agent_budget",
+    "agent_model_catalog",
     "truncated_trajectory",
     "empty_trajectory",
     "immediate_exit",
@@ -63,6 +75,9 @@ CAUSES: tuple[str, ...] = (
     "agent_auth",
     "agent_install",
     "agent_model",
+    "agent_effort",
+    "agent_budget",
+    "agent_model_catalog",
     "truncated_trajectory",
     "empty_trajectory",
     "immediate_exit",
@@ -70,7 +85,16 @@ CAUSES: tuple[str, ...] = (
 )
 #: Causes that will recur on every trial of the batch (the circuit breaker
 #: counts them); the others can be transient.
-PERMANENT_CAUSES = frozenset({"agent_auth", "agent_install", "agent_model"})
+PERMANENT_CAUSES = frozenset(
+    {
+        "agent_auth",
+        "agent_install",
+        "agent_model",
+        "agent_effort",
+        "agent_budget",
+        "agent_model_catalog",
+    }
+)
 IMMEDIATE_EXIT_SEC = 10.0
 _CONTROL_EVENTS = frozenset({"oracle", "nop", "script"})
 _EVIDENCE_LIMIT = 300

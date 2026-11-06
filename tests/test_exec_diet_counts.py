@@ -79,7 +79,7 @@ def _group(e: Exec) -> str:
     # root exec, so that exec is the snapshot's (with U12, the manifest too).
     if e.caller == "_snapshot_build_config" or (
         e.caller == "_prepare_bash_env_inspector"
-        and "benchflow_build_snapshot" in command
+        and "runtime_build_snapshot" in command
     ):
         return "snapshot"
     if e.caller == "_seed_verifier_workspace":
@@ -90,13 +90,13 @@ def _group(e: Exec) -> str:
         return "environment_reads"
     if "verifier-started-" not in command and (
         ("chmod +x" in command and "test.sh" in command)
-        or "mkdir -p /run/benchflow" in command
+        or "mkdir -p /run/runtime" in command
     ):
         return "verifier_start"
     if command == "mkdir -p /":
         return "upload_root_mkdir"
     if e.caller in ("_publish_trajectory_for_verifier", "_publish_step") or (
-        e.caller == "upload_file" and "/logs/.benchflow-publish-" in command
+        e.caller == "upload_file" and "/logs/.runtime-publish-" in command
     ):
         return "publish"
     return "other"

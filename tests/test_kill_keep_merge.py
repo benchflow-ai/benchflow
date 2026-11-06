@@ -154,3 +154,64 @@ async def test_keeping_counts_uid_role_transitions_once(tmp_path, reverse):
     assert str(writer) not in proc.live_pids()
     assert [p.pid for p in outcome.kept] == [service]
     assert proc.stopped(service)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep", [False, True])
+async def test_what_a_collect_hook_leaves_is_stopped_before_the_capture(
+    tmp_path, monkeypatch, keep
+):
+    """Guards the fix to PR #84's collect hooks: a main hook runs as the
+    agent's account, so what it starts there (the agent's git config can
+    start anything) is killed after the hooks, a kept service stays kept, and
+    the counts add to the turn-end record."""
+    from benchflow.task.config import VerifierCollectConfig
+
+    users = []
+
+    class Hooked(_NetProc):
+        async def exec(self, command, **kwargs):
+            if command == "snapshot":
+                users.append(kwargs.get("user"))
+                left.append(self.add(_LIVE))  # left running by what it ran
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            return await super().exec(command, **kwargs)
+
+    left = []
+    proc = Hooked(tmp_path)
+    task = _task([{"port": 5000}] if keep else [])
+    task.config.verifier.collect = [VerifierCollectConfig(command="snapshot")]
+    service = proc.add(_LIVE) if keep else None
+    if service is not None:
+        proc.hold(service, proc.listen(5000))
+    writer = proc.add(_LIVE)
+    trial = SimpleNamespace(
+        _branch_child_active=False,
+        _review_plan=None,
+        _config=SimpleNamespace(
+            purpose="task",
+            sandbox_user="agent",
+            freeze_workspace=False,
+            primary_agent="claude-agent-acp",
+        ),
+        _env=proc,
+        _task=task,
+        _planes=DefaultRolloutPlanes(),
+        disconnect=AsyncMock(),
+        _require_rollout_dir=lambda: tmp_path,
+    )
+    monkeypatch.setattr(_review, "_freeze_requested", lambda _: False)
+    monkeypatch.setattr(
+        "benchflow.rollout._verifier_recovery.recovery_ineligible_reason",
+        lambda _: "no recovery contract",
+    )
+    await _review.capture_terminal_workspace(trial)
+    assert users == ["agent"]
+    assert str(writer) not in proc.live_pids()
+    assert left and not {str(pid) for pid in left} & set(proc.live_pids())
+    record = json.loads((tmp_path / "kill-before-grading.json").read_text())
+    # The turn-end kill took the writer, the second one what the hook left.
+    assert record["quiesce_killed"] == record["killed_total"] == 2
+    assert record["killed"] == 1
+    if service is not None:
+        assert str(service) in proc.live_pids() and proc.stopped(service)

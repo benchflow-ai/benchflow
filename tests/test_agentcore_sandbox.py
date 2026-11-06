@@ -325,10 +325,8 @@ class TestFileTransfer:
             # Check the final API body, after the real backend's quoting.
             assert len(payload) <= 65_536
             if "mktemp -d " in payload:
-                return _stream(
-                    stdout="/opt/benchflow/agent-install/install.ABC123xyz0\n"
-                )
-            if "bash /opt/benchflow/agent-install/install." in payload:
+                return _stream(stdout="/opt/runtime/agent-install/install.ABC123xyz0\n")
+            if "bash /opt/runtime/agent-install/install." in payload:
                 return _stream(
                     stdout="installer stdout",
                     stderr="installer stderr",
@@ -354,7 +352,7 @@ class TestFileTransfer:
         # The lock's exact bytes, to its path, then the staged installer.
         assert [target for target, _ in uploads] == [
             lock.path,
-            "/opt/benchflow/agent-install/install.ABC123xyz0/install.sh",
+            "/opt/runtime/agent-install/install.ABC123xyz0/install.sh",
         ]
         assert uploads[0][1] == lock.content
         installer = uploads[1][1]
@@ -367,12 +365,10 @@ class TestFileTransfer:
             i for i, p in enumerate(payloads) if f"chown -h 0:0 -- {lock.path}" in p
         ]
         launch = next(
-            i
-            for i, p in enumerate(payloads)
-            if "bash /opt/benchflow/agent-install/" in p
+            i for i, p in enumerate(payloads) if "bash /opt/runtime/agent-install/" in p
         )
         assert owned and owned[0] < launch
-        assert "/opt/benchflow/agents" in payloads[owned[0]]
+        assert "/opt/runtime/agents" in payloads[owned[0]]
         assert len(payloads) > 3  # Real sealed transfer, rather than one giant exec.
         log = (tmp_path / "rollout/agent/install-stdout.txt").read_text()
         assert "installer stdout" in log and "installer stderr" in log
@@ -405,10 +401,8 @@ class TestFileTransfer:
             payloads.append(payload)
             assert len(payload) <= 65_536
             if "mktemp -d " in payload:
-                return _stream(
-                    stdout="/opt/benchflow/agent-install/install.ABC123xyz0\n"
-                )
-            if "bash /opt/benchflow/agent-install/install." in payload:
+                return _stream(stdout="/opt/runtime/agent-install/install.ABC123xyz0\n")
+            if "bash /opt/runtime/agent-install/install." in payload:
                 return _stream(
                     stdout="installer stdout",
                     stderr="installer stderr",
@@ -433,7 +427,7 @@ class TestFileTransfer:
         assert scripts == [script]
         assert len(payloads) > 3
         assert any(
-            "rmdir -- /opt/benchflow/agent-install/install." in p for p in payloads
+            "rmdir -- /opt/runtime/agent-install/install." in p for p in payloads
         )
         log = (tmp_path / "rollout/agent/install-stdout.txt").read_text()
         assert "installer stdout" in log and "installer stderr" in log
@@ -456,10 +450,8 @@ class TestFileTransfer:
             payload = kwargs["body"]["command"]
             commands.append(payload)
             if "mktemp -d " in payload:
-                return _stream(
-                    stdout="/opt/benchflow/agent-install/install.ABC123xyz0\n"
-                )
-            if "bash /opt/benchflow/agent-install/install." in payload:
+                return _stream(stdout="/opt/runtime/agent-install/install.ABC123xyz0\n")
+            if "bash /opt/runtime/agent-install/install." in payload:
                 raise TimeoutError("installer timed out")
             return _stream()
 
@@ -480,10 +472,10 @@ class TestFileTransfer:
         ):
             await install_agent(sandbox, "deepagents", tmp_path / "rollout")
         assert any(
-            "rmdir -- /opt/benchflow/agent-install/install." in c for c in commands
+            "rmdir -- /opt/runtime/agent-install/install." in c for c in commands
         )
         launches = [
-            c for c in commands if "bash /opt/benchflow/agent-install/install." in c
+            c for c in commands if "bash /opt/runtime/agent-install/install." in c
         ]
         assert len(launches) == (0 if failure == "upload" else 1)
 

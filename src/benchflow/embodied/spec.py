@@ -3,7 +3,7 @@
 One schema covers single arms, bimanual rigs, dexterous hands, mobile manipulators, quadrupeds, humanoids,
 drones and skill-only robots. A backend keeps its native flat action vector; action groups name slices of it
 in declaration order. The restore boundary (``restore_boundary``) says what software may do to an embodied
-task's world: branching, checkpoint restores and replay. See docs/tasks/embodied.md.
+task's world: branching, checkpoint restores and replay. See docs/tasks/task-format.md#other-task-formats.
 
 Standard library only: this module is vendored into simulator images.
 """
@@ -677,7 +677,7 @@ def restore_boundary(metadata: Any) -> RestoreBoundary:
         raise SpecError(
             "metadata.embodiment is not read; declare an embodied task under "
             "metadata.embodied (mode, world_restore, action_replay; see "
-            "docs/tasks/embodied.md)"
+            "docs/tasks/task-format.md#other-task-formats)"
         )
     if "embodied" not in metadata:
         return RestoreBoundary()

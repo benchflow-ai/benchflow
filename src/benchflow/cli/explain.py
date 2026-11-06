@@ -78,13 +78,16 @@ _BODIES: dict[str, str] = {
     ),
     # Unscored: the agent finished, the verifier could not score it.
     "verifier_failure": (
-        "The agent finished, but the verifier (the task's test.sh, or its "
-        "judge) crashed: it exited with an error and wrote no reward, or its "
-        "reward file could not be read. This unscored final trial counts as a "
-        "failure in primary metrics (mean reward and pass@k), remaining in "
-        "their denominator; only scored-only metrics exclude it. Every run "
-        "of the task, the reference solution's "
-        "included, fails the same way until the task is fixed."
+        "The agent finished, but the verifier step failed before a reward "
+        "existed, and the trial's error starts 'verifier crashed:'. "
+        "BenchFlow names a finer cause when it can (its own infrastructure, "
+        "a dependency install, a full disk); this one is left when it "
+        "cannot, and usually comes from the task's verifier setup. This "
+        "unscored final trial counts as a failure in primary metrics (mean "
+        "reward and pass@k), remaining in their denominator; only scored-only "
+        "metrics exclude it. A test.sh that itself exits with an error before "
+        "writing a reward is not this cause either: that is "
+        "verifier_no_usable_reward."
     ),
     "verifier_timeout": (
         "The verifier ran longer than the task's verifier timeout and was "
@@ -101,10 +104,10 @@ _BODIES: dict[str, str] = {
     "reward_out_of_range": (
         "The verifier ran and wrote a reward, but the number is outside the "
         "range the task declares (0 to 1 unless task.toml's [verifier] "
-        "reward_range says otherwise), so it is not counted: the trial is "
-        "unscored. It counts as a failure in primary metrics (mean reward "
-        "and pass@k), remaining in their denominator; only scored-only "
-        "metrics exclude it. "
+        "reward_range says otherwise), so it is not used: the trial scores 0, "
+        "a failure in the primary metrics (mean reward and pass@k) and in the "
+        "scored-only ones alike, and stays in every denominator, with a "
+        "'Verifier scored 0:' warning. "
         "reward_out_of_range_info in result.json keeps the raw value. Every "
         "run of the task fails the same way until the verifier or the "
         "declared range is fixed."
@@ -147,7 +150,9 @@ _BODIES: dict[str, str] = {
         "pytest-json-ctrf) into a Python environment the agent could write: "
         "the workspace, the agent's home, /tmp, /var/tmp, /logs or /testbed. "
         "The pytest plugin guard refuses to load it, since the agent could "
-        "have planted it, so every run of the task is unscored. Bake the "
+        "have planted it, so every run of the task scores 0, with a warning "
+        "that starts 'Verifier scored 0: pytest plugin guard not confirmed'. "
+        "Bake the "
         "plugin into the image, or pin its release in [verifier] "
         "pytest_plugin_releases and install it as root into a Python "
         "environment's site-packages, where the guard trusts it by the bytes "
@@ -187,6 +192,14 @@ _BODIES: dict[str, str] = {
         "write that the agent left there, or changed, after it started. The "
         "trial counts as a failure. The trial's verifier/ folder names the "
         "plugin and why."
+    ),
+    "verifier_no_usable_reward": (
+        "The final verify left no reward BenchFlow could use: no reward file, "
+        "an empty one, one it could not read, or one without a number. That "
+        "is the verifier's error, not a wrong answer, and it is never retried. "
+        "The trial still counts as a failure in every score, as a plugin guard "
+        "refusal does, because the reward files are evidence the agent can "
+        "reach. The trial's verifier/ folder has test.sh's output."
     ),
     "no_verdict": (
         "The trial has neither a reward nor an error: a reviewer's "
@@ -241,6 +254,15 @@ _BODIES: dict[str, str] = {
         "When the verifier can still score the workspace, the trial is "
         "scored instead; this cause is a timeout it could not score."
     ),
+    "trial_budget": (
+        "The trial spent its token or turn budget (a turn is one model call): "
+        "BenchFlow's model proxy refused the agent's next call and BenchFlow "
+        "stopped the agent. Like a timeout, the verifier then grades what the "
+        "agent left, so the trial is usually scored, 0 unless its tests "
+        "passed, and it is never retried; this cause is a budget stop it "
+        "could not score. result.json's trial_budget says which measure "
+        "stopped it, what the trial used and its subagents' share."
+    ),
     "infra_failure": (
         "The sandbox, or BenchFlow's connection to it, failed during the "
         "trial: a lost container, or a trial past the host's hard deadline "
@@ -283,6 +305,30 @@ _BODIES: dict[str, str] = {
         "The agent does not offer the model the run asked for. The error "
         "lists the models it does offer."
     ),
+    "agent_integration:agent_model_catalog": (
+        "The agent's engine takes each model's tools from its model catalog, "
+        "and the catalog has no entry for this model, so the agent ran on "
+        "fallback tools (for Codex: no apply_patch, no code mode). That is "
+        "another agent than the model is used with, so the trial is not "
+        "scored. Codex's warning ('Model metadata for ... not found') or the "
+        "tools its first request offered show it; result.json's tool_surface "
+        "lists them."
+    ),
+    "agent_integration:agent_effort": (
+        "The agent offers the model, but not at the reasoning effort the run "
+        "asked for (codex-acp lists one model id per effort a model takes). "
+        "The run is refused before the agent starts rather than run at "
+        "another effort; the error lists the efforts it does offer."
+    ),
+    "agent_integration:agent_budget": (
+        "The trial has a token or turn budget (--token-budget, --turn-budget "
+        "or the task's [agent] token_budget and turn_budget), but the agent "
+        "calls its model around BenchFlow's model proxy: a subscription "
+        "login, an endpoint of its own, or an agent that routes its own "
+        "model. The proxy is what counts and enforces a trial's budget, so "
+        "the trial is refused before the agent starts rather than run "
+        "without one; the error says which route it took."
+    ),
     "agent_integration:agent_install": (
         "The agent started, but its install or runtime in the sandbox is "
         "broken: a missing program, or a dependency that does not load."
@@ -299,7 +345,16 @@ _BODIES: dict[str, str] = {
     ),
     "pipe_closed:exit": (
         "The agent process exited during its turn; the message has its exit "
-        "code. Its log has its last words."
+        "code, and says whether the sandbox's cgroup counted an OOM kill (an "
+        "exit is called a memory kill only with that count, never from its "
+        "code alone). Its log has its last words."
+    ),
+    "provider_unavailable": (
+        "The agent stopped with an error after the model provider answered a "
+        "call with a server error (HTTP 500, 502, 503, 504 or 529): the "
+        "provider's failure, not the agent's or the model's. It is retried "
+        "within the run; agent_outcome in result.json counts the failed "
+        "calls."
     ),
     "other": (
         "An error none of the other pages covers. If it repeats on other "

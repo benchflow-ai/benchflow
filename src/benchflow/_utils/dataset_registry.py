@@ -298,14 +298,66 @@ def _github_org_repo(git_url: str) -> str:
     return f"{match.group(1)}/{match.group(2)}"
 
 
+def _hub_for(
+    name: str, registry: str | None, exc: DatasetResolutionError | None = None
+) -> str | None:
+    """The Hub to read ``name`` from: the one ``--registry hub:<url>`` names, or, when no registry was named and
+    BenchFlow's registry does not hold the dataset (``exc``), ``$BENCHFLOW_HUB_URL`` for an ``org/name`` dataset."""
+    from benchflow.hub.client import HUB_URL_ENV, hub_from_registry, normalize_hub_url
+
+    named = hub_from_registry(registry)
+    if named is not None or registry is not None:
+        return named
+    fallback = os.environ.get(HUB_URL_ENV)
+    if exc is not None and exc.exit_code == 2 and fallback and "/" in name:
+        return normalize_hub_url(fallback)
+    return None
+
+
+def _hub_entry(spec: str, name: str, version: str, hub: str) -> dict[str, Any]:
+    """A Hub's dataset document as a registry entry (name, version, bench_version, tasks with digests)."""
+    from benchflow.hub.client import HubClient, HubError
+
+    try:
+        doc = HubClient.from_env(hub).dataset(name, version)
+    except HubError as exc:
+        error = DatasetResolutionError(
+            f"Dataset {spec!r} could not be read from the Hub at {hub}: {exc}"
+        )
+        error.hint = exc.hint or "check the name@version with `bench hub show`"
+        error.exit_code = 2 if exc.status == 404 else 1
+        raise error from None
+    return {
+        "name": doc.get("name"),
+        "version": doc.get("version"),
+        "bench_version": doc.get("bench_version"),
+        "tasks": [
+            {"name": t.get("name"), "digest": t.get("digest")}
+            for t in doc.get("tasks") or []
+        ],
+        "hub": hub,
+        "digest": doc.get("digest"),
+    }
+
+
 def dataset_registry_entry(spec: str, *, registry: str | None = None) -> dict[str, Any]:
     """Read a dataset's declared pins without cloning or starting a sandbox.
 
     Looks the entry up the way ``resolve_dataset`` does (one named registry,
-    or BenchFlow's own), so a check sees what a run sees.
+    or BenchFlow's own, then ``$BENCHFLOW_HUB_URL``), so a check sees what a run
+    sees.
     """
     name, version = parse_dataset_spec(spec)
-    entry, _source = _find_entry(spec, name, version, registry)
+    hub = _hub_for(name, registry)
+    if hub is not None:
+        return _hub_entry(spec, name, version, hub)
+    try:
+        entry, _source = _find_entry(spec, name, version, registry)
+    except DatasetResolutionError as exc:
+        hub = _hub_for(name, registry, exc)
+        if hub is None:
+            raise
+        return _hub_entry(spec, name, version, hub)
     return entry
 
 
@@ -497,10 +549,21 @@ def resolve_dataset(spec: str, registry: str | None = None) -> ResolvedDataset:
     ``git_commit_id`` is ``HEAD`` or missing runs the default branch.
 
     ``registry`` names the one registry to read; by default only BenchFlow's
-    registry is read (its published list and its packaged entries).
+    registry is read (its published list and its packaged entries), then the
+    Hub at ``$BENCHFLOW_HUB_URL`` for an ``org/name`` dataset it does not hold.
+    ``hub:<url>`` names a BenchFlow Hub (:mod:`benchflow.hub.datasets`).
     """
     name, version = parse_dataset_spec(spec)
-    entry, source = _find_entry(spec, name, version, registry)
+    hub = _hub_for(name, registry)
+    if hub is not None:
+        return _resolve_from_hub(spec, name, version, hub)
+    try:
+        entry, source = _find_entry(spec, name, version, registry)
+    except DatasetResolutionError as exc:
+        hub = _hub_for(name, registry, exc)
+        if hub is None:
+            raise
+        return _resolve_from_hub(spec, name, version, hub)
     tasks = entry.get("tasks") or []
     if not tasks:
         raise DatasetResolutionError(f"Dataset {spec!r} has no tasks in the registry")
@@ -614,4 +677,38 @@ def resolve_dataset(spec: str, registry: str | None = None) -> ResolvedDataset:
         task_digests=task_digests,
         provenance=resolved.provenance,
         registry=source,
+    )
+
+
+def _resolve_from_hub(spec: str, name: str, version: str, hub: str) -> ResolvedDataset:
+    """Pull ``name@version`` from the Hub at ``hub`` (every archive and task digest checked)."""
+    from benchflow.hub.client import HUB_REGISTRY_PREFIX, HubClient, HubError
+    from benchflow.hub.datasets import pull_dataset
+
+    try:
+        pulled = pull_dataset(HubClient.from_env(hub), name, version)
+    except HubError as exc:
+        error = DatasetResolutionError(
+            f"Dataset {spec!r} could not be pulled from the Hub at {hub}: {exc}"
+        )
+        damaged = "no longer hash" in str(exc)
+        error.hint = exc.hint or (
+            ("the Hub's stored copy is damaged, so tell its admin; " if damaged else "")
+            + "`bench hub show "
+            + spec
+            + " --hub "
+            + hub
+            + "` shows what the Hub holds"
+        )
+        error.exit_code = 2 if exc.status == 404 else 1
+        raise error from None
+    return ResolvedDataset(
+        name=name,
+        version=version,
+        bench_version=pulled.bench_version,
+        tasks_dir=pulled.tasks_dir,
+        task_names=set(pulled.task_digests),
+        task_digests=dict(pulled.task_digests),
+        provenance=pulled.provenance,
+        registry=HUB_REGISTRY_PREFIX + hub,
     )

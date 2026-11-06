@@ -91,7 +91,7 @@ def _setup(tmp_path: Path, script: str, **sandbox):
         {
             "/logs/verifier": on_disk(paths.verifier_dir),
             "/tests": tmp_path / "sandbox-tests",
-            "/run/benchflow": tmp_path / "sandbox-run-benchflow",
+            "/run/runtime": tmp_path / "sandbox-run-benchflow",
         },
         **sandbox,
     )

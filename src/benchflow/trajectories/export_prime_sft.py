@@ -194,6 +194,45 @@ def is_control_run(rollout_dir: Path) -> bool:
         return False
 
 
+def load_rollout_result(rollout_dir: Path) -> dict[str, Any] | None:
+    """A rollout's ``result.json``; a task.toml-package runner's trial result
+    reads as BenchFlow's (its reward under ``verifier_result``)."""
+    result = _load_json(rollout_dir / "result.json")
+    if isinstance(result, dict) and (
+        "verifier_result" in result or "exception_info" in result
+    ):
+        from benchflow.jobs import _normalize_legacy
+
+        result = _normalize_legacy(result)
+        result.setdefault("agent", result.get("agent_name"))
+    return result
+
+
+def load_rollout_exchanges(rollout_dir: Path) -> list[dict[str, Any]]:
+    """A rollout's model calls: BenchFlow's proxy log, else the ATIF
+    trajectory a task.toml-package runner's trial kept
+    (:func:`benchflow.trajectories.atif_reader.atif_exchanges`)."""
+    path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+    if not path.exists():
+        from benchflow.trajectories.atif_reader import atif_exchanges, trial_atif
+
+        trajectory = trial_atif(rollout_dir)
+        if trajectory is not None:
+            return atif_exchanges(trajectory)
+    return load_llm_trajectory_jsonl(path, strict=True)
+
+
+def exchange_source(rollout_dir: Path, exchange: dict[str, Any]) -> tuple[str, str]:
+    """A row's ``source`` and ``source_path``: the proxy log, or the ATIF file."""
+    if (exchange.get("metadata") or {}).get("source") == "atif":
+        from benchflow.trajectories.atif_reader import TRIAL_ATIF_RELPATH
+
+        return "atif", str(rollout_dir / TRIAL_ATIF_RELPATH)
+    return "benchflow-llm-trajectory", str(
+        rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+    )
+
+
 def _iter_rollout_dirs(root: str | Path) -> list[Path]:
     path = Path(root)
     if not path.is_dir():
@@ -423,9 +462,20 @@ def prime_sft_last_user_training_window(
         message = messages[idx]
         if message.get("role") != "user":
             continue
+        # A user message right after a tool result is a notice inside the
+        # agent's turn, not an instruction: a system message remapped to
+        # "user" (Claude Code's "<total_tokens>... left</total_tokens>"), which
+        # anchored the window on the last notice and dropped every tool call.
+        if idx > 0 and messages[idx - 1].get("role") == "tool":
+            continue
         completion = messages[idx + 1 :]
         if any(item.get("role") == "assistant" for item in completion):
-            return [message], completion
+            # The instruction can span consecutive user messages (the task,
+            # then a remapped environment notice); keep them all.
+            start = idx
+            while start > 0 and messages[start - 1].get("role") == "user":
+                start -= 1
+            return messages[start : idx + 1], completion
     return None
 
 
@@ -1348,8 +1398,8 @@ def _row_from_exchange(
         "messages": messages,
         "tool_defs": normalized.tool_defs,
         "task_name": (result or {}).get("task_name") or rollout_dir.name,
-        "source": "benchflow-llm-trajectory",
-        "source_path": str(rollout_dir / "trajectory" / "llm_trajectory.jsonl"),
+        "source": exchange_source(rollout_dir, exchange)[0],
+        "source_path": exchange_source(rollout_dir, exchange)[1],
         "exchange_index": exchange_idx,
         "reward": reward,
         "score": reward,
@@ -1404,7 +1454,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
         stats.training_signal = signals.manifest()
     for rollout_dir in rollout_dirs:
         stats.rollouts_seen += 1
-        result = _load_json(rollout_dir / "result.json")
+        result = load_rollout_result(rollout_dir)
         if result is None:
             stats.skipped_no_result += 1
             continue
@@ -1419,8 +1469,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             stats.skipped_reward += 1
             continue
 
-        trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-        exchanges = load_llm_trajectory_jsonl(trajectory_path, strict=True)
+        exchanges = load_rollout_exchanges(rollout_dir)
         if not exchanges:
             stats.skipped_no_trajectory += 1
             continue
@@ -1485,7 +1534,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
                     subagent_written += 1
                 if _has_tool_calls(row["messages"]):
                     stats.rows_with_tool_calls += 1
-                stats.sources.append(str(trajectory_path))
+                stats.sources.append(row["source_path"])
         stats.subagents.subagent_rows_written += subagent_written
         stats.subagents.subagent_exchanges_excluded += (
             split.subagent_exchanges - subagent_written

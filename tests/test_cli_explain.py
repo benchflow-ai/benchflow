@@ -179,6 +179,7 @@ def test_every_flag_a_page_names_is_a_real_flag():
         | _flags("run")
         | _flags("doctor")
         | _flags("eval", "resume")
+        | _flags("eval", "score")
     )
     for entry in _listed():
         page = _page(entry["code"])
@@ -194,12 +195,13 @@ def test_every_flag_a_page_names_is_a_real_flag():
             {"verifier_error": "verifier exploded", "verifier_error_category": "x"},
             "verifier_other",
         ),
+        # A crashed rubric review (review/persistence.py): the infrastructure's.
         (
             {
                 "verifier_error": "verifier crashed: oops",
                 "verifier_error_category": "infra_failure",
             },
-            "verifier_other",
+            "infra_failure",
         ),
         # An integration cause no row names, or one that is not a word.
         (

@@ -11,7 +11,7 @@ parser's ACP updates to an :class:`~benchflow.acp.session.ACPSession`, so the
 trajectory, the dashboards, the watchdog and the training exports read the
 same object they read for an ACP agent.
 
-Every process of a turn carries ``BENCHFLOW_NATIVE_RUN=<id>`` in its
+Every process of a turn carries ``RUNTIME_NATIVE_RUN=<id>`` in its
 environment and the CLI leads its own process group (``set -m``), so
 :meth:`cancel` can signal the CLI's group and then kill every marked process,
 including tool subprocesses that left the group.
@@ -57,7 +57,7 @@ from benchflow.trust.state import IngressKind, admit
 
 logger = logging.getLogger(__name__)
 
-RUN_ENV = "BENCHFLOW_NATIVE_RUN"
+RUN_ENV = "RUNTIME_NATIVE_RUN"
 # The launch script's last line: the CLI's exit status.
 EXIT_KEY = "benchflow_native_exit"
 # How long a cancelled CLI gets to exit on SIGINT (writing its result and
@@ -101,7 +101,7 @@ def launch_script(executable: str, argv: tuple[str, ...], run_id: str) -> str:
     signal killed with its whole command line ("line 1: 479 Killed ..."),
     which would put the arguments, MCP settings included, into the error.
     """
-    work = shlex.quote(f"/tmp/benchflow-native-{run_id}")
+    work = shlex.quote(f"/tmp/runtime-native-{run_id}")
     command = " ".join(shlex.quote(part) for part in (executable, *argv))
     return (
         f"( umask 077; mkdir -p {work} || exit 1; "
@@ -123,7 +123,7 @@ def _process_functions(run_id: str) -> str:
     """Shell functions over this turn's marked processes (read from ``/proc``).
 
     Marked processes are those whose initial environment holds this turn's
-    ``BENCHFLOW_NATIVE_RUN``: the CLI, the shells around it and every tool
+    ``RUNTIME_NATIVE_RUN``: the CLI, the shells around it and every tool
     subprocess the CLI starts. One ``grep`` reads every environment (the run
     id is a unique 32-digit hex string), so the scan costs one process
     however many run in the sandbox. Needs ``/proc``, ``grep``, ``sed`` and
@@ -372,7 +372,11 @@ class NativeCLIClient:
             mcp_servers=self._mcp_servers,
         )
         launch = self._harness.build_launch(turn, self._launch_env)
-        command = launch_script(self._harness.executable, launch.argv, run_id)
+        from benchflow.agents.visible_runtime import visible_env, visible_launch
+
+        command = visible_launch(
+            launch_script(self._harness.executable, launch.argv, run_id)
+        )
         if self._sandbox_user:
             command = build_priv_drop_cmd(command, self._sandbox_user)
         elif no_web_root_agent(self._sandbox_user, self._launch_env):
@@ -399,7 +403,9 @@ class NativeCLIClient:
         end: TransportClosedError | None = None
         try:
             try:
-                await process.start(command=command, env=env, cwd=self._cwd)
+                await process.start(
+                    command=command, env=visible_env(env), cwd=self._cwd
+                )
                 await process.writeline(encode_prompt(text))
                 if self._cancel_requested:
                     # cancel() ran while the process was starting, before its

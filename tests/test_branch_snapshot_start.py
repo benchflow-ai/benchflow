@@ -68,7 +68,7 @@ def _child(tmp_path, *, agent: bool, baseline: bool, agent_name="claude-agent-ac
     trial._env = _probe_env(agent=agent, baseline=baseline)
     trial._from_branch_snapshot = True
     trial._installed_agent_cfg = SimpleNamespace(
-        name=agent_name, launch_cmd="/opt/benchflow/bin/claude-agent-acp"
+        name=agent_name, launch_cmd="/opt/runtime/bin/claude-agent-acp"
     )
     return trial
 

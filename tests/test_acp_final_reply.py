@@ -51,7 +51,7 @@ class RecordingEnv:
 
 def _staged(env: RecordingEnv, name: str) -> str:
     (target,) = [t for t in env.uploads if t.endswith(f"/{name}")]
-    assert target.startswith("/logs/.benchflow-publish-"), target
+    assert target.startswith("/logs/.runtime-publish-"), target
     return env.uploads[target]
 
 
@@ -127,7 +127,7 @@ async def test_final_reply_is_published_to_logs_agent_output_txt(tmp_path) -> No
     assert [u for _, u in copies] == ["agent"]
     assert "rm -f /logs/agent/output.txt" in copies[0][0]
     # The staging folder is removed afterwards.
-    assert env.execs[-1][0].startswith("rm -rf /logs/.benchflow-publish-")
+    assert env.execs[-1][0].startswith("rm -rf /logs/.runtime-publish-")
     assert env.execs[-1][1] == "root"
 
 

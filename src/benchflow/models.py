@@ -65,6 +65,24 @@ class AgentTimeoutError(RuntimeError):
         super().__init__(f"Agent {agent} timed out after {timeout_sec}s")
 
 
+def _installed(receipt: dict[str, Any] | None, role: str) -> str | None:
+    """One part of a harness receipt as ``package@version``, or None."""
+    part = receipt.get(role) if isinstance(receipt, dict) else None
+    if not isinstance(part, dict) or part.get("source") != "installed-package":
+        return None
+    package, version = part.get("package"), part.get("version")
+    return f"{package}@{version}" if package and version else None
+
+
+def rollout_time(value: str) -> datetime:
+    """A rollout's ``started_at``/``finished_at`` from result.json, always with
+    a time zone. Results written before they carried one hold the writer's
+    local time (``datetime.now()``), so a naive value gets this machine's
+    offset, as the writer's ``astimezone()`` gives a new one."""
+    moment = datetime.fromisoformat(value)
+    return moment if moment.tzinfo is not None else moment.astimezone()
+
+
 class RolloutResult:
     """Outcome of a single rollout execution.
 
@@ -80,7 +98,7 @@ class RolloutResult:
                       messages, thoughts) captured during execution.
         agent:        Harness name from the registry (e.g. "codex-acp").
         agent_name:   Name reported by the agent via ACP initialize handshake.
-        model:        Model ID used (e.g. "google/gemini-3.1-flash-lite-preview").
+        model:        Model ID used (e.g. "google/gemini-3.5-flash-lite").
         n_tool_calls: Total tool calls observed during the session.
         n_skill_invocations: Total skill tool calls observed in structured ACP
                       trajectory events. Counts only ``tool_call`` events whose
@@ -98,7 +116,9 @@ class RolloutResult:
                       or None when provider telemetry was unavailable.
         cost_usd:     Provider cost estimate in USD, or None when unavailable.
         usage_source: Token telemetry source. One of "provider_response",
-                      "agent_native_acp", or "unavailable".
+                      "agent_native_acp", or "unavailable"; for an agent
+                      that routes its own model calls, "agent-reported" or
+                      "none" (never metered).
         price_source: Pricing table version used for cost_usd, or None.
         usage_details: Optional source-specific telemetry details.
         error:        Error description string, or None on success.
@@ -182,6 +202,9 @@ class RolloutResult:
         rollout_dir: Path | None = None,
         retry: dict[str, Any] | None = None,
         integrity: dict[str, Any] | None = None,
+        harness_versions: dict[str, Any] | None = None,
+        model_refusal: dict[str, Any] | None = None,
+        trial_budget: dict[str, Any] | None = None,
     ):
         self.task_name = task_name
         self.rollout_name = rollout_name
@@ -191,6 +214,7 @@ class RolloutResult:
         self._trajectory_stored = False
         self.agent = agent
         self.agent_name = agent_name
+        self.harness_versions = harness_versions
         self.model = model
         self.n_tool_calls = n_tool_calls
         self.n_skill_invocations = n_skill_invocations
@@ -226,6 +250,13 @@ class RolloutResult:
         # The integrity verdict (benchflow.integrity), reported next to
         # ``rewards``, never merged into them.
         self.integrity = integrity
+        # result.json's ``model_refusal``: the trial ended on a model refusal
+        # or a content filter (the call and the reason), else None. Such a
+        # trial is final: never retried.
+        self.model_refusal = model_refusal
+        # result.json's ``trial_budget``: the trial's budget, what it used and
+        # what stopped it (benchflow.trial_budget); None without one.
+        self.trial_budget = trial_budget
 
     @property
     def reward(self) -> float | None:
@@ -275,6 +306,12 @@ class RolloutResult:
             "task_name": self.task_name,
             "rollout_name": self.rollout_name,
             "agent": self.agent,
+            # The installed harness, one column per part (result.json keeps
+            # the whole receipt): "package@version", or None when unknown.
+            **{
+                f"harness_{role}": _installed(self.harness_versions, role)
+                for role in ("adapter", "cli", "engine")
+            },
             "model": self.model,
             "reward": self.reward,
             "passed": self.passed,
@@ -367,7 +404,7 @@ class RolloutResult:
             value = kwargs.get(key)
             if isinstance(value, str):
                 try:
-                    kwargs[key] = datetime.fromisoformat(value)
+                    kwargs[key] = rollout_time(value)
                 except ValueError:
                     kwargs[key] = None
         scoring = kwargs.get("scoring")

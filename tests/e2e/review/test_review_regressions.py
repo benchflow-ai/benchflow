@@ -47,11 +47,13 @@ def _multi_step_task(root: Path) -> Path:
     return task
 
 
-def test_toml_multi_step_task_is_refused_on_steps(
+def test_toml_multi_step_task_runs_each_step(
     review_sandbox: str, review_out: Path
 ) -> None:
-    """A task.toml multi-step task is refused on ``steps``; the run and the check
-    used to name a missing instruction.md instead."""
+    """A task.toml multi-step task runs its steps in order; it used to
+    be refused on ``steps``, and before that the check named a missing
+    instruction.md. nop leaves the workspace as it is and each step's tests
+    write 1, so both steps are verified and the task scores 1."""
     tasks = review_out / "tasks-multistep"
     task = _multi_step_task(tasks)
 
@@ -63,10 +65,10 @@ def test_toml_multi_step_task_is_refused_on_steps(
         review_sandbox,
         log=review_out / "logs" / "multistep-check.log",
     )
-    assert check.returncode == 1, check.tail()
+    assert check.returncode == 0, check.tail()
     flat = " ".join(check.output.split())
-    assert "Unsupported runtime feature: steps" in flat
-    assert "Missing required file: instruction.md" not in flat
+    assert "Unsupported runtime feature: steps" not in flat
+    assert "Missing required file" not in flat
 
     job = s.fresh_job(review_out / "jobs" / "multistep")
     run = s.bench(
@@ -87,10 +89,14 @@ def test_toml_multi_step_task_is_refused_on_steps(
     )
     trial = s.trials(job)["multi-step"]
     result = s.read_json(trial / "result.json")
-    assert "steps: multi-step tasks are not supported" in result["error"]
-    assert "instruction.md" not in result["error"]
-    # Refused before launch: no sandbox was created for it.
-    assert not (trial / "sandbox.json").exists(), run.tail()
+    assert result["error"] is None, run.tail()
+    assert result["verifier_error"] is None, run.tail()
+    assert result["rewards"]["reward"] == 1.0
+    steps = s.read_json(trial / "steps.json")
+    assert [(r["name"], r["source"], r["reward"]) for r in steps["steps"]] == [
+        ("create-file", "soft", 1.0),
+        ("append-content", "final", 1.0),
+    ]
 
 
 def test_oracle_batch_records_what_the_tasks_declare(

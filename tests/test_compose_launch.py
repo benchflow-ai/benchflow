@@ -257,7 +257,7 @@ async def test_r3_3_the_vm_check_reads_the_value_not_its_printed_escape(tmp_path
     strategy, vm, _ = _dind(tmp_path, task)
     (vm / "task" / "environment" / "leak$dir").symlink_to("/")
     message = await _dind_refused(strategy)
-    assert "mounts /benchflow/task/environment/leak$dir for service main" in message
+    assert "mounts /runtime/task/environment/leak$dir for service main" in message
 
 
 # A bind mount written as a tmpfs volume

@@ -205,7 +205,7 @@ async def test_the_root_file_handoff_keeps_a_task_variable_named_rc(tmp_path):
     verifier.before_test = release  # services are kept: the handoff runs
     result = await verifier.verify()
     (command,) = sandbox.ran  # type: ignore[attr-defined]
-    assert "/.benchflow-verifier-env-" in command
+    assert "/.runtime-verifier-env-" in command
     assert result.rewards == {"reward": 1.0}
 
 
@@ -291,7 +291,7 @@ async def test_soft_verification_puts_no_verifier_value_on_a_command_line(tmp_pa
     assert watcher.scans > 1
     assert watcher.hits == [], watcher.hits[:3]
     (command,) = sandbox.ran  # type: ignore[attr-defined]
-    assert "/.benchflow-verifier-env-" in command  # the root-only file
+    assert "/.runtime-verifier-env-" in command  # the root-only file
     assert sandbox.stdin == []  # type: ignore[attr-defined]  # not even on stdin
 
 

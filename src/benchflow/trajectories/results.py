@@ -18,9 +18,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, cast, overload
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow._utils.scoring import finite_reward
@@ -30,13 +31,16 @@ from benchflow.trajectories.export_prime_sft import (
     _assistant_from_chat_response,
     _messages_from_chat_request,
     _messages_from_responses_request,
-    load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
     prime_sft_last_user_training_window,
     validate_prime_sft_row,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
-from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
+from benchflow.usage_tracking import (
+    USAGE_SOURCE_AGENT_NATIVE_ACP,
+    USAGE_SOURCE_AGENT_REPORTED,
+    USAGE_SOURCE_NONE,
+)
 
 if TYPE_CHECKING:
     from benchflow.review.outcome import ScoringResult
@@ -204,9 +208,79 @@ def _llm_steps_from_trajectory(
     if not path.exists():
         return steps, tool_defs, None
     try:
-        exchanges = load_llm_trajectory_jsonl(path, strict=True)
-    except PrimeSftTrajectoryJsonlError as exc:
+        with path.open("rb") as handle:
+            exchanges = _IndexedExchanges(handle, path)
+            return _llm_steps_from_exchanges(
+                rollout_dir,
+                exchanges,
+                path,
+                reward=reward,
+                is_truncated=is_truncated,
+                trajectory_id_prefix=trajectory_id_prefix,
+            )
+    except (PrimeSftTrajectoryJsonlError, OSError) as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+
+
+class _IndexedExchanges(Sequence[dict[str, Any]]):
+    """An offset index over a validated log, retaining no request/response bodies.
+
+    Training selection needs earlier requests and later tool replays. Seek for
+    those records instead of holding the entire HTTP log and normalized histories.
+    The caller owns the open handle for the duration of the export.
+    """
+
+    def __init__(self, handle: BinaryIO, path: Path):
+        self._handle = handle
+        self._offsets: list[int] = []
+        line_num = 0
+        while True:
+            offset = handle.tell()
+            line = handle.readline()
+            if not line:
+                break
+            line_num += 1
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except (ValueError, UnicodeError) as exc:
+                raise PrimeSftTrajectoryJsonlError(
+                    f"{path}: line {line_num}: invalid JSON: {exc}"
+                ) from exc
+            if not isinstance(record, dict):
+                raise PrimeSftTrajectoryJsonlError(
+                    f"{path}: line {line_num}: top-level record must be an object"
+                )
+            self._offsets.append(offset)
+
+    def __len__(self) -> int:
+        return len(self._offsets)
+
+    @overload
+    def __getitem__(self, index: int) -> dict[str, Any]: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[dict[str, Any]]: ...
+
+    def __getitem__(self, index: int | slice) -> dict[str, Any] | list[dict[str, Any]]:
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        self._handle.seek(self._offsets[index])
+        return json.loads(self._handle.readline())
+
+
+def _llm_steps_from_exchanges(
+    rollout_dir: Path,
+    exchanges: Sequence[dict[str, Any]],
+    path: Path,
+    *,
+    reward: float | None,
+    is_truncated: bool,
+    trajectory_id_prefix: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    steps: list[dict[str, Any]] = []
+    tool_defs: list[dict[str, Any]] = []
     training_success_indices = _training_success_exchange_indices(exchanges)
     owners = _step_owners(rollout_dir, exchanges, path)
     skipped_successful: list[str] = []
@@ -287,7 +361,7 @@ def _llm_steps_from_trajectory(
 
 def _step_owners(
     rollout_dir: Path,
-    exchanges: list[dict[str, Any]],
+    exchanges: Sequence[dict[str, Any]],
     path: Path,
 ) -> dict[int, dict[str, Any]]:
     """Which agent made each successful call, recorded while the capture is whole.
@@ -376,7 +450,7 @@ def _response_is_training_success(response: Any) -> bool:
 
 
 def _training_success_exchange_indices(
-    exchanges: list[dict[str, Any]],
+    exchanges: Sequence[dict[str, Any]],
 ) -> set[int]:
     candidates_by_request: dict[bytes, list[int]] = {}
     for exchange_idx, exchange in enumerate(exchanges):
@@ -396,13 +470,12 @@ def _training_success_exchange_indices(
         request_key = hashlib.sha256(request_body.encode()).digest()
         candidates_by_request.setdefault(request_key, []).append(exchange_idx)
 
-    histories = [_request_training_history(exchange) for exchange in exchanges]
     selected: set[int] = set()
     for candidates in candidates_by_request.values():
         consumed = [
             exchange_idx
             for exchange_idx in candidates
-            if _response_consumed_by_later_request(exchanges, histories, exchange_idx)
+            if _response_consumed_by_later_request(exchanges, exchange_idx)
         ]
         if consumed:
             # Identical prompts can belong to independently consumed branches
@@ -431,8 +504,7 @@ def _training_success_exchange_indices(
 
 
 def _response_consumed_by_later_request(
-    exchanges: list[dict[str, Any]],
-    histories: list[list[dict[str, Any]]],
+    exchanges: Sequence[dict[str, Any]],
     exchange_idx: int,
 ) -> bool:
     response = exchanges[exchange_idx].get("response")
@@ -455,8 +527,9 @@ def _response_consumed_by_later_request(
     idless = any(not call["id"] for call in calls)
     if not legacy and idless:
         return False
-    prefix = histories[exchange_idx]
-    for history in histories[exchange_idx + 1 :]:
+    prefix = _request_training_history(exchanges[exchange_idx])
+    for later_idx in range(exchange_idx + 1, len(exchanges)):
+        history = _request_training_history(exchanges[later_idx])
         # Without a protocol ID the replay must extend this exact prompt. An
         # exact ID remains useful after the runtime compacts older history.
         if idless and history[: len(prefix)] != prefix:
@@ -562,7 +635,7 @@ def _request_training_history(exchange: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _response_safe_without_later_consumption(
-    exchanges: list[dict[str, Any]], exchange_idx: int
+    exchanges: Sequence[dict[str, Any]], exchange_idx: int
 ) -> bool:
     exchange = exchanges[exchange_idx]
     response = exchange.get("response")
@@ -573,7 +646,7 @@ def _response_safe_without_later_consumption(
     return not any(
         isinstance(request := later.get("request"), dict)
         and isinstance(request.get("body"), dict)
-        for later in exchanges[exchange_idx + 1 :]
+        for later in (exchanges[i] for i in range(exchange_idx + 1, len(exchanges)))
     )
 
 
@@ -667,8 +740,16 @@ def build_rollout_results_record(
         export_error=effective_export_error,
     )
     terminal_health_error = bool(error or verifier_error or partial_trajectory)
+    # No proxy runs for a native login, or for an agent that routes its own
+    # model calls (agent-reported or none): no LLM trajectory is
+    # expected, so its absence is not an export error.
     native_subscription_without_llm = bool(
-        (agent_result or {}).get("usage_source") == USAGE_SOURCE_AGENT_NATIVE_ACP
+        (agent_result or {}).get("usage_source")
+        in (
+            USAGE_SOURCE_AGENT_NATIVE_ACP,
+            USAGE_SOURCE_AGENT_REPORTED,
+            USAGE_SOURCE_NONE,
+        )
         and not (rollout_path / "trajectory" / "llm_trajectory.jsonl").exists()
         and effective_export_error is None
         and not terminal_health_error

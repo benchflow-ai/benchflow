@@ -489,5 +489,5 @@ def test_the_runner_registers_through_the_guards_marker_format():
     )
     assert 'mac + "\\t" + body' in source
     assert '_mark("registered")' in source
-    assert "/_benchflow_guard_" in source
+    assert "/_runtime_guard_" in source
     compile(source, "run.py", "exec")

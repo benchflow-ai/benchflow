@@ -62,6 +62,12 @@ from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.review.outcome import ScoringResult
 from benchflow.review.persistence import write_json_atomic
 from benchflow.rewards.validation import reward_lenient_from_env
+from benchflow.run_checks import (
+    harness_ending,
+    read_calls,
+    settings_sent,
+    turn_endings,
+)
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     TaskSkillPolicy,
@@ -69,6 +75,15 @@ from benchflow.skill_policy import (
 )
 from benchflow.trajectories._capture import TrajectoryWriter
 from benchflow.trajectories.metrics import count_skill_invocations
+from benchflow.trajectories.model_calls import (
+    SUMMARY_FILE,
+    agent_outcome,
+    effort_outcome,
+    effort_warning,
+    refusal_ending,
+    subagent_usage,
+)
+from benchflow.trajectories.otel_spans import emit_trial_spans
 from benchflow.trajectories.types import stamp_observation_ids
 from benchflow.usage_tracking import UsageTrackingConfig, normalize_usage_source
 
@@ -84,7 +99,7 @@ def _write_rewards_jsonl(
 ) -> None:
     """Write rewards.jsonl — one JSON line per reward event.
 
-    Architecture (``docs/architecture.md``, "Evaluation — the five spaces"):
+    Architecture (``docs/start/how-it-works.md``, "Evaluation — the five spaces"):
     every reward record is tagged ``(space, granularity, value)``. The shared
     :func:`build_rewards_jsonl_events` helper promotes those tags from any
     verifier-supplied per-item dict to first-class fields, falling back to the
@@ -153,15 +168,19 @@ def _write_config(
     verifier_sandbox: str = "task",
     harness: str = "acp",
     litellm_proxy: dict[str, Any] | None = None,
+    harness_versions: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out.
 
     ``harness_mode`` records how the agent ran (``acp`` or ``native``). It is
     not called ``harness``: published metadata and ``bf.compare`` already use
-    that name for the agent itself.
+    that name for the agent itself. ``model_route`` is recorded only for an
+    agent that routes its own model calls (``"agent"``): its
+    ``model`` is then a label, and nothing metered its usage.
     """
     from benchflow.acp.selection import selected_acp_transport
     from benchflow.agents.install import effective_install_timeout
+    from benchflow.agents.registry import MODEL_ROUTE_AGENT, agent_routes_own_model
 
     artifact_source = artifact_source_provenance(source_provenance)
     recorded_task_path = (
@@ -181,6 +200,7 @@ def _write_config(
         "task_path": recorded_task_path,
         "agent": agent,
         "model": model,
+        **({"model_route": MODEL_ROUTE_AGENT} if agent_routes_own_model(agent) else {}),
         "reasoning_effort": reasoning_effort,
         "codex_apps_policy": codex_apps_policy,
         "environment": environment,
@@ -205,7 +225,7 @@ def _write_config(
         "timeout_sec": timeout,
         "concurrency": concurrency,
         "agent_idle_timeout_sec": agent_idle_timeout,
-        "started_at": str(started_at),
+        "started_at": started_at.astimezone().isoformat(),
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
         "loop": loop_block(loop_strategy),
@@ -255,7 +275,59 @@ def _write_config(
         # Where the model proxy ran, the locked requirement file it installed
         # (by name and sha256) and the extras it added on top of it.
         config_data["litellm_proxy"] = litellm_proxy
+    # The installed versions, once the agent's install has been probed
+    # (_record_harness_versions_in_config adds them then).
+    config_data["harness_versions"] = harness_versions
     write_json_atomic(rollout_dir / "config.json", config_data)
+
+
+def _record_harness_versions_in_config(
+    rollout_dir: Path, receipt: dict[str, Any]
+) -> None:
+    """Add the installed harness versions the rollout probed to config.json.
+
+    From the rollout's own copy, never from ``agent/runtime.json``: the agent
+    can write that folder. Never fails the trial.
+    """
+    path = rollout_dir / "config.json"
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(config, dict):
+        return
+    config["harness_versions"] = receipt
+    try:
+        write_json_atomic(path, config)
+    except OSError as e:
+        logger.warning(f"Cannot record the harness versions in {path}: {e}")
+
+
+def _record_effort_in_config(
+    rollout_dir: Path, applied: str | None, route: str | None
+) -> None:
+    """Add the reasoning effort the agent session applied to config.json.
+
+    ``reasoning_effort`` stays what the run asked for; ``reasoning_effort_applied``
+    is the session's word for what it runs at, and ``reasoning_effort_route``
+    the effort the model proxy's route sets on each request, when it sets one.
+    result.json's ``effort`` sets both beside the model calls'. Never fails
+    the trial.
+    """
+    path = rollout_dir / "config.json"
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(config, dict):
+        return
+    config["reasoning_effort_applied"] = applied
+    if route is not None:
+        config["reasoning_effort_route"] = route
+    try:
+        write_json_atomic(path, config)
+    except OSError as e:
+        logger.warning(f"Cannot record the applied effort in {path}: {e}")
 
 
 def _record_reported_models(
@@ -334,6 +406,13 @@ def _build_rollout_result(
     partial_trajectory: bool,
     export_error: str | None = None,
     trajectory_source: TrajectorySource | None = None,
+    stop_reason: str | None = None,
+    stop_reasons: list[str | None] | None = None,
+    compactions: dict[str, Any] | None = None,
+    harness_versions: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
+    effort_applied: str | None = None,
+    effort_route: str | None = None,
     rewards: dict | None,
     started_at: datetime,
     timing: dict[str, Any],
@@ -364,6 +443,7 @@ def _build_rollout_result(
     verifier_isolation: tuple[str, str] | None = None,
     cloud_metadata: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    trial_budget: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -372,6 +452,21 @@ def _build_rollout_result(
     dicts should construct a collector and ``set()`` typed diagnostics.
     ``result_filename=None`` builds the result without writing any result
     file: a reviewed trial publishes nothing until its scoring commits.
+
+    ``stop_reason`` is how the agent's last prompt ended (the ACP stop
+    reason), None when it did not end; with the model-call totals teardown
+    wrote, it decides result.json's ``agent_outcome``, which also lists
+    ``stop_reasons``, every prompt turn's (benchflow.run_checks). ``harness_versions``
+    is the rollout's probe of the installed harness; without one (a result
+    built again in a later process), config.json's record of it.
+    ``reasoning_effort`` is the effort the run asked for, ``effort_applied``
+    the agent session's word for the one it runs at and ``effort_route`` one
+    the model proxy's route sets: result.json's ``effort`` puts them beside
+    the efforts the model calls carried, and a difference is a warning.
+    ``trial_budget`` is the trial's budget and what stopped it, when it had
+    one (the rollout's ``_trial_budget_block``): result.json's
+    ``trial_budget`` adds what the trial used, by the model calls the proxy
+    recorded, and what its subagents used, by the agent's own session log.
     """
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
@@ -400,7 +495,10 @@ def _build_rollout_result(
     # Before the result and the final write share the list: each tool call's
     # observation identity is fixed once, before any redaction.
     stamp_observation_ids(trajectory)
+    if harness_versions is None:
+        harness_versions = _recorded_harness_versions(rollout_dir)
     result = RolloutResult(
+        harness_versions=harness_versions,
         task_name=task_name,
         rollout_name=rollout_name,
         rewards=rewards,
@@ -468,18 +566,70 @@ def _build_rollout_result(
     # (streaming + final) is scrubbed (#537/#585).
     TrajectoryWriter(traj_dir / "acp_trajectory.jsonl").write_final(trajectory)
     rollout_dir.mkdir(parents=True, exist_ok=True)
+    timed_out = bool(trajectory) and trajectory[-1].get("type") == "agent_timeout"
+    calls_summary = _model_calls_summary(rollout_dir)
+    effort = effort_outcome(
+        calls_summary,
+        requested=reasoning_effort,
+        applied=effort_applied,
+        route=effort_route,
+    )
+    warnings = list(warnings or [])
+    if (effort_note := effort_warning(effort)) is not None:
+        warnings.append(effort_note)
+    inputs = (calls_summary or {}).get("input_files")
+    inputs = inputs if isinstance(inputs, dict) else None
+    warnings += _input_stub_warnings(inputs)
+    calls = read_calls(rollout_dir) if calls_summary is not None else []
+    outcome = {
+        **agent_outcome(
+            calls_summary,
+            stop_reason=stop_reason,
+            agent_error=error is not None or timed_out,
+        ),
+        **turn_endings(calls_summary, stop_reasons=stop_reasons, error=error),
+        **harness_ending(error_category, stop_reasons),
+    }
+    if trial_budget is not None:
+        trial_budget = {
+            **trial_budget,
+            "used": {
+                "tokens": result.total_tokens,
+                "turns": (calls_summary or {}).get("calls"),
+            },
+            "subagents": subagent_usage(rollout_dir),
+        }
     result_data = {
         "task_name": result.task_name,
         "rollout_name": result.rollout_name,
         "rewards": result.rewards,
         "agent": result.agent,
         "agent_name": result.agent_name,
+        "harness_versions": result.harness_versions,
         "model": result.model,
         **skill_policy.config_metadata(),
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": result.n_skill_invocations,
         "n_prompts": result.n_prompts,
         "agent_result": agent_result,
+        "agent_outcome": outcome,
+        # The trial ended on a model refusal or a content filter: which call
+        # and why (agent_outcome's status refusal), else None.
+        "model_refusal": refusal_ending(outcome, calls_summary, calls),
+        # Its token and turn budget, what it used and what stopped it; None
+        # when it had none (benchflow.trial_budget).
+        "trial_budget": trial_budget,
+        "effort": effort,
+        "tool_surface": _tool_surface(calls_summary, agent),
+        "input_delivery": inputs,
+        # What the agent's main calls carried (benchflow.run_checks): the
+        # job compares it with what the run card asked for.
+        "settings_sent": settings_sent(calls, model)
+        if calls_summary is not None
+        else None,
+        # Claude Code's compactions in the trial (rollout._session_log); None
+        # when they were not counted.
+        "compactions": compactions,
         "final_metrics": final_metrics,
         "trajectory_summary": trajectory_summary,
         "usage_tracking": usage_tracking,
@@ -491,8 +641,8 @@ def _build_rollout_result(
         **diagnostics.to_result_fields(),
         "partial_trajectory": result.partial_trajectory,
         "trajectory_source": result.trajectory_source,
-        "started_at": str(result.started_at),
-        "finished_at": str(result.finished_at),
+        "started_at": started_at.astimezone().isoformat(),
+        "finished_at": finished_at.astimezone().isoformat(),
         "timing": timing,
         "scenes": _scene_metadata(scenes or []),
         "loop": loop or loop_block(None),
@@ -518,6 +668,8 @@ def _build_rollout_result(
             verifier_isolation[1] if verifier_isolation else None
         ),
     }
+    result.model_refusal = result_data["model_refusal"]
+    result.trial_budget = trial_budget
     if scoring is not None:
         result_data["scoring"] = scoring.to_dict()
     if branches is not None:
@@ -582,7 +734,74 @@ def _build_rollout_result(
         branches=branches,
     )
     write_json_atomic(rollout_dir / "result.json", result_data)
+    # The trial and its model calls as OpenTelemetry spans (and sent where
+    # OTEL_EXPORTER_OTLP_*ENDPOINT says); never fails the trial.
+    emit_trial_spans(rollout_dir)
     return result
+
+
+def _recorded_harness_versions(rollout_dir: Path) -> dict[str, Any] | None:
+    """The harness versions config.json records (trial root, out of the
+    sandbox's reach), or None."""
+    try:
+        config = json.loads((rollout_dir / "config.json").read_text())
+    except (OSError, ValueError):
+        return None
+    versions = config.get("harness_versions") if isinstance(config, dict) else None
+    return versions if isinstance(versions, dict) else None
+
+
+def _tool_surface(summary: dict[str, Any] | None, agent: str) -> dict[str, Any] | None:
+    """result.json's ``tool_surface``: the tools the agent's first request
+    offered (``model-calls.json`` ``first_agent_tools``: count, names and
+    their hash), with ``fallback`` True when they are Codex's fallback surface
+    (False for Codex's own, None for other agents); None when no record saw a
+    request (no proxy)."""
+    from benchflow.agents.codex_config import codex_fallback_tools
+
+    tools = (summary or {}).get("first_agent_tools")
+    if not isinstance(tools, dict):
+        return None
+    names = tools.get("names")
+    names = [str(name) for name in names] if isinstance(names, list) else []
+    return {
+        "count": tools.get("count"),
+        "names": names,
+        "sha256": tools.get("sha256"),
+        "fallback": codex_fallback_tools(names) if agent == "codex-acp" else None,
+    }
+
+
+def _input_stub_warnings(inputs: dict[str, Any] | None) -> list[str]:
+    """A trial warning for each file the agent read whose content did not
+    reach the model, as far as the proxy's requests show (``input_delivery``
+    in result.json, from ``model-calls.json`` ``input_files``)."""
+    warnings = []
+    for entry in (inputs or {}).get("files") or []:
+        if not isinstance(entry, dict) or entry.get("stub") is not True:
+            continue
+        warnings.append(
+            f"input file {entry.get('path')} may not have reached the model: the "
+            f"agent's read of it reached the model as {entry.get('text_chars')} "
+            "characters of text and no document or image"
+            + (f" (route {entry['route']})" if entry.get("route") else "")
+            + (
+                "; a later call that named the file brought back a long text"
+                if entry.get("recovered")
+                else ""
+            )
+        )
+    return warnings
+
+
+def _model_calls_summary(rollout_dir: Path) -> dict[str, Any] | None:
+    """The model-call totals teardown wrote (``model-calls.json``), or None
+    before then: building a result never reads the proxy's log again."""
+    try:
+        summary = json.loads((rollout_dir / SUMMARY_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    return summary if isinstance(summary, dict) else None
 
 
 def _write_results_jsonl(

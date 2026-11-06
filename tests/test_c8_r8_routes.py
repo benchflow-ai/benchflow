@@ -475,8 +475,8 @@ def test_restore_starts_pid1_on_an_absolute_sleep_with_empty_loader_settings(
     asyncio.run(sandbox.restore(image))
     run = next(argv for argv in ran if argv[:1] == ["run"])
     entry = run[max(i for i, value in enumerate(run) if value == "--entrypoint") + 1]
-    assert entry == "/opt/benchflow/rt/bin/sh"
-    assert run[-2:] == ["/opt/benchflow/rt/bin/sleep", "infinity"]
+    assert entry == "/opt/runtime/rt/bin/sh"
+    assert run[-2:] == ["/opt/runtime/rt/bin/sleep", "infinity"]
     assert "trap" in run[run.index("snap") + 2]
     assert "LD_PRELOAD=" in run and "_BF_IMAGE_LD_PRELOAD=/app/x.so" in run
 
@@ -506,7 +506,7 @@ async def test_the_credential_scrub_and_attach_take_the_routes_shell():
     sandbox._docker_cli = cli
     await _DockerCredentialOps(sandbox, "ctr").run("ls /root")
     argv = ran[0]
-    assert argv[argv.index("ctr") + 1] == "/opt/benchflow/rt/bin/sh"
+    assert argv[argv.index("ctr") + 1] == "/opt/runtime/rt/bin/sh"
     assert "LD_PRELOAD=" in argv
     route = await sandbox.exec_route("root", system_shell=True)
     attach = route_exec_argv(
@@ -515,8 +515,8 @@ async def test_the_credential_scrub_and_attach_take_the_routes_shell():
     )  # fmt: skip
     after = attach[attach.index("main") + 1 :]
     # Since round 10 (PT-C8-R9-5): from env -i, terminal data only.
-    assert after[:2] == ["/opt/benchflow/rt/bin/env", "-i"]
-    assert after[-4:] == ["/opt/benchflow/rt/bin/bash", "--noprofile", "--norc", "-i"]
+    assert after[:2] == ["/opt/runtime/rt/bin/env", "-i"]
+    assert after[-4:] == ["/opt/runtime/rt/bin/bash", "--noprofile", "--norc", "-i"]
     assert "-u" in attach and attach[attach.index("-u") + 1] == "0"
     assert f"PATH={route.pin}" in attach
 
@@ -524,7 +524,7 @@ async def test_the_credential_scrub_and_attach_take_the_routes_shell():
 @pytest.mark.asyncio
 async def test_the_live_launcher_stages_its_env_privately_and_exclusively():
     """PT-C8-R3-8, on integ's live transport: the
-    launch env never touches a container pathname (no fixed /tmp/.benchflow_env,
+    launch env never touches a container pathname (no fixed /tmp/.runtime_env,
     no staged file) and no value is in argv; it is the exec's first stdin
     line, read by root's bootstrap before anything else, and the launch starts
     the route's bash."""
@@ -572,9 +572,9 @@ async def test_the_live_launcher_stages_its_env_privately_and_exclusively():
         module.asyncio.create_subprocess_exec = original
     (launch,) = seen
     text = " ".join(launch)
-    assert "secret-v" not in text and "/tmp/.benchflow_env" not in text
+    assert "secret-v" not in text and "/tmp/.runtime_env" not in text
     assert f"{RUN_DIR}/env-" not in text
-    assert launch[launch.index("main") + 1] == "/opt/benchflow/rt/bin/bash"
+    assert launch[launch.index("main") + 1] == "/opt/runtime/rt/bin/bash"
     assert launch[-1].count("IFS= read -r __bf_live_env") == 1
     assert base64.b64decode(Stdin.data.strip()) == b"export KEY=secret-v\n"
 
@@ -635,7 +635,7 @@ def test_the_proxy_child_gets_only_the_checked_runtime_python_path(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "workspace", ["/", "/opt/benchflow", "/opt/benchflow/x", "/usr", "/etc"]
+    "workspace", ["/", "/opt/runtime", "/opt/runtime/x", "/usr", "/etc"]
 )
 def test_a_workspace_that_would_hand_over_roots_programs_is_refused(workspace):
     """Invariant 2's tree: no grant covers the runtime tree or a system
@@ -646,7 +646,7 @@ def test_a_workspace_that_would_hand_over_roots_programs_is_refused(workspace):
     assert workspace_grant_problem("/app") is None
     assert workspace_grant_problem("/opt") is None
     grant = workspace_grant_command("/opt", "agent")
-    assert "chmod 1777 /opt" in grant and "! -path /opt/benchflow" in grant
+    assert "chmod 1777 /opt" in grant and "! -path /opt/runtime" in grant
 
 
 def test_root_python_helpers_are_isolated_from_the_working_folder():
@@ -661,7 +661,7 @@ def test_root_python_helpers_are_isolated_from_the_working_folder():
 
     command = asyncio.run(root_python_command(Env(), ["-c", "pass"]))
     # Since round 10 (PT-C8-R9-8): one entry point, -I -S -B.
-    assert command.startswith("/opt/benchflow/rt/py/python3 -I -S -B ")
+    assert command.startswith("/opt/runtime/rt/py/python3 -I -S -B ")
     source = (SRC / "review" / "evidence.py").read_text()
     assert '"python3",\n            "-c"' not in source
     assert '["python3", "-c"' not in source
@@ -715,7 +715,7 @@ def test_the_runtime_check_walks_link_hops_before_canonicalizing(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_daytona_branch_child_never_starts_a_root_shell_with_the_preload():
-    """S3-CONF-ROOT-1: on native Daytona the provider's
+    """On native Daytona the provider's
     root shells must start from a clean environment. A branch child is
     created from a checkpoint the agent wrote, so its values come only from
     the checkpoint's startup receipt (integ's ``_TOOLBOX_STARTUP_META``):

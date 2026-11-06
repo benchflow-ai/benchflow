@@ -262,7 +262,7 @@ async def test_daytona_direct_env_bootstrap_starts_without_the_agent_preload(tmp
     for command, env in seen:
         # Root's shells (the env-file write, its clean-up), with the env
         # Daytona starts them with.
-        command = re.sub(r"/tmp/benchflow_env_[0-9a-f]+\.env", str(env_file), command)
+        command = re.sub(r"/tmp/runtime_env_[0-9a-f]+\.env", str(env_file), command)
         result = _run(["/bin/sh", "-c", command], {"PATH": IMAGE_PATH, **env})
         assert not _loaded(result), result.stderr
         if env_file.exists():

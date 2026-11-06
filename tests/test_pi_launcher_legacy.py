@@ -45,7 +45,8 @@ class PiLauncherCompatibility(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), "EXEC-REACHED")
                 config = json.loads((Path(home) / ".pi/agent/models.json").read_text())
-                provider = config["providers"]["benchflow-test-model"]
+                # Provider keys use the neutral runtime prefix since f749dea7b.
+                provider = config["providers"]["runtime-test-model"]
                 self.assertGreater(provider["models"][0]["maxTokens"], 0)
 
 

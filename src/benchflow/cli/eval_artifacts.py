@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -228,7 +228,7 @@ MATRIX_FORMAT = (
     "models: maps each alias (its folder name) to a model name, or to a "
     "mapping with model, and optionally agent and agent_env; an agent that "
     "takes no model (oracle, nop) needs only agent, e.g. "
-    "models: {haiku: claude-haiku-4-5, oracle: {agent: oracle}}"
+    "models: {haiku: claude-haiku-5-5, oracle: {agent: oracle}}"
 )
 _NOT_MODELS = {"", "none", "null", "~"}
 
@@ -373,7 +373,7 @@ def run_matrix_eval(
         except (OSError, ValueError) as exc:
             print_error(
                 str(exc),
-                next_step="fix the --matrix file; docs/reference/pass-at-k.md "
+                next_step="fix the --matrix file; docs/audit/compare-runs.md#choose-the-metric "
                 "shows one",
             )
             raise typer.Exit(1) from None
@@ -408,8 +408,15 @@ def run_matrix_eval(
                     },
                 )
                 eval_config = trial_plan.make_eval_config(**overrides)
+                # The run card counts every trial of a task, not this job's one.
+                eval_config.planned_trials = req.trials
+                eval_config.trial_number = trial
                 # None: an agent that takes no model (oracle, nop).
                 eval_config.model = None if raw["model"] is None else str(raw["model"])
+                if req.matrix is not None:
+                    # A matrix entry names its model; --trials alone keeps
+                    # the run's own, as the plan resolved it.
+                    eval_config.model_given = eval_config.model is not None
                 if raw.get("agent"):
                     eval_config.agent = str(raw["agent"])
                     eval_config.agent_defaulted = False
@@ -425,8 +432,13 @@ def run_matrix_eval(
                     matrix_runs.append(_failed_run(alias, trial, trial_dir))
                     continue
                 job = _trial_job(alias, trial, result, eval_config)
+                earlier = [(j.trial, j.result) for j in results if j.alias == alias]
                 results.append(job)
                 matrix_runs.append(_trial_run(job, trial_dir))
+                if _stop_after_run_check(
+                    alias, trial, req.trials, result, earlier=earlier
+                ):
+                    break
         complete = True
     finally:
         restore_reuse()
@@ -485,6 +497,38 @@ def _trial_request(req: Any, alias: str, trial: int) -> Any:
         summary_out=None,
         matrix_trial=True,
     )
+
+
+def _stop_after_run_check(
+    alias: str,
+    trial: int,
+    trials: int,
+    result: Any,
+    *,
+    earlier: Sequence[tuple[int, Any]] = (),
+) -> bool:
+    """Whether the run checks refuse the alias's later trial jobs
+    (benchflow.run_checks), judged over its trial jobs so far: *earlier*
+    (trial number, result), then this one. A trial job that stopped itself
+    refuses them, and so does the truncation rate over all of them; a trial
+    job alone has one trial per task, too few for a rate of its own. The
+    later trial jobs would measure the same setting, so they do not run."""
+    from benchflow.run_checks import pool
+
+    checks = pool(
+        (f"trial-{n:02d}", getattr(r, "run_checks", None))
+        for n, r in [*earlier, (trial, result)]
+    )
+    if not checks["refused"]:
+        return False
+    if trial < trials:
+        console.print(
+            f"[red]{escape(alias)}:[/red] the run checks refuse the run after trial "
+            f"{trial}, so its {trials - trial} later trial job(s) do not run",
+            highlight=False,
+            soft_wrap=True,
+        )
+    return True
 
 
 def _failed_run(alias: str, trial: int, trial_dir: Path) -> dict[str, Any]:
@@ -546,7 +590,10 @@ def _write_matrix_summary(
             **(extra or {}),
             "runs": matrix_runs,
             "solve_rates": matrix_solve_rates(
-                root, aliases, include_controls=include_controls, ks=ks
+                root,
+                aliases,
+                include_controls=include_controls or whole.controls_counted,
+                ks=ks,
             ),
             # What --fail-under counts: control runs are
             # left out unless every trial job is one.
@@ -557,9 +604,26 @@ def _write_matrix_summary(
                 "control_kinds": whole.control_kinds,
                 "controls_counted": whole.controls_counted,
             },
+            # The run checks over each alias's trial jobs together: what
+            # failed the matrix, and the pooled figures it was judged on.
+            "run_checks": whole.run_checks,
         },
     )
     console.print(f"[green]Matrix summary:[/green] {escape(str(summary_path))}")
+    # One report per alias over all its repeats: each task's tries in one row.
+    from benchflow.report import write_report
+
+    for alias in aliases:
+        alias_dir = root / alias
+        jobs = [
+            job
+            for run in matrix_runs
+            if run.get("alias") == alias and run.get("jobs_dir")
+            for job in sorted(Path(run["jobs_dir"]).glob("*/evaluation.json"))
+        ]
+        report = write_report([job.parent for job in jobs], alias_dir, alias)
+        if report is not None:
+            console.print(f"[green]Report:[/green] {escape(str(report))}")
     return whole
 
 
@@ -569,8 +633,18 @@ def _report_matrix(
     """The matrix's closing line, its gate, and the run's end (exit code)."""
     from benchflow.cli.main import _finish_run
 
+    jobs = len(matrix_runs)
+    aliases = len({run.get("alias") for run in matrix_runs})
+    repeats = len({run.get("trial") for run in matrix_runs})
+    if aliases > 1 and repeats > 1:
+        shape = f" ({aliases} aliases, {repeats} repeats each)"
+    elif aliases > 1:
+        shape = f" ({aliases} aliases)"
+    else:
+        shape = f" ({repeats} repeats)" if repeats > 1 else ""
     console.print(
-        f"Matrix: {len(matrix_runs)} trial job(s), {whole.all_passed}/{whole.all_total} "
+        f"Matrix: {jobs} job{'' if jobs == 1 else 's'}{shape}, "
+        f"{whole.all_passed}/{whole.all_total} "
         f"trials passed, errors={whole.errored} verifier-errors="
         f"{whole.verifier_errored}"
         + (
@@ -581,7 +655,8 @@ def _report_matrix(
             else ""
         )
         + (
-            f", {whole.jobs_failed} trial job(s) failed to run"
+            f", {whole.jobs_failed} job{'' if whole.jobs_failed == 1 else 's'} "
+            "failed to run"
             if whole.jobs_failed
             else ""
         ),
@@ -652,8 +727,15 @@ def run_job_matrix(
                     matrix_runs.append(_failed_run(cell.alias, trial, trial_dir))
                     continue
                 job = _trial_job(cell.alias, trial, result, evaluation._config)
+                earlier = [
+                    (j.trial, j.result) for j in results if j.alias == cell.alias
+                ]
                 results.append(job)
                 matrix_runs.append(_trial_run(job, trial_dir))
+                if _stop_after_run_check(
+                    cell.alias, trial, job_plan.attempts, result, earlier=earlier
+                ):
+                    break
         complete = True
     finally:
         restore_reuse()
@@ -774,6 +856,16 @@ def _matrix_result(
     planned = total + not_run
     all_total, all_passed = count(results, "total"), count(results, "passed")
     all_not_run = count(results, "not_run")
+    # Each alias's trial jobs are judged together (benchflow.run_checks.pool);
+    # a failure in any alias fails the matrix.
+    from benchflow.run_checks import pool
+
+    blocks: dict[str, list[tuple[str, Any]]] = {}
+    for j in results:
+        blocks.setdefault(j.alias, []).append(
+            (f"{j.alias}/trial-{j.trial:02d}", getattr(j.result, "run_checks", None))
+        )
+    checks = {alias: pool(rows, label=alias) for alias, rows in blocks.items()}
     return SimpleNamespace(
         job_name=root.name,
         total=total,
@@ -801,4 +893,10 @@ def _matrix_result(
         all_passed=all_passed,
         all_not_run=all_not_run,
         all_planned=all_total + all_not_run,
+        run_checks={
+            "failed": any(c["failed"] for c in checks.values()),
+            "failures": [line for c in checks.values() for line in c["failures"]],
+            "warnings": [line for c in checks.values() for line in c["warnings"]],
+            "aliases": checks,
+        },
     )

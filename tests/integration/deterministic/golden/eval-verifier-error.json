@@ -127,9 +127,9 @@
     }
   ],
   "outcome": {
-    "assessment": "scored",
+    "assessment": "error",
     "execution": "completed",
-    "reward": 0.0
+    "reward": null
   },
   "result": {
     "agent_result": {
@@ -155,9 +155,7 @@
     },
     "n_prompts": 1,
     "n_tool_calls": 1,
-    "rewards": {
-      "reward": 0.0
-    },
+    "rewards": null,
     "timing_keys": [
       "agent_execution",
       "agent_setup",
@@ -198,6 +196,6 @@
       "status": "enabled",
       "usage_source": "provider_response"
     },
-    "verifier_error_category": null
+    "verifier_error_category": "verifier_failure"
   }
 }

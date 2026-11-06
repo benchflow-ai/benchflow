@@ -25,7 +25,7 @@ def test_credential_write_umask_does_not_reach_agent(tmp_path, agent, mask):
     stub.chmod(0o755)
     command = AGENTS[agent].launch_cmd
     if agent == "codex-acp":
-        command = command.replace("/opt/benchflow/bin/codex-acp", str(stub))
+        command = command.replace("/opt/runtime/bin/codex-acp", str(stub))
         files = [".codex/auth.json"]
     else:
         command = command.replace(
@@ -62,7 +62,7 @@ def test_native_harness_prompt_umask_does_not_reach_agent(tmp_path, mask):
         "assert sys.stdin.read() == 'private prompt\\n'\n"
     )
     command = launch_script(sys.executable, (str(stub),), "umask-test")
-    command = command.replace("/tmp/benchflow-native-umask-test", str(tmp_path / "run"))
+    command = command.replace("/tmp/runtime-native-umask-test", str(tmp_path / "run"))
     run = subprocess.run(
         ["bash", "-c", f"umask {mask}; {command}"],
         input=encode_prompt("private prompt\n") + "\n",
@@ -82,7 +82,7 @@ def test_mimo_config_umask_does_not_reach_agent(tmp_path, mask, proxy):
     stub.write_text("#!/bin/sh\numask\n")
     stub.chmod(0o755)
     command = _MIMO_MANIFEST_LAUNCHER.replace(
-        "/opt/benchflow/node/bin/node", shlex.quote(str(stub))
+        "/opt/runtime/node/bin/node", shlex.quote(str(stub))
     )
     run = subprocess.run(
         ["sh", "-c", f"umask {mask}; {command}"],
@@ -128,12 +128,12 @@ async def test_config_writers_preserve_prepared_credentials(tmp_path, agent, kin
     stub.chmod(0o755)
     if agent == "mimo":
         command = _MIMO_MANIFEST_LAUNCHER.replace(
-            "/opt/benchflow/node/bin/node", shlex.quote(str(stub))
+            "/opt/runtime/node/bin/node", shlex.quote(str(stub))
         )
         names = [".config/mimocode/mimocode.json", "mimocode.json"]
     elif agent == "codex-acp":
         command = AGENTS[agent].launch_cmd.replace(
-            "/opt/benchflow/bin/codex-acp", shlex.quote(str(stub))
+            "/opt/runtime/bin/codex-acp", shlex.quote(str(stub))
         )
         names = [".codex/auth.json"]
     else:

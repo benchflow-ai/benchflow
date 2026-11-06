@@ -24,7 +24,7 @@ def test_cleanup_uses_captured_image_paths(tmp_path, folder, hook):
     record = tmp_path / "paths.json"
     record.write_text(json.dumps({"path": [str(directory)], "user_site": []}))
     script = lockdown._CLEANUP_SITE_SCRIPT.replace(
-        "/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json", str(record)
+        "/opt/runtime/rt/IMAGE_PYTHON_PATHS.json", str(record)
     )
     done = subprocess.run(
         [sys.executable, "-I", "-S", "-c", script],

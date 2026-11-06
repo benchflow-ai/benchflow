@@ -75,6 +75,8 @@ from benchflow._verifier_env import PIP_CONFIG_FIX, pin_verifier_env
 from benchflow.agents.registry import get_sandbox_home_dirs
 from benchflow.sandbox import _hardening_python, _verifier_tool_state
 from benchflow.sandbox._cache_reclaim import build_reclaim_caches_cmd
+from benchflow.sandbox._delegate_disarm import RECORD_DIR as _DELEGATE_RECORD_DIR
+from benchflow.sandbox._delegate_disarm import XATTR_SHIM as _XATTR_SHIM
 from benchflow.sandbox._dependency_options import (
     UnknownDependencyInputs,
     dependency_inputs,
@@ -98,7 +100,7 @@ from benchflow.sandbox._hardening_python import (
     hardening_python_cmd,
 )
 from benchflow.sandbox._hook_cleanup import ROOT_MADE_EXCLUDED
-from benchflow.sandbox._identities import Identities, kill_prelude
+from benchflow.sandbox._identities import Identities, Identity, kill_prelude
 from benchflow.sandbox._identities import resolve as resolve_identity
 from benchflow.sandbox._in_order import in_order, runs_steps_at_once
 from benchflow.sandbox._locked_path_validation import _validate_locked_path
@@ -110,11 +112,12 @@ from benchflow.sandbox.cloud_metadata import (
     CLOUD_METADATA_V6,
     NOT_REACHABLE,
     PROVIDER_MANAGED,
+    REFUSED,
     CloudMetadataPowerError,
     cloud_metadata_list,
     cloud_metadata_record,
 )
-from benchflow.sandbox.protocol import KeptServiceFreezerUnavailable
+from benchflow.sandbox.protocol import ExecTimeoutError, KeptServiceFreezerUnavailable
 
 if TYPE_CHECKING:
     from benchflow.sandbox._root_launch import AgentLaunch
@@ -355,17 +358,76 @@ def _allowlist_firewall_cmd(allow_networks: tuple[str, ...]) -> str:
     return "".join(parts)
 
 
+# Installs iptables when the image lacks it, as the firewall's first step.
+_IPTABLES_INSTALL_CMD = (
+    "if ! command -v iptables >/dev/null 2>&1; then "
+    "if command -v apt-get >/dev/null 2>&1; then "
+    "export DEBIAN_FRONTEND=noninteractive; "
+    "apt-get update -qq && apt-get install -y -qq iptables >/dev/null; "
+    "elif command -v dnf >/dev/null 2>&1; then "
+    "dnf -y install iptables >/dev/null; "
+    "elif command -v apk >/dev/null 2>&1; then "
+    "apk add --no-cache iptables >/dev/null; "
+    "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
+)
+# The same install on its own, after the firewall's exec ran out of time.
+# The timed-out exec may have left apt running (this install waits up to
+# 300 s for the lock) or dpkg interrupted mid-unpack (dpkg --configure -a
+# finishes it); a lists update that cannot run now is no reason to stop.
+_IPTABLES_INSTALL_RETRY_CMD = (
+    "set -e; "
+    "if ! command -v iptables >/dev/null 2>&1; then "
+    "if command -v apt-get >/dev/null 2>&1; then "
+    "export DEBIAN_FRONTEND=noninteractive; "
+    "apt-get -o DPkg::Lock::Timeout=300 update -qq || true; "
+    "dpkg --configure -a >/dev/null 2>&1 || true; "
+    "apt-get -o DPkg::Lock::Timeout=300 install -y -qq iptables >/dev/null; "
+    "elif command -v dnf >/dev/null 2>&1; then "
+    "dnf -y install iptables >/dev/null; "
+    "elif command -v apk >/dev/null 2>&1; then "
+    "apk add --no-cache iptables >/dev/null; "
+    "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi"
+)
+_FIREWALL_EXEC_SEC = 120
+_FIREWALL_INSTALL_SEC = 600
+# Runs of the firewall's exec after the first one timed out; the rules are
+# idempotent (each is checked with -C before it is added).
+_FIREWALL_RETRIES = 2
+# The status `timeout` exits with when it ends a command; Daytona runs every
+# exec with a time limit under it.
+_TIMEOUT_STATUS = 124
+
+
+def exec_timed_out(outcome: Any) -> bool:
+    """Whether an exec ran out of its time limit, however the backend said so:
+    ExecTimeoutError, the exec channel's "Command timed out" RuntimeError
+    (Docker), or an answer with the status of an in-sandbox ``timeout``
+    (Daytona)."""
+    if isinstance(outcome, BaseException):
+        return isinstance(outcome, ExecTimeoutError) or (
+            isinstance(outcome, RuntimeError)
+            and str(outcome).startswith("Command timed out")
+        )
+    return _exec_return_code(outcome) == _TIMEOUT_STATUS
+
+
 def _agent_egress_firewall_cmd(
     sandbox_user: str,
     *,
     allow_networks: tuple[str, ...] | None = None,
     root_gid: int | None = None,
+    refuse_dns: bool = False,
 ) -> str:
     """The uid firewall: the agent's packets leave only on loopback.
 
     ``root_gid``: the agent runs as uid 0 with that primary group
     (:func:`build_root_no_web_launch`), and the rules match uid 0 *and* that
-    group, so BenchFlow's own root processes (gid 0) are not held."""
+    group, so BenchFlow's own root processes (gid 0) are not held.
+
+    ``refuse_dns`` (an offline agent): DNS on loopback is refused too. A
+    resolver there answers from outside the sandbox (Docker's embedded one,
+    127.0.0.11 on a rewritten port, forwards to the host's), so it would
+    resolve any name and carry data out in the names asked."""
     user = shlex.quote(sandbox_user)
     owner = (
         f"-m owner --uid-owner 0 --gid-owner {int(root_gid)}"
@@ -377,17 +439,29 @@ def _agent_egress_firewall_cmd(
         if allow_networks is not None
         else ""
     )
+    dns4 = dns6 = ""
+    if refuse_dns:
+        # Above the loopback ACCEPT (each goes in at the top).
+        rules4 = [
+            f"OUTPUT -d 127.0.0.11 {owner} -j REJECT",
+            *(
+                f"OUTPUT -o lo -p {p} --dport 53 {owner} -j REJECT"
+                for p in ("udp", "tcp")
+            ),
+        ]
+        dns4 = "".join(
+            f"iptables -C {r} 2>/dev/null || "
+            f"iptables -I {r.replace('OUTPUT', 'OUTPUT 1', 1)}; "
+            for r in rules4
+        )
+        dns6 = "".join(
+            f"ip6tables -C {r} 2>/dev/null || "
+            f"ip6tables -I {r.replace('OUTPUT', 'OUTPUT 1', 1)}; "
+            for r in rules4[1:]
+        )
     return (
         "set -e; "
-        "if ! command -v iptables >/dev/null 2>&1; then "
-        "if command -v apt-get >/dev/null 2>&1; then "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "apt-get update -qq && apt-get install -y -qq iptables >/dev/null; "
-        "elif command -v dnf >/dev/null 2>&1; then "
-        "dnf -y install iptables >/dev/null; "
-        "elif command -v apk >/dev/null 2>&1; then "
-        "apk add --no-cache iptables >/dev/null; "
-        "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
+        + _IPTABLES_INSTALL_CMD
         + (
             "agent_uid=0; "
             if root_gid is not None
@@ -400,10 +474,11 @@ def _agent_egress_firewall_cmd(
         f"iptables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
         f"iptables -A OUTPUT {owner} -j REJECT; "
+        + dns4
         # procfs reports zero stat size even when this interface has content.
         # Install IPv6 rules whenever the kernel exposes the stack, including
         # before a non-loopback interface acquires an address.
-        "if [ -e /proc/net/if_inet6 ]; then "
+        + "if [ -e /proc/net/if_inet6 ]; then "
         "command -v ip6tables >/dev/null 2>&1 || "
         "{ echo 'IPv6 enabled but ip6tables unavailable' >&2; exit 86; }; "
         f"ip6tables -C OUTPUT -o lo {owner} "
@@ -412,9 +487,7 @@ def _agent_egress_firewall_cmd(
         "-j ACCEPT; "
         f"ip6tables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
-        f"ip6tables -A OUTPUT {owner} -j REJECT; "
-        "fi"
-        f"{allow}"
+        f"ip6tables -A OUTPUT {owner} -j REJECT; " + dns6 + f"fi{allow}"
     )
 
 
@@ -840,14 +913,47 @@ async def enforce_agent_egress_firewall(
     if not sandbox_user:
         # A uid-0 agent under no-web: its launch put it in
         # NO_WEB_ROOT_GID (build_root_no_web_launch); hold that.
-        await enforce_sandbox_uid_egress(env, "root", root_gid=NO_WEB_ROOT_GID)
+        await enforce_sandbox_uid_egress(
+            env, "root", root_gid=NO_WEB_ROOT_GID, refuse_dns=True
+        )
         return
     allow_networks = None
     if denylist and agent_env.get(EGRESS_ALLOWLIST_ENV) == "1":
         allow_networks = tuple(
             n for n in agent_env.get(EGRESS_ALLOW_NETWORKS_ENV, "").split(",") if n
         )
-    await enforce_sandbox_uid_egress(env, sandbox_user, allow_networks=allow_networks)
+    await enforce_sandbox_uid_egress(
+        env, sandbox_user, allow_networks=allow_networks, refuse_dns=no_web
+    )
+
+
+async def _install_iptables_alone(env: Any) -> None:
+    """The firewall's iptables install in its own exec, with the longer limit."""
+    try:
+        installed = await exec_raw(
+            env.exec,
+            _IPTABLES_INSTALL_RETRY_CMD,
+            user="root",
+            timeout_sec=_FIREWALL_INSTALL_SEC,
+        )
+    except Exception as exc:
+        if not exec_timed_out(exc):
+            raise
+        raise RuntimeError(
+            "Failed to enforce sandbox-user egress firewall: installing "
+            f"iptables timed out ({exc})"
+        ) from exc
+    if exec_timed_out(installed):
+        raise RuntimeError(
+            "Failed to enforce sandbox-user egress firewall: installing "
+            f"iptables timed out (exit {_TIMEOUT_STATUS} from its time limit)"
+        )
+    if _exec_return_code(installed) != 0:
+        detail = _exec_failure_detail(installed)
+        raise RuntimeError(
+            "Failed to enforce sandbox-user egress firewall: installing "
+            f"iptables failed.{detail}"
+        )
 
 
 async def enforce_sandbox_uid_egress(
@@ -856,20 +962,54 @@ async def enforce_sandbox_uid_egress(
     *,
     allow_networks: tuple[str, ...] | None = None,
     root_gid: int | None = None,
+    refuse_dns: bool = False,
 ) -> None:
     """Install the shared loopback-only UID firewall without inference setup.
 
     ``allow_networks`` (allowlist mode) adds the DNS redirect and the direct
     rules for listed IP ranges; see ``_allowlist_firewall_cmd``.
+    ``refuse_dns`` (an offline agent) refuses DNS on loopback too.
+
+    One exec installs iptables when the image lacks it and adds the rules.
+    When it runs out of time (a slow package mirror, a loaded sandbox), the
+    install runs on its own with a longer limit and the exec runs again, at
+    most ``_FIREWALL_RETRIES`` times; a failure names the step.
     """
-    result = await exec_raw(
-        env.exec,
-        _agent_egress_firewall_cmd(
-            sandbox_user, allow_networks=allow_networks, root_gid=root_gid
-        ),
-        user="root",
-        timeout_sec=120,
+    command = _agent_egress_firewall_cmd(
+        sandbox_user,
+        allow_networks=allow_networks,
+        root_gid=root_gid,
+        refuse_dns=refuse_dns,
     )
+    attempt = 0
+    while True:
+        cause: BaseException | None = None
+        try:
+            result = await exec_raw(
+                env.exec, command, user="root", timeout_sec=_FIREWALL_EXEC_SEC
+            )
+        except Exception as exc:
+            if not exec_timed_out(exc):
+                raise
+            failure, cause = str(exc), exc
+        else:
+            if not exec_timed_out(result):
+                break
+            failure = f"exit {_TIMEOUT_STATUS} from its time limit"
+        if attempt == _FIREWALL_RETRIES:
+            raise RuntimeError(
+                "Failed to enforce sandbox-user egress firewall: its exec "
+                f"timed out {attempt + 1} times ({failure})"
+            ) from cause
+        attempt += 1
+        logger.warning(
+            "Egress firewall exec timed out after %ss; installing iptables in "
+            "its own exec, then retrying (%d of %d)",
+            _FIREWALL_EXEC_SEC,
+            attempt,
+            _FIREWALL_RETRIES,
+        )
+        await _install_iptables_alone(env)
     if _exec_return_code(result) != 0:
         detail = _exec_failure_detail(result)
         raise RuntimeError(f"Failed to enforce sandbox-user egress firewall.{detail}")
@@ -1221,7 +1361,391 @@ def _cloud_metadata_after_cmd(fw4: str, probe: str) -> str:
     )
 
 
-def _cloud_metadata_delegate_check_cmd(root: str = "/") -> str:
+# --- the delegate inventory (S2-CONF-7 and S2-CONF-8) ------------------
+
+#: The folders whose distribution helpers may keep a set-ID bit, and whose
+#: network tools may keep their usual NET_RAW file capability.
+_DELEGATE_SYSTEM_DIRS = ("/usr/bin", "/usr/sbin", "/bin", "/sbin")
+#: Narrow distribution set-ID helpers, exempt only in the folders above.
+#: Deliberately narrower than S3's ``_STANDARD_SETUID`` policy: su, ksu, sudo,
+#: sudoedit, doas, pkexec and BusyBox bbsuid can launch commands or
+#: identities under image policy, and a fixed distribution path cannot make
+#: that grant narrow (S2-CONF-8). Exact paths, not basenames: /opt/su and
+#: /tmp/ping receive no exemption.
+_DELEGATE_SETID_NAMES = (
+    "at",
+    "chage",
+    "chfn",
+    "chsh",
+    "dbus-daemon-launch-helper",
+    "expiry",
+    "fusermount",
+    "fusermount3",
+    "gpasswd",
+    "mount",
+    "mount.cifs",
+    "mount.nfs",
+    "newgidmap",
+    "newgrp",
+    "newuidmap",
+    "passwd",
+    "ping",
+    "ping6",
+    "polkit-agent-helper-1",
+    "pt_chown",
+    "ssh-keysign",
+    "umount",
+    "unix_chkpwd",
+    "Xorg.wrap",
+    # Standard setgid-only helpers (S3's setuid inventory did not need
+    # these): authentication, terminal messages and lookup databases.
+    "ssh-agent",
+    "pam_extrausers_chkpwd",
+    "crontab",
+    "wall",
+    "write",
+    "bsd-write",
+    "locate",
+    "mlocate",
+    "plocate",
+)
+#: Narrow helpers outside those folders, by exact path.
+_DELEGATE_SETID_HELPERS = (
+    "/opt/google/chrome/chrome-sandbox",
+    "/usr/lib/chromium-browser/chrome-sandbox",
+    "/usr/lib/chromium/chrome-sandbox",
+    "/usr/lib/aarch64-linux-gnu/gstreamer1.0/gstreamer-1.0/gst-ptp-helper",
+    "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/gstreamer-1.0/gst-ptp-helper",
+    "/usr/libexec/gstreamer-1.0/gst-ptp-helper",
+    "/usr/lib/dbus-1.0/dbus-daemon-launch-helper",
+    "/usr/lib/openssh/ssh-keysign",
+    "/usr/lib/polkit-1/polkit-agent-helper-1",
+    "/usr/libexec/dbus-daemon-launch-helper",
+    "/usr/libexec/openssh/ssh-keysign",
+    "/usr/libexec/polkit-agent-helper-1",
+    "/usr/lib/xorg/Xorg.wrap",
+    "/usr/lib/eject/dmcrypt-get-device",
+    "/usr/sbin/pam_timestamp_check",
+)
+_DELEGATE_SETID_EXEMPT = frozenset(
+    (
+        *(f"{d}/{n}" for d in _DELEGATE_SYSTEM_DIRS for n in _DELEGATE_SETID_NAMES),
+        *_DELEGATE_SETID_HELPERS,
+    )
+)
+#: The one exempt file capability, on these network tools in the folders
+#: above only. Do not try to enumerate "dangerous" capability names:
+#: DAC_OVERRIDE, FOWNER, SYS_MODULE, etc. can also lead to root, and
+#: NET_ADMIN is never exempt.
+_DELEGATE_NARROW_CAPS = "cap_net_raw=ep"
+_DELEGATE_NARROW_CAP_EXEMPT = frozenset(
+    f"{d}/{n}"
+    for d in _DELEGATE_SYSTEM_DIRS
+    for n in (
+        "arping",
+        "clockdiff",
+        "fping",
+        "fping6",
+        "mtr-packet",
+        "ping",
+        "ping4",
+        "ping6",
+        "traceroute6.iputils",
+    )
+)
+#: The seconds one inventory exec may take.
+_DELEGATE_EXEC_SEC = 120
+#: Report lines (set-ID files, capability files, errors) one inventory may
+#: print. More is an incomplete inventory, never a truncated clean one.
+_DELEGATE_LINE_LIMIT = 2000
+#: How many findings the refusal names, and how many the record keeps.
+_DELEGATE_NAMED = 10
+_DELEGATE_RECORDED = 40
+#: Capability names by bit (Linux 5.9+), for the report.
+_CAP_NAMES = (
+    "chown",
+    "dac_override",
+    "dac_read_search",
+    "fowner",
+    "fsetid",
+    "kill",
+    "setgid",
+    "setuid",
+    "setpcap",
+    "linux_immutable",
+    "net_bind_service",
+    "net_broadcast",
+    "net_admin",
+    "net_raw",
+    "ipc_lock",
+    "ipc_owner",
+    "sys_module",
+    "sys_rawio",
+    "sys_chroot",
+    "sys_ptrace",
+    "sys_pacct",
+    "sys_admin",
+    "sys_boot",
+    "sys_nice",
+    "sys_resource",
+    "sys_time",
+    "sys_tty_config",
+    "mknod",
+    "lease",
+    "audit_write",
+    "audit_control",
+    "setfcap",
+    "mac_override",
+    "mac_admin",
+    "syslog",
+    "wake_alarm",
+    "block_suspend",
+    "audit_read",
+    "perfmon",
+    "bpf",
+    "checkpoint_restore",
+)
+
+# Root's inventory with BenchFlow's protected Python (PT's root-only kit
+# copy, never a Python found on the image's PATH): every regular file across
+# mounts, but /proc and /sys, each looked at with lstat and lgetxattr only,
+# never through a link and never run. Each set-ID file and each file with a
+# security.capability attribute is printed with its path in hex, so no
+# filename can forge a report line, then one scan line. A name that goes
+# away between its folder's listing and its own look (another process's
+# temp file renamed into place) is counted as vanished, not an error: there
+# is nothing left at that path to run. Any other failure is an error, and
+# an inventory with an error is incomplete (exit 7). A Python with no way to
+# read extended attributes (``_delegate_disarm.XATTR_SHIM``: os.getxattr, else
+# the C library's through ctypes) reads nothing and reports so (``why=xattr``).
+# Python 3.5 or later.
+_DELEGATE_PY_READER_SOURCE = r"""
+import errno, os, stat, sys
+@XATTR@
+NAMES = @NAMES@
+root = os.fsencode(sys.argv[1])
+limit = int(sys.argv[2])
+# A set-ID file the sandbox user owns is marked "s" (not counted) only when
+# it grants nothing beyond that user's own identity: setuid to it, setgid
+# only to a group it already belongs to (primary or supplementary, read here
+# in the sandbox). Setgid to any other group (root, disk, shadow) counts, and
+# a capability counts whoever owns it.
+sandbox_uid = None
+sandbox_groups = frozenset()
+if len(sys.argv) > 3 and sys.argv[3]:
+    try:
+        import pwd
+        account = pwd.getpwnam(sys.argv[3])
+        if account.pw_uid:
+            sandbox_groups = frozenset(os.getgrouplist(sys.argv[3], account.pw_gid))
+            sandbox_uid = account.pw_uid
+    except (ImportError, KeyError, OSError, AttributeError):
+        sandbox_uid = None
+        sandbox_groups = frozenset()
+out = sys.stdout.buffer
+prune = (b"/proc", b"/sys")
+counts = {"files": 0, "vanished": 0, "errors": 0, "lines": 0}
+why = []
+gone = (errno.ENOENT, errno.ENOTDIR)
+no_caps = (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP)
+
+
+class Full(Exception):
+    pass
+
+
+if lgetxattr is None:
+    out.write(
+        b"BF metadata-delegates-scan reader=none complete=0 files=- vanished=- "
+        b"errors=- why=xattr\n"
+    )
+    out.flush()
+    sys.exit(7)
+
+
+def emit(*parts):
+    if counts["lines"] >= limit:
+        raise Full()
+    counts["lines"] += 1
+    out.write(b" ".join(parts) + b"\n")
+
+
+def failed(op, err, path):
+    counts["errors"] += 1
+    if counts["errors"] <= 20:
+        name = errno.errorcode.get(err.errno, "E%s" % err.errno)
+        emit(b"BF metadata-delegates-error", op, name.encode(), path.hex().encode())
+
+
+def caps(raw):
+    # VFS capability revisions 1 to 3 (linux/capability.h), as the kernel
+    # reads them: an exact size per revision, or the attribute is invalid.
+    n = len(raw)
+    if n not in (12, 20, 24):
+        return b"invalid"
+    w = [int.from_bytes(raw[i:i + 4], "little") for i in range(0, n, 4)]
+    rev = w[0] & 0xFF000000
+    if rev == 0x01000000 and n == 12:
+        prm, inh, owner = w[1], w[2], 0
+    elif rev == 0x02000000 and n == 20:
+        prm, inh, owner = w[1] | w[3] << 32, w[2] | w[4] << 32, 0
+    elif rev == 0x03000000 and n == 24:
+        prm, inh, owner = w[1] | w[3] << 32, w[2] | w[4] << 32, w[5]
+    else:
+        return b"invalid"
+    order = []
+    held = {}
+    for i in range(64):
+        p = prm >> i & 1
+        h = inh >> i & 1
+        if not (p or h):
+            continue
+        # getcap's flag order: e, i, p.
+        f = ("e" if w[0] & 1 and p else "") + ("i" if h else "") + ("p" if p else "")
+        if f not in held:
+            held[f] = []
+            order.append(f)
+        held[f].append("cap_" + NAMES[i] if i < len(NAMES) else str(i))
+    text = " ".join(",".join(held[f]) + "=" + f for f in order) or "="
+    if owner:
+        text += " [rootid=%d]" % owner
+    return text.encode()
+
+
+seen = set()
+stack = [root]
+try:
+    while stack:
+        d = stack.pop()
+        try:
+            st = os.lstat(d)
+        except OSError as e:
+            if e.errno in gone:
+                counts["vanished"] += 1
+            else:
+                failed(b"lstat", e, d)
+            continue
+        if not stat.S_ISDIR(st.st_mode) or (st.st_dev, st.st_ino) in seen:
+            continue
+        seen.add((st.st_dev, st.st_ino))
+        try:
+            it = os.scandir(d)
+        except OSError as e:
+            if e.errno in gone:
+                counts["vanished"] += 1
+            else:
+                failed(b"opendir", e, d)
+            continue
+        try:
+            while True:
+                try:
+                    entry = next(it)
+                except StopIteration:
+                    break
+                except OSError as e:
+                    failed(b"readdir", e, d)
+                    break
+                p = entry.path
+                if p in prune:
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(p)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError as e:
+                    if e.errno in gone:
+                        counts["vanished"] += 1
+                    else:
+                        failed(b"lstat", e, p)
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                counts["files"] += 1
+                if st.st_mode & (stat.S_ISUID | stat.S_ISGID):
+                    flags = (
+                        (b"u" if st.st_mode & stat.S_ISUID else b"-")
+                        + (b"g" if st.st_mode & stat.S_ISGID else b"-")
+                        + (
+                            b"0"
+                            if st.st_uid == 0
+                            else b"s"
+                            if st.st_uid == sandbox_uid
+                            and (
+                                not st.st_mode & stat.S_ISGID
+                                or st.st_gid in sandbox_groups
+                            )
+                            else b"-"
+                        )
+                    )
+                    emit(b"BF metadata-delegates-setid", flags, p.hex().encode())
+                try:
+                    raw = lgetxattr(p, "security.capability")
+                except OSError as e:
+                    if e.errno in no_caps:
+                        continue
+                    if e.errno in gone:
+                        counts["vanished"] += 1
+                    else:
+                        failed(b"getxattr", e, p)
+                    continue
+                emit(b"BF metadata-delegates-cap", p.hex().encode(), caps(raw))
+        finally:
+            close = getattr(it, "close", None)
+            if close is not None:
+                close()
+except Full:
+    why.append("truncated")
+if counts["errors"]:
+    why.append("errors")
+complete = 0 if why else 1
+out.write(
+    b"BF metadata-delegates-scan reader=python3 complete=%d files=%d vanished=%d "
+    b"errors=%d why=%s\n"
+    % (
+        complete,
+        counts["files"],
+        counts["vanished"],
+        counts["errors"],
+        (",".join(why) or "-").encode(),
+    )
+)
+out.flush()
+sys.exit(0 if complete else 7)
+"""
+_DELEGATE_PY_READER = _DELEGATE_PY_READER_SOURCE.replace("@XATTR@", _XATTR_SHIM)
+
+# find's batches of set-ID files (shell inventory): each path in hex, with
+# whether it is setuid, setgid and root's own (``[ -O ]``: owned by root,
+# whose script this is). Any failure fails the batch, and so find.
+_DELEGATE_SETID_READER = r"""
+od=$1; tr=$2; shift 2
+for f do
+    u=-; g=-; o=-
+    [ ! -u "$f" ] || u=u
+    [ ! -g "$f" ] || g=g
+    [ ! -O "$f" ] || o=0
+    hex=$("$od" -An -v -tx1 <<EOF
+$f
+EOF
+    ) || exit 1
+    hex=$(printf '%s' "$hex" | "$tr" -d ' \n') || exit 1
+    hex=${hex%0a}
+    [ -n "$hex" ] || exit 1
+    printf 'BF metadata-delegates-setid %s%s%s %s\n' "$u" "$g" "$o" "$hex"
+done
+"""
+
+
+def _cloud_metadata_delegate_check_cmd(
+    root: str = "/",
+    *,
+    python: str | None = None,
+    record: str = f"{_DELEGATE_RECORD_DIR}/record.json",
+    sandbox_user: str = "",
+) -> str:
     """Inventory privilege independently of executable names or probe success.
 
     A trusted wrapper (including a native binary) may execute a delegate by
@@ -1230,121 +1754,491 @@ def _cloud_metadata_delegate_check_cmd(root: str = "/") -> str:
     can traverse a directory it cannot list. Never execute the listed files.
     Only /proc and /sys kernel interfaces are excluded, not /opt, /dev/shm,
     private folders or volumes.
-    Only narrow distribution set-ID helpers are exempt. General command or
-    identity launchers are not: legitimate sudoers, doas or authentication
-    policy can delegate root without a hostile package, even when a firewall
-    mutation probe fails. Do not infer absent authority from current policy.
-    Other set-ID files and file capabilities refuse startup; narrow network
-    tools may retain only their usual NET_RAW at fixed distribution paths.
-    Enumeration/inspection failure is not a clean inventory.
+
+    It reports and never decides: each set-ID file (``BF metadata-delegates-
+    setid <u|-><g|-><0|-> <hex path>``) and each file capability, then one
+    ``BF metadata-delegates-scan reader=<python3|getcap|none> complete=<0|1>
+    files= vanished= errors= why=`` line, and exits 7 unless it is complete.
+    :func:`_delegate_report` classifies. With *python* (PT's protected kit
+    Python, checked root's alone here), that Python walks the file system
+    and reads each file's ``security.capability`` itself
+    (:data:`_DELEGATE_PY_READER`). Otherwise root's custody-checked ``find``
+    lists set-ID files and the image's ``getcap`` reads capabilities (``BF
+    metadata-delegates-getcap <hex of getcap's output>``); GNU find skips a
+    name that goes away mid-walk (``-ignore_readdir_race``). With neither
+    reader the inventory is incomplete (``reader=none``): file capabilities
+    were never read, which is not a clean inventory.
+
+    First, ``BF metadata-delegates-record`` when root's record of disarmed
+    files (*record*) is there: this sandbox's files were disarmed before,
+    by an earlier connect or before the snapshot it was restored from, and
+    the block has root list them so they are put back before grading.
     """
-    # Exact paths, not basenames: /opt/su and /tmp/ping receive no exemption.
-    # Deliberately narrower than S3's _STANDARD_SETUID policy: su, ksu, sudo,
-    # sudoedit, doas, pkexec and BusyBox bbsuid can launch commands/identities under
-    # image policy. A fixed distribution path cannot make that grant narrow.
-    names = [
-        "at",
-        "chage",
-        "chfn",
-        "chsh",
-        "dbus-daemon-launch-helper",
-        "expiry",
-        "fusermount",
-        "fusermount3",
-        "gpasswd",
-        "mount",
-        "mount.cifs",
-        "mount.nfs",
-        "newgidmap",
-        "newgrp",
-        "newuidmap",
-        "passwd",
-        "ping",
-        "ping6",
-        "polkit-agent-helper-1",
-        "pt_chown",
-        "ssh-keysign",
-        "umount",
-        "unix_chkpwd",
-        "Xorg.wrap",
-        # Standard setgid-only helpers (S3's setuid inventory did not need
-        # these): authentication, terminal messages and lookup databases.
-        "ssh-agent",
-        "pam_extrausers_chkpwd",
-        "crontab",
-        "wall",
-        "write",
-        "bsd-write",
-        "locate",
-        "mlocate",
-        "plocate",
-    ]
-    standard_paths = [
-        f"{directory}/{name}"
-        for directory in ("/usr/bin", "/usr/sbin", "/bin", "/sbin")
-        for name in names
-    ]
-    standard_paths += [
-        "/opt/google/chrome/chrome-sandbox",
-        "/usr/lib/chromium-browser/chrome-sandbox",
-        "/usr/lib/chromium/chrome-sandbox",
-        "/usr/lib/aarch64-linux-gnu/gstreamer1.0/gstreamer-1.0/gst-ptp-helper",
-        "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/gstreamer-1.0/gst-ptp-helper",
-        "/usr/libexec/gstreamer-1.0/gst-ptp-helper",
-        "/usr/lib/dbus-1.0/dbus-daemon-launch-helper",
-        "/usr/lib/openssh/ssh-keysign",
-        "/usr/lib/polkit-1/polkit-agent-helper-1",
-        "/usr/libexec/dbus-daemon-launch-helper",
-        "/usr/libexec/openssh/ssh-keysign",
-        "/usr/libexec/polkit-agent-helper-1",
-        "/usr/lib/xorg/Xorg.wrap",
-        "/usr/lib/eject/dmcrypt-get-device",
-        "/usr/sbin/pam_timestamp_check",
-    ]
-    standard = "|".join(map(shlex.quote, standard_paths))
-    # Do not try to enumerate "dangerous" capability names: DAC_OVERRIDE,
-    # FOWNER, SYS_MODULE, etc. can also lead to root. Only this narrow grant
-    # on trusted distribution network tools is exempt, never NET_ADMIN.
-    narrow_caps = "|".join(
-        shlex.quote(f"{directory}/{name} cap_net_raw=ep")
-        for directory in ("/usr/bin", "/usr/sbin", "/bin", "/sbin")
-        for name in (
-            "arping",
-            "clockdiff",
-            "fping",
-            "fping6",
-            "mtr-packet",
-            "ping",
-            "ping4",
-            "ping6",
-            "traceroute6.iputils",
+    r = shlex.quote(root)
+    recorded = (
+        f"if [ -f {shlex.quote(record)} ]; then "
+        "printf 'BF metadata-delegates-record\\n'; fi; "
+    )
+    walk = r"\( -path /proc -o -path /sys \) -prune -o -type f"
+    shell = (
+        "complete=1; why=; reader=none; "
+        'miss() { complete=0; why="${why:+$why,}$1"; }; '
+        "if finder=$(tool find) && d_sh=$(tool sh) && d_od=$(tool od) "
+        "&& d_tr=$(tool tr) && d_mk=$(tool mktemp) && d_rm=$(tool rm); then "
+        'race=; "$finder" / -ignore_readdir_race -maxdepth 0 -prune '
+        ">/dev/null 2>&1 && race=-ignore_readdir_race; "
+        f'"$finder" {r} $race {walk} \\( -perm -4000 -o -perm -2000 \\) '
+        f'-exec "$d_sh" -c {shlex.quote(_DELEGATE_SETID_READER)} sh '
+        '"$d_od" "$d_tr" {} + || miss setid; '
+        "if reader=$(tool getcap); then "
+        'errs=$("$d_mk") || { errs=; miss tools; }; '
+        'if [ -n "$errs" ]; then '
+        # GNU/BusyBox find pass a failed batched -exec on as their status;
+        # the command substitution keeps it (a pipe would not). getcap
+        # reports a file it cannot read on stderr and still exits 0, so its
+        # stderr is kept, in the C locale, and every line of it is read.
+        f'caps=$(LC_ALL=C "$finder" {r} $race {walk} -exec "$reader" {{}} + '
+        '2>"$errs") || miss caps; '
+        'if [ -n "$caps" ]; then '
+        'hex=$(printf \'%s\\n\' "$caps" | "$d_od" -An -v -tx1 | '
+        "\"$d_tr\" -d ' \\n'); "
+        '[ -n "$hex" ] || miss encode; '
+        "printf 'BF metadata-delegates-getcap %s\\n' \"$hex\"; fi; "
+        'if [ -s "$errs" ]; then '
+        'hex=$("$d_od" -An -v -tx1 < "$errs" | "$d_tr" -d \' \\n\'); '
+        '[ -n "$hex" ] || miss encode; '
+        "printf 'BF metadata-delegates-getcaperr %s\\n' \"$hex\"; fi; "
+        '"$d_rm" -f "$errs"; fi; '
+        "reader=getcap; "
+        "else reader=none; miss reader; fi; "
+        "else miss tools; fi; "
+        "printf 'BF metadata-delegates-scan reader=%s complete=%s files=- "
+        'vanished=- errors=- why=%s\\n\' "$reader" "$complete" "${why:--}"; '
+        '[ "$complete" = 1 ] || exit 7; '
+    )
+    protected = ""
+    if python:
+        py = shlex.quote(python)
+        program = _DELEGATE_PY_READER.replace("@NAMES@", repr(_CAP_NAMES))
+        protected = (
+            f'if walk {py} && [ -f "$W" ] && [ -x "$W" ]; then '
+            f"{py} -I -S -B -c {shlex.quote(program)} {r} {_DELEGATE_LINE_LIMIT}"
+            + (f" {shlex.quote(sandbox_user)}" if sandbox_user else "")
+            + "; "
+            "exit $?; fi; "
         )
+    return "( " + _cloud_metadata_root_prelude() + recorded + protected + shell + ")"
+
+
+@dataclass
+class _DelegateReport:
+    """One delegate inventory, read and classified (:func:`_delegate_report`).
+
+    ``findings``: the set-ID files and file capabilities that count, each a
+    ``{"path", "why"}``. ``problems``: why the inventory is not complete; an
+    incomplete inventory never stands for a clean one. ``deterministic``:
+    the image itself decides the incompleteness (no reader, no tools), so
+    another attempt would only repeat it.
+    """
+
+    reader: str = "none"
+    findings: list[dict[str, str]] = dataclasses.field(default_factory=list)
+    problems: list[str] = dataclasses.field(default_factory=list)
+    deterministic: bool = False
+    files: int | None = None
+    vanished: int | None = None
+    errors: int | None = None
+    attempts: int = 1
+    # The findings' paths as the sandbox spelled them, for the strip.
+    targets: list[bytes] = dataclasses.field(default_factory=list)
+    # Which Python read it (kit, managed, staged), and why none could be had.
+    python: str = ""
+    python_why: str = ""
+    # Root's record of disarmed files is in the sandbox (a snapshot's).
+    recorded: bool = False
+    # Set-ID files the sandbox user owns, not counted.
+    sandbox_owned: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return not self.problems
+
+    def summary(self) -> dict[str, Any]:
+        """The record's ``delegate_inventory``."""
+        return {
+            "reader": self.reader,
+            "files": self.files,
+            "vanished": self.vanished,
+            "errors": self.errors,
+            "attempts": self.attempts,
+            **({"python": self.python} if self.python else {}),
+            **({"python_unavailable": self.python_why} if self.python_why else {}),
+            **(
+                {"sandbox_owned_setid_not_counted": self.sandbox_owned}
+                if self.sandbox_owned
+                else {}
+            ),
+            **({"incomplete": list(self.problems)} if self.problems else {}),
+        }
+
+
+_DELEGATE_HEX = r"((?:[0-9a-f]{2})+)"
+_DELEGATE_LINES = {
+    "setid": re.compile(
+        rf"BF metadata-delegates-setid ([u-][g-][0s-]) {_DELEGATE_HEX}"
+    ),
+    "cap": re.compile(rf"BF metadata-delegates-cap {_DELEGATE_HEX} (\S.*)"),
+    "getcap": re.compile(rf"BF metadata-delegates-getcap {_DELEGATE_HEX}"),
+    "getcaperr": re.compile(rf"BF metadata-delegates-getcaperr {_DELEGATE_HEX}"),
+    "record": re.compile(r"BF metadata-delegates-record"),
+    "error": re.compile(
+        rf"BF metadata-delegates-error ([a-z]+) (E[A-Z0-9]+) {_DELEGATE_HEX}"
+    ),
+    "scan": re.compile(
+        r"BF metadata-delegates-scan reader=(python3|getcap|none) complete=([01]) "
+        r"files=([0-9]+|-) vanished=([0-9]+|-) errors=([0-9]+|-) why=([a-z,]+|-)"
+    ),
+}
+# What each of the scan's ``why`` words means, for the record and refusal.
+_DELEGATE_WHY = {
+    "tools": "find, sh, od, tr, mktemp or rm is missing from root's own folders, "
+    "or someone other than root can change it",
+    "reader": "nothing could read file capabilities: the image has no getcap "
+    "(libcap) and BenchFlow had none of its own Python there",
+    "setid": "find failed while listing set-ID files",
+    "caps": "find or getcap failed while reading file capabilities",
+    "encode": "its report could not be encoded",
+    "xattr": "the Python that ran it has no way to read file capabilities (its os "
+    "module has no getxattr, and ctypes could not reach the C library's)",
+    "errors": "files or folders could not be read",
+    "truncated": f"it found more than {_DELEGATE_LINE_LIMIT} set-ID files, "
+    "capability files and errors",
+}
+# Scan words the image itself decides: another attempt would repeat them.
+_DELEGATE_IMAGE_WHY = frozenset({"reader", "tools", "xattr"})
+# getcap's line: ``<path> <caps>`` (libcap 2.x, `` [rootid=<n>]`` for a
+# namespaced capability) or ``<path> = <caps>`` (older libcap).
+_GETCAP_LINE = re.compile(
+    r"(/.*?) (?:= )?([a-z0-9_,]*[=+-][eip]*(?: [a-z0-9_,]*[=+-][eip]*)*"
+    r"(?: \[rootid=[0-9]+\])?)"
+)
+# getcap's stderr (C locale) for a name that went away before it looked.
+_GETCAP_GONE = re.compile(r".* \((?:No such file or directory|Not a directory)\)")
+
+
+def _shown_path(raw: bytes) -> str:
+    """A path as the record and message show it: UTF-8, any other byte
+    escaped, and quoted when it holds a control character."""
+    text = raw.decode("utf-8", "backslashreplace")
+    return text if text.isprintable() else ascii(text)
+
+
+def _decoded_path(hex_path: str) -> bytes | None:
+    raw = bytes.fromhex(hex_path)
+    return raw if raw.startswith(b"/") and b"\0" not in raw else None
+
+
+def _delegate_setid_why(flags: str) -> str:
+    why = []
+    if flags[0] == "u":
+        why.append("setuid root" if flags[2] == "0" else "setuid, not root's")
+    if flags[1] == "g":
+        why.append("setgid")
+    return " and ".join(why)
+
+
+def _delegate_report(out: Any, code: Any, failed: str = "") -> _DelegateReport:
+    """Read and classify one inventory (:func:`_cloud_metadata_delegate_check_cmd`).
+
+    Fails closed: a failed exec, a status other than the report's own, a
+    missing or repeated scan line, a line the inventory never prints, or a
+    file getcap could not read makes the inventory incomplete. Only the
+    narrow exemptions above clear a set-ID file or a file capability.
+    """
+    report = _DelegateReport()
+    if failed:
+        report.problems.append(f"its exec failed ({failed})")
+        return report
+    text = out if isinstance(out, str) else ""
+    scans: list[re.Match[str]] = []
+    errors: list[str] = []
+    unread: list[str] = []
+    gone = malformed = 0
+
+    def found(path: bytes, why: str) -> None:
+        finding = {"path": _shown_path(path), "why": why}
+        if finding not in report.findings:
+            report.findings.append(finding)
+        if path not in report.targets:
+            report.targets.append(path)
+
+    for line in text.splitlines():
+        if not line:
+            continue
+        kind, match = "", None
+        for name, pattern in _DELEGATE_LINES.items():
+            match = pattern.fullmatch(line)
+            if match is not None:
+                kind = name
+                break
+        if match is None:
+            malformed += 1
+        elif kind == "scan":
+            scans.append(match)
+        elif kind == "record":
+            report.recorded = True
+        elif kind == "setid":
+            raw = _decoded_path(match[2])
+            why = _delegate_setid_why(match[1])
+            if raw is None:
+                malformed += 1
+            elif match[1][2] == "s":
+                # The sandbox user's own, granting nothing beyond its own
+                # identity (setuid to it, setgid to one of its groups); the
+                # agent may fix it.
+                report.sandbox_owned += 1
+            elif why and os.fsdecode(raw) not in _DELEGATE_SETID_EXEMPT:
+                found(raw, why)
+        elif kind == "cap":
+            raw = _decoded_path(match[1])
+            if raw is None:
+                malformed += 1
+            elif not (
+                os.fsdecode(raw) in _DELEGATE_NARROW_CAP_EXEMPT
+                and match[2] == _DELEGATE_NARROW_CAPS
+            ):
+                found(raw, f"file capabilities {match[2]}")
+        elif kind == "getcap":
+            for cap_line in bytes.fromhex(match[1]).split(b"\n"):
+                if not cap_line or any(
+                    cap_line == f"{p} {_DELEGATE_NARROW_CAPS}".encode()
+                    for p in _DELEGATE_NARROW_CAP_EXEMPT
+                ):
+                    continue
+                parsed = _GETCAP_LINE.fullmatch(os.fsdecode(cap_line))
+                if parsed is None:
+                    found(cap_line, "a getcap line BenchFlow could not read")
+                else:
+                    found(os.fsencode(parsed[1]), f"file capabilities {parsed[2]}")
+        elif kind == "getcaperr":
+            for err_line in bytes.fromhex(match[1]).split(b"\n"):
+                if not err_line:
+                    continue
+                if _GETCAP_GONE.fullmatch(os.fsdecode(err_line)):
+                    gone += 1
+                else:
+                    unread.append(_shown_path(err_line))
+        elif kind == "error":
+            raw = _decoded_path(match[3])
+            shown = _shown_path(raw) if raw is not None else "?"
+            errors.append(f"{match[1]} {shown}: {match[2]}")
+    if len(scans) != 1:
+        report.problems.append(
+            "it did not report" if not scans else "it reported more than once"
+        )
+        return report
+    scan = scans[0]
+    report.reader = scan[1]
+    report.files, report.vanished, report.errors = (
+        None if v == "-" else int(v) for v in (scan[3], scan[4], scan[5])
     )
-    # Do not print filenames: even an agent-created filename is report data,
-    # and cannot become a shell program or forge the final inventory marker.
-    classify = (
-        f"for f do case \"$f\" in {standard}) ;; *) printf 'unsafe\\n';; esac; done"
+    if gone:
+        report.vanished = (report.vanished or 0) + gone
+    words = [] if scan[6] == "-" else scan[6].split(",")
+    for word in words:
+        why = _DELEGATE_WHY.get(word, f"it gave an unknown reason ({word})")
+        if word == "errors" and errors:
+            why += f" ({report.errors} in all; first: {'; '.join(errors[:3])})"
+        report.problems.append(why)
+    report.deterministic = bool(words) and set(words) <= _DELEGATE_IMAGE_WHY
+    if unread:
+        report.problems.append(
+            f"getcap could not read {len(unread)} file(s) (first: {unread[0]})"
+        )
+    if scan[2] == "1" and words:
+        report.problems.append("its report was both complete and incomplete")
+    if malformed:
+        report.problems.append(f"it printed {malformed} line(s) it never prints")
+    expected = 0 if scan[2] == "1" and not words else 7
+    if type(code) is not int or code != expected:
+        report.problems.append(f"it ended with status {code!r}, not {expected}")
+    return report
+
+
+def _cloud_metadata_refusal(
+    message: str, *, why: str = "", **extra: Any
+) -> CloudMetadataPowerError:
+    """The block's refusal of sandbox startup, carrying its ``refused``
+    record (*why*, the message itself by default, and what the block knew so
+    far), which the rollout writes to cloud-metadata.json before the error
+    goes on."""
+    why = why or message.removeprefix("sandbox startup refused: ")
+    return CloudMetadataPowerError(
+        message, record=cloud_metadata_record(REFUSED, why, **extra)
     )
-    scan = (
-        f'"$finder" {shlex.quote(root)} '
-        r"\( -path /proc -o -path /sys \) -prune -o -type f "
+
+
+async def _cloud_metadata_delegate_audit(
+    env: Any, sandbox_user: str = ""
+) -> tuple[_DelegateReport, Any]:
+    """Root's delegate inventory in *env*, read and classified, and root's
+    Python that read it (None when no Python could be had).
+
+    Root's Python is PT's protected kit Python, else BenchFlow's managed
+    CPython, else BenchFlow's own pinned CPython staged into the sandbox
+    (:func:`benchflow.sandbox._delegate_disarm.find_python`), so file
+    capabilities are read whatever tools the image has. Only when none can
+    be had does the image's ``getcap`` read them. One more attempt follows
+    an inventory that ran, found nothing and did not finish for a reason the
+    image does not decide (a folder that went away under BusyBox's find,
+    say); an exec that failed or ran out of time is not repeated. Neither
+    outcome is ever a clean report.
+    """
+    from benchflow.sandbox import _delegate_disarm
+
+    python, python_why = await _delegate_disarm.find_python(env)
+    report = await _cloud_metadata_delegate_inventory(env, python, sandbox_user)
+    report.python_why = python_why if python is None else ""
+    return report, python
+
+
+async def _cloud_metadata_delegate_inventory(
+    env: Any, python: Any, sandbox_user: str = ""
+) -> _DelegateReport:
+    command = _cloud_metadata_delegate_check_cmd(
+        python=python.path if python is not None else None,
+        sandbox_user=sandbox_user,
     )
+    report = _DelegateReport()
+    for attempt in (1, 2):
+        result, failed = await _cloud_metadata_exec(
+            env, command, user="root", timeout_sec=_DELEGATE_EXEC_SEC
+        )
+        report = _delegate_report(
+            getattr(result, "stdout", ""), getattr(result, "return_code", None), failed
+        )
+        report.attempts = attempt
+        if report.complete or report.findings or failed or report.deterministic:
+            break
+    if python is not None and report.reader == "python3":
+        report.python = python.source
+    return report
+
+
+async def _disarm_delegates(
+    env: Any, python: Any, report: _DelegateReport, sandbox_user: str = ""
+) -> tuple[list[dict[str, Any]], str]:
+    """Option A: take the set-ID bits and file capabilities the
+    inventory counted off their files for the agent's turn, recording each
+    file's identity in a root-only record first, then inventory again.
+    Returns ``(what was disarmed, "")``, or ``([], why)`` naming each file
+    that could not be disarmed or still counts. What root's record held
+    already (``earlier``: disarmed before the snapshot this sandbox was
+    restored from) is listed and remembered too, so it is put back before
+    this sandbox's grading."""
+    from benchflow.sandbox import _delegate_disarm
+
+    result, failed = await _cloud_metadata_exec(
+        env,
+        _delegate_disarm.disarm_cmd(
+            python.path, "strip", tree=python.tree, targets=tuple(report.targets)
+        ),
+        user="root",
+        timeout_sec=_DELEGATE_EXEC_SEC,
+    )
+    strip = _delegate_disarm.read_strip(
+        getattr(result, "stdout", ""), getattr(result, "return_code", None), failed
+    )
+    if strip.stripped:
+        # Remembered even when the strip then fails: the trial stops anyway.
+        _delegate_disarm.remember(env, python, strip.stripped)
+    if not strip.ok:
+        named = ", ".join(f"{f['path']} ({f['why']})" for f in strip.failures)
+        return [], (
+            "BenchFlow could not take the set-ID bit or file capability off "
+            + (named or "the files it found")
+            + ("; " + "; ".join(strip.problems) if strip.problems else "")
+        )
+    if report.targets:
+        after = await _cloud_metadata_delegate_inventory(env, python, sandbox_user)
+        if after.findings or not after.complete:
+            left = ", ".join(f"{f['path']} ({f['why']})" for f in after.findings)
+            return [], (
+                "after BenchFlow disarmed them, the file privilege inventory "
+                + (f"still counts {left}" if left else "did not finish")
+                + (f" ({'; '.join(after.problems)})" if after.problems else "")
+            )
+    why = {f["path"]: f["why"] for f in report.findings}
+    return [
+        {**entry, "why": why.get(entry["path"]) or _disarmed_why(entry)}
+        for entry in strip.stripped
+    ], ""
+
+
+def _disarmed_why(entry: dict[str, Any]) -> str:
+    """Why a file root's record held already counted, from its recorded mode
+    and capability (the inventory that counted it ran before a snapshot)."""
+    mode = int(str(entry.get("mode", "0")), 8)
+    why = _delegate_setid_why(
+        ("u" if mode & 0o4000 else "-")
+        + ("g" if mode & 0o2000 else "-")
+        + ("0" if entry.get("uid") == 0 else "-")
+    )
+    if entry.get("capability"):
+        why = " and ".join(w for w in (why, "file capabilities") if w)
+    return why
+
+
+def _delegate_refusal(report: _DelegateReport) -> str:
+    """Why the delegate inventory refuses startup, naming what it found."""
+    named = ", ".join(
+        f"{f['path']} ({f['why']})" for f in report.findings[:_DELEGATE_NAMED]
+    )
+    more = len(report.findings) - _DELEGATE_NAMED
+    if more > 0:
+        named += (
+            f", and {more} more (cloud-metadata.json lists up to {_DELEGATE_RECORDED})"
+        )
+    incomplete = "; ".join(report.problems)
+    no_reader = _DELEGATE_WHY["reader"] in report.problems
+    staged = (
+        f"; BenchFlow's own Python could not be had to disarm them "
+        f"({report.python_why})"
+        if report.python_why and (report.findings or no_reader)
+        else ""
+    )
+    if report.findings:
+        why = (
+            "the image holds privileges a firewall delegate could use to gain "
+            "root or NET_ADMIN and remove the cloud metadata block: " + named
+        )
+        if incomplete:
+            why += f"; the inventory also did not finish ({incomplete})"
+        return why + staged
     return (
-        "( "
-        + _cloud_metadata_root_prelude()
-        + "finder=$(tool find) && reader=$(tool getcap) || exit 7; "
-        # GNU/BusyBox find propagate failures from the batched -exec. Unlike
-        # a pipe to grep, the command substitution retains the scan's status.
-        + f'caps=$({scan}-exec "$reader" {{}} +) || exit 7; '
-        + "power=0; "
-        + 'cap_power=$(printf "%s\\n" "$caps" | while IFS= read -r line; do '
-        + f"case $line in ''|{narrow_caps}) ;; *) printf unsafe;; esac; done); "
-        + '[ -z "$cap_power" ] || power=1; '
-        + f"setids=$({scan}\\( -perm -4000 -o -perm -2000 \\) "
-        + f"-exec /bin/sh -c {shlex.quote(classify)} sh {{}} +) || exit 7; "
-        + '[ -z "$setids" ] || power=1; '
-        + 'printf "BF metadata-delegates power=%s\\n" "$power"; )'
+        "BenchFlow could not finish the file privilege inventory that rules out "
+        f"a firewall delegate gaining root or NET_ADMIN ({incomplete}){staged}"
     )
+
+
+def _delegate_remedy(report: _DelegateReport) -> str:
+    remedy = []
+    if report.findings:
+        remedy.append(
+            "remove them in the task's Dockerfile (chmod ug-s <file> for a set-ID "
+            "bit, setcap -r <file> for file capabilities)"
+        )
+    if any(p == _DELEGATE_WHY["tools"] for p in report.problems):
+        remedy.append(
+            "put find, od, tr, mktemp and rm (findutils and coreutils, or "
+            "BusyBox) in a root-owned system folder of the task's image"
+        )
+    if _DELEGATE_WHY["reader"] in report.problems:
+        remedy.append(
+            "put python3, or libcap's getcap (libcap2-bin on Debian and Ubuntu, "
+            "libcap-getcap on Alpine), in the task's image"
+        )
+    return " and ".join(remedy)
 
 
 def _proc_status_reader() -> str:
@@ -1864,9 +2758,13 @@ async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str,
     main; elsewhere root holds NET_ADMIN, and a root agent is not held.)
 
     Raises :class:`CloudMetadataPowerError` when the agent user holds
-    NET_ADMIN, a firewall tool lets it change the rules, or the kernel
-    privilege construction cannot be verified. Missing optional inventory
-    tools are recorded rather than preventing an honest image from starting.
+    NET_ADMIN, a firewall tool lets it change the rules, the kernel
+    privilege construction cannot be verified, or the delegate inventory
+    finds a set-ID file or file capability that counts, or cannot finish
+    (a missing capability reader, a failed or timed-out exec and an
+    unreadable report are no longer a clean inventory). Each refusal carries
+    its ``refused`` record (``CloudMetadataPowerError.record``), which the
+    rollout writes before the error goes on.
     """
     started = _timing_spans.clock()
     root_agent = not sandbox_user or sandbox_user in {"root", "0"}
@@ -1956,11 +2854,12 @@ async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str,
             construction_out if isinstance(construction_out, str) else "",
             construction_code,
         ):
-            raise CloudMetadataPowerError(
+            raise _cloud_metadata_refusal(
                 "sandbox startup refused: the agent privilege construction could "
                 "not be verified from /proc as root. The shared launch must set "
                 "NoNewPrivs, remove NET_ADMIN and NET_RAW from CapBnd, and clear "
-                "CapAmb. Provide util-linux setpriv and a readable /proc."
+                "CapAmb. Provide util-linux setpriv and a readable /proc.",
+                seconds=round(_timing_spans.clock() - started, 3),
             )
     block_cmd = _cloud_metadata_block_cmd(cover_root=root_agent)
     rules = _metadata_rules(env)
@@ -2131,7 +3030,7 @@ async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str,
             if agent.get("power")
             else "its own process"
         )
-        raise CloudMetadataPowerError(
+        raise _cloud_metadata_refusal(
             "sandbox startup refused: cannot rule out that the agent user "
             f"{sandbox_user!r} can change the firewall through {what}. "
             "BenchFlow grants NET_ADMIN only "
@@ -2139,7 +3038,8 @@ async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str,
             "setuid/setgid firewall tools could let the agent remove that "
             "refusal. Remove the capabilities or setuid/setgid bits in the "
             "task's Dockerfile (setcap -r <file>, chmod ug-s <file>), or "
-            f"{CLOUD_METADATA_OPT_OUT_HINT}."
+            f"{CLOUD_METADATA_OPT_OUT_HINT}.",
+            **{**extra, "seconds": round(_timing_spans.clock() - started, 3)},
         )
     # Named probes cannot cover an arbitrary trusted delegation graph. Its
     # privilege sources must be absent even when every mutation probe fails.
@@ -2148,27 +3048,53 @@ async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str,
     if root_agent:
         extra["delegate_privilege_audit"] = "not_needed"
     else:
-        delegates, delegates_failed = await _cloud_metadata_exec(
-            env, _cloud_metadata_delegate_check_cmd(), user="root", timeout_sec=120
+        # Only a complete inventory lets the agent start: a missing
+        # capability reader, a failed or timed-out exec and an unreadable
+        # report used to pass as "unavailable". What it counts is
+        # disarmed for the agent's turn (option A) and put back before
+        # grading (_delegate_disarm.restore_disarmed_delegates).
+        delegates, python = await _cloud_metadata_delegate_audit(
+            env, sandbox_user or ""
         )
-        delegate_out = getattr(delegates, "stdout", "")
-        delegate_code = getattr(delegates, "return_code", None)
-        delegate_ok = (
-            not delegates_failed
-            and type(delegate_code) is int
-            and delegate_code == 0
-            and delegate_out
-            in ("BF metadata-delegates power=0\n", "BF metadata-delegates power=1\n")
+        extra["delegate_privilege_audit"] = (
+            "complete" if delegates.complete else "incomplete"
         )
-        extra["delegate_privilege_audit"] = "complete" if delegate_ok else "unavailable"
-        if delegate_out == "BF metadata-delegates power=1\n":
-            raise CloudMetadataPowerError(
-                "sandbox startup refused: a firewall delegate may acquire root "
-                "or NET_ADMIN, or its file privilege inventory did not finish. "
-                "Provide trusted find and getcap utilities, remove powerful file "
-                "capabilities and setuid/setgid command or identity launchers "
-                "(including sudo, doas, su and pkexec) and other nonstandard "
-                f"privileged helpers from the image, or {CLOUD_METADATA_OPT_OUT_HINT}."
+        extra["delegate_inventory"] = delegates.summary()
+        if delegates.findings:
+            extra["delegates"] = delegates.findings[:_DELEGATE_RECORDED]
+        why = ""
+        if (
+            (delegates.findings or delegates.recorded)
+            and delegates.complete
+            and python is not None
+        ):
+            # Also with nothing counted when root's record is there (a
+            # snapshot's): root lists what it holds, to put back before grading.
+            disarmed, why = await _disarm_delegates(
+                env, python, delegates, sandbox_user or ""
+            )
+            if not why and disarmed:
+                extra["delegates_disarmed"] = disarmed[:_DELEGATE_RECORDED]
+        elif delegates.findings or not delegates.complete:
+            why = _delegate_refusal(delegates)
+        elif delegates.recorded:
+            # Files disarmed before this sandbox's snapshot, and no Python to
+            # list them and put them back before grading:
+            # refused, and a retry may find one.
+            why = (
+                "root's record of files disarmed before this sandbox's snapshot "
+                "is here, but BenchFlow's own Python could not be had to list "
+                f"them and put them back before grading ({delegates.python_why})"
+            )
+        if why:
+            remedy = _delegate_remedy(delegates)
+            hint = CLOUD_METADATA_OPT_OUT_HINT
+            tail = f"{remedy}, or {hint}" if remedy else hint
+            extra["seconds"] = round(_timing_spans.clock() - started, 3)
+            raise _cloud_metadata_refusal(
+                f"sandbox startup refused: {why}. {tail[0].upper()}{tail[1:]}.",
+                why=why,
+                **extra,
             )
     extra["seconds"] = round(_timing_spans.clock() - started, 3)
     if result is None:
@@ -2640,7 +3566,12 @@ async def check_loader_custody(env, workspace: str, *, timeout_sec: int = 120) -
 
 
 async def prepare_runtime_tree(
-    env, *, phase: str = "all", timeout_sec: int = 300, service: str = "main"
+    env,
+    *,
+    phase: str = "all",
+    timeout_sec: int = 300,
+    service: str = "main",
+    transfer_roots: tuple[str, ...] = (),
 ) -> bool:
     """Make (or keep) root's protected runtime kit in *env*, before the
     agent's turn, and route root's steps through it (C8).
@@ -2654,7 +3585,8 @@ async def prepare_runtime_tree(
     :func:`benchflow._runtime_tree.kit_prepare_command`). *service*: the
     compose service whose own kit this is (PY8-PT-R8-6); a service other
     than ``main`` that cannot have one is recorded without one, and root's
-    plumbing there is refused after the agent's turn.
+    plumbing there is refused after the agent's turn. *transfer_roots*: a
+    separate verifier's (:func:`prepare_separate_verifier_runtime`).
     """
     from benchflow._runtime_tree import kit_prepare_command, parse_kit_record
 
@@ -2668,7 +3600,10 @@ async def prepare_runtime_tree(
             result, miss = await _restore_cached_kit(env, timeout_sec)
         if result is None:
             result = await _read_exec(
-                env, kit_prepare_command(phase), user="root", timeout_sec=timeout_sec
+                env,
+                kit_prepare_command(phase, transfer_roots=transfer_roots),
+                user="root",
+                timeout_sec=timeout_sec,
             )
             lines = (getattr(result, "stdout", "") or "").splitlines()
             if (
@@ -2760,7 +3695,7 @@ async def prepare_runtime_tree(
             )
         raise RuntimeError(
             "BenchFlow could not prepare its protected runtime "
-            "(/opt/benchflow/rt) in the sandbox, so it will not run root steps "
+            "(/opt/runtime/rt) in the sandbox, so it will not run root steps "
             "after the agent's turn. The image needs a root-owned /bin/sh, "
             "sha256sum and /opt as a folder only root (or, sticky, anyone) may "
             f"write.{_exec_failure_detail(result)}"
@@ -2905,13 +3840,18 @@ async def setup_sandbox_user(
     sandbox_user: str,
     workspace: str,
     *,
+    agents: list[str] | None = None,
     timeout_sec: int = 120,
     guard_daemon: bool = True,
 ) -> str:
     """Create non-root sandbox user, grant workspace access. Return agent_cwd.
 
+    ``agents`` names the agents that will run as this user. Only their home
+    config/auth dirs are filled from /root; None fills every registered
+    agent's.
+
     The grant never covers BenchFlow's runtime tree (C8): a
-    workspace of ``/``, inside ``/opt/benchflow`` or holding a system folder
+    workspace of ``/``, inside ``/opt/runtime`` or holding a system folder
     is refused, and one above the tree (``/opt``) stays root's and sticky
     (:func:`benchflow._runtime_tree.workspace_grant_command`). Last, root's
     protected runtime kit is made (:func:`prepare_runtime_tree`), before
@@ -2978,7 +3918,16 @@ async def setup_sandbox_user(
     ]
     await prepare_runtime_tree(env, phase="build", timeout_sec=max(timeout_sec, 300))
     home = f"/home/{sandbox_user}"
-    home_dirs = sorted(d for d in get_sandbox_home_dirs() if d != ".local")
+    home_dirs = sorted(d for d in get_sandbox_home_dirs(agents) if d != ".local")
+    # Other agents' dirs are still created, just empty: later root-run setup
+    # such as the Vertex ADC upload into ~/.config/gcloud creates missing
+    # parents as root, so they must already exist and belong to the user.
+    empty_dirs = sorted(get_sandbox_home_dirs() - set(home_dirs) - {".local"})
+    create_empty_dirs = (
+        f"for d in {' '.join(empty_dirs)}; do mkdir -p {home}/$d; done && "
+        if empty_dirs
+        else ""
+    )
     result = await exec_raw(
         env.exec,
         f"{_create_sandbox_user_cmd(sandbox_user)} && "
@@ -2988,18 +3937,26 @@ async def setup_sandbox_user(
         f"mkdir -p {home}/$d && "
         f"if [ -d /root/$d ]; then "
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
+        f"{create_empty_dirs}"
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
         f"{workspace_grant_command(workspace, sandbox_user)} && "
         f"for d in /output /outputs; do "
         f'if [ -d "$d" ] && [ ! -L "$d" ]; then '
         f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
+        # As root whatever the image's USER is: an image that ends with
+        # `USER nobody` (Terminal-Bench 4.1's risk-scorer-replay) otherwise
+        # runs useradd and the uid inventory as nobody.
+        user="root",
         timeout_sec=timeout_sec,
     )
     if _exec_return_code(result) != 0:
         # A later step (a chown on a read-only mount) may fail once the user
         # exists, as before; a missing user would only surface much later.
         exists = await exec_raw(
-            env.exec, f"id -u {sandbox_user} >/dev/null 2>&1", timeout_sec=30
+            env.exec,
+            f"id -u {sandbox_user} >/dev/null 2>&1",
+            user="root",
+            timeout_sec=30,
         )
         detail = _exec_failure_detail(result)
         if _exec_return_code(exists) != 0:
@@ -3097,7 +4054,7 @@ _BUILD_CONFIG_FILES = (
 # A fixed private root path keeps our pre-agent copy outside workspace and
 # runtime input trees. A /tmp copy otherwise taints even an unchanged project
 # because it has no workspace-relative image counterpart (V2-R12-CONF-5).
-_SNAPSHOT_DIR = "/.benchflow_build_snapshot"
+_SNAPSHOT_DIR = "/.runtime_build_snapshot"
 _SNAPSHOT_MANIFEST = f"{_SNAPSHOT_DIR}/manifest.json"
 # The second step of _snapshot_build_config's exec (PY8 U12): the manifest
 # the host builds from the copy's output (json.dumps of {file: present} in
@@ -3335,6 +4292,24 @@ VERIFIER_ENV: dict[str, str] = {
     # git reads no ~/.gitconfig or ~/.config/git/config (git >= 2.32); the
     # system file /etc/gitconfig still applies.
     "GIT_CONFIG_GLOBAL": "/dev/null",
+    # The freeze makes the workspace's repositories root's, so root's git
+    # trusts what the agent wrote in them. At command-line scope (git >= 2.31)
+    # git runs no hook, fsmonitor, external diff or signing program of theirs;
+    # a test.sh that wants one names it with -c, which comes later. Drivers and
+    # includes named in the repository's config are purged with the freeze.
+    "GIT_CONFIG_COUNT": "6",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "GIT_CONFIG_VALUE_0": "/dev/null",
+    "GIT_CONFIG_KEY_1": "core.fsmonitor",
+    "GIT_CONFIG_VALUE_1": "false",
+    "GIT_CONFIG_KEY_2": "diff.external",
+    "GIT_CONFIG_VALUE_2": "",
+    "GIT_CONFIG_KEY_3": "commit.gpgSign",
+    "GIT_CONFIG_VALUE_3": "false",
+    "GIT_CONFIG_KEY_4": "tag.gpgSign",
+    "GIT_CONFIG_VALUE_4": "false",
+    "GIT_CONFIG_KEY_5": "log.showSignature",
+    "GIT_CONFIG_VALUE_5": "false",
     # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
     # system-site without this flag. Verifier runs as root and system-site is
     # root-owned, so allowing it is safe; without it, tasks that pip-install
@@ -4119,6 +5094,7 @@ set -f
 nl='
 '
 a=$2
+bf_fresh_image=${6-0}
 bf_filter_root=${3-}
 bf_count=0
 au=
@@ -4150,6 +5126,9 @@ bf_slot_of() {
 }
 __BF_EXCLUSIONS__
 bf_may() {
+  # A fresh separate verifier has no agent-writable image objects. The
+  # route walker still rejects every transferred path and its aliases.
+  [ "$bf_fresh_image" = 1 ] && return 1
   set -- "$1" $(ls -ldn -- "$1" 2>/dev/null)
   [ $# -ge 5 ] || { echo "$1 could not be read"; return 0; }
   if [ -z "$au" ] && [ "$4" != 0 ]; then
@@ -4190,7 +5169,7 @@ bf_route() {
   bf_representable "$rest" || return 2
   case "$rest" in /*) ;; *) echo "$rest is not an absolute path"; return 1 ;; esac
   b=$(bf_under /) && { echo "under $b"; return 1; }
-  if [ -z "$bf_identity_only" ]; then
+  if [ -z "$bf_identity_only" ] && [ "$bf_fresh_image" != 1 ]; then
     why=$(bf_may /) && { echo "$why"; return 1; }
   fi
   while [ -n "$rest" ]; do
@@ -4217,7 +5196,7 @@ bf_route() {
     if [ -L "$p" ]; then
       n=$((n + 1))
       [ "$n" -le 40 ] || { echo "the way passes more than 40 links"; return 1; }
-      if [ -z "$bf_identity_only" ]; then
+      if [ -z "$bf_identity_only" ] && [ "$bf_fresh_image" != 1 ]; then
         set -- $(ls -ldn -- "$p" 2>/dev/null)
         [ $# -ge 4 ] || { echo "$p could not be read"; return 1; }
         if [ -z "$au" ] && [ "$3" != 0 ]; then
@@ -4234,10 +5213,10 @@ bf_route() {
       continue
     fi
     if [ -e "$p" ]; then
-      if [ -z "$bf_identity_only" ]; then
+      if [ -z "$bf_identity_only" ] && [ "$bf_fresh_image" != 1 ]; then
         why=$(bf_may "$p") && { echo "$why"; return 1; }
       fi
-    elif [ -n "$rest" ]; then
+    elif [ -n "$rest" ] && [ "$bf_fresh_image" != 1 ]; then
       echo "$p is missing"; return 1
     fi
     cur=$p
@@ -4275,7 +5254,7 @@ bf_judge() (
       printf 'T '; bf_encode "$e"; printf '\n'
       continue
     fi
-    if [ -z "$bf_identity_only" ]; then
+    if [ -z "$bf_identity_only" ] && [ "$bf_fresh_image" != 1 ]; then
       # Numeric metadata only: filenames and link targets are never records.
       set -- $(stat -c '%a %u' -- "$e" 2>/dev/null)
       [ $# -eq 2 ] || { echo "its entry metadata could not be read"; exit 1; }
@@ -4341,12 +5320,28 @@ for d in __BF_ENTRIES__; do
   unset IFS
   bf_count=$((bf_count + 1))
   if b=$(bf_under "$d"); then bf_drop "$d" "under $b"; continue; fi
+  # A fresh image may reserve a PATH directory for tools its verifier
+  # installs later. Walk even absent components: existing symlinks and
+  # transferred prefixes still must not lead into the agent's submission.
+  if [ "$bf_fresh_image" = 1 ] && [ ! -e "$d" ]; then
+    if why=$(bf_route "$d"); then
+      printf 'K '; bf_encode "$d"; printf '\n'
+    else bf_drop "$d" "$why"; fi
+    continue
+  fi
   real=$(cd -P "$d" 2>/dev/null && pwd -P && echo .) || continue
   real=${real%"$nl."}
   [ -n "$real" ] || continue
   if b=$(bf_under "$real"); then bf_drop "$d" "it leads to $real, under $b"; continue; fi
   set -- $(ls -ldn "$real" 2>/dev/null)
   if [ $# -lt 4 ]; then bf_drop "$d" "$real could not be read"; continue; fi
+  if [ "$bf_fresh_image" = 1 ]; then
+    if why=$(bf_judge "$d"); then
+      [ -z "$why" ] || printf '%s\n' "$why"
+      printf 'K '; bf_encode "$d"; printf '\n'
+    else bf_drop "$d" "$why"; fi
+    continue
+  fi
   if [ "$3" = 0 ]; then
     case "$1" in
       ?????w*|????????w*) bf_drop "$d" "root's, but writable by group or others" ;;
@@ -4422,6 +5417,8 @@ def _trusted_path_extras_cmd(
     agent: str | None = None,
     workspace: str | None = None,
     record: str | None = None,
+    *,
+    fresh_image: bool = False,
 ) -> str:
     """Build the container-side command that judges verifier PATH extras.
 
@@ -4433,6 +5430,8 @@ def _trusted_path_extras_cmd(
     non-root *agent* and the pre-agent *record* of the PATH folders' names
     (by default the inspector's, :data:`_PATH_NAMES_RECORD`): a tool whose
     route enters it stays when the record does not hold its name (ACC-RUN2).
+    *fresh_image* is only for a separate verifier where no agent ran: image
+    ownership is trusted, but every transferred path and alias stays excluded.
     """
     if workspace is None:
         workspace = _path_workspace.get()
@@ -4492,6 +5491,7 @@ def _trusted_path_extras_cmd(
             blocked_prefixes.inspector + "/path-" + uuid.uuid4().hex,
             workspace or "",
             record or "",
+            "1" if fresh_image else "0",
         )
     return _system_probe(
         script,
@@ -4501,6 +5501,7 @@ def _trusted_path_extras_cmd(
         "",
         workspace or "",
         record or "",
+        "1" if fresh_image else "0",
     )
 
 
@@ -5276,7 +6277,7 @@ async def _discover_pytest_plugins(
 # stop before pytest would turn its own 0 into an unscored verifier error.
 _PYTEST_PLUGIN_GUARD_PARENT = "/"
 # The guard module is this prefix plus a random hex suffix chosen at hardening.
-PYTEST_PLUGIN_GUARD_PREFIX = "_benchflow_guard_"
+PYTEST_PLUGIN_GUARD_PREFIX = "_runtime_guard_"
 # The guard leaves ``<guard>.<token>.<kind>`` markers in ``<guard dir>/.markers``
 # (mode 0700, the verifier's user's), not the world-writable /logs/verifier,
 # and signs each with a key in ``<guard dir>/.key`` (mode 0400, the same
@@ -6037,7 +7038,7 @@ async def _install_pytest_plugin_guard(
             if named:
                 why[named.group(1)] = named.group(2)
     with contextlib.suppress(AttributeError):
-        env._benchflow_guard_why = why
+        env._runtime_guard_why = why
     return directory, f"-p {name} {plugin_flags}".strip(), guarded, unrecorded
 
 
@@ -7575,7 +8576,7 @@ async def _distro_pip_env(env) -> dict[str, str]:
 # place may be inside some task's workspace.
 _VERIFIER_TOOL_STATE_SCRIPT = Path(_verifier_tool_state.__file__).read_text()
 _VERIFIER_TOOL_STATE_PARENT = "/"
-VERIFIER_TOOL_STATE_PREFIX = "_benchflow_verifier_"
+VERIFIER_TOOL_STATE_PREFIX = "_runtime_verifier_"
 
 
 # The verifier's environment reads (PY8 U12): each reader's own command, run
@@ -7803,8 +8804,10 @@ async def prepare_separate_verifier_runtime(
     # The kit, and with it the record of the image's interpreters
     # (IMAGE_PYTHON_GUARD), whether or not the task pins plugins: the guard
     # installer then starts none of the interpreters the transfer brings,
-    # which the record does not hold (PT-C8-CONF-2b round 3).
-    await prepare_runtime_tree(env)
+    # which the record does not hold (PT-C8-CONF-2b round 3). The transfer
+    # unpacks as root, so its files would pass for the image's: an image
+    # LD_PRELOAD or LD_LIBRARY_PATH naming the workspace is not admitted.
+    await prepare_runtime_tree(env, transfer_roots=(workspace, "/logs/artifacts"))
     pins, ctrf = runtime_requested(task)
     if not pins and not ctrf and not runner_requested(task):
         return
@@ -7979,6 +8982,7 @@ async def _move_verifier_tool_state(
             for name in (
                 _verifier_tool_state.UV_CONFIG,
                 _verifier_tool_state.PIP_CONFIG,
+                _verifier_tool_state.GIT_CONFIG,
             )
         )
         await _checked_exec(
@@ -8024,6 +9028,11 @@ async def _move_verifier_tool_state(
                 found[key] != expected
                 for key, expected in _verifier_home_paths(directory).items()
                 if key in found
+            )
+            or (
+                "GIT_CONFIG_GLOBAL" in found
+                and found["GIT_CONFIG_GLOBAL"]
+                != os.path.join(directory, _verifier_tool_state.GIT_CONFIG)
             )
         ):
             raise ValueError(f"invalid probe response {stdout[:200]!r}")
@@ -8155,7 +9164,12 @@ async def _clear_system_route(env, blocked: PathExclusions) -> PathExclusions:
 
 
 async def _judge_trusted_entries(
-    env, raw: str, blocked: tuple[str, ...] | PathExclusions, agent: str | None
+    env,
+    raw: str,
+    blocked: tuple[str, ...] | PathExclusions,
+    agent: str | None,
+    *,
+    fresh_image: bool = False,
 ) -> TrustedPathReport | None:
     """Run the trusted-PATH program on *raw*; ``None`` when it could not run."""
     entries = _path_entries_to_judge(raw)
@@ -8169,7 +9183,7 @@ async def _judge_trusted_entries(
         blocked = await _clear_system_route(env, blocked)
     result = await _read_exec(
         env,
-        _trusted_path_extras_cmd(raw, blocked, agent),
+        _trusted_path_extras_cmd(raw, blocked, agent, fresh_image=fresh_image),
         user="root",
         timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
@@ -8221,6 +9235,7 @@ async def _judge_verifier_path(
     workspace: str | None,
     *,
     blocked: tuple[str, ...] | PathExclusions | None = None,
+    fresh_image: bool = False,
 ) -> TrustedPathReport:
     """Judge the image's PATH for the verifier, without reporting it.
 
@@ -8278,6 +9293,7 @@ async def _judge_verifier_path(
         if blocked is not None
         else _blocked_verifier_path_prefixes(sandbox_user, workspace),
         sandbox_user,
+        fresh_image=fresh_image,
     )
     if judged is None:
         report = TrustedPathReport(
@@ -8347,7 +9363,7 @@ async def _trusted_verifier_path(
 # no global inventory can preserve cwd-dependent lookups or see late helpers.
 # They require the task's complete required_tools contract (CONFIRM7-3/5/6).
 _REFUSAL_STUBS_PARENT = "/"
-REFUSAL_STUBS_PREFIX = "_benchflow_refused_"
+REFUSAL_STUBS_PREFIX = "_runtime_refused_"
 # More names than this fails hardening (a verifier error) instead of leaving
 # the rest merely missing; each name needs a script and a short marker.
 _REFUSAL_STUBS_MAX = 4096
@@ -8925,7 +9941,7 @@ async def _prepare_bash_env_inspector(
         env._benchflow_path_inspectors = {
             name: folder for name, folder in saved.items() if name != service
         }
-    folder = f"{_BASH_ENV_INSPECTOR_ROOT}/.benchflow-bash-env-{uuid.uuid4().hex}"
+    folder = f"{_BASH_ENV_INSPECTOR_ROOT}/.runtime-bash-env-{uuid.uuid4().hex}"
     quoted = shlex.quote(folder)
     command = (
         f"umask 077 && mkdir {quoted} && chown 0:0 {quoted} && "
@@ -9203,7 +10219,7 @@ _CLEAR_VERIFIER_DIR_CMD = (
     "else "
     "rm -rf /logs/verifier/* /logs/verifier/.[!.]* /logs/verifier/..?* 2>/dev/null; true; "
     "fi && "
-    "chmod 777 /logs/verifier"
+    "chown root:root /logs/verifier && chmod 777 /logs/verifier"
 )
 # The same clear while the trial keeps services (x-keep-services): the folder
 # is left root's 0755 instead of 0777. The verifier runs as root then
@@ -9215,7 +10231,7 @@ _CLEAR_VERIFIER_DIR_CMD = (
 # agent's file (K2-R4-A-1).
 _CLEAR_VERIFIER_DIR_CLOSED_CMD = (
     _CLEAR_VERIFIER_DIR_CMD.removesuffix("chmod 777 /logs/verifier")
-    + "chown root:root /logs/verifier && chmod 755 /logs/verifier"
+    + "chmod 755 /logs/verifier"
 )
 
 # Legacy verifier rootdir fallback for main-container verification paths.
@@ -9404,6 +10420,7 @@ NO_PROTECTED_PYTHON_SKIP = (
 #   cleanup_conftests = false   # don't delete conftest.py before verify
 HARDENING_DEFAULTS: dict[str, bool] = {
     "cleanup_conftests": True,
+    "cleanup_git": True,
 }
 
 
@@ -9443,6 +10460,211 @@ def _read_hardening_config(task_dir: "Path | str | None") -> dict[str, bool]:
     return result
 
 
+# The conftest sweep's rule in the sandbox, on the protected Python (the bfx
+# form decides it on the host: benchflow.sandbox._hook_cleanup.package_owned
+# and unchanged_in_workspace). stdin: the NUL-separated conftest.py paths find
+# printed; argv: ``baseline=<the pre-agent copy, or empty>``, then the
+# workspace and its aliases. A conftest.py stays when it is
+# - an installed package's own file: a regular file outside the workspace,
+#   inside a site-packages or dist-packages folder, that a *.dist-info/RECORD
+#   in that folder lists with this exact sha256, such as beartype's
+#   _conf/conftest.py in an agent's install tree; or
+# - the repository's own file: in the workspace and byte for byte the file at
+#   the same place in the root-owned pre-agent copy (/testbed_verify), read
+#   without following a link at any level, so the agent neither added nor
+#   changed it (#1171, #1177). Only with a baseline, which the caller passes
+#   when the agent ran as another user than root and the copy is root's and
+#   closed to everyone else. Such a file is written again as a new root-owned
+#   file renamed over the name, so no descriptor a kept service holds reaches
+#   what the verifier runs.
+# Every decision is made before anything is removed: the sweep's own matches
+# include the copy's conftest.py files. Every other one is removed.
+_CONFTEST_SWEEP_SCRIPT = r"""
+import base64, csv, hashlib, io, os, stat, sys
+names = ("site-packages", "dist-packages")
+args = sys.argv[1:]
+baseline = ""
+if args and args[0].startswith("baseline="):
+    baseline, args = args[0][len("baseline="):], args[1:]
+roots = []
+for p in args:
+    if p:
+        roots.append(os.path.normpath(p))
+        roots.append(os.path.realpath(p))
+def inside(path):
+    return any(path == r or path.startswith(r.rstrip("/") + "/") for r in roots)
+cache = {}
+def records(site):
+    if site not in cache:
+        found = {}
+        try:
+            listed = os.listdir(site)
+        except OSError:
+            listed = []
+        for n in listed:
+            if not n.endswith(".dist-info"):
+                continue
+            try:
+                fd = os.open(os.path.join(site, n, "RECORD"), os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError:
+                continue
+            with os.fdopen(fd, "rb") as f:
+                data = f.read(64 << 20)
+            for row in csv.reader(io.StringIO(data.decode("utf-8", "replace"))):
+                if len(row) >= 2 and row[1].startswith("sha256="):
+                    found.setdefault(row[0], set()).add(row[1])
+        cache[site] = found
+    return cache[site]
+def owned(path):
+    parts = path.split("/")
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i] in names:
+            site, rel = "/".join(parts[: i + 1]), "/".join(parts[i + 1 :])
+            break
+    else:
+        return False
+    if inside(path):
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return False
+        data = f.read((64 << 20) + 1)
+    if len(data) > 64 << 20:
+        return False
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=")
+    return "sha256=" + digest.decode() in records(site).get(rel, ())
+def closed(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o077
+base_ok = bool(baseline) and closed(baseline)
+def read_at(fd, name):
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return None
+        data = f.read((64 << 20) + 1)
+    return None if len(data) > 64 << 20 else data
+def in_baseline(rel):
+    parts = rel.split("/")
+    if not parts or any(p in ("", ".", "..") for p in parts):
+        return None
+    try:
+        fd = os.open(baseline, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        return read_at(fd, parts[-1])
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+def unchanged(path):
+    if not base_ok:
+        return None
+    for r in roots:
+        prefix = r.rstrip("/") + "/"
+        if path.startswith(prefix):
+            here = read_at(None, path)
+            if here is not None and here == in_baseline(path[len(prefix):]):
+                return here
+    return None
+def rewrite(path, data):
+    tmp = os.path.join(os.path.dirname(path), ".bf-conftest-%s.tmp" % os.urandom(8).hex())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        try:
+            os.write(fd, data)
+            os.fchmod(fd, 0o644)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+found = [os.fsdecode(raw) for raw in sys.stdin.buffer.read().split(b"\0") if raw]
+decided = [(path, True, None) if owned(path) else (path, False, unchanged(path)) for path in found]
+for path, package, data in decided:
+    if package or (data is not None and rewrite(path, data)):
+        continue
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+"""
+
+
+def _conftest_sweep_cmd(
+    keep: tuple[str, ...] = (),
+    workspace: str | None = None,
+    workspace_aliases: tuple[str, ...] = (),
+    *,
+    agent_user: bool = False,
+) -> str:
+    """The conftest.py sweep: every conftest.py outside /tests and /verifier,
+    found by one ``find /`` with its prunes, goes, except an installed
+    package's own file and, when the agent ran as a user other than root
+    (*agent_user*), a workspace file unchanged since the pre-agent copy
+    (:data:`_CONFTEST_SWEEP_SCRIPT`). Without the protected Python (127), or
+    when the check fails, the plain sweep removes every match, as before: the
+    exceptions are never granted by default.
+
+    ``keep`` lists absolute folders the walk prunes."""
+    select = (
+        # Prune virtual filesystems so the full-rootfs walk stays bounded and
+        # fast — an unpruned `find /` over a slow network-backed FS (Daytona)
+        # routinely exceeds the setup timeout and false-errors a valid verifier.
+        # `-exec rm`, not `-delete`: GNU find refuses -delete next to -prune
+        # (exit 1, nothing removed), which made this sweep a silent no-op.
+        # V2's protected verifier runtime holds a copy of the image's site
+        # folders, a package's own tests/conftest.py included: it is root's
+        # alone and checked file by file before test.sh, so a conftest.py
+        # planted or changed there refuses grading anyway; removing one
+        # made that check refuse an honest trial.
+        "find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o "
+        + f"-path {shlex.quote(VERIFIER_DIR)} -prune -o "
+        + "".join(f"-path {shlex.quote(path)} -prune -o " for path in keep)
+        + "-name conftest.py "
+        "-not -path '/verifier/*' -not -path '/tests/*' "
+    )
+    roots = [workspace] if workspace else []
+    roots += [
+        a
+        for a in workspace_aliases
+        if not workspace or os.path.normpath(a) != os.path.normpath(workspace)
+    ]
+    # A root agent could have written the pre-agent copy too: no baseline.
+    baseline = _VERIFIER_WORKSPACE_COPY if agent_user and workspace else ""
+    check = root_python_sh(
+        _CONFTEST_SWEEP_SCRIPT,
+        f"baseline={baseline}",
+        raw_args=" ".join(shlex.quote(p) for p in roots if p),
+        fallback='"${__bf_root_python:-/nonexistent/benchflow-judged-python3}"',
+    )
+    return (
+        f"{{ {select}-print0 2>/dev/null | {check}; }} || "
+        f"{select}-exec rm -f -- {{}} + 2>/dev/null"
+    )
+
+
 def _build_cleanup_cmd(
     hardening: dict[str, bool] | None = None,
     workspace: str | None = None,
@@ -9454,7 +10676,9 @@ def _build_cleanup_cmd(
     """Build the cleanup shell command, honoring per-task hardening opt-outs.
 
     Steps:
-      - conftest.py removal outside /tests (skippable via cleanup_conftests=false)
+      - conftest.py removal outside /tests (skippable via cleanup_conftests=false),
+        sparing an installed package's own file and the repository's own,
+        unchanged since the pre-agent copy (:func:`_conftest_sweep_cmd`)
       - *.py purge from /tmp /var/tmp outside the submission workspace and
         its mount aliases
       - start-up hooks new or changed since the pre-agent record removed,
@@ -9471,25 +10695,13 @@ def _build_cleanup_cmd(
     (there are no verifier-cache exemptions).
     """
     h = hardening or HARDENING_DEFAULTS
+    agent_user = _hook_agent_user.get() if agent_user is None else agent_user
     parts: list[str] = []
     if h.get("cleanup_conftests", True):
         parts.append(
-            # Prune virtual filesystems so the full-rootfs walk stays bounded and
-            # fast — an unpruned `find /` over a slow network-backed FS (Daytona)
-            # routinely exceeds the setup timeout and false-errors a valid verifier.
-            # `-exec rm`, not `-delete`: GNU find refuses -delete next to -prune
-            # (exit 1, nothing removed), which made this sweep a silent no-op.
-            # V2's protected verifier runtime holds a copy of the image's site
-            # folders, a package's own tests/conftest.py included: it is root's
-            # alone and checked file by file before test.sh, so a conftest.py
-            # planted or changed there refuses grading anyway; removing one
-            # made that check refuse an honest trial.
-            "find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o "
-            + f"-path {shlex.quote(VERIFIER_DIR)} -prune -o "
-            + "".join(f"-path {shlex.quote(path)} -prune -o " for path in keep)
-            + "-name conftest.py "
-            "-not -path '/verifier/*' -not -path '/tests/*' "
-            "-exec rm -f -- {} + 2>/dev/null"
+            _conftest_sweep_cmd(
+                keep, workspace, workspace_aliases, agent_user=agent_user
+            )
         )
     if workspace:
         # pwd -P covers a workspace reached through a symlink. Never use
@@ -9533,7 +10745,7 @@ def _build_cleanup_cmd(
     parts.append(
         _cleanup_site_cmd(
             workspace,
-            agent_user=_hook_agent_user.get() if agent_user is None else agent_user,
+            agent_user=agent_user,
             workspace_aliases=workspace_aliases,
         )
     )
@@ -9564,7 +10776,7 @@ _CLEANUP_SITE_SCRIPT = (
         "for search in (os.environ.get('PATH', ''), os.environ.get('_BF_HOOK_IMAGE_PATH', '')):\n"
         "    for p in search.split(':'):\n"
         "        exe = os.path.join(p, 'python3')\n"
-        "        if (not os.path.isabs(p) or p.startswith('/opt/benchflow/')\n"
+        "        if (not os.path.isabs(p) or p.startswith('/opt/runtime/')\n"
         "                or not os.path.isfile(exe)):\n"
         "            continue\n"
         "        prefixes.append(os.path.dirname(os.path.dirname(os.path.realpath(exe))))\n"
@@ -10413,12 +11625,12 @@ for directory, dirs, files in walked:
 def pre_agent_folders():
     entries = []
     try:
-        with open('/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json') as handle:
+        with open('/opt/runtime/rt/IMAGE_PYTHON_PATHS.json') as handle:
             entries.append(json.load(handle))
     except (OSError, ValueError):
         return set()
     try:
-        with open('/opt/benchflow/rt/IMAGE_PYTHON_PATHS.jsonl') as handle:
+        with open('/opt/runtime/rt/IMAGE_PYTHON_PATHS.jsonl') as handle:
             entries += [json.loads(line) for line in handle if line.strip()]
     except (OSError, ValueError):
         pass
@@ -10569,6 +11781,195 @@ def _purge_pycache_cmd(workspace: str) -> str:
     return _PURGE_PYCACHE_CMD_TEMPLATE.replace("__WSQ__", shlex.quote(workspace))
 
 
+# The freeze makes the workspace's repositories root's, so root's git in test.sh
+# would trust what the agent wrote there: a hook, an fsmonitor command, a
+# filter, diff or merge driver the attributes name, an include, a shell alias
+# for a subcommand the image lacks. In every git
+# directory of the workspace, each hook and each such config entry that is not
+# in root's pre-agent copy (/testbed_verify, trusted as the other purges trust
+# it) goes; the repository's own stay. The config is read and written with the
+# image's root-owned git, includes off; without one, a changed config file is
+# put back from the copy or removed (git runs on its defaults). A commondir
+# file sends git to another folder's config and hooks: one in the workspace is
+# purged too; one outside it, like a .git file naming a folder outside it, goes
+# where the agent ran in this sandbox, unless the copy holds the same pointer.
+_PURGE_GIT_CONTROLS_SCRIPT = """\
+import os, re, shutil, stat, subprocess, sys
+root = sys.argv[1]
+baseline = sys.argv[2] if len(sys.argv) > 2 else ''
+RUNS = re.compile(
+    r'(filter\\..*|diff\\.[^.]+\\..+|merge\\.[^.]+\\..+|include\\..*|includeif\\..*'
+    r'|core\\.(fsmonitor|hookspath|sshcommand|gitproxy|askpass|editor|pager'
+    r'|alternaterefscommand)|alias\\..*|(diff|merge)tool\\..*'
+    r'|diff\\.external|sequence\\.editor|gpg\\..*program|credential\\..*|pager\\..*'
+    r'|uploadpack\\..*|remote\\..+\\.(uploadpack|receivepack)|interactive\\.difffilter'
+    r'|submodule\\..+\\.update)$', re.I)
+DEVNULL = subprocess.DEVNULL
+ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'LC_ALL': 'C',
+       'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
+trusted = False
+if baseline:
+    try:
+        st = os.lstat(baseline)
+        trusted = (stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid()
+                   and not st.st_mode & 0o077)
+    except OSError:
+        trusted = False
+def base_of(path):
+    if not trusted:
+        return None
+    candidate = os.path.join(baseline, os.path.relpath(path, root))
+    try:
+        if stat.S_ISREG(os.lstat(candidate).st_mode):
+            return candidate
+    except OSError:
+        pass
+    return None
+def read(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return b''.join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+git = None
+for candidate in ('/usr/bin/git', '/bin/git', '/usr/local/bin/git'):
+    try:
+        st = os.stat(candidate)
+    except OSError:
+        continue
+    if stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022:
+        git = candidate
+        break
+def entries(path):
+    out = subprocess.check_output(
+        [git, 'config', '--file', path, '--no-includes', '--null', '--list'],
+        env=ENV, stderr=DEVNULL)
+    pairs = []
+    for item in out.split(b'\\0'):
+        if item:
+            key, _, value = item.partition(b'\\n')
+            pairs.append((key, value))
+    return pairs
+def put_back(path, base):
+    os.unlink(path)
+    if base is not None:
+        with open(base, 'rb') as source, open(path, 'xb') as target:
+            shutil.copyfileobj(source, target)
+def config(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        put_back(path, base_of(path))
+        return
+    if not stat.S_ISREG(st.st_mode):
+        return
+    base = base_of(path)
+    if base is not None and read(base) == read(path):
+        return
+    if git is None:
+        put_back(path, base)
+        return
+    try:
+        now = entries(path)
+        before = entries(base) if base is not None else []
+    except (OSError, subprocess.CalledProcessError):
+        put_back(path, base)
+        return
+    keys = []
+    for key, _ in now:
+        if RUNS.match(key.decode('utf-8', 'surrogateescape')) and key not in keys:
+            keys.append(key)
+    for key in keys:
+        kept = [v for k, v in before if k == key]
+        if [v for k, v in now if k == key] == kept:
+            continue
+        code = subprocess.call([git, 'config', '--file', path, '--unset-all', key],
+                               env=ENV, stdout=DEVNULL, stderr=DEVNULL)
+        if code not in (0, 5):
+            raise SystemExit('git config --unset-all failed: %d' % code)
+        for value in kept:
+            subprocess.check_call([git, 'config', '--file', path, '--add', key, value],
+                                  env=ENV, stdout=DEVNULL, stderr=DEVNULL)
+def hooks(gitdir):
+    folder = os.path.join(gitdir, 'hooks')
+    try:
+        st = os.lstat(folder)
+    except OSError:
+        return
+    if not stat.S_ISDIR(st.st_mode):
+        os.unlink(folder)
+        return
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        st = os.lstat(path)
+        if stat.S_ISREG(st.st_mode):
+            if name.endswith('.sample'):
+                continue
+            base = base_of(path)
+            if (base is not None and read(base) == read(path)
+                    and os.lstat(base).st_mode & 0o111 == st.st_mode & 0o111):
+                continue
+        if stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+real_root = os.path.realpath(root)
+def follow(path, prefix):
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        data = read(path)
+    except OSError:
+        return None
+    if not data.startswith(prefix):
+        return None
+    target = os.fsdecode(data[len(prefix):].rstrip(b'\\r\\n'))
+    target = os.path.realpath(os.path.join(os.path.dirname(path), target))
+    if target == real_root or target.startswith(real_root.rstrip('/') + '/'):
+        return os.path.join(root, os.path.relpath(target, real_root))
+    base = base_of(path)
+    if baseline and (base is None or read(base) != read(path)):
+        os.unlink(path)
+    return None
+def repository(gitdir):
+    config(os.path.join(gitdir, 'config'))
+    config(os.path.join(gitdir, 'config.worktree'))
+    hooks(gitdir)
+for folder, dirs, files in os.walk(root):
+    names = set(dirs) | set(files)
+    if '.git' in files:
+        follow(os.path.join(folder, '.git'), b'gitdir: ')
+    if 'HEAD' in names and ('objects' in names or 'commondir' in names):
+        repository(folder)
+        common = follow(os.path.join(folder, 'commondir'), b'')
+        if common is not None:
+            repository(common)
+        dirs[:] = [d for d in dirs if d not in ('objects', 'hooks', 'refs', 'logs')]
+"""
+
+
+def _purge_git_controls_cmd(workspace: str, *, agent_user: bool = False) -> str:
+    """Render the git hook and config purge for the workspace's repositories.
+
+    The pre-agent copy is the baseline only where the agent ran as a user
+    other than root in this sandbox (*agent_user*, the conftest sweep's rule);
+    elsewhere, as in a separate verifier, every such entry goes.
+    """
+    baseline = _VERIFIER_WORKSPACE_COPY if agent_user else ""
+    return hardening_python_cmd(
+        _PURGE_GIT_CONTROLS_SCRIPT,
+        f"{shlex.quote(workspace)} {shlex.quote(baseline)}",
+        workspace,
+    )
+
+
 def _purge_workspace_python_hooks_cmd(workspace: str) -> str:
     """Remove workspace venv startup hooks unless identical to the image copy.
 
@@ -10651,6 +12052,27 @@ def _purge_workspace_python_hooks_cmd(workspace: str) -> str:
 # run: its pid shows State Z with Threads above 1, and it is live (Rust
 # P1.1-r5-B-1). Signals sent to that pid reach the whole group.
 #
+# One process of the user's is left alone: PID 1, when it is BenchFlow's
+# keep-alive (``sleep infinity``, which the inert bootstrap makes PID 1 itself
+# under an image user that is not root, or the protected kit's sleep in a
+# restored checkpoint) and no process of the user's can ever have run code in
+# it. PID 1 runs as the image's user, so it is the sandbox user's whenever the
+# image's USER is that account (a task image with ``USER agent``, as the
+# sandbox user is named), and no kill from inside the sandbox can end it:
+# kill(-1) skips it, and the kernel drops any signal it does not handle that a
+# process of its own PID namespace sends it. Counted, it fails every kill; and
+# when PID 1 was a shell waiting on its sleep, killing the sleep ended PID 1
+# and the container, BenchFlow's root command helper included. ``sleep``
+# reads nothing and handles no signal, so only a tracer could make it do
+# anything, and PID 1 descends from no process of the sandbox: with Yama's
+# ptrace_scope at 1 or 2 only a holder of CAP_SYS_PTRACE could attach to it,
+# and when PID 1's bounding set lacks that capability no process in the
+# sandbox can hold it; at 3 nothing attaches. So PID 1 is left alone only with
+# Yama at 1 to 3, the capability out of its bounding set (at 1 and 2), no
+# tracer now and one of those command lines; otherwise it counts as before.
+# Its children, and every orphan reparented to it, are killed like any other
+# process.
+#
 # Reads /proc with shell builtins (plus ``id`` and ``sleep``) so it runs on
 # busybox and debian-slim images that ship neither procps nor python3. An
 # entry that disappears before its status is read has exited. Prints
@@ -10659,7 +12081,8 @@ def _purge_workspace_python_hooks_cmd(workspace: str) -> str:
 # process survives every round, 2 when the state cannot be observed, the
 # script is not root or no helper can signal as the user. The host trusts the
 # count only with exit status 0 and exactly one such line, whole.
-_KILL_PRELUDE = r"""P=__PROC__
+_KILL_PRELUDE = (
+    r"""P=__PROC__
 uid=$(id -u __USER__ 2>/dev/null) || { echo 'Invalid sandbox UID' >&2; exit 2; }
 case "$uid" in ''|*[!0-9]*|0) echo 'Invalid sandbox UID' >&2; exit 2 ;; esac
 if [ ! -r "$P/self/status" ]; then
@@ -10740,10 +12163,44 @@ each() {
     [ -n "$mine" ] || return 0
     asuser "for p in$mine; do kill -s $sig \$p 2>/dev/null; done; echo BF as-user" || helpless "$sig"
 }
+# PID 1 as BenchFlow's keep-alive that nothing in the sandbox could have traced
+# (see the rule above): looked at once, before anything is signalled.
+pid1_inert() {
+    i1s=
+    { read -r i1s <"$P/sys/kernel/yama/ptrace_scope"; } 2>/dev/null
+    case "$i1s" in 1|2|3) ;; *) return 1 ;; esac
+    i1t=
+    i1b=
+    { while read -r key first rest || [ -n "$key" ]; do
+        case "$key" in
+            TracerPid:) i1t=$first ;;
+            CapBnd:) i1b=$first ;;
+        esac
+        key=
+    done <"$P/1/status"; } 2>/dev/null
+    [ "$i1t" = 0 ] || return 1
+    if [ "$i1s" != 3 ]; then
+        # CAP_SYS_PTRACE is bit 19: the high bit of the fifth hex digit from
+        # the right of the 16-digit mask.
+        case "$i1b" in ''|*[!0-9a-f]*) return 1 ;; esac
+        [ "${#i1b}" -eq 16 ] || return 1
+        i1d=${i1b%????}
+        i1d=${i1d#"${i1d%?}"}
+        case "$i1d" in [0-7]) ;; *) return 1 ;; esac
+    fi
+    i1c=$(tr '\000' '|' <"$P/1/cmdline" 2>/dev/null) || return 1
+    case "$i1c" in 'sleep|infinity|'|"""
+    + shlex.quote(f"{KIT_BIN}/sleep|infinity|")
+    + r""") return 0 ;; esac
+    return 1
+}
+inert1=
+pid1_inert && inert1=1
 live() {
     for entry in "$P"/[0-9]*; do
         pid=${entry##*/}
         case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ "$pid" = 1 ] && [ -n "$inert1" ] && continue
         state=
         ruid=
         euid=
@@ -10801,6 +12258,7 @@ signal_one() {
     return 0
 }
 """
+)
 # The kill itself, after the prelude (no service kept).
 _KILL_SANDBOX_USER_PROCS_BODY = r"""freeze() {
     everyone STOP
@@ -10932,7 +12390,12 @@ _KILL_SANDBOX_USER_PROCS_CMD_TEMPLATE = _KILL_PRELUDE + _KILL_SANDBOX_USER_PROCS
 # on just before the verifier's test command. With __WAIT__ set (the first
 # kill of a trial) it first waits up to 30 s for every kept port to have a
 # listener, so a service still loading is not killed for being late, and
-# prints ``BF waited <tenths of a second>``.
+# prints ``BF waited <tenths of a second>``. With __REQUIRE_NNP__ set (the
+# cloud metadata block disarmed files for the agent's turn) a
+# listener that runs without no_new_privs is not the agent's launch and is
+# not kept: it dies with the rest, printed as ``BF kept-not-nnp <port> <pid>
+# <command>``, so nothing outside no_new_privs is alive when the disarmed
+# files go back before grading.
 #
 # What holds a kept process is the kernel's cgroup v2 freezer, not SIGSTOP
 # (K1-CONFIRM-1). A stopped process goes on at any SIGCONT, and the kernel
@@ -10942,7 +12405,7 @@ _KILL_SANDBOX_USER_PROCS_CMD_TEMPLATE = _KILL_PRELUDE + _KILL_SANDBOX_USER_PROCS
 # SIGKILL takes a process out of a frozen cgroup, and a child forked there
 # is born frozen. So the kill moves each kept process, as soon as it finds
 # it (``freezer_hold`` after every ``keepnow``), into the leaf
-# /sys/fs/cgroup/benchflow-kept, frozen before anything enters it; the
+# /sys/fs/cgroup/runtime-kept, frozen before anything enters it; the
 # rounds then kill the rest, and the receipt is printed only after the leaf
 # reports frozen and holds every kept process that is still alive. The
 # release checks the same (``freezer_assert``: frozen, and exactly the
@@ -10963,7 +12426,7 @@ _KILL_SANDBOX_USER_PROCS_CMD_TEMPLATE = _KILL_PRELUDE + _KILL_SANDBOX_USER_PROCS
 # without writable-cgroups) a kill that would keep a process fails instead
 # (exit 2), and the trial is not graded; a kill that keeps nothing needs no
 # freezer.
-_KEPT_FREEZER = r"""C=/sys/fs/cgroup/benchflow-kept
+_KEPT_FREEZER = r"""C=/sys/fs/cgroup/runtime-kept
 freezer_error() {
     echo "Cannot hold the kept services in a frozen cgroup: $1" >&2
     exit 2
@@ -11099,7 +12562,20 @@ rootish() {
     done <"$P/$1/status"; } 2>/dev/null
     return 0
 }
+nnp() {
+    # NoNewPrivs: 1, as the agent's launch sets it: a set-ID file or a file
+    # capability gives such a process nothing.
+    { while read -r key a rest || [ -n "$key" ]; do
+        if [ "$key" = NoNewPrivs: ]; then
+            [ "$a" = 1 ]
+            return
+        fi
+        key=
+    done <"$P/$1/status"; } 2>/dev/null
+    return 1
+}
 kept=' '
+refused=' '
 keepnow() {
     listen
     [ "$ki" = ' ' ] && return 0
@@ -11112,8 +12588,19 @@ keepnow() {
         fi
         [ -n "$port" ] || continue
         rootish "$pid" && continue
-        kept="$kept$pid "
         cmd=$(tr '\000\n' ' ?' <"$P/$pid/cmdline" 2>/dev/null | cut -c1-200)
+        if [ __REQUIRE_NNP__ = 1 ] && ! nnp "$pid"; then
+            # Not the agent's launch: when the cloud metadata block disarmed
+            # files for the agent's turn, it is killed like any other process
+            # of the user's, so nothing outside no_new_privs runs when they go
+            # back before grading.
+            case "$refused" in *" $pid "*) ;; *)
+                refused="$refused$pid "
+                printf 'BF kept-not-nnp %s %s %s\n' "$port" "$pid" "$cmd" ;;
+            esac
+            continue
+        fi
+        kept="$kept$pid "
         printf 'BF kept %s %s %s\n' "$port" "$pid" "$cmd"
     done
     return 0
@@ -11552,6 +13039,8 @@ echo "BF released $n"
 # 1" of "BF killed 12 end") is never read as a count.
 _KILLED_RE = re.compile(r"BF killed (\d+) end")
 _KEPT_RE = re.compile(r"^BF kept (\d+) (\d+) ?(.*)$", re.MULTILINE)
+# A listener on a kept port that runs without no_new_privs: killed.
+_KEPT_NOT_NNP_RE = re.compile(r"^BF kept-not-nnp (\d+) (\d+) ?(.*)$", re.MULTILINE)
 _WAITED_RE = re.compile(r"^BF waited (\d+)$", re.MULTILINE)
 _KEPT_COUNT_RE = re.compile(r"^BF kept count (\d+)$", re.MULTILINE)
 
@@ -11572,6 +13061,8 @@ class KeepingKill:
     killed: int
     kept: tuple[KeptProcess, ...]
     waited_sec: float
+    #: Listeners on kept ports that ran without no_new_privs, killed instead.
+    not_nnp: tuple[KeptProcess, ...] = ()
 
 
 def _confirmed_kill_count(result, stdout: object) -> int:
@@ -11667,12 +13158,26 @@ async def _kill_sandbox_user_procs(
 _BFX_ANSWERED = SimpleNamespace(return_code=0, stdout="", stderr="")
 
 
+def _init_may_be(table: Identities, identity: Identity) -> bool:
+    """Whether the sandbox's PID 1 may run as *identity*'s account.
+
+    PID 1 runs as the container's configured user, the account *table*
+    gives for no selector (the image's USER on Docker); True when that
+    cannot be resolved."""
+    try:
+        init = resolve_identity(table, None)
+    except RuntimeError:
+        return True
+    return init.uid == identity.uid
+
+
 async def _bfx_kill_receipt(env: Any, sandbox_user: str) -> str | None:
     """The K1 kill as ``bfx kill`` (TRUSTED-RUNTIME v2 §4): its receipt.
 
     None where bfx is not delivered, the sandbox has no ``bfx_call``, the
-    pre-agent identity table is absent, or bfx did not start the request:
-    the shell kill then runs, as before. The account's numbers are the ones
+    pre-agent identity table is absent, PID 1 may run as the account (bfx
+    has no rule for it), or bfx did not start the request: the shell kill
+    then runs, as before. The account's numbers are the ones
     measured before the agent started (``_identities.snapshot``). Every
     other bfx failure raises, with the shell kill's wording; a kill that may
     have run is never sent again.
@@ -11691,6 +13196,12 @@ async def _bfx_kill_receipt(env: Any, sandbox_user: str) -> str | None:
             "exited with rc=2 (Invalid sandbox UID: root's processes are never "
             "killed)"
         )
+    if _init_may_be(table, identity):
+        # bfx's kill counts PID 1 like any other process of the account, and
+        # nothing inside the sandbox can end it; the shell kill's walk leaves
+        # BenchFlow's untraceable keep-alive alone (_KILL_PRELUDE).
+        logger.debug("PID 1 may be %s's; the shell kill runs", sandbox_user)
+        return None
     try:
         answer = await env.bfx_call(
             "kill",
@@ -11738,9 +13249,16 @@ async def kill_switched_accounts(env) -> int:
 
 
 def _keeping_kill_cmd(
-    sandbox_user: str, ports: "tuple[int, ...]", *, wait: bool, proc_root: str
+    sandbox_user: str,
+    ports: "tuple[int, ...]",
+    *,
+    wait: bool,
+    proc_root: str,
+    require_nnp: bool = False,
 ) -> str:
-    """The keeping kill's script (see ``_KILL_KEEPING_BODY``)."""
+    """The keeping kill's script (see ``_KILL_KEEPING_BODY``). With
+    *require_nnp* a listener on a kept port is kept only when it runs under
+    no_new_privs (``BF kept-not-nnp`` names one killed instead)."""
     kp = " " + " ".join(f"{p:04X}:{p}" for p in sorted(set(ports))) + " "
     return (
         (_KILL_PRELUDE + _KEPT_FREEZER + _KILL_KEEPING_BODY)
@@ -11749,6 +13267,7 @@ def _keeping_kill_cmd(
         .replace("__NEED_ROOT__", "1")
         .replace("__KEEP_PORTS__", shlex.quote(kp))
         .replace("__WAIT__", "1" if wait else "0")
+        .replace("__REQUIRE_NNP__", "1" if require_nnp else "0")
     )
 
 
@@ -11775,12 +13294,25 @@ async def _kill_sandbox_user_procs_keeping(
         killed = await _kill_sandbox_user_procs(env, sandbox_user, proc_root=proc_root)
         return KeepingKill(killed=killed, kept=(), waited_sec=0.0)
     # PATH: the exec route's alone (C8, PT-C8-R3-3).
+    from benchflow.sandbox import _delegate_disarm
+
+    # Only where the cloud metadata block disarmed files: their restore
+    # before grading must find nothing outside no_new_privs alive. The
+    # oracle (no block) starts services through su and keeps them as before.
+    state = getattr(env, _delegate_disarm.DISARMED_ATTR, None)
+    require_nnp = isinstance(state, dict) and bool(state.get("stripped"))
     with BaseSandbox.services_kept(env):
         result = await _read_exec(
             env,
             kill_prelude(
                 env,
-                _keeping_kill_cmd(sandbox_user, ports, wait=wait, proc_root=proc_root),
+                _keeping_kill_cmd(
+                    sandbox_user,
+                    ports,
+                    wait=wait,
+                    proc_root=proc_root,
+                    require_nnp=require_nnp,
+                ),
                 sandbox_user,
             ),
             user="root",
@@ -11807,6 +13339,10 @@ async def _kill_sandbox_user_procs_keeping(
         killed=killed,
         kept=kept,
         waited_sec=int(waited.group(1)) / 10 if waited else 0.0,
+        not_nnp=tuple(
+            KeptProcess(port=int(m.group(1)), pid=int(m.group(2)), command=m.group(3))
+            for m in _KEPT_NOT_NNP_RE.finditer(stdout)
+        ),
     )
 
 
@@ -11931,13 +13467,27 @@ def _record_kept(
         for k in outcome.kept
     ]
     missing = sorted({*keep.ports} - {k.port for k in outcome.kept})
+    not_nnp = [
+        {"port": k.port, "pid": k.pid, "command": k.command[:200]}
+        for k in outcome.not_nnp
+    ]
     _kill_record.record_kept_services(
         rows,
         ports=list(keep.ports),
         source=keep.describe_source(),
         no_listener=missing,
         waited_sec=outcome.waited_sec,
+        not_nnp=not_nnp,
     )
+    for row in not_nnp:
+        logger.warning(
+            "Killed instead of kept: port %s pid %s `%s` ran without no_new_privs "
+            "(not the agent's launch), so it could use a set-ID file or a file "
+            "capability put back before grading",
+            row["port"],
+            row["pid"],
+            row["command"],
+        )
     if turn_end is not None:
         now = {k.pid for k in outcome.kept}
         _kill_record.record_kept_services_turn_end(
@@ -12234,7 +13784,7 @@ def _clear_verifier_dir_cmd(*, bfx: bool = False) -> str:
         f"[ ! -d /logs/verifier ]; then {_CLEAR_VERIFIER_DIR_CMD}; else "
         f"__bf_o=$({bfx_path} clear --json {shlex.quote(args)}); "
         'case "$__bf_o" in '
-        "*'\"ok\":true'*) chmod 777 /logs/verifier;; "
+        "*'\"ok\":true'*) chown root:root /logs/verifier && chmod 777 /logs/verifier;; "
         "*) printf '%s\\n' \"$__bf_o\" >&2; false;; "
         "esac; fi"
     )
@@ -12318,15 +13868,27 @@ def _chown_workspace_cmd(workspace: str, *, bfx: bool = False) -> str:
     The plain one is root's Python walking the tree with descriptors
     (_workspace_owner.py "freeze"): every other entry, a link itself (never
     its target) and what a mount holds, is chowned, as ``chown -R`` does,
-    each by its own checked syscall. Without root Python, ``find`` chowns
+    each by its own checked syscall. A regular file whose chown is denied
+    is replaced by a root-owned copy and recorded; directories and shared
+    files are never replaced. Without root Python, ``find`` chowns
     and a second ``find`` fails the step if any entry it should have given
     to root is not root's (BusyBox ``find`` drops the status of every
     ``-exec ... +`` batch but the last).
     """
+    copy_refused = (
+        "bf_copy() { " + _FRESH_COPY + "; }; "
+        "for f; do "
+        'if chown -h root:root "$f"; then continue; fi; '
+        'if [ -f "$f" ] && [ ! -h "$f" ] && '
+        '[ "$(stat -c %h "$f")" = 1 ] && (bf_copy "$f"); then '
+        "printf 'workspace freeze: copied unchownable file %s\\n' \"$f\" >&2; "
+        "else printf 'failed\\n'; fi; done"
+    )
     shell = _at_physical_workspace(
         workspace,
-        'find "$bf_workspace" -type f -links +1 -prune -o '
-        "-exec chown -h root:root {} + || exit 1; "
+        'bf_failed=$(find "$bf_workspace" -type f -links +1 -prune -o '
+        f"-exec sh -c {shlex.quote(copy_refused)} sh {{}} +) || exit 1; "
+        '[ -z "$bf_failed" ] || { echo "workspace freeze: ownership failed" >&2; exit 1; }; '
         'bf_left=$(find "$bf_workspace" ! -user 0 '
         r"\( ! -type f -o -links 1 \) -print -quit) || exit 1; "
         '[ -z "$bf_left" ] || { echo "workspace freeze: entries are left '
@@ -12349,17 +13911,21 @@ def _chown_workspace_cmd(workspace: str, *, bfx: bool = False) -> str:
     bfx_path = shlex.quote(SANDBOX_PATH)
     return (
         f"if [ ! -x {bfx_path} ]; then {plain}; else "
-        f"__bf_o=$({bfx_path} chown --json {shlex.quote(args)}); "
+        f"__bf_o=$({bfx_path} chown --json {shlex.quote(args)}) || :; "
         'case "$__bf_o" in '
         "*'\"ok\":true'*'\"skipped_mounts\":[]'*) ;; "
         '*\'"ok":true\'*|*\'"kind":"link"\'*|*\'"kind":"mount"\'*) '
+        f"{plain};; "
+        "*'Operation not permitted'*|*'Permission denied'*) "
         f"{plain};; "
         "*) printf '%s\\n' \"$__bf_o\" >&2; false;; "
         "esac; fi"
     )
 
 
-def _freeze_steps(workspace: str, *, bfx: bool = False) -> list[_PrepStep]:
+def _freeze_steps(
+    workspace: str, *, bfx: bool = False, git: bool = True
+) -> list[_PrepStep]:
     """Purge external symlinks, stale caches and startup hooks, then chown.
 
     The cache purge runs before the hooks purge and leaves only the image's
@@ -12393,6 +13959,21 @@ def _freeze_steps(workspace: str, *, bfx: bool = False) -> list[_PrepStep]:
             _purge_workspace_python_hooks_cmd(workspace),
             VERIFIER_SETUP_TIMEOUT_SEC,
             "Verifier hardening failed: purging workspace Python startup hooks",
+        ),
+        *(
+            [
+                _PrepStep(
+                    "purge_git_controls",
+                    "freeze_workspace",
+                    _purge_git_controls_cmd(
+                        workspace, agent_user=_hook_agent_user.get()
+                    ),
+                    VERIFIER_SETUP_TIMEOUT_SEC,
+                    "Verifier hardening failed: purging workspace git hooks and config",
+                )
+            ]
+            if git
+            else []
         ),
         _PrepStep(
             "chown_workspace",
@@ -12507,6 +14088,7 @@ async def _cleanup_hooks_on_bfx(
                     agent_user=(
                         _hook_agent_user.get() if agent_user is None else agent_user
                     ),
+                    baseline=_VERIFIER_WORKSPACE_COPY if workspace else None,
                 )
             finally:
                 await session.__aexit__(None, None, None)
@@ -12590,7 +14172,7 @@ async def _run_prep_step(
 # folder in a sticky, root-owned /tmp, never to the exec's stdout, so these lines are the only thing on
 # stdout up to a FAIL line, and nothing the agent left behind can forge one.
 _PREP_MARK = "BENCHFLOW-PREP"
-_PREP_DIR_PREFIX = "/tmp/.benchflow_prep_"
+_PREP_DIR_PREFIX = "/tmp/.runtime_prep_"
 # Added to the sum of the step budgets for the exec's own timeout, for the
 # script's few lines around the steps.
 _PREP_EXEC_SLACK_SEC = 30
@@ -12923,10 +14505,10 @@ async def _restore_workspace_state(env, workspace: str) -> None:
     )
 
 
-async def _freeze_workspace(env, workspace: str) -> None:
+async def _freeze_workspace(env, workspace: str, *, git: bool = True) -> None:
     """Purge external symlinks, stale caches and startup hooks, then chown
     (see _freeze_steps), one exec each."""
-    for step in _freeze_steps(workspace, bfx=_bfx_in_scripts(env)):
+    for step in _freeze_steps(workspace, bfx=_bfx_in_scripts(env), git=git):
         await _run_prep_step(env, step)
 
 
@@ -13046,7 +14628,11 @@ async def _assemble_verifier_env(
     main_report, pythonpath_read = await in_order(
         env,
         lambda: _judge_verifier_path(
-            env, sandbox_user, workspace, blocked=path_blocked
+            env,
+            sandbox_user,
+            workspace,
+            blocked=path_blocked,
+            fresh_image=agent_paths is not None,
         ),
         lambda: _outcome(
             lambda: _trusted_verifier_pythonpath(
@@ -13065,6 +14651,7 @@ async def _assemble_verifier_env(
                 None,
                 workspace,
                 blocked=target_blocked,
+                fresh_image=agent_paths is not None,
             ),
             service=service,
         )
@@ -13187,8 +14774,8 @@ async def _assemble_verifier_env(
     env._benchflow_verifier_runtime = runtime
     # The interpreters the guard reaches through PYTHONPATH only, which a
     # guard-load verifier error names (PT-C8-CONF-2b round 3).
-    env._benchflow_guard_unrecorded = ()
-    env._benchflow_guard_why = {}
+    env._runtime_guard_unrecorded = ()
+    env._runtime_guard_why = {}
     if runtime and runtime.get("runner"):
         verifier_env["BENCHFLOW_PYTEST"] = str(runtime["runner"])
     # A task whose tests folder and [verifier] env never name the runner gets
@@ -13230,7 +14817,7 @@ async def _assemble_verifier_env(
             named_inputs=_verifier_dependency_hints(task),
             runner_stub=runner_stub,
         )
-        env._benchflow_guard_unrecorded = tuple(unrecorded)
+        env._runtime_guard_unrecorded = tuple(unrecorded)
         guard_name = os.path.basename(guard_directory or "")
         if runner_stub and guard_name.startswith(PYTEST_PLUGIN_GUARD_PREFIX):
             verifier_env["BENCHFLOW_PYTEST"] = pytest_runner_stub_file(guard_name)
@@ -13421,6 +15008,20 @@ async def _harden_steps(
                 await remove_muse_credentials(
                     env, sandbox_user, timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
                 )
+    # Put back what the cloud metadata block disarmed for the agent's turn
+    # , on files whose path, owner, size, sha256, link count and
+    # stripped mode are unchanged. Processes can still be alive here: kept
+    # services (frozen; the kill keeps only those under no_new_privs) and
+    # every process of another user (never killed). So the restore puts
+    # nothing back while any process that is not root runs without
+    # no_new_privs, and a BenchFlow failure in it leaves the trial unscored.
+    # A separate verifier sandbox starts from the task's image: nothing there
+    # was disarmed, and the agent's sandbox is not graded.
+    from benchflow.sandbox import _delegate_disarm
+
+    if agent_paths is None and getattr(env, _delegate_disarm.DISARMED_ATTR, None):
+        with _prep_timing(seconds, "restore_disarmed_delegates"):
+            await _delegate_disarm.restore_disarmed_delegates(env)
     # Decide before clear/reclaim/restore/freeze changes any ownership. Even
     # main can mount its workspace a second time under an unblocked alias.
     # A file the agent could write must not become trusted merely because
@@ -13511,7 +15112,11 @@ async def _harden_steps(
             ]
             after = [
                 *(
-                    _freeze_steps(workspace, bfx=_bfx_in_scripts(env))
+                    _freeze_steps(
+                        workspace,
+                        bfx=_bfx_in_scripts(env),
+                        git=hardening.get("cleanup_git", True),
+                    )
                     if workspace
                     else []
                 ),
@@ -13574,7 +15179,13 @@ async def _harden_steps(
             #    (a regular file with another name keeps its owner).
             if workspace:
                 with _prep_timing(seconds, "freeze_workspace"):
-                    await _freeze_workspace(env, workspace)
+                    await _freeze_workspace(
+                        env,
+                        workspace,
+                        git=_read_hardening_config(getattr(task, "task_dir", None)).get(
+                            "cleanup_git", True
+                        ),
+                    )
                     if keep is not None and sandbox_user:
                         # Closing the workspace and checking its ancestors both
                         # run root's judged Python; without one,

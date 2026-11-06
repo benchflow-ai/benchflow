@@ -115,23 +115,47 @@ def _price_table() -> dict[str, Any]:
     return {}
 
 
-def list_price(model: str) -> dict[str, float] | None:
-    """USD per token for ``model`` (input, output, cache read, cache write),
-    from LiteLLM's table; None when the model is not in it."""
+def _tier_suffix(entry: dict[str, Any], prompt_tokens: int) -> str:
+    """The key suffix of the highest long-prompt tier ``prompt_tokens`` is over."""
+    over = [
+        int(m.group(1))
+        for key in entry
+        if (m := re.fullmatch(r"input_cost_per_token_above_(\d+)k_tokens", key))
+        and prompt_tokens > int(m.group(1)) * 1000
+    ]
+    return f"_above_{max(over)}k_tokens" if over else ""
+
+
+def list_price(model: str, prompt_tokens: int = 0) -> dict[str, float] | None:
+    """USD per token for ``model`` (input, output, cache read, cache write).
+
+    From BenchFlow's dated snapshot for current Claude models, else LiteLLM's
+    table; None when neither has the model. ``prompt_tokens`` (input plus
+    cache reads and writes, as Anthropic counts a prompt) picks a long-prompt
+    tier, such as Haiku 5.5's over 100,000 tokens.
+    """
+    # Here, not at import: the providers package imports the gateway runtime.
+    from benchflow.providers.pricing_snapshot import anthropic_prices
+
     table = _price_table()
     base = model.split("[", 1)[0]
     undated = re.sub(r"-\d{8}$", "", base)
     for name in (model, base, f"anthropic/{base}", undated, f"anthropic/{undated}"):
-        entry = table.get(name)
+        entry = anthropic_prices(name.removeprefix("anthropic/")) or table.get(name)
         if not isinstance(entry, dict) or "input_cost_per_token" not in entry:
             continue
+        tier = _tier_suffix(entry, prompt_tokens)
+
+        def rate(key: str, entry: dict[str, Any] = entry, tier: str = tier) -> Any:
+            return entry.get(key + tier, entry.get(key))
+
         price = {
-            "input": _number(entry.get("input_cost_per_token")),
-            "output": _number(entry.get("output_cost_per_token")),
-            "cache_read": _number(entry.get("cache_read_input_token_cost")),
-            "cache_write": _number(entry.get("cache_creation_input_token_cost")),
+            "input": _number(rate("input_cost_per_token")),
+            "output": _number(rate("output_cost_per_token")),
+            "cache_read": _number(rate("cache_read_input_token_cost")),
+            "cache_write": _number(rate("cache_creation_input_token_cost")),
         }
-        hour = entry.get("cache_creation_input_token_cost_above_1hr")
+        hour = rate("cache_creation_input_token_cost_above_1hr")
         price["cache_write_1h"] = (
             _number(hour) if hour is not None else price["cache_write"]
         )
@@ -142,7 +166,15 @@ def list_price(model: str) -> dict[str, float] | None:
 def _at_list_price(responses: list[tuple]) -> tuple[float | None, dict[str, float]]:
     by_model: dict[str, float] = defaultdict(float)
     for model, usage in responses:
-        price = list_price(model)
+        prompt = sum(
+            _int(usage.get(key))
+            for key in (
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            )
+        )
+        price = list_price(model, prompt)
         if price is None:
             return None, {}
         written = usage.get("cache_creation") or {}

@@ -912,8 +912,8 @@ async def test_pinned_gateway_refuses_translated_hosted_tools(family):
                 # is left to refuse and the plain request may succeed.
                 assert not [r for r in upstream.requests if _hosted(r["body"])]
                 if (path, body) in _reported(family) and path == "/messages":
-                    # The input boundary admits it; pinned LiteLLM 1.91.5
-                    # serves no /messages route, so nothing is sent.
+                    # The input boundary admits it; the pinned LiteLLM
+                    # (1.103.3) serves no /messages route, so nothing is sent.
                     assert response.status_code == 404 or REFUSED in response.text
                 elif (path, body) in _reported(family):
                     assert response.status_code == 400, (path, response.text)

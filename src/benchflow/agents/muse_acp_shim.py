@@ -64,7 +64,7 @@ import time
 import uuid
 
 MUSE_BIN_ENV = "BENCHFLOW_MUSE_BIN"
-DEFAULT_MUSE_BIN = "/opt/benchflow/muse/muse"
+DEFAULT_MUSE_BIN = "/opt/runtime/muse/muse"
 MODEL_ENV = "MUSE_MODEL"
 EFFORT_ENV = "MUSE_EFFORT"
 AUTH_JSON_ENV = "MUSE_AUTH_JSON"

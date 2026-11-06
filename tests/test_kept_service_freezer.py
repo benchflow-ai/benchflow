@@ -4,7 +4,7 @@ At 38eb884a the kills held a kept listener only with SIGSTOP, and the kernel
 sends SIGCONT with no sender running (a POSIX timer the listener armed with
 SIGCONT, a parent-death or child-exit signal, an orphaned process group), so
 the listener could run on through the capture and the hardening. The kills
-now move each kept process into the frozen leaf /sys/fs/cgroup/benchflow-kept
+now move each kept process into the frozen leaf /sys/fs/cgroup/runtime-kept
 as soon as they find it, print their receipt only once the leaf is frozen
 and holds it, and only the release thaws the leaf, after its checks. Where
 root cannot hold the leaf, a kill that would keep something fails.
@@ -215,11 +215,11 @@ async def test_a_kept_service_that_exits_is_lost_not_a_failure(tmp_path):
     "node",
     [
         ".",
-        "benchflow-kept",
+        "runtime-kept",
         "cgroup.procs",
-        "benchflow-kept/cgroup.procs",
-        "benchflow-kept/cgroup.freeze",
-        "benchflow-kept/cgroup.events",
+        "runtime-kept/cgroup.procs",
+        "runtime-kept/cgroup.freeze",
+        "runtime-kept/cgroup.events",
     ],
 )
 @pytest.mark.parametrize("mode", [0o775, 0o777])

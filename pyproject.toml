@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.9.1"
+version = "0.10.0rc2"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -20,6 +20,12 @@ dependencies = [
     # Dataset registry bench_version checks (PEP 440 specifier sets).
     "packaging>=24",
     "litellm[proxy]==1.103.3",
+    # The model proxy gives a chat-completions model each PDF Claude Code
+    # sends as its text (providers/litellm_messages_bridge_patch.py), and a
+    # host proxy runs from this environment. The PDFs come from the agent:
+    # the floor is the release that was checked, with pypdf's latest limits
+    # on parsing work.
+    "pypdf>=6.21.4,<7",
     "google-cloud-aiplatform>=1.133.0,<2.0",
     "tomli-w>=1.0",
     # Upper bounds at the newest minors tools/ci/fresh_resolve.sh passes on
@@ -77,6 +83,7 @@ dev = [
     "pathspec>=0.12",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
+    "pytest-timeout>=2.4.0",
     # `pytest -n auto` (CI's unit job and the round's test command). 3.8 is
     # the release the suite was first checked under.
     "pytest-xdist>=3.8",
@@ -173,6 +180,8 @@ Changelog = "https://github.com/benchflow-ai/benchflow/blob/main/CHANGELOG.md"
 litellm-proxy = [
     "litellm[proxy]==1.103.3",
     "boto3>=1.40",
+    # PDF text for a chat-completions model, as in the core dependencies.
+    "pypdf>=6.21.4,<7",
 ]
 # Vertex routes (google-vertex, anthropic-vertex) also need the Vertex SDK.
 litellm-proxy-vertex = [
@@ -182,8 +191,8 @@ litellm-proxy-vertex = [
 
 [build-system]
 # Pinned: an unpinned backend made the same source build a wheel with other
-# bytes (hatchling 1.33.0 writes its own version into WHEEL), so 0.9.0 rebuilt
-# after 2026-10-28 no longer matched its accepted SHA-256.
+# bytes (hatchling 1.33.0 writes its own version into WHEEL), so a rebuild of
+# an accepted release no longer matched its recorded SHA-256.
 requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
@@ -193,7 +202,8 @@ build-backend = "hatchling.build"
 artifacts = ["src/benchflow/_bfx/bin/bfx-x86_64", "src/benchflow/_bfx/bin/bfx-aarch64"]
 
 [tool.hatch.build.targets.sdist]
-# Allowlist: only ship what the installed package needs.
+# Allowlist: only what builds and documents the installed package. The tests,
+# their fixtures and the docs stay in the repository, out of the sdist.
 only-include = [
     "src",
     "README.md",

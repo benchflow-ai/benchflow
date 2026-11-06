@@ -53,6 +53,10 @@ EXPECTED_OPTION_IDS = {"model", "effort"}
 FABLE_MODEL = "claude-fable-5-1"
 FABLE_EFFORT = "xhigh"
 OPUS_MODEL = "claude-opus-5-5"
+# The current Sonnet and Haiku (the judge and agent defaults): Claude Code
+# 2.1.280 knew neither, so claude-agent-acp 0.81.2 refused them at connect.
+SONNET_MODEL = "claude-sonnet-5-5"
+HAIKU_MODEL = "claude-haiku-5-5"
 CODEX_MODEL = "gpt-6.1-sol"
 CODEX_EFFORT = "max"
 
@@ -143,7 +147,7 @@ def _current(client) -> dict[str, str]:
 
 async def _exercise_config_options(
     entry: Path, cli: Path, endpoint: str
-) -> tuple[set[str], dict[str, str], str, set[str]]:
+) -> tuple[set[str], dict[str, str], dict[str, str], set[str]]:
     from benchflow.acp.client import ACPClient
     from benchflow.acp.transport import StdioTransport
 
@@ -174,7 +178,7 @@ async def _exercise_config_options(
             if isinstance(o, dict) and isinstance(o.get("id"), str)
         }
         current: dict[str, str] = {}
-        opus = ""
+        chosen: dict[str, str] = {}
         if ids >= EXPECTED_OPTION_IDS:
             await asyncio.wait_for(
                 client.set_config_option("model", FABLE_MODEL), timeout=60
@@ -183,11 +187,12 @@ async def _exercise_config_options(
                 client.set_config_option("effort", FABLE_EFFORT), timeout=60
             )
             current = _current(client)
-            await asyncio.wait_for(
-                client.set_config_option("model", OPUS_MODEL), timeout=60
-            )
-            opus = _current(client).get("model", "")
-        return ids, current, opus, running
+            for model in (OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL):
+                await asyncio.wait_for(
+                    client.set_config_option("model", model), timeout=60
+                )
+                chosen[model] = _current(client).get("model", "")
+        return ids, current, chosen, running
     finally:
         with contextlib.suppress(Exception):
             await client.close()
@@ -224,7 +229,7 @@ def test_pinned_claude_acp_supports_fable_model_and_effort(tmp_path):
     assert entry.is_file(), f"pinned agent entry not found: {entry}"
 
     with _stub_anthropic() as (endpoint, seen):
-        ids, current, opus, running = asyncio.run(
+        ids, current, chosen, running = asyncio.run(
             _exercise_config_options(entry, cli, endpoint)
         )
     if Path("/proc/self/exe").exists():
@@ -237,11 +242,23 @@ def test_pinned_claude_acp_supports_fable_model_and_effort(tmp_path):
         f"model/effort wiring is stale — re-verify acp_model_config_id / "
         f"acp_effort_config_id"
     )
-    assert current.get("model", "").split("[", 1)[0] == FABLE_MODEL, current
+    # The adapter reports a model's alias when the CLI has one for it:
+    # "opus" for Opus 5.5, and since Claude Code 2.1.316 "fable" for Fable 5.1.
+    assert current.get("model", "").split("[", 1)[0] in {FABLE_MODEL, "fable"}, current
     assert current.get("effort") == FABLE_EFFORT, current
     # The CLI validated the Fable id through the (stub) Messages API.
     assert ("POST", "/v1/messages?beta=true", FABLE_MODEL) in seen, seen
-    assert opus.startswith("opus"), opus
+    for model, family in (
+        (OPUS_MODEL, "opus"),
+        (SONNET_MODEL, "sonnet"),
+        (HAIKU_MODEL, "haiku"),
+    ):
+        reported_model = chosen.get(model, "").split("[", 1)[0]
+        assert reported_model in {model, family}, (model, chosen)
+    # An alias says only the family; the request the CLI then sent names the
+    # model itself, so "haiku" is Haiku 5.5, not the legacy Haiku 4.5.
+    for model in (SONNET_MODEL, HAIKU_MODEL):
+        assert ("POST", "/v1/messages?beta=true", model) in seen, (model, seen)
 
 
 async def _exercise_codex_model_selection(

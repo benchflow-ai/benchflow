@@ -599,7 +599,7 @@ def test_an_offline_fetch_says_what_failed_and_what_to_do(monkeypatch, capsys):
 def test_help_and_doctor_point_at_the_real_pages():
     """DFR-p1-12: both pointed at a moved stub page, doctor by a repo path."""
     out = _squash(runner.invoke(app, ["--help"]).output)
-    assert "docs/getting-started/quick-start.md" in out
+    assert "docs/start/quick-start.md" in out
     assert "docs/getting-started.md" not in out
     doctor = (SRC / "doctor.py").read_text(encoding="utf-8")
     assert "see docs/getting-started.md" not in doctor

@@ -43,7 +43,11 @@ from benchflow._utils.reachable_write import (
     private_temporary_directory,
 )
 from benchflow._utils.text import describe_exception
-from benchflow._verifier_env import pinned_shell_prefix, sandbox_verifier_env
+from benchflow._verifier_env import (
+    VERIFIER_ATTEMPT_ENV,
+    pinned_shell_prefix,
+    sandbox_verifier_env,
+)
 from benchflow.rewards.validation import (
     RewardOutOfRange,
     apply_aggregate_policy,
@@ -96,6 +100,7 @@ from benchflow.task.verifier_errors import (
     PluginGuardMarkersUnreadableError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
+    RewardFileParseError,
     RewardOutOfRangeError,
     RubricNotFoundError,
     UnsupportedVerifierStrategyError,
@@ -135,7 +140,7 @@ logger = logging.getLogger(__name__)
 
 # Where the test command records that it started (#1136): a BenchFlow-owned
 # directory, never the verifier output dir test.sh inspects.
-_EXECUTION_RECEIPT_DIR = PurePosixPath("/run/benchflow")
+_EXECUTION_RECEIPT_DIR = PurePosixPath("/run/runtime")
 
 # The verifier's setup commands (clearing the output dir, chmod, the target
 # verifier dir, the criteria-runner manifest) run after the agent has finished. On
@@ -152,6 +157,9 @@ _RECEIPT_DIR_COMMAND = (
 )
 _RECEIPT_DIR_BUDGET_SEC = 10
 _SETUP_RETRY_DELAYS_SEC = (5.0, 15.0)
+# A read of the plugin guard's markers that did not come back whole is tried
+# again after these waits (Verifier._plugin_guard_markers).
+_GUARD_MARKER_RETRY_DELAYS_SEC = (2.0, 5.0)
 # The uid the verifier's commands run as, with shell builtins only: the shell
 # reads its own status file (no program on a PATH, no task env in this exec).
 _VERIFIER_UID_CMD = (
@@ -176,19 +184,19 @@ def _marker_tokens(markers: list[GuardMarker]) -> set[str]:
 # sources it, and /tmp is writable by everyone (without its sticky bit, as
 # some images leave it, that rename is allowed: K2-R6-A-1). So /, /var and
 # /var/lib must be root's real folders with no group or other write, and
-# /var/lib/benchflow (made root's 0700 before the agent user exists) and this
+# /var/lib/runtime (made root's 0700 before the agent user exists) and this
 # folder are made root's 0700; anything else fails the step.
-_VERIFIER_ENV_PARENT = "/var/lib/benchflow/verifier-env"
+_VERIFIER_ENV_PARENT = "/var/lib/runtime/verifier-env"
 _VERIFIER_ENV_PARENT_CMD = (
     "for d in / /var /var/lib; do "
     '[ -d "$d" ] && [ ! -h "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && '
     'case "$(stat -c %a "$d")" in *[2367]?|*[2367]) false ;; esac || '
     '{ echo "Unsafe folder for the verifier env: $d" >&2; exit 1; }; done; '
-    f"for d in /var/lib/benchflow {_VERIFIER_ENV_PARENT}; do "
+    f"for d in /var/lib/runtime {_VERIFIER_ENV_PARENT}; do "
     '[ ! -h "$d" ] || { echo "Unsafe folder for the verifier env: $d" >&2; '
     "exit 1; }; done; "
     f"umask 077 && mkdir -p {_VERIFIER_ENV_PARENT} && "
-    f"for d in /var/lib/benchflow {_VERIFIER_ENV_PARENT}; do "
+    f"for d in /var/lib/runtime {_VERIFIER_ENV_PARENT}; do "
     '[ ! -h "$d" ] && chown 0:0 "$d" && chmod 700 "$d" || '
     '{ echo "Unsafe folder for the verifier env: $d" >&2; exit 1; }; done'
 )
@@ -207,6 +215,24 @@ def _root_file_env_prefix(folder: str) -> str:
         f"/bin/rm -rf {folder}; else /bin/rm -rf {folder}; exit 1; fi; "
         "case $# in 0) ;; *) exit 1;; esac\n"
     )
+
+
+def _set_aside(path: ReachablePath) -> None:
+    """Rename a reward file a timed-out test command left to ``timeout-<name>``.
+
+    The test command's code could have put something in the way (a folder of
+    that name); then the file takes a name of its own, or goes, so that no
+    reward stays under its real name beside a score of 0.
+    """
+    for name in (f"timeout-{path.name}", f"timeout-{uuid4().hex}-{path.name}"):
+        try:
+            path.rename_entry(name)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            continue
+    path.unlink(missing_ok=True)
 
 
 class Verifier:
@@ -248,6 +274,9 @@ class Verifier:
         # Scores the issued test command's outputs once it has ended, for a
         # command whose exec never returned (finish_test_command).
         self._finish_test: Callable[[int], Awaitable[VerifierResult]] | None = None
+        # Brings in the issued test command's outputs; kept for a command still
+        # running at its deadline (save_timed_out_outputs).
+        self._save_outputs: Callable[..., Awaitable[None]] | None = None
         # Host state, unlike the receipt test.sh's user can delete or forge.
         self.test_command_issued = False
         # Awaited with the verifier's code folder in the sandbox just before
@@ -311,7 +340,7 @@ class Verifier:
         except VerifierOutputParseError:
             raise
         except (OSError, ValueError, RecursionError, OverflowError) as e:
-            raise VerifierOutputParseError(
+            raise RewardFileParseError(
                 "Cannot read verifier/reward.txt or verifier/reward.json: "
                 f"{type(e).__name__} (invalid contents or unsafe file)"
             ) from e
@@ -322,7 +351,7 @@ class Verifier:
         with destination(path).open("rb") as stream:
             data = stream.read(_REWARD_FILE_MAX_BYTES + 1)
         if len(data) > _REWARD_FILE_MAX_BYTES:
-            raise VerifierOutputParseError(
+            raise RewardFileParseError(
                 f"verifier/{path.name} exceeds the 16 MiB reward file limit"
             )
         return data.decode("utf-8")
@@ -337,8 +366,8 @@ class Verifier:
         try:
             reward = float(self._read_reward_file(self._rollout_paths.reward_text_path))
         except (ValueError, TypeError) as e:
-            raise VerifierOutputParseError(
-                f"Failed to parse rewards from text file {self._rollout_paths.reward_text_path}"
+            raise RewardFileParseError(
+                "Failed to parse rewards from text file verifier/reward.txt"
             ) from e
         if is_out_of_range_reward(reward, reward_range=self._reward_range):
             raise RewardOutOfRangeError(
@@ -346,8 +375,8 @@ class Verifier:
                 file="verifier/reward.txt",
             )
         if not is_valid_reward_number(reward, reward_range=self._reward_range):
-            raise VerifierOutputParseError(
-                f"Reward text file {self._rollout_paths.reward_text_path} "
+            raise RewardFileParseError(
+                f"Reward text file verifier/reward.txt "
                 "must contain a finite numeric reward "
                 f"{reward_range_phrase(self._reward_range)}"
             )
@@ -370,13 +399,13 @@ class Verifier:
                 self._read_reward_file(self._rollout_paths.reward_json_path)
             )
         except (ValueError, TypeError) as e:
-            raise VerifierOutputParseError(
-                f"Failed to parse rewards from JSON file {self._rollout_paths.reward_json_path}"
+            raise RewardFileParseError(
+                "Failed to parse rewards from JSON file verifier/reward.json"
             ) from e
 
         if not isinstance(rewards, dict):
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} "
+            raise RewardFileParseError(
+                "Reward JSON file verifier/reward.json "
                 "must contain an object with numeric rewards"
             )
         if (
@@ -409,8 +438,8 @@ class Verifier:
                 )
             raise error from e
         except ValueError as e:
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
+            raise RewardFileParseError(
+                f"Reward JSON file verifier/reward.json {e}"
             ) from e
 
     def _parse_reward_json_with_text_compat(
@@ -434,8 +463,8 @@ class Verifier:
                     reward_range=self._reward_range,
                 )
             except ValueError as e:
-                raise VerifierOutputParseError(
-                    f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
+                raise RewardFileParseError(
+                    f"Reward JSON file verifier/reward.json {e}"
                 ) from e
             self._write_verifier_file(
                 self._rollout_paths.reward_json_path,
@@ -452,8 +481,8 @@ class Verifier:
                         reward_range=self._reward_range,
                     )
                 except ValueError as e:
-                    raise VerifierOutputParseError(
-                        f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
+                    raise RewardFileParseError(
+                        f"Reward JSON file verifier/reward.json {e}"
                     ) from e
                 self._write_verifier_file(
                     self._rollout_paths.reward_json_path,
@@ -473,15 +502,15 @@ class Verifier:
                         reward_range=self._reward_range,
                     )
                 except ValueError as e:
-                    raise VerifierOutputParseError(
-                        f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
+                    raise RewardFileParseError(
+                        f"Reward JSON file verifier/reward.json {e}"
                     ) from e
                 json_reward = rewards["reward"]
                 if not math.isclose(
                     float(json_reward), float(text_reward), abs_tol=1e-9
                 ):
-                    raise VerifierOutputParseError(
-                        f"Reward JSON file {self._rollout_paths.reward_json_path} "
+                    raise RewardFileParseError(
+                        f"Reward JSON file verifier/reward.json "
                         f"aggregates to reward={json_reward}, which does not match "
                         f"scalar reward.txt value {text_reward}"
                     )
@@ -492,8 +521,8 @@ class Verifier:
                 return rewards
             return {"reward": text_reward, **rewards}
         if not math.isclose(float(json_reward), float(text_reward), abs_tol=1e-9):
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} "
+            raise RewardFileParseError(
+                f"Reward JSON file verifier/reward.json "
                 f"has reward={json_reward}, which does not match scalar "
                 f"reward.txt value {text_reward}"
             )
@@ -543,8 +572,40 @@ class Verifier:
             )
             verifier_dir.publish_entries(landing)
 
+    async def _bundled_tests(
+        self, verifier_code_dir: PurePosixPath, service: str
+    ) -> bool:
+        """Whether this sandbox's image already holds the task's tests.
+
+        A task.toml task's separate verifier built from ``tests/Dockerfile``
+        carries its tests as that Dockerfile left them (the format's bundled
+        tests; every Terminal-Bench 4.1 verifier image copies them in). Its
+        ``/tests`` is used as built when the test script is there: uploading
+        ``tests/`` over it brought back files the Dockerfile removed on
+        purpose (risk-scorer-replay deletes its private scorer's source, then
+        checks that nobody can read one). Any other sandbox, or an image
+        without its test script, gets the upload as before.
+        """
+        if getattr(self._task, "_benchflow_bundled_tests", False) is not True:
+            return False
+        script = (
+            verifier_code_dir
+            / self._task.paths.test_path.relative_to(
+                self._task.paths.tests_dir
+            ).as_posix()
+        )
+        found = await exec_raw(
+            self._sandbox.exec,
+            f"test -f {shlex.quote(str(script))}",
+            user="root",
+            service=service,
+            timeout_sec=30,
+        )
+        return getattr(found, "return_code", 1) == 0
+
     async def verify(self) -> VerifierResult:
         """Run the configured verifier and return the reward result."""
+        self._save_outputs = None
         self._clear_reward_outputs()
         verifier_document = self._selected_verifier_document()
         if verifier_document is not None:
@@ -835,7 +896,7 @@ class Verifier:
             if _exec_return_code(parent) != 0:
                 return parent
             folder = shlex.quote(
-                f"{_VERIFIER_ENV_PARENT}/.benchflow-verifier-env-{uuid4().hex}"
+                f"{_VERIFIER_ENV_PARENT}/.runtime-verifier-env-{uuid4().hex}"
             )
             made = await exec_raw(
                 self._sandbox.exec,
@@ -981,6 +1042,7 @@ class Verifier:
         report, not from a reward file (``benchflow.taskmd.verify``).
         """
         self._finish_test = None
+        self._save_outputs = None
         service = self._task.config.verifier.service
         verifier_outputs_are_mounted = service == "main" and getattr(
             self._sandbox, "is_mounted", False
@@ -997,21 +1059,25 @@ class Verifier:
             if uses_native_verifier_dir
             else sandbox_paths.tests_dir
         )
-        try:
-            await self._sandbox.upload_dir(
-                source_dir=self._task.paths.tests_dir,
-                target_dir=str(verifier_code_dir),
-                service=service,
-                admission=admit(
-                    self._sandbox, service, TRUSTED_TRANSFER, reason="the task's tests"
-                ),
-            )
-        except VerifierOutputParseError:
-            raise
-        except Exception as e:
-            raise AddTestsDirError(
-                "Failed to add verifier directory to sandbox."
-            ) from e
+        if not await self._bundled_tests(verifier_code_dir, service):
+            try:
+                await self._sandbox.upload_dir(
+                    source_dir=self._task.paths.tests_dir,
+                    target_dir=str(verifier_code_dir),
+                    service=service,
+                    admission=admit(
+                        self._sandbox,
+                        service,
+                        TRUSTED_TRANSFER,
+                        reason="the task's tests",
+                    ),
+                )
+            except VerifierOutputParseError:
+                raise
+            except Exception as e:
+                raise AddTestsDirError(
+                    "Failed to add verifier directory to sandbox."
+                ) from e
 
         await self._link_legacy_verifier_mount(
             verifier_code_dir=verifier_code_dir,
@@ -1117,8 +1183,13 @@ class Verifier:
             # Once the tests end, the command records their exit status beside
             # the receipt (``.exit``): a lost exec whose tests had finished is
             # scored from their outputs, not timed out (finish_test_command).
+            # The receipt's name in the environment of every process the
+            # command starts, so the kill of a timed-out attempt finds them
+            # by it (VERIFIER_ATTEMPT_ENV).
             ended = shlex.quote(receipt + ".exit")
+            attempt = shlex.quote(PurePosixPath(receipt).name)
             command = (
+                f"export {VERIFIER_ATTEMPT_ENV}={attempt} && "
                 f"printf started > {shlex.quote(receipt)} && "
                 f"[ ! -e {shlex.quote(receipt + '.abandoned')} ] && "
                 f"{{ {command}; _benchflow_status=$?; "
@@ -1158,6 +1229,12 @@ class Verifier:
         )
         if parse_rewards and receipt is not None:
             self._finish_test = functools.partial(after_test, parse_rewards=True)
+        self._save_outputs = functools.partial(
+            self._bring_in_outputs,
+            sandbox_paths=sandbox_paths,
+            service=service,
+            verifier_outputs_are_mounted=verifier_outputs_are_mounted,
+        )
         with as_task_command(self._sandbox):
             self.test_command_issued = True
             self._sandbox._benchflow_test_command_issued = True
@@ -1207,6 +1284,81 @@ class Verifier:
             raise VerifierExecutionError("no test command of this run to score")
         return await finish(return_code)
 
+    @property
+    def test_command_savable(self) -> bool:
+        """Whether :meth:`save_timed_out_outputs` has an issued test command
+        whose outputs it can keep."""
+        return self._save_outputs is not None
+
+    async def save_timed_out_outputs(self) -> None:
+        """Keep what a test command still running at its deadline wrote.
+
+        The rollout calls this once it has killed the tests (a scored
+        timeout): the outputs come into ``verifier/`` as a finished command's
+        do, file by file when the folder's download fails, and each reward
+        file there is renamed ``timeout-<name>``, since a reward written
+        before the deadline is no verdict.
+        """
+        save = self._save_outputs
+        if save is None:
+            raise VerifierExecutionError("no test command of this run to save")
+        failure: OSError | None = None
+        try:
+            await save(recover_all=True)
+        finally:
+            for path in (
+                self._rollout_paths.reward_text_path,
+                self._rollout_paths.reward_json_path,
+                self._rollout_paths.reward_details_json_path,
+                self._rollout_paths.criteria_runner_manifest_path,
+            ):
+                try:
+                    _set_aside(path)
+                except OSError as exc:
+                    failure = failure or exc
+        if failure is not None:
+            raise failure
+
+    async def _bring_in_outputs(
+        self,
+        *,
+        sandbox_paths: SandboxPaths,
+        service: str,
+        verifier_outputs_are_mounted: bool,
+        recover_all: bool = False,
+    ) -> None:
+        """Bring the test command's outputs into the rollout's ``verifier/``.
+
+        Mounted outputs are there already and only change owner; others are
+        downloaded. When the download fails, ``main``'s canonical outputs are
+        copied one by one: the run needs a reward file among them, unless
+        *recover_all* takes whatever is there.
+        """
+        if verifier_outputs_are_mounted:
+            await self._hand_mounted_outputs_to_host(sandbox_paths, service)
+            return
+        try:
+            await self._download_verifier_dir(sandbox_paths, service)
+        except Exception as e:
+            if isinstance(
+                e, (ReachableWriteError, UnsafeDownloadEntryError)
+            ) and not verifier_infrastructure_failure(e):
+                raise VerifierOutputParseError(
+                    f"Unsafe verifier output capture: {e}"
+                ) from e
+            if service != "main" or not (
+                await self._recover_main_verifier_outputs(sandbox_paths) or recover_all
+            ):
+                raise DownloadVerifierDirError(
+                    "Failed to download verifier directory from sandbox: "
+                    + verifier_failure_reason(e)
+                ) from e
+            self._logger.warning(
+                "Verifier directory download failed; recovered canonical "
+                "verifier output files individually: %s",
+                e,
+            )
+
     async def _after_test_command(
         self,
         test_return_code: int,
@@ -1225,30 +1377,11 @@ class Verifier:
         # Download verifier output if it is not host-mounted. Only the agent's
         # ``main`` container has the rollout dir bind-mounted; a target service
         # never does, so target-side rewards (#248) are always downloaded.
-        if verifier_outputs_are_mounted:
-            await self._hand_mounted_outputs_to_host(sandbox_paths, service)
-        else:
-            try:
-                await self._download_verifier_dir(sandbox_paths, service)
-            except Exception as e:
-                if isinstance(
-                    e, (ReachableWriteError, UnsafeDownloadEntryError)
-                ) and not verifier_infrastructure_failure(e):
-                    raise VerifierOutputParseError(
-                        f"Unsafe verifier output capture: {e}"
-                    ) from e
-                if service != "main" or not await self._recover_main_verifier_outputs(
-                    sandbox_paths
-                ):
-                    raise DownloadVerifierDirError(
-                        "Failed to download verifier directory from sandbox: "
-                        + verifier_failure_reason(e)
-                    ) from e
-                self._logger.warning(
-                    "Verifier directory download failed; recovered canonical "
-                    "verifier output files individually: %s",
-                    e,
-                )
+        await self._bring_in_outputs(
+            sandbox_paths=sandbox_paths,
+            service=service,
+            verifier_outputs_are_mounted=verifier_outputs_are_mounted,
+        )
 
         markers = (
             await self._plugin_guard_markers(guard, service)
@@ -1278,9 +1411,9 @@ class Verifier:
             # from its exit status would score the harness, not the solution.
             # Hardening names the Pythons that took no copy: not in the
             # pre-agent record, or the agent's files (PT-C8-CONF-2b round 3).
-            unrecorded = getattr(self._sandbox, "_benchflow_guard_unrecorded", ())
+            unrecorded = getattr(self._sandbox, "_runtime_guard_unrecorded", ())
             # Why each took none, from hardening (its log line is DEBUG).
-            why = getattr(self._sandbox, "_benchflow_guard_why", None)
+            why = getattr(self._sandbox, "_runtime_guard_why", None)
             why = why if isinstance(why, dict) else {}
             unrecorded_note = (
                 "; these Pythons took no guard copy and reach it through "
@@ -1456,13 +1589,13 @@ class Verifier:
             if test_return_code != 0:
                 msg = (
                     f"verifier exited with rc={test_return_code}; no reward file "
-                    f"found at {self._rollout_paths.reward_text_path} or "
-                    f"{self._rollout_paths.reward_json_path}"
+                    f"found at verifier/reward.txt or "
+                    f"verifier/reward.json"
                 )
             else:
                 msg = (
-                    f"No reward file found at {self._rollout_paths.reward_text_path} or "
-                    f"{self._rollout_paths.reward_json_path}"
+                    "No reward file found at verifier/reward.txt or "
+                    "verifier/reward.json"
                 )
             # Surface ONLY a fixed, secret-free dep-install diagnostic (never
             # any scanned stdout) so classify_verifier_error can return
@@ -1488,25 +1621,63 @@ class Verifier:
         receipt (``_exec_receipt.py``): a backend that rewrites exec output
         (remote Docker's redaction) could otherwise change a refusal marker's
         body, which then fails its signature and is dropped.
+
+        A read whose output did not come back whole (its exec raised, or ended
+        with a failed status: a timeout or a lost exec on a loaded host) is
+        tried again, up to three tries in all. It only reads, so a passing
+        reward is never lost to one failed exec, which said nothing about the
+        markers. Output that did come back is decided as it is, a missing or
+        overfull marker folder included (test.sh's user can make those). When
+        no try brought output back and the last failed in transport or in the
+        controller, the verifier errors as it does for any of its steps; any
+        other failure scores 0 as unreadable markers, naming the cause.
         """
         problem = None
         output = ""
-        try:
-            result = await receipt_exec(
-                self._sandbox,
-                pytest_plugin_guard_markers_cmd(guard),
-                user="root",
-                service=service,
-                timeout_sec=30,
-            )
-        except Exception as e:
-            problem = f"{type(e).__name__}: {e}"
-        else:
+        failure: Exception | None = None
+        tries = 1 + len(_GUARD_MARKER_RETRY_DELAYS_SEC)
+        for delay in (0.0, *_GUARD_MARKER_RETRY_DELAYS_SEC):
+            if delay:
+                self._logger.warning(
+                    "Reading the pytest plugin guard %s's markers failed (%s); "
+                    "retrying in %.0fs",
+                    guard,
+                    str(problem)[:300],
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            failure = None
+            try:
+                result = await receipt_exec(
+                    self._sandbox,
+                    pytest_plugin_guard_markers_cmd(guard),
+                    user="root",
+                    service=service,
+                    timeout_sec=30,
+                )
+            except Exception as e:
+                failure = e
+                problem = f"{type(e).__name__}: {e}"
+                continue
+            # A failed status's output still counts when no try does better:
+            # a verdict read from it decides, as before.
             output = result.stdout or ""
             if _exec_return_code(result) != 0:
                 problem = f"exit {_exec_return_code(result)}"
-            else:
-                problem = pytest_plugin_guard_markers_problem(output)
+                continue
+            problem = pytest_plugin_guard_markers_problem(output)
+            break
+        else:
+            if (
+                not output
+                and failure is not None
+                and verifier_infrastructure_failure(failure)
+            ):
+                raise VerifierInfrastructureError(
+                    f"the pytest plugin guard {guard}'s markers could not be read "
+                    f"in {tries} tries"
+                ) from failure
+            problem = f"{tries} tries, the last: {problem}"
         by_kind: dict[str, list[GuardMarker]] = {}
         markers = parse_pytest_plugin_guard_markers(output, guard)
         names = {marker.name for marker in markers}
@@ -1536,9 +1707,9 @@ class Verifier:
                 )
                 return by_kind
             raise PluginGuardMarkersUnreadableError(
-                f"the pytest plugin guard {guard}'s markers could not all be "
-                f"read ({str(problem)[:300]}), so a refusal may be among those "
-                "missed; guard loading is not confirmed"
+                f"BenchFlow could not read back the markers of the pytest "
+                f"plugin guard {guard} ({str(problem)[:300]}), so a plugin it "
+                "refused may be among those missed"
             )
         return by_kind
 
@@ -1605,7 +1776,7 @@ class Verifier:
                                 NotADirectoryError,
                             ),
                         ) and not verifier_infrastructure_failure(exc):
-                            raise VerifierOutputParseError(
+                            raise RewardFileParseError(
                                 f"Unsafe or unreadable reward entry {remote_path}: {exc}"
                             ) from exc
                         raise DownloadVerifierDirError(
@@ -2017,12 +2188,11 @@ class Verifier:
             if return_code != 0:
                 raise RewardFileNotFoundError(
                     f"criteria-runner exited with rc={return_code}; no reward file "
-                    f"found at {self._rollout_paths.reward_text_path} or "
-                    f"{self._rollout_paths.reward_json_path}"
+                    f"found at verifier/reward.txt or "
+                    f"verifier/reward.json"
                 )
             raise RewardFileNotFoundError(
-                f"No reward file found at {self._rollout_paths.reward_text_path} or "
-                f"{self._rollout_paths.reward_json_path}"
+                "No reward file found at verifier/reward.txt or verifier/reward.json"
             )
 
         return VerifierResult(rewards=rewards)

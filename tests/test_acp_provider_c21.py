@@ -33,8 +33,9 @@ OPERATOR_ENV = "BENCHFLOW_RESTRICTED_WEB_MODELS"  # documented operator key
 
 def test_operator_key_is_the_documented_one():
     assert rm.OPERATOR_ENV == OPERATOR_ENV
+    # Docs v2: the restricted-network model check is on this page.
     doc = (
-        Path(__file__).resolve().parents[1] / "docs/sandboxes/threat-model.md"
+        Path(__file__).resolve().parents[1] / "docs/tasks/network-and-secrets.md"
     ).read_text()
     assert f"{OPERATOR_ENV}=" in doc
 
@@ -96,7 +97,7 @@ async def test_a_body_naming_another_model_is_refused(monkeypatch, tmp_path):
     monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(tmp_path / "log.jsonl"))
     monkeypatch.setenv(
         "BENCHFLOW_LITELLM_SERVED_MODELS",
-        json.dumps(["benchflow-openai-gpt-4.1", "openai/gpt-4.1"]),
+        json.dumps(["runtime-openai-gpt-4.1", "openai/gpt-4.1"]),
     )
     namespace: dict = {}
     exec(callback_module_source(), namespace)

@@ -148,3 +148,49 @@ def test_native_bearer_retains_explicit_provider_endpoint(native_url):
     assert resolved["ANTHROPIC_BASE_URL"] == (native_url or "https://generic.invalid")
     assert "BENCHFLOW_PROVIDER_API_KEY" not in resolved
     assert "ANTHROPIC_API_KEY" not in resolved
+
+
+@pytest.fixture
+def own_route_agent():
+    from benchflow.agents.registry import (
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+        register_agent,
+    )
+
+    register_agent(
+        "en191-own-route",
+        "true",
+        "en191-own-route --acp",
+        requires_env=["EN191_ENDPOINT_KEY"],
+        env_mapping={"BENCHFLOW_PROVIDER_API_KEY": "EN191_ENDPOINT_KEY"},
+        model_route="agent",
+    )
+    yield "en191-own-route"
+    for registry in (AGENTS, AGENT_INSTALLERS, AGENT_LAUNCH):
+        registry.pop("en191-own-route", None)
+
+
+@pytest.mark.parametrize(
+    "label", ["deepseek/deepseek-v4-pro", "anthropic/claude-sonnet-4-6"]
+)
+def test_own_model_route_label_needs_and_admits_no_provider_key(
+    monkeypatch, own_route_agent, label
+):
+    """A model label of an agent that routes its own calls
+    asks for no provider key (a proxied agent would be refused without one)
+    and resolves to the same direct table as no model: only its own key."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-host-anthropic")
+    with pytest.raises(MissingCredentialError):
+        auth.resolve_agent_env("openhands", "deepseek/deepseek-v4-pro", {})
+    explicit = {"EN191_ENDPOINT_KEY": "dummy-own-key"}
+    labelled = auth.resolve_agent_env(own_route_agent, label, dict(explicit))
+    unlabelled = auth.resolve_agent_env(own_route_agent, None, dict(explicit))
+    assert labelled == unlabelled
+    policy = credential_policy(own_route_agent, label, labelled)
+    assert policy.route == "direct"
+    launch = agent_launch_env(own_route_agent, label, labelled)
+    assert launch["EN191_ENDPOINT_KEY"] == "dummy-own-key"
+    assert "ANTHROPIC_API_KEY" not in launch
+    assert "BENCHFLOW_PROVIDER_MODEL" not in launch

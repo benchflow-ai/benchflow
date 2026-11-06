@@ -67,8 +67,8 @@ def test_deferred_instructions_are_not_snapshot_inputs(keyword, instruction):
 def test_proxy_recipe_keeps_its_runtime_outside_opt():
     """Guard C1: /opt workspaces cannot own a cached proxy or its Python."""
     plan = layers.plan_install_layers(agent="openhands", model="openai/gpt-4o")
-    assert plan.proxy.venv.startswith("/opt/benchflow/")
-    assert "UV_PYTHON_INSTALL_DIR=/opt/benchflow/" in plan.proxy.script
+    assert plan.proxy.venv.startswith("/opt/runtime/")
+    assert "UV_PYTHON_INSTALL_DIR=/opt/runtime/" in plan.proxy.script
 
 
 @pytest.mark.parametrize("entry", ["bin/python", "bin/litellm", "lib", "pyvenv.cfg"])

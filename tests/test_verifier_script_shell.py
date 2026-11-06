@@ -135,7 +135,7 @@ class LocalImage:
             text.replace("/logs/verifier", str(on_disk(self.paths.verifier_dir)))
             .replace("/tests/", f"{self.tests}/")
             .replace("/bin/su ", f"{self.bin}/su ")
-            .replace("/opt/benchflow/run/", f"{self.stage}/")
+            .replace("/opt/runtime/run/", f"{self.stage}/")
         )
 
     def run(

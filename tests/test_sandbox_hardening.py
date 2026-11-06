@@ -222,7 +222,7 @@ class TestHardenSequence:
             (
                 i
                 for i, c in enumerate(cmds)
-                if "-exec chown -h root:root" in c and "/testbed" in c
+                if "chown -h root:root" in c and "/testbed" in c
             ),
             None,
         )
@@ -242,7 +242,7 @@ class TestHardenSequence:
         injected = task.config.verifier.env
         assert "--rootdir=/testbed" in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
-        assert injected["PYTHONPATH"].startswith("/_benchflow_guard_")
+        assert injected["PYTHONPATH"].startswith("/_runtime_guard_")
         assert "PYTHONHOME" not in injected  # breaks Py_Initialize if set to ""
         assert injected["PYTHONDONTWRITEBYTECODE"] == "1"
 
@@ -277,7 +277,7 @@ class TestHardenSequence:
         assert injected["PATH"] == VERIFIER_ENV["PATH"]
         assert injected["MY_VAR"] == "hello"
         assert injected["PYTHONPATH"].startswith(
-            "/_benchflow_guard_"
+            "/_runtime_guard_"
         )  # non-overridden defaults kept
 
 
@@ -413,7 +413,7 @@ class TestVerifierDirWipe:
         from benchflow.sandbox.lockdown import harden_before_verify
 
         def side_effect(command, **kwargs):
-            if "-exec chown -h root:root" in command and "/app" in command:
+            if "chown -h root:root" in command and "/app" in command:
                 return MagicMock(
                     stdout="", stderr="operation not permitted", return_code=1
                 )
@@ -461,13 +461,13 @@ class TestVerifierDirWipe:
         was a silent no-op: on Daytona (python:3.12-slim) an
         agent-planted /app/conftest.py survived hardening.
         """
-        from benchflow.sandbox.lockdown import _build_cleanup_cmd
+        from benchflow.sandbox.lockdown import _build_cleanup_cmd, _conftest_sweep_cmd
 
-        sweep = next(
-            part for part in _build_cleanup_cmd().split("; ") if "conftest.py" in part
-        )
+        sweep = _conftest_sweep_cmd()
+        assert sweep in _build_cleanup_cmd()
         assert "-prune" in sweep, "the sweep must still skip /proc, /sys and /dev"
         assert "-delete" not in sweep
+        # The plain sweep, when the protected Python cannot judge the matches.
         assert "-exec rm -f -- {} +" in sweep
 
     def test_cleanup_cmd_purges_py_from_tmp(self):
@@ -796,7 +796,7 @@ class TestBuildConfigSnapshot:
             (
                 c
                 for c in env.exec.call_args_list
-                if "-exec chown -h root:root" in c.args[0] and "/testbed" in c.args[0]
+                if "chown -h root:root" in c.args[0] and "/testbed" in c.args[0]
             ),
             None,
         )
@@ -814,7 +814,7 @@ class TestBuildConfigSnapshot:
         chown_idx = next(
             i
             for i, c in enumerate(calls)
-            if "-exec chown -h root:root" in c and "/testbed" in c
+            if "chown -h root:root" in c and "/testbed" in c
         )
         assert restore_idx < chown_idx
 
@@ -827,7 +827,7 @@ class TestBuildConfigSnapshot:
         await harden_before_verify(env, _make_task(), sandbox_user=None, workspace=None)
 
         assert not any(
-            "-exec chown -h root:root" in c.args[0] for c in env.exec.call_args_list
+            "chown -h root:root" in c.args[0] for c in env.exec.call_args_list
         )
         assert not any("chmod -R a-w" in c.args[0] for c in env.exec.call_args_list)
 
@@ -870,9 +870,7 @@ class TestBuildConfigSnapshot:
         restore_idx = next(
             i for i, c in enumerate(calls) if "/testbed_verify" in c and "rsync" in c
         )
-        chown_idx = next(
-            i for i, c in enumerate(calls) if "-exec chown -h root:root" in c
-        )
+        chown_idx = next(i for i, c in enumerate(calls) if "chown -h root:root" in c)
         assert restore_idx < chown_idx, "full restore must precede workspace chown"
 
     def test_build_config_files_matches_test_constant(self):
@@ -914,7 +912,7 @@ class TestBuildConfigSnapshot:
         await _snapshot_build_config(env, workspace="/testbed")
 
         calls = [c.args[0] for c in env.exec.call_args_list]
-        assert any("chmod 700" in c and ".benchflow_build_snapshot" in c for c in calls)
+        assert any("chmod 700" in c and ".runtime_build_snapshot" in c for c in calls)
 
 
 # TestVerifierUserHarden
@@ -1008,6 +1006,8 @@ class TestVerifierEnv:
             "PIP_USER",
             "PIP_CONFIG_FILE",
             "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_COUNT",
+            *(f"GIT_CONFIG_{kind}_{i}" for kind in ("KEY", "VALUE") for i in range(6)),
             "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",
@@ -1029,6 +1029,13 @@ class TestVerifierEnv:
         assert VERIFIER_ENV["LD_PRELOAD"] == ""
         assert VERIFIER_ENV["LD_LIBRARY_PATH"] == ""
         assert VERIFIER_ENV["PYTHONPATH"] == ""
+        git = {
+            VERIFIER_ENV[f"GIT_CONFIG_KEY_{i}"]: VERIFIER_ENV[f"GIT_CONFIG_VALUE_{i}"]
+            for i in range(int(VERIFIER_ENV["GIT_CONFIG_COUNT"]))
+        }
+        assert git["core.hooksPath"] == "/dev/null"
+        assert git["core.fsmonitor"] == "false"
+        assert git["diff.external"] == ""
         assert VERIFIER_ENV["PYTHONDONTWRITEBYTECODE"] == "1"
         assert (
             VERIFIER_ENV["PATH"]
@@ -1271,7 +1278,7 @@ class TestVerifierEnv:
         install = next(
             call for call in env.exec.call_args_list if "install_guard" in call.args[0]
         )
-        assert guard.startswith("/_benchflow_guard_")
+        assert guard.startswith("/_runtime_guard_")
         assert f"mkdir -m 755 {guard} " in install.args[0]
         assert f"verifier_path={shlex.quote(injected['PATH'])}" in install.args[0]
         assert injected["PATH"].startswith("/opt/venv/bin:")
@@ -1769,9 +1776,7 @@ class TestVerifierEnv:
         symlink_idx = next(
             i for i, c in enumerate(calls) if "is_symlink()" in c and "rglob" in c
         )
-        chown_idx = next(
-            i for i, c in enumerate(calls) if "-exec chown -h root:root" in c
-        )
+        chown_idx = next(i for i, c in enumerate(calls) if "chown -h root:root" in c)
         assert symlink_idx < chown_idx, "symlink purge must precede workspace chown"
 
     @pytest.mark.asyncio
@@ -1808,9 +1813,7 @@ class TestVerifierEnv:
         purge_idx = next(
             i for i, c in enumerate(calls) if "__pycache__" in c and "rm -rf" in c
         )
-        freeze_idx = next(
-            i for i, c in enumerate(calls) if "-exec chown -h root:root" in c
-        )
+        freeze_idx = next(i for i, c in enumerate(calls) if "chown -h root:root" in c)
         assert purge_idx < freeze_idx, "pycache purge must run before workspace freeze"
 
     def test_code_execution_env_vars_cleared(self):

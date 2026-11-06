@@ -183,14 +183,14 @@ async def test_root_plumbing_runs_nothing_the_agent_wrote_after_its_turn(box):
     _agent_turn(box)
     result = await sandbox.exec(
         "python3 -c 'print(1)' >/dev/null 2>&1; "
-        "/opt/benchflow/rt/py/python3 -c 'import json, sys; print(json.dumps(sys.prefix))'; "
+        "/opt/runtime/rt/py/python3 -c 'import json, sys; print(json.dumps(sys.prefix))'; "
         "sh -c 'echo shell-ok'; tar --version >/dev/null; env >/dev/null; "
         f"find {WORKSPACE}/work -maxdepth 0 >/dev/null; id -u",
         user="root",
     )
     assert result.return_code == 0, result.stderr
     assert "shell-ok" in result.stdout
-    assert '"/opt/benchflow/rt"' in result.stdout
+    assert '"/opt/runtime/rt"' in result.stdout
     assert "cannot be preloaded" not in (result.stderr or "")
     assert _marks(box) == []
 
@@ -232,18 +232,18 @@ async def test_kill_helper_runs_the_routes_tools_not_the_agents(box):
 
 @pytest.mark.asyncio
 async def test_an_opt_workspace_never_hands_over_benchflows_runtime_tree(box):
-    """PT-C8-R3-9/R3-11: an honest ``WORKDIR /opt`` keeps
-    /opt/benchflow root's alone, so a later JS agent install's check passes,
+    """An honest ``WORKDIR /opt`` keeps
+    /opt/runtime root's alone, so a later JS agent install's check passes,
     while the agent user can still add its own files to /opt."""
     from benchflow._root_only import root_only_tree_check
 
-    _dx(box, "mkdir -p /opt/benchflow/node/bin /opt/project")
+    _dx(box, "mkdir -p /opt/runtime/node/bin /opt/project")
     sandbox = await _setup(box, workspace="/opt")
-    owned = _dx(box, "touch /opt/new-file && mv /opt/benchflow /opt/x", user="agent")
+    owned = _dx(box, "touch /opt/new-file && mv /opt/runtime /opt/x", user="agent")
     assert "new-file" in _dx(box, "ls /opt").stdout
     assert owned.returncode != 0
     check = await sandbox.exec(
-        root_only_tree_check("/opt/benchflow", "BenchFlow's agent runtime folder"),
+        root_only_tree_check("/opt/runtime", "BenchFlow's agent runtime folder"),
         user="root",
     )
     assert check.return_code == 0, check.stderr
@@ -258,12 +258,12 @@ async def test_a_link_through_a_folder_the_agent_writes_fails_the_runtime_check(
     _dx(
         box,
         "mkdir -p /srv/real-node /app && chmod 777 /app && "
-        "ln -s /srv/real-node /app/node && mkdir -p /opt/benchflow && "
-        "ln -s /app/node /opt/benchflow/node",
+        "ln -s /srv/real-node /app/node && mkdir -p /opt/runtime && "
+        "ln -s /app/node /opt/runtime/node",
     )
     sandbox = _sandbox(box)
     check = await sandbox.exec(
-        root_only_tree_check("/opt/benchflow/node", "BenchFlow's Node"), user="root"
+        root_only_tree_check("/opt/runtime/node", "BenchFlow's Node"), user="root"
     )
     assert check.return_code != 0
 
@@ -345,14 +345,14 @@ async def test_a_changed_kit_refuses_every_root_step(box):
     from benchflow.sandbox._base import RuntimeKitBrokenError
 
     sandbox = await _setup(box)
-    _dx(box, "echo changed >> /opt/benchflow/rt/RECORD")
+    _dx(box, "echo changed >> /opt/runtime/rt/RECORD")
     sandbox._runtime_kit_unknown()  # as a restore leaves it
     with pytest.raises(RuntimeKitBrokenError):
         await sandbox.exec("true", user="root")
 
 
 def test_kit_python_is_isolated_and_keeps_its_own_libraries():
-    """PT-C8-R3-10: a Python that needs its own libpython from
+    """A Python that needs its own libpython from
     /usr/local/lib works from the kit after the agent removed it."""
     if not _docker_ready():
         pytest.skip("docker daemon not running")
@@ -366,10 +366,10 @@ def test_kit_python_is_isolated_and_keeps_its_own_libraries():
         sandbox = _sandbox(name)
         asyncio.run(_setup_only(sandbox))
         _dx(name, "for f in /usr/local/lib/libpython3*.so*; do mv $f $f.gone; done")
-        out = _dx(name, "cd /tmp && /opt/benchflow/rt/py/python3 -c "
+        out = _dx(name, "cd /tmp && /opt/runtime/rt/py/python3 -c "
                   "'import sys, tarfile; print(sys.flags.isolated, sys.flags.no_site, sys.prefix)'")  # fmt: skip
         assert out.returncode == 0, out.stderr
-        assert out.stdout.split() == ["1", "1", "/opt/benchflow/rt"]
+        assert out.stdout.split() == ["1", "1", "/opt/runtime/rt"]
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
@@ -382,7 +382,7 @@ async def _setup_only(sandbox) -> None:
 
 @pytest.mark.asyncio
 async def test_capture_from_an_app_workspace_never_imports_the_agents_json(tmp_path):
-    """PT-C8-R3-1: Docker starts root's exec in the image's
+    """Docker starts root's exec in the image's
     WORKDIR, the agent's workspace; the capture's ``python3`` must not
     import the ``json`` module the agent left there."""
     from benchflow.review.evidence import capture_workspace
@@ -425,15 +425,15 @@ async def test_a_chain_of_links_inside_the_tree_is_still_walked_where_it_leaves(
 
     _dx(
         box,
-        "mkdir -p /srv/real /app/hop /opt/benchflow/t && chmod 777 /app/hop && "
-        "ln -s /srv/real /app/hop/real && ln -s /app/hop/real /opt/benchflow/t/b && "
-        "ln -s b /opt/benchflow/t/a && mkdir -p /opt/benchflow/ok && "
-        "ln -s ../ok/c /opt/benchflow/ok/d && touch /opt/benchflow/ok/c",
+        "mkdir -p /srv/real /app/hop /opt/runtime/t && chmod 777 /app/hop && "
+        "ln -s /srv/real /app/hop/real && ln -s /app/hop/real /opt/runtime/t/b && "
+        "ln -s b /opt/runtime/t/a && mkdir -p /opt/runtime/ok && "
+        "ln -s ../ok/c /opt/runtime/ok/d && touch /opt/runtime/ok/c",
     )
     sandbox = _sandbox(box)
-    bad = await sandbox.exec(root_only_tree_check("/opt/benchflow/t", "t"), user="root")
+    bad = await sandbox.exec(root_only_tree_check("/opt/runtime/t", "t"), user="root")
     good = await sandbox.exec(
-        root_only_tree_check("/opt/benchflow/ok", "ok"), user="root"
+        root_only_tree_check("/opt/runtime/ok", "ok"), user="root"
     )
     assert bad.return_code != 0
     assert good.return_code == 0, good.stderr
@@ -468,14 +468,14 @@ def _fresh(prep: str = "", *, env: tuple[str, ...] = ()):
 
 @pytest.mark.asyncio
 async def test_a_runtime_root_the_image_made_a_link_is_refused():
-    """/opt/benchflow as a link uid 1000 owns in a sticky /opt
+    """/opt/runtime as a link uid 1000 owns in a sticky /opt
     its group may write (the kernel's protected_symlinks covers only a
     folder everyone may write), to a folder that is root's today: its owner
     could swap it later, so it is refused before anything is made through it."""
     prep = (
         "useradd -m -u 1000 agent && chgrp 1000 /opt && chmod 1775 /opt && "
         "mkdir -p /srv/rt && "
-        "ln -s /srv/rt /opt/benchflow && chown -h 1000 /opt/benchflow"
+        "ln -s /srv/rt /opt/runtime && chown -h 1000 /opt/runtime"
     )
     with _fresh(prep) as name:
         with pytest.raises(RuntimeError, match="protected runtime"):
@@ -485,7 +485,7 @@ async def test_a_runtime_root_the_image_made_a_link_is_refused():
 
 @pytest.mark.asyncio
 async def test_a_library_folder_another_user_may_write_refuses_the_kit():
-    """PT-C8-R8-5: a folder the loader searches that another
+    """A folder the loader searches that another
     user may write (or a loader file naming one) means no root step can
     rely on its libraries: the kit is refused, not built on them."""
     for prep in (
@@ -500,7 +500,7 @@ async def test_a_library_folder_another_user_may_write_refuses_the_kit():
 
 @pytest.mark.asyncio
 async def test_a_usr_local_workspace_keeps_the_loaders_folders_roots():
-    """PT-C8-R9-4 (round 10): a /usr/local workspace
+    """A /usr/local workspace
     is granted again, without the loader's folders. The agent installs into
     site-packages and its own folders, never puts a library where the
     loader (or a later ldconfig) looks, never renames that folder, and
@@ -543,7 +543,7 @@ async def test_one_foreign_link_in_a_system_folder_keeps_its_other_programs():
         )
         assert result.return_code == 0, result.stderr
         lines = result.stdout.split()
-        assert lines[0].startswith("/opt/benchflow/rt/view/") or lines[0] in (
+        assert lines[0].startswith("/opt/runtime/rt/view/") or lines[0] in (
             "/usr/sbin/apt-get",
             "/sbin/apt-get",
         ), lines
@@ -575,7 +575,7 @@ async def test_root_plumbing_starts_from_nothing():
         result = await sandbox.exec("env", user="root")
         names = {line.split("=", 1)[0] for line in result.stdout.splitlines()}
         assert "PYTHONPATH" not in names and "NODE_OPTIONS" not in names, names
-        assert "HOME=/opt/benchflow/run/home" in result.stdout.splitlines()
+        assert "HOME=/opt/runtime/run/home" in result.stdout.splitlines()
 
 
 # Round 10: the b114 regressions that need a real container.
@@ -615,17 +615,17 @@ async def test_a_grant_that_reaches_the_kit_is_undone_by_the_seal():
     with _fresh("useradd -m -u 1000 agent") as name:
         built = _dx(name, kit_prepare_command("build"))
         assert built.returncode == 0, built.stderr
-        _dx(name, "chown -R 1000:1000 /opt/benchflow/rt")
+        _dx(name, "chown -R 1000:1000 /opt/runtime/rt")
         sealed = _dx(name, kit_prepare_command("seal"))
         assert sealed.returncode == 0, sealed.stderr
-        owners = _dx(name, "find /opt/benchflow/rt ! -user 0 | head -n 1")
+        owners = _dx(name, "find /opt/runtime/rt ! -user 0 | head -n 1")
         assert owners.stdout == ""
     with _fresh("useradd -m -u 1000 agent") as name:
         assert _dx(name, kit_prepare_command("build")).returncode == 0
-        _dx(name, "chown 1000:1000 /opt/benchflow && chmod 777 /opt/benchflow")
+        _dx(name, "chown 1000:1000 /opt/runtime && chmod 777 /opt/runtime")
         sealed = _dx(name, kit_prepare_command("seal"))
         assert sealed.returncode == 0, sealed.stderr
-        mode = _dx(name, "stat -c '%u %a' /opt/benchflow").stdout.split()
+        mode = _dx(name, "stat -c '%u %a' /opt/runtime").stdout.split()
         assert mode[0] == "0" and int(mode[1], 8) & 0o022 == 0, mode
 
 
@@ -645,7 +645,7 @@ async def test_a_root_home_the_agent_owns_gets_a_protected_one_for_ssh():
             await require_protected_root_terminal(sandbox, "the SSH session")
         await protect_root_terminal_home(sandbox, "the SSH session")
         home = _dx(name, "getent passwd root | cut -d: -f6").stdout.strip()
-        assert home == "/opt/benchflow/run/home"
+        assert home == "/opt/runtime/run/home"
         await require_protected_root_terminal(sandbox, "the SSH session")
 
 
@@ -822,3 +822,65 @@ async def test_a_runtime_folder_another_user_owns_is_refused_before_any_chown(
 
     config = _dx(box, f"stat -c %u {runtime_dir}/config.yaml")
     assert config.stdout.strip() == "1000"
+
+
+def test_kit_python_supports_lib64_without_using_the_live_standard_library():
+    """Fedora's isolated Python keeps its lib64 layout."""
+    image = os.environ.get("BENCHFLOW_TEST_LIB64_IMAGE")
+    if not image or not _docker_ready():
+        pytest.skip(
+            "BENCHFLOW_TEST_LIB64_IMAGE with Python and a Docker daemon required"
+        )
+    name = "en298-lib64-" + uuid.uuid4().hex[:8]
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            "none",
+            image,
+            "sleep",
+            "600",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    try:
+        asyncio.run(_setup_only(_sandbox(name)))
+        moved = _dx(
+            name,
+            'for d in /usr/lib64/python3.*; do [ ! -d "$d" ] || mv "$d" "$d.saved"; done',
+        )
+        assert moved.returncode == 0, moved.stderr
+        result = _dx(
+            name,
+            "/opt/runtime/rt/py/python3 -c 'import sys, json, tarfile, hashlib; print(sys.prefix, sys.flags.isolated, sys.flags.no_site)' ",
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == ["/opt/runtime/rt", "1", "1"]
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+@pytest.mark.asyncio
+async def test_agent_visible_env_and_managed_paths_are_neutral(box):
+    """Agent-visible env and managed paths stay neutral across the real runtime seal and privilege drop."""
+    from benchflow.agents.visible_runtime import visible_env, visible_launch
+    from benchflow.sandbox.lockdown import build_priv_drop_cmd
+
+    sandbox = await _setup(box)
+    command = visible_launch(
+        "env; find /opt /run /var/lib -maxdepth 2 2>/dev/null; "
+        "find / -maxdepth 1 2>/dev/null; true"
+    )
+    result = await sandbox.exec(
+        build_priv_drop_cmd(command, "agent"),
+        env=visible_env({"BENCHFLOW_PROVIDER_MODEL": "model-under-test"}),
+    )
+    assert result.return_code == 0, result.stderr
+    assert "benchflow" not in result.stdout.lower()
+    assert "RUNTIME_PROVIDER_MODEL=model-under-test" in result.stdout
+    assert "/opt/runtime" in result.stdout

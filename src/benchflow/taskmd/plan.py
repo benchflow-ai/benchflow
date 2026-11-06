@@ -315,7 +315,7 @@ SUPPORT: list[tuple[str, str, str]] = [
     (
         "[verifier] judges and its role tables",
         PARTIAL,
-        "llm and agent roles run judge-loop@1 (docs/reference/taskmd-judges.md); vlm, panel, effort, a hosted harness, resources, services are refused",
+        "llm and agent roles run judge-loop@1 (docs/tasks/rubric-review.md); vlm, panel, effort, a hosted harness, resources, services are refused",
     ),
     (
         "[verifier] human, [verifier.human] <key>",
@@ -356,7 +356,12 @@ SUPPORT: list[tuple[str, str, str]] = [
     ("[training] fork", HONORED, "a bench run sets every episode up from scratch"),
     ("[training] max_concurrent", REFUSED, "not enforced across a run's trials yet"),
     ("[trajectory] require", PARTIAL, '"tool-calls"; the rest is refused'),
-    ("[preference] <key>", REFUSED, "the human-preference protocol is not run"),
+    (
+        "[preference] <key>",
+        PARTIAL,
+        "the run is unchanged; `bench preferences` applies protocol (pairwise or rubric), "
+        "randomize_sides, raters_per_pair and min_agreement, and records the rest",
+    ),
     (
         "[integrity] profile",
         PARTIAL,
@@ -1515,8 +1520,9 @@ _TOP_LEVEL: dict[str, Any] = {
     "family": _family,
     "training": _training,
     "trajectory": _trajectory,
-    "preference": _refuse_table(
-        "preference", "the human-preference protocol is not run"
+    "preference": _record_table(
+        "preference",
+        "run after the trials by `bench preferences` (docs/tasks/human-preferences.md)",
     ),
     "integrity": _integrity,
     "runs": _runs,

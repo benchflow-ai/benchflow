@@ -746,7 +746,7 @@
       "type": "array"
     },
     "schema_minor": {
-      "default": 0,
+      "default": 1,
       "description": "optional fields added within schema_version; see the changelog",
       "title": "Schema Minor",
       "type": "integer"
@@ -756,6 +756,20 @@
       "default": 2,
       "title": "Schema Version",
       "type": "integer"
+    },
+    "scoring": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "the scoring rule's figures for each side on the tasks both ran, the gap b - a with its 95% interval paired by task, its warnings, and each side's mixed settings (2.1)",
+      "title": "Scoring"
     },
     "summary": {
       "$ref": "#/$defs/ComparisonSummaryExport"

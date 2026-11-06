@@ -2,13 +2,14 @@
 
 The tables live in ``benchflow.cli_parity``; this fails when a flag is added,
 renamed or removed without a row, when a row names a flag the CLI no longer
-has, when a Python target stops existing, or when the generated docs page is
-stale (regenerate with ``python -m benchflow.cli_parity >
-docs/reference/cli-python-parity.md``).
+has, when a Python target stops existing, or when the generated docs page
+(``docs/reference/cli-python.md``, the tables under the page's own title) is
+stale (regenerate with ``uv run python tools/docs_reference.py --write``).
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import click
@@ -17,8 +18,9 @@ import typer.main
 
 from benchflow import cli_parity
 from benchflow.cli.main import app
+from tools.docs_reference import _cli_python_page, python_in_note
 
-DOC = Path(__file__).resolve().parents[1] / "docs/reference/cli-python-parity.md"
+DOC = Path(__file__).resolve().parents[1] / "docs/reference/cli-python.md"
 
 
 def _flags(command: str) -> set[str]:
@@ -69,4 +71,11 @@ def test_every_python_target_exists(command: str, flag: str) -> None:
 
 
 def test_the_docs_page_is_current() -> None:
-    assert DOC.read_text() == cli_parity.markdown()
+    page = DOC.read_text()
+    assert page == _cli_python_page()
+    tables = cli_parity.markdown()
+    # The page is the tables, with "(0.10)" or "(unreleased)" after what 0.9.1
+    # lacked and the Python a note writes set as code.
+    unlabelled = re.sub(r" \((?:0\.10|unreleased)\)", "", page)
+    rows = tables[tables.index("\n## ") :].split("\n")
+    assert unlabelled.endswith("\n".join(python_in_note(row) for row in rows))

@@ -20,7 +20,7 @@ from benchflow.agents.registry import AGENTS
 
 def _without_agent(launch_cmd: str) -> str:
     """Run the full writer, stubbing only the executable (092eb18ad)."""
-    executable = "/opt/benchflow/bin/codex-acp"
+    executable = "/opt/runtime/bin/codex-acp"
     assert executable in launch_cmd
     return launch_cmd.replace(executable, "true", 1)
 

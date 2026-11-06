@@ -300,7 +300,7 @@ async def test_reset_restarts_framework_started_services_for_stateless_env():
     assert len(restarts) == 2, "reset must restart every framework-started service"
     # No restore — there is no [environment.state] table, so no snapshot
     # directory should be copied back over the live state files.
-    assert not any("/tmp/benchflow-snapshots/" in c for c in sandbox.exec_calls)
+    assert not any("/tmp/runtime-snapshots/" in c for c in sandbox.exec_calls)
 
 
 async def test_reset_restores_baseline_state_for_stateful_env():
@@ -316,7 +316,7 @@ async def test_reset_restores_baseline_state_for_stateful_env():
     assert provision_backups, "provision must capture a baseline for stateful manifests"
     sandbox.exec_calls.clear()
     await env.reset()
-    restore_cmds = [c for c in sandbox.exec_calls if "/tmp/benchflow-snapshots/" in c]
+    restore_cmds = [c for c in sandbox.exec_calls if "/tmp/runtime-snapshots/" in c]
     assert restore_cmds, "reset must copy the baseline state files back"
     assert "/data/gmail.db" in restore_cmds[0]
     # And restart the service we previously started.
@@ -450,7 +450,7 @@ def test_service_start_command_fully_detaches():
 
 
 def test_service_log_path_is_per_service_and_retrievable():
-    assert service_log_path("gmail") == "/tmp/benchflow-env-gmail.log"
+    assert service_log_path("gmail") == "/tmp/runtime-env-gmail.log"
     assert service_log_path("gmail") != service_log_path("gcal")
 
 

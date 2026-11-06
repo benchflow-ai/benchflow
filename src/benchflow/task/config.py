@@ -14,7 +14,7 @@ import re
 import tomllib
 import warnings
 from enum import StrEnum
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -337,8 +337,8 @@ def _validate_network_policy_fields(
     blocked_urls: list[str] | None = None,
     blocked_hosts: list[str] | None = None,
 ) -> None:
-    if network_mode == NetworkMode.ALLOWLIST and not allowed_hosts:
-        raise ValueError("allowed_hosts must be non-empty for network_mode='allowlist'")
+    # An empty allowlist is a policy, not a mistake: the agent then reaches
+    # only what the runner admits for it (its model endpoint), nothing else.
     if network_mode != NetworkMode.ALLOWLIST and allowed_hosts:
         raise ValueError("allowed_hosts is only valid for network_mode='allowlist'")
     if network_mode == NetworkMode.DENYLIST and not (blocked_urls or blocked_hosts):
@@ -456,7 +456,9 @@ class JudgeVerifierConfig(TaskConfigModel):
     """
 
     model: str = Field(
-        default="claude-sonnet-4-6",
+        # The current Sonnet; Sonnet 4.6 is a legacy model (Anthropic's models
+        # page, read 2026-11-04). A task that names its judge keeps it.
+        default="claude-sonnet-5-5",
         description="Judge model identifier. Provider is routed from the prefix "
         "(claude-* / gpt-* / gemini-*).",
     )
@@ -500,12 +502,44 @@ class VerifierHardeningConfig(TaskConfigModel):
     """The ``[verifier.hardening]`` section for per-task opt-outs."""
 
     cleanup_conftests: bool = True
+    # False keeps the workspace repositories' hooks and the config entries
+    # that run commands, for a task whose answer is one (test.sh then names
+    # a hook with git -c core.hooksPath=...).
+    cleanup_git: bool = True
 
 
 # A pinned PyPI release: a project name, then == and a version.
 _PINNED_RELEASE_RE = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?==[0-9][0-9A-Za-z.!+_-]*"
 )
+
+
+MAIN_SERVICE = "main"
+_SERVICE_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
+
+
+def _compose_service(value: str | None, what: str) -> str | None:
+    if value is not None and not _SERVICE_NAME.fullmatch(value):
+        raise ValueError(f"{what} {value!r} is not a compose service name")
+    return value
+
+
+class VerifierCollectConfig(TaskConfigModel):
+    """A command the task runs in a compose service once the agent's turn is
+    over and before its artifacts are collected (``[[verifier.collect]]``),
+    to snapshot runtime state (a database, a patch of the workspace) into
+    files its artifacts then carry to the verifier. Best effort: a hook that
+    fails is logged and the trial goes on."""
+
+    command: str
+    service: str = MAIN_SERVICE
+    timeout_sec: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    user: str | int | None = None
+
+    @field_validator("service")
+    @classmethod
+    def _service_name(cls, value: str) -> str:
+        return _compose_service(value, "collect service") or MAIN_SERVICE
 
 
 class VerifierConfig(TaskConfigModel):
@@ -558,6 +592,11 @@ class VerifierConfig(TaskConfigModel):
         "non-finite budgets are rejected at validation time.",
     )
     env: dict[str, str] = Field(default_factory=dict)
+    collect: list[VerifierCollectConfig] = Field(
+        default_factory=list,
+        description="Commands run in compose services after the agent's turn and "
+        "before artifact collection (task.toml [[verifier.collect]]).",
+    )
     required_tools: list[str] | None = Field(
         default=None,
         description="Complete list of PATH program names whose availability or lookup "
@@ -744,6 +783,24 @@ class AgentConfig(TaskConfigModel):
         "rollout's whole deadline bounds it (as in 0.7.11) unless the caller "
         "passes a timeout; zero, negative, and non-finite budgets are "
         "rejected at validation time, matching verifier.timeout_sec.",
+    )
+    token_budget: int | None = Field(
+        default=None,
+        gt=0,
+        strict=True,
+        description="The most tokens a trial's model calls may use, input "
+        "(cached included) plus output, subagents' calls included. BenchFlow's "
+        "model proxy refuses the next call once they are spent and the agent "
+        "is stopped (benchflow.trial_budget). A run's --token-budget replaces it.",
+    )
+    turn_budget: int | None = Field(
+        default=None,
+        gt=0,
+        strict=True,
+        description="The most model calls (turns) a trial may make through "
+        "BenchFlow's model proxy, subagents' and side calls included; the proxy "
+        "refuses the next one and the agent is stopped. A run's --turn-budget "
+        "replaces it.",
     )
     user: str | int | None = Field(
         default=None,
@@ -1257,12 +1314,35 @@ class SolutionConfig(TaskConfigModel):
         return normalized
 
 
+#: The compose service the agent runs in (the task.toml format's ``main``).
 class ArtifactConfig(TaskConfigModel):
     """Artifact path copied out of a task environment after verification."""
 
     source: str
     destination: str | None = None
     exclude: list[str] = Field(default_factory=list)
+    service: str | None = Field(
+        default=None,
+        description="The compose service to collect this artifact from (the task.toml "
+        "format's sidecar artifacts): None or 'main' is the agent's own container; any "
+        "other names a service of the task's compose file, needs a sandbox that runs "
+        "compose services and an absolute source, and is read from that service's own "
+        "filesystem.",
+    )
+
+    @field_validator("service")
+    @classmethod
+    def _service_name(cls, value: str | None) -> str | None:
+        return _compose_service(value, "artifact service")
+
+    @model_validator(mode="after")
+    def _sidecar_source_is_absolute(self) -> Self:
+        if self.service not in (None, MAIN_SERVICE) and not self.source.startswith("/"):
+            raise ValueError(
+                f"artifact {self.source!r} from service {self.service!r} must be an "
+                "absolute path"
+            )
+        return self
 
 
 class StepConfig(TaskConfigModel):
@@ -1310,8 +1390,50 @@ class TaskConfig(TaskConfigModel):
     )
     steps: list[StepConfig] | None = None
     artifacts: list[str | ArtifactConfig] = Field(default_factory=list)
+    preference: dict[str, Any] = Field(
+        default_factory=dict,
+        description="How `bench preferences` pairs and ranks this task's outputs "
+        "(protocol, randomize_sides, raters_per_pair, min_agreement; other keys "
+        "are recorded). The run itself is unchanged. "
+        "See docs/tasks/human-preferences.md.",
+    )
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @field_validator("preference")
+    @classmethod
+    def validate_preference(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """The keys `bench preferences` reads must have their types; the rest
+        is recorded as given (as in a task.md package's [preference])."""
+        protocol = value.get("protocol", "pairwise")
+        if protocol not in ("pairwise", "rubric", "best-of-n"):
+            raise ValueError(
+                "preference.protocol must be pairwise or rubric "
+                f"(best-of-n is not supported yet), not {protocol!r}"
+            )
+        if "randomize_sides" in value and not isinstance(
+            value["randomize_sides"], bool
+        ):
+            raise ValueError("preference.randomize_sides must be true or false")
+        raters = value.get("raters_per_pair")
+        if raters is not None and (
+            isinstance(raters, bool) or not isinstance(raters, int) or raters < 1
+        ):
+            raise ValueError("preference.raters_per_pair must be a whole number from 1")
+        agreement = value.get("min_agreement")
+        # A number, or task.md draft 2's {metric, value} table.
+        if isinstance(agreement, dict):
+            agreement = agreement.get("value")
+        if agreement is not None and (
+            isinstance(agreement, bool)
+            or not isinstance(agreement, int | float)
+            or not 0 <= agreement <= 1
+        ):
+            raise ValueError(
+                "preference.min_agreement must be a number from 0 to 1 "
+                "(or a table whose value is one)"
+            )
+        return value
 
     @field_validator("metadata")
     @classmethod
@@ -1357,7 +1479,10 @@ class TaskConfig(TaskConfigModel):
             keep_services.validate(value[keep_services.KEY])
         return value
 
-    _SUPPORTED_SCHEMA_MAJORS: ClassVar[frozenset[int]] = frozenset({1})
+    # Terminal-Bench 4.1 labels some tasks schema_version "2.0" with the 1.x
+    # keys: the runner that writes them reads the label without gating on it.
+    # A 2.x task is read as 1.x; a key 1.x does not know is still refused.
+    _SUPPORTED_SCHEMA_MAJORS: ClassVar[frozenset[int]] = frozenset({1, 2})
 
     @model_validator(mode="before")
     @classmethod

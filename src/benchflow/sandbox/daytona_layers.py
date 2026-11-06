@@ -1,4 +1,4 @@
-"""Cached install layers in Daytona's image recipe: the model proxy and the agent.
+"""Cached install layers in Daytona's image recipe.
 
 Every Daytona sandbox BenchFlow creates from a task image goes through
 Daytona's declarative builder: the SDK sends a Dockerfile text (``FROM <task
@@ -8,23 +8,29 @@ is sent again on that runner (https://www.daytona.io/docs/en/declarative-builder
 Without BenchFlow's installs in the recipe, every trial installs the in-sandbox
 LiteLLM proxy (about 104 packages) and the agent (Node plus npm) cold.
 
-This module appends two layers to the recipe, each a ``RUN`` of what the
+This module appends install layers to the recipe, each a ``RUN`` of what the
 per-trial install runs (``litellm_runtime.sandbox_litellm_install_command``
 for the proxy: the same pinned uv, managed CPython and locked, hashed
 requirement set, with bytecode compiled; the registry's ``install_cmd`` for
 the agent), so an unchanged
 recipe is the same Dockerfile text and Daytona reuses its build. Each layer
-writes its key beside the private proxy or under ``/opt/benchflow/layers``; the trial
+writes its key beside the private proxy or under ``/opt/runtime/layers``; the trial
 compares that file with the key it expects before it skips an install, and
 installs fresh when they differ. No snapshot is registered: the cache is
 Daytona's own, so nothing is left to clean up.
 
 What stays per trial: the proxy's config, master key, callbacks and logs (in
-``/tmp/benchflow-litellm/<token>``), the agent user, credentials, skills and
+``/opt/runtime/proxy/<token>``), the agent user, credentials, skills and
 lockdown. The layers hold only what the install scripts write, which take no
 secrets.
 
-``--fresh-install`` (``BENCHFLOW_FRESH_INSTALL=1``) leaves both layers out, so
+The daemon guard's packages are prepared even for a single trial. A failed
+install discards the layered build; the runtime guard still checks the tools
+and enforces every rule on the plain image.
+The delegate Python layer also discards failed attempts. Its live probe
+authenticates the complete pinned tree; its key never authorizes execution.
+
+``--fresh-install`` (``BENCHFLOW_FRESH_INSTALL=1``) leaves the layers out, so
 the trial installs everything in the live sandbox as before.
 
 #1169: a task's ``storage_mb`` is what the task needs, not what BenchFlow's own
@@ -60,22 +66,24 @@ FRESH_INSTALL_ENV = "BENCHFLOW_FRESH_INSTALL"
 #: N > 1 sets it): only then does building the layers pay for itself.
 LAYER_REUSE_ENV = "BENCHFLOW_DAYTONA_LAYER_REUSE"
 #: Where each layer writes its key inside the image.
-LAYER_KEY_DIR = "/opt/benchflow/layers"
+LAYER_KEY_DIR = "/opt/runtime/layers"
 #: The complete cached proxy runtime; the per-trial install keeps its own path.
-PROXY_LAYER_ROOT = "/opt/benchflow/daytona-proxy"
+PROXY_LAYER_ROOT = "/opt/runtime/daytona-proxy"
 PROXY_LAYER_VENV = f"{PROXY_LAYER_ROOT}/venv"
 #: Disk the proxy install takes, rounded up from a measurement: on
 #: python:3.13-slim the venv is 618 MB and the fresh install leaves 785 MB on
 #: the disk, with pip's cache (results/U3b/footprint.txt in the round notes).
 PROXY_FOOTPRINT_MB = 1024
 #: Disk an agent install takes: on ubuntu:24.04 claude-agent-acp leaves 1030 MB
-#: (Node and the agent in /opt/benchflow, npm's cache, apt lists), codex-acp
+#: (Node and the agent in /opt/runtime, npm's cache, apt lists), codex-acp
 #: 891 MB and opencode 934 MB.
 AGENT_FOOTPRINT_MB = 1280
+#: Allow for firewall packages and the package lists an install may refresh.
+GUARD_FOOTPRINT_MB = 128
 #: Scratch caches the layer scripts use, removed in the same ``RUN`` so the
 #: image keeps only what the install put in place.
-_LAYER_CACHE_DIR = "/tmp/benchflow-layer-cache"
-_LAYER_SCRIPT = "/tmp/benchflow-layer.sh"
+_LAYER_CACHE_DIR = "/tmp/runtime-layer-cache"
+_LAYER_SCRIPT = "/tmp/runtime-layer.sh"
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _USER_LINE = re.compile(r"^\s*USER\s+(\S.*?)\s*$", re.IGNORECASE)
 _FROM_LINE = re.compile(r"^\s*FROM\s", re.IGNORECASE)
@@ -94,6 +102,12 @@ def fresh_install_requested(flag: bool | None = None) -> bool:
 # Layer keys of the recipes this process built, and of those being built.
 _BUILT: set[tuple[tuple[str, str], ...]] = set()
 _BUILDING: set[tuple[tuple[str, str], ...]] = set()
+_FAILED: set[tuple[tuple[str, str], ...]] = set()
+
+
+def layer_build_failed(keys: Mapping[str, str]) -> bool:
+    """A confirmed failure stays plain for this process; a new process retries."""
+    return tuple(sorted(keys.items())) in _FAILED
 
 
 def claim_layer_build(keys: Mapping[str, str]) -> str | None:
@@ -106,6 +120,8 @@ def claim_layer_build(keys: Mapping[str, str]) -> str | None:
     more time than the installs it saves, and no trial waits on another's.
     """
     ident = tuple(sorted(keys.items()))
+    if ident in _FAILED:
+        return None
     if ident in _BUILT:
         return "built"
     reuse = os.environ.get(LAYER_REUSE_ENV, "").strip().lower()
@@ -115,9 +131,13 @@ def claim_layer_build(keys: Mapping[str, str]) -> str | None:
     return "build"
 
 
-def layer_build_finished(keys: Mapping[str, str], *, built: bool) -> None:
+def layer_build_finished(
+    keys: Mapping[str, str], *, built: bool, failed: bool = False
+) -> None:
     ident = tuple(sorted(keys.items()))
     _BUILDING.discard(ident)
+    if failed:
+        _FAILED.add(ident)
     if built:
         _BUILT.add(ident)
     else:
@@ -132,8 +152,8 @@ def _sha256(text: str) -> str:
 class InstallLayer:
     """One cached install: the script the trial would run, and where it goes."""
 
-    kind: str  # "proxy" or "agent"
-    name: str  # "litellm" or the agent's name
+    kind: str  # "guard", "proxy", "agent" or "python"
+    name: str  # "daemon", "litellm", "delegate" or the agent's name
     script: str
     venv: str | None = None
     extra_requirements: tuple[str, ...] = ()
@@ -174,14 +194,20 @@ class InstallLayerPlan:
     proxy: InstallLayer | None = None
     agent: InstallLayer | None = None
     footprint_mb: int = 0
-    #: Carry the layers only as :func:`claim_layer_build` decides.
+    #: Carry proxy/agent layers only as :func:`claim_layer_build` decides.
     only_if_reused: bool = False
+    guard: InstallLayer | None = None
+    python: InstallLayer | None = None
 
     @property
     def layers(self) -> tuple[InstallLayer, ...]:
         if self.fresh:
             return ()
-        return tuple(layer for layer in (self.proxy, self.agent) if layer)
+        return tuple(
+            layer
+            for layer in (self.guard, self.proxy, self.agent, self.python)
+            if layer
+        )
 
     @property
     def build_allowance_sec(self) -> int:
@@ -198,6 +224,8 @@ def plan_install_layers(
     install_agent: bool = True,
     sandbox_setup_timeout: int = 120,
     only_if_reused: bool = False,
+    guard_daemon: bool = False,
+    stage_python: bool = False,
 ) -> InstallLayerPlan:
     """The installs a Daytona trial of ``agent`` on ``model`` runs, as layers.
 
@@ -205,7 +233,8 @@ def plan_install_layers(
     BenchFlow's in-sandbox proxy (always on Daytona); a route that cannot be
     resolved gets no layer, so the trial fails where it always did, with the
     route's own error. The agent layer is planned when the agent has an
-    install script.
+    install script. Guard packages and delegate Python are planned only for
+    their callers; these small layers do not require reuse.
     """
     from benchflow.agents.env import uses_native_subscription_auth
     from benchflow.agents.install import effective_install_timeout
@@ -218,6 +247,28 @@ def plan_install_layers(
     footprint = 0
     proxy: InstallLayer | None = None
     agent_layer: InstallLayer | None = None
+    guard: InstallLayer | None = None
+    python: InstallLayer | None = None
+    if guard_daemon:
+        from benchflow.sandbox.lockdown import DAEMON_GUARD_TIMEOUT_SEC
+
+        footprint += GUARD_FOOTPRINT_MB
+        guard = InstallLayer(
+            kind="guard",
+            name="daemon",
+            script=daemon_guard_install_command(),
+            timeout_sec=DAEMON_GUARD_TIMEOUT_SEC,
+        )
+    if stage_python:
+        from benchflow.sandbox import _staged_python_layer
+
+        footprint += _staged_python_layer.FOOTPRINT_MB
+        python = InstallLayer(
+            kind="python",
+            name="delegate",
+            script=_staged_python_layer.install_command(),
+            timeout_sec=300,
+        )
     agent_base = (agent or "").split()[0] if (agent or "").split() else ""
     if (
         agent_base
@@ -260,6 +311,27 @@ def plan_install_layers(
         agent=agent_layer,
         footprint_mb=footprint,
         only_if_reused=only_if_reused,
+        guard=guard,
+        python=python,
+    )
+
+
+def daemon_guard_install_command() -> str:
+    """Prepare both families: the build kernel cannot predict runtime IPv6."""
+    return (
+        '[ "$(id -u)" = 0 ] || exit 1; '
+        "if ! command -v iptables >/dev/null 2>&1 || "
+        "! command -v ip6tables >/dev/null 2>&1; then "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -q iptables || "
+        "{ apt-get update -q && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -q iptables; }; "
+        "elif command -v dnf >/dev/null 2>&1; then dnf -y install iptables; "
+        "elif command -v apk >/dev/null 2>&1; then "
+        "apk add --no-cache iptables ip6tables; "
+        "else exit 0; fi || exit $?; fi; "
+        "command -v iptables >/dev/null 2>&1 && "
+        "command -v ip6tables >/dev/null 2>&1"
     )
 
 
@@ -400,8 +472,39 @@ def layer_run_line(layer: InstallLayer, key: str) -> str:
     The script travels base64-encoded so its newlines and quotes survive the
     Dockerfile; it runs under ``bash`` as the per-trial install does. Package
     caches go to a scratch folder removed in the same instruction, so they
-    never reach the image or the sandbox's disk.
+    never reach the image or the sandbox's disk. The guard and Python scripts
+    run directly; failed or interrupted installs discard the build.
     """
+    if layer.kind in {"guard", "python"}:
+        script = shlex.quote(layer.script)
+        before = after = ""
+        ready = (
+            "command -v iptables >/dev/null 2>&1 && "
+            "command -v ip6tables >/dev/null 2>&1"
+        )
+        if layer.kind == "python":
+            from benchflow.sandbox import _delegate_disarm, _staged_python_layer
+
+            before = _staged_python_layer.archive_add_line() + "\n"
+            ready = (
+                " || ".join(
+                    f"[ -x {shlex.quote(_delegate_disarm.staged_python_bin(a, c))} ]"
+                    for a, c in _delegate_disarm.STAGED_PYTHON_SHA256
+                )
+                or "false"
+            )
+            after = f" && rm -f {shlex.quote(_staged_python_layer.BUNDLED_ARCHIVE)}"
+        # Only an unattemptable install may succeed without the tools. Failed
+        # attempts must use the plain image, never a partial package transaction.
+        return (
+            before + "RUN ( if command -v timeout >/dev/null 2>&1; then "
+            f"timeout {layer.timeout_sec} sh -c {script}; "
+            f"else sh -c {script}; fi && "
+            f"if {ready}; then "
+            f"mkdir -p {LAYER_KEY_DIR} && "
+            f"printf '%s\\n' {shlex.quote(key)} > {shlex.quote(layer.marker)} "
+            "; fi" + after + " )"
+        )
     body = (
         f"export UV_CACHE_DIR={_LAYER_CACHE_DIR}/uv "
         "UV_LINK_MODE=copy "
@@ -431,7 +534,7 @@ def layer_run_line(layer: InstallLayer, key: str) -> str:
         f"{validate}"
         f"mkdir -p {LAYER_KEY_DIR} && "
         f"printf '%s\\n' {key} > {marker} && "
-        f"chmod -R a+rX /opt/benchflow && "
+        f"chmod -R a+rX /opt/runtime && "
         # Both layers expose the agent tools; keep the proxy's private root
         # private after either layer, including the later agent install.
         f"if [ -d {PROXY_LAYER_ROOT} ]; then chmod 700 {PROXY_LAYER_ROOT}; fi"

@@ -45,6 +45,47 @@ ReviewerIdleTimeoutOption = Annotated[
         ),
     ),
 ]
+ReviewerStorageOption = Annotated[
+    int | None,
+    typer.Option(
+        "--reviewer-storage-mb",
+        min=1,
+        help=(
+            "Reviewer sandbox disk in MB (default: the evidence it holds plus "
+            "2048, at least 4096, at most the sandbox backend's limit)"
+        ),
+    ),
+]
+ReviewerMemoryOption = Annotated[
+    int | None,
+    typer.Option(
+        "--reviewer-memory-mb",
+        min=1,
+        help="Reviewer sandbox memory in MB (default: 2048)",
+    ),
+]
+ReviewerSetupTimeoutOption = Annotated[
+    int | None,
+    typer.Option(
+        "--reviewer-setup-timeout",
+        min=1,
+        help=(
+            "Seconds for the reviewer sandbox's setup, its model proxy install "
+            "among it (default: the run's --sandbox-setup-timeout)"
+        ),
+    ),
+]
+ReviewerEvidenceTimeoutOption = Annotated[
+    int | None,
+    typer.Option(
+        "--reviewer-evidence-timeout",
+        min=1,
+        help=(
+            "Seconds to unpack, and again to check, the workspace evidence in "
+            "the reviewer sandbox (default: 1 per MiB, at least 600)"
+        ),
+    ),
+]
 ReviewerConcurrencyOption = Annotated[
     int | None,
     typer.Option(

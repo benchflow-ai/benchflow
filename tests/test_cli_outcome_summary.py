@@ -105,7 +105,10 @@ def _render(monkeypatch, result, job_dir) -> str:
 def test_outcomes_by_cause_with_whose_fault_and_what_next(job, monkeypatch, tmp_path):
     job_dir, result = job
     out = _render(monkeypatch, result, job_dir)
-    assert "Outcomes: 1 scored (1 passed, 0 failed), 1 unscored, 2 errored" in out
+    assert (
+        "Outcomes: 1 scored (1 passed, 0 failed), 1 unscored (1 verifier error), "
+        "2 errored"
+    ) in out
     assert (
         "1 unscored: verifier plugin trust: test.sh installs a pytest plugin where "
         "the agent could write (task problem): powerlifting"
@@ -204,7 +207,10 @@ def test_a_trial_with_no_verdict_and_no_error_is_errored_on_both_lines(
     assert result.results["cut"].score_outcome == "errored"
     out = _render(monkeypatch, result, job_dir)
     assert "errors=1" in out
-    assert "Outcomes: 0 scored (0 passed, 0 failed), 0 unscored, 1 errored" in out
+    assert (
+        "Outcomes: 0 scored (0 passed, 0 failed), 0 unscored, 1 errored (1 with no "
+        "verdict)"
+    ) in out
     assert "1 errored: no verdict was recorded" in out
 
 
@@ -229,7 +235,10 @@ def test_a_trial_whose_cause_is_unknown_keeps_the_score_line_s_bucket(
     )
     monkeypatch.setattr(failures, "cause_of", lambda *a, **k: None)
     out = _render(monkeypatch, result, job_dir)
-    assert "Outcomes: 0 scored (0 passed, 0 failed), 0 unscored, 1 errored" in out
+    assert (
+        "Outcomes: 0 scored (0 passed, 0 failed), 0 unscored, 1 errored (1 with no "
+        "verdict)"
+    ) in out
     assert "next:" not in out  # no cause to explain, so no group under the line
 
 
@@ -249,3 +258,125 @@ def test_results_without_trials_print_no_outcomes(monkeypatch):
         None,
     )
     assert "Outcomes:" not in out and "Score: 0/1" in out
+
+
+def test_failures_the_verifier_scored_zero_are_told_apart(tmp_path, monkeypatch):
+    """A benchmark's lesson (seen in a 0.10.0rc1 acceptance run): a test script that wrote
+    no reward scored 0 as a failure, and only result.json's warnings said so.
+    Such a record (rc1 wrote it) is still told apart from a wrong answer."""
+    from benchflow._utils.scoring import score_summary_fields
+
+    job = tmp_path / "jobs" / "run"
+    job.mkdir(parents=True)
+    zero = "Verifier scored 0: No reward file found at <reachable:verifier/reward.txt>"
+    results = {
+        "no-reward": _trial(job, "no-reward", rewards={"reward": 0.0}, warnings=[zero]),
+        "wrong": _trial(job, "wrong", rewards={"reward": 0.0}),
+        "right": _trial(job, "right", rewards={"reward": 1.0}),
+    }
+    rec = Console(file=io.StringIO(), width=240)
+    monkeypatch.setattr(shared, "console", rec)
+    shared._report_outcomes(SimpleResult(results), job)
+    text = rec.file.getvalue()
+    assert "Outcomes: 3 scored (1 passed, 2 failed)" in text
+    assert (
+        "1 of the failed: the verifier scored them 0 on its own evidence, not on "
+        "an answer (a failure, not an error): no-reward" in text
+    )
+    rows = [json.loads(p.read_text()) for p in sorted(job.glob("*/result.json"))]
+    assert score_summary_fields(rows)["verifier_scored_zero"] == 1
+
+
+def test_grading_timeouts_are_named_apart(tmp_path, monkeypatch):
+    """A benchmark's lesson: tests still running at the verifier's
+    time limit score 0, and a slow grading machine does that too, so the
+    summary names them and says how to rerun only the verifier."""
+    from benchflow._utils.scoring import score_summary_fields
+
+    job = tmp_path / "jobs" / "run"
+    job.mkdir(parents=True)
+    zero = "Verifier scored 0: verifier timed out after 600.0s"
+    results = {
+        "slow": _trial(
+            job,
+            "slow",
+            rewards={"reward": 0.0},
+            warnings=[zero],
+            verifier_timeout_info={"timeout_budget_sec": 600.0, "scored": True},
+        ),
+        "right": _trial(job, "right", rewards={"reward": 1.0}),
+    }
+    rec = Console(file=io.StringIO(), width=240)
+    monkeypatch.setattr(shared, "console", rec)
+    shared._report_outcomes(SimpleResult(results), job)
+    text = rec.file.getvalue()
+    assert (
+        "1 of the failed: the tests were still running at the verifier's time "
+        "limit, so they scored 0 (slow code, or a slow grading machine): slow"
+    ) in text
+    assert "bench regrade <job dir>" in text
+    assert "on its own evidence" not in text
+    rows = [json.loads(p.read_text()) for p in sorted(job.glob("*/result.json"))]
+    summary = score_summary_fields(rows)
+    assert summary["grading_timeouts"] == 1
+    assert summary["verifier_scored_zero"] == 1
+
+
+def test_no_usable_reward_is_a_verifier_error_that_counts_as_a_failure(
+    tmp_path, monkeypatch
+):
+    """A final verify with no usable reward is now the verifier's
+    error, named as such; the error-excluding score still counts it failed."""
+    from benchflow._utils.scoring import NO_USABLE_REWARD, score_summary_fields
+
+    job = tmp_path / "jobs" / "run"
+    job.mkdir(parents=True)
+    error = (
+        NO_USABLE_REWARD + "Failed to parse rewards from text file verifier/reward.txt"
+    )
+    results = {
+        "no-reward": _trial(job, "no-reward", rewards=None, verifier_error=error),
+        "right": _trial(job, "right", rewards={"reward": 1.0}),
+    }
+    rec = Console(file=io.StringIO(), width=240)
+    monkeypatch.setattr(shared, "console", rec)
+    shared._report_outcomes(SimpleResult(results), job)
+    text = rec.file.getvalue()
+    assert (
+        "Outcomes: 1 scored (1 passed, 0 failed), 1 unscored (1 refused), 0 errored"
+        in text
+    )
+    assert "the verifier wrote no usable reward (a failure in every score)" in text
+    rows = [json.loads(p.read_text()) for p in sorted(job.glob("*/result.json"))]
+    summary = score_summary_fields(rows)
+    assert summary["unusable_rewards"] == 1
+    assert summary["score_excl_errors_ratio"] == 0.5
+
+
+def test_a_reviewed_trial_with_no_usable_reward_still_counts_as_a_failure():
+    """A rubric-reviewed trial's review refuses a trial whose verifier left no
+    reward, and its scoring block keeps the error as ``ValueError: ...``
+    (review/automatic.py): the trial is still a failure in every score."""
+    from benchflow._utils.scoring import (
+        NO_USABLE_REWARD,
+        VERIFIER_FAILED,
+        classify_verifier_error,
+        is_unusable_reward,
+        score_summary_fields,
+    )
+
+    error = "ValueError: " + NO_USABLE_REWARD + "verifier/reward.txt is empty"
+    reviewed = {
+        "rewards": None,
+        "verifier_error": error,
+        "scoring": {"status": "error", "error": error},
+    }
+    assert is_unusable_reward(error)
+    assert classify_verifier_error(error) == VERIFIER_FAILED
+    summary = score_summary_fields([reviewed, {"rewards": {"reward": 1.0}}])
+    assert (summary["unusable_rewards"], summary["score_excl_errors_ratio"]) == (1, 0.5)
+
+
+class SimpleResult:
+    def __init__(self, results):
+        self.results = results

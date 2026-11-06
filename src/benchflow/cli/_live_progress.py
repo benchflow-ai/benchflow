@@ -82,14 +82,28 @@ def quiet_root_logging() -> Iterator[None]:
         buffer.replay()
 
 
+# A record with this attribute set prints above the dashboard at once (the
+# run card, which a terminal user must see before the trials it describes).
+SHOW_LIVE = "benchflow_show_live"
+
+
 class _WarningBuffer(logging.Handler):
-    """Capture WARNING+ records during a Live; drop INFO/DEBUG; replay on exit."""
+    """Capture WARNING+ records during a Live; drop INFO/DEBUG; replay on exit.
+    A record marked :data:`SHOW_LIVE` prints above the Live at once instead."""
 
     def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
+        super().__init__(level=logging.NOTSET)
         self._records: list[tuple[logging.LogRecord, str]] = []
 
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, SHOW_LIVE, False):
+            text = escape(record.getMessage())
+            if record.levelno >= logging.WARNING:
+                text = f"[yellow]{text}[/yellow]"
+            console.print(text, highlight=False, soft_wrap=True)
+            return
+        if record.levelno < logging.WARNING:
+            return
         # The task of the trial that logged it, read now, in the trial's
         # context: replayed after the dashboard, a line without it cannot be
         # told apart from another trial's (dogfood p5-16).
@@ -479,5 +493,18 @@ class LiveEvalProgress:
         if completed:
             footer.append(f" · telemetry {covered / completed * 100:.0f}%", style="dim")
         parts.append(footer)
+        # The utilization watcher's last report, which the log holds back
+        # while this panel is live (benchflow._utils.utilization).
+        from benchflow._utils import utilization
+
+        report = utilization.latest()
+        if report is not None:
+            line, warnings = report
+            parts.append(
+                Text(
+                    line + (". Underused: " + "; ".join(warnings) if warnings else ""),
+                    style="yellow" if warnings else "dim",
+                )
+            )
 
         return Group(*parts)

@@ -774,12 +774,8 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     (follow-up to PRs #1013 and #1014): the prompt tells the agent to
     upgrade BenchFlow before reading the skill, the upgrade command appears
     before the skill URL, and the URL sits on one unbroken physical line.
-    The prize page renders the prompt as a blockquote (a fenced code block
-    would not soft-wrap on GitHub), so each unwrapped prompt line is asserted
-    to be present on the page instead of the whole string verbatim. The page
-    is docs/results/eval-prize.md, the event page split out of
-    docs/traj-upload.md (dx/first-run had moved the prize flow there from the
-    README's quick start).
+    The prize page that quoted the prompt (docs/results/eval-prize.md, an
+    event page) has no successor in docs v2.
     """
     from benchflow.cli.traj import (
         CONTRIBUTOR_PROMPT,
@@ -789,8 +785,6 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     )
 
     result = runner.invoke(app, ["traj", "setup", "--prompt"])
-    page = Path(__file__).resolve().parents[1] / "docs" / "results" / "eval-prize.md"
-    page_text = page.read_text(encoding="utf-8")
 
     assert result.exit_code == 0, result.output
     output = click.unstyle(result.output)
@@ -801,12 +795,6 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
 
     prompt_lines = [line for line in CONTRIBUTOR_PROMPT.splitlines() if line]
     assert len(prompt_lines) == 3
-    # The page keeps the event's own first line (the CLI's is general since
-    # 0.8.3); the two steps are the same.
-    for line in prompt_lines[1:]:
-        assert line in page_text
-    # Wording updated on main in 8cae2a42 ("Send these to your coding agent.").
-    assert "Send these to your coding agent" in page_text
 
     assert UPGRADE_COMMAND in CONTRIBUTOR_PROMPT
     assert CONTRIBUTOR_PROMPT.index(UPGRADE_COMMAND) < CONTRIBUTOR_PROMPT.index(

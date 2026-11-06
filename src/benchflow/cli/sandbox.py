@@ -15,8 +15,10 @@ logic without a fork. The Daytona client + reaper deliberately resolve through
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -27,7 +29,7 @@ from rich.table import Table
 
 from benchflow._utils.sandbox_providers import extra_install_hint
 from benchflow.cli._options import SandboxOption
-from benchflow.cli._shared import console, print_error
+from benchflow.cli._shared import DaytonaUnconfigured, console, print_error
 
 # `bench sandbox`'s help (cli/main.py's layout copies it). Only Daytona's
 # sandboxes outlive a run; Docker's are made and removed per trial.
@@ -102,8 +104,9 @@ def _daytona_sdk_available() -> bool:
 def sandbox_list_local(*, show_all: bool = False, as_json: bool = False) -> None:
     """List active off-box sandboxes (Daytona).
 
-    Daytona is the only backend with persistent, listable sandboxes; Docker
-    sandboxes are ephemeral (built and torn down per run). When the optional
+    Daytona is the only backend with persistent, listable sandboxes; a Docker
+    sandbox is torn down after its trial unless --keep-sandbox kept it (its trial
+    folder then holds kept-sandbox.json). When the optional
     Daytona SDK is not installed there is nothing to list — an empty result, not
     an error (mirroring how ``sandbox create`` degrades on a missing extra).
     With ``BENCHFLOW_DAYTONA_OWNER`` set, only that owner's sandboxes are listed
@@ -117,9 +120,10 @@ def sandbox_list_local(*, show_all: bool = False, as_json: bool = False) -> None
             "No active sandboxes. Daytona is the only backend with persistent, "
             "listable sandboxes, and its SDK is not installed "
             f"([cyan]{escape(extra_install_hint('sandbox-daytona'))}[/cyan]). "
-            "Docker sandboxes are "
-            "ephemeral and created per run; [cyan]bench sandbox cleanup[/cyan] "
-            "removes those a killed run left behind."
+            "A Docker sandbox is deleted after its trial, unless --keep-sandbox "
+            "kept it: its trial folder then holds kept-sandbox.json (the run's summary "
+            "names those trials). [cyan]bench sandbox cleanup[/cyan] "
+            "removes what a killed run left behind."
         )
         return
     import json
@@ -360,13 +364,20 @@ def sandbox_cleanup(
                 names=frozenset(names),
             )
             cleaned_any = True
+        except DaytonaUnconfigured:
+            # The SDK is installed (an extra) but no key is set: no Daytona
+            # account holds sandboxes of this machine's runs.
+            console.print(
+                "Daytona: no key set (DAYTONA_API_KEY), so there is nothing to clean there."
+            )
         except (Exception, typer.Exit) as exc:
-            # The Daytona SDK is installed but unusable (typically no or a bad
-            # DAYTONA_API_KEY). Report and continue: a second backend may still
+            # The Daytona SDK is installed but unusable (a bad DAYTONA_API_KEY,
+            # an API error). Report and continue: a second backend may still
             # have resources to reclaim — AgentCore runtimes consume a
             # 100-per-account quota — then exit 1 so a teardown step fails.
             print_error(
-                f"Daytona cleanup failed: {exc}",
+                "Daytona cleanup failed"
+                + ("" if isinstance(exc, typer.Exit) else f": {exc}"),
                 next_step="`bench doctor --sandbox daytona` checks the Daytona key",
             )
             backend_failed = True
@@ -397,6 +408,232 @@ def sandbox_cleanup(
             f"([cyan]{escape(extra_install_hint('sandbox-agentcore'))}[/cyan]) "
             "is installed; only those backends leave resources between runs."
         )
+
+
+# --- a sandbox kept with --keep-sandbox --------------------------------------
+
+_KEPT_NEXT = (
+    "pass the trial folder of a run with --keep-sandbox (it holds kept-sandbox.json)"
+)
+# The shell attach opens when no command is given: bash where the image has it.
+_ATTACH_SHELL = [
+    "/bin/sh",
+    "-c",
+    "command -v bash >/dev/null 2>&1 && exec bash -l || exec sh -l",
+]
+
+
+def _kept_record(target: Path) -> tuple[Path, dict]:
+    import json
+
+    from benchflow.rollout._keep_sandbox import RECORD_NAME
+
+    path = target if target.name == RECORD_NAME else target / RECORD_NAME
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print_error(f"No kept sandbox at {target}: {exc}", next_step=_KEPT_NEXT)
+        raise typer.Exit(2) from None
+    if not isinstance(record, dict) or record.get("backend") not in (
+        "docker",
+        "daytona",
+    ):
+        print_error(f"{path} is not a kept-sandbox record", next_step=_KEPT_NEXT)
+        raise typer.Exit(2)
+    if record.get("state") == "released":
+        print_error(
+            f"The sandbox in {path} was released at {record.get('released_at')}",
+            next_step="run the task again with --keep-sandbox to get a new one",
+        )
+        raise typer.Exit(1)
+    return path, record
+
+
+def _docker_env(record: dict) -> dict[str, str]:
+    import os
+
+    env = dict(os.environ)
+    for key, name in (
+        ("docker_host", "DOCKER_HOST"),
+        ("docker_context", "DOCKER_CONTEXT"),
+    ):
+        if record.get(key) and not env.get(name):
+            env[name] = str(record[key])
+    return env
+
+
+def _kept_docker_ids(record: dict, *kinds: str) -> list[str]:
+    """The ids of the kept Compose project's resources (``ps -a``, or
+    ``network ls`` / ``volume ls``), by Compose's own project label."""
+    label = f"label=com.docker.compose.project={record['project']}"
+    if kinds[0] == "container":
+        argv = ["docker", "ps", "-aq", "--filter", label, *kinds[1:]]
+    else:
+        argv = ["docker", kinds[0], "ls", "-q", "--filter", label]
+    out = subprocess.run(
+        argv, capture_output=True, text=True, timeout=60, env=_docker_env(record)
+    )
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip() or f"{' '.join(argv)} failed")
+    return [line for line in out.stdout.split() if line]
+
+
+def _attach_docker(record: dict, command: list[str]) -> int:
+    import sys
+
+    ids = _kept_docker_ids(
+        record,
+        "container",
+        "--filter",
+        f"label=com.docker.compose.service={record.get('service') or 'main'}",
+    )
+    if not ids:
+        print_error(
+            f"The kept sandbox {record['project']} has no main container any more",
+            next_step="`bench sandbox release <trial>` clears the record",
+        )
+        return 1
+    env = _docker_env(record)
+    subprocess.run(["docker", "start", ids[0]], capture_output=True, env=env)
+    argv = ["docker", "exec", "-u", "0"]
+    if not command:
+        tty = sys.stdin.isatty() and sys.stdout.isatty()
+        argv.append("-it" if tty else "-i")
+    argv += [ids[0], *(command or _ATTACH_SHELL)]
+    return subprocess.run(argv, env=env).returncode
+
+
+def _attach_daytona(record: dict, command: list[str]) -> int:
+    import os
+    import shlex
+    import sys
+    import tempfile
+
+    from benchflow.cli import main as cli_main
+
+    client = cli_main._daytona_client_or_exit()
+    sandbox = client.get(record["sandbox_id"])
+    if "started" not in str(getattr(sandbox, "state", "")).lower():
+        # BenchFlow's auto-stop stopped it while it sat idle.
+        sandbox.start(timeout=180)
+    access = sandbox.create_ssh_access(expires_in_minutes=60)
+    fd, config = tempfile.mkstemp(prefix="benchflow_attach_", text=True)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(
+                "Host benchflow-kept\n  HostName ssh.app.daytona.io\n"
+                f"  User {access.token}\n  StrictHostKeyChecking no\n"
+                "  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n"
+            )
+        os.chmod(config, 0o600)
+        argv = ["ssh", "-F", config]
+        if not command and sys.stdin.isatty() and sys.stdout.isatty():
+            argv.append("-t")
+        argv.append("benchflow-kept")
+        if command:
+            argv.append(shlex.join(command))
+        return subprocess.run(argv).returncode
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(config)
+        with contextlib.suppress(Exception):
+            sandbox.revoke_ssh_access(access.token)
+
+
+def sandbox_attach(target: Path, command: list[str] | None = None) -> None:
+    """Open a root shell in a kept sandbox, or run *command* there."""
+    _path, record = _kept_record(target)
+    try:
+        if record["backend"] == "docker":
+            rc = _attach_docker(record, list(command or ()))
+        else:
+            rc = _attach_daytona(record, list(command or ()))
+    except Exception as exc:
+        print_error(
+            f"Could not attach to the kept sandbox: {exc}",
+            next_step="`bench sandbox release <trial>` deletes it if it is broken",
+        )
+        raise typer.Exit(1) from None
+    raise typer.Exit(rc)
+
+
+def sandbox_release(target: Path) -> None:
+    """Delete a kept sandbox and mark its record released."""
+    from benchflow.review.persistence import write_json_atomic
+
+    path, record = _kept_record(target)
+    if record["backend"] == "docker":
+        from benchflow.sandbox._docker_sweep import unkeep_project
+
+        env = _docker_env(record)
+        containers = _kept_docker_ids(record, "container")
+        if containers:
+            subprocess.run(
+                ["docker", "rm", "-f", "-v", *containers], capture_output=True, env=env
+            )
+        # Docker can still list a container it is removing; the networks
+        # and volumes go only once their containers have.
+        for _ in range(20):
+            if not _kept_docker_ids(record, "container"):
+                break
+            time.sleep(0.5)
+        else:
+            print_error(
+                f"Docker still lists containers of {record['project']}",
+                next_step="`docker ps -a --filter "
+                f"label=com.docker.compose.project={record['project']}` shows them",
+            )
+            raise typer.Exit(1)
+        left: list[tuple[str, str]] = []
+        for kind in ("network", "volume"):
+            ids = _kept_docker_ids(record, kind)
+            if not ids:
+                continue
+            run = subprocess.run(
+                ["docker", kind, "rm", *ids], capture_output=True, text=True, env=env
+            )
+            if run.returncode != 0 and _kept_docker_ids(record, kind):
+                left.append((kind, (run.stderr or "").strip()))
+        if left:
+            # The record stays kept, so the release can be run again.
+            kind, why = left[0]
+            print_error(
+                f"Docker did not remove the {' and '.join(k + 's' for k, _ in left)} "
+                f"of {record['project']}"
+                + (f": {why}" if why else "")
+                + "; the sandbox is still marked kept",
+                next_step=f"`docker {kind} ls --filter label=com.docker.compose."
+                f"project={record['project']}` shows what is left; run `bench sandbox "
+                "release` again once it is free",
+            )
+            raise typer.Exit(1)
+        unkeep_project(record["project"])
+        copy = record.get("task_copy")
+        # Only BenchFlow's own per-trial task copy (tempfile prefix).
+        if (
+            copy
+            and Path(copy).name.startswith("benchflow-task-")
+            and Path(copy).is_dir()
+        ):
+            shutil.rmtree(copy, ignore_errors=True)
+        what = f"Docker project {record['project']}"
+    else:
+        from benchflow.cli import main as cli_main
+
+        client = cli_main._daytona_client_or_exit()
+        try:
+            client.delete(client.get(record["sandbox_id"]))
+        except Exception as exc:
+            if "not found" not in str(exc).lower() and "404" not in str(exc):
+                print_error(
+                    f"Could not delete Daytona sandbox {record['sandbox_id']}: {exc}",
+                    next_step="`bench sandbox cleanup --id <sandbox id>` deletes it",
+                )
+                raise typer.Exit(1) from None
+        what = f"Daytona sandbox {record['sandbox_id']}"
+    record.update(state="released", released_at=datetime.now(UTC).isoformat())
+    write_json_atomic(path, record)
+    console.print(f"Released the kept sandbox ({escape(what)}).")
 
 
 def register_sandbox(app: typer.Typer) -> None:
@@ -430,8 +667,36 @@ def register_sandbox(app: typer.Typer) -> None:
             bool, typer.Option("--json", help="Print the sandboxes as JSON")
         ] = False,
     ) -> None:
-        """List active sandboxes (Daytona; Docker sandboxes are ephemeral)."""
+        """List active Daytona sandboxes (kept Docker sandboxes: their trial folders hold kept-sandbox.json)."""
         sandbox_list_local(show_all=show_all, as_json=as_json)
+
+    @sandbox_app.command(
+        "attach",
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    )
+    def sandbox_attach_cmd(
+        ctx: typer.Context,
+        trial: Annotated[
+            Path,
+            typer.Argument(
+                help="The trial folder of a run with --keep-sandbox, or its kept-sandbox.json"
+            ),
+        ],
+    ) -> None:
+        """Open a root shell in a kept sandbox; with a command after --, run it there and exit with its status."""
+        sandbox_attach(trial, list(ctx.args))
+
+    @sandbox_app.command("release")
+    def sandbox_release_cmd(
+        trial: Annotated[
+            Path,
+            typer.Argument(
+                help="The trial folder of a run with --keep-sandbox, or its kept-sandbox.json"
+            ),
+        ],
+    ) -> None:
+        """Delete a sandbox kept with --keep-sandbox."""
+        sandbox_release(trial)
 
     @sandbox_app.command("cleanup")
     def sandbox_cleanup_cmd(

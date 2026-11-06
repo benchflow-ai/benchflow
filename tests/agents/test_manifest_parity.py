@@ -20,7 +20,7 @@ A data-only manifest cannot carry the ``_SHIM_ONLY`` AgentConfig fields
 ``disallow_web_tools_*``, ...); ``_merge_core_shim_only`` takes exactly those
 from the core entry and everything else from the manifest. The merged result
 must then equal the core entry on *every* dataclass field — i.e. the manifest's
-14 data fields reproduce core exactly.
+15 data fields (contract 1.1) reproduce core exactly.
 
 Lanes
 -----
@@ -184,7 +184,7 @@ def _parametrization() -> list:
 def test_manifest_byte_identical_to_core(agent_name: str | None) -> None:
     """Every core agent's manifest merges back to a byte-identical AgentConfig.
 
-    The manifest owns the 14 data fields; ``_merge_core_shim_only`` restores the
+    The manifest owns the 15 data fields; ``_merge_core_shim_only`` restores the
     host-side ``_SHIM_ONLY`` bits from core; the merged result must equal core on
     every dataclass field. Any drift fails loudly with a per-field diff so the
     flip is never made on a manifest that changed behaviour.

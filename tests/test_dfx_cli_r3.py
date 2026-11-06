@@ -105,7 +105,9 @@ def test_control_download_programming_error_keeps_diagnostics(
     assert list((tmp_path / "logs").glob("*"))
 
 
-@pytest.mark.parametrize("format_name", ["prime-sft", "trl-sft", "branch-tree"])
+@pytest.mark.parametrize(
+    "format_name", ["prime-sft", "trl-sft", "branch-tree", "verl-sft"]
+)
 @pytest.mark.parametrize("existing_output", [False, True])
 def test_missing_conversion_job_writes_nothing(
     tmp_path, capsys, format_name, existing_output

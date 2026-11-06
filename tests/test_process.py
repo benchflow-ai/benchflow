@@ -484,8 +484,8 @@ class TestAppleContainerProcess:
             "root",
         )
         main_command = calls[1][0][-1]
-        assert ". /tmp/.benchflow_agent_env_" in main_command
-        assert "rm -f /tmp/.benchflow_agent_env_" in main_command
+        assert ". /tmp/.runtime_agent_env_" in main_command
+        assert "rm -f /tmp/.runtime_agent_env_" in main_command
         assert main_command.endswith("; exec /bin/bash -c codex-acp")
 
     @pytest.mark.asyncio
@@ -513,7 +513,7 @@ class TestAppleContainerProcess:
 
         assert len(calls) == 3
         cleanup = " ".join(calls[2][0])
-        assert "rm -f /tmp/.benchflow_agent_env_" in cleanup
+        assert "rm -f /tmp/.runtime_agent_env_" in cleanup
         assert "secret" not in cleanup
 
 
@@ -556,7 +556,7 @@ class TestDaytonaProcessEnvFilePath:
         # And: a real path was used in the SDK bootstrap (literal hex suffix,
         # no shell variable), while env values travel through Daytona's env map.
         assert "$$" not in bootstrap_cmd
-        assert "/tmp/benchflow_env_" in bootstrap_cmd
+        assert "/tmp/runtime_env_" in bootstrap_cmd
         assert sandbox.process.exec.await_args.kwargs["env"] == {
             **_EMPTY_LOADER,
             "FOO": "bar",
@@ -564,8 +564,8 @@ class TestDaytonaProcessEnvFilePath:
         assert "--env FOO" in live_cmd
         assert "--env-file" not in live_cmd
         assert "bar" not in live_cmd
-        assert ". /tmp/benchflow_env_" in live_cmd
-        assert "rm -f /tmp/benchflow_env_" in live_cmd
+        assert ". /tmp/runtime_env_" in live_cmd
+        assert "rm -f /tmp/runtime_env_" in live_cmd
 
     @pytest.mark.asyncio
     async def test_direct_sandbox_env_file_path_does_not_use_shell_pid_expansion(self):
@@ -584,12 +584,12 @@ class TestDaytonaProcessEnvFilePath:
         assert "$$" not in live_cmd
 
         assert "$$" not in bootstrap_cmd
-        assert "/tmp/benchflow_env_" in bootstrap_cmd
+        assert "/tmp/runtime_env_" in bootstrap_cmd
         assert sandbox.process.exec.await_args.kwargs["env"] == {
             **_EMPTY_LOADER,
             "FOO": "bar",
         }
-        assert "rm -f /tmp/benchflow_env_" in live_cmd
+        assert "rm -f /tmp/runtime_env_" in live_cmd
 
     def test_direct_bootstrap_env_file_sources_single_quote_values(self, tmp_path):
         """Guards the 2026-05-22 Daytona direct env quoting fix."""
@@ -761,8 +761,8 @@ class TestDaytonaProcessSecretArgv:
         assert len(calls) == 2
         bootstrap_cmd = calls[0].args[0]
         cleanup_cmd = calls[1].args[0]
-        assert "/tmp/benchflow_env_" in bootstrap_cmd
-        assert cleanup_cmd.startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert "/tmp/runtime_env_" in bootstrap_cmd
+        assert cleanup_cmd.startswith("/bin/rm -f /tmp/runtime_env_")
         assert "secret" not in cleanup_cmd
         assert proc._ssh_config_path is None
 
@@ -825,7 +825,7 @@ class TestDaytonaProcessSecretArgv:
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 2
         assert calls[0].args[0].startswith("/bin/sh -c ")
-        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/runtime_env_")
         assert proc._ssh_config_path is None
 
     @pytest.mark.asyncio
@@ -847,7 +847,7 @@ class TestDaytonaProcessSecretArgv:
         calls = sandbox.process.exec.await_args_list
         assert len(calls) == 2
         assert calls[0].args[0].startswith("/bin/sh -c ")
-        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/runtime_env_")
         assert proc._ssh_config_path is None
 
 
@@ -872,7 +872,7 @@ class TestDaytonaPtyProcessSecretTransport:
         assert "echo '__BENCHFLOW_ACP_" in ptys[0].inputs[0]
         assert "stty raw -echo" in ptys[0].inputs[0]
         assert "docker compose -p test exec" not in ptys[0].inputs[0]
-        assert ptys[0].inputs[1].startswith("exec /bin/sh /tmp/benchflow_pty_exec_")
+        assert ptys[0].inputs[1].startswith("exec /bin/sh /tmp/runtime_pty_exec_")
         assert "docker compose -p test exec" not in ptys[0].inputs[1]
         sent_payload = "\n".join(ptys[0].inputs)
         assert secret not in sent_payload
@@ -886,8 +886,8 @@ class TestDaytonaPtyProcessSecretTransport:
         assert secret not in script_call.args[0]
         assert "docker compose -p test exec" in script_call.args[0]
         assert "--env GEMINI_API_KEY" in script_call.args[0]
-        assert ". /tmp/benchflow_env_" not in sent_payload
-        assert "rm -f /tmp/benchflow_env_" not in sent_payload
+        assert ". /tmp/runtime_env_" not in sent_payload
+        assert "rm -f /tmp/runtime_env_" not in sent_payload
         assert "--env GEMINI_API_KEY" not in sent_payload
         assert "--env-file" not in sent_payload
         assert "exec ." not in sent_payload
@@ -895,10 +895,8 @@ class TestDaytonaPtyProcessSecretTransport:
         await proc.close()
 
         cleanup_calls = sandbox.process.exec.await_args_list[-2:]
-        assert cleanup_calls[0].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
-        assert (
-            cleanup_calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_pty_exec_")
-        )
+        assert cleanup_calls[0].args[0].startswith("/bin/rm -f /tmp/runtime_env_")
+        assert cleanup_calls[1].args[0].startswith("/bin/rm -f /tmp/runtime_pty_exec_")
         assert secret not in cleanup_calls[0].args[0]
         assert secret not in cleanup_calls[1].args[0]
 
@@ -924,11 +922,11 @@ class TestDaytonaPtyProcessSecretTransport:
         sent_payload = "\n".join(ptys[0].inputs)
         assert "docker compose" not in sent_payload
         assert "cd /workspace/agent_workspace" not in sent_payload
-        assert ". /tmp/benchflow_env_" not in sent_payload
-        assert "rm -f /tmp/benchflow_env_" not in sent_payload
+        assert ". /tmp/runtime_env_" not in sent_payload
+        assert "rm -f /tmp/runtime_env_" not in sent_payload
         assert "exec bash -lc 'openhands acp --always-approve'" not in sent_payload
         # Root's terminal: keep and pin with builtins, then /bin/sh (C8).
-        assert "; exec /bin/sh /tmp/benchflow_pty_exec_" in ptys[0].inputs[1]
+        assert "; exec /bin/sh /tmp/runtime_pty_exec_" in ptys[0].inputs[1]
         assert "--env OPENAI_API_KEY" not in sent_payload
         assert secret not in sent_payload
         bootstrap_call = sandbox.process.exec.await_args_list[0]
@@ -963,8 +961,8 @@ class TestDaytonaPtyProcessSecretTransport:
         assert calls[0].args[0].startswith("/bin/sh -c ")
         assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
         assert "docker compose -p test exec" in calls[1].args[0]
-        assert calls[2].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
-        assert calls[3].args[0].startswith("/bin/rm -f /tmp/benchflow_pty_exec_")
+        assert calls[2].args[0].startswith("/bin/rm -f /tmp/runtime_env_")
+        assert calls[3].args[0].startswith("/bin/rm -f /tmp/runtime_pty_exec_")
         assert "secret" not in calls[2].args[0]
         assert "secret" not in calls[3].args[0]
 
@@ -993,8 +991,8 @@ class TestDaytonaPtyProcessSecretTransport:
         assert calls[0].args[0].startswith("/bin/sh -c ")
         assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
         assert "docker compose -p test exec" in calls[1].args[0]
-        assert calls[2].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
-        assert calls[3].args[0].startswith("/bin/rm -f /tmp/benchflow_pty_exec_")
+        assert calls[2].args[0].startswith("/bin/rm -f /tmp/runtime_env_")
+        assert calls[3].args[0].startswith("/bin/rm -f /tmp/runtime_pty_exec_")
         assert "secret" not in calls[2].args[0]
         assert "secret" not in calls[3].args[0]
 
@@ -1070,7 +1068,7 @@ class TestDaytonaPtyProcessSecretTransport:
         assert len(calls) == 2
         assert calls[0].args[0].startswith("/bin/sh -c ")
         assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
-        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/runtime_env_")
         assert "secret" not in calls[1].args[0]
 
     @pytest.mark.asyncio
@@ -1093,5 +1091,5 @@ class TestDaytonaPtyProcessSecretTransport:
         assert len(calls) == 2
         assert calls[0].args[0].startswith("/bin/sh -c ")
         assert calls[0].kwargs["env"] == {**_EMPTY_LOADER, "GEMINI_API_KEY": "secret"}
-        assert calls[1].args[0].startswith("/bin/rm -f /tmp/benchflow_env_")
+        assert calls[1].args[0].startswith("/bin/rm -f /tmp/runtime_env_")
         assert "secret" not in calls[1].args[0]

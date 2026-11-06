@@ -1,11 +1,11 @@
-"""After the in-sandbox proxy install nothing under /opt/benchflow is another
+"""After the in-sandbox proxy install nothing under /opt/runtime is another
 user's to write (DET-R1), in a real container with the real install.
 
 uv 0.13.1 makes every lock file it creates writable by everyone (mode 666,
 past the umask): one per cached wheel, the cache's, the managed Python's and
-each venv's. Since C8 put uv's cache in /opt/benchflow, the in-sandbox proxy
+each venv's. Since C8 put uv's cache in /opt/runtime, the in-sandbox proxy
 install left them there, and the agent install's root-only check of
-/opt/benchflow refused every later agent install ("not root-only:
+/opt/runtime refused every later agent install ("not root-only:
 .../granian/....lock"): codex-acp and claude-agent-acp under an allowlist or
 denylist. The install is BenchFlow's real one (pinned uv, managed CPython,
 the locked proxy set), so it needs the network; skipped without a Docker
@@ -28,7 +28,7 @@ from tests.test_c8_protected_runtime_container import (
 )
 
 IMAGE = "ubuntu:24.04"
-WRITABLE = "find /opt/benchflow ! -type l \\( -perm -0020 -o -perm -0002 \\) -print"
+WRITABLE = "find /opt/runtime ! -type l \\( -perm -0020 -o -perm -0002 \\) -print"
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ async def _assert_root_only(box: str, sandbox) -> None:
     assert writable.stdout == "", f"writable by another user:\n{writable.stdout}"
     # The agent install's own check of the whole tree (registry's JS agents).
     check = await sandbox.exec(
-        root_only_tree_check("/opt/benchflow", "BenchFlow's agent runtime folder"),
+        root_only_tree_check("/opt/runtime", "BenchFlow's agent runtime folder"),
         user="root",
     )
     assert check.return_code == 0, check.stderr
@@ -96,10 +96,10 @@ async def test_nothing_under_opt_benchflow_is_writable_after_the_proxy_install(b
 
     # uv did make its lock files (one per cached wheel among them), so the
     # check below is not vacuous.
-    locks = _dx(box, "find /opt/benchflow/cache/uv -name '*.lock' -type f | wc -l")
+    locks = _dx(box, "find /opt/runtime/cache/uv -name '*.lock' -type f | wc -l")
     assert int(locks.stdout.strip() or 0) > 1, locks
     await _assert_root_only(box, sandbox)
-    cache = _dx(box, "stat -c %a /opt/benchflow/cache")
+    cache = _dx(box, "stat -c %a /opt/runtime/cache")
     assert cache.stdout.strip() == "700", cache
 
 
@@ -108,16 +108,16 @@ async def test_a_second_roles_proxy_install_reuses_the_cache_and_stays_root_only
     box,
 ):
     """A second role's install in the same sandbox: the cache from the first,
-    opened by an agent install's ``chmod -R a+rX /opt/benchflow``, passes the
+    opened by an agent install's ``chmod -R a+rX /opt/runtime``, passes the
     install's own check, is private again while uv runs, and is sealed after."""
     sandbox = _sandbox(box)
     await _install_proxy(sandbox)
-    opened = _dx(box, "chmod -R a+rX /opt/benchflow")
+    opened = _dx(box, "chmod -R a+rX /opt/runtime")
     assert opened.returncode == 0, opened.stderr
 
     await _install_proxy(sandbox)
 
-    cache = _dx(box, "stat -c %a /opt/benchflow/cache")
+    cache = _dx(box, "stat -c %a /opt/runtime/cache")
     assert cache.stdout.strip() == "700", cache
     await _assert_root_only(box, sandbox)
 
@@ -140,7 +140,7 @@ async def test_the_seal_takes_write_off_uv_git_locks_and_nothing_else(box):
     made = _dx(
         box,
         f"umask 022 && mkdir -p {UV_CACHE_DIR}/git-v1/locks {UV_CACHE_DIR}/wheels-v7 "
-        f"{UV_CACHE_DIR}/git-v1/checkouts && chmod 700 /opt/benchflow/cache && "
+        f"{UV_CACHE_DIR}/git-v1/checkouts && chmod 700 /opt/runtime/cache && "
         f"umask 0 && : > {git_lock} && : > {wheel_lock} && printf x > {stray}",
     )
     assert made.returncode == 0, made.stderr

@@ -148,7 +148,7 @@ def test_the_refusal_names_the_current_job_flag(tmp_path):
     job = _foreign_job(tmp_path / "jobs")
     with pytest.raises(ResumeMismatchError) as refused:
         _check_resume_mismatch(job, EvaluationConfig(agent="oracle"))
-    assert refused.value.hint == "pick another --job or another --jobs-dir"
+    assert refused.value.hint == "pick another --job-name or another --jobs-dir"
 
 
 @pytest.mark.parametrize("key", ["benchflow_version", "harness_mode"])
@@ -340,8 +340,17 @@ def test_resuming_a_finished_0_7_11_job_keeps_its_files_first(tmp_path, caplog):
     (tasks / "task.toml").write_text('version = "1.0"\n')
     job = _real_0_7_11_finished_job(tmp_path / "jobs")
     original = (job / "summary.json").read_bytes()
-    with caplog.at_level(logging.WARNING):
+    # This task.toml is not the one the trial ran (its task_digest differs):
+    # the named job is refused before its files are copied anywhere.
+    with pytest.raises(ResumeMismatchError, match="task 'fast' at task_digest"):
         asyncio.run(_evaluation(tasks.parent, job, preflight=False).run())
+    assert not (job / ".pre-0.8").exists()
+    assert (job / "summary.json").read_bytes() == original
+    # Restarted, its own files are kept first, then rewritten.
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(
+            _evaluation(tasks.parent, job, preflight=False, restart_changed=True).run()
+        )
     assert (job / ".pre-0.8" / "summary.json").read_bytes() == original
     assert (job / "summary.json").read_bytes() != original
     assert "made by BenchFlow 0.7" in caplog.text

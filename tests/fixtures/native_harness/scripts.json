@@ -43,7 +43,7 @@
       "text": "Sleeping.",
       "tool": "Bash",
       "input": {
-        "command": "sleep 300",
+        "command": "timeout 600 sleep 300",
         "description": "Wait",
         "timeout": 600000
       }

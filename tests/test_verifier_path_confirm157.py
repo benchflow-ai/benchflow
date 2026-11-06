@@ -187,8 +187,8 @@ def test_checkpoint_carries_only_the_main_inspector_and_rejects_alias_names():
     from benchflow.sandbox import _path_inspector_state as state
     from benchflow.sandbox.protocol import SandboxImage
 
-    main = "/etc/.benchflow-bash-env-" + "1" * 32
-    target = "/etc/.benchflow-bash-env-" + "2" * 32
+    main = "/etc/.runtime-bash-env-" + "1" * 32
+    target = "/etc/.runtime-bash-env-" + "2" * 32
     env = SimpleNamespace(_benchflow_path_inspectors={"main": main, "target": target})
     image = state.checkpoint(env, SandboxImage("docker", "dummy"))
     assert state.read(image) == main

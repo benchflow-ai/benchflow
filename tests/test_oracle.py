@@ -2,6 +2,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from benchflow.rollout._setup import ORACLE_IMAGE_PATH
+
 
 def _oracle_env():
     env = MagicMock()
@@ -62,7 +64,9 @@ async def test_run_oracle_redirects_to_container_log(tmp_path):
 
     calls = env.exec.call_args_list
     solve_call = calls[0]
-    assert solve_call.args[0] == "bash /solution/solve.sh > /logs/agent/oracle.txt 2>&1"
+    assert solve_call.args[0] == (
+        ORACLE_IMAGE_PATH + "bash /solution/solve.sh > /logs/agent/oracle.txt 2>&1"
+    )
     assert "tee" not in solve_call.args[0]
     assert solve_call.kwargs["env"] == {"DEBIAN_FRONTEND": "noninteractive"}
     assert solve_call.kwargs["timeout_sec"] == 123
@@ -88,7 +92,9 @@ async def test_run_oracle_uses_native_oracle_mount(tmp_path):
     trajectory, _agent_name = await SDK()._run_oracle(env, tmp_path, timeout=123)
 
     solve_call = env.exec.call_args_list[0]
-    assert solve_call.args[0] == "bash /oracle/solve.sh > /logs/agent/oracle.txt 2>&1"
+    assert solve_call.args[0] == (
+        ORACLE_IMAGE_PATH + "bash /oracle/solve.sh > /logs/agent/oracle.txt 2>&1"
+    )
     assert trajectory[0]["command"] == "oracle/solve.sh"
 
 
@@ -104,7 +110,8 @@ async def test_run_oracle_redirects_sandbox_user_output(tmp_path):
     solve_cmd = env.exec.call_args_list[0].args[0]
     assert solve_cmd == (
         "su -s /bin/bash agent -c "
-        "'DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh' "
+        '\'export PATH="${_BENCHFLOW_IMAGE_PATH-$PATH}"; '
+        "DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh' "
         "> /logs/agent/oracle.txt 2>&1"
     )
     assert "tee" not in solve_cmd

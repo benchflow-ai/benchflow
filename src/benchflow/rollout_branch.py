@@ -210,8 +210,8 @@ async def branch(
 ) -> float:
     """Branch ``rollout`` at its cursor into ``n`` child continuations.
 
-    The Branch lifecycle (``docs/architecture.md``; usage in
-    ``docs/jobs/branching-reference.md``):
+    The Branch lifecycle (``docs/start/how-it-works.md``; usage in
+    ``docs/train/environment.md``):
 
     1. ``quiesce``: disconnect the agent.
     2. ``checkpoint``: capture the requested ``snapshot_layers``, environment

@@ -17,7 +17,7 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("docker") is None, reason="docker required"),
 ]
 
-KIT_PY = "/opt/benchflow/rt/py/python3"
+KIT_PY = "/opt/runtime/rt/py/python3"
 FLAGS = (
     "import importlib.util, json, sys; "
     "c = importlib.util.cache_from_source(json.__file__); "
@@ -45,13 +45,13 @@ def test_the_kit_build_compiles_the_helpers_modules_before_the_seal():
         assert flags.returncode == 0, flags.stderr
         assert flags.stdout.split() == ["True", "3"], flags.stdout
         for module in ("json/__pycache__/__init__", "importlib/metadata/__pycache__"):
-            listed = _dx(name, f"grep -c {module} /opt/benchflow/rt/MANIFEST")
+            listed = _dx(name, f"grep -c {module} /opt/runtime/rt/MANIFEST")
             assert listed.returncode == 0 and int(listed.stdout) >= 1, module
         # The kit's Python loads the compiled file (-v names its source).
         verbose = _dx(name, f"cd / && {KIT_PY} -v -c 'import json' 2>&1")
         assert "json/__pycache__/__init__" in verbose.stdout
         # Every file the build made is root's alone, as before.
-        owners = _dx(name, "find /opt/benchflow/rt ! -user 0 | head -n 1")
+        owners = _dx(name, "find /opt/runtime/rt ! -user 0 | head -n 1")
         assert owners.stdout == ""
 
 
@@ -65,7 +65,7 @@ def test_a_source_that_no_longer_matches_its_pyc_is_what_runs():
         _built(name)
         _dx(
             name,
-            "f=$(ls -d /opt/benchflow/rt/lib/python3*/json/__init__.py) && "
+            "f=$(ls -d /opt/runtime/rt/lib/python3*/json/__init__.py) && "
             "printf '\\nBF_CHANGED = 1\\n' >> \"$f\"",
         )
         ran = _dx(name, f"cd / && {KIT_PY} -c 'import json; print(json.BF_CHANGED)'")

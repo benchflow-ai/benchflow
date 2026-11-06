@@ -263,8 +263,13 @@ def admit_restricted_model(
     provider_name: str = "",
     api_base: str | None = None,
     environ: Mapping[str, str] | None = None,
+    requested: str | None = None,
 ) -> RestrictedAdmission:
-    """Admit ``model`` (the controller-resolved upstream) or refuse it."""
+    """Admit ``model`` (the controller-resolved upstream) or refuse it.
+
+    ``requested`` is the id the run was given (``xiaomi/mimo-v2.6-pro``, sent
+    upstream as ``openai/mimo-v2.6-pro``): an operator entry may name either,
+    and a refusal names the one the user typed."""
     try:
         parsed, base, _ = identify(model)
         effective = provider_name if provider_name not in {"", "native"} else parsed
@@ -300,24 +305,25 @@ def admit_restricted_model(
     if why:
         # Catalogued self-searching models: no operator entry admits them.
         raise RestrictedModelRefused(
-            f"With web access restricted, {why}; choose a model without hosted "
-            "web search."
+            f"Refused {model!r} with web access restricted: {why}. "
+            "next: choose a model without hosted web search."
         )
     if reason is None:
         return RestrictedAdmission(model, provider, base, key, "metadata", endpoint)
     entries = operator_entries(environ)
-    if model in entries or f"{provider}/*" in entries:
+    if model in entries or requested in entries or f"{provider}/*" in entries:
         # An unclassified URL can contain credentials; the admission records
         # the provider and override, never an operator's private endpoint.
         return RestrictedAdmission(model, provider, base, key, "operator")
+    shown = requested or model
+    sent = f" (sent to the provider as {model!r})" if shown != model else ""
     raise RestrictedModelRefused(
-        f"With web access restricted, BenchFlow runs only models it can identify "
-        f"as having no hosted web search or retrieval. {model!r} is not one: "
-        f"{reason}.{endpoint_hint(provider, api_base)} "
-        "If this model runs without web access, allow it explicitly "
-        f"in the controller's environment: {OPERATOR_ENV}={model} (comma-separated "
-        f"ids; '{provider}/*' allows an operator-run provider). The run records "
-        "the override in config.json (restricted_web_model)."
+        f"Refused {shown!r}{sent} with web access restricted: BenchFlow can't confirm it "
+        f"has no hosted web search or retrieval ({reason}).{endpoint_hint(provider, api_base)} "
+        f"next: if it runs without web access, set {OPERATOR_ENV}={shown} in the "
+        f"controller's environment (comma-separated ids; '{provider}/*' allows an "
+        "operator-run provider). The run records the override in config.json "
+        "(restricted_web_model)."
     )
 
 
@@ -347,12 +353,17 @@ def admit_restricted_route(
                 "GOOGLE_CLOUD_LOCATION": r"[a-z0-9-]+",
             }
         )
-        if any(
-            process_env.get(n) and not re.fullmatch(pattern, process_env[n])
+        bad = [
+            n
             for n, pattern in components.items()
-        ):
+            if process_env.get(n) and not re.fullmatch(pattern, process_env[n])
+        ]
+        if bad:
             raise RestrictedModelRefused(
-                "With web access restricted, cloud project/location/region must be URL components, not deployment aliases."
+                f"Refused the {provider} route with web access restricted: "
+                f"{' and '.join(bad)} must be a plain name, as it becomes part of "
+                "the URL. next: set it to the region, project or location name "
+                "itself, not a deployment alias."
             )
     api_base = route.litellm_params.get("api_base")
     if not api_base:
@@ -368,6 +379,7 @@ def admit_restricted_route(
         route.upstream_model,
         provider_name=route.provider_name,
         api_base=str(api_base) if api_base else None,
+        requested=route.requested_model,
     )
     sealed_env: dict[str, str] = {}
     if admission.admitted_by == "metadata":

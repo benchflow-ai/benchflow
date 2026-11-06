@@ -12,7 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from benchflow.usage_tracking import usage_unavailable
+from benchflow.usage_tracking import (
+    USAGE_SOURCE_AGENT_REPORTED,
+    USAGE_SOURCE_NONE,
+    is_token_usage_available,
+    usage_unavailable,
+)
 
 
 @dataclass(frozen=True)
@@ -32,7 +37,14 @@ _PROVIDER_FAILURES: dict[int, ProviderFailure] = {
     401: ProviderFailure(401, "provider auth failed"),
     403: ProviderFailure(403, "provider auth failed"),
     429: ProviderFailure(429, "provider rate limited"),
-    503: ProviderFailure(503, "provider unavailable"),
+    # A provider's server error, like its 503: the agent's ACP error then is
+    # the provider's, retried as infrastructure, not the agent's own (a 500
+    # read as acp_error, "the agent reported an error"). 529 is Anthropic's
+    # overloaded_error.
+    **{
+        status: ProviderFailure(status, "provider unavailable")
+        for status in (500, 502, 503, 504, 529)
+    },
 }
 
 
@@ -44,23 +56,26 @@ def _provider_failure_from_status(status: Any) -> ProviderFailure | None:
 
 
 def _provider_failure_from_runtime(runtime: Any) -> ProviderFailure | None:
-    """Return the latest provider failure from a usage runtime trajectory.
+    """Return the provider failure the trial's last answered call ended with.
 
-    Scans the captured provider HTTP exchanges for provider-owned failures that
-    ACP agents often wrap as a generic ``-32603 Internal error``. Only the
-    sanitized status code and category marker are surfaced, never response
-    bodies or headers, so no credential material reaches ``result.error``
-    (#546/#564). Returns ``None`` when there is no runtime, no trajectory, or no
-    recognized provider-failure status.
+    Reads the captured provider HTTP exchanges for the provider-owned failure
+    an ACP agent often wraps as a generic ``-32603 Internal error``. Only the
+    latest exchange with a status decides: a failure the agent's later calls
+    got past (a 500 it retried, then 40 calls that answered) is not why it
+    stopped, and its own error then stays its own. Only the sanitized status
+    code and category marker are surfaced, never response bodies or headers,
+    so no credential material reaches ``result.error`` (#546/#564). Returns
+    ``None`` when there is no runtime, no trajectory, or the last call did not
+    fail with a recognized provider-failure status.
     """
     server = getattr(runtime, "server", None)
     trajectory = getattr(server, "trajectory", None)
     exchanges = getattr(trajectory, "exchanges", None) or []
     for exchange in reversed(exchanges):
         status = getattr(getattr(exchange, "response", None), "status_code", None)
-        failure = _provider_failure_from_status(status)
-        if failure is not None:
-            return failure
+        if status is None:
+            continue  # no answer at all: the call before it decides
+        return _provider_failure_from_status(status)
     return None
 
 
@@ -178,6 +193,54 @@ _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
 
 def _zero_native_acp_usage_metrics() -> dict[str, Any]:
     return {**usage_unavailable(), "usage_details": {"thought_tokens": 0}}
+
+
+def _zero_agent_reported_usage_metrics() -> dict[str, Any]:
+    """No usage from an agent that routes its own model calls."""
+    return {**_zero_native_acp_usage_metrics(), "usage_source": USAGE_SOURCE_NONE}
+
+
+def _add_agent_reported_usage(
+    metrics: dict[str, Any], delta: dict[str, int]
+) -> dict[str, Any]:
+    """``metrics`` plus one ACP usage delta of an agent that routes its own
+    model calls: agent-reported, so unpriced and never trusted."""
+    out = dict(metrics)
+    for snapshot_field, result_field in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.items():
+        out[result_field] = _as_nonnegative_int(out.get(result_field)) + (
+            delta.get(snapshot_field) or 0
+        )
+    details = dict(out.get("usage_details") or {})
+    details["thought_tokens"] = _as_nonnegative_int(details.get("thought_tokens")) + (
+        delta.get("thought_tokens") or 0
+    )
+    out.update(
+        usage_details=details,
+        usage_source=USAGE_SOURCE_AGENT_REPORTED,
+        cost_usd=None,
+        price_source=None,
+    )
+    return out
+
+
+def _with_agent_reported_usage(
+    usage: dict[str, Any], reported: dict[str, Any]
+) -> dict[str, Any]:
+    """A trial's usage once an agent that routes its own model calls ran.
+
+    Trusted usage of the trial's other roles (metered or native) keeps its
+    totals: the agent's own report goes beside them in ``usage_details``,
+    never into them, and the cost is unknown because those totals miss the
+    agent's calls. Without trusted usage, the trial's usage is the agent's
+    report: ``agent-reported``, or ``none`` when it reported nothing.
+    """
+    if not is_token_usage_available(usage):
+        return dict(reported)
+    details = {
+        **(usage.get("usage_details") or {}),
+        USAGE_SOURCE_AGENT_REPORTED: dict(reported),
+    }
+    return {**usage, "usage_details": details, "cost_usd": None, "price_source": None}
 
 
 def _as_nonnegative_int(value: object) -> int:

@@ -1,7 +1,7 @@
 """The built protected kit, kept per image on this host (PERF-SBX).
 
 ``kit_prepare_command("build")`` copies root-only image files into
-``/opt/benchflow/rt`` and captures the image interpreters' search paths:
+``/opt/runtime/rt`` and captures the image interpreters' search paths:
 0.9-1.3 s of a trial on one CPU, the same bytes for every fresh container of
 one image. A cache keyed by image and recipe alone is refused because a
 Compose mount or the task's entrypoint can change what the container holds
@@ -230,7 +230,7 @@ def staged_tar(tar: Path, stage: str) -> bytes:
     """*tar* (the kit folder ``rt/...``, as kept) under the folder *stage*
     (a single name, made root's and mode 700 first), for one upload to the
     container's ``/``. Every member keeps its bytes, mode, owner and link."""
-    if not re.fullmatch(r"\.benchflow-kit-[0-9a-f]{32}", stage):
+    if not re.fullmatch(r"\.runtime-kit-[0-9a-f]{32}", stage):
         raise ValueError(f"not a kit stage name: {stage!r}")
     out = io.BytesIO()
     with (

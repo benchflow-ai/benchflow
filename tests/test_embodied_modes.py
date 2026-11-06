@@ -63,3 +63,36 @@ def test_seed_report_groups_modes():
         "real",
         "sim",
     ]
+
+
+def test_report_prints_one_interval_per_mode_only_when_modes_differ():
+    """A one-mode report printed the same Wilson interval twice, once per mode."""
+    from benchflow.embodied.rollouts import format_report
+
+    def report(modes):
+        return seed_report(
+            "unused",
+            rows=[
+                {
+                    "task": "t",
+                    "seed": s,
+                    "reward": float(s % 2),
+                    "error": None,
+                    "outcome": "done",
+                    "steps_used": 1,
+                    "return": None,
+                    "initial_state_sha256": None,
+                    "trial": f"t-{s}",
+                    "mode": m,
+                }
+                for s, m in enumerate(modes)
+            ],
+        )
+
+    one = format_report(report(("sim", "sim", "sim", "sim")))
+    assert one.count("95% Wilson interval") == 1
+    # four seeds of one task: p@k mixes initial states, and the report says so
+    assert "p@k samples k of a task's trials across its seeds" in one
+    two = format_report(report(("sim", "sim", "real", "real")))
+    assert two.count("95% Wilson interval") == 3
+    assert "  real: 2 trials, pass rate 0.500 (95% Wilson interval" in two

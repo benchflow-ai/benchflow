@@ -71,10 +71,10 @@ _SKIP = (
     "/sys",
     "/dev",
     "/.bfx",
-    "/opt/benchflow",
-    "*/_benchflow_guard_*",
-    "/_benchflow_verifier_*",
-    "/etc/.benchflow-*",
+    "/opt/runtime",
+    "*/_runtime_guard_*",
+    "/_runtime_verifier_*",
+    "/etc/.runtime-*",
 )
 _VOLATILE = ("/etc/hostname", "/etc/hosts", "/etc/resolv.conf")
 _SNAPSHOT = (
@@ -750,7 +750,7 @@ async def test_v8_merge1_recovery_and_regrade_on_slim(tmp_path, flow):
             if flow == "recovery":
                 archive = tmp_path / f"workspace-{name}.tar"
                 prepare_workspace_upload(bundle, archive)
-                remote = "/tmp/benchflow-verifier-recovery-" + uuid.uuid4().hex
+                remote = "/tmp/runtime-verifier-recovery-" + uuid.uuid4().hex
                 await sandbox.upload_file(
                     archive, remote + ".tar", admission=admitted(sandbox)
                 )

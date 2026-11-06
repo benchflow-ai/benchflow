@@ -124,8 +124,7 @@ def _assert_solved(run: h.CliRun, trial: Path) -> None:
     # The sandbox ran the plugin's pinned install, ending in its tool-call probe.
     install = (trial / "agent" / "install-stdout.txt").read_text()
     assert (
-        "pip --isolated install -q -r /opt/benchflow/mini-swe-requirements.txt"
-        in install
+        "pip --isolated install -q -r /opt/runtime/mini-swe-requirements.txt" in install
     )
     assert "mock_response='ok'" in install
     assert run.returncode == 0, run.output[-4000:]
@@ -246,7 +245,7 @@ def test_two_pythons_install_identically_fresh_cold_and_warm(tmp_path, request):
     verifier.write_text(
         verifier.read_text()
         + """
-/opt/benchflow/mini-swe-venv/bin/python -I - <<'PY' > /logs/verifier/install.json
+/opt/runtime/mini-swe-venv/bin/python -I - <<'PY' > /logs/verifier/install.json
 import hashlib, importlib.metadata, json, pathlib, sys
 root = pathlib.Path(sys.prefix)
 print(json.dumps({
@@ -268,7 +267,7 @@ PY
         snapshots.append(h.read_json(trial / "verifier" / "install.json"))
         layers.append(h.read_json(trial / "config.json").get("layers", {}).get("agent"))
     fresh, cold, warm = snapshots
-    assert fresh["base_executable"].startswith("/opt/benchflow/python/"), fresh
+    assert fresh["base_executable"].startswith("/opt/runtime/python/"), fresh
     assert fresh["version"] == cold["version"] == warm["version"]
     assert (
         fresh["base_executable"] == cold["base_executable"] == warm["base_executable"]

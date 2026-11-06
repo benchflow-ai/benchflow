@@ -247,7 +247,7 @@ async def test_native_task_mcp_config_installer_uses_registry_path() -> None:
     )
 
     uploaded_path = env.upload_file.await_args.args[1]
-    assert uploaded_path.startswith("/.benchflow-credential-")
+    assert uploaded_path.startswith("/.runtime-credential-")
     assert env.upload_file.await_args.kwargs["mode"] == "600"
     (install_call,) = [
         call
@@ -363,14 +363,18 @@ def _fake_planes() -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_connect_threads_task_mcp_servers_into_connect_acp(tmp_path) -> None:
-    """``Rollout.connect()`` passes the task's mapped MCP specs to connect_acp."""
+    """``Rollout.connect()`` passes the task's mapped MCP specs to connect_acp.
+
+    With an agent that takes task MCP servers: Claude Code refuses them under
+    its managed connector policy (#79, tests/test_claude_connector_policy.py).
+    """
     cfg = RolloutConfig(
-        task_path=tmp_path / "task", agent="claude-agent-acp", model="test-model"
+        task_path=tmp_path / "task", agent="opencode", model="test-model"
     )
     trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._agent_launch = "claude-agent-acp"
+    trial._agent_launch = "opencode"
     trial._phase = "installed"
     trial._task = _task_with_mcp(
         MCPServerConfig(

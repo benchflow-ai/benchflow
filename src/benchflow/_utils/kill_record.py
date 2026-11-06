@@ -67,6 +67,7 @@ def record_kept_services(
     source: str,
     no_listener: list[int],
     waited_sec: float,
+    not_nnp: list[dict[str, Any]] | None = None,
 ) -> None:
     """Note the services the kill kept (``x-keep-services``, K2).
 
@@ -75,7 +76,10 @@ def record_kept_services(
     ``kept_services_ports`` the ports the trial keeps, ``kept_services_source``
     where they came from, ``kept_services_no_listener`` the named ports no
     process of the agent user listened on, and ``kept_services_waited_sec``
-    how long the kill waited for listeners first.
+    how long the kill waited for listeners first. ``kept_services_not_nnp``
+    lists the listeners on kept ports it killed instead because they ran
+    without no_new_privs: not the agent's launch, so a set-ID file
+    or a file capability put back before grading would work for them.
     """
     record = _current.get()
     if record is not None:
@@ -86,6 +90,7 @@ def record_kept_services(
                 "kept_services_source": source,
                 "kept_services_no_listener": no_listener,
                 "kept_services_waited_sec": waited_sec,
+                **({"kept_services_not_nnp": not_nnp} if not_nnp else {}),
             }
         )
 

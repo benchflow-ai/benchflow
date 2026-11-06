@@ -305,17 +305,22 @@ class AzureUploadBroker:
 
     def _user_delegation_key(self, now: datetime):
         with self._state_lock:
+            # Reused only while it outlives any grant it signs.
+            margin = timedelta(minutes=max(10, self.sas_minutes))
             if (
                 self._delegation_key is not None
-                and now < self._delegation_key_expires - timedelta(minutes=10)
+                and now < self._delegation_key_expires - margin
             ):
                 return self._delegation_key
-            self._delegation_key_expires = now + timedelta(hours=1)
-            self._delegation_key = self.blob_service.get_user_delegation_key(
+            expires = now + timedelta(hours=1)
+            key = self.blob_service.get_user_delegation_key(
                 key_start_time=now - timedelta(minutes=5),
-                key_expiry_time=self._delegation_key_expires,
+                key_expiry_time=expires,
             )
-            return self._delegation_key
+            # Key and expiry change together, after the refresh succeeded: a
+            # failed refresh leaves the old expiry, so the next grant retries.
+            self._delegation_key, self._delegation_key_expires = key, expires
+            return key
 
     def _upload_object(
         self,

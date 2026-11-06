@@ -560,7 +560,7 @@ def register_eval_branches(eval_app: typer.Typer) -> None:
             typer.Option(
                 "--json",
                 help="Print the benchflow.branch-view/1 documents (a JSON list, one "
-                "per branched trial); see docs/reference/branch-view.md.",
+                "per branched trial); see docs/train/environment.md.",
             ),
         ] = False,
     ) -> None:

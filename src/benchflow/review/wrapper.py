@@ -30,6 +30,7 @@ redaction boundary before inclusion.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import stat
 from pathlib import Path
@@ -39,7 +40,12 @@ from benchflow.review.config import (
     Rubric,
     build_review_response_model,
 )
-from benchflow.review.options import REVIEWER_AGENT_TIMEOUT_SEC, REVIEWER_IMAGE
+from benchflow.review.options import (
+    REVIEWER_AGENT_TIMEOUT_SEC,
+    REVIEWER_IMAGE,
+    REVIEWER_MEMORY_MB,
+    REVIEWER_STORAGE_MB,
+)
 from benchflow.review.prompts import (
     TASK_MOUNT,
     TRIAL_MOUNT,
@@ -121,7 +127,10 @@ def main() -> int:
     for name in sorted(expected_top_level - data.keys()):
         problems.append(f"result is missing key: {name}")
     if weighted:
-        for name in sorted(data.keys() - expected_top_level):
+        # A reviewer that copies the schema it was given can copy its
+        # definitions too ($defs, $schema); they carry no verdict.
+        schema_keys = {"$defs", "$schema"}
+        for name in sorted(data.keys() - expected_top_level - schema_keys):
             problems.append(f"result has unexpected key: {name}")
     expected_trial = Path(sys.argv[3]).read_text(encoding="utf-8")
     if data.get("trial_name") != expected_trial:
@@ -196,11 +205,31 @@ sandbox:
   docker_image: {image}
   workdir: /app{network_line}
   cpus: 1
-  memory_mb: 2048
-  storage_mb: 4096{setup_commands}
+  memory_mb: {memory_mb}
+  storage_mb: {storage_mb}{setup_commands}
 ---
 
 """
+
+#: The reviewer sandbox's disk beyond its evidence: the image, the reviewer
+#: agent, the model proxy and the artifact packages.
+REVIEWER_DISK_MARGIN_MB = 2048
+
+
+def reviewer_storage_mb(evidence_bytes: int, environment: str) -> int:
+    """The reviewer sandbox's disk for *evidence_bytes* of evidence: that plus
+    :data:`REVIEWER_DISK_MARGIN_MB`, never below :data:`REVIEWER_STORAGE_MB`,
+    at most what the backend gives one sandbox (Daytona's ceiling)."""
+    wanted = max(
+        REVIEWER_STORAGE_MB,
+        math.ceil(evidence_bytes / 1024**2) + REVIEWER_DISK_MARGIN_MB,
+    )
+    if environment == "daytona":
+        from benchflow.sandbox.setup import _DAYTONA_MAX_STORAGE_MB
+
+        return min(wanted, _DAYTONA_MAX_STORAGE_MB)
+    return wanted
+
 
 #: Default network posture: the wrapper declares no-internet, which engages
 #: the no-web pipeline (web tools disabled, sandbox-local model proxy,
@@ -313,11 +342,17 @@ def assemble_review_task(
     agent_timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
     open_network: bool = False,
     workspace_bundle: Path | None = None,
+    memory_mb: int = REVIEWER_MEMORY_MB,
+    storage_mb: int | None = None,
+    environment: str = "docker",
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
     Returns the wrapper path plus the upload map (host evidence directory →
-    absolute sandbox path) to pass through ``RolloutConfig.uploads``.
+    absolute sandbox path) to pass through ``RolloutConfig.uploads``. Without
+    *storage_mb* the reviewer sandbox's disk is sized for the evidence it
+    holds (:func:`reviewer_storage_mb` on *environment*): the uploads, and
+    each workspace unpacked beside its archive.
     """
 
     if dest.exists():
@@ -357,6 +392,15 @@ def assemble_review_task(
         )
         uploads[str(evidence / "task")] = TASK_MOUNT
         task_mount = TASK_MOUNT
+    if storage_mb is None:
+        held = sum(
+            path.stat().st_size for path in evidence.rglob("*") if path.is_file()
+        )
+        if workspace_bundle is not None:
+            from benchflow.review.evidence import evidence_bytes
+
+            held += evidence_bytes(workspace_bundle)
+        storage_mb = reviewer_storage_mb(held, environment)
 
     response_model = build_review_response_model(rubric)
     instruction = render_review_instruction(
@@ -374,6 +418,8 @@ def assemble_review_task(
         agent_timeout=float(agent_timeout_sec),
         image=image,
         network_line=_NETWORK_LINE_OPEN if open_network else _NETWORK_LINE_ISOLATED,
+        memory_mb=memory_mb,
+        storage_mb=storage_mb,
         setup_commands=(
             "\n  setup_commands:"
             "\n    - command: python3 -m pip install --disable-pip-version-check --no-cache-dir "

@@ -121,5 +121,5 @@ def test_shared_script_policy_refuses_native_model_only(monkeypatch):
     policy = egress_denylist.EgressDenylist((), (), native_claude_model_only=True)
     monkeypatch.setattr(egress_denylist, "egress_denylist_for", lambda _: policy)
     task = SimpleNamespace(config=SimpleNamespace(sandbox=SandboxConfig()))
-    with pytest.raises(ValueError, match="script: cannot use a native Claude"):
+    with pytest.raises(ValueError, match="script: cannot use a native model-only"):
         agent_egress_policy(task, agent="script:attempt.sh", sandbox_user="agent")

@@ -192,6 +192,9 @@ async def connect_native(
         mcp_servers=tuple(mcp_servers or ()),
         resume_id=resume_session_id,
     )
+    # The CLI takes the effort as given (--effort, or Codex's
+    # model_reasoning_effort): what it sends is in the trial's model calls.
+    client.session.effort_applied = reasoning_effort
     logger.info(
         "Native harness: %s (%s)%s",
         harness.cli,

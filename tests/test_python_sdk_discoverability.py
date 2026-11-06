@@ -26,7 +26,7 @@ def test_the_package_docstring_names_the_entry_points() -> None:
         "branch",
         "load_job",
         "compare",
-        "python-api.md",
+        "docs/reference/python.md",
     ):
         assert name in doc, name
     for name in doc.split("``")[1::2]:

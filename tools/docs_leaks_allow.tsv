@@ -1,0 +1,5 @@
+rule	path	value_sha256	reason
+personal	docs/examples/nanofirm-task/task.toml	a2050b1e737999c3b3d2646bc847ff39629d48b7de6fd4a6711fd44adf2351d7	public authorship: the task's author field, as published with the task
+process	docs/examples/task-md/real-skillsbench/weighted-gdp-calc/environment/gdp.xlsx!/xl/sharedStrings.xml	15b42c09c8a6f64f15078c22ffb69551a48af5540c460d66a8c18851cea82033	the task's data: a country group's name in the GDP table
+personal	docs/examples/task-md/real-skillsbench/weighted-gdp-calc/task.md	516392824cc4f0406f8784d836df4f10f8471fab4b33ba9c441ffce1f24a2890	public authorship: the task's author field, as published with the task
+personal	docs/examples/task-md/real-skillsbench/weighted-gdp-calc/task.md	a2050b1e737999c3b3d2646bc847ff39629d48b7de6fd4a6711fd44adf2351d7	public authorship: the task's author field, as published with the task

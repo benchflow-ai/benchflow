@@ -222,7 +222,7 @@ def _write_google_cloud_mcp_pattern_wrapper() -> Path:
     runtime_dir = Path(
         os.environ.get(
             "TOOLATHLON_RUNTIME_DIR",
-            "/tmp/benchflow_toolathlon",
+            "/tmp/runtime_toolathlon",
         )
     )
     target = runtime_dir / "google_cloud_mcp_pattern_wrapper.py"

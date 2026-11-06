@@ -9,6 +9,7 @@ in test_verifier_uv_state.py.
 """
 
 import os
+import subprocess
 import sys
 import uuid
 from types import SimpleNamespace
@@ -92,7 +93,44 @@ MOVED_ALWAYS = {
 
 
 def _moved(tmp_path):
-    return {key: str(tmp_path / "fresh" / entry) for key, entry in MOVED_ALWAYS.items()}
+    return {
+        **{key: str(tmp_path / "fresh" / entry) for key, entry in MOVED_ALWAYS.items()},
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "fresh" / tool_state.GIT_CONFIG),
+    }
+
+
+def test_verifier_git_config_is_empty_private_and_writable(tmp_path):
+    """Verifier git writes persist in fresh state."""
+    home = tmp_path / "agent-home"
+    home.mkdir()
+    planted = home / ".gitconfig"
+    planted.write_text("[alias]\n\tpong = !echo agent\n")
+    fresh = str(tmp_path / "fresh")
+    overrides = tool_state.overrides({"HOME": str(home)}, (str(home),), fresh)
+    tool_state.create(fresh, overrides.get("HOME"))
+    env = {**os.environ, "HOME": str(home), **overrides, "GIT_CONFIG_NOSYSTEM": "1"}
+    read = subprocess.run(
+        ["git", "config", "--global", "--get", "alias.pong"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert read.returncode == 1 and read.stdout == ""
+    subprocess.run(
+        ["git", "config", "--global", "--add", "safe.directory", "/app/api"],
+        env=env,
+        capture_output=True,
+        check=True,
+    )
+    read = subprocess.run(
+        ["git", "config", "--global", "--get", "safe.directory"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert read.stdout.strip() == "/app/api"
+    assert planted.read_text() == "[alias]\n\tpong = !echo agent\n"
 
 
 def test_image_cache_in_a_runtime_directory_moves_with_the_uv_config(
@@ -260,7 +298,7 @@ async def test_shell_only_image_decides_from_paths_and_creates_in_sh(
         "agent",
         str(layout.workspace),
     )
-    (directory,) = layout.fs.glob("_benchflow_verifier_*")
+    (directory,) = layout.fs.glob("_runtime_verifier_*")
     assert env["UV_CACHE_DIR"] == str(directory / "uv-cache")
     assert env["UV_CONFIG_FILE"] == str(directory / "uv.toml")
     assert (directory / "uv.toml").read_text() == ""
@@ -331,7 +369,7 @@ async def test_failed_probe_still_moves_a_home_the_agent_could_write(
         str(layout.workspace),
     )
     home = env["HOME"]
-    assert home.startswith(str(layout.fs / "_benchflow_verifier_"))
+    assert home.startswith(str(layout.fs / "_runtime_verifier_"))
     assert home.endswith("/home")
     assert env == {
         "HOME": home,
@@ -388,7 +426,7 @@ def test_a_home_with_an_entry_the_agent_could_write_moves(tmp_path, monkeypatch)
 
 
 def test_the_new_home_is_roots_with_empty_rc_files(tmp_path):
-    directory = tmp_path / ("_benchflow_verifier_" + uuid.uuid4().hex)
+    directory = tmp_path / ("_runtime_verifier_" + uuid.uuid4().hex)
     home = directory / "home"
     tool_state.create(str(directory), str(home))
     assert home.stat().st_mode & 0o777 == 0o700
@@ -399,7 +437,7 @@ def test_the_new_home_is_roots_with_empty_rc_files(tmp_path):
 
 def test_directory_name_is_fresh_for_every_verification(tmp_path, monkeypatch):
     """The directory must not exist beforehand: the probe refuses to reuse one."""
-    directory = tmp_path / ("_benchflow_verifier_" + uuid.uuid4().hex)
+    directory = tmp_path / ("_runtime_verifier_" + uuid.uuid4().hex)
     tool_state.create(str(directory))
     with pytest.raises(FileExistsError):
         tool_state.create(str(directory))

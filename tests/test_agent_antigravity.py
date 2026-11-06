@@ -107,17 +107,17 @@ class TestRegistryEntry:
         assert "sha512sum -c" in cfg.install_cmd
         # The download stage proves the binary runs on the task image before
         # the shim is deployed after it.
-        assert "/opt/benchflow/antigravity/agy --version" in cfg.install_cmd
+        assert "/opt/runtime/antigravity/agy --version" in cfg.install_cmd
         assert cfg.install_cmd.index(
-            "/opt/benchflow/antigravity/agy --version"
+            "/opt/runtime/antigravity/agy --version"
         ) < cfg.install_cmd.index("antigravity-acp-shim")
         # No Node.js: the CLI is a native binary and the shim is stdlib Python.
         assert "npm install" not in cfg.install_cmd
-        assert "/opt/benchflow/bin/antigravity-acp-shim" in cfg.install_cmd
+        assert "/opt/runtime/bin/antigravity-acp-shim" in cfg.install_cmd
         assert "bf_shim_python=/usr/bin/python3" in cfg.launch_cmd
         assert "bf_shim_python=/usr/local/bin/python3" in cfg.launch_cmd
         assert (
-            'exec "$bf_shim_python" -I -S /opt/benchflow/bin/antigravity-acp-shim'
+            'exec "$bf_shim_python" -I -S /opt/runtime/bin/antigravity-acp-shim'
             in cfg.launch_cmd
         )
 
@@ -128,7 +128,7 @@ class TestRegistryEntry:
         fake.write_text(f"#!/bin/sh\necho {cfgmod.AGY_VERSION}\n")
         fake.chmod(0o755)
         cmd = cfgmod.agy_install_cmd("exit 99").replace(
-            "/opt/benchflow/antigravity", str(fake.parent)
+            "/opt/runtime/antigravity", str(fake.parent)
         )
         result = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
@@ -281,7 +281,7 @@ _FAKE_AGY = textwrap.dedent(
     import json, os, stat, sys
     args = sys.argv[1:]
     log = open(os.environ["FAKE_AGY_LOG"], "a")
-    log.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\n"); log.flush()
+    log.write(json.dumps({"args": args, "cwd": os.getcwd(), "auto_update": os.environ.get("AGY_CLI_DISABLE_AUTO_UPDATE")}) + "\n"); log.flush()
     if "--version" in args:
         print("9.9.9"); sys.exit(0)
     if args[:1] == ["models"]:
@@ -302,6 +302,13 @@ _FAKE_AGY = textwrap.dedent(
         log.write(json.dumps({"prompt": text}) + "\n"); log.flush()
         if text == "explode":
             emit({"event": "result", "result": {"conversation_id": conv, "status": "ERROR", "error": "model exploded", "usage": {}}})
+            continue
+        if text in ("recovered", "exhausted"):
+            left = 2 if text == "recovered" else 0
+            notice = ("Your previous response was cut off because it exceeded the output token limit. "
+                      f"Please continue. Retries remaining: {left}")
+            emit({"event": "result", "result": {"conversation_id": conv, "status": "ERROR", "error": notice,
+                  "response": "the answer" if left else "", "usage": {"total_tokens": 9}}})
             continue
         if text == "die":
             sys.stderr.write('AGY_ERROR: {"short_error":"boom"}\n'); sys.stderr.flush()
@@ -520,8 +527,9 @@ def test_shim_streams_tool_calls_message_and_usage(shim, tmp_path):
         (shim.home / ".gemini/antigravity-cli/settings.json").read_text()
     )
     assert settings["modelProvider"] == "gemini"
-    assert settings["enableTelemetry"] == "off"
-    assert settings["enableTerminalSandbox"] == "off"
+    assert settings["enableTelemetry"] is False
+    assert settings["enableTerminalSandbox"] is False
+    assert settings["allowNonWorkspaceAccess"] is True
     shim.close()
 
 
@@ -616,3 +624,48 @@ def test_shim_initialize_fails_closed_without_binary(tmp_path):
     finally:
         if client.proc.poll() is None:
             client.proc.kill()
+
+
+def test_shim_finishes_a_turn_the_model_recovered_from_a_retry_notice(shim, tmp_path):
+    """Guards a reported case: agy keeps a retry
+    notice as the turn's ERROR status after the model recovered and gave its
+    final response, so the shim failed a finished turn. A notice with no
+    retry left and no response still fails."""
+    session_id = _handshake(shim, str(tmp_path))
+    shim.request(
+        "session/set_model", {"sessionId": session_id, "modelId": "gemini-3.8-flash"}
+    )
+    reply = shim.request(
+        "session/prompt",
+        {"sessionId": session_id, "prompt": [{"type": "text", "text": "recovered"}]},
+    )
+    assert reply["result"]["stopReason"] == "end_turn"
+    # agy runs with its self-update off, so the pinned release stays.
+    assert [e for e in shim.agy_log() if "args" in e][-1]["auto_update"] == "true"
+    reply = shim.request(
+        "session/prompt",
+        {"sessionId": session_id, "prompt": [{"type": "text", "text": "exhausted"}]},
+    )
+    assert "error" in reply and "Retries remaining: 0" in reply["error"]["message"]
+    shim.close()
+
+
+def test_settings_switches_are_booleans_even_over_an_earlier_file(
+    tmp_path, monkeypatch
+):
+    """Guards a reported case: agy rejects "on" /
+    "off" for its boolean settings and falls back to their defaults
+    (non-workspace access off)."""
+    from benchflow.agents import antigravity_acp_shim as shim_module
+
+    monkeypatch.setattr(shim_module, "agent_home", lambda: str(tmp_path))
+    path = tmp_path / ".gemini" / "antigravity-cli" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"enableTerminalSandbox": "off", "allowNonWorkspaceAccess": "on"})
+    )
+    assert shim_module.prepare_settings() == path
+    settings = json.loads(path.read_text())
+    assert settings["enableTelemetry"] is False
+    assert settings["enableTerminalSandbox"] is False
+    assert settings["allowNonWorkspaceAccess"] is True

@@ -17,13 +17,14 @@ from benchflow.trajectories.export_prime_sft import (
     _benchflow_row_training_skip_reason,
     _iter_rollout_dirs,
     _iter_selected_rollout_dirs,
-    _load_json,
     _result_training_skip_reason,
     _reward_from_result,
     _row_reward,
     _training_signals,
+    exchange_source,
     is_control_run,
-    load_llm_trajectory_jsonl,
+    load_rollout_exchanges,
+    load_rollout_result,
     normalize_prime_sft_exchange,
     refuse_training_signal_for_jsonl,
     validate_prime_sft_row,
@@ -58,6 +59,8 @@ class TrlSftExportStats:
     skipped_control: int = 0
     skipped_helper_calls: int = 0
     skipped_invalid: int = 0
+    # A completion calling a tool with input that is not a JSON object.
+    skipped_unparsed_tool_calls: int = 0
     rows_compacted: int = 0
     messages_dropped: int = 0
     max_original_tokens: int = 0
@@ -91,6 +94,7 @@ class TrlSftExportStats:
             "skipped_control": self.skipped_control,
             "skipped_helper_calls": self.skipped_helper_calls,
             "skipped_invalid": self.skipped_invalid,
+            "skipped_unparsed_tool_calls": self.skipped_unparsed_tool_calls,
             "rows_compacted": self.rows_compacted,
             "messages_dropped": self.messages_dropped,
             "max_original_tokens": self.max_original_tokens,
@@ -155,6 +159,37 @@ def _trl_message(message: dict[str, Any]) -> dict[str, Any]:
 
 def _has_tool_calls(messages: list[dict[str, Any]]) -> bool:
     return any(bool(message.get("tool_calls")) for message in messages)
+
+
+# What a tool call's arguments become when its input is not a JSON object:
+# ours (_arguments_as_object) and the wrapper a provider's adapter puts in the
+# response itself (MiMo's Anthropic endpoint through the proxy, input cut or
+# sent as text). TRL trains on the completion, so such a call would teach the
+# model to emit the wrapper.
+_UNPARSED_ARGUMENTS = frozenset(
+    {
+        "_malformed_json_arguments",
+        "_non_object_json_arguments",
+        "_non_object_arguments",
+        "__unparsedToolInput",
+    }
+)
+
+
+def _calls_tool_with_unparsed_input(messages: list[dict[str, Any]]) -> bool:
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") if isinstance(call, dict) else None
+            arguments = (
+                function.get("arguments") if isinstance(function, dict) else None
+            )
+            if (
+                isinstance(arguments, dict)
+                and len(arguments) == 1
+                and next(iter(arguments)) in _UNPARSED_ARGUMENTS
+            ):
+                return True
+    return False
 
 
 def _apply_context_policy(
@@ -294,6 +329,8 @@ def _row_from_exchange(
         return None, "invalid_trl_sft_row"
     prompt = [_trl_message(message) for message in normalized.messages[:-1]]
     completion = [_trl_message(normalized.messages[-1])]
+    if _calls_tool_with_unparsed_input(completion):
+        return None, "unparsed_tool_call"
     row = {
         "prompt": prompt,
         "completion": completion,
@@ -305,8 +342,8 @@ def _row_from_exchange(
         "model": ((exchange.get("request") or {}).get("body") or {}).get("model"),
         "exchange_index": exchange_idx,
         "call_purpose": "agent",
-        "source": "benchflow-llm-trajectory",
-        "source_path": str(rollout_dir / "trajectory" / "llm_trajectory.jsonl"),
+        "source": exchange_source(rollout_dir, exchange)[0],
+        "source_path": exchange_source(rollout_dir, exchange)[1],
         "source_rollout_dir": str(rollout_dir),
     }
     agent_result = result.get("agent_result")
@@ -354,7 +391,7 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
         stats.training_signal = signals.manifest()
     for rollout_dir in rollout_dirs:
         stats.rollouts_seen += 1
-        result = _load_json(rollout_dir / "result.json")
+        result = load_rollout_result(rollout_dir)
         if result is None:
             stats.skipped_no_result += 1
             continue
@@ -368,8 +405,7 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
             continue
-        trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-        exchanges = load_llm_trajectory_jsonl(trajectory_path, strict=True)
+        exchanges = load_rollout_exchanges(rollout_dir)
         if not exchanges:
             stats.skipped_no_trajectory += 1
             continue
@@ -423,6 +459,9 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
                 if skip_reason == "missing_tool_defs":
                     stats.skipped_missing_tools += 1
                     continue
+                if skip_reason == "unparsed_tool_call":
+                    stats.skipped_unparsed_tool_calls += 1
+                    continue
                 if row is None:
                     stats.skipped_invalid += 1
                     continue
@@ -439,7 +478,7 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
                     subagent_written += 1
                 if _has_tool_calls(row["prompt"] + row["completion"]):
                     stats.rows_with_tool_calls += 1
-                stats.sources.append(str(trajectory_path))
+                stats.sources.append(row["source_path"])
         stats.subagents.subagent_rows_written += subagent_written
         stats.subagents.subagent_exchanges_excluded += (
             split.subagent_exchanges - subagent_written
@@ -577,6 +616,11 @@ def _convert_results_jsonl_to_trl_sft_rows(
                     "source_index": source_index,
                 }
                 row = {key: value for key, value in row.items() if value is not None}
+                if _calls_tool_with_unparsed_input(
+                    cast(list[dict[str, Any]], row["completion"])
+                ):
+                    stats.skipped_unparsed_tool_calls += 1
+                    continue
                 try:
                     validate_trl_sft_row(row, len(rows) + 1)
                 except ValueError:

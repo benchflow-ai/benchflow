@@ -67,7 +67,7 @@ input_type = "deliverables"
         cfg = TaskConfig.model_validate_toml(
             'version = "1.0"\n[verifier]\ntype = "llm-judge"\n'
         )
-        assert cfg.verifier.judge.model == "claude-sonnet-4-6"
+        assert cfg.verifier.judge.model == "claude-sonnet-5-5"
         assert cfg.verifier.judge.rubric_path == "tests/rubric.toml"
         assert cfg.verifier.judge.input_dir == "/app"
 

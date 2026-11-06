@@ -128,7 +128,7 @@ async def test_gateway_is_written_to_root_owned_policy():
     policies = []
 
     async def upload_dir(source, target, **kwargs):
-        assert target == "/opt/benchflow-egress"
+        assert target == "/opt/runtime-egress"
         policies.append(proxy.Policy.load(Path(source) / "policy.json"))
 
     env = MagicMock()

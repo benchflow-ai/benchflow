@@ -251,7 +251,7 @@ class _DaytonaDinD(_DaytonaStrategy):
     _DOCKER_DAEMON_TIMEOUT_SEC = _positive_int_env(
         "BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 600
     )
-    _COMPOSE_DIR = "/benchflow/compose"
+    _COMPOSE_DIR = "/runtime/compose"
     # Uploaded to ``_COMPOSE_DIR``; every overlay ``_compose_file_flags`` can
     # reference must be here, or ``docker compose -f`` fails on a missing file.
     _BENCHFLOW_COMPOSE_FILES = (
@@ -942,7 +942,7 @@ class _DaytonaDinD(_DaytonaStrategy):
             # snapshot of it), never the task's: the task image's env
             # reaches only the inner containers, which the bootstrap overlay
             # admits (_inert_bootstrap.overlay, startup_name).
-            await env._create_sandbox(params=params)
+            await env._create_or_rebuild(params)
         except Exception as e:
             raise env._startup_failure(e) from e
 
@@ -1045,28 +1045,33 @@ class _DaytonaDinD(_DaytonaStrategy):
                 "regardless of delete=False."
             )
 
-        if env._sandbox:
+        sandbox = env._sandbox
+        if sandbox:
             try:
                 await self._compose_teardown(timeout_sec=30)
             except Exception as e:
                 env.logger.warning(f"docker compose down failed: {e}")
 
         try:
-            if not env._sandbox:
+            if not sandbox:
                 env._log_no_sandbox_to_stop()
             else:
                 try:
-                    await env._stop_sandbox()
+                    await env._stop_sandbox(sandbox)
                 except BaseException as e:
                     # Cancelled too: the delete may be in flight (the ledger
                     # confirms it).
-                    env._log_sandbox_left_behind(e)
+                    env._log_sandbox_left_behind(
+                        e, sandbox=sandbox, release_channels=True
+                    )
                     if not isinstance(e, Exception):
                         raise
                 finally:
-                    env._sandbox = None
+                    if env._sandbox is sandbox:
+                        env._sandbox = None
         finally:
-            env._client_manager = None
+            if env._sandbox is None:
+                env._client_manager = None
 
     async def exec(
         self,
@@ -1214,7 +1219,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         )
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
-        temp = f"/tmp/benchflow_{uuid4().hex}"
+        temp = f"/tmp/runtime_{uuid4().hex}"
         try:
             await self._env._sdk_upload_file(source_path, temp)
             target_parent_cmd = compose_parent_mkdir_p_command(target_path)
@@ -1251,7 +1256,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         ``service`` defaults to ``"main"``; pass a target service to land the
         directory in an additional vulhub-style container (#248).
         """
-        temp = f"/tmp/benchflow_{uuid4().hex}"
+        temp = f"/tmp/runtime_{uuid4().hex}"
         try:
             await self._env._sdk_upload_dir(source_dir, temp, route=VM_ROUTE)
             prep_result = await exec_raw(
@@ -1287,7 +1292,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         self, source_path: str, target_path: Path | str
     ) -> None:
         await self._check_compose_download_file(source_path)
-        temp = f"/tmp/benchflow_{uuid4().hex}"
+        temp = f"/tmp/runtime_{uuid4().hex}"
         try:
             result = await self._compose_exec(
                 ["cp", f"main:{source_path}", temp], timeout_sec=60
@@ -1393,7 +1398,7 @@ class _DaytonaDinD(_DaytonaStrategy):
     async def _compose_download_dir(
         self, source_dir: str, target_dir: Path | str, service: str
     ) -> None:
-        temp = f"/tmp/benchflow_{uuid4().hex}"
+        temp = f"/tmp/runtime_{uuid4().hex}"
         try:
             await self._vm_exec(f"mkdir -p {shlex.quote(temp)}", timeout_sec=10)
             result = await self._compose_exec(
@@ -1613,7 +1618,7 @@ class DinDBfxTransport:
     ) -> tuple[int, bytes, bytes]:
         """``docker import`` on the VM of *archive* (the helper image's tar,
         made on the host from the verified bytes), sent by the SDK's upload."""
-        stage = f"/tmp/benchflow-bfx-{uuid4().hex[:12]}"
+        stage = f"/tmp/runtime-bfx-{uuid4().hex[:12]}"
         made = await self._strategy._vm_exec(
             shlex.join(["mkdir", "-m", "0700", stage]), timeout_sec=30
         )

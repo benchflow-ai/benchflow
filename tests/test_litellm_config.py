@@ -16,7 +16,7 @@ def test_bedrock_model_maps_to_litellm_bedrock_route():
         {"AWS_BEARER_TOKEN_BEDROCK": "token", "AWS_REGION": "us-west-2"},
     )
 
-    assert route.model_alias == "benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"
+    assert route.model_alias == "runtime-aws-bedrock-us.anthropic.claude-opus-4-8"
     assert route.upstream_model == "bedrock/us.anthropic.claude-opus-4-8"
     assert route.required_env == ("AWS_BEARER_TOKEN_BEDROCK", "AWS_REGION")
     assert route.litellm_params["reasoning_effort"] == "high"

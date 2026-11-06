@@ -267,5 +267,5 @@ def test_verifier_recovery_after_lost_sandbox(
         result.get("verifier_error"),
         verification,
     )
-    # The start receipt lives under /run/benchflow, never in the verifier outputs.
+    # The start receipt lives under /run/runtime, never in the verifier outputs.
     assert not list((trial / "verifier").glob("*receipt*"))

@@ -222,5 +222,5 @@ Open any job folder with `bench view <folder>`. `bench eval metrics evals/<id>/t
 
 ## Next steps
 
-- [Cookbook](../../cookbook/index.md): other recipes, including [GRPO training](../../training/grpo-recipe.md).
-- [Skill evals](../../judging/skill-evals.md): measure a skill once, without climbing.
+- [Cookbook](../../tasks/multi-turn.md): other recipes, including [GRPO training](../../train/environment.md).
+- [Skill evals](../../evaluate/skills.md): measure a skill once, without climbing.

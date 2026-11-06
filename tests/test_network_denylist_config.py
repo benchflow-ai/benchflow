@@ -1,6 +1,6 @@
 """Denylist egress mode: task config, capability gate, and stdlib mirrors.
 
-Guards the denylist egress mode, benchflow-ai/FrontierPhysics#365.
+Guards the denylist egress mode.
 """
 
 from __future__ import annotations
@@ -177,11 +177,31 @@ def test_blocked_lists_outside_denylist_are_rejected(mode: str) -> None:
 
 
 def test_allowlist_with_blocked_lists_is_rejected_before_allowlist_check() -> None:
-    """The allowlist messages stay verbatim and fire before the denylist ones."""
-    with pytest.raises(ValueError, match="allowed_hosts must be non-empty"):
+    """The allowlist messages stay verbatim and fire before the denylist ones.
+
+    An allowlist without hosts is now valid, so its blocked lists
+    meet the denylist-only message instead.
+    """
+    with pytest.raises(ValueError, match="only valid for network_mode='denylist'"):
         _validate_network_policy_fields(NetworkMode.ALLOWLIST, None, ["x"], None)
     with pytest.raises(ValueError, match="allowed_hosts is only valid"):
         _validate_network_policy_fields(NetworkMode.DENYLIST, ["x.com"], ["x"], None)
+
+
+@pytest.mark.parametrize("hosts", [None, []])
+def test_allowlist_without_hosts_is_a_policy(hosts: list[str] | None) -> None:
+    """An empty allowlist parses and is an allow-mode policy.
+
+    It admits nothing the task lists, only what the runner admits for the
+    agent (its model endpoint), so a task whose services are its own (Plane,
+    Gitea and the like as compose services) runs with no outside host at all.
+    """
+    from benchflow.sandbox.egress_denylist import egress_denylist_for
+
+    cfg = SandboxConfig(network_mode="allowlist", allowed_hosts=hosts)
+    policy = egress_denylist_for(cfg)
+    assert policy is not None and policy.allow_mode
+    assert policy.allowed_hosts == ()
 
 
 def test_verifier_rejects_denylist() -> None:

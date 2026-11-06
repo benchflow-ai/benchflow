@@ -163,7 +163,7 @@ def test_refusal_is_its_own_cause():
         "rewards": None,
         "verifier_error": (
             "verifier crashed: PluginGuardLoadError: the pytest plugin guard "
-            "_benchflow_guard_x refused a pytest plugin it could not trust, so "
+            "_runtime_guard_x refused a pytest plugin it could not trust, so "
             "pytest stopped and this run is not scored (Verifier plugin trust "
             "rejected: ctrf (ctrf: /app/plugins/ctrf.py is under /app, which "
             "the agent could write))"
@@ -192,11 +192,11 @@ def guard_refusal(quoted: str) -> str:
     """The trial's error for a refusal whose first line quotes *quoted*."""
     return (
         "verifier crashed: PluginGuardLoadError: the pytest plugin guard "
-        "_benchflow_guard_x refused a pytest plugin it could not trust, so "
+        "_runtime_guard_x refused a pytest plugin it could not trust, so "
         "pytest stopped and this run is not scored (Verifier plugin trust "
         f"rejected: ctrf (cannot inspect: OSError: [Errno 40] Too many levels "
         f"of symbolic links: '/app/{quoted}-1.0.dist-info/entry_points.txt')); "
-        "listed in verifier/_benchflow_guard_x.ab.refused"
+        "listed in verifier/_runtime_guard_x.ab.refused"
     )
 
 
@@ -234,7 +234,7 @@ def test_guard_crash_quoting_the_refusal_words_is_not_a_refusal():
     """Guards V2-R1-A-1: only the guard's opening words name a refusal."""
     error = (
         "verifier crashed: PluginGuardLoadError: the pytest plugin guard "
-        "_benchflow_guard_x crashed inside pytest (OSError: refused a pytest "
+        "_runtime_guard_x crashed inside pytest (OSError: refused a pytest "
         "plugin; connection reset); traceback in verifier/x.crashed; its "
         "reward is not scored"
     )

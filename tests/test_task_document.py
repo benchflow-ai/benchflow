@@ -1414,18 +1414,22 @@ def test_multi_agent_profile_reviewer_model_is_one_the_pinned_adapter_accepts() 
     inherit a stale list.
     """
     assert _CLAUDE_AGENT_ACP_PACKAGE == "@agentclientprotocol/claude-agent-acp@0.81.2"
-    assert _CLAUDE_CODE_PACKAGE == "@anthropic-ai/claude-code@2.1.280"
+    assert _CLAUDE_CODE_PACKAGE == "@anthropic-ai/claude-code@2.1.316"
 
+    # Re-probed on 2026-11-04 with Claude Code 2.1.316: it lists only current
+    # models (and their aliases), so claude-haiku-4-5(-20251001),
+    # claude-sonnet-5, claude-sonnet-4-6, claude-opus-5 and claude-opus-4-8
+    # answered -32603 too.
     accepted_by_the_pinned_adapter = {
-        "claude-haiku-4-5-20251001",
-        "claude-haiku-4-5",
-        "claude-sonnet-5",
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
         "claude-opus-5-5",
         "claude-fable-5-1",
         "default",
         "haiku",
         "sonnet",
         "opus",
+        "fable",
     }
     roles = _TASK_AUTHORING_PROFILES["multi-agent"]["agents"]["roles"]
     reviewer = roles["reviewer"]

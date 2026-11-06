@@ -17,6 +17,10 @@ One table per run, :class:`CredentialPolicy`, computed once at the end of
       A slot already holding the proxy key may be placed as a variable or a
       file (connect_as wires the proxy before staging).
 
+An agent that routes its own model calls (``model_route = "agent"``)
+is on the direct route whatever model label it carries: the label never
+selects a provider login, so it receives only its own declared credentials.
+
 Every placement reads only this table: launch variables
 (:func:`agent_launch_env`), credential files written into the agent's home
 (:meth:`CredentialPolicy.admitted_value`, the only value source for ADC,
@@ -42,10 +46,11 @@ from benchflow.agents.env import (
     _login_family,
     _select_login,
     inheritable_env_names,
+    uses_direct_anthropic_endpoint,
     uses_native_subscription_auth,
     uses_native_vertex_login,
 )
-from benchflow.agents.registry import AGENTS, launcher_guard_env
+from benchflow.agents.registry import AGENTS, launcher_guard_env, routed_model
 
 # Inherited or derived names that never hold a credential. Every other name
 # the resolver can inherit counts as a credential, so a name added to the
@@ -219,7 +224,9 @@ def _route(agent: str, model: str | None, env: dict[str, str]) -> str:
         return PROXY
     if agent in _SCRIPTED_AGENTS:
         return NONE
-    if model is None:
+    if uses_direct_anthropic_endpoint(agent, model, env):
+        return DIRECT
+    if routed_model(agent, model) is None:
         return DIRECT
     if uses_native_subscription_auth(agent, model, env):
         return NATIVE
@@ -246,6 +253,8 @@ def compute_credential_policy(
     explicit_keys: set[str] | frozenset[str],
 ) -> CredentialPolicy:
     """The table for one agent, from its resolved env and the caller's keys."""
+    # A label of an agent that routes its own model calls selects nothing.
+    model = routed_model(agent, model)
     route = _route(agent, model, env)
     if route == NONE:
         return CredentialPolicy(route=route)

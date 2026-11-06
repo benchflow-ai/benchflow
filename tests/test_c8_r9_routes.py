@@ -48,7 +48,7 @@ from benchflow.sandbox._base import (
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "benchflow"
 # Root's HOME on the kit: a mode-700 folder of the protected tree.
-ROOT_HOME = "/opt/benchflow/run/home"
+ROOT_HOME = "/opt/runtime/run/home"
 KIT_RECORD = RuntimeKit(trusted=("/usr/bin", "/bin"), python=True, bash=True)
 KIT_ROUTE = ExecRoute(
     pin=KIT_RECORD.path,
@@ -174,7 +174,7 @@ async def test_every_root_exec_in_main_starts_from_the_kit(backend, phase):
 @pytest.mark.parametrize("phase", PHASES)
 @pytest.mark.parametrize("backend", sorted(SERVICE_BACKENDS))
 async def test_every_root_exec_in_a_service_takes_that_services_own_kit(backend, phase):
-    """PT-C8-R8-3: a service gets root's plumbing only on its
+    """A service gets root's plumbing only on its
     own kit; without one (once main has its kit) root's steps there are
     refused, while a named non-root user's command there still runs."""
     for has_kit in (True, False):
@@ -209,6 +209,13 @@ SDK_CALLS = re.compile(
     r"open_shell\(|invoke_agent_runtime_command\(|\.exec\.aio\("
 )
 SDK_CALLERS = {
+    # The command channel adds two calls on its captured protected route.
+    ("sandbox/daytona_channel.py", "DaytonaChannel.connect"): (
+        "the route's protected Python; terminal_env before the terminal starts"
+    ),
+    ("sandbox/daytona_channel.py", "DaytonaChannels._control"): (
+        "_session_command builds the control command on the captured root route"
+    ),
     ("sandbox/daytona.py", "DaytonaSandbox._sandbox_session_exec"): (
         "lowest call: sends the session command _session_command built on the "
         "route _sandbox_exec passes (its payload, if any, as staged stdin)"
@@ -310,7 +317,7 @@ def test_every_raw_provider_sdk_call_is_on_a_route():
 
 @not_root
 def test_a_link_another_user_owns_in_a_sticky_folder_fails_the_walk():
-    """PT-C8-R8-4: a link in a sticky folder (/tmp) that
+    """A link in a sticky folder (/tmp) that
     another user owns can be replaced by that user, wherever it points
     today. Every walk refuses it, as a hop and as the path itself."""
     tmp = Path("/tmp")
@@ -334,7 +341,7 @@ def test_a_link_another_user_owns_in_a_sticky_folder_fails_the_walk():
 
 
 def test_the_seal_refuses_a_runtime_root_that_is_a_link():
-    """The reserved root: /opt/benchflow and its kit are
+    """The reserved root: /opt/runtime and its kit are
     folders, never aliases, before anything is made in them."""
     head = kit_prepare_command("build").split('bfc_chain "$RT" 0', 1)[0]
     assert '[ ! -L "$RT" ] && [ ! -L "$KIT" ] || bf_die' in head
@@ -355,7 +362,7 @@ def _daytona_sdk(seen: list[str]):
 
 @pytest.mark.asyncio
 async def test_daytona_staging_pins_the_routes_path_before_any_program():
-    """PT-C8-R8-1: each staging command Daytona's toolbox runs
+    """Each staging command Daytona's toolbox runs
     (the env file, the script file, the clean-up) starts the route's shell
     by absolute path, and its first text pins PATH: no program runs before
     it, the staging folder's mkdir and check included."""
@@ -401,14 +408,14 @@ def test_openhands_install_keeps_the_routes_path():
     install = AGENTS["openhands"].install_cmd
     for value in re.findall(r'export PATH="([^"]*)"', install):
         assert "$HOME" not in value and "~" not in value, value
-    assert "export UV_TOOL_DIR=/opt/benchflow/uv-tools " in install
-    assert "UV_TOOL_BIN_DIR=/opt/benchflow/bin" in install
-    assert install.endswith("test -x /opt/benchflow/bin/openhands")
+    assert "export UV_TOOL_DIR=/opt/runtime/uv-tools " in install
+    assert "UV_TOOL_BIN_DIR=/opt/runtime/bin" in install
+    assert install.endswith("test -x /opt/runtime/bin/openhands")
     assert "command -v openhands" not in install
     launch = AGENTS["openhands"].launch_cmd
     # integ's umask (cli-other-blockers) comes first; then the PATH.
     assert launch.removeprefix("umask 077; ").startswith(
-        'export PATH="/opt/benchflow/bin:'
+        'export PATH="/opt/runtime/bin:'
     )
 
 
@@ -425,11 +432,9 @@ async def test_openhands_root_patch_runs_the_protected_entry_point():
         agent_env={"BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS": "1"},
     )
     command = env.exec.await_args.args[0]
-    assert "OH_BIN=/opt/benchflow/bin/openhands" in command
+    assert "OH_BIN=/opt/runtime/bin/openhands" in command
     assert "command -v" not in command and "$HOME" not in command
-    assert command.index("bfc_chain /opt/benchflow/uv-tools 0") < command.index(
-        "OH_BIN="
-    )
+    assert command.index("bfc_chain /opt/runtime/uv-tools 0") < command.index("OH_BIN=")
     assert '"$OH_PY" -I ' in command
 
 
@@ -460,7 +465,7 @@ def test_the_task_route_restores_no_loader_value_another_user_can_replace(
 
 @pytest.mark.asyncio
 async def test_a_root_task_command_on_the_kit_checks_the_values_it_restores():
-    """At the exec: Docker's task route as root on the kit."""
+    """Docker's task route as root on the kit, at the exec."""
     from benchflow.sandbox.docker import DockerSandbox
 
     sandbox = object.__new__(DockerSandbox)
@@ -550,12 +555,12 @@ def test_the_proxy_runtime_is_outside_any_workspace_a_task_may_have():
     from benchflow.providers.litellm_runtime import LITELLM_SANDBOX_ROOT
 
     assert LITELLM_SANDBOX_ROOT.startswith(RUNTIME_ROOT + "/")
-    # /opt is granted without /opt/benchflow (PT-C8-R3-11).
+    # /opt is granted without /opt/runtime (PT-C8-R3-11).
     assert workspace_grant_problem("/opt") is None
     for workspace in ("/tmp", "/tmp/work", "/app", "/root"):
         assert workspace_grant_problem(workspace) is None, workspace
         assert not LITELLM_SANDBOX_ROOT.startswith(workspace.rstrip("/") + "/")
-    for workspace in ("/opt/benchflow", "/opt/benchflow/proxy"):
+    for workspace in ("/opt/runtime", "/opt/runtime/proxy"):
         assert workspace_grant_problem(workspace), workspace
 
 

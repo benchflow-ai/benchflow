@@ -213,7 +213,7 @@ class AgentCoreProcess(LiveProcess):
         remote_path = (
             f"{RUN_DIR}/env-{uuid.uuid4().hex}"
             if getattr(self._route, "kit", False)
-            else f"/tmp/.benchflow_agent_env_{uuid.uuid4().hex[:16]}"
+            else f"/tmp/.runtime_agent_env_{uuid.uuid4().hex[:16]}"
         )
         body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
         result = await self._sandbox.write_text_file(remote_path, body, mode="600")

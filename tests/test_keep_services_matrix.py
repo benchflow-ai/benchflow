@@ -89,13 +89,10 @@ ROWS = [
         default="agent",
     ),
     Row("oracle-image-root", verifier('"0"'), "oracle"),
-    Row(
-        "oracle-image-nonroot",
-        verifier('"0"'),
-        "oracle",
-        default="agent",
-        setup=SPELLING,
-    ),
+    # An oracle with no account of its own runs as root whatever the image's
+    # USER (setup gives the workspace and /logs/agent to the sandbox
+    # user, so an image user could use neither), exempt like a root image's.
+    Row("oracle-image-nonroot", verifier('"0"'), "oracle", default="agent"),
     Row(
         "oracle-agent-declared",
         AGENT_ORACLE + verifier('"0"'),

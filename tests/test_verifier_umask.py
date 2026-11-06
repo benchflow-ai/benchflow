@@ -15,6 +15,7 @@ The sandbox model here runs the verifier's real command string through
 """
 
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -148,7 +149,11 @@ async def test_start_receipt_and_test_command_share_the_mask(tmp_path):
     await verifier.verify()
 
     (command,) = [c for c in commands if "test-stdout.txt" in c]
-    assert command.startswith("umask 022 && printf started > /run/benchflow/")
+    assert re.match(
+        r"umask 022 && export BENCHFLOW_VERIFIER_ATTEMPT=verifier-started-[0-9a-f]{32}"
+        r" && printf started > /run/runtime/",
+        command,
+    )
 
 
 def test_with_verifier_umask_prefixes_the_command():

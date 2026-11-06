@@ -487,3 +487,87 @@ def test_reformat_keeps_the_trailing_newline() -> None:
     ws = next(v for v in variants if v.family == "whitespace")
     assert ws.changes[ANSWER] == raw[:-1]
     assert ws.instruction_fixes_form
+
+
+def test_verifier_sources_takes_a_relative_task_folder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`bench check skillsbench/tasks/x --level equivalence`
+    stopped with "battery could not run: ... is not in the subpath of ...":
+    the verifier's files were found under the resolved task folder and keyed
+    against the relative path the command was given."""
+    from benchflow.task.equivalence import verifier_sources
+
+    task = tmp_path / "tasks" / "t"
+    (task / "verifier").mkdir(parents=True)
+    (task / "verifier" / "test_outputs.py").write_text("assert True\n")
+    monkeypatch.chdir(tmp_path)
+
+    assert verifier_sources(Path("tasks/t")) == {
+        "verifier/test_outputs.py": "assert True\n"
+    }
+
+
+def test_battery_builds_the_verifier_runtime_before_the_oracle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On Docker every graded variant stopped with "protected
+    verifier runtime was not built before the agent's turn": the check ran the
+    oracle without the setup a trial does first. It now seeds the verifier's
+    workspace and builds the runtime, in that order, before the oracle runs."""
+    import benchflow.contracts as contracts
+    import benchflow.rollout as rollout
+    import benchflow.rollout._setup as setup
+    from benchflow.task import equivalence
+
+    task = tmp_path / "t"
+    (task / "oracle").mkdir(parents=True)
+    (task / "oracle" / "solve.sh").write_text("#!/bin/bash\n")
+    (task / "task.md").write_text("---\nversion: '1.0'\n---\nDo it.\n")
+    calls: list[str] = []
+
+    class Env:
+        async def exec(self, *a, **k):
+            return None
+
+        async def stop(self, delete: bool = True) -> None:
+            calls.append("stop")
+
+    class Planes:
+        def create_environment(self, *a, **k):
+            return Env()
+
+        async def prepare_log_dirs(self, env, *, sandbox_user):
+            calls.append("log dirs")
+
+        async def seed_verifier_workspace(self, env, *, workspace, sandbox_user):
+            calls.append("seed")
+
+        async def prepare_verifier_runtime(self, env, *, task, sandbox_user):
+            calls.append("runtime")
+
+    async def upload(*a, **k):
+        calls.append("upload")
+
+    async def cwd(*a, **k):
+        return "/app"
+
+    async def raw(*a, **k):
+        return None
+
+    async def oracle(*a, **k):
+        calls.append("oracle")
+        return [{"return_code": 1, "stdout": "stop here"}], None
+
+    monkeypatch.setattr(contracts, "default_rollout_planes", lambda: Planes())
+    monkeypatch.setattr(rollout, "_start_env_and_upload", upload)
+    monkeypatch.setattr(rollout, "_resolve_agent_cwd", cwd)
+    monkeypatch.setattr(setup, "_run_oracle", oracle)
+    monkeypatch.setattr(equivalence, "exec_raw", raw)
+
+    report = asyncio.run(
+        equivalence.check_equivalence_async(task, sandbox_type="docker")
+    )
+
+    assert calls == ["upload", "log dirs", "seed", "runtime", "oracle", "stop"]
+    assert report.status == "oracle-fails"

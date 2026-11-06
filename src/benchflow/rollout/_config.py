@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from benchflow._types import Role, Scene
 from benchflow._utils.config import (
+    DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
+    default_agent_idle_timeout,
     normalize_agent_idle_timeout,
     normalize_agent_name,
     normalize_reasoning_effort,
@@ -43,6 +46,7 @@ from benchflow.skill_policy import (
     SKILL_MODE_WITH_SKILL,
     normalize_skill_mode,
 )
+from benchflow.trial_budget import TrialBudget
 from benchflow.usage_tracking import UsageTrackingConfig
 
 logger = logging.getLogger(__name__)
@@ -93,6 +97,30 @@ def _task_document_scenes(
 
     document = TaskDocument.from_path(document_path)
     return materialize_prompt_plan_scenes(document)
+
+
+def _task_steps_user(task_path: Path, agent: Callable[[], str | None]) -> Any:
+    """The scripted user of a task.toml multi-step task, or None (no steps,
+    a task.md task, or a scripted seat: the oracle runs each step's
+    solve.sh itself). *agent* is read only for a task with steps."""
+    if (task_path / "task.md").exists() or not (task_path / "task.toml").is_file():
+        return None
+    import tomllib
+
+    try:
+        steps = tomllib.loads((task_path / "task.toml").read_text()).get("steps")
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        # The task's own load says what is wrong with it.
+        return None
+    if not isinstance(steps, list) or not steps:
+        return None
+    seat = agent()
+    if seat is None or is_scripted_agent(seat):
+        return None
+    from benchflow.task import Task
+    from benchflow.task.steps import StepsUser
+
+    return StepsUser(Task(task_path))
 
 
 def _task_document_user_runtime(
@@ -160,6 +188,10 @@ class RolloutConfig:
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection.
     agent_idle_timeout: int | None = 600
+    # The caller set agent_idle_timeout instead of taking BenchFlow's default
+    # for the effort (_utils.config.default_agent_idle_timeout), as
+    # EvaluationConfig's field of that name; None: any value but 600 was set.
+    agent_idle_timeout_given: bool | None = None
     # Hard wall-clock budget for the agent prompt, in seconds. When set,
     # overrides the per-task default (task config [agent] timeout_sec).
     # ``None`` keeps the task's own default — this is the seam through which
@@ -169,6 +201,10 @@ class RolloutConfig:
     # Text appended to every resolved prompt (``bench eval run --extra-instruction``):
     # prompt ablations without editing tasks. Recorded in the rollout config.
     prompt_suffix: str | None = None
+    # The trial's token and turn budget (benchflow.trial_budget): a measure
+    # set here replaces the task's [agent] token_budget / turn_budget. The
+    # model proxy enforces the result while the agent runs.
+    trial_budget: TrialBudget | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
     # How the agent runs: "acp" (default) through its ACP adapter, or "native"
     # through its own CLI in headless JSON mode (benchflow.native_harness;
@@ -220,6 +256,12 @@ class RolloutConfig:
     # regrade`` can re-run a changed verifier later. Rubric review and
     # verifier recovery freeze it anyway; this makes any trial regradable.
     freeze_workspace: bool = False
+    # Keep the trial's sandbox instead of deleting it at teardown
+    # (``--keep-sandbox``): "never", "on-failure" (a trial that did not pass)
+    # or "always"; docker and daytona only. ``bench sandbox attach`` opens a
+    # root shell in a kept one and ``bench sandbox release`` deletes it
+    # (rollout/_keep_sandbox.py).
+    keep_sandbox: str = "never"
     # Reward integrity (benchflow.integrity): "audit" records host-side
     # evidence of what the agent did and writes integrity/claim_verdict.json;
     # "strict" also runs the verifier in the separate verifier sandbox. Never
@@ -407,11 +449,16 @@ class RolloutConfig:
                 "rollout's deadline when the task sets none"
             )
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.trial_budget = TrialBudget.coerce(self.trial_budget)
         self.reviewer = ReviewerConfig.coerce(self.reviewer)
         if self.codex_apps_policy not in {None, "disabled", "inherit"}:
             raise ValueError("codex_apps_policy must be disabled, inherit, or None")
         if self.purpose not in {"task", "reviewer"}:
             raise ValueError("purpose must be task or reviewer")
+        from benchflow.rollout._keep_sandbox import check_backend, normalize_policy
+
+        self.keep_sandbox = normalize_policy(self.keep_sandbox)
+        check_backend(self.keep_sandbox, self.environment)
         from benchflow.integrity.constants import normalize_integrity_mode
 
         self.integrity = normalize_integrity_mode(self.integrity)
@@ -429,6 +476,24 @@ class RolloutConfig:
                 role.reasoning_effort = normalize_reasoning_effort(
                     role.reasoning_effort
                 )
+        if self.agent_idle_timeout_given is None:
+            self.agent_idle_timeout_given = (
+                self.agent_idle_timeout != DEFAULT_AGENT_IDLE_TIMEOUT_SEC
+            )
+        if not self.agent_idle_timeout_given:
+            # bf.run, the SDK and bench eval branch get the effort's default,
+            # as bench run does: 1800 s at xhigh or max. The first role's
+            # effort, read without effective_scenes (a self-gen config has
+            # no scenes of its own yet).
+            first = (
+                self.scenes[0].roles[0]
+                if self.scenes and self.scenes[0].roles
+                else None
+            )
+            effort = (
+                first.reasoning_effort if first is not None else self.reasoning_effort
+            )
+            self.agent_idle_timeout = default_agent_idle_timeout(effort)[0]
         from benchflow.agents.muse_config import validate_muse_roles
 
         validate_muse_roles(
@@ -519,6 +584,18 @@ class RolloutConfig:
             self.user, max_rounds = document_user
             if max_rounds is not None:
                 self.max_user_rounds = max_rounds
+            return
+        # Self-gen's orchestrator builds its own scenes (effective_scenes
+        # refuses it here).
+        steps_user = (
+            None
+            if self.skill_mode == SKILL_MODE_SELF_GEN
+            else _task_steps_user(self.task_path, lambda: self.primary_agent)
+        )
+        if steps_user is not None:
+            # One round per step, and one more call that ends the loop: the
+            # user records the last step's soft verify there (task/steps.py).
+            self.user, self.max_user_rounds = steps_user, len(steps_user.steps) + 1
 
     @classmethod
     def from_legacy(

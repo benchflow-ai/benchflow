@@ -17,6 +17,7 @@ from benchflow.agents.providers import (
     resolve_base_url,
     strip_provider_prefix,
 )
+from benchflow.providers.pricing_snapshot import model_prices
 
 AZURE_API_VERSION_ENV = "AZURE_API_VERSION"
 AZURE_DEFAULT_API_VERSION = "preview"
@@ -44,8 +45,8 @@ _NATIVE_LITELLM_COMPLETIONS_PROVIDERS = frozenset({"deepseek"})
 # price is injected into the LiteLLM deployment as ``input_cost_per_token`` /
 # ``output_cost_per_token`` so LiteLLM computes ``response_cost`` itself —
 # BenchFlow keeps no cost-calculation logic, only this price *data*. Mainstream
-# models (OpenAI, Anthropic, Gemini, Bedrock, Azure, …) are already priced by
-# LiteLLM and must NOT be listed here.
+# models are priced by LiteLLM or by ``pricing_snapshot`` and must NOT be listed
+# here.
 #
 # Keys are matched as a lowercase substring of the bare model id. Values are USD
 # *per token* (i.e. price-per-million-tokens / 1e6). Add entries for the custom
@@ -53,22 +54,10 @@ _NATIVE_LITELLM_COMPLETIONS_PROVIDERS = frozenset({"deepseek"})
 #
 # Example:
 #   "minimax-m3": (0.30e-6, 1.20e-6),   # $0.30 / $1.20 per 1M in/out — VERIFY
-MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {
-    # deepseek-v4 is not in LiteLLM's built-in price table (it tops out at
-    # deepseek-v3.2), so a deepseek-v4 run otherwise records $0/null cost.
-    # v4 list price is not yet published — these are v3-class PLACEHOLDERS;
-    # VERIFY against api-docs.deepseek.com/quick_start/pricing before relying on
-    # absolute cost figures. (Single flat input rate uses the cache-miss price,
-    # so cache-hit-heavy runs are slightly over-counted.)
-    "deepseek-v4-pro": (
-        0.28e-6,
-        0.42e-6,
-    ),  # $0.28 / $0.42 per 1M in/out — PLACEHOLDER, VERIFY
-    "deepseek-v4-flash": (
-        0.28e-6,
-        0.42e-6,
-    ),  # $0.28 / $0.42 per 1M in/out — PLACEHOLDER, VERIFY
-}
+# The DeepSeek V4 placeholders that stood here ($0.28 / $0.42 for both models,
+# never verified) overrode LiteLLM's table; ``pricing_snapshot`` now carries
+# DeepSeek's published rates (2026-11-04).
+MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {}
 
 
 def custom_cost_per_token(model: str) -> tuple[float, float] | None:
@@ -147,7 +136,7 @@ def safe_model_alias(model: str) -> str:
     if len(cleaned) > 96:
         digest = hashlib.sha1(model.encode()).hexdigest()[:10]
         cleaned = f"{cleaned[:80].rstrip('-')}-{digest}"
-    return f"benchflow-{cleaned}"
+    return f"runtime-{cleaned}"
 
 
 def _env_ref(name: str) -> str:
@@ -245,6 +234,7 @@ def _route_registered_provider(
             "api_key": _env_ref("AZURE_API_KEY"),
             "api_base": api_base,
             "api_version": env.get(AZURE_API_VERSION_ENV, AZURE_DEFAULT_API_VERSION),
+            "allowed_openai_params": ["reasoning_effort"],
         }
         effort = _provider_reasoning_effort(env)
         if effort:
@@ -339,13 +329,16 @@ def _route_registered_provider(
         # native runs used the agent's. LiteLLM's native provider integrations
         # declare those params supported (deepseek does for both), so routing
         # through the provider's own prefix forwards them while drop_params
-        # keeps protecting genuinely unsupported fields. (The pinned LiteLLM
-        # 1.89.0 has no per-deployment allowed_openai_params escape, so the
-        # provider prefix is the only faithful route.)
+        # keeps protecting genuinely unsupported fields. OpenAI-compatible
+        # routes separately allow agent-supplied reasoning_effort below.
         upstream = f"{provider_name}/{bare}"
     else:
         upstream = f"openai/{bare}"
     params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
+    if upstream.startswith("openai/"):
+        # The provider validates requested effort, including models newer than
+        # the pinned LiteLLM catalog. Never silently discard this setting.
+        params["allowed_openai_params"] = ["reasoning_effort"]
     if api_base:
         params["api_base"] = api_base
     native_key = (env.get(provider_cfg.auth_env or "") or "").strip()
@@ -410,6 +403,10 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
         required = ("OPENAI_API_KEY",)
 
     params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
+    if upstream.startswith("openai/"):
+        # The provider validates requested effort, including models newer than
+        # the pinned LiteLLM catalog. Never silently discard this setting.
+        params["allowed_openai_params"] = ["reasoning_effort"]
     # The proxy serves the key and endpoint resolve_agent_env selected, in
     # every family: a generic key is mapped to the agent's own slot
     # (ANTHROPIC_AUTH_TOKEN for Claude), never to the family key named above,
@@ -443,6 +440,9 @@ def litellm_proxy_config(
 ) -> dict[str, object]:
     """Build the LiteLLM ``config.yaml`` payload for one route."""
     params = dict(route.litellm_params)
+    prices = model_prices(route.provider_name, route.upstream_model)
+    for key, value in prices.items():
+        params.setdefault(key, value)
     cost = custom_cost_per_token(route.upstream_model)
     if cost is not None:
         params.setdefault("input_cost_per_token", cost[0])
@@ -484,6 +484,12 @@ def litellm_proxy_config(
                 model_list.append(
                     {"model_name": bridge_name, "litellm_params": dict(bridge_params)}
                 )
+    if prices:
+        # LiteLLM's router keeps only its own list of price keys from
+        # litellm_params and drops a tier such as Haiku 5.5's prompts over
+        # 100K tokens (priced 5x); the deployment's model_info keeps them all.
+        for entry in model_list:
+            entry["model_info"] = dict(prices)
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},

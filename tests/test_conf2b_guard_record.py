@@ -332,4 +332,4 @@ async def test_an_unrecorded_python_puts_the_guard_on_pythonpath(
     )
     assert env["PYTHONPATH"] == ("/guard:/image" if unrecorded else "/image")
     # For the verifier's guard-load error (CONF-2b round 3).
-    assert sandbox._benchflow_guard_unrecorded == unrecorded
+    assert sandbox._runtime_guard_unrecorded == unrecorded

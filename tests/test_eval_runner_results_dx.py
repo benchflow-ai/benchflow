@@ -103,7 +103,9 @@ def test_a_matrix_names_a_control_by_its_agent_and_refuses_none(tmp_path: Path):
         _load_eval_matrix(shapeless)
 
 
-def test_matrix_and_trials_take_a_dataset_and_refuse_a_config(tmp_path: Path):
+def test_matrix_and_trials_take_a_dataset_or_repository_and_refuse_a_config(
+    tmp_path: Path,
+):
     from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 
     matrix = tmp_path / "m.yaml"
@@ -115,7 +117,13 @@ def test_matrix_and_trials_take_a_dataset_and_refuse_a_config(tmp_path: Path):
     build_eval_plan(
         EvalCreateRequest(dataset="terminal-bench@2.0", matrix=matrix, trials=3)
     )
-    with pytest.raises(EvalPlanError, match="needs a task folder or --dataset"):
+    # A task named by repository repeats too.
+    build_eval_plan(
+        EvalCreateRequest(
+            source_repo="benchflow-ai/skillsbench", agent="oracle", trials=3
+        )
+    )
+    with pytest.raises(EvalPlanError, match="needs a task folder, a task named by"):
         build_eval_plan(EvalCreateRequest(config_file=Path("run.yaml"), trials=3))
 
 
@@ -268,7 +276,7 @@ def test_inspect_names_the_unfinished_tasks_and_how_to_resume(tmp_path: Path):
     assert f"bench eval resume {job}" in out.output
     # Only control runs: counted, without "0 left out (… counted)".
     assert "0 control runs left out" not in out.output
-    assert "0 unscored, only control runs, so they are counted" in out.output
+    assert "0 unscored, 0 errored, only control runs, so they are counted" in out.output
 
 
 def test_list_shows_an_interrupted_job_against_its_plan(tmp_path: Path):
@@ -473,7 +481,7 @@ def test_trials_5_with_an_infrastructure_error_in_trial_01_runs_every_trial(
     # P4's rule: the errored trial counts as a trial that did not pass.
     rates = summary["solve_rates"]["oracle"]
     assert rates["trials"] == 5 and rates["solve_rate"] == pytest.approx(0.8)
-    assert "Matrix: 5 trial job(s), 4/5 trials passed, errors=1" in run.output
+    assert "Matrix: 5 jobs (5 repeats), 4/5 trials passed, errors=1" in run.output
     doc = json.loads((tmp_path / "run.json").read_text())
     assert (doc["total"], doc["passed"], doc["errored"]) == (5, 4, 1)
 
@@ -519,7 +527,7 @@ def test_a_matrix_gate_leaves_its_nop_control_out(tmp_path, monkeypatch):
     )
     assert "Gate failed" not in run.output
     # The Matrix line still totals every trial.
-    assert "Matrix: 4 trial job(s), 2/4 trials passed" in run.output
+    assert "Matrix: 4 jobs (2 aliases, 2 repeats each), 2/4 trials passed" in run.output
 
 
 def test_a_matrix_of_only_controls_gates_on_them_once(tmp_path, monkeypatch):

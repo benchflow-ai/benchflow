@@ -1,7 +1,7 @@
 """The Environment plane — Han's "S" (the stateful world).
 
 A benchmark author writes a manifest (``environment.toml``); the default
-adapter runs it on any Sandbox provider. See ``docs/architecture.md``,
+adapter runs it on any Sandbox provider. See ``docs/start/how-it-works.md``,
 "The Environment plane & the manifest".
 """
 

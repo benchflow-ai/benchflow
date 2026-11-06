@@ -38,7 +38,7 @@ def test_prior_role_startup_files_never_run(tmp_path, hook, agent, source_name, 
             check=True,
         )
         command = registry.AGENTS[agent].launch_cmd.replace(
-            f"/opt/benchflow/bin/{binary}", str(target)
+            f"/opt/runtime/bin/{binary}", str(target)
         )
     elif agent.startswith("settings"):
         command = registry._json_settings_merge(
@@ -118,7 +118,7 @@ def test_dependency_shims_keep_trusted_site_packages_but_ignore_user_paths():
     """5bb84a1b did not isolate the pinned venv shims from PYTHONPATH."""
     for name in ("harvey-lab-harness", "deepagents"):
         command = registry.AGENTS[name].launch_cmd
-        assert "/opt/benchflow/" in command
+        assert "/opt/runtime/" in command
         assert "/bin/python -I " in command
         assert " -S " not in command
 

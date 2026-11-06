@@ -365,6 +365,85 @@ def _check_workspace_plugin_installs(
     return warnings
 
 
+# Programs that fetch from the network when test.sh runs, by first word (and
+# subcommand). A failed fetch fails the tests, and the trial scores 0 like a
+# wrong answer.
+_FETCHERS = {
+    "pip": ("install",),
+    "pip3": ("install",),
+    "uv": ("add", "sync", "pip"),
+    "uvx": (),
+    "pipx": ("install", "run"),
+    "conda": ("install", "create"),
+    "mamba": ("install", "create"),
+    "apt-get": ("update", "install"),
+    "apt": ("update", "install"),
+    "apk": ("add",),
+    "yum": ("install",),
+    "dnf": ("install",),
+    "npm": ("install", "i", "ci"),
+    "npx": (),
+    "yarn": ("add", "install"),
+    "pnpm": ("add", "install"),
+    "cargo": ("install",),
+    "go": ("install", "get"),
+    "git": ("clone",),
+    "curl": (),
+    "wget": (),
+}
+_OFFLINE_OPTIONS = frozenset({"--no-index", "--offline"})
+_LOCAL_URL_RE = re.compile(r"^(?:\w+://)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b")
+
+
+def grade_time_downloads(text: str) -> list[str]:
+    """The commands in a verifier script that fetch from the network."""
+    found: list[str] = []
+    for command in _SCRIPT_COMMAND_SPLIT_RE.split(_SCRIPT_COMMENT_RE.sub("", text)):
+        words = _command_words(command.strip())
+        if words[:1] in (["sudo"], ["command"]):
+            words = words[1:]
+        if not words:
+            continue
+        program = words[0].rsplit("/", 1)[-1]
+        rest = words[1:]
+        if program.startswith("python") and rest[:2] == ["-m", "pip"]:
+            program, rest = "pip", rest[2:]
+        if program not in _FETCHERS or _OFFLINE_OPTIONS & set(rest):
+            continue
+        subcommands = _FETCHERS[program]
+        if subcommands and (not rest or rest[0] not in subcommands):
+            continue
+        if program == "uv" and rest[0] == "pip" and rest[1:2] != ["install"]:
+            continue
+        if program in ("curl", "wget"):
+            urls = [w for w in rest if not w.startswith("-")]
+            if not urls or all(_LOCAL_URL_RE.match(u) for u in urls):
+                continue
+        shown = 2 if program == "uv" and rest[0] == "pip" else 1
+        found.append(" ".join([program, *rest[:shown]]) if subcommands else program)
+    return list(dict.fromkeys(found))
+
+
+def _check_grade_time_downloads(verifier_dir: Path, *, label: str) -> list[str]:
+    """Warn when a verifier script downloads while it grades."""
+    warnings = []
+    for script in sorted(verifier_dir.glob("*.sh")):
+        try:
+            text = script.read_text(errors="replace")
+        except OSError:
+            continue
+        found = grade_time_downloads(text)
+        if found:
+            warnings.append(
+                f"{label}/{script.name} downloads while it grades "
+                f"({', '.join(found)}): when the download fails, the tests fail "
+                "and the trial scores 0 like a wrong answer. Install what it "
+                "needs into the image (environment/Dockerfile), or for a pytest "
+                "plugin pin its release in [verifier] pytest_plugin_releases"
+            )
+    return warnings
+
+
 def _logical_dir_label(paths: TaskPaths, *, kind: Literal["verifier", "oracle"]) -> str:
     if kind == "verifier":
         return (
@@ -474,8 +553,8 @@ def _check_task_document(task_md: Path) -> list[str]:
         issues.append("task.md prompt is empty")
     if _PLACEHOLDER_MARKER in text:
         issues.append(
-            "task.md contains unreplaced placeholder - replace "
-            "task prompts, role prompts, and simulated-user notes"
+            "task.md contains unreplaced placeholder — replace "
+            "the task's prompts, role prompts and simulated-user notes"
         )
     return issues
 
@@ -531,7 +610,7 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
             "publication-grade validation requires native verifier/ — `bench import` "
             "produces the native layout but not the verifier package; "
             "author verifier/ (verifier.md + rubrics/) per "
-            "docs/tasks/verifier.md, then re-run check"
+            "docs/tasks/verifiers.md, then re-run check"
         )
         return issues
     if paths.legacy_tests_dir.exists():
@@ -544,7 +623,7 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
     if not verifier_md.exists():
         issues.append(
             "publication-grade validation requires verifier/verifier.md — author "
-            "the verifier strategy document (see docs/tasks/verifier.md); "
+            "the verifier strategy document (see docs/tasks/verifiers.md); "
             "`bench import` does not generate it"
         )
         return issues

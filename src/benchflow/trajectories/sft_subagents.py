@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -182,7 +182,7 @@ def load_acp_parent_links(rollout_dir: Path) -> dict[str, str]:
 
 
 def attribute_rollout_exchanges(
-    exchanges: list[dict[str, Any]],
+    exchanges: Sequence[dict[str, Any]],
     successful: list[int],
     *,
     acp_parent_links: dict[str, str] | None = None,
@@ -460,7 +460,7 @@ class RolloutExchangeSplit:
 
 def split_rollout_exchanges(
     rollout_dir: Path,
-    exchanges: list[dict[str, Any]],
+    exchanges: Sequence[dict[str, Any]],
     successful: list[tuple[int, dict[str, Any]]],
     *,
     counts: SubagentConversionCounts,

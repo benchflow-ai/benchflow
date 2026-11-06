@@ -141,7 +141,7 @@ class Environment:
         task that keeps services (``x-keep-services``) gets the kept-service
         freezer it needs: the oracle, or an agent run as the non-root
         ``sandbox_user``. ``Runtime.execute`` does this for an environment
-        it starts; call it yourself for one you start (K1-R14-1)."""
+        it starts; call it yourself for one you start."""
         from benchflow.task import keep_services
 
         keep_services.assign_runner_intent(self._inner, self.task, agent, sandbox_user)
@@ -445,7 +445,7 @@ class Runtime:
 
     Usage::
 
-        agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
+        agent = Agent("gemini", model="gemini-3.5-flash-lite")
         env = Environment.from_task("tasks/X", sandbox="daytona")
         runtime = Runtime(env, agent)
         result = await runtime.execute()
@@ -517,6 +517,20 @@ class Runtime:
             _warn_if_old_default_timeout_mattered(self.env.task_path)
 
         rollout = await Rollout.create(trial_config)
+
+        # The rollout's setup refuses an agent that routes its own model calls
+        # where it cannot run, but only after this sandbox starts below: refuse
+        # it before the start.
+        from benchflow.task.plan_validation import (
+            OwnModelRouteError,
+            own_model_route_refusal,
+        )
+
+        reason = own_model_route_refusal(
+            self.env.task, agent=self.agent.name, usage_tracking=config.usage_tracking
+        )
+        if reason is not None:
+            raise OwnModelRouteError(reason)
 
         # An SDK plane may bypass the launch gate. Admit identity-switch
         # tasks before start, using both the named plan and the supplied

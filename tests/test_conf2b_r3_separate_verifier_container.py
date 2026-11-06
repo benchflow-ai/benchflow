@@ -152,7 +152,7 @@ async def test_a_separate_verifier_never_starts_a_transferred_interpreter(
         assert TRANSFERRED in unrecorded, unrecorded
         assert any(TRANSFERRED in note for note in notes), notes
         # The line is DEBUG; its reason goes to the verifier error instead.
-        assert TRANSFERRED in sandbox._benchflow_guard_why
+        assert TRANSFERRED in sandbox._runtime_guard_why
         # The image's own Python keeps its copy.
         assert "/usr/local/bin/python3" in guarded, guarded
         # Built from the fresh image even with no plugin pins.

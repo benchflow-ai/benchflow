@@ -9,9 +9,7 @@ from benchflow.agents.install import deploy_skills
 from benchflow.agents.registry import AGENTS
 
 
-@pytest.mark.parametrize(
-    "destination", ["/skills", "/app/packs", "/opt/benchflow/packs"]
-)
+@pytest.mark.parametrize("destination", ["/skills", "/app/packs", "/opt/runtime/packs"])
 @pytest.mark.parametrize("agent", [*AGENTS, None])
 async def test_runtime_skill_upload_uses_private_staging(tmp_path, destination, agent):
     """Every registry spelling and the oracle use the same protected upload path."""
@@ -32,7 +30,7 @@ async def test_runtime_skill_upload_uses_private_staging(tmp_path, destination, 
         skills_sandbox_dir=destination,
     )
     uploaded = env.upload_dir.await_args.args[1]
-    assert uploaded.startswith("/.benchflow-skills-")
+    assert uploaded.startswith("/.runtime-skills-")
     assert uploaded != destination
     copies = [call for call in env.exec.await_args_list if "cp -R " in call.args[0]]
     assert len(copies) == 1
@@ -66,7 +64,7 @@ async def test_runtime_skill_upload_fails_closed(tmp_path, failure):
             (failure == "prepare" and "mkdir -m 700" in cmd)
             or (failure == "publish" and "chmod" in cmd and "find" in cmd)
             or (failure == "copy" and "cp -R " in cmd)
-            or (failure == "cleanup" and "rm -rf -- /.benchflow-skills-" in cmd)
+            or (failure == "cleanup" and "rm -rf -- /.runtime-skills-" in cmd)
         )
         return SimpleNamespace(return_code=int(failed))
 

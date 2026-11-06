@@ -56,7 +56,9 @@ class _TrajectorySink:
         records = list(self.prior)
         keys: list[object] = [("prior", id(record)) for record in records]
         for event in session.events:
-            converted = _events_to_trajectory([event])
+            converted = _events_to_trajectory(
+                [event], live_output_limit=_LIVE_OUTPUT_LIMIT
+            )
             records.extend(converted)
             if event["type"] == "tool_call":
                 record = event["record"]
@@ -95,7 +97,15 @@ def _iso_from_receipt_ns(observed_ns: str) -> str:
     return (_UNIX_EPOCH + timedelta(microseconds=int(observed_ns) // 1000)).isoformat()
 
 
-def _events_to_trajectory(events: list[dict]) -> list[dict]:
+# The longest tool output string the live acp_trajectory.jsonl holds; a
+# longer one gives way to a note there (ToolCallRecord.live_raw_output),
+# never in the final trajectory.
+_LIVE_OUTPUT_LIMIT = 1 << 20
+
+
+def _events_to_trajectory(
+    events: list[dict], *, live_output_limit: int | None = None
+) -> list[dict]:
     """Convert ``ACPSession.events`` records into the JSONL event format.
 
     Single canonical conversion used by both the destructive
@@ -108,6 +118,9 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     viewer reads: ``ts`` (first observation) on text, notice and timeout events;
     ``started_at`` (first observation) and, once terminal, ``finished_at``
     (observation of the terminal status) on tool calls.
+
+    ``live_output_limit`` is for the live file: a tool output string longer
+    than that many characters gives way to a note.
     """
     out: list[dict] = []
     for event in events:
@@ -126,8 +139,14 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
             # without raw I/O keep their exact shape.
             if getattr(tc, "raw_input", None) is not None:
                 record["raw_input"] = tc.raw_input
-            if getattr(tc, "raw_output", None) is not None:
-                record["raw_output"] = tc.raw_output
+            live_raw_output = getattr(tc, "live_raw_output", None)
+            raw_output = (
+                live_raw_output(live_output_limit)
+                if live_output_limit is not None and callable(live_raw_output)
+                else getattr(tc, "raw_output", None)
+            )
+            if raw_output is not None:
+                record["raw_output"] = raw_output
             if getattr(tc, "parent_tool_call_id", None) is not None:
                 record["parent_tool_call_id"] = tc.parent_tool_call_id
             if getattr(tc, "tool_name", None):
@@ -179,8 +198,10 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
     Equivalent to ``_capture_session_trajectory`` except it does not call
     ``session._flush_agent_text()``: pending streamed chunks are merged
     into the returned snapshot but remain in ``session._pending_text``
-    until the prompt completes. Use this from the live ``on_change``
-    sink; use ``_capture_session_trajectory`` for the end-of-run capture.
+    until the prompt completes, and a tool output longer than
+    ``_LIVE_OUTPUT_LIMIT`` characters gives way to a note. Use this from the
+    live ``on_change`` sink; use ``_capture_session_trajectory`` for the
+    end-of-run capture.
     """
     if session is None:
         return []
@@ -195,9 +216,9 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.
         return _capture_session_trajectory(session)
-    return _events_to_trajectory(session.events) + _events_to_trajectory(
-        _merge_pending_text(session._pending_text)
-    )
+    return _events_to_trajectory(
+        session.events, live_output_limit=_LIVE_OUTPUT_LIMIT
+    ) + _events_to_trajectory(_merge_pending_text(session._pending_text))
 
 
 class TrajectoryWriter:
@@ -488,50 +509,76 @@ def _parse_provider_tool_evidence(exchanges: list[Any]) -> list[dict]:
     source is captured by BenchFlow's host/sandbox-local proxy, unlike the
     agent-writable native trajectory fallback.
     """
+    evidence = ProviderToolEvidence()
+    for exchange in exchanges:
+        evidence.add(exchange)
+    return evidence.items()
 
-    evidence: dict[str, dict] = {}
-    order: list[str] = []
 
-    def record_call(tool_call_id: Any, name: Any, arguments: Any) -> None:
+class ProviderToolEvidence:
+    """:func:`_parse_provider_tool_evidence`, one exchange at a time.
+
+    A stopped proxy's import feeds each exchange as it reads it, so the
+    evidence is there after the exchanges have shed their request bodies.
+    """
+
+    def __init__(self) -> None:
+        self._evidence: dict[str, dict] = {}
+
+    def items(self) -> list[dict]:
+        """The evidence, in the order each tool-call ID first appeared."""
+        return list(self._evidence.values())
+
+    def merge(self, items: list[dict]) -> None:
+        """Add another capture's :meth:`items`, as if its exchanges came next."""
+        for item in items:
+            tool_call_id = item["tool_call_id"]
+            known = self._evidence.get(tool_call_id)
+            if known is None:
+                self._evidence[tool_call_id] = dict(item)
+            else:
+                known.update(item)
+
+    def _entry(self, tool_call_id: str) -> dict:
+        entry = self._evidence.get(tool_call_id)
+        if entry is None:
+            entry = self._evidence[tool_call_id] = {
+                "type": "tool_call",
+                "tool_call_id": tool_call_id,
+            }
+        return entry
+
+    def _record_call(self, tool_call_id: Any, name: Any, arguments: Any) -> None:
         if not isinstance(tool_call_id, str) or not tool_call_id:
             return
-        if tool_call_id not in evidence:
-            order.append(tool_call_id)
-            evidence[tool_call_id] = {
-                "type": "tool_call",
-                "tool_call_id": tool_call_id,
-            }
+        entry = self._entry(tool_call_id)
         if isinstance(name, str) and name:
-            evidence[tool_call_id]["provider_tool"] = name
+            entry["provider_tool"] = name
             title = _provider_tool_title(name, arguments)
             if title:
-                evidence[tool_call_id]["title"] = title
+                entry["title"] = title
 
-    def record_result(tool_call_id: Any, output: Any) -> None:
+    def _record_result(self, tool_call_id: Any, output: Any) -> None:
         if not isinstance(tool_call_id, str) or not tool_call_id or output is None:
             return
-        if tool_call_id not in evidence:
-            order.append(tool_call_id)
-            evidence[tool_call_id] = {
-                "type": "tool_call",
-                "tool_call_id": tool_call_id,
-            }
+        entry = self._entry(tool_call_id)
         text = output if isinstance(output, str) else json.dumps(output)
-        evidence[tool_call_id]["content"] = [
+        entry["content"] = [
             {
                 "type": "content",
                 "content": {"type": "text", "text": text},
             }
         ]
 
-    for exchange in exchanges:
+    def add(self, exchange: Any) -> None:
+        """Read one exchange's request."""
         request = getattr(exchange, "request", None)
         body = getattr(request, "body", None)
         if not isinstance(body, dict):
-            continue
+            return
         messages = body.get("messages")
         if not isinstance(messages, list):
-            continue
+            return
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -542,13 +589,13 @@ def _parse_provider_tool_evidence(exchanges: list[Any]) -> list[dict]:
                         continue
                     function = tool_call.get("function")
                     function = function if isinstance(function, dict) else {}
-                    record_call(
+                    self._record_call(
                         tool_call.get("id") or tool_call.get("tool_call_id"),
                         function.get("name") or tool_call.get("name"),
                         function.get("arguments", tool_call.get("arguments")),
                     )
             if message.get("role") == "tool":
-                record_result(
+                self._record_result(
                     message.get("tool_call_id") or message.get("id"),
                     message.get("content"),
                 )
@@ -571,7 +618,9 @@ def _parse_provider_tool_evidence(exchanges: list[Any]) -> list[dict]:
                 for part in parts:
                     call = part.get("functionCall") if isinstance(part, dict) else None
                     if isinstance(call, dict):
-                        record_call(call.get("id"), call.get("name"), call.get("args"))
+                        self._record_call(
+                            call.get("id"), call.get("name"), call.get("args")
+                        )
                     response = (
                         part.get("functionResponse") if isinstance(part, dict) else None
                     )
@@ -580,5 +629,4 @@ def _parse_provider_tool_evidence(exchanges: list[Any]) -> list[dict]:
                     payload = response.get("response")
                     if not isinstance(payload, dict):
                         continue
-                    record_result(response.get("id"), payload.get("output"))
-    return [evidence[tool_call_id] for tool_call_id in order]
+                    self._record_result(response.get("id"), payload.get("output"))

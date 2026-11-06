@@ -2,7 +2,7 @@
 
 Codex resolves model metadata (tool mode, ``apply_patch`` tool type,
 multi-agent version) by slug. Given the proxy alias
-``benchflow-azure-foundry-openai-gpt-5.6-luna`` it warns "Model metadata for
+``runtime-azure-foundry-openai-gpt-5.6-luna`` it warns "Model metadata for
 `...` not found. Defaulting to fallback metadata" and offers a reduced tool
 surface: eight function tools, no native ``apply_patch``, no code mode, no
 subagents. The LiteLLM proxy serves the bare slug next to the alias, so the
@@ -27,7 +27,7 @@ ALIAS = safe_model_alias(MODEL)
 
 def test_alias_carries_the_provider_prefix():
     """The value Codex used to receive: unknown to its model catalog."""
-    assert ALIAS == "benchflow-azure-foundry-openai-gpt-5.6-luna"
+    assert ALIAS == "runtime-azure-foundry-openai-gpt-5.6-luna"
 
 
 def test_custom_provider_config_names_the_bare_slug(monkeypatch: pytest.MonkeyPatch):

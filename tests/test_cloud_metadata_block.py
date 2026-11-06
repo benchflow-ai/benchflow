@@ -1103,6 +1103,11 @@ class FakeEnv:
                 "bnd=0000000000000000 amb=0000000000000000\n",
                 return_code=0,
             )
+        if "BF delegate-python" in command:
+            # Root's look for BenchFlow's own Python: none here, so
+            # the delegate inventory runs as the shell (find and getcap).
+            assert user == "root"
+            return SimpleNamespace(stdout=NO_DELEGATE_PYTHON, stderr="", return_code=0)
         command, user = self.agent_command(command, user)
         self.calls.append((command, user))
         if "BF metadata-connect" in command:
@@ -1110,13 +1115,22 @@ class FakeEnv:
                 stdout="BF metadata-connect failed\n", stderr="", return_code=0
             )
         if "BF metadata-delegates" in command:
-            return SimpleNamespace(
-                stdout="BF metadata-delegates power=0\n", stderr="", return_code=0
-            )
+            return SimpleNamespace(stdout=DELEGATES_CLEAN, stderr="", return_code=0)
         out = self.outputs.pop(0) if self.outputs else ""
         return SimpleNamespace(stdout=out, stderr="", return_code=0)
 
 
+# Root's look for BenchFlow's own Python finding none, on a machine with no
+# build of it (lockdown._cloud_metadata_delegate_audit, _delegate_disarm).
+NO_DELEGATE_PYTHON = (
+    "BF delegate-python managed=- staged=- arch=other libc=none tar=0\n"
+)
+# The delegate inventory's report for an image with nothing that counts,
+# read with getcap (lockdown._cloud_metadata_delegate_check_cmd).
+DELEGATES_CLEAN = (
+    "BF metadata-delegates-scan reader=getcap complete=1 files=- vanished=- "
+    "errors=- why=-\n"
+)
 ROOT_OK = (
     "BF metadata status=0 fw4=iptables fw6=ip6tables v6=local install=none "
     "install_t=- hits=0\n"
@@ -1472,13 +1486,10 @@ async def test_root_starts_the_systems_shell_where_the_sandbox_can(supports):
     )
 
     root = True if supports else None
-    assert seen == [
-        ("root", root),
-        ("root", root),
-        ("root", root),
-        ("root", root),
-        ("root", root),
-    ]
+    # The construction check, root's rules, the agent's check (through
+    # root's launch), the counter, root's look for BenchFlow's own Python
+    # and the delegate inventory.
+    assert seen == [("root", root)] * 6
 
 
 # --- the plan: when the block is armed ----------------------------------------
@@ -2159,6 +2170,29 @@ def test_other_compose_services_are_named_as_uncovered(tmp_path):
     )
     assert plan is not None and plan.armed
     assert plan.uncovered == ("browser", "target")
+
+
+def test_a_service_with_no_network_is_not_named_as_uncovered(tmp_path):
+    """An embodied task's simulator has network_mode none, yet the trial's record
+    said it reaches the endpoints. A service that extends another or joins networks still counts."""
+    from benchflow.sandbox.cloud_metadata import cloud_metadata_plan
+
+    task_dir = _task_dir(
+        tmp_path,
+        compose=(
+            "services:\n  main: {}\n  simulator:\n    network_mode: none\n  target: {}\n"
+            "  joined:\n    network_mode: none\n    extends: {service: target}\n"
+            "  listed:\n    network_mode: none\n    networks: [default]\n"
+        ),
+    )
+    plan = cloud_metadata_plan(
+        _config(OPEN),
+        sandbox_user="agent",
+        launches_agent=True,
+        environment_dir=task_dir / "environment",
+    )
+    assert plan is not None and plan.armed
+    assert plan.uncovered == ("joined", "listed", "target")
 
 
 @pytest.mark.asyncio

@@ -25,7 +25,7 @@ from benchflow import __version__, doctor
 from benchflow.doctor import CommandResult, DoctorProbes, run_doctor
 
 RUST_VERSION_LINE = "bench 0.8.2 (5180090b 2026-10-15)\n"
-INSTALL_ANCHOR = "docs/install.md#which-bench-runs"
+INSTALL_ANCHOR = "docs/benchflow/getting-started/install#which-bench-runs"
 
 
 def _make_program(path: Path, content: bytes) -> Path:

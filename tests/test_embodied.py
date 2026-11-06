@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -567,6 +568,322 @@ def test_verifier_writes_rewards_from_a_finished_episode(tmp_path, monkeypatch) 
     assert details["closed_by"] == "episode_server" and details["outcome"] == "done"
 
 
+def _verify(
+    tmp_path, monkeypatch, *, video: bytes | None = None, images: int = 0
+) -> tuple[Path, Path]:
+    """Run the physical verifier on a finished episode; returns (episode, verifier out)."""
+    from benchflow.embodied import verifier
+
+    ep = _server(tmp_path)
+    ep.handle({"op": "move_to", "pos": [0.1, 0.0, 0.0]})
+    ep.handle({"op": "done"})
+    ep.close()
+    episode = tmp_path / "ep"
+    (episode / "serve.exit").write_text("0")
+    if video is not None:
+        (episode / "recording.mp4").write_bytes(video)
+    for i in range(images):
+        (episode / "observations").mkdir(exist_ok=True)
+        (episode / "observations" / f"obs_{i:03d}.png").write_bytes(
+            b"\x89PNG image %d" % i
+        )
+    out = tmp_path / "logs" / "verifier"
+    for k, v in {
+        "EPISODE_DIR": episode,
+        "VERIFIER_DIR": out,
+        "SOCKET": tmp_path / "none.sock",
+    }.items():
+        monkeypatch.setenv(f"ROBO_{k}", str(v))
+    assert verifier.main() == 0
+    return episode, out
+
+
+def _trial(tmp_path: Path, out: Path) -> Path:
+    """A trial folder as BenchFlow leaves it after verification: verifier/ (the record inside) and artifacts/."""
+    trial = tmp_path / "trial"
+    shutil.copytree(out, trial / "verifier")
+    (trial / "artifacts").mkdir()
+    (trial / "artifacts-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "collections": [
+                    {
+                        "kind": "logs",
+                        "source": "/logs/artifacts",
+                        "destination": ".",
+                        "status": "empty",
+                    }
+                ],
+                "files": [],
+                "total_bytes": 0,
+                "total_files": 0,
+            }
+        )
+    )
+    return trial
+
+
+def test_the_verifier_writes_only_its_own_folder(tmp_path, monkeypatch) -> None:
+    """The verifier no longer copies into /logs/artifacts, the folder the agent's container
+    shares. Through 0.10.0rc1 it copied there with shutil.copy2, which follows a link at the destination, so a
+    recording.mp4 link to the episode's result.json overwrote the verdict before it was read."""
+    shared = tmp_path / "logs" / "artifacts"
+    shared.mkdir(parents=True)
+    monkeypatch.setenv("ROBO_ARTIFACTS_DIR", str(shared))
+    (shared / "recording.mp4").symlink_to(tmp_path / "ep" / "result.json")
+    episode, out = _verify(tmp_path, monkeypatch, video=b"frames", images=2)
+    assert (out / "reward.txt").read_text() == "1"
+    assert json.loads((episode / "result.json").read_text())["success"] is True
+    assert sorted(p.name for p in shared.iterdir()) == [
+        "recording.mp4"
+    ]  # left as the agent made it, unread
+    assert (out / "episode" / "recording.mp4").read_bytes() == b"frames"
+    assert len(list((out / "episode" / "observations").glob("*.png"))) == 2
+
+
+def test_the_simulator_mounts_nothing_the_agent_can_write(tmp_path) -> None:
+    """The simulator service no longer mounts the trial's artifacts folder; its only mounts
+    are its own volumes, and `main` mounts the socket's and the oracle token's read-only."""
+    compose = (sidecar.TEMPLATES / "docker-compose.yaml").read_text()
+    main, simulator = compose.split("\n  simulator:\n", 1)
+    volumes = simulator.split("    volumes:\n", 1)[1].split("\n    environment:", 1)[0]
+    mounts = [
+        line.strip()[2:]
+        for line in volumes.splitlines()
+        if line.strip().startswith("- ")
+    ]
+    assert mounts == ["rpc:/rpc", "episode:/episode", "oracle:/run/runtime-oracle"]
+    assert "- rpc:/rpc:ro" in main and "- oracle:/run/runtime-oracle:ro" in main
+
+
+def test_the_vendored_runtime_path_is_one_contract() -> None:
+    """The simulator snippet copies benchflow.embodied to the folder its
+    PYTHONPATH and the verifier's test.sh name, and what the agent's container
+    gets (its compose service, the robo client) names no BenchFlow path."""
+    snippet = sidecar.SIM_DOCKERFILE_SNIPPET
+    (copy,) = [line for line in snippet.splitlines() if "benchflow_embodied/" in line]
+    folder = copy.split()[-1].rstrip("/")
+    assert f"ENV PYTHONPATH={folder}$" in snippet
+    test_sh = (sidecar.TEMPLATES / "verifier" / "test.sh").read_text()
+    assert f'export PYTHONPATH="{folder}$' in test_sh
+    compose = (sidecar.TEMPLATES / "docker-compose.yaml").read_text()
+    main = compose.split("\n  simulator:\n", 1)[0]
+    lines = [ln for ln in main.splitlines() if not ln.lstrip().startswith("#")]
+    assert "benchflow" not in "\n".join(lines).lower()
+    assert "benchflow" not in (sidecar.EMBODIED_DIR / "robo.py").read_text().lower()
+
+
+def test_robo_reads_the_oracle_token_only_where_it_can(tmp_path, monkeypatch) -> None:
+    """The simulator mints the oracle token into a root-only file; the reference solution
+    (root) reads it, an agent cannot, and a token the environment names comes first."""
+    from benchflow.embodied import robo
+
+    monkeypatch.delenv("ROBO_ORACLE_TOKEN", raising=False)
+    monkeypatch.delenv("ROBOUSE_ORACLE_TOKEN", raising=False)
+    token_file = tmp_path / "token"
+    monkeypatch.setenv("ROBO_ORACLE_TOKEN_FILE", str(token_file))
+    assert robo.oracle_token() is None  # no file: an agent's view
+    token_file.write_text("abc123\n")
+    assert robo.oracle_token() == "abc123"
+    if os.getuid() != 0:  # root reads any file, as the reference solution does
+        token_file.chmod(0o000)
+        assert robo.oracle_token() is None
+        token_file.chmod(0o600)
+    monkeypatch.setenv("ROBO_ORACLE_TOKEN", "from-env")
+    assert robo.oracle_token() == "from-env"
+
+
+def test_placement_replaces_what_the_agent_planted_in_artifacts(
+    tmp_path, monkeypatch
+) -> None:
+    """On Docker the agent's container mounts the trial's artifacts/, so it can leave links there. Placing the
+    episode's files must never follow one (here onto the trial's own reward), and a planted video or image must not
+    survive as the trial's.
+
+    The host places the record's files after verification, on every backend."""
+    from benchflow.embodied.export import place_episode_artifacts
+
+    episode, out = _verify(
+        tmp_path, monkeypatch, video=b"\x00\x00\x00\x18ftypmp42 the episode", images=1
+    )
+    trial = _trial(tmp_path, out)
+    (trial / "artifacts" / "recording.mp4").symlink_to("../verifier/reward.txt")
+    (trial / "artifacts" / "observations").symlink_to("../verifier")
+    entries = place_episode_artifacts(trial)
+    assert (trial / "verifier" / "reward.txt").read_text() == "1"
+    placed = trial / "artifacts" / "recording.mp4"
+    assert (
+        not placed.is_symlink()
+        and placed.read_bytes() == (episode / "recording.mp4").read_bytes()
+    )
+    images = trial / "artifacts" / "observations"
+    assert not images.is_symlink() and [p.name for p in images.iterdir()] == [
+        "obs_000.png"
+    ]
+    assert {e["path"] for e in entries} == {"recording.mp4", "observations/obs_000.png"}
+    manifest = json.loads((trial / "artifacts-manifest.json").read_text())
+    assert [c["kind"] for c in manifest["collections"]] == ["logs", "embodied"]
+    assert manifest["total_files"] == 2
+
+
+def test_placement_removes_a_planted_video_when_none_was_recorded(
+    tmp_path, monkeypatch
+) -> None:
+    """A video the agent wrote must not pass for the episode's when none was recorded."""
+    from benchflow.embodied.export import place_episode_artifacts
+
+    _, out = _verify(tmp_path, monkeypatch)
+    trial = _trial(tmp_path, out)
+    (trial / "artifacts" / "recording.mp4").write_bytes(b"a video of something else")
+    assert place_episode_artifacts(trial) == []
+    assert not (trial / "artifacts" / "recording.mp4").exists()
+    assert (
+        "recording.mp4"
+        not in json.loads((out / "reward-details.json").read_text())["evidence"]
+    )
+
+
+def test_verdict_evidence_binds_the_video_and_the_trace(tmp_path, monkeypatch) -> None:
+    """The verdict names the sha256 of each record file, and the trainer export says whether
+    the trial's video copies still match it."""
+    import hashlib
+
+    from benchflow.embodied.export import place_episode_artifacts, verdict_evidence
+
+    episode, out = _verify(tmp_path, monkeypatch, video=b"frames")
+    evidence = json.loads((out / "reward-details.json").read_text())["evidence"]
+    for name in (
+        "recording.mp4",
+        "trace.jsonl",
+        "steps.jsonl",
+        "result.json",
+        "episode.json",
+    ):
+        digest = hashlib.sha256((episode / name).read_bytes()).hexdigest()
+        assert evidence[name] == f"sha256:{digest}", name
+    trial = _trial(tmp_path, out)
+    assert (
+        verdict_evidence(trial)["video_matches_verdict"] is False
+    )  # artifacts/ has no copy yet
+    place_episode_artifacts(trial)
+    assert verdict_evidence(trial)["video_matches_verdict"] is True
+    (trial / "artifacts" / "recording.mp4").write_bytes(b"edited after the verdict")
+    checked = verdict_evidence(trial)
+    assert checked["video_matches_verdict"] is False
+    assert checked["recorded"]["recording.mp4"] == evidence["recording.mp4"]
+
+
+def test_verify_checks_the_files_as_they_are_now(tmp_path, monkeypatch) -> None:
+    """`bench embodied verify` recomputes the record's hashes, the video copies and the reward
+    against the verdict from the files on disk, so a file edited after the trial finished fails, even though the
+    export's video_matches_verdict was true when it was written."""
+    from benchflow.embodied.export import place_episode_artifacts
+    from benchflow.embodied.verify import (
+        STATUS_MISMATCH,
+        STATUS_NO_VERDICT,
+        STATUS_OK,
+        verify_job,
+        verify_trial,
+    )
+
+    _, out = _verify(tmp_path, monkeypatch, video=b"frames", images=2)
+    job = tmp_path / "job"
+    trial = job / "toy-reach__0001"
+    shutil.copytree(_trial(tmp_path, out), trial)
+    place_episode_artifacts(trial)
+    (trial / "result.json").write_text(
+        json.dumps({"task_name": "toy-reach", "rewards": {"reward": 1.0}})
+    )
+    assert verify_trial(trial)["status"] == STATUS_OK
+    details = json.loads((trial / "verifier" / "reward-details.json").read_text())
+    # the verdict hashes every file of the record, the camera images included, and says what computed it
+    assert details["evidence_scope"] == "record"
+    assert {"observations/obs_000.png", "serve.exit", "trace.jsonl"} <= set(
+        details["evidence"]
+    )
+    assert details["runtime"]["python"] and "packages" in details["runtime"]
+
+    # a file added to the record later, and a camera image changed in artifacts/, are both named
+    planted = trial / "verifier" / "episode" / "result-2.json"
+    planted.write_text("{}")
+    assert [c["detail"] for c in verify_trial(trial)["checks"] if not c["ok"]] == [
+        "not in the verdict: added later"
+    ]
+    planted.unlink()
+    (trial / "artifacts" / "observations" / "obs_001.png").write_bytes(b"other")
+    assert [c["check"] for c in verify_trial(trial)["checks"] if not c["ok"]] == [
+        "image artifacts/observations/obs_001.png"
+    ]
+    place_episode_artifacts(trial)
+
+    steps = trial / "verifier" / "episode" / "steps.jsonl"
+    original = steps.read_bytes()
+    steps.write_bytes(original + b"\n")
+    failed = verify_trial(trial)
+    assert failed["status"] == STATUS_MISMATCH
+    assert [c["check"] for c in failed["checks"] if not c["ok"]] == [
+        "record steps.jsonl"
+    ]
+    steps.write_bytes(original)
+
+    (trial / "artifacts" / "recording.mp4").write_bytes(b"other frames")
+    assert [c["check"] for c in verify_trial(trial)["checks"] if not c["ok"]] == [
+        "video artifacts/recording.mp4"
+    ]
+    place_episode_artifacts(trial)
+
+    (trial / "result.json").write_text(
+        json.dumps({"task_name": "toy-reach", "rewards": {"reward": 0.0}})
+    )
+    assert [c["check"] for c in verify_trial(trial)["checks"] if not c["ok"]] == [
+        "reward result.json"
+    ]
+    (trial / "result.json").write_text(
+        json.dumps({"task_name": "toy-reach", "rewards": {"reward": 1.0}})
+    )
+    # reward.json is checked too: its reward, not its other metrics
+    reward_json = trial / "verifier" / "reward.json"
+    kept = reward_json.read_text()
+    reward_json.write_text(json.dumps({**json.loads(kept), "reward": 0.0}))
+    assert [c["check"] for c in verify_trial(trial)["checks"] if not c["ok"]] == [
+        "reward verifier/reward.json"
+    ]
+    reward_json.write_text(kept)
+
+    broken = job / "toy-reach__0002"
+    (broken / "verifier" / "episode").mkdir(parents=True)
+    (broken / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "toy-reach",
+                "rewards": {"reward": 0.0},
+                "warnings": [
+                    "Verifier scored 0: no reward file found at <reachable:verifier/reward.txt>"
+                ],
+            }
+        )
+    )
+    report = verify_job(job)
+    assert (
+        report["counts"] == {STATUS_OK: 1, STATUS_NO_VERDICT: 1}
+        and report["ok"] is False
+    )
+    # bench run writes jobs/<job>/<time>/<trial>: the job folder above the run is checked the same way
+    nested = tmp_path / "jobs" / "toy"
+    shutil.copytree(job, nested / "2026-11-04__12-00-00")
+    assert verify_job(nested)["counts"] == report["counts"]
+    assert {t["run"] for t in verify_job(nested)["trials"]} == {"2026-11-04__12-00-00"}
+    # the reason is BenchFlow's own warning, with its path named plainly
+    assert verify_trial(broken)["checks"] == [
+        {
+            "check": "verdict",
+            "ok": False,
+            "detail": "Verifier scored 0: no reward file found at verifier/reward.txt",
+        }
+    ]
+
+
 def test_verifier_without_a_result_is_an_infrastructure_error(
     tmp_path, monkeypatch
 ) -> None:
@@ -720,7 +1037,11 @@ def test_embodied_format_materializes_a_native_package(tmp_path) -> None:
     )
     solve = (pkg / "oracle" / "solve.sh").read_text()
     assert "ROBO_ORACLE_TOKEN=" in solve and "robo done" in solve
-    runtime = Path(compose.split("context: ")[1].split("\n")[0].strip('"'))
+    assert 'context: "${CONTEXT_DIR}/simulator"' in compose
+    runtime = pkg / "environment" / sidecar.SIM_DIR
+    assert (pkg / "environment" / ".dockerignore").read_text().split() == [
+        sidecar.SIM_DIR
+    ]
     assert (
         runtime / "benchflow_embodied" / "benchflow" / "embodied" / "server.py"
     ).exists()
@@ -746,10 +1067,64 @@ def test_embodied_format_seed_noop_and_flat_variants(tmp_path) -> None:
     assert "\nrobo done" not in (noop / "oracle" / "solve.sh").read_text()
     flat = fmt.materialize_variant(src, tmp_path / "bundle", flat=True)
     assert flat == tmp_path / "bundle" / "tasks" / "toy-reach"
-    assert (
-        'context: "../../../runtime-'
-        in (flat / "environment" / "docker-compose.yaml").read_text()
+    compose = (flat / "environment" / "docker-compose.yaml").read_text()
+    assert 'context: "${CONTEXT_DIR}/simulator"' in compose and "../" not in compose
+    # the bundle holds its packages only: no shared runtime folder beside them
+    assert sorted(p.name for p in (tmp_path / "bundle").iterdir()) == ["tasks"]
+    assert (flat / "environment" / "simulator" / "embodied-sim-entry").is_file()
+
+
+def test_embodied_package_is_self_contained(tmp_path) -> None:
+    """A package copied anywhere (a Daytona VM, a Hub download) still builds its simulator: every compose build
+    context is inside environment/ once CONTEXT_DIR is that folder, and no file names the folder it was built in.
+
+    Through 0.10.0rc1 the simulator's context was the cache's runtime folder (an absolute host
+    path) or ../../../runtime-<hash> in a bundle, so a Daytona sandbox's VM had nothing to build from."""
+    import yaml
+
+    class ComposeLoader(
+        yaml.SafeLoader
+    ):  # Compose's own tags (!override, !reset) read as plain values
+        pass
+
+    ComposeLoader.add_multi_constructor(
+        "!",
+        lambda loader, suffix, node: (
+            loader.construct_sequence(node)
+            if isinstance(node, yaml.SequenceNode)
+            else loader.construct_mapping(node)
+            if isinstance(node, yaml.MappingNode)
+            else loader.construct_scalar(node)
+        ),
     )
+    fmt = ToyFormat()
+    src = _toy_task(tmp_path / "src")
+    built = fmt.materialize(src, tmp_path / "cache")
+    moved = tmp_path / "elsewhere" / built.name
+    shutil.copytree(built, moved)
+    shutil.rmtree(tmp_path / "cache")
+    env = moved / "environment"
+    services = yaml.load(
+        (env / "docker-compose.yaml").read_text(), Loader=ComposeLoader
+    )["services"]
+    contexts = {
+        name: Path(svc["build"]["context"].replace("${CONTEXT_DIR}", str(env)))
+        for name, svc in services.items()
+        if isinstance(svc.get("build"), dict)
+    }
+    assert set(contexts) == {"simulator"}
+    for context in contexts.values():
+        assert context.resolve().is_relative_to(env.resolve())
+        assert (context / "Dockerfile").is_file()
+        assert (
+            context / "benchflow_embodied" / "benchflow" / "embodied" / "server.py"
+        ).is_file()
+    marker = (
+        f".{fmt.name}-source.json"  # records where the package came from, by design
+    )
+    for f in moved.rglob("*"):
+        if f.is_file() and f.name != marker:
+            assert str(tmp_path / "cache") not in f.read_text(errors="replace"), f
 
 
 def test_task_formats_seeded_materialization(tmp_path, monkeypatch) -> None:

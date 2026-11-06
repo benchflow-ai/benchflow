@@ -1,0 +1,101 @@
+{
+  "overall_passed": false,
+  "overall_status": "incomplete",
+  "incomplete_scans": [
+    "pip-audit"
+  ],
+  "total_validators": 1,
+  "total_skipped": 0,
+  "total_advisory_skipped": 0,
+  "total_errors": 0,
+  "total_warnings": 2,
+  "severity_counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "benchmark_policy": {
+    "tier2_required": true,
+    "tier3_required": true
+  },
+  "publication_status": "incomplete",
+  "publication": {
+    "status": "incomplete",
+    "eligible": false,
+    "reasons": [
+      "One or more validators reported incomplete scanner evidence."
+    ],
+    "tier3": {
+      "status": "not_run",
+      "evidence_complete": false,
+      "execution_status": "not_run",
+      "verdict": "not_run",
+      "reason": "Tier 3 lacks publication-complete execution evidence."
+    }
+  },
+  "skills": [],
+  "results": [
+    {
+      "validator": "Dependency Vulnerability Audit",
+      "description": "Scan dependencies for CVE vulnerabilities using pip-audit and Safety",
+      "passed": false,
+      "status": "incomplete",
+      "skipped": false,
+      "skip_reason": null,
+      "incomplete_scans": [
+        "pip-audit"
+      ],
+      "summary": {
+        "files_scanned": 0,
+        "checks_performed": 0,
+        "errors": 0,
+        "warnings": 2,
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0
+      },
+      "findings": [],
+      "success_details": [],
+      "legacy": {
+        "errors": [],
+        "warnings": [
+          "requirements.txt: pip-audit returned a malformed JSON report; scan did not complete",
+          "Workflow scope: llm skipped. LLM checks disabled by --no-llm."
+        ],
+        "messages": [
+          "Auditing requirements.txt"
+        ]
+      },
+      "gating": {
+        "tier": 1,
+        "blocking": true
+      },
+      "publication_target": {
+        "skill_name": "dep-conflict",
+        "skill_digest": "sha256:fbb4c61112892e3a50548d8ae51a0d012860d63b4fa2f53ba8db26e58594fa29",
+        "skill_digest_algorithm": "skill-evaluator-source-tree/2"
+      },
+      "publication_evidence": {
+        "schema_version": 1,
+        "producer": "skillevaluator.tier1",
+        "tier": 1,
+        "check_id": "dependency"
+      },
+      "workflow": {
+        "tier": 1,
+        "stages": {
+          "validation": {
+            "status": "incomplete"
+          },
+          "llm": {
+            "status": "skipped",
+            "reason": "LLM checks disabled by --no-llm."
+          }
+        }
+      }
+    }
+  ],
+  "quality_summary": []
+}

@@ -14,7 +14,6 @@ import re
 import shutil
 import uuid
 from dataclasses import dataclass, replace
-from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
@@ -35,7 +34,7 @@ from benchflow._utils.trial_warnings import recording_trial_warnings
 from benchflow.agents.registry import is_scripted_agent
 from benchflow.contracts import default_rollout_planes
 from benchflow.diagnostics import RewardOutOfRangeDiagnostic
-from benchflow.models import RolloutResult
+from benchflow.models import RolloutResult, rollout_time
 from benchflow.review.evidence import (
     EvidenceError,
     EvidenceManifest,
@@ -342,7 +341,7 @@ def _interrupted_solver_result_locked(rollout: Any, detail: str) -> Any:
                 "verifier_error"
             )
             result.verifier_error_category = payload.get("verifier_error_category")
-            result.finished_at = datetime.fromisoformat(payload["finished_at"])
+            result.finished_at = rollout_time(payload["finished_at"])
             rollout._timing = payload["timing"]
     return result
 
@@ -557,7 +556,7 @@ async def _recover_verifier(
             await restore_submission(rollout, child._env)
             workspace = child._agent_cwd
         else:
-            remote = "/tmp/benchflow-verifier-recovery-" + uuid.uuid4().hex
+            remote = "/tmp/runtime-verifier-recovery-" + uuid.uuid4().hex
             await child._env.upload_file(archive, remote + ".tar", admission=transfer)
             await child._env.upload_file(
                 bundle / "manifest.json", remote + ".json", admission=transfer

@@ -194,7 +194,7 @@ async def test_c33_launcher_preparation_never_writes_through_an_alias(
     # 092eb18ad scopes the writer in a subshell followed by && exec. Run the
     # complete writer/control flow and stub only the external agent executable.
     command = AGENTS["codex-acp"].launch_cmd.replace(
-        "/opt/benchflow/bin/codex-acp", "true", 1
+        "/opt/runtime/bin/codex-acp", "true", 1
     )
     subprocess.run(
         ["sh", "-c", command],
@@ -321,7 +321,7 @@ async def test_partial_launcher_preparation_keeps_each_attempt_on_one_ledger(
         )
     assert trial._credential_ledger == [str(first), str(blocked)]
     assert first.read_text() == '{"dummy":"original"}'
-    assert not list(folder.glob(".benchflow-credential-*"))
+    assert not list(folder.glob(".runtime-credential-*"))
 
 
 @pytest.mark.parametrize("backend", ["docker", "remote-docker", "daytona", "modal"])

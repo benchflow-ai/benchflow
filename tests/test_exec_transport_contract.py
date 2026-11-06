@@ -761,10 +761,10 @@ async def test_the_staged_file_is_roots_alone_up_to_slash(backend, monkeypatch):
     # BenchFlow's own protected runtime kit, as before the agent's first turn:
     # it makes the staging folder and proves the folders above it.
     assert await prepare_runtime_tree(backend, phase="build", timeout_sec=600)
-    folder = f"/opt/benchflow/run/stage-{uuid.uuid4().hex}"
+    folder = f"/opt/runtime/run/stage-{uuid.uuid4().hex}"
     monkeypatch.setattr(daytona_module, "stage_folder", lambda: folder)
     probe = (
-        f"stat -c '%n %u %a' / /opt /opt/benchflow /opt/benchflow/run {folder} "
+        f"stat -c '%n %u %a' / /opt /opt/runtime /opt/runtime/run {folder} "
         f"{folder}/payload"
     )
     # Root's shell opens the file before it selects any account, so a
@@ -777,12 +777,12 @@ async def test_the_staged_file_is_roots_alone_up_to_slash(backend, monkeypatch):
         line.split(" ", 1)[0]: line.split(" ", 1)[1].split()
         for line in (result.stdout or "").strip().splitlines()
     }
-    for path in ("/", "/opt/benchflow"):
+    for path in ("/", "/opt/runtime"):
         owner, mode = rows[path]
         assert owner == "0" and int(mode, 8) & 0o022 == 0, (path, rows[path])
     owner, mode = rows["/opt"]
     assert owner == "0" and (int(mode, 8) & 0o022 == 0 or int(mode, 8) & 0o1000), mode
-    assert rows["/opt/benchflow/run"] == ["0", "700"]
+    assert rows["/opt/runtime/run"] == ["0", "700"]
     assert rows[folder][0] == "0" and rows[f"{folder}/payload"][0] == "0"
     gone = await exec_raw(
         backend.exec, f"[ ! -e {folder} ] && echo gone", user="root", timeout_sec=60
@@ -795,7 +795,7 @@ async def test_the_staged_file_is_roots_alone_up_to_slash(backend, monkeypatch):
     )
     assert (agent.stdout or "").strip() == str(AGENT_UID), agent.stderr
     denied = await exec_raw(
-        backend.exec, "ls /opt/benchflow/run", user="agent", timeout_sec=60
+        backend.exec, "ls /opt/runtime/run", user="agent", timeout_sec=60
     )
     assert denied.return_code != 0
 
@@ -828,9 +828,9 @@ async def _staging_folder_link(box: Box, at: str, target: str) -> AsyncIterator[
                 "sh",
                 "-c",
                 'rm -f "$1" "$3"; rm -rf "$2"; '
-                "mkdir -p /opt/benchflow/run/home /opt/benchflow/verifier && "
-                "chmod 700 /opt/benchflow/run /opt/benchflow/run/home && "
-                "chmod 755 /opt/benchflow/verifier",
+                "mkdir -p /opt/runtime/run/home /opt/runtime/verifier && "
+                "chmod 700 /opt/runtime/run /opt/runtime/run/home && "
+                "chmod 755 /opt/runtime/verifier",
                 "sh",
                 at,
                 target,
@@ -850,7 +850,7 @@ async def test_a_link_at_the_staging_folder_runs_nothing(backend, box, target, r
     from benchflow.sandbox.lockdown import prepare_runtime_tree
 
     dind = "dind" in request.node.name
-    async with _staging_folder_link(box, "/opt/benchflow/run", target) as marker:
+    async with _staging_folder_link(box, "/opt/runtime/run", target) as marker:
         if not dind:
             try:
                 kit = await prepare_runtime_tree(
@@ -900,7 +900,7 @@ async def test_an_honest_image_whose_opt_another_user_owns_still_runs_staged(
 
 
 @_each("daytona")
-@pytest.mark.parametrize("at", ["/opt/benchflow/run/home", "/opt/benchflow/verifier"])
+@pytest.mark.parametrize("at", ["/opt/runtime/run/home", "/opt/runtime/verifier"])
 async def test_the_kit_refuses_a_link_inside_its_tree(backend, box, at):
     """The kit's preparation refuses a link at ``$RT/run/home`` and
     ``$RT/verifier`` as at ``$RT`` and ``$KIT`` (accepted at 29b6ea03c)."""
@@ -1004,7 +1004,7 @@ async def test_a_directory_of_2000_files_moves_with_bounded_open_files(
         assert rows == {("root", "755"): 200, ("root", "644"): 1801}, out
         assert "echo 1999" in out.decode()
         staged = await box.exec(
-            ["sh", "-c", "ls /opt/benchflow/run | grep -c stage- || true"]
+            ["sh", "-c", "ls /opt/runtime/run | grep -c stage- || true"]
         )
         assert staged[1].decode().strip() == "0"
     finally:
@@ -1016,7 +1016,7 @@ async def test_a_pipe_backend_stages_nothing_on_disk(backend):
     """(c) for the stdin backends: the payload is the exec's own pipe."""
     probe = _script(
         200_000,
-        "echo staged-ran; ls -A /opt/benchflow/run 2>/dev/null | grep -c stage- || true",
+        "echo staged-ran; ls -A /opt/runtime/run 2>/dev/null | grep -c stage- || true",
     )
     result = await exec_raw(backend.exec, probe, user="root", timeout_sec=120)
     lines = (result.stdout or "").split()

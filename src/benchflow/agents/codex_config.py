@@ -16,9 +16,9 @@ CODEX_MODEL_PROVIDER_ENV = "MODEL_PROVIDER"
 CODEX_HOME_CONFIG_ENV = "BENCHFLOW_CODEX_HOME_CONFIG"
 # First line of that file; the launcher removes a file that starts with it when
 # a later launch routes Codex to no provider.
-CODEX_HOME_CONFIG_MARKER = "# benchflow-codex-home-config"
+CODEX_HOME_CONFIG_MARKER = "# runtime-codex-home-config"
 
-_CODEX_PROVIDER_ID_PREFIX = "benchflow-"
+_CODEX_PROVIDER_ID_PREFIX = "runtime-"
 _LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 _PROVIDER_MODEL_ENV = "BENCHFLOW_PROVIDER_MODEL"
 
@@ -207,6 +207,33 @@ def codex_config_overrides(config: dict[str, Any] | None) -> list[str]:
 
 _BARE_TOML_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
+# Under no-web, the rest of Codex's own network use is off, as on the native
+# harness (native_harness/codex.py: plugin marketplace, analytics, feedback,
+# update check), and so is what the native Codex model-only gate refuses:
+# zstd-compressed request bodies (Codex 0.159+ compresses Responses requests
+# on a ChatGPT login) and the hosted image tool. A value the run sets wins.
+_NO_WEB_CODEX_DEFAULTS: dict[str, Any] = {
+    "features": {
+        "enable_request_compression": False,
+        "image_generation": False,
+        "plugins": False,
+    },
+    "analytics": {"enabled": False},
+    "feedback": {"enabled": False},
+    "check_for_update_on_startup": False,
+}
+
+
+def _no_web_codex_defaults(config: dict[str, Any]) -> None:
+    for key, default in _NO_WEB_CODEX_DEFAULTS.items():
+        if not isinstance(default, dict):
+            config.setdefault(key, default)
+            continue
+        section = config.setdefault(key, {})
+        if isinstance(section, dict):
+            for name, value in default.items():
+                section.setdefault(name, value)
+
 
 def apply_codex_launch_config(
     agent: str,
@@ -248,6 +275,7 @@ def apply_codex_launch_config(
             # codex-acp (1.6.0 through 2.0.1) ignores CLI -c flags; its CODEX_CONFIG
             # is forwarded to the Codex app-server's thread configuration.
             config["web_search"] = "disabled"
+            _no_web_codex_defaults(config)
         if owns_model and reasoning_effort:
             config["model_reasoning_effort"] = reasoning_effort
         updated_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
@@ -307,6 +335,25 @@ def _apply_codex_default_auth_request(
             request,
             separators=(",", ":"),
         )
+
+
+def codex_fallback_tools(names: list[str]) -> bool:
+    """Whether the tools a Codex request offered are its fallback surface.
+
+    Codex takes a model's tools from its model catalog. Every model the
+    pinned Codex (0.159.3) catalogues has a freeform ``apply_patch``: a
+    ``code_mode_only`` model reaches it through code mode, whose requests
+    offer ``functions.exec`` (and the tools a script calls) instead of
+    top-level tools; any other model is offered ``apply_patch`` itself. A
+    model the catalog lacks runs on fallback metadata, whose requests offer
+    plain function tools and neither (``exec_command``, ``write_stdin``,
+    ``view_image``, ...; read from requests the pinned Codex sent for
+    gpt-5.5, gpt-6-astra and gpt-5.4 against a scripted model).
+    """
+    return bool(names) and not any(
+        name == "functions.exec" or name.rsplit(".", 1)[-1] == "apply_patch"
+        for name in names
+    )
 
 
 def disable_codex_apps(agent_env: dict[str, str]) -> dict[str, str]:

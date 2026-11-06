@@ -174,9 +174,15 @@ class TestCleanupCommandGating:
             "_cleanup_agentcore_runtimes",
             lambda **kw: calls.append("agentcore") or True,
         )
-        fake_main = MagicMock()
-        fake_main._cleanup_daytona_sandboxes.side_effect = typer.Exit(1)
-        monkeypatch.setitem(__import__("sys").modules, "benchflow.cli.main", fake_main)
+        # A Daytona backend that fails (a bad key, an API error). Patched on the
+        # real module: `from benchflow.cli import main` returns it whenever
+        # another test in this worker imported it first.
+        from benchflow.cli import main as cli_main
+
+        def daytona_fails(**_):
+            raise typer.Exit(1)
+
+        monkeypatch.setattr(cli_main, "_cleanup_daytona_sandboxes", daytona_fails)
 
         # AgentCore is still cleaned up; the command then exits 1 because the
         # Daytona backend failed (a teardown step must not pass).

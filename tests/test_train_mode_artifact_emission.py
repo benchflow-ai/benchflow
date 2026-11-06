@@ -831,7 +831,14 @@ def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
 
     artifact = rollout_dir / "results.jsonl"
     row = json.loads(artifact.read_text())
-    assert row["prompt"] == [{"role": "user", "content": "List files."}]
+    # The prompt comes from the canonical exchange: the second system prompt,
+    # remapped to "user" (system is allowed only first), then the instruction.
+    # The window keeps every user message just before the
+    # agent's turn, so a remapped notice never drops the task text.
+    assert row["prompt"] == [
+        {"role": "user", "content": "Second system prompt."},
+        {"role": "user", "content": "List files."},
+    ]
     assert row["trajectory"][0]["prompt"][0]["role"] == "system"
     assert row["trajectory"][0]["prompt"][1]["role"] == "user"
     assert row["info"]["training_ready"] is True

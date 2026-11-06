@@ -23,7 +23,7 @@ import shlex
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,9 +35,14 @@ from benchflow import _park
 from benchflow._diagnostics import render_text
 from benchflow._utils import timing_spans
 from benchflow._utils.command_hints import command_arg
+from benchflow._utils.config import (
+    DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
+    default_agent_idle_timeout,
+)
 from benchflow._utils.env_values import env_value_text, normalize_env_mapping
 from benchflow._utils.evaluation_results import (
     loop_summary,
+    model_call_summary,
     phase_timing_summary,
     rollout_result_payload,
     skill_invocation_summary,
@@ -71,6 +76,7 @@ from benchflow._utils.scoring import (
     PROVIDER_REJECTED,
     SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
+    TRIAL_BUDGET,
     USAGE_LIMIT,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
@@ -80,6 +86,8 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
     count_guard_refusals,
     count_score_outcomes,
+    count_unusable_rewards,
+    is_output_cap_error,
     is_unrecoverable_startup_error,
     mean_reward_caveat,
     mean_reward_every_trial,
@@ -120,6 +128,7 @@ from benchflow.loop_strategies import (
 )
 from benchflow.models import RolloutResult
 from benchflow.review.options import ReviewerConfig
+from benchflow.run_checks import RunChecks
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -134,6 +143,7 @@ from benchflow.task.discovery import (
 )
 from benchflow.task.verifier_sandbox import effective_verifier_sandbox
 from benchflow.trajectories.tree import RolloutNode
+from benchflow.trial_budget import TrialBudget
 from benchflow.usage_tracking import UsageTrackingConfig
 
 # Backward-compat alias
@@ -145,6 +155,10 @@ if TYPE_CHECKING:
     from benchflow.review.outcome import ScoringResult
 
 logger = logging.getLogger(__name__)
+
+# result.json's records of a trial's model calls that summary.json totals
+# (model_call_summary); a fresh trial's payload has them only on disk.
+_MODEL_CALL_KEYS = ("agent_outcome", "effort", "tool_surface", "input_delivery")
 
 # The prepared rollout the warm pool handed the trial running in this task,
 # taken once by its first attempt (_run_single_task).
@@ -424,16 +438,43 @@ class JobMatrixError(ValueError, UserError):
 
 
 class ResumeMismatchError(ValueError, UserError):
-    """Raised when a job's earlier trials ran with other settings and could not
-    be set aside.
+    """Raised when a named job's earlier trials ran with other settings, or
+    when they could not be set aside.
 
     A job holds one run. Folding trials of another agent, model, timeout or
-    any other setting in :data:`_RESUME_SETTINGS` into this run would publish
-    a blended ``Score: X/N`` that belongs to neither, and re-running over the
-    prior rows would destroy them; so they move to ``<job>/.set-aside/``
-    (:func:`_check_resume_mismatch`). When that move fails the run is refused;
+    any other setting in :data:`_RESUME_SETTINGS`, or of an earlier version
+    of a task, into this run would publish a blended ``Score: X/N`` that
+    belongs to neither. So a named job (``job_name=``, ``Evaluation.resume``)
+    is not resumed with other settings: the run is refused before anything
+    in the job moves or runs (:func:`_check_resume_mismatch`), and the error
+    names each change (``changed``) and how many finished trials ran with the
+    old settings (``finished_trials``). ``restart_changed=True``
+    (``--restart-changed``) moves those trials to ``<job>/.set-aside/``
+    instead and runs them again. When that move fails the run is refused too;
     the fix is a new job (``--fresh``, another ``--job-name``).
+
+    ``exit_code`` is how ``bench`` exits on it: 2 for a refused resume, a
+    choice for the user to make, and 1 otherwise.
     """
+
+    exit_code: int = 1
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        hint: str | None = None,
+        changed: Sequence[str] = (),
+        finished_trials: int | None = None,
+        exit_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        if hint is not None:
+            self.hint = hint
+        self.changed = list(changed)
+        self.finished_trials = finished_trials
+        if exit_code is not None:
+            self.exit_code = exit_code
 
 
 class Pre08CopyError(RuntimeError, UserError):
@@ -698,13 +739,15 @@ RUN_CONFIG_KEYS: frozenset[str] = _USAGE_KEYS | frozenset(
         "dataset_task_digests", "dataset_version", "environment",
         "environment_manifest", "exclude", "extra_instruction", "freeze_workspace",
         "fresh_install", "harness", "include", "integrity", "job_mode", "jobs_dir",
+        "keep_sandbox", "accept_deviations",
         "loop_strategy", "max_retries", "model", "n_tasks", "prompts",
         "reasoning_effort", "retry", "retry_from_checkpoint", "retry_prompt",
         "retry_resume_session", "reviewer", "sample_seed", "sandbox_locked_paths",
         "sandbox_setup_timeout", "sandbox_user", "seeds", "self_gen_no_internet",
         "separate_verifier", "separate_verifier_include", "skill_creator_dir",
         "skill_mode", "skills_dir", "skip_install", "source", "source_provenance",
-        "tasks_dir", "timeout_multiplier", "verifier_sandbox", "warm_pool",
+        "tasks_dir", "timeout_multiplier", "token_budget", "turn_budget",
+        "verifier_sandbox", "warm_pool",
     }
 )  # fmt: skip
 LEGACY_RUN_CONFIG_KEYS: frozenset[str] = _USAGE_KEYS | frozenset(
@@ -779,11 +822,11 @@ def check_run_config_keys(
         problems += check_keys(
             source, _SOURCE_KEYS, file=path, lines=lines, prefix=("source",)
         )
-    docs = "https://github.com/benchflow-ai/benchflow/blob/main/docs/jobs/configs.md"
+    docs = "https://github.com/benchflow-ai/benchflow/blob/main/docs/scale/configs.md"
     if problems:
         raise ConfigKeyError(
             "\n".join(problems),
-            hint=f"fix the key; a run config's keys are listed in {docs}#keys",
+            hint=f"fix the key; a run config's keys are listed in {docs}",
         )
     if legacy:
         # Never a fraction of the run the file asks for.
@@ -792,7 +835,7 @@ def check_run_config_keys(
             raise ConfigKeyError(
                 "\n".join(problems),
                 hint="change or drop each setting named; what a YAML job config "
-                f"runs is in {docs}#yaml-job-configs",
+                f"runs is in {docs}",
             )
     return raw
 
@@ -978,12 +1021,22 @@ class RetryConfig:
         category: str | None = None,
     ) -> bool:
         """Check if an error is retryable."""
+        if is_output_cap_error(error):
+            # The model's answer ran past the run's output cap: its own
+            # ending under that cap. Rerunning it until an attempt stays
+            # under the cap would raise the score.
+            return False
         category = retry_category(error, category or classify_error(error))
         if not category:
             return False
         if category == USAGE_LIMIT:
             # Whatever exclude_categories says: every retry on the same login
             # fails the same way until the window resets.
+            return False
+        if category == TRIAL_BUDGET:
+            # The trial spent its token or turn budget: its ending under the
+            # run's limits, graded like a timeout. Another attempt would buy
+            # the agent a second budget.
             return False
         if category in self.exclude_categories:
             return False
@@ -1215,8 +1268,11 @@ class UsageLimitStop:
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
+# The current Haiku: Haiku 4.5 is a legacy model (Anthropic's models page, read
+# 2026-11-04), and Claude Code 2.1.316 lists only current models to a
+# subscription login, so claude-agent-acp refuses claude-haiku-4-5 there.
 DEFAULT_AGENT = "claude-agent-acp"
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 
 def default_agent_warning(model: str | None) -> str:
@@ -1387,8 +1443,9 @@ def _job_folders(jobs_dir: Path) -> list[Path]:
 
 # The settings evaluation.json records (its "config") that change what a trial
 # measures. A rerun that differs in any of them does not resume the job: with
-# no job name it starts a new job, and on a named job the earlier trials are
-# set aside (_check_resume_mismatch), so one score never blends two runs (P2;
+# no job name it starts a new job, and a named job is refused unless the run
+# passes restart_changed, which sets the earlier trials aside
+# (_check_resume_mismatch), so one score never blends two runs (P2;
 # the Rust bench's dx-006). The tasks folder is compared too. Not compared, as
 # they do not change what a finished trial measured: how many trials or
 # reviews run at once or are prepared ahead (concurrency, build_concurrency,
@@ -1400,7 +1457,9 @@ def _job_folders(jobs_dir: Path) -> list[Path]:
 # <task>--seed-<n>: a resume may run a wider selection),
 # infrastructure retries (retry: a resume reruns those trials anyway), what is
 # kept or checked afterwards (checkpoint_keep, freeze_workspace, integrity,
-# usage_tracking), provenance (source_provenance, dataset_task_digests), how
+# usage_tracking, keep_sandbox), what the run card reads (accept_deviations,
+# planned_trials, trial_number, model_given, agent_idle_timeout_given: the
+# limit itself is compared), provenance (source_provenance, dataset_task_digests), how
 # the install is done (fresh_install: the proxy and agent install in the trial
 # instead of from a cached layer) and agent_defaulted. agent_env is compared by the entries evaluation.json
 # records (secret-looking names and values are never stored, so a rotated key
@@ -1426,6 +1485,7 @@ _RESUME_SETTINGS = (
     "agent_idle_timeout",
     "sandbox_setup_timeout",
     "budget",
+    "trial_budget",
     "agent_env",
     "environment",
     "sandbox_user",
@@ -1468,9 +1528,12 @@ _RESUME_SCHEMA_SETTINGS = (
 )
 
 # Files of a job folder that are its trials' (beside the trial folders): set
-# aside with them when a rerun with other settings starts the job over.
+# aside with them when a rerun with other settings starts the job over. The
+# run card describes the run that made them, and the next run writes its own.
 _JOB_RESULT_FILES = (
     "summary.json",
+    "run-card.json",
+    "report.md",
     "learner_store.json",
     "results.jsonl",
     "results.errors.json",
@@ -1804,16 +1867,35 @@ def _trial_settings_differ(
 
     ``digests`` caches each task folder's digest across the trials of one check.
     """
+    changes = _trial_setting_changes(
+        trial_dir,
+        config,
+        tasks,
+        digests,
+        compare_legacy_settings=compare_legacy_settings,
+    )
+    return ", ".join(changes) or None
+
+
+def _trial_setting_changes(
+    trial_dir: Path,
+    config: EvaluationConfig,
+    tasks: dict[str, Path] | None = None,
+    digests: dict[Path, str | None] | None = None,
+    *,
+    compare_legacy_settings: bool = False,
+) -> list[str]:
+    """:func:`_trial_settings_differ`'s differences, one entry each."""
     if _left_no_rollout_folder(trial_dir):
         # It ran nothing, so no setting of it can differ (R2-L1).
-        return None
+        return []
     try:
         recorded = json.loads((trial_dir / "config.json").read_text())
     except (OSError, ValueError):
-        return None
+        return []
     if not isinstance(recorded, dict) or recorded.get("purpose", "task") != "task":
-        return None
-    diffs = []
+        return []
+    diffs: list[str] = []
     agent = recorded.get("agent")
     current_agent = config.agent
     # config.json records primary_agent, which a task's scenes can pin.
@@ -1830,12 +1912,36 @@ def _trial_settings_differ(
     if task_dir is not None:
         current_agent, model, effort = _resolved_primary_settings(task_dir, config)
         current_settings.update(model=model, reasoning_effort=effort)
+    from benchflow.agents.receipt import receipt_matches_install
+
+    receipt = recorded.get("harness_versions")
+    if isinstance(receipt, dict) and not receipt_matches_install(
+        receipt, current_agent, config.harness
+    ):
+        diffs.append("harness_versions: installed harness differs")
     if agent and agent != current_agent:
         diffs.append(
             _setting_change(
                 "agent", _without_secrets(agent), _without_secrets(current_agent)
             )
         )
+    if agent:
+        # config.json records model_route only for an agent that routed its
+        # own model calls: unmetered trials never pool with metered.
+        from benchflow.agents.registry import (
+            MODEL_ROUTE_AGENT,
+            MODEL_ROUTE_PROXY,
+            agent_routes_own_model,
+        )
+
+        old_route = recorded.get("model_route") or MODEL_ROUTE_PROXY
+        new_route = (
+            MODEL_ROUTE_AGENT
+            if agent_routes_own_model(current_agent)
+            else MODEL_ROUTE_PROXY
+        )
+        if old_route != new_route:
+            diffs.append(_setting_change("model_route", old_route, new_route))
     if compare_legacy_settings:
         from benchflow._utils.config import (
             normalize_reasoning_effort,
@@ -1877,7 +1983,7 @@ def _trial_settings_differ(
                 f"task {task_name!r} at task_digest {recorded_digest[:19]} (this "
                 f"run: {current_digest[:19]}; the task's files changed since)"
             )
-    return ", ".join(diffs) or None
+    return diffs
 
 
 def _resume_task_paths(
@@ -2020,6 +2126,35 @@ def _env_comparison_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _recorded_idle_limit_is_default(recorded: dict[str, Any]) -> bool:
+    """Whether a job's record holds BenchFlow's default idle limit rather
+    than one its run set. A record from before ``agent_idle_timeout_given``
+    took the default exactly when it holds 600 s, that build's only one."""
+    given = recorded.get("agent_idle_timeout_given")
+    if given is None:
+        return recorded.get("agent_idle_timeout") == DEFAULT_AGENT_IDLE_TIMEOUT_SEC
+    return not given
+
+
+def _keep_recorded_idle_limit(job_dir: Path, config: EvaluationConfig) -> None:
+    """A run that sets no idle limit, resuming a job whose record holds
+    BenchFlow's default, keeps the limit the job ran with: an earlier build's
+    600 s at effort max stays 600 s for the job's remaining trials."""
+    if config.agent_idle_timeout_given:
+        return
+    try:
+        record = json.loads((job_dir / EVALUATION_RECORD).read_text())
+    except (OSError, ValueError):
+        return
+    recorded = record.get("config") if isinstance(record, dict) else None
+    if not isinstance(recorded, dict) or not _recorded_idle_limit_is_default(recorded):
+        return
+    limit = recorded.get("agent_idle_timeout")
+    if limit is None or isinstance(limit, int):
+        config.agent_idle_timeout = limit
+        config.agent_idle_timeout_given = True
+
+
 def _job_record_differs(
     job_dir: Path, config: EvaluationConfig, tasks_dir: Path | None
 ) -> str | None:
@@ -2029,16 +2164,37 @@ def _job_record_differs(
     Every setting in :data:`_RESUME_SETTINGS` the record has is compared; one
     an older record lacks is not (its value then is unknown, not different).
     """
+    return ", ".join(_job_record_changes(job_dir, config, tasks_dir)) or None
+
+
+def _job_record_changes(
+    job_dir: Path, config: EvaluationConfig, tasks_dir: Path | None
+) -> list[str]:
+    """:func:`_job_record_differs`'s differences, one entry per setting."""
     try:
         record = json.loads((job_dir / EVALUATION_RECORD).read_text())
     except (OSError, ValueError):
-        return None
+        return []
     recorded = record.get("config") if isinstance(record, dict) else None
     if not isinstance(recorded, dict):
-        return None
+        return []
     current = _config_to_record(config)
-    diffs = []
+    diffs: list[str] = []
+    if (
+        "harness_identity" in recorded
+        and recorded["harness_identity"] != current["harness_identity"]
+    ):
+        diffs.append("harness_identity: installer changed")
     for key in _RESUME_SETTINGS:
+        if (
+            key == "agent_idle_timeout"
+            and not config.agent_idle_timeout_given
+            and _recorded_idle_limit_is_default(recorded)
+        ):
+            # Neither run set the limit: the job keeps the one it ran with
+            # (_keep_recorded_idle_limit), whatever a later BenchFlow's
+            # default for the effort is.
+            continue
         if key == "verifier_sandbox":
             # Compared as where the run put the verifiers: strict integrity
             # implies the switch, and a record from before the switch (no
@@ -2116,7 +2272,7 @@ def _job_record_differs(
         and Path(recorded_tasks).resolve() != Path(tasks_dir).resolve()
     ):
         diffs.append(f"tasks_dir={recorded_tasks!r} (this run: {str(tasks_dir)!r})")
-    return ", ".join(diffs) or None
+    return diffs
 
 
 def _first_line(text: str) -> str:
@@ -2159,11 +2315,18 @@ def _recorded_run_differs(
 
 
 def _set_aside(
-    job_dir: Path, trials: list[Path], reason: str, *, whole_job: bool
+    job_dir: Path,
+    trials: list[Path],
+    reason: str,
+    *,
+    whole_job: bool,
+    changed: Sequence[str] = (),
 ) -> Path:
     """Move ``trials`` (and, for ``whole_job``, the job's result files and a
     copy of its evaluation.json) into a new ``<job>/.set-aside/<UTC time>/``
-    folder with a ``set-aside.json`` naming why. Nothing is deleted."""
+    folder with a ``set-aside.json`` naming why: the ``reason``, each of
+    the ``changed`` settings, and how many of the trials had finished.
+    Nothing is deleted."""
     import shutil
 
     from benchflow._utils.result_paths import SET_ASIDE_DIR
@@ -2174,6 +2337,7 @@ def _set_aside(
     while dest.exists():
         n += 1
         dest = job_dir / SET_ASIDE_DIR / f"{stamp}-{n}"
+    finished = _finished_trials(trials)
     dest.mkdir(parents=True)
     moved: list[str] = []
     try:
@@ -2202,16 +2366,83 @@ def _set_aside(
             f"refusing to resume {job_dir}: its trials ran {reason}, and setting "
             f"them aside in {dest} failed ({e}). {len(moved)} item(s) were moved "
             "there; the rest are where they were. Start a new job instead: bench "
-            "eval run --fresh (or another --job-name); in Python, a new job_name."
+            "run --fresh (or another --job-name); in Python, a new job_name."
         ) from e
     (dest / "set-aside.json").write_text(
         json.dumps(
-            {"set_aside_at": now.isoformat(), "reason": reason, "moved": moved},
+            {
+                "set_aside_at": now.isoformat(),
+                "reason": reason,
+                "changed": list(changed) or [reason],
+                "trials": len(trials),
+                "finished_trials": finished,
+                "moved": moved,
+            },
             indent=2,
         )
         + "\n"
     )
     return dest
+
+
+def _finished_trials(trials: Iterable[Path]) -> int:
+    """How many of ``trials`` finished: wrote their result.json."""
+    return sum(1 for trial in trials if (trial / "result.json").is_file())
+
+
+def _restart_record(job_dir: Path) -> dict[str, Any] | None:
+    """summary.json's and run-card.json's ``restarted_after_change`` block.
+
+    The latest set-aside of the job's trials (``<job>/.set-aside/*/
+    set-aside.json``): when it was made, each setting that changed, the
+    folder the trials went to (relative to the job folder), how many trials
+    moved there and how many of them had finished. None when nothing was
+    ever set aside. Read from the folder, so it stays in the job's records
+    when a later run resumes the restarted job.
+    """
+    from benchflow._utils.result_paths import SET_ASIDE_DIR
+
+    try:
+        folders = [p for p in (job_dir / SET_ASIDE_DIR).iterdir() if p.is_dir()]
+    except OSError:
+        return None
+    latest: tuple[datetime, Path, dict[str, Any]] | None = None
+    for folder in folders:
+        record = _json_object(folder / "set-aside.json")
+        if record is None:
+            continue
+        try:
+            at = datetime.fromisoformat(str(record.get("set_aside_at")))
+        except ValueError:
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        if latest is None or (at, folder.name) > (latest[0], latest[1].name):
+            latest = (at, folder, record)
+    if latest is None:
+        return None
+    _, folder, record = latest
+    changed = record.get("changed")
+    if not isinstance(changed, list):
+        # A set-aside.json from before the list: its reason is the one entry.
+        reason = record.get("reason")
+        changed = [reason] if isinstance(reason, str) and reason else []
+    moved = [str(m) for m in record.get("moved") or []]
+    trial_names = [
+        m for m in moved if m not in _JOB_RESULT_FILES and m != JOB_BUDGET_RECORDS
+    ]
+    trials, finished = record.get("trials"), record.get("finished_trials")
+    return {
+        "at": record.get("set_aside_at"),
+        "changed": [str(c) for c in changed],
+        "set_aside": f"{SET_ASIDE_DIR}/{folder.name}",
+        "trials": trials if isinstance(trials, int) else len(trial_names),
+        "finished_trials": (
+            finished
+            if isinstance(finished, int)
+            else _finished_trials(folder / name for name in trial_names)
+        ),
+    }
 
 
 def _refuse_external_job(job_dir: Path) -> None:
@@ -2221,8 +2452,118 @@ def _refuse_external_job(job_dir: Path) -> None:
         error = ResumeMismatchError(
             f"{job_dir} is a folder BenchFlow did not make; nothing in it moves"
         )
-        error.hint = "pick another --job or another --jobs-dir"
+        error.hint = "pick another --job-name or another --jobs-dir"
         raise error
+
+
+@dataclass(frozen=True)
+class _ResumeChange:
+    """How a job's earlier trials differ from a run (:func:`_resume_change`)."""
+
+    #: The trial folders a restart sets aside.
+    trials: list[Path]
+    #: The differences as one line (set-aside.json's ``reason``).
+    reason: str
+    #: Each difference on its own: a setting, or a task whose files changed.
+    changed: list[str]
+    #: Whether ``trials`` is every trial of the job.
+    whole_job: bool
+
+
+# What a trial's task digest difference says (_trial_setting_changes).
+_TASK_FILES_CHANGED = "the task's files changed since"
+# Differences a refusal names; the rest are counted (a dataset update can
+# change the digests of hundreds of tasks).
+_SHOWN_CHANGES = 10
+
+
+def _resume_change(
+    job_dir: Path,
+    config: EvaluationConfig,
+    task_dirs: list[Path] | None = None,
+    tasks_root: Path | None = None,
+) -> _ResumeChange | None:
+    """The job's earlier trials that ran with other settings than ``config``,
+    or None when every one of them matches. Reads only; see
+    :func:`_check_resume_mismatch`."""
+    trials = _trial_folders(job_dir)
+    if not trials:
+        return None
+    whole = _job_record_changes(job_dir, config, None)
+    if whole:
+        return _ResumeChange(trials, ", ".join(whole), whole, whole_job=True)
+    tasks = _resume_task_paths(tasks_root, task_dirs)
+    digests: dict[Path, str | None] = {}
+    legacy = not (job_dir / EVALUATION_RECORD).is_file()
+    differing = {
+        t: _trial_setting_changes(
+            t, config, tasks, digests, compare_legacy_settings=legacy
+        )
+        for t in trials
+    }
+    chosen = [t for t, d in differing.items() if d]
+    if not chosen:
+        return None
+    reason = "; ".join(sorted({", ".join(d) for d in differing.values() if d}))
+    changed = sorted({c for d in differing.values() for c in d})
+    if config.job_mode == "sequential-shared":
+        # Its learner store holds every trial's lessons.
+        chosen = trials
+    return _ResumeChange(chosen, reason, changed, whole_job=chosen == trials)
+
+
+def _changed_resume_refusal(
+    job_dir: Path, change: _ResumeChange
+) -> ResumeMismatchError:
+    """The error that refuses to resume ``job_dir`` with other settings: each
+    change, the finished trials it concerns, and the ways on."""
+    finished = _finished_trials(change.trials)
+    unfinished = len(change.trials) - finished
+    trials = f"{finished} finished trial{'' if finished == 1 else 's'}"
+    if unfinished:
+        trials += f" (and {unfinished} unfinished)"
+    shown = change.changed[:_SHOWN_CHANGES]
+    more = len(change.changed) - len(shown)
+    changes = "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
+    job = command_arg(job_dir, "<job dir>")
+
+    def kind(text: str) -> str:
+        if _TASK_FILES_CHANGED in text:
+            return "task"
+        return "route" if text.startswith("model_route=") else "setting"
+
+    # How to get back what each kind of change changed.
+    kinds = {kind(c) for c in change.changed}
+    ways = []
+    if "setting" in kinds:
+        ways.append(
+            f"run it with its recorded settings, `bench eval resume {job}`"
+            if (job_dir / EVALUATION_RECORD).is_file()
+            else "run the command that started it, with the settings it ran with"
+        )
+    if "task" in kinds:
+        ways.append("put the changed tasks' files back as they were")
+    if "route" in kinds:
+        # The agent's registry entry says how its calls go, not the run.
+        ways.append(
+            "run it with the BenchFlow version that ran it, which routed the "
+            "agent's model calls the old way"
+        )
+    old = ", and ".join(ways)
+    return ResumeMismatchError(
+        f"Refusing to resume job {job_dir.name}: {trials} in it ran {changes}. "
+        "Resuming would score them and this run's trials as one run, so nothing "
+        "in the job was moved or run.",
+        hint=(
+            f"to finish the job as it ran, {old}; to run those trials again in "
+            "this run, pass --restart-changed (in Python, restart_changed=True), "
+            f"which first moves them to {job}/.set-aside/; another --job-name "
+            "keeps this run in a job of its own"
+        ),
+        changed=change.changed,
+        finished_trials=finished,
+        exit_code=2,
+    )
 
 
 def _check_resume_mismatch(
@@ -2231,65 +2572,65 @@ def _check_resume_mismatch(
     before_set_aside: Callable[[], None] | None = None,
     task_dirs: list[Path] | None = None,
     tasks_root: Path | None = None,
+    *,
+    restart_changed: bool = False,
 ) -> Path | None:
-    """Set aside the job's earlier trials that ran with other settings.
+    """Refuse to resume a job whose earlier trials ran with other settings,
+    or, with ``restart_changed``, set those trials aside.
 
     Runs before a job starts (or resumes) under its name. When the job's
     ``evaluation.json`` records another value of any setting in
-    :data:`_RESUME_SETTINGS`, every trial folder, with the job's
-    summary.json, learner store and results files, moves to
-    ``<job>/.set-aside/<UTC time>/`` and the job starts over; otherwise each
+    :data:`_RESUME_SETTINGS`, every trial folder differs; otherwise each
     trial whose own config.json records another agent or loop strategy, or
-    an earlier version of its task (another ``task_digest``, DF-13), is
-    moved (all of them in a sequential-shared job, whose learner store holds
-    every trial's lessons). Without evaluation.json, the recorded effective
-    model, effort, backend and user are checked too. Readers skip that folder
+    an earlier version of its task (another ``task_digest``, DF-13), does
+    (every trial of a sequential-shared job, whose learner store holds every
+    trial's lessons). Without evaluation.json, the recorded effective model,
+    effort, backend and user are checked too. The tasks folder is not
+    compared here, only when an unnamed run picks its job
+    (:meth:`Evaluation._resolve_job_name`): naming the job is how a moved
+    tasks folder is resumed (``Evaluation.resume(job_dir, tasks_dir=...)``).
+
+    Without ``restart_changed`` such a job raises
+    :class:`ResumeMismatchError` (``exit_code`` 2) before anything in it
+    moves: the error names each change and the finished trials it concerns.
+    With it, the differing trials, with the job's summary.json, learner
+    store and results files when they are all of them, move to
+    ``<job>/.set-aside/<UTC time>/`` with a ``set-aside.json`` naming each
+    change, and the run starts them over. Readers skip that folder
     (:data:`benchflow._utils.result_paths.SET_ASIDE_DIR`) and nothing is
     deleted: a blended score belongs to neither run, and re-running over the
-    old rows would lose them. A warning names the setting that changed.
-    The tasks folder is not compared here, only when an unnamed run picks
-    its job (:meth:`Evaluation._resolve_job_name`): naming the job is how a
-    moved tasks folder is resumed (``Evaluation.resume(job_dir,
-    tasks_dir=...)``). ``before_set_aside`` runs once trials are to move
-    and before any does: the checks that can still refuse the run go there,
-    so a refused run leaves the job's trials where its record expects them.
-    Returns the folder the trials went to, or None when all of them matched.
-    Raises :class:`ResumeMismatchError` when they cannot be moved.
+    old rows would lose them. A warning names the setting that changed, and
+    summary.json and run-card.json record the restart
+    (``restarted_after_change``, :func:`_restart_record`).
+    ``before_set_aside`` runs once trials are to move and before any does:
+    the checks that can still refuse the run go there, so a refused run
+    leaves the job's trials where its record expects them. Returns the
+    folder the trials went to, or None when all of them matched. Raises
+    :class:`ResumeMismatchError` too when they cannot be moved.
     """
     # A named run never resumes into or moves trials out of an external job
     # (review R2-1).
     _refuse_external_job(job_dir)
-    trials = _trial_folders(job_dir)
-    if not trials:
+    change = _resume_change(job_dir, config, task_dirs, tasks_root)
+    if change is None:
         return None
-    whole = _job_record_differs(job_dir, config, None)
-    if whole:
-        reason, chosen = whole, trials
-    else:
-        tasks = _resume_task_paths(tasks_root, task_dirs)
-        digests: dict[Path, str | None] = {}
-        legacy = not (job_dir / EVALUATION_RECORD).is_file()
-        differing = {
-            t: _trial_settings_differ(
-                t, config, tasks, digests, compare_legacy_settings=legacy
-            )
-            for t in trials
-        }
-        chosen = [t for t, d in differing.items() if d]
-        if not chosen:
-            return None
-        reason = "; ".join(sorted({d for d in differing.values() if d}))
-        if config.job_mode == "sequential-shared":
-            chosen = trials
-    whole_job = chosen == trials
+    if not restart_changed:
+        raise _changed_resume_refusal(job_dir, change)
     if before_set_aside is not None:
         before_set_aside()
-    dest = _set_aside(job_dir, chosen, reason, whole_job=whole_job)
+    dest = _set_aside(
+        job_dir,
+        change.trials,
+        change.reason,
+        whole_job=change.whole_job,
+        changed=change.changed,
+    )
     logger.warning(
-        f"Setting aside {len(chosen)} earlier trial(s) of job {job_dir.name} in "
-        f"{dest}: they ran {reason}. They are kept there and not counted; this "
-        "run runs those tasks again with its own settings (bench run "
-        "--fresh, or another --job, keeps two runs as two jobs)."
+        f"Setting aside {len(change.trials)} earlier trial(s) of job "
+        f"{job_dir.name} in {dest}: they ran {change.reason}. They are kept "
+        "there and not counted; this run runs those tasks again with its own "
+        "settings (bench run --fresh, or another --job-name, keeps two runs as "
+        "two jobs)."
     )
     return dest
 
@@ -2324,28 +2665,67 @@ def _classify_completed_outcomes(
     return passed, failed, errored
 
 
-def effective_model(agent: str, model: str | None) -> str | None:
+def model_from_agent_env(
+    agent: str, agent_env: dict[str, str] | None
+) -> tuple[str | None, str | None]:
+    """The agent's declared model variable, then its generic model override."""
+    from benchflow.agents.registry import AGENTS, is_scripted_agent
+
+    if is_scripted_agent(agent):
+        return None, None
+    agent_config = AGENTS.get(agent)
+    native_key = (
+        agent_config.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
+        if agent_config is not None
+        else None
+    )
+    for key in (native_key, "BENCHFLOW_PROVIDER_MODEL"):
+        if key and (value := (agent_env or {}).get(key)):
+            return value, key
+    return None, None
+
+
+def effective_model(
+    agent: str, model: str | None, agent_env: dict[str, str] | None = None
+) -> str | None:
     """Resolve the model an agent should run with.
 
     Resolution order:
       1. An explicit ``--model`` always wins.
-      2. The agent's own ``default_model`` (e.g. ``gemini-2.5-flash`` for the
+      2. The model ``agent_env`` names: the agent's own model variable
+         (``ANTHROPIC_MODEL`` for claude-agent-acp), then
+         ``BENCHFLOW_PROVIDER_MODEL`` (:func:`model_from_agent_env`).
+      3. The agent's own ``default_model`` (e.g. ``gemini-2.5-flash`` for the
          gemini agent) — keeps each agent on its native provider.
-      3. ``DEFAULT_MODEL`` only when the caller is on the default agent.
+      4. ``DEFAULT_MODEL`` only when the caller is on the default agent.
          Substituting it under any other agent silently cross-wires providers
          and was the root cause of #343 (gemini eval demanding ANTHROPIC_API_KEY).
+
+    Step 2 sets the model a trial runs, not only the one its card names: the
+    model BenchFlow gives the agent (its ACP model setting), the proxy's
+    routing and pricing, and the result's model label all follow the
+    variable. Before 0.10 a run without ``--model`` gave the agent the default
+    model here, and Claude Code took that ACP setting over its
+    ``ANTHROPIC_MODEL``.
 
     Oracle runs solve.sh and never calls an LLM, so it never receives a model
     (the chokepoint in resolve_agent_env defends, but callers should also stop
     materializing DEFAULT_MODEL into oracle configs to keep the data honest —
     e.g. result-summary JSON shows model=null instead of a bogus default).
+
+    An agent that routes its own model calls (``model_route = "agent"``)
+    needs no model: without ``--model`` or a ``default_model`` it gets None
+    and uses its own; with one, the model is only a label.
     """
-    from benchflow.agents.registry import is_scripted_agent
+    from benchflow.agents.registry import agent_routes_own_model, is_scripted_agent
 
     if is_scripted_agent(agent):
         return None
     if model:
         return model
+    env_model, _ = model_from_agent_env(agent, agent_env)
+    if env_model:
+        return env_model
     # Look up the agent's own default. Unknown agents (raw-command fallback)
     # bypass the registry lookup and use the global default.
     from benchflow.agents.registry import AGENTS
@@ -2353,6 +2733,8 @@ def effective_model(agent: str, model: str | None) -> str | None:
     agent_cfg = AGENTS.get(agent)
     if agent_cfg and agent_cfg.default_model:
         return agent_cfg.default_model
+    if agent_routes_own_model(agent):
+        return None
     if agent == DEFAULT_AGENT or agent_cfg is None:
         return DEFAULT_MODEL
     raise ValueError(
@@ -2394,6 +2776,11 @@ class EvaluationConfig:
     # (``--allow-cloud-metadata``): no block, recorded per trial.
     allow_cloud_metadata: bool = False
     agent_idle_timeout: int | None = 600
+    # The run set agent_idle_timeout (--agent-idle-timeout, a config's
+    # agent_idle_timeout_sec, a job's record) instead of taking BenchFlow's
+    # default for its effort (_utils.config.default_agent_idle_timeout).
+    # None: set when it is not the plain default, 600.
+    agent_idle_timeout_given: bool | None = None
     context_root: str | None = None
     base_image_override: str | None = None
     separate_verifier: bool = False
@@ -2440,6 +2827,9 @@ class EvaluationConfig:
     checkpoint_keep: int = 3
     # Freeze each trial's final workspace for later `bench eval regrade`.
     freeze_workspace: bool = False
+    # Keep trial sandboxes for `bench sandbox attach` (rollout/_keep_sandbox):
+    # "never", "on-failure" or "always". Not part of the job's identity.
+    keep_sandbox: str = "never"
     # Reward integrity for every trial (benchflow.integrity): "off", "audit"
     # or "strict". Writes integrity/claim_verdict.json; never changes a reward.
     integrity: str = "off"
@@ -2457,9 +2847,13 @@ class EvaluationConfig:
     # Hard per-job budget (benchflow.budget): stop launching and cancel
     # running trials once USD, sandbox-seconds or tokens reach a cap.
     budget: Budget | None = None
+    # Per-trial token and turn budget (benchflow.trial_budget), enforced by
+    # the model proxy while each trial runs; a measure set here replaces the
+    # one a task's [agent] section sets.
+    trial_budget: TrialBudget | None = None
     # Seeded rollouts (`--seeds 0-4`): every task whose task format writes seeded
     # variants runs once per seed; summary.json then carries a `seeded` report
-    # (pass@k, variance, reset reproducibility). See docs/tasks/embodied.md.
+    # (pass@k, variance, reset reproducibility). See docs/tasks/task-format.md#other-task-formats.
     seeds: list[int] | None = None
     # Python hooks run in every rollout's sandbox after it starts and before
     # the agent does (RolloutConfig.pre_agent_hooks): ``async def hook(sandbox)``.
@@ -2471,6 +2865,21 @@ class EvaluationConfig:
     # warned once (default_agent_warning) and evaluation.json records it beside
     # the agent and model it ran.
     agent_defaulted: bool = False
+    # Why this run differs from its task set's run-reference.toml (the run
+    # card, benchflow.run_card): a strict reference refuses a run that differs
+    # without one. Kept in run-card.json; not part of the job's identity.
+    accept_deviations: str | None = None
+    # The trials per task the whole run makes, and which one this job is, when
+    # each trial is a job of its own (`bench run --trials N`): read by the run
+    # card only.
+    planned_trials: int = 1
+    trial_number: int | None = None
+    # The run named its model (--model, a config's model or model_name, a
+    # matrix entry) instead of taking the one its agent_env names or the
+    # agent's default. The model is resolved before the job starts, so
+    # ``model`` alone cannot tell. None: named when ``model`` is set. Read by
+    # the run card only.
+    model_given: bool | None = None
 
     def retry_policy(self) -> RetryPolicy | None:
         """The parsed retry policy, or None when not requested."""
@@ -2489,6 +2898,21 @@ class EvaluationConfig:
             resume_session=self.retry_resume_session,
         )
 
+    def settle_idle_timeout(self) -> None:
+        """Give a run that set no idle limit BenchFlow's default for its
+        effort; call again after the effort changes."""
+        if not self.agent_idle_timeout_given:
+            self.agent_idle_timeout = default_agent_idle_timeout(self.reasoning_effort)[
+                0
+            ]
+
+    def idle_timeout_source(self) -> str:
+        """Where the idle limit came from: ``given``, or BenchFlow's
+        ``default`` (``effort_max`` and ``effort_xhigh`` for its longer one)."""
+        if self.agent_idle_timeout_given:
+            return "given"
+        return default_agent_idle_timeout(self.reasoning_effort)[1]
+
     def checkpoint_policy(self) -> CheckpointPolicy | None:
         """The parsed checkpoint policy, or None when not requested."""
         from benchflow.checkpoints import parse_checkpoint_policy
@@ -2499,6 +2923,11 @@ class EvaluationConfig:
 
     def __post_init__(self):
         self.budget = Budget.coerce(self.budget)
+        self.trial_budget = TrialBudget.coerce(self.trial_budget)
+        from benchflow.rollout._keep_sandbox import check_backend, normalize_policy
+
+        self.keep_sandbox = normalize_policy(self.keep_sandbox)
+        check_backend(self.keep_sandbox, self.environment)
         # A YAML or JSON config can give a number or a bool (MAX_THINKING_TOKENS:
         # 32000); the agent gets a string, and resume compares strings.
         self.agent_env = normalize_env_mapping(self.agent_env)
@@ -2524,6 +2953,8 @@ class EvaluationConfig:
                     "script: has no agent options or model harness; drop them or choose a model agent"
                 )
             self.model = None
+        # A config that sets a model names it unless its maker says not.
+        self.model_given = self.model is not None and self.model_given is not False
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         from benchflow.native_harness.harnesses import (
             check_harness,
@@ -2536,6 +2967,11 @@ class EvaluationConfig:
         if self.codex_apps_policy not in (None, "disabled", "inherit"):
             raise ValueError("codex_apps_policy must be disabled, inherit, or None")
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
+        if self.agent_idle_timeout_given is None:
+            self.agent_idle_timeout_given = (
+                self.agent_idle_timeout != DEFAULT_AGENT_IDLE_TIMEOUT_SEC
+            )
+        self.settle_idle_timeout()
         self.checkpoint_policy()  # refuse a bad --checkpoints before any run
         self.retry_policy()  # and a bad --retry-from-checkpoint
         from benchflow.integrity.constants import normalize_integrity_mode
@@ -2626,6 +3062,9 @@ class EvaluationResult:
     # Unscored trials the plugin guard refused, failures in score_excl_errors
     # .
     guard_refused: int = 0
+    # Unscored trials whose final verify left no usable reward, failures there
+    # too (NO_USABLE_REWARD).
+    unusable_rewards: int = 0
     elapsed_sec: float = 0.0
     memory_score: float | None = None
     memory_scores: dict[str, float] = field(default_factory=dict)
@@ -2665,6 +3104,14 @@ class EvaluationResult:
     # which ``interrupted`` had started (DFR-p3-11).
     stopped: bool = False
     interrupted: int = 0
+    # summary.json's ``run_checks`` block (benchflow.run_checks): the
+    # truncation rate, what failed the run and what only warns; None for a
+    # result built some other way.
+    run_checks: dict[str, Any] | None = None
+    # summary.json's ``scoring`` block (benchflow.scoring): the scoring rule's
+    # account of the trials, with its interval over tasks and its warnings;
+    # None for a result built some other way.
+    scoring: dict[str, Any] | None = None
 
     def __repr__(self) -> str:
         # The counts, not the config or every task's RolloutResult.
@@ -2681,7 +3128,7 @@ class EvaluationResult:
         )
 
     def to_records(self) -> list[dict[str, Any]]:
-        """One flat dict per task, sorted by task name (``RolloutResult.to_record``)."""
+        """Return one flat dict per task (``RolloutResult.to_record``), sorted by task name."""
         return [result.to_record() for _, result in sorted(self.results.items())]
 
     def to_csv(self, path: str | Path) -> Path:
@@ -2716,7 +3163,9 @@ class EvaluationResult:
     def score_excl_errors(self) -> float:
         """Pass rate excluding errored tasks."""
         return pass_rate_excl_errors(
-            passed=self.passed, failed=self.failed, refused=self.guard_refused
+            passed=self.passed,
+            failed=self.failed,
+            refused=self.guard_refused + self.unusable_rewards,
         )
 
 
@@ -2737,6 +3186,33 @@ def _benchflow_version() -> str:
 
 
 JOB_LOCK = ".evaluation.lock"
+
+
+def _earlier_attempts(
+    job_dir: Path, completed: dict[str, dict], remaining: list[Path]
+) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]]]:
+    """What an earlier run of the job left, for its run checks: each finished
+    task's trial, and every other attempt of the job's tasks (one the retry
+    policy ran again, or one this run starts over)."""
+    from benchflow._utils.result_paths import iter_task_result_paths
+
+    finals = {
+        task: str(data["rollout_name"])
+        for task, data in completed.items()
+        if data.get("rollout_name")
+    }
+    tasks = set(completed) | {d.name for d in remaining}
+    retried: list[tuple[str, Path]] = []
+    for path in iter_task_result_paths(job_dir) if job_dir.is_dir() else []:
+        data = None
+        with contextlib.suppress(OSError, ValueError):
+            data = json.loads(path.read_text())
+        if not isinstance(data, dict) or data.get("purpose", "task") != "task":
+            continue
+        task = data.get("task_name")
+        if task in tasks and path.parent.name != finals.get(task):
+            retried.append((task, path.parent))
+    return [(task, job_dir / name) for task, name in finals.items()], retried
 
 
 def _recorded_attempts(job_dir: Path) -> tuple[list[dict[str, Any]], int]:
@@ -2943,7 +3419,7 @@ def _config_to_record(config: EvaluationConfig) -> dict[str, Any]:
             record[f.name] = None if value is None else value.model_dump(mode="json")
         elif f.name == "loop_strategy":
             record[f.name] = None if value is None else value.to_mapping()
-        elif f.name == "budget":
+        elif f.name in ("budget", "trial_budget"):
             record[f.name] = None if value is None else value.to_dict()
         elif f.name == "pre_agent_hooks":
             record[f.name] = (
@@ -2953,6 +3429,9 @@ def _config_to_record(config: EvaluationConfig) -> dict[str, Any]:
             record[f.name] = sorted(value)
         else:
             record[f.name] = value
+    from benchflow.agents.receipt import install_identity
+
+    record["harness_identity"] = install_identity(config.agent, config.harness)
     return json.loads(json.dumps(record, default=str))
 
 
@@ -2971,6 +3450,10 @@ def _config_from_record(
     known = {f.name for f in dataclasses.fields(EvaluationConfig)}
     kwargs = {k: v for k, v in raw.items() if k in known}
     kwargs.pop("pre_agent_hooks", None)  # names only; see Evaluation.resume
+    if "agent_idle_timeout" in kwargs:
+        # The limit the job ran with, whatever set it: never resolved again
+        # from a later BenchFlow's defaults.
+        kwargs["agent_idle_timeout_given"] = True
     # The values the record keeps (none that look secret), then the caller's.
     recorded_env = raw.get("agent_env")
     env = {
@@ -3013,7 +3496,7 @@ class Evaluation:
         evaluation = Evaluation(
             tasks_dir=resolve_source("terminal-bench-2"),
             jobs_dir="parity/tb2-haiku",
-            config=EvaluationConfig(model="claude-haiku-4-5-20251001"),
+            config=EvaluationConfig(model="claude-haiku-5-5"),
         )
         result = await evaluation.run()
         print(result.score)
@@ -3086,6 +3569,8 @@ class Evaluation:
         on_plan: Callable[[int, int, int, tuple[int, int, int]], None] | None = None,
         preflight: bool = True,
         budget: Budget | dict[str, Any] | None = None,
+        *,
+        restart_changed: bool = False,
     ):
         # A saved job may be resumed from a different working directory. Bind
         # relative input paths when selected, before writing evaluation.json.
@@ -3101,6 +3586,9 @@ class Evaluation:
             self._config.budget = Budget.coerce(budget)
         self._budget_guard: BudgetGuard | None = None
         self._usage_stop = UsageLimitStop()
+        # The job's checks of its finished trials (benchflow.run_checks),
+        # made when it runs.
+        self._run_checks = RunChecks(None, planned=1)
         self._selection_warned = False
         # Set by resume(): it runs the selection the job recorded.
         self._resuming = False
@@ -3118,6 +3606,10 @@ class Evaluation:
         # checks it again against the settings it finally runs, which a caller
         # (the CLI's --config path) may still change after construction.
         self._auto_job_name: str | None = None if job_name else self._job_name
+        # A named job whose earlier trials ran with other settings is refused
+        # (ResumeMismatchError); with this, they are set aside and run again
+        # (--restart-changed, _check_resume_mismatch).
+        self._restart_changed = restart_changed
         # Set by the YAML job config loader: the task names a `tasks:` list
         # fixes, and whether the oracle runs because the file names no agent
         # . The CLI reads them once its flags are applied.
@@ -3264,6 +3756,15 @@ class Evaluation:
             "retry_prompt": cfg.retry_prompt,
             "retry_resume_session": cfg.retry_resume_session,
             "budget": None if cfg.budget is None else cfg.budget.to_dict(),
+            **(
+                {
+                    f"{measure[:-1]}_budget": value
+                    for measure, value in cfg.trial_budget.to_dict().items()
+                    if value is not None
+                }
+                if cfg.trial_budget is not None
+                else {}
+            ),
             "seeds": cfg.seeds,
             "n_tasks": cfg.n_tasks,
             "sample_seed": cfg.sample_seed,
@@ -3319,7 +3820,7 @@ class Evaluation:
             tasks_dir: path/to/tasks
             jobs_dir: jobs/my-run
             agent: claude-agent-acp
-            model: claude-haiku-4-5-20251001
+            model: claude-haiku-5-5
             environment: daytona
             concurrency: 64
             max_retries: 1
@@ -3335,7 +3836,7 @@ class Evaluation:
               type: docker
             agents:
               - name: claude-agent-acp
-                model_name: anthropic/claude-haiku-4-5-20251001
+                model_name: anthropic/claude-haiku-5-5
                 env:
                   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
             datasets:
@@ -3466,7 +3967,7 @@ class Evaluation:
             )
         config = EvaluationConfig(
             agent=agent_name,
-            model=effective_model(agent_name, raw.get("model")),
+            model=effective_model(agent_name, raw.get("model"), agent_env_raw),
             reasoning_effort=raw.get("reasoning_effort"),
             harness=raw.get("harness", "acp"),
             environment=raw.get("environment", "docker"),
@@ -3489,6 +3990,9 @@ class Evaluation:
             allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
+            ),
+            agent_idle_timeout_given=(
+                "agent_idle_timeout_sec" in raw or "agent_idle_timeout" in raw
             ),
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
@@ -3515,18 +4019,30 @@ class Evaluation:
             checkpoints=raw.get("checkpoints"),
             checkpoint_keep=raw.get("checkpoint_keep", 3),
             freeze_workspace=bool(raw.get("freeze_workspace", False)),
+            keep_sandbox=str(raw.get("keep_sandbox") or "never"),
+            accept_deviations=(
+                str(raw["accept_deviations"])
+                if raw.get("accept_deviations") is not None
+                else None
+            ),
             integrity=raw.get("integrity") or "off",
             verifier_sandbox=raw.get("verifier_sandbox", "task"),
             retry_from_checkpoint=raw.get("retry_from_checkpoint"),
             retry_prompt=raw.get("retry_prompt"),
             retry_resume_session=bool(raw.get("retry_resume_session", False)),
             budget=Budget.coerce(raw.get("budget")),
+            trial_budget=TrialBudget(
+                tokens=raw.get("token_budget"), turns=raw.get("turn_budget")
+            )
+            if raw.get("token_budget") is not None or raw.get("turn_budget") is not None
+            else None,
             seeds=_seeds_from_config(raw.get("seeds")),
             n_tasks=raw.get("n_tasks"),
             sample_seed=raw.get("sample_seed"),
             timeout_multiplier=raw.get("timeout_multiplier"),
             extra_instruction=raw.get("extra_instruction"),
             agent_defaulted="agent" not in raw,
+            model_given=bool(raw.get("model")),
         )
         if config.agent_defaulted and warn_default_agent:
             logger.warning(default_agent_warning(config.model))
@@ -3595,7 +4111,7 @@ class Evaluation:
         agent_name = agent_cfg.get("name", DEFAULT_AGENT)
 
         # Model — keep provider prefix intact for downstream resolution
-        model = effective_model(agent_name, agent_cfg.get("model_name") or None)
+        named_model = agent_cfg.get("model_name") or None
 
         # Environment
         env_cfg = raw.get("environment", {})
@@ -3604,6 +4120,7 @@ class Evaluation:
         # Only the agent receives this env; job_config_problems refuses the
         # sandbox-wide environment.env setting.
         agent_env = job_agent_env(agent_cfg, where, cell.agent_index)
+        model = effective_model(agent_name, named_model, agent_env)
 
         # Tasks: the cell's dataset folder, or its explicit `tasks:` list:
         # one task folder, or tasks that share
@@ -3778,6 +4295,9 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            agent_idle_timeout_given=(
+                "agent_idle_timeout_sec" in raw or "agent_idle_timeout" in raw
+            ),
             context_root=raw.get("context_root"),
             base_image_override=raw.get("base_image_override"),
             separate_verifier=bool(raw.get("separate_verifier", False)),
@@ -3793,6 +4313,7 @@ class Evaluation:
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             agent_defaulted=agent_defaulted,
+            model_given=named_model is not None,
             # Where the verifiers run, as in the native format: a legacy file
             # that asks for separate verifiers (or strict integrity, which
             # implies them) must get them, never a silent shared run
@@ -3920,7 +4441,7 @@ class Evaluation:
             if seeds:
                 raise ValueError(
                     f"--seeds: {self._tasks_dir.name} is a native task package; seeded rollouts "
-                    "need a task format that writes seeded variants (docs/tasks/embodied.md)"
+                    "need a task format that writes seeded variants (docs/tasks/task-format.md#other-task-formats)"
                 )
             if not picked(self._tasks_dir.name):
                 return []
@@ -3972,7 +4493,7 @@ class Evaluation:
                 if seeds:
                     raise ValueError(
                         f"--seeds: {d.name} is a native task package; seeded rollouts need "
-                        "a task format that writes seeded variants (docs/tasks/embodied.md)"
+                        "a task format that writes seeded variants (docs/tasks/task-format.md#other-task-formats)"
                     )
                 if linked:
                     # The same rule as a task named on its own (above).
@@ -4302,6 +4823,8 @@ class Evaluation:
                 "integration_failure_info",
                 "loop",
                 "verifier_isolation",
+                "warnings",
+                *_MODEL_CALL_KEYS,
             )
         ):
             return
@@ -4319,6 +4842,11 @@ class Evaluation:
         timing = persisted.get("timing")
         if isinstance(timing, dict) and "timing" not in payload:
             payload["timing"] = timing
+        # The trial's warnings (a "Verifier scored 0: ..." among them) exist
+        # only in the persisted result; summary.json counts those zeros.
+        warnings = persisted.get("warnings")
+        if isinstance(warnings, list) and "warnings" not in payload:
+            payload["warnings"] = warnings
         # The integration-failure record (its cause) exists only in the
         # persisted result; summary.json counts integration failures by it.
         integration = persisted.get("integration_failure_info")
@@ -4332,6 +4860,11 @@ class Evaluation:
         loop = persisted.get("loop")
         if isinstance(loop, dict):
             payload.setdefault("loop", loop)
+        # The model-call records exist only in the persisted result too
+        # (summary.json's model_calls block).
+        for key in _MODEL_CALL_KEYS:
+            if isinstance(persisted.get(key), dict):
+                payload.setdefault(key, persisted[key])
 
     async def _run_single_task(
         self, task_dir: Path, cfg: EvaluationConfig
@@ -4438,6 +4971,8 @@ class Evaluation:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
+            # The job settled its limit (its effort's default or a set one).
+            agent_idle_timeout_given=True,
             context_root=cfg.context_root,
             base_image_override=cfg.base_image_override,
             separate_verifier=cfg.separate_verifier,
@@ -4454,6 +4989,7 @@ class Evaluation:
             task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
             loop_strategy=cfg.loop_strategy,
+            trial_budget=cfg.trial_budget,
             **_budget_overrides(cfg, task_dir),
         )
         rollout_config.checkpoints = cfg.checkpoint_policy()
@@ -4463,6 +4999,7 @@ class Evaluation:
                 *cfg.pre_agent_hooks,
             ]
         rollout_config.freeze_workspace = cfg.freeze_workspace
+        rollout_config.keep_sandbox = cfg.keep_sandbox
         rollout_config.fresh_install = cfg.fresh_install
         rollout_config.allow_cloud_metadata = cfg.allow_cloud_metadata
         rollout_config.integrity = cfg.integrity
@@ -4507,6 +5044,14 @@ class Evaluation:
             retryable_verifier_error = cfg.retry.should_retry_verifier_error(
                 result.verifier_error
             )
+            if (retryable_agent_error or retryable_verifier_error) and getattr(
+                result, "model_refusal", None
+            ):
+                # The model refused (or a content filter stopped it): its own
+                # answer, which another attempt would re-roll. The refusal
+                # stays the trial's result, counted beside the score.
+                logger.info(f"Not retrying {task_dir.name}: its model refused")
+                break
 
             # If succeeded, verifier-errored (terminal), or non-retryable, stop.
             # Retryable infra/idle errors win over fallback rewards so a hung
@@ -4518,6 +5063,15 @@ class Evaluation:
                 if guard is not None and not guard.retry(task_dir.name):
                     logger.info(f"Not retrying {task_dir.name}: {guard.reason}")
                     break
+                checks = self._job_checks()
+                if checks.stopped:
+                    logger.info(f"Not retrying {task_dir.name}: {checks.reason}")
+                    break
+                # The run checks count every attempt: an attempt cut at the
+                # output cap still counts once its rerun is the trial's result.
+                checks.record(
+                    task_dir.name, getattr(result, "rollout_dir", None), retried=True
+                )
                 err_preview = render_text(
                     result.error or result.verifier_error or "", 60
                 )
@@ -4694,6 +5248,7 @@ class Evaluation:
         breaker = ApiErrorCircuitBreaker()
         guard = self._budget_guard
         usage_stop = self._usage_stop
+        checks = self._job_checks()
         # Pace starts above --concurrency 16 so SSH and the Docker daemon's
         # compose-up handler never see a storm (at about 10 starts/s they
         # did). The pacer waits for its token before the slot is taken, so
@@ -4705,6 +5260,7 @@ class Evaluation:
                 (guard is not None and guard.stopped)
                 or usage_stop.error is not None
                 or breaker.tripped
+                or checks.stopped
             )
 
         async def admit(td: Path) -> tuple[bool, RunResult | None]:
@@ -4713,7 +5269,7 @@ class Evaluation:
             if guard is not None and guard.stopped:
                 guard.start(td.name)  # records it as not started
                 return False, None
-            if usage_stop.skip(td.name):
+            if usage_stop.skip(td.name) or checks.skip(td.name):
                 return False, None
             if breaker.tripped:
                 result = RunResult(task_name=td.name, error=breaker.skip_error())
@@ -4724,7 +5280,13 @@ class Evaluation:
             ):
                 return False, None
             # Admission can suspend behind another trial. Its completion may
-            # stop the login or open the breaker while waking budget waiters.
+            # stop the login, a run check or open the breaker while waking
+            # budget waiters.
+            if checks.stopped:
+                if guard is not None:
+                    guard.abandon(td.name)
+                checks.skip(td.name)
+                return False, None
             if usage_stop.error is not None or breaker.tripped:
                 if guard is not None:
                     guard.abandon(td.name)
@@ -4735,9 +5297,13 @@ class Evaluation:
                 return False, result
             return True, None
 
+        started = 0
+
         async def start(
             index: int, td: Path, slot_taken: float, pace_wait: float | None
         ) -> tuple[str, RunResult | None]:
+            nonlocal started
+            started += 1
             self._fire_progress(self._on_task_start, td.name)
             waits = {"slot_wait": timing_spans.clock() - slot_taken}
             if pace_wait is not None:
@@ -4759,6 +5325,7 @@ class Evaluation:
             usage_stop.record(result)
             breaker.record(result)
             self._log_and_report(td, result)
+            checks.record(td.name, result.rollout_dir)
             return td.name, result
 
         def not_started(
@@ -4805,6 +5372,18 @@ class Evaluation:
         # job's end (a stop or Ctrl-C included) removes those no trial took.
         pool = self._warm_pool = self._make_warm_pool(remaining, stopped)
         watcher = asyncio.ensure_future(guard.watch()) if guard is not None else None
+        # A line every few minutes on the slots in use and the model's load,
+        # with a warning when the run is underused (benchflow._utils.utilization).
+        # A job of fewer tasks than --concurrency has only as many slots.
+        from benchflow._utils import utilization
+
+        usage_watch = asyncio.ensure_future(
+            utilization.watch(
+                max(1, min(cfg.concurrency, len(remaining))),
+                lambda: len(remaining) - started,
+                card=getattr(self, "_run_card", None),
+            )
+        )
         try:
             if _park.role() == "parked":
                 # Returns once an identical call takes this one; else the
@@ -4815,6 +5394,7 @@ class Evaluation:
                 return_exceptions=True,
             )
         finally:
+            usage_watch.cancel()
             if watcher is not None:
                 watcher.cancel()
             if pool is not None:
@@ -4938,11 +5518,13 @@ class Evaluation:
                 self._learner_export_dir = export_dir
 
                 guard = self._budget_guard
-                if self._usage_stop.error is not None or (
-                    guard is not None and not guard.start(td.name)
+                if (
+                    self._usage_stop.error is not None
+                    or self._job_checks().skip(td.name)
+                    or (guard is not None and not guard.start(td.name))
                 ):
-                    # A usage limit stopped the job, or a cap was reached (the guard
-                    # records the trial as not started).
+                    # A usage limit or a run check stopped the job, or a cap
+                    # was reached (each records the trial as not started).
                     if self._usage_stop.error is not None:
                         self._usage_stop.skip(td.name)
                     self._learner_skills_dir = None
@@ -4979,6 +5561,7 @@ class Evaluation:
 
                 self._usage_stop.record(result)
                 self._log_and_report(td, result)
+                self._job_checks().record(td.name, result.rollout_dir)
                 pairs.append((td.name, result))
 
                 await self._commit_learner_generation(
@@ -5159,6 +5742,7 @@ class Evaluation:
         *,
         tasks_dir: str | Path | None = None,
         agent_env: dict[str, str] | None = None,
+        restart_changed: bool = False,
         **config_overrides: Any,
     ) -> Evaluation:
         """Rebuild the Evaluation that created ``job_dir``, ready to finish it.
@@ -5171,10 +5755,12 @@ class Evaluation:
         (only their names are recorded); ``config_overrides`` replace
         individual config fields (e.g. ``concurrency=8``). An override or a
         missing hook that changes a setting the trials ran with
-        (:data:`_RESUME_SETTINGS`) sets the finished trials aside, as for any
-        named job, and the run starts them over. Jobs started before this
-        record existed need ``Evaluation(tasks_dir, jobs_dir=job_dir.parent,
-        config=..., job_name=job_dir.name)`` instead.
+        (:data:`_RESUME_SETTINGS`), or a task whose files changed since, makes
+        the run raise :class:`ResumeMismatchError` before anything in the job
+        moves, as for any named job; with ``restart_changed=True`` those
+        trials are set aside instead and the run starts them over. Jobs
+        started before this record existed need ``Evaluation(tasks_dir,
+        jobs_dir=job_dir.parent, config=..., job_name=job_dir.name)`` instead.
         """
         import dataclasses
 
@@ -5199,8 +5785,9 @@ class Evaluation:
                         "and reuses its finished trials: "
                         f"`{_pre_08_resume_command(job_dir, trials)}` plus any "
                         "other flags it had (--agent-env, --sandbox-user, a "
-                        "source, skills); a setting that differs sets the "
-                        "finished trials aside instead"
+                        "source, skills); a setting that differs refuses the "
+                        "run, and --restart-changed sets those trials aside "
+                        "and runs them again"
                     ),
                 )
             raise NoEvaluationRecordError(
@@ -5216,7 +5803,7 @@ class Evaluation:
             logger.warning(
                 "The job ran pre_agent_hooks %s, which %s cannot store; pass "
                 "pre_agent_hooks=[...] to Evaluation.resume() to run them again "
-                "(without them the finished trials are set aside).",
+                "(without them the run is refused as one with other settings).",
                 ", ".join(map(str, hooks)),
                 EVALUATION_RECORD,
             )
@@ -5227,6 +5814,7 @@ class Evaluation:
             jobs_dir=job_dir.parent,
             config=config,
             job_name=job_dir.name,
+            restart_changed=restart_changed,
         )
         evaluation._resuming = True  # no unselected-results warning
         return evaluation
@@ -5383,7 +5971,7 @@ class Evaluation:
             f"Job {job_dir.name} was made by BenchFlow 0.7 or older (it has no "
             f"{EVALUATION_RECORD}): this run reuses its finished trials and "
             "rewrites its summary.json and results files. Its own files are "
-            f"kept in {kept}. Pass --fresh (or another --job) to leave it "
+            f"kept in {kept}. Pass --fresh (or another --job-name) to leave it "
             "as it was."
         )
 
@@ -5453,6 +6041,14 @@ class Evaluation:
             # and this refusal must hold there too, before the job folder exists.
             self._check_verifier_sandbox_plan()
             self._settle_auto_job_name()
+            # A job resumed without an idle limit keeps the one it ran with,
+            # before the card shows it.
+            jobs_dir = getattr(self, "_jobs_dir", None)
+            if jobs_dir is not None:
+                _keep_recorded_idle_limit(jobs_dir / self._job_name, self._config)
+            # The run card, and a strict run-reference.toml's refusal, before
+            # the job folder exists too.
+            self._prepare_run_card()
             # In the local runtime, a call prepared ahead that cannot be ends
             # here, before its job folder exists (benchflow._park).
             _park.note_job(self)
@@ -5477,13 +6073,126 @@ class Evaluation:
 
             await drain_host_proxies()
 
+    def _prepare_run_card(self) -> None:
+        """Build the run card (benchflow.run_card) and refuse a run a strict
+        run-reference.toml does not allow. A card that cannot be built for any
+        other reason is skipped with a warning: it never stops a run."""
+        from benchflow.run_card import RunCardError, build_run_card, check_card
+
+        self._run_card = None
+        try:
+            card = build_run_card(self, self._get_task_dirs())
+        except RunCardError:
+            raise
+        except Exception as exc:
+            logger.warning(f"No run card for this job: {exc}")
+            return
+        check_card(card)
+        self._run_card = card
+
+    def _log_run_card(self, *, done: int) -> None:
+        """Write run-card.json in the job folder and log the card, its
+        reference findings as a warning."""
+        from benchflow.run_card import card_lines, reference_findings, write_card
+
+        card = getattr(self, "_run_card", None)
+        if card is None:
+            return
+        job_dir = self._jobs_dir / self._job_name
+        card["trials"]["done_before_this_run"] = done
+        restart = _restart_record(job_dir)
+        if restart is not None:
+            # The job started over after a change: its earlier trials are
+            # kept apart, and this card describes the run that replaced them.
+            card["restarted_after_change"] = restart
+        try:
+            write_card(card, job_dir)
+        except OSError as exc:
+            logger.warning(f"Could not write the run card: {exc}")
+            return
+        # Shown above a live dashboard at once (cli._live_progress.SHOW_LIVE):
+        # the card is for reading before the trials it describes run.
+        show = {"benchflow_show_live": True}
+        for line in card_lines(card, job_dir):
+            logger.info(line, extra=show)
+        findings = reference_findings(card)
+        if findings:
+            logger.warning(
+                "The run differs from its reference setup:\n  " + "\n  ".join(findings),
+                extra=show,
+            )
+        context = card.get("context") or {}
+        if context.get("under_half"):
+            from benchflow.run_card import context_text
+
+            logger.warning(
+                "The agent's context window is under half the model's: "
+                + context_text(context),
+                extra=show,
+            )
+
+    def _job_checks(self) -> RunChecks:
+        """The job's run checks; a no-card one for a job that runs its trials
+        without :meth:`run`."""
+        checks = getattr(self, "_run_checks", None)
+        if checks is None:
+            checks = self._run_checks = RunChecks(None, planned=1)
+        return checks
+
+    def _log_run_card_after(
+        self,
+        job_dir: Path,
+        checks: dict[str, Any] | None,
+        scoring: dict[str, Any] | None = None,
+    ) -> None:
+        """Add the run's checks and the scoring rule's figures to
+        run-card.json (``after_run``) and log the card's lines after the run:
+        a refusal as an error, a warning as one."""
+        from benchflow.run_card import write_card
+        from benchflow.run_checks import after_run_lines
+
+        if checks is None:
+            return
+        if scoring is not None:
+            checks = {**checks, "scoring": scoring}
+        card = getattr(self, "_run_card", None)
+        if card is not None:
+            card["after_run"] = checks
+            try:
+                write_card(card, job_dir)
+            except OSError as exc:
+                logger.warning(f"Could not write the run card: {exc}")
+        settings = checks.get("settings") or {}
+        if not (
+            (checks.get("truncation") or {}).get("trials")
+            and (
+                (checks.get("truncation") or {}).get("known")
+                or settings.get("main_calls")
+                or settings.get("side_calls")
+                or (checks.get("compactions") or {}).get("trials")
+            )
+        ):
+            # No trial recorded a model call or how its model ended (a control
+            # run, an agent BenchFlow sees no calls of): nothing to say.
+            return
+        lines = after_run_lines(checks)
+        level = (
+            logging.ERROR
+            if checks.get("failed")
+            else logging.WARNING
+            if checks.get("warnings")
+            else logging.INFO
+        )
+        logger.log(level, "\n".join(lines))
+
     def _settle_auto_job_name(self) -> None:
         """Start a new job when the job an unnamed run would resume ran with
         other settings than the ones this run has now (see
         :meth:`_resolve_job_name`), or when it holds results of tasks this run
         does not select (:meth:`_unselected_results`): its score would count
         them. A named job is left to :func:`_check_resume_mismatch`, which
-        sets its old trials aside, and is warned about unselected results."""
+        refuses it (or, with ``restart_changed``, sets its old trials aside),
+        and is warned about unselected results."""
         auto = getattr(self, "_auto_job_name", None)
         if auto is None or self._job_name != auto:
             self._warn_unselected_results()
@@ -5503,8 +6212,9 @@ class Evaluation:
                 else:
                     logger.warning(
                         f"Resuming into existing job directory: {job_dir.name} "
-                        "(finished tasks are reused; pass a new job_name, or "
-                        "--fresh on the CLI, for a new run)"
+                        "(finished tasks are reused; --fresh or another "
+                        "--job-name starts a new job, as a new job_name does in "
+                        "Python)"
                     )
                 return
             name = self._new_job_instead(self._jobs_dir, job_dir, differs)
@@ -5705,23 +6415,35 @@ class Evaluation:
                     prepare_review(task_dir, self._config.reviewer)
                     reviews_checked.add(task_dir)
 
-        # A job an older BenchFlow made: keep its files before anything here
-        # moves or rewrites them, and say so (DF-p4-upgrader-3).
-        self._keep_pre_08_files()
-        # Trials an earlier run of this job ran with other settings are set
-        # aside before anything reads them (pending reviews, completed tasks,
-        # the budget already spent), so they are neither reused nor counted.
-        # Before any moves, every selected task's review plan is checked (a
-        # set-aside reruns the tasks): a run refused for a missing reviewer
-        # key must not leave the job with its record but without its trials.
+        def before_set_aside() -> None:
+            # A job an older BenchFlow made: keep its files before anything
+            # here moves or rewrites them, and say so (DF-p4-upgrader-3).
+            self._keep_pre_08_files()
+            # A set-aside reruns the tasks, so every selected task's review
+            # plan is checked first: a run refused for a missing reviewer key
+            # must not leave the job with its record but without its trials.
+            _check_reviews(task_dirs)
+
+        # A named job (job_name=, Evaluation.resume) whose earlier trials ran
+        # with other settings is refused here, before anything in it is
+        # copied, moved or run, unless the run passed restart_changed. An
+        # unnamed run took a new job for other settings
+        # (_settle_auto_job_name), so what still differs here (a task whose
+        # files changed) is set aside. Set-aside trials go before anything
+        # reads them (pending reviews, completed tasks, the budget already
+        # spent), so they are neither reused nor counted.
+        named = getattr(self, "_auto_job_name", None) is None
         set_aside = _check_resume_mismatch(
             self._jobs_dir / self._job_name,
             self._config,
-            before_set_aside=lambda: _check_reviews(task_dirs),
+            before_set_aside=before_set_aside,
             task_dirs=task_dirs,
             tasks_root=self._tasks_dir,
+            restart_changed=self._restart_changed or not named,
         )
-        if set_aside is not None:
+        if set_aside is None:
+            self._keep_pre_08_files()
+        else:
             # The record names the settings of the trials the folder now
             # holds, even if this run stops before it writes it again below.
             self._write_evaluation_record()
@@ -5766,6 +6488,22 @@ class Evaluation:
                 agent_env=dict(self._config.agent_env or {}),
                 environment=self._config.environment,
             )
+            # Nothing can meter an agent that routes its own model calls:
+            # refuse required usage once for the job, not in every trial.
+            from benchflow.agents.registry import agent_routes_own_model
+
+            if (
+                agent_routes_own_model(self._config.agent)
+                and self._config.usage_tracking.with_env_defaults().mode == "required"
+            ):
+                from benchflow.task.plan_validation import (
+                    OwnModelRouteError,
+                    own_model_route_usage_refusal,
+                )
+
+                raise OwnModelRouteError(
+                    own_model_route_usage_refusal(self._config.agent)
+                )
 
         # A resumed sequential-shared job rebuilds the LearnerStore from the
         # per-job snapshot under ``<job>/learner_store.json``. If that file
@@ -5820,6 +6558,7 @@ class Evaluation:
         # like "11/1 · 1100%" and a denominator that disagreed with the final
         # "Score: 8/11". completed-plus-remaining is exactly what gets scored.
         planned_total = len(completed) + len(remaining)
+        self._log_run_card(done=len(completed))
         pool_note = (
             f", {warm_pool_note(warm_pool_size(cfg.concurrency, cfg.warm_pool))}"
             if cfg.environment == "docker"
@@ -5846,6 +6585,15 @@ class Evaluation:
         start = time.time()
 
         self._usage_stop = UsageLimitStop()
+        # Checked as each trial ends: a run whose trials are cut at the output
+        # cap stops starting more (benchflow.run_checks). The trials an
+        # earlier run of the job finished count first.
+        self._run_checks = RunChecks(
+            getattr(self, "_run_card", None), planned=planned_total
+        )
+        self._run_checks.seed(
+            *_earlier_attempts(self._jobs_dir / self._job_name, completed, remaining)
+        )
 
         from benchflow.rollout._teardown_queue import background_teardown
 
@@ -5947,6 +6695,7 @@ class Evaluation:
                 set(stopped_budget.get("cancelled") or ())
                 | set(stopped_budget.get("not_started") or ())
                 | set(stopped_usage.get("not_started") or ())
+                | set(self._job_checks().not_started)
             )
             - set(all_results)
         )
@@ -5975,6 +6724,7 @@ class Evaluation:
             errored=score_counts["errored"],
             verifier_errored=score_counts["verifier_errored"],
             guard_refused=count_guard_refusals(all_results.values()),
+            unusable_rewards=count_unusable_rewards(all_results.values()),
             elapsed_sec=elapsed,
             memory_score=memory["avg_score"],
             memory_scores=memory_scores,
@@ -5992,6 +6742,7 @@ class Evaluation:
             not_run=len(not_run),
             stopped=stopped,
             interrupted=len(interrupted),
+            run_checks=self._job_checks().summary(),
         )
 
         assert (
@@ -6006,10 +6757,12 @@ class Evaluation:
         )
 
         scoring_fields = score_summary_fields(all_results.values())
+        job_result.scoring = scoring_fields["scoring"]
         error_category_counts = scoring_fields["error_categories"] or {}
         verifier_error_category_counts = (
             scoring_fields["verifier_error_categories"] or {}
         )
+        from benchflow.agents.registry import MODEL_ROUTE_AGENT, agent_routes_own_model
 
         # Save summary
         summary = {
@@ -6020,9 +6773,18 @@ class Evaluation:
             "benchflow_version": _benchflow_version(),
             "codex_apps_policy": cfg.codex_apps_policy,
             "model": cfg.model,
+            # Its trials were never metered: their usage is agent-reported or
+            # none, and never pooled with metered usage.
+            **(
+                {"model_route": MODEL_ROUTE_AGENT}
+                if agent_routes_own_model(cfg.agent)
+                else {}
+            ),
             "environment": cfg.environment,
             "concurrency": cfg.concurrency,
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
+            # given, or BenchFlow's default for the effort (default, effort_max).
+            "agent_idle_timeout_source": cfg.idle_timeout_source(),
             "usage_tracking": cfg.usage_tracking.with_env_defaults().to_config_artifact(),
             "loop": loop_block(cfg.loop_strategy),
             **scoring_fields,
@@ -6038,6 +6800,9 @@ class Evaluation:
             **loop_summary(all_results),
             **solve_rate_summary(all_results),
             **tool_call_summary(all_results),
+            # What the trials' model calls show beside the score: the tool
+            # surfaces they ran on, efforts other than the one asked for.
+            **model_call_summary(all_results),
             # Retries from checkpoints, next to (never merged into) the score.
             **(
                 {"checkpoint_retries": retries}
@@ -6075,11 +6840,22 @@ class Evaluation:
                 if (stop := self._usage_stop.summary()) is not None
                 else {}
             ),
+            # What the finished trials' model calls carried and how they
+            # ended, against the run card: a failure here fails the run.
+            "run_checks": job_result.run_checks,
             **summary_source_fields(cfg.source_provenance, all_results),
             **(
                 {
                     "dataset_name": cfg.dataset_name,
                     "dataset_version": cfg.dataset_version,
+                    # A Hub dataset's identity (benchflow.hub.datasets): the Hub links a pushed run to the
+                    # version by it.
+                    **(
+                        {"dataset_digest": provenance["resolved_sha"]}
+                        if (provenance := cfg.source_provenance or {}).get("type")
+                        == "benchflow_hub"
+                        else {}
+                    ),
                 }
                 if cfg.dataset_name
                 else {}
@@ -6123,6 +6899,27 @@ class Evaluation:
                 summary["seeded"] = seed_report(job_dir)
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Seeded-rollout report failed: %s", e)
+        # The job started over after a change (--restart-changed, or a task
+        # whose files changed): when, what changed, and where the earlier
+        # trials went. Their results are not in the counts above.
+        restart = _restart_record(job_dir)
+        if restart is not None:
+            summary["restarted_after_change"] = restart
+        # Each setting the trials ran, with the scoring rule's figures per
+        # setting and the mixed-settings warning (benchflow.setting_groups); a
+        # restart after a change reads as mixed.
+        from benchflow.run_checks import seeding
+        from benchflow.setting_groups import summary_settings
+
+        scoring_fields["scoring"]["settings"] = summary_settings(job_dir, [summary])
+        # The seeds the numbers depend on: the task order and sample, the
+        # rollout seeds, and the sampling seed asked for and carried.
+        scoring_fields["scoring"]["seeding"] = seeding(
+            n_tasks=cfg.n_tasks,
+            sample_seed=cfg.sample_seed,
+            rollout_seeds=cfg.seeds,
+            checks=job_result.run_checks,
+        )
         summary_text = json.dumps(summary, indent=2)
         # Whole or not at all: a full disk leaves no 0-byte summary.json.
         from benchflow._utils.disk_space import write_text_atomic
@@ -6131,6 +6928,12 @@ class Evaluation:
         # Backward-compat: also write to jobs_dir root for tooling that
         # expects summary.json at the top level.
         write_text_atomic(self._jobs_dir / "summary.json", summary_text)
+        self._log_run_card_after(job_dir, job_result.run_checks, job_result.scoring)
+        # The job's report: per-task bars with intervals, tries, time, tokens
+        # and the sampling the requests carried (benchflow.report).
+        from benchflow.report import write_report
+
+        write_report([job_dir], job_dir, self._job_name)
         if stopped:
             # The partial result, for --summary-out; then the stop goes on.
             self.result = job_result
@@ -6181,10 +6984,24 @@ class Evaluation:
                 f"dependency install — check verifier_error_category in result.json "
                 f"and fix the task's index policy"
             )
-        if scoring_fields["verifier_errored"] > 0:
-            pct = scoring_fields["verifier_errored"] / job_result.total * 100
+        # A crashed review or a lost verifier sandbox is the infrastructure's,
+        # not a bug in the task's verifier script.
+        infra_errored = sum(
+            verifier_error_category_counts.get(category, 0)
+            for category in (INFRA_ERROR, VERIFIER_INFRA)
+        )
+        if infra_errored > 0:
             logger.warning(
-                f"{scoring_fields['verifier_errored']} tasks ({pct:.0f}%) had verifier errors — "
+                f"{infra_errored} task(s) lost the review or the verifier's sandbox "
+                "to an infrastructure failure: the trial's result.json names it, "
+                "and `bench eval score <trial> --tasks-root <tasks> --force` scores "
+                "it again"
+            )
+        script_errored = max(0, scoring_fields["verifier_errored"] - infra_errored)
+        if script_errored > 0:
+            pct = script_errored / job_result.total * 100
+            logger.warning(
+                f"{script_errored} tasks ({pct:.0f}%) had verifier errors — "
                 f"check verifier scripts for bugs"
             )
             if pct > 20:

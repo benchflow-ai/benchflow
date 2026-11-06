@@ -43,6 +43,7 @@ from uuid import uuid4
 from benchflow._utils import kill_record as kill_record_module
 from benchflow._utils import timing_spans
 from benchflow._utils.reachable_write import ReachablePath, destination
+from benchflow._utils.scoring import NO_USABLE_REWARD
 from benchflow._utils.text import describe_exception
 from benchflow._utils.trial_warnings import report_trial_warning
 from benchflow._utils.trusted_path import (
@@ -51,6 +52,7 @@ from benchflow._utils.trusted_path import (
     refused_programs,
     refused_programs_cmd,
 )
+from benchflow._verifier_env import VERIFIER_ATTEMPT_ENV
 from benchflow.contracts import RolloutPlanes, default_rollout_planes
 from benchflow.diagnostics import (
     Diagnostic,
@@ -79,6 +81,7 @@ from benchflow.sandbox.egress_denylist import (
     EgressDenylist,
     agent_network_sandbox_config,
     egress_denylist_for,
+    task_service_policy,
 )
 from benchflow.sandbox.oracle_egress import (
     arm_oracle_egress,
@@ -95,6 +98,7 @@ from benchflow.task.verifier_errors import (
     PluginGuardMarkersUnreadableError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
+    RewardFileParseError,
     VerifierExecutionError,
     VerifierInfrastructureError,
     VerifierOutputParseError,
@@ -319,9 +323,11 @@ def trust_workspace_repos_cmd(workspace: str) -> str:
     file beside ``objects/`` and ``refs/``) is listed. Links are not
     followed. Paths outside the resolved workspace are never added, and a
     workspace of ``/`` adds only itself. The verifier
-    reads no global git config (``GIT_CONFIG_GLOBAL=/dev/null``) and runs
-    after the workspace's folders are chowned back to root, so it is
-    unaffected.
+    reads no global git config but its own (``GIT_CONFIG_GLOBAL`` is
+    ``/dev/null``, or for a root verifier an empty file made after the agent
+    stopped) and runs after the workspace's folders are chowned back to
+    root, so it is unaffected. A task's collect hooks get no such trust: they
+    run as the agent's account (``_collect_hooks.agent_account``).
     """
     q = shlex.quote(workspace)
     return (
@@ -880,6 +886,11 @@ def oracle_run_user(task: Any) -> str | None:
     return declared if isinstance(declared, str) and declared else None
 
 
+#: The first words of solve.sh's command (see _run_oracle): the exec names
+#: root, which starts on root's fixed PATH, so the image's comes back.
+ORACLE_IMAGE_PATH = 'export PATH="${_BENCHFLOW_IMAGE_PATH-$PATH}"; '
+
+
 def oracle_user_command(command: str, user: str | None) -> str:
     """Run an oracle command under the same identity as solve.sh."""
     if user:
@@ -945,8 +956,8 @@ async def _run_oracle(
         sandbox_user = oracle_run_user(task)
     from benchflow.task import keep_services
 
-    # The account solve.sh runs as below, the image's default user when
-    # neither names one (keep_services.run_identity, DT2-R9-2).
+    # The account solve.sh runs as below, root when neither names one
+    # (keep_services.run_identity, DT2-R9-2).
     await keep_services.prepare_identities(env, task, sandbox_user, inherit=True)
     workdir = _configured_task_workdir(task)
     if sandbox_user and sandbox_user == declared_user:
@@ -964,7 +975,7 @@ async def _run_oracle(
     if workdir is not None:
         _validate_agent_workdir(workdir)
         exec_kwargs["cwd"] = workdir
-    policy = _task_egress_denylist(task)
+    policy = await task_service_policy(env, _task_egress_denylist(task))
     if policy is not None:
         policy = replace(
             policy,
@@ -990,8 +1001,21 @@ async def _run_oracle(
     oracle_cmd = f"{join}bash {oracle_script}"
     if sandbox_user:
         oracle_cmd = f"DEBIAN_FRONTEND=noninteractive {oracle_cmd}"
+    if "PATH" not in oracle_env:
+        # The exec below names root, and a command that names root starts on
+        # root's fixed PATH with the image's kept aside (_root_exec_command):
+        # solve.sh gets the image's back, as it had when the exec named no
+        # user. A conda image's only python is in /opt/conda/bin.
+        oracle_cmd = ORACLE_IMAGE_PATH + oracle_cmd
     # The same su that prepare_identities measured the account with.
     cmd = oracle_user_command(oracle_cmd, sandbox_user)
+    # From root, whatever the image's USER: su switches account from root,
+    # and an oracle with no account of its own runs as root. Named no user,
+    # the exec ran as the image's USER, and an image ending with `USER
+    # nobody` (Terminal-Bench 4.1's risk-scorer-replay) could neither open
+    # /logs/agent/oracle.txt nor write the workspace, both the sandbox
+    # user's after setup: solve.sh never ran (rc 2, no output).
+    exec_kwargs["user"] = "root"
     admit(env, "main", IngressKind.ORACLE_LAUNCH)
     try:
         if keep_services.kept_by_identity(task) is not None:
@@ -1007,7 +1031,7 @@ async def _run_oracle(
             # service put there to a file of root's (K2p-R2-B-2). With no
             # mktemp the output goes to /logs/agent/oracle.txt as before.
             cmd = (
-                "o=$(mktemp /tmp/benchflow-oracle.XXXXXX 2>/dev/null) || o=; "
+                "o=$(mktemp /tmp/runtime-oracle.XXXXXX 2>/dev/null) || o=; "
                 'if [ -n "$o" ]; then '
                 "exec 3>/logs/agent/oracle.txt; "
                 f'{cmd} 3>&- > "$o" 2>&1; rc=$?; '
@@ -1095,7 +1119,7 @@ async def _run_script(
     _validate_agent_workdir(workdir)
     # Only / is an ancestor. A root-owned leaf beneath an agent-owned
     # workspace can be renamed, even if the leaf itself is unwritable.
-    directory = f"/.benchflow-script-{uuid4().hex}"
+    directory = f"/.runtime-script-{uuid4().hex}"
     target = f"{directory}/attempt.sh"
 
     async def root_exec(command: str, **kwargs: Any) -> Any:
@@ -1598,7 +1622,7 @@ async def _publish_trajectory_for_verifier(
     # discard an otherwise complete rollout. That mkdir rides in the stage's
     # root exec (PY8 U12): its failure is ignored as before, and the stage's
     # mkdir still decides the step.
-    stage = f"/logs/.benchflow-publish-{uuid4().hex}"
+    stage = f"/logs/.runtime-publish-{uuid4().hex}"
     # The agent's log folder, as setup leaves it (_log_dir_cmds), in case the
     # mkdir before it just made it root's.
     owner = (
@@ -1615,7 +1639,7 @@ async def _publish_trajectory_for_verifier(
         failures: list[Exception] = []
         for attempt in range(2):
             if attempt:
-                stage = f"/logs/.benchflow-publish-{uuid4().hex}"
+                stage = f"/logs/.runtime-publish-{uuid4().hex}"
                 stages.append(stage)
             # The defensive mkdir rides in front of each attempt: it is
             # idempotent, its status is dropped by the ";", and /logs exists
@@ -1974,7 +1998,7 @@ async def _await_verifier(
     logger.warning(
         f"Verifier test command start is unconfirmed ({why}); retrying it once"
     )
-    await _kill_orphan_verifier(env)
+    await _kill_orphan_verifier(env, verifier)
     # The first attempt's receipt cannot confirm its start. The retry's
     # command names a fresh receipt when it is issued.
     with contextlib.suppress(AttributeError):
@@ -2102,9 +2126,10 @@ async def _verify_rollout(
 
     From the end of hardening on, root's commands find their programs on the
     verifier's safe PATH, never on the image's (V3-CONFIRM-1): the Verifier's
-    upload, ``chmod +x`` of test.sh, receipt and output folders, the retry's
-    ``pkill`` and the backends' own helpers would otherwise run a program
-    the agent planted in an image PATH folder it could write, as root.
+    upload, ``chmod +x`` of test.sh, receipt and output folders, the kill of
+    a timed-out test command and the backends' own helpers would otherwise
+    run a program the agent planted in an image PATH folder it could write,
+    as root.
     """
     with contextlib.ExitStack() as root_path:
         return await _verify_hardened(
@@ -2256,8 +2281,13 @@ async def _verify_hardened(
         except RewardOutOfRange:
             raise
         except ValueError as e:
-            raise VerifierOutputParseError(f"Invalid verifier rewards: {e}") from e
-        logger.info(f"Rewards: {rewards}")
+            raise RewardFileParseError(f"Invalid verifier rewards: {e}") from e
+        label = getattr(task, "step_label", None)
+        logger.info(
+            f"Rewards of the final verify ({label}): {rewards}"
+            if label
+            else f"Rewards: {rewards}"
+        )
     except (TimeoutError, ExecTimeoutError) as exc:
         elapsed = (datetime.now() - t0).total_seconds()
         timing["verifier"] = elapsed
@@ -2279,6 +2309,9 @@ async def _verify_hardened(
         if scored:
             rewards = _verifier_zero(verifier_error)
             verifier_error = None
+            await _keep_timed_out_output(
+                env, task, verifier, rollout_paths, verifier_diagnostic
+            )
         else:
             if isinstance(exc, _TestEndUnknown):
                 verifier_error += (
@@ -2293,14 +2326,22 @@ async def _verify_hardened(
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         verifier_diagnostic = RewardOutOfRangeDiagnostic.from_error(e)
         rewards = _verifier_zero(f"{REWARD_OUT_OF_RANGE} {e}")
-    except (PluginGuardLoadError, PluginGuardMarkersUnreadableError) as e:
+    except PluginGuardMarkersUnreadableError as e:
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        # BenchFlow's own read failed, or its output says the markers are
+        # incomplete: the warning names which, not the guard verdicts the
+        # markers would have held, none of which was read.
+        rewards = _verifier_zero(
+            f"pytest plugin guard not confirmed: {e}; test.sh's reward is not "
+            "used. See verifier/test-stdout.txt"
+        )
+    except PluginGuardLoadError as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         rewards = _verifier_zero(
             "pytest plugin guard not confirmed: it may have failed to load, "
-            "stopped, refused a plugin, or left incomplete markers; code run "
-            "by test.sh can also print the diagnostic or change the markers. "
-            "See verifier/test-stdout.txt and verifier/_benchflow_guard_*"
-            + (e.guard_copy_diagnostic if isinstance(e, PluginGuardLoadError) else "")
+            "stopped or refused a plugin; code run by test.sh can also print "
+            "the diagnostic or change the markers. See verifier/test-stdout.txt "
+            "and verifier/_runtime_guard_*" + e.guard_copy_diagnostic
         )
     except VerifierSetupError as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
@@ -2327,6 +2368,15 @@ async def _verify_hardened(
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         if verifier_infrastructure_failure(e):
             verifier_error = f"verifier crashed: {verifier_failure_reason(e)}"
+            rewards = None
+            logger.error(verifier_error)
+        elif isinstance(
+            e, (RewardFileEmptyError, RewardFileNotFoundError, RewardFileParseError)
+        ):
+            # No reward BenchFlow can use: the verifier's error, not a 0 that
+            # reads as a wrong answer. Never retried, and still a failure in
+            # every score (scoring.NO_USABLE_REWARD).
+            verifier_error = f"{NO_USABLE_REWARD}{e}"
             rewards = None
             logger.error(verifier_error)
         else:
@@ -2539,11 +2589,140 @@ def _write_trusted_path_record(
         logger.warning("could not write verifier/trusted-path.json", exc_info=True)
 
 
-async def _verifier_wedged_without_output(env: Any) -> bool:
-    """True when the timed-out verifier attempt left no test output behind.
+# POSIX sh that sets ``$held`` to the processes around a running test
+# command: those whose command line names the capture file
+# /logs/verifier/test-stdout.txt, which every test command redirects into.
+# It reads /proc because task images often lack procps. The ``[r]`` keeps the
+# pattern from matching this script's own command line, and stderr is dropped
+# because the Docker sandbox merges it into the stdout parsed here.
+# Sets ``$held`` (when it is empty) to the processes that have test.sh itself
+# as a whole argument: the roots where no process names the capture file.
+_TEST_SH_ROOTS_SH = r"""
+t='/verifie[r]/test[.]sh'; u='/test[s]/test[.]sh'
+[ -n "$held" ] || for f in $(grep -l -e "$t" -e "$u" /proc/[0-9]*/cmdline); do
+  tr '\0' '\n' < "$f" | grep -qx -e "$t" -e "$u" || continue
+  f=${f%/cmdline}
+  held="$held ${f#/proc/}"
+done
+"""
 
-    Zero bytes in ``/logs/verifier/test-stdout.txt`` (or no file at all) means
-    ``test.sh`` never started — the wedge signature. When even this probe
+_VERIFIER_ROOTS_SH = (
+    r"""
+exec 2>/dev/null
+held=
+for f in $(grep -l '/logs/verifie[r]/test-stdout[.]txt' /proc/[0-9]*/cmdline); do
+  f=${f%/cmdline}
+  held="$held ${f#/proc/}"
+done
+# A shell that runs test.sh in place of itself (busybox sh -c with a single
+# redirected command) leaves no process naming the capture file, so fall
+# back to a process that has test.sh itself as a whole argument.
+"""
+    + _TEST_SH_ROOTS_SH
+)
+
+_VERIFIER_PROBE_SH = (
+    _VERIFIER_ROOTS_SH
+    + r"""
+if [ -n "$held" ]; then echo running
+else cd /logs/verifier && wc -c < test-stdout.txt || echo 0
+fi
+"""
+)
+
+# Stop the test command's whole process tree, then kill it. ``grow`` adds
+# every live descendant of a held PID (test.sh, pytest and whatever those
+# started) in one awk pass over /proc; ``cat`` feeds it because awk gives up
+# on the first file that vanished. Parents come from ``status``, not
+# ``stat``, which prints the command name raw: a name holding a newline
+# could pass off a fake record. Roots are never matched again, so a retry
+# that starts meanwhile is left alone. Each round stops what is held and
+# looks again until no new child appears, so a process forked mid-scan
+# cannot escape, and every stopped PID stays held, so a child reparented
+# when its parent exits is killed rather than left stopped. The last line
+# is how many processes were killed.
+_KILL_TREE_SH = r"""
+grow() {
+  grown=$(cat /proc/[0-9]*/status | awk -v held="$held" '
+    $1 == "Pid:" { p = $2 }
+    $1 == "PPid:" { parent[p] = $2 }
+    END {
+      out = held
+      n = split(held, h, " ")
+      for (i = 1; i <= n; i++) keep[h[i]] = 1
+      do {
+        more = 0
+        for (p in parent)
+          if (!(p in keep) && (parent[p] in keep)) {
+            keep[p] = 1; out = out " " p; more = 1
+          }
+      } while (more)
+      print out
+    }')
+  [ -z "$grown" ] || held=$grown
+}
+grow
+stopped=
+while [ "$held" != "$stopped" ]; do
+  stopped=$held
+  kill -s STOP $held
+  grow
+done
+[ -z "$held" ] || kill -s KILL $held
+set -- $held
+echo "killed $#"
+"""
+
+_KILL_VERIFIER_SH = _VERIFIER_ROOTS_SH + _KILL_TREE_SH
+
+# The name of a test command's start receipt (Verifier._receipt_after).
+_RECEIPT_NAME_RE = re.compile(r"verifier-started-[0-9a-f]{32}")
+
+
+def _kill_verifier_command(receipt: Any) -> str:
+    """:data:`_KILL_VERIFIER_SH`, with the roots narrowed to this attempt's
+    processes when it has a start receipt: those whose command line names
+    the receipt, and those whose environment holds it under
+    ``VERIFIER_ATTEMPT_ENV``, which the test command exports. The name is
+    unique to the attempt, so no other test command (another attempt's,
+    another sandbox's on a shared host) is ever taken. A command too long for
+    a command line is sent as data and names the receipt on none; its tests
+    still carry it in their environment. Root reads another user's
+    environment only with CAP_SYS_PTRACE, which Docker's default set lacks,
+    so tests that run as another user and were sent as data are found by
+    neither and run on."""
+    path = receipt[0] if isinstance(receipt, tuple) and len(receipt) == 2 else None
+    name = PurePosixPath(path).name if isinstance(path, str) else ""
+    if not _RECEIPT_NAME_RE.fullmatch(name):
+        return _KILL_VERIFIER_SH
+    # The bracket keeps each pattern from matching this script's own line.
+    pattern = f"{name[:-1]}[{name[-1]}]"
+    marker = f"{VERIFIER_ATTEMPT_ENV}={pattern}"
+    return (
+        "exec 2>/dev/null\nheld=\n"
+        f"for f in $(grep -l '{pattern}' /proc/[0-9]*/cmdline); do\n"
+        '  f=${f%/cmdline}\n  held="$held ${f#/proc/}"\ndone\n'
+        f"for f in $(grep -l '{marker}' /proc/[0-9]*/environ); do\n"
+        f"  tr '\\0' '\\n' < \"$f\" | grep -qx '{marker}' || continue\n"
+        '  f=${f%/environ}\n  held="$held ${f#/proc/}"\ndone\n' + _KILL_TREE_SH
+    )
+
+
+def _verifier_service(task: Any) -> str:
+    """The service test.sh runs in (``[verifier].service``, ``main`` unless set)."""
+    verifier = getattr(getattr(task, "config", None), "verifier", None)
+    service = getattr(verifier, "service", None)
+    return service if isinstance(service, str) and service else "main"
+
+
+async def _verifier_wedged_without_output(env: Any) -> bool:
+    """True when the timed-out verifier attempt never got test.sh running.
+
+    A wedged exec layer leaves no verifier process behind and zero bytes in
+    ``/logs/verifier/test-stdout.txt``. Empty output alone does not show
+    that: a test script that sends pytest's output to its own log and copies
+    it to stdout only at the end has empty output while it runs, but its
+    processes are alive (:data:`_VERIFIER_PROBE_SH`). When even this probe
     fails, the control plane is still sick and a retry is the best remaining
     move, so failures count as wedged.
     """
@@ -2551,34 +2730,148 @@ async def _verifier_wedged_without_output(env: Any) -> bool:
         r = await asyncio.wait_for(
             exec_raw(
                 env.exec,
-                "wc -c < /logs/verifier/test-stdout.txt 2>/dev/null || echo 0",
-                # As root, so it is on the trusted PATH (V3-CONFIRM-1).
+                _VERIFIER_PROBE_SH,
+                # As root, so it is on the trusted PATH (V3-CONFIRM-1) and
+                # sees processes where /proc is mounted with hidepid.
                 user="root",
                 timeout_sec=10,
             ),
             timeout=30,
         )
-        return int((r.stdout or "0").strip() or 0) == 0
+        lines = (r.stdout or "").strip().splitlines()
+        out = lines[-1].strip() if lines else ""
+        return out != "running" and int(out or 0) == 0
     except Exception:
         return True
 
 
-async def _kill_orphan_verifier(env: Any) -> None:
-    """Best-effort kill of a possibly-orphaned first verifier attempt.
+async def _kill_verifier_tree(
+    env: Any, service: str = "main", receipt: Any = None
+) -> int | None:
+    """Kill the test command's whole process tree (:data:`_KILL_VERIFIER_SH`).
 
-    The host-side timeout cancels only our await; if the in-sandbox test.sh
-    did start late it would race the retry's run, so clear it first.
+    A host-side timeout cancels only our await: test.sh, pytest and their
+    children run on in the sandbox. *receipt* is the attempt's start receipt
+    (``Verifier.execution_receipt``), which narrows the roots to its command.
+    Returns how many processes were killed, or None when the sandbox did not
+    say. Needs no procps, only ``sh``, ``grep``, ``tr``, ``cat`` and ``awk``;
+    without ``awk`` only the roots die.
     """
-    with contextlib.suppress(Exception):
-        await asyncio.wait_for(
+    where = {} if service == "main" else {"service": service}
+    try:
+        r = await asyncio.wait_for(
             exec_raw(
                 env.exec,
-                "pkill -f '/verifier/test.sh' 2>/dev/null || true",
+                _kill_verifier_command(receipt),
+                # As root: the tests may run as another user.
                 user="root",
                 timeout_sec=10,
+                **where,
             ),
             timeout=30,
         )
+    except Exception as exc:
+        logger.warning(f"Killing the verifier's processes failed: {exc!r}")
+        return None
+    stdout = getattr(r, "stdout", None)
+    lines = stdout.strip().splitlines() if isinstance(stdout, str) else []
+    killed = re.fullmatch(r"killed (\d+)", lines[-1].strip()) if lines else None
+    return int(killed.group(1)) if killed else None
+
+
+async def _kill_orphan_verifier(env: Any, verifier: Any = None) -> None:
+    """Kill a possibly orphaned first verifier attempt before the retry.
+
+    If test.sh did start late it would race the retry's run, and killing it
+    alone would leave pytest and its children running beside the retry, so
+    the whole tree goes.
+    """
+    receipt = getattr(verifier, "execution_receipt", None)
+    service = receipt[1] if isinstance(receipt, tuple) and len(receipt) == 2 else None
+    await _kill_verifier_tree(
+        env, service if isinstance(service, str) else "main", receipt
+    )
+
+
+# A scored timeout keeps what the tests wrote before their deadline: the
+# kill, the copy of /logs/verifier and the renames get this long in all.
+_TIMED_OUT_OUTPUT_BUDGET_SEC = 180.0
+
+
+async def _keep_timed_out_output(
+    env: Any,
+    task: Any,
+    verifier: Any,
+    rollout_paths: Any,
+    diagnostic: VerifierTimeoutDiagnostic,
+) -> None:
+    """Tests ran past their deadline: stop them and keep what they wrote.
+
+    The tests' process tree goes first, so nothing writes while their folder
+    is copied and no reward lands after the score. Then ``/logs/verifier``
+    comes into ``verifier/`` as a finished test command's does, its reward
+    files renamed ``timeout-<name>`` (:meth:`Verifier.save_timed_out_outputs`).
+    *diagnostic* records the processes killed and the files and bytes kept,
+    or why none were. The score stays 0 whatever happens here.
+    """
+    save = getattr(verifier, "save_timed_out_outputs", None)
+    savable = getattr(verifier, "test_command_savable", False) is True
+    if not callable(save) or not savable:
+        return
+
+    async def keep() -> None:
+        diagnostic.processes_killed = await _kill_verifier_tree(
+            env,
+            _verifier_service(task),
+            getattr(verifier, "execution_receipt", None),
+        )
+        await save()
+
+    try:
+        await asyncio.wait_for(keep(), timeout=_TIMED_OUT_OUTPUT_BUDGET_SEC)
+    except Exception as exc:
+        if isinstance(exc, TimeoutError):
+            why = f"not done within {_TIMED_OUT_OUTPUT_BUDGET_SEC:g}s"
+        else:
+            why = describe_exception(exc)
+        diagnostic.partial_output_error = why[:_DIAG_TRUNCATE]
+        logger.warning(f"Keeping the timed-out verifier's output failed: {why}")
+    files, size = _verifier_output_size(rollout_paths)
+    diagnostic.partial_output_files = files
+    diagnostic.partial_output_bytes = size
+
+
+_OUTPUT_COUNT_LIMIT = 100_000
+
+
+def _verifier_output_size(rollout_paths: Any) -> tuple[int, int]:
+    """The regular files under the rollout's ``verifier/`` and their bytes.
+
+    Read without following links, at most ``_OUTPUT_COUNT_LIMIT`` entries.
+    """
+    root = getattr(rollout_paths, "verifier_dir", None)
+    if root is None:
+        return 0, 0
+    files = size = seen = 0
+    folders = [root]
+    while folders and seen < _OUTPUT_COUNT_LIMIT:
+        folder = folders.pop()
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            try:
+                st = entry.lstat()
+            except OSError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                folders.append(entry)
+            elif stat.S_ISREG(st.st_mode):
+                files += 1
+                size += st.st_size
+    return files, size
 
 
 def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict:

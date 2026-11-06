@@ -84,9 +84,9 @@ def test_pin_is_uv_0_13_4_with_a_sum_per_linux_target():
     for digest in UV_SHA256.values():
         assert re.fullmatch(r"[0-9a-f]{64}", digest)
     assert len(set(UV_SHA256.values())) == len(TARGETS)
-    assert UV_DIR == "/opt/benchflow/uv/0.13.4"
+    assert UV_DIR == "/opt/runtime/uv/0.13.4"
     assert PYTHON_VERSION == "3.12.15"
-    assert PYTHON_INSTALL_DIR == "/opt/benchflow/python"
+    assert PYTHON_INSTALL_DIR == "/opt/runtime/python"
     assert _uv_pin.MANAGED_PYTHON_ENV["UV_PYTHON_PREFERENCE"] == "only-managed"
 
 
@@ -99,8 +99,8 @@ async def _proxy_install_command() -> str:
     sandbox = _RecordingSandbox()
     await runtime_mod._ensure_sandbox_litellm(
         sandbox,
-        venv_dir="/tmp/benchflow-litellm/abc/venv",
-        requirements_path="/tmp/benchflow-litellm/abc/litellm-proxy.txt",
+        venv_dir="/tmp/runtime-litellm/abc/venv",
+        requirements_path="/tmp/runtime-litellm/abc/litellm-proxy.txt",
     )
     (command,) = sandbox.commands
     return command
@@ -126,7 +126,7 @@ async def test_proxy_install_pins_uv_checks_sum_before_uv_and_names_python():
     assert "sha256sum" in command
     assert check < unpack < first_uv_run
 
-    # The venv is built on a uv-managed CPython 3.12 under /opt/benchflow.
+    # The venv is built on a uv-managed CPython 3.12 under /opt/runtime.
     exports = command.index("export UV_PYTHON_PREFERENCE=only-managed")
     assert f"UV_PYTHON_INSTALL_DIR={PYTHON_INSTALL_DIR}" in command
     assert "UV_PYTHON_DOWNLOADS=automatic" in command
@@ -143,7 +143,7 @@ async def test_proxy_install_pins_uv_checks_sum_before_uv_and_names_python():
 
 def test_agent_installs_use_the_pinned_uv():
     pinned = uv_install_command()
-    path = f'export PATH="{UV_DIR}:/opt/benchflow/bin:/opt/benchflow/agents/bin:$PATH"'
+    path = f'export PATH="{UV_DIR}:/opt/runtime/bin:/opt/runtime/agents/bin:$PATH"'
     for name, first_use in (
         ("deepagents", "uv venv -q --clear --python 3.12"),
         ("harvey-lab-harness", "uv venv -q --clear --python 3.12"),
@@ -633,7 +633,7 @@ def test_managed_exports_drop_every_inherited_uv_setting(tmp_path):
         f"{key}={value}" for key, value in _uv_pin.MANAGED_PYTHON_ENV.items()
     )
     assert _uv_pin.MANAGED_PYTHON_ENV["UV_NO_CONFIG"] == "1"
-    assert _uv_pin.MANAGED_PYTHON_ENV["UV_CACHE_DIR"] == "/opt/benchflow/cache/uv"
+    assert _uv_pin.MANAGED_PYTHON_ENV["UV_CACHE_DIR"] == "/opt/runtime/cache/uv"
 
 
 def test_proxy_layer_recipe_takes_the_same_settings():
@@ -690,7 +690,7 @@ def test_openhands_install_fails_when_the_pinned_uv_cannot_be_fetched(tmp_path):
 
     done = run_sh(
         # The uv download folder sits beside the pinned uv (FF-install-C12):
-        # an unprivileged test cannot create /.benchflow.
+        # an unprivileged test cannot create /.runtime.
         AGENTS["openhands"].install_cmd.replace(
             _uv_pin.BENCHFLOW_ROOT, str(tmp_path / "protected")
         ),
@@ -716,16 +716,15 @@ def test_agent_installs_let_only_the_traversal_chmod_fail():
         if name == "openhands":
             # The tool's own folders only, mandatory: nothing under /root.
             assert (
-                "chmod -R a+rX /opt/benchflow/python /opt/benchflow/uv-tools && "
-                in install
+                "chmod -R a+rX /opt/runtime/python /opt/runtime/uv-tools && " in install
             ), name
             assert "/root/.local" not in install, name
         else:
             # U4 no longer needs root-home traversal for deepagents. Its
             # managed interpreter and venv chmod must remain mandatory.
             assert (
-                "chmod -R a+rX /opt/benchflow/agents/deepagents-venv "
-                "/opt/benchflow/python && " in install
+                "chmod -R a+rX /opt/runtime/agents/deepagents-venv "
+                "/opt/runtime/python && " in install
             )
 
 

@@ -176,13 +176,17 @@ def _assert_trial_bytes(original, folder):
             assert (folder / path).read_bytes() == content
 
 
-def _evaluation(tasks, old, config, selection):
+def _evaluation(tasks, old, config, selection, *, restart_changed=True):
+    """The run under test. A named job that ran with other settings is
+    refused by default (test below); these tests pass restart_changed to see
+    which trials it sets aside and what it reuses."""
     job = Evaluation(
         tasks_dir=tasks,
         jobs_dir=old.parent,
         job_name=old.name if selection == "named" else None,
         config=config,
         preflight=False,
+        restart_changed=restart_changed,
     )
 
     async def run_task(task_path, cfg):
@@ -428,6 +432,30 @@ def test_legacy_setting_failure_preserves_rows_and_redacts_reason(
         assert (old / path).read_bytes() == content
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [{"model": "openai/fixture-new"}, {"reasoning_effort": "high"}],
+    ids=["model", "effort"],
+)
+def test_legacy_named_job_with_other_settings_is_refused_untouched(tmp_path, changed):
+    """A 0.7.11 job named again with another model or effort is refused before
+    its files are copied to .pre-0.8 or moved, and nothing runs."""
+    tasks, old = _legacy_job(tmp_path)
+    original = _files(old)
+    job = _evaluation(tasks, old, _config(**changed), "named", restart_changed=False)
+    with pytest.raises(ResumeMismatchError) as refused:
+        asyncio.run(job.run())
+    (key, value), was = next(iter(changed.items())), _config()
+    assert f"{key}={getattr(was, key)!r} (this run: {value!r})" in str(refused.value)
+    assert "2 finished trials in it ran" in str(refused.value)
+    assert refused.value.exit_code == 2
+    assert "the command that started it" in (refused.value.hint or "")
+    assert job._run_single_task.await_count == 0
+    assert _files(old) == original
+    assert not (old / ".pre-0.8").exists()
+    assert not (old / SET_ASIDE_DIR).exists()
+
+
 def test_legacy_stored_task_path_is_not_followed(tmp_path):
     """Guards IU-R1-1 at 7bc81e6ba: current tasks, never saved absolute paths."""
     tasks, old = _legacy_job(tmp_path)
@@ -642,6 +670,7 @@ def test_legacy_self_gen_final_rollout_resume(
         job_name=old.name if selection == "named" else None,
         config=config,
         preflight=False,
+        restart_changed=True,
     )
     result = asyncio.run(job.run())
     sequential = job_mode == "sequential-shared"
@@ -764,6 +793,7 @@ def test_self_gen_job_record_keeps_requested_effort_authority(
         job_name=old.name if selection == "named" else None,
         config=config,
         preflight=False,
+        restart_changed=True,
     )
     result = asyncio.run(job.run())
     assert (result.reused, result.ran) == (0, 2)

@@ -413,7 +413,7 @@ async def test_the_early_check_refuses_with_the_owner_and_a_next_line(box):
         box("ls -ldn /usr/lib/mips-linux-gnu | awk '{print $3}'").stdout.strip()
         == "2952"
     )
-    assert box("[ -e /opt/benchflow ] || echo none").stdout.strip() == "none"
+    assert box("[ -e /opt/runtime ] || echo none").stdout.strip() == "none"
 
 
 @pytest.mark.asyncio

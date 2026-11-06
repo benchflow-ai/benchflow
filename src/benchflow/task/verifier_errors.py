@@ -49,6 +49,11 @@ class VerifierOutputParseError(Exception):
     pass
 
 
+class RewardFileParseError(VerifierOutputParseError):
+    """A reward file BenchFlow cannot use: unreadable or unsafe, oversized,
+    no number, no object, or disagreeing with its companion file."""
+
+
 class VerifierSetupError(VerifierOutputParseError):
     """BenchFlow's own setup step failed before the test command ran."""
 

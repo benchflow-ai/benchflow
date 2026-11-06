@@ -1,6 +1,6 @@
 """Why a trial has no score, whose fault it was, and what to do next.
 
-One table for the end-of-run summary and for docs/jobs/when-a-run-fails.md. A
+One table for the end-of-run summary and for docs/evaluate/failed-trials.md. A
 trial ends in one of three ways:
 
 * **scored**: the verifier gave it a reward (passed or failed);
@@ -164,6 +164,12 @@ _ERRORED: dict[str, tuple[str, Fault, str]] = {
         "raise the task's agent timeout (task.md agent.timeout_sec) or "
         "--timeout-multiplier",
     ),
+    "trial_budget": (
+        "the trial spent its token or turn budget and the agent was stopped",
+        "agent",
+        "raise --token-budget or --turn-budget (or the task's [agent] budget) if "
+        "the task needs more; trial_budget in result.json has what it used",
+    ),
     "infra_failure": (
         "the sandbox or its transport failed",
         "infrastructure",
@@ -216,6 +222,25 @@ _INTEGRATION: dict[str, tuple[str, Fault, str]] = {
         "setup",
         "pick a model the agent lists in the error",
     ),
+    "agent_effort": (
+        "it does not offer the model at that reasoning effort",
+        "setup",
+        "pick an effort the error lists for the model, or a model that takes "
+        "the effort",
+    ),
+    "agent_budget": (
+        "its model calls go around BenchFlow's model proxy, which enforces the "
+        "trial's token and turn budget",
+        "setup",
+        "run it with an API key, so its calls go through the proxy, or drop "
+        "--token-budget/--turn-budget (or the task's [agent] budget)",
+    ),
+    "agent_model_catalog": (
+        "its model catalog has no entry for the model, so it ran on fallback tools",
+        "setup",
+        "pick a model the agent's pinned engine catalogues, or an agent release "
+        "whose engine lists the model",
+    ),
     "agent_install": (
         "its install or runtime is broken",
         "infrastructure",
@@ -257,6 +282,14 @@ _UNSCORED: dict[str, tuple[str, Fault, str]] = {
         "infrastructure",
         "`bench eval resume {job}` scores it again",
     ),
+    # A rubric review that crashed (review/persistence.py records the scoring
+    # error under this category): the reviewer's run, not the task's tests.
+    "infra_failure": (
+        "the review or its sandbox failed",
+        "infrastructure",
+        "run the review again: `bench eval score <the trial's folder> "
+        "--tasks-root <the tasks folder> --force`",
+    ),
     "disk_full": (
         "the disk that holds the job folder is full, so the reward was lost",
         "setup",
@@ -285,6 +318,12 @@ _SPECIAL: dict[str, tuple[str, Fault, str]] = {
         "agent",
         "the agent's log (agent/<agent>.txt) has its last words; "
         "`bench eval resume {job}` reruns it",
+    ),
+    "provider_unavailable": (
+        "the model provider failed with a server error",
+        "infrastructure",
+        "`bench eval resume {job}` reruns it; agent_outcome in result.json "
+        "counts the calls that failed",
     ),
     "kept_service_freezer:engine": (
         "the Docker Engine cannot freeze the task's kept services",
@@ -340,6 +379,13 @@ _SPECIAL: dict[str, tuple[str, Fault, str]] = {
         "the trial's verifier/ folder names the plugin and why; when "
         "test.sh installs it, `bench tasks check {task}`",
     ),
+    "verifier_no_usable_reward": (
+        "the verifier wrote no usable reward (a failure in every score)",
+        "task",
+        "the trial's verifier/ folder has test.sh's output; fix test.sh so it "
+        "always writes one number to /logs/verifier/reward.txt, then run the "
+        "task again",
+    ),
     "no_verdict": (
         "no verdict was recorded (an assessment still pending, or an "
         "interrupted trial)",
@@ -382,6 +428,7 @@ def unscored_keys() -> tuple[str, ...]:
         "verifier_plugin_unproven",
         "verifier_plugin_unlisted",
         "verifier_plugin_refused",
+        "verifier_no_usable_reward",
         "no_verdict",
     )
 
@@ -399,6 +446,7 @@ def cause_keys() -> tuple[str, ...]:
                 *(_integration_key(why) for why in (*_INTEGRATION, None)),
                 "usage_limit",
                 "pipe_closed:exit",
+                "provider_unavailable",
                 "kept_service_freezer:engine",
                 "kept_service_freezer:probe",
                 "other",
@@ -467,6 +515,7 @@ def cause_of(
         classify_error,
         classify_score_outcome,
         classify_verifier_error,
+        is_unusable_reward,
         plugin_guard_error_message,
     )
 
@@ -484,6 +533,8 @@ def cause_of(
         category = data.get("verifier_error_category") or classify_verifier_error(
             verifier_error
         )
+        if is_unusable_reward(verifier_error):
+            return _special("verifier_no_usable_reward", job, task)
         # Only the guard's own opening words decide the kind: the rest of its
         # message can quote a path or an error the agent chose (V2-R1-A-1).
         guard_message = plugin_guard_error_message(verifier_error) or ""
@@ -551,11 +602,35 @@ def _errored_cause(
         info = data.get("transport_error_info")
         code = info.get("process_exit_code") if isinstance(info, Mapping) else None
         if isinstance(code, int) and not isinstance(code, bool):
+            # A memory kill is named only with the cgroup's word for it, never
+            # from the exit code alone (137 is any SIGKILL).
+            kills = info.get("oom_kills") if isinstance(info, Mapping) else None
+            memory = (
+                f", and the sandbox's cgroup counted {kills} OOM kill"
+                + ("" if kills == 1 else "s")
+                if isinstance(kills, int) and kills > 0
+                else ", and the sandbox's cgroup counted no OOM kill"
+                if kills == 0
+                else ""
+            )
             return _special(
                 "pipe_closed:exit",
                 job,
                 task,
-                f"the agent process exited with code {code}",
+                f"the agent process exited with code {code}{memory}",
+            )
+    if category == "infra_failure":
+        # A provider's 5xx behind the agent's ACP error ("... | provider
+        # unavailable (HTTP 500)"), not the sandbox.
+        found = re.search(
+            r"provider unavailable \(HTTP (\d+)\)", str(data.get("error"))
+        )
+        if found:
+            return _special(
+                "provider_unavailable",
+                job,
+                task,
+                f"the model provider failed with HTTP {found.group(1)}",
             )
     if category == "kept_service_freezer":
         # One category, three causes, each with its own fix: the sandbox

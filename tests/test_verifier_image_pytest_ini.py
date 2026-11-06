@@ -103,7 +103,7 @@ async def test_the_images_unchanged_ini_replaces_dev_null(tmp_path):
     plugins = [args[i + 1] for i, arg in enumerate(args) if arg == "-p"]
     assert plugins[-1] == "pytester"
     assert plugins.index("pytester") > next(
-        i for i, name in enumerate(plugins) if name.startswith("_benchflow_guard_")
+        i for i, name in enumerate(plugins) if name.startswith("_runtime_guard_")
     )
 
 
@@ -276,7 +276,7 @@ async def test_tests_in_the_package_pass_under_a_workspace_cov_addopts(
     )
     # The guard itself is not importable here; what comes before it is.
     addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-    addopts = addopts.split(" -p _benchflow_guard_")[0]
+    addopts = addopts.split(" -p _runtime_guard_")[0]
     done = subprocess.run(
         [sys.executable, "-m", "pytest", str(tests / "test_outputs.py")],
         cwd=app,

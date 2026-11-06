@@ -5,7 +5,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from benchflow.agents.errors import AgentProtocolError, UsageLimitError
+from benchflow.agents.errors import (
+    AgentProtocolError,
+    ModelCatalogMiss,
+    UsageLimitError,
+)
 from benchflow.agents.usage_limits import is_usage_limit_text
 
 from .session import ACPSession, _host_receipt
@@ -179,9 +183,11 @@ class ACPClient:
         *,
         subagent_transcript: bool = False,
         typed_failures: bool = False,
+        session_meta: dict[str, Any] | None = None,
     ):
         self._transport = transport
         self._typed_failures = typed_failures
+        self._session_meta = session_meta
         self._request_id = 100000  # High start to avoid collision with agent IDs
         self._session: ACPSession | None = None
         # True when session/new returned no sessionId and the session runs
@@ -298,6 +304,8 @@ class ACPClient:
             if "method" in msg and "id" not in msg:
                 try:
                     await self._handle_notification(msg)
+                except ModelMetadataError:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Error handling notification {msg.get('method')}: {e}"
@@ -354,6 +362,20 @@ class ACPClient:
                 self._session.handle_update(update)
             else:
                 self._session.handle_update(update, _receipt=_receipt)
+            if update.get("sessionUpdate") == "notice":
+                text = " ".join(
+                    str(update.get(k) or "") for k in ("title", "description")
+                )
+                if (
+                    "model metadata for " in text.lower()
+                    and "not found" in text.lower()
+                ):
+                    raise ModelMetadataError(
+                        -32603,
+                        "Agent model catalog is missing the requested model; refusing "
+                        "fallback tool metadata. Use an engine/catalog that supports "
+                        "this model. " + text.strip(),
+                    )
 
     async def _handle_agent_request(self, msg: dict[str, Any]) -> None:
         """Handle requests from agent (fs/terminal) — auto-approve and proxy to environment."""
@@ -515,6 +537,8 @@ class ACPClient:
         """Open a session; ``known_id`` is the caller's real ID for session/load."""
         if self._opening_session_updates is not None:
             raise RuntimeError("ACP session handshake already in progress")
+        if self._session_meta:
+            params = {**params, "_meta": self._session_meta}
         updates: list[tuple[dict[str, Any], dict[str, str]]] = []
         self._opening_session_updates = updates
         try:
@@ -669,3 +693,7 @@ class ACPError(AgentProtocolError):
         self.message = message
         self.data = data
         super().__init__(f"ACP error {code}: {message}")
+
+
+class ModelMetadataError(ACPError, ModelCatalogMiss):
+    """A model catalog fallback cannot be accepted as an evaluated agent."""

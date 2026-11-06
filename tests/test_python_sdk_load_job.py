@@ -439,3 +439,78 @@ def test_an_evaluation_result_prints_on_one_line() -> None:
         "unscored as 0), mean_reward_scored_only=None (over 0), "
         "results=<2 task(s)>, job_dir=None)"
     )
+
+
+def test_a_rerun_replaces_the_placeholder_of_a_trial_that_left_no_folder(
+    tmp_path: Path,
+) -> None:
+    """A trial that failed before its folder existed and passed on resume is one trial.
+
+    The job writes a placeholder for it (``no_rollout_folder``), whose
+    result.json records no agent or model; its config.json does. Found on a
+    real job: a full disk stopped one trial, the resume reran it and it passed,
+    summary.json counted 4 trials and ``bench eval metrics`` 5, the placeholder
+    shown as a trial of agent "" with no model.
+    """
+    from benchflow.metrics import collect_metrics
+
+    job = tmp_path / "job"
+    placeholder = job / "t__00000001"
+    placeholder.mkdir(parents=True)
+    (placeholder / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "t",
+                "rollout_name": placeholder.name,
+                "rewards": None,
+                "error": "Unexpected: [Errno 28] No space left on device",
+                "no_rollout_folder": True,
+            }
+        )
+    )
+    (placeholder / "config.json").write_text(
+        json.dumps(
+            {"task_path": "t", "agent": "claude-agent-acp", "model": "claude-haiku-4-5"}
+        )
+    )
+    _trial(job, "t", reward=1.0, suffix="00000002")
+    _trial(job, "u", reward=0.0, suffix="00000003")
+    (job / "evaluation.json").write_text("{}")
+
+    loaded = bf.load_job(job)
+    assert [(t.task_name, t.reward) for t in loaded.trials] == [("t", 1.0), ("u", 0.0)]
+    [rerun] = [t for t in loaded.trials if t.task_name == "t"]
+    assert [a.path for a in rerun.attempts] == [placeholder, job / "t__00000002"]
+    every = bf.load_job(job, attempts="all").trials
+    assert {(t.agent, t.model) for t in every} == {
+        ("claude-agent-acp", "claude-haiku-4-5")
+    }
+    metrics = collect_metrics(job)
+    assert (metrics.total, metrics.passed, metrics.errored) == (2, 1, 0)
+
+
+def test_a_placeholder_with_no_rerun_still_counts_under_its_agent(
+    tmp_path: Path,
+) -> None:
+    """Without a rerun the placeholder stays a trial: unscored, under its own agent."""
+    job = tmp_path / "job"
+    placeholder = job / "t__00000001"
+    placeholder.mkdir(parents=True)
+    (placeholder / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "t",
+                "rewards": None,
+                "error": "boom",
+                "no_rollout_folder": True,
+            }
+        )
+    )
+    (placeholder / "config.json").write_text(
+        json.dumps({"task_path": "t", "agent": "claude-agent-acp", "model": None})
+    )
+    (job / "evaluation.json").write_text("{}")
+
+    [trial] = bf.load_job(job).trials
+    assert (trial.agent, trial.model, trial.reward) == ("claude-agent-acp", None, None)
+    assert "agent" not in trial.raw  # the file's own record is left as written

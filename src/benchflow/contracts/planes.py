@@ -91,6 +91,7 @@ class RolloutPlanes(Protocol):
         sandbox_user: str,
         *,
         workspace: str,
+        agents: list[str] | None = None,
         timeout_sec: int = 120,
         guard_daemon: bool = True,
     ) -> str: ...
@@ -149,6 +150,10 @@ class RolloutPlanes(Protocol):
     async def enforce_agent_egress_firewall(
         self, env: Any, sandbox_user: str | None, agent_env: dict[str, str]
     ) -> None: ...
+    async def enforce_offline_uid_egress(self, env: Any, sandbox_user: str) -> None:
+        """The loopback-only uid firewall, DNS refused, for an agent with no model route."""
+        ...
+
     async def block_cloud_metadata(
         self, env: Any, sandbox_user: str | None
     ) -> dict[str, Any]: ...

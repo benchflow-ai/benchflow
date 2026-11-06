@@ -293,6 +293,11 @@ def format_report(report: dict) -> str:
         f"{'all tasks':<44} {s['trials']:>3} {'':>4} {mr:>6} {'':>6} "
         + " ".join(f"{v:>6.3f}" for v in s["pass_at_k"].values())
     )
+    if any(len(e.get("rewards_by_seed") or {}) > 1 for e in report["tasks"].values()):
+        lines.append(
+            "p@k samples k of a task's trials across its seeds: each seed is another initial state, "
+            "so it is not k tries of one episode"
+        )
     if s.get("pass_rate") is not None:
         ci = s.get("pass_rate_ci95") or [None, None]
         lines.append(
@@ -310,9 +315,12 @@ def format_report(report: dict) -> str:
         )
     if s.get("mean_reward_caveat"):
         lines.append(s["mean_reward_caveat"])
-    for mode, m in (s.get("by_mode") or {}).items():
-        ci = m["pass_rate_ci95"]
-        lines.append(
-            f"  {mode}: {m['trials']} trials, pass rate {m['pass_rate']:.3f} [{ci[0]:.3f}, {ci[1]:.3f}]"
-        )
+    modes = s.get("by_mode") or {}
+    if len(modes) > 1:  # one mode would repeat the pass rate line above
+        for mode, m in modes.items():
+            ci = m["pass_rate_ci95"]
+            lines.append(
+                f"  {mode}: {m['trials']} trials, pass rate {m['pass_rate']:.3f} "
+                f"(95% Wilson interval {ci[0]:.3f}-{ci[1]:.3f})"
+            )
     return "\n".join(lines)

@@ -93,6 +93,16 @@ def _reviewer_options(
     return ReviewerConfig.model_validate(saved)
 
 
+def _recorded_setup_timeout(rollout_dir: Path) -> int | None:
+    """The run's own sandbox_setup_timeout: the setup timeout of a reviewer
+    recorded without one."""
+    config_path = rollout_dir / "config.json"
+    if not config_path.is_file():
+        return None
+    value = _read_object(config_path).get("sandbox_setup_timeout")
+    return value if type(value) is int and value > 0 else None
+
+
 async def resume_review(
     rollout_dir: str | Path,
     *,
@@ -230,7 +240,11 @@ async def _resume_review(
             )
         task_path = _trusted_task(path, solver, Path(tasks_root))
         await resume_verification(path, task_path)
-        plan = prepare_review(task_path, _reviewer_options(path, reviewer))
+        plan = prepare_review(
+            task_path,
+            _reviewer_options(path, reviewer),
+            sandbox_setup_timeout=_recorded_setup_timeout(path),
+        )
         if plan is None:
             verifier = Task(task_path).config.verifier
             # Without review, only an eligible recovery contract has scoring

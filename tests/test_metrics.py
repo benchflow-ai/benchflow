@@ -238,6 +238,41 @@ def test_collect_metrics_corrupt_file(tmp_path):
     assert s["total"] == 0
 
 
+@pytest.mark.parametrize("rewards", [1.0, 1, True, [1.0], "1.0"])
+def test_a_rewards_field_that_is_no_mapping_is_an_errored_trial(tmp_path, rewards):
+    """The payloads of benchflow#1096: result.json is read back with no shape
+    check, so ``rewards`` can be any JSON value. It counts as an errored
+    trial; the folder's other trials are still collected."""
+    for name, value in (("task-a__abc", rewards), ("task-b__def", {"reward": 1.0})):
+        trial = tmp_path / "job" / name
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(
+            json.dumps({"task_name": name.split("__")[0], "rewards": value})
+        )
+
+    s = collect_metrics(str(tmp_path)).summary()
+
+    assert (s["total"], s["passed"], s["errored"]) == (2, 1, 1)
+    assert s["errored_tasks"] == ["task-a"]
+
+
+def test_bench_eval_metrics_reads_a_folder_with_such_a_trial(tmp_path):
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+
+    trial = tmp_path / "job" / "task-a__abc"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({"task_name": "task-a", "rewards": [1.0]})
+    )
+
+    result = CliRunner().invoke(app, ["eval", "metrics", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["errored"] == 1
+
+
 def test_collect_metrics_metadata(results_dir):
     """Test that benchmark/agent/model metadata is passed through."""
     metrics = collect_metrics(
@@ -438,6 +473,8 @@ def test_usage_source_type_contract_tracks_trusted_sources():
     from benchflow.usage_tracking import (
         TRUSTED_USAGE_SOURCES,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_AGENT_REPORTED,
+        USAGE_SOURCE_NONE,
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_UNAVAILABLE,
         UsageSource,
@@ -448,6 +485,9 @@ def test_usage_source_type_contract_tracks_trusted_sources():
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
         USAGE_SOURCE_UNAVAILABLE,
+        # An agent that routes its own model calls; never trusted.
+        USAGE_SOURCE_AGENT_REPORTED,
+        USAGE_SOURCE_NONE,
     }
     assert {
         USAGE_SOURCE_PROVIDER_RESPONSE,

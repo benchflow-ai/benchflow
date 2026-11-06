@@ -5,16 +5,30 @@ SDK is only touched when a Daytona environment is actually being built.
 """
 
 import asyncio
+import hashlib
+import importlib.metadata
 import inspect
 import logging
 import os
 from collections.abc import Callable
 from typing import Any, cast
 
+from benchflow.sandbox.daytona_build_keys import context_hash
+
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
 _HEARTBEAT_PATCHED = "_benchflow_ws_heartbeat"
+_CONTEXT_HASH_PATCHED = "_benchflow_sorted_context_hash"
+# sha256 of ``inspect.getsource`` of the SDK's two context hashes, the source
+# daytona_build_keys.context_hash reproduces: daytona 0.207.0's, the same
+# text from 0.184.0 to 0.225.0. Another source keeps the SDK's own walk.
+_AUDITED_CONTEXT_HASH_SHA256 = {
+    "ObjectStorage": "27e66cddea2e8783d08304524fdb2a864e03bbedccb1ca3d5b295bce3c883544",
+    "AsyncObjectStorage": "b75fb096334c799833ca4920958feb77db44b6e9b5586b6c5d20b9005369bd51",
+}
+# Set once the stand-down is reported, so each trial's apply() stays quiet.
+_context_hash_refusal_logged = False
 
 # Seconds between websocket pings on the SDK's PTY and log websockets; 0 or
 # "off" disables. aiohttp closes a websocket whose pong is missing after half
@@ -115,12 +129,95 @@ def _patch_websocket_heartbeat(sdk_process: Any = None) -> None:
     cls._open_ws = wrapper
 
 
+def _source_sha256(function: Any) -> str | None:
+    try:
+        source = inspect.getsource(function)
+    except (OSError, TypeError):
+        return None
+    return hashlib.sha256(source.encode()).hexdigest()
+
+
+def _patch_context_hash(sync_storage: Any = None, async_storage: Any = None) -> None:
+    """Hash a build context's folders in sorted order, so a task keeps one
+    Daytona build key on every machine (``daytona_build_keys``).
+
+    The SDK's ``_compute_hash_for_path_md5`` (``ObjectStorage`` and
+    ``AsyncObjectStorage``) walks a COPY folder in the filesystem's listing
+    order, and Daytona keys the build by that hash. Both become
+    ``daytona_build_keys.context_hash`` only while both are the source it
+    reproduces (:data:`_AUDITED_CONTEXT_HASH_SHA256`); otherwise both keep
+    the SDK's walk, and a warning says so once. The async one hashes in a
+    worker thread, as the SDK walks its folders.
+    """
+    global _context_hash_refusal_logged
+    if sync_storage is None or async_storage is None:
+        try:
+            from daytona._async.object_storage import AsyncObjectStorage
+            from daytona._sync.object_storage import ObjectStorage
+        except Exception:  # SDK not installed, or its layout changed
+            logger.debug("daytona SDK object storage not importable", exc_info=True)
+            return
+        sync_storage, async_storage = ObjectStorage, AsyncObjectStorage
+    owners = {"ObjectStorage": sync_storage, "AsyncObjectStorage": async_storage}
+    originals = {
+        name: getattr(owner, "_compute_hash_for_path_md5", None)
+        for name, owner in owners.items()
+    }
+    if all(getattr(f, _CONTEXT_HASH_PATCHED, False) for f in originals.values()):
+        return
+    changed = [
+        name
+        for name, function in originals.items()
+        if _source_sha256(function) != _AUDITED_CONTEXT_HASH_SHA256[name]
+    ]
+    if changed:
+        if not _context_hash_refusal_logged:
+            _context_hash_refusal_logged = True
+            try:
+                release = importlib.metadata.version("daytona")
+            except importlib.metadata.PackageNotFoundError:
+                release = "?"
+            logger.warning(
+                "Daytona build keys keep the SDK's folder order: %s in daytona "
+                "%s is not the source BenchFlow's sorted context hash was "
+                "written against, so a task with a COPY folder can get another "
+                "build key on another machine",
+                " and ".join(f"{name}._compute_hash_for_path_md5" for name in changed),
+                release,
+            )
+        return
+
+    def _compute_hash_for_path_md5(
+        self: Any, path_str: str, archive_base_path: str | None = None
+    ) -> str:
+        return context_hash(path_str, archive_base_path, self.compute_archive_base_path)
+
+    async def _compute_hash_for_path_md5_async(
+        self: Any, path_str: str, archive_base_path: str | None = None
+    ) -> str:
+        return await asyncio.to_thread(
+            context_hash, path_str, archive_base_path, self.compute_archive_base_path
+        )
+
+    wrappers: dict[str, Any] = {
+        "ObjectStorage": _compute_hash_for_path_md5,
+        "AsyncObjectStorage": _compute_hash_for_path_md5_async,
+    }
+    for name, wrapper in wrappers.items():
+        setattr(wrapper, _CONTEXT_HASH_PATCHED, True)
+        wrapper.__wrapped__ = originals[name]
+        owners[name]._compute_hash_for_path_md5 = wrapper
+
+
 def apply() -> None:
     """Install workarounds for known Daytona SDK bugs.
 
     Currently:
       * ``AsyncProcess._open_ws`` opens websockets without pings
         (:func:`_patch_websocket_heartbeat`).
+      * ``ObjectStorage._compute_hash_for_path_md5`` (sync and async) hashes
+        a build context's folders in the filesystem's listing order, so a
+        task's build key depends on the machine (:func:`_patch_context_hash`).
       * ``AsyncProcess.get_session_command_logs`` occasionally raises
         ``pydantic.ValidationError`` because the server returns an empty
         string instead of a JSON object for ``SessionCommandLogsResponse``.
@@ -131,6 +228,7 @@ def apply() -> None:
     """
     global _PATCHED
     _patch_websocket_heartbeat()
+    _patch_context_hash()
     if _PATCHED:
         return
 

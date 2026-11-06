@@ -141,7 +141,10 @@ async def test_recovery_uses_verified_remote_absence(
     if companion == "absent":
         assert rewards == {"reward": 1.0} and error is None and not warnings
     elif companion in ("directory", "link", "unsafe-parent"):
-        assert rewards == {"reward": 0.0} and error is None and warnings
+        # An unsafe companion is no usable reward: the verifier's error.
+        from benchflow._utils.scoring import NO_USABLE_REWARD
+
+        assert rewards is None and error.startswith(NO_USABLE_REWARD)
     else:
         assert rewards is None and error is not None and not warnings
     # Both arms must reach the real adapter for the companion. The repaired

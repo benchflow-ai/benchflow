@@ -265,3 +265,44 @@ async def test_a_public_agent_env_value_survives_the_logs_redaction(
     assert price is not None
     one = 1000 * price["input"] + 50 * price["output"]
     assert usage["cost_usd"] == pytest.approx(2 * one)
+
+
+def test_current_claude_models_are_priced_from_the_snapshot():
+    """Stale-audit price fix: LiteLLM 1.91.5's table has no
+    Claude 5.x model, so a Claude Code log without a cost-state priced none.
+    Rates are Anthropic's pricing page, read 2026-11-04."""
+    assert list_price("claude-opus-5-5") == {
+        "input": 4e-6,
+        "output": 20e-6,
+        "cache_read": 0.2e-6,
+        "cache_write": 5e-6,
+        "cache_write_1h": 8e-6,
+    }
+    sonnet = list_price("claude-sonnet-5-5")
+    assert sonnet is not None and sonnet["cache_read"] == pytest.approx(0.1e-6)
+    assert list_price("anthropic/claude-fable-5-1[1m]") is not None
+
+
+def test_haiku_5_5_prompts_over_100k_tokens_use_the_higher_rates(tmp_path):
+    """Anthropic prices a Haiku 5.5 prompt over 100,000 tokens (cache reads and
+    writes included) at $0.50 / $2.50 instead of $0.10 / $0.50 per million."""
+    short = list_price("claude-haiku-5-5", 100_000)
+    long = list_price("claude-haiku-5-5", 100_001)
+    assert short is not None and long is not None
+    assert (short["input"], short["output"]) == (0.1e-6, 0.5e-6)
+    assert (long["input"], long["output"], long["cache_read"]) == (
+        0.5e-6,
+        2.5e-6,
+        0.05e-6,
+    )
+    assert long["cache_write_1h"] == pytest.approx(1e-6)
+    big = _response("msg_1", input_tokens=30_000, model="claude-haiku-5-5")
+    big["message"]["usage"]["cache_read_input_tokens"] = 120_000
+    small = _response("msg_2", input_tokens=1_000, model="claude-haiku-5-5")
+    _log(tmp_path, [big, small])
+    estimate = estimate_claude_code_cost(tmp_path)
+    assert estimate is not None and estimate["method"] == LIST_PRICE
+    expected = (30_000 * 0.5e-6 + 120_000 * 0.05e-6 + 50 * 2.5e-6) + (
+        1_000 * 0.1e-6 + 50 * 0.5e-6
+    )
+    assert estimate["usd"] == pytest.approx(expected)

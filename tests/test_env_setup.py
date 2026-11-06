@@ -75,12 +75,12 @@ class TestInjectSkillsIntoDockerfile:
         skills_dir = _make_skills_dir(tmp_path)
 
         _inject_skills_into_dockerfile(
-            task_path, skills_dir, sandbox_dir="/opt/benchflow/skill-eval"
+            task_path, skills_dir, sandbox_dir="/opt/runtime/skill-eval"
         )
 
         content = (task_path / "environment" / "Dockerfile").read_text()
-        assert "COPY _deps/skills /opt/benchflow/skill-eval/" in content
-        assert "ln -sf /opt/benchflow/skill-eval" in content
+        assert "COPY _deps/skills /opt/runtime/skill-eval/" in content
+        assert "ln -sf /opt/runtime/skill-eval" in content
 
     def test_rejects_unsafe_sandbox_dir(self, tmp_path):
         """Guards PR #586 against Dockerfile injection from sandbox_dir."""

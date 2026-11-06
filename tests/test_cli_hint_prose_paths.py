@@ -100,7 +100,7 @@ def test_doctor_path_advice_is_literal(tmp_path, monkeypatch, folder, mode):
             entry=chosen / "benchflow",
         )
         prefix = "benchflow always runs this install; for bench to run it too, "
-        suffix = ": https://github.com/benchflow-ai/benchflow/blob/main/docs/install.md#which-bench-runs"
+        suffix = ": https://www.benchflow.ai/docs/benchflow/getting-started/install#which-bench-runs"
         if mode == "reorder":
             prefix += "put "
             suffix = " on PATH" + suffix

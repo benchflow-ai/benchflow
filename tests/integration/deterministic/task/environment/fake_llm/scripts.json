@@ -51,7 +51,7 @@
       "text": "Waiting.",
       "tool": "Bash",
       "input": {
-        "command": "sleep 590",
+        "command": "timeout 600 sleep 590",
         "description": "Wait",
         "timeout": 600000
       }
@@ -65,7 +65,7 @@
       "text": "Stopping the agent process.",
       "tool": "Bash",
       "input": {
-        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/benchflow/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '^/opt/runtime/js-agents/bin/[c]laude '; then kill -9 \"$pid\"; break; fi; done; sleep 30",
         "description": "Kill the Claude Code CLI"
       }
     },
@@ -126,7 +126,7 @@
       "text": "Writing hello.txt and listing the agent's variable names (never values).",
       "tool": "Bash",
       "input": {
-        "command": "printf 'Hello, world!\\n' > /app/hello.txt; pid=$(cut -d' ' -f4 /proc/$$/stat); agent=; while [ \"$pid\" -gt 1 ]; do if tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null | grep -q '^/opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/claude-agent-acp'; then agent=$pid; break; fi; pid=$(cut -d' ' -f4 /proc/$pid/stat); done; echo \"envprobe agent ${agent:-none}\" | sed 's/agent [0-9][0-9]*$/agent found/'; e=$(tr '\\0' '\\n' < /proc/${agent:-0}/environ 2>/dev/null); echo \"envprobe keys $(printf '%s\\n' \"$e\" | cut -d= -f1 | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | sort | tr '\\n' ' ')\"; for v in BF_SU_MARK BF_ROOT_ONLY BENCHFLOW_SU_PATH BENCHFLOW_SU_NAMES; do if printf '%s\\n' \"$e\" | grep -q \"^$v=\"; then echo \"envprobe var $v present\"; else echo \"envprobe var $v absent\"; fi; done; echo \"envprobe path-sha $(printf '%s\\n' \"$e\" | grep '^PATH=' | sha256sum | cut -c1-16)\"; echo \"envprobe uid $(id -u)\"; sed 's/^/envprobe /' /tmp/bf-rc.log 2>/dev/null; true",
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt; pid=$(cut -d' ' -f4 /proc/$$/stat); agent=; while [ \"$pid\" -gt 1 ]; do if tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null | grep -q '^/opt/runtime/node/bin/node /opt/runtime/js-agents/bin/claude-agent-acp'; then agent=$pid; break; fi; pid=$(cut -d' ' -f4 /proc/$pid/stat); done; echo \"envprobe agent ${agent:-none}\" | sed 's/agent [0-9][0-9]*$/agent found/'; e=$(tr '\\0' '\\n' < /proc/${agent:-0}/environ 2>/dev/null); echo \"envprobe keys $(printf '%s\\n' \"$e\" | cut -d= -f1 | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | sort | tr '\\n' ' ')\"; for v in BF_SU_MARK BF_ROOT_ONLY BENCHFLOW_SU_PATH BENCHFLOW_SU_NAMES; do if printf '%s\\n' \"$e\" | grep -q \"^$v=\"; then echo \"envprobe var $v present\"; else echo \"envprobe var $v absent\"; fi; done; echo \"envprobe path-sha $(printf '%s\\n' \"$e\" | grep '^PATH=' | sha256sum | cut -c1-16)\"; echo \"envprobe uid $(id -u)\"; sed 's/^/envprobe /' /tmp/bf-rc.log 2>/dev/null; true",
         "description": "List the agent's variable names"
       }
     },
@@ -161,6 +161,176 @@
       "input": {
         "command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
       }
+    }
+  ],
+  "subagent": [
+    {
+      "text": "Delegating hello.txt.",
+      "tool": "Agent",
+      "input": {
+        "description": "Write hello.txt",
+        "prompt": "Write the file. [[fake-llm:subagent-child]]",
+        "subagent_type": "general-purpose",
+        "run_in_background": false
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "subagent-child": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Wrote /app/hello.txt."
+    }
+  ],
+  "refuse-after-look": [
+    {
+      "text": "Looking at /app first.",
+      "tool": "Bash",
+      "input": {
+        "command": "ls /app",
+        "description": "List /app"
+      }
+    },
+    {
+      "refusal": true
+    }
+  ],
+  "many-steps": [
+    {
+      "text": "Step 1.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 1",
+        "description": "Step 1"
+      }
+    },
+    {
+      "text": "Step 2.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 2",
+        "description": "Step 2"
+      }
+    },
+    {
+      "text": "Step 3.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 3",
+        "description": "Step 3"
+      }
+    },
+    {
+      "text": "Step 4.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 4",
+        "description": "Step 4"
+      }
+    },
+    {
+      "text": "Step 5.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 5",
+        "description": "Step 5"
+      }
+    },
+    {
+      "text": "Step 6.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 6",
+        "description": "Step 6"
+      }
+    },
+    {
+      "text": "Step 7.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 7",
+        "description": "Step 7"
+      }
+    },
+    {
+      "text": "Step 8.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo step 8",
+        "description": "Step 8"
+      }
+    },
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "subagent-explore": [
+    {
+      "text": "Delegating the look around.",
+      "tool": "Agent",
+      "input": {
+        "description": "Look around /app",
+        "prompt": "Look around /app. [[fake-llm:subagent-explore-child]]",
+        "subagent_type": "general-purpose",
+        "run_in_background": false
+      }
+    },
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "subagent-explore-child": [
+    {
+      "text": "Listing /app.",
+      "tool": "Bash",
+      "input": {
+        "command": "ls /app",
+        "description": "List /app"
+      }
+    },
+    {
+      "text": "Listing /app again.",
+      "tool": "Bash",
+      "input": {
+        "command": "ls -la /app",
+        "description": "List /app in full"
+      }
+    },
+    {
+      "text": "Listing the root.",
+      "tool": "Bash",
+      "input": {
+        "command": "ls /",
+        "description": "List /"
+      }
+    },
+    {
+      "text": "/app holds nothing yet."
     }
   ]
 }

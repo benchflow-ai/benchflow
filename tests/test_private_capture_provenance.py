@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from benchflow._utils import reachable_write as rw
+from benchflow._utils.scoring import NO_USABLE_REWARD
 from benchflow.sandbox.docker import DockerSandbox
 from benchflow.sandbox.remote_docker import RemoteDockerHost, RemoteDockerSandbox
 from benchflow.task.verifier_errors import verifier_infrastructure_failure
@@ -268,15 +269,14 @@ async def test_capture_evidence_controls_keep_their_scores(
         assert f"/logs/verifier/{missing}" in state["metadata"]
         assert f"/logs/verifier/{missing}" not in state["copies"]
     elif control == "conflict":
-        # Conflicting companions are evidence-zero in either direction.
-        # Neither may be discarded to accept the other's higher reward.
-        observe(tmp_path, rewards, error, 0)
-        assert warnings
+        # Conflicting companions are no usable reward in either direction:
+        # neither may be discarded to accept the other's higher reward. That
+        # is now the verifier's error, a failure in every score.
+        observe(tmp_path, rewards, error, "unscored", NO_USABLE_REWARD)
         assert f"/logs/verifier/{missing}" in state["copies"]
         assert f"/logs/verifier/{present}" in state["copies"]
     else:
-        observe(tmp_path, rewards, error, 0)
-        assert warnings
+        observe(tmp_path, rewards, error, "unscored", NO_USABLE_REWARD)
         if control == "source-read":
             assert source_reads
 

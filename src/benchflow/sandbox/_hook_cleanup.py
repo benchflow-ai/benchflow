@@ -14,7 +14,9 @@ The three parts, in today's order:
 1. ``conftest.py`` outside ``/tests`` and ``/verifier`` (unless the task
    sets ``cleanup_conftests = false``): today's ``find /`` with its prunes.
    Mounted folders are walked as roots of their own, as ``find`` crosses
-   into them.
+   into them. An installed package's own file stays (:func:`package_owned`),
+   and so does the repository's own, unchanged since the pre-agent copy
+   (:func:`unchanged_in_workspace`), written again as a fresh root-owned file.
 2. ``*.py`` in ``/tmp`` and ``/var/tmp`` outside the workspace and its
    aliases.
 3. Python start-up hooks (:data:`benchflow._image_python_paths.HOOK_RULE`):
@@ -40,6 +42,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import base64
+import csv
 import fnmatch
 import hashlib
 import io
@@ -60,9 +63,9 @@ _MAX_NAMES = 4096
 # The kernel's limit on links followed in one lookup.
 _MAX_HOPS = 40
 # The pre-agent records (benchflow._image_python_paths).
-_RECORD = "/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json"
-_RECORD_EACH = "/opt/benchflow/rt/IMAGE_PYTHON_PATHS.jsonl"
-_KIT_RECORD = "/opt/benchflow/rt/RECORD"
+_RECORD = "/opt/runtime/rt/IMAGE_PYTHON_PATHS.json"
+_RECORD_EACH = "/opt/runtime/rt/IMAGE_PYTHON_PATHS.jsonl"
+_KIT_RECORD = "/opt/runtime/rt/RECORD"
 _EROFS = 30
 _EXDEV = 18
 _EMFILE = 24
@@ -967,8 +970,141 @@ def _find_path(pattern: str, path: str) -> bool:
     return fnmatch.fnmatchcase(path, pattern)
 
 
+# The conftest sweep's one exception: an installed package's own
+# conftest.py. pip and uv list every file they install, with its sha256, in
+# the distribution's *.dist-info/RECORD (PEP 376, PEP 627). beartype ships a
+# module named _conf/conftest.py; removing it from an agent's install tree
+# stopped that agent from starting again in a later round. The shell form
+# (lockdown._CONFTEST_SWEEP_SCRIPT) applies the same rule in the sandbox.
+SITE_FOLDER_NAMES = ("site-packages", "dist-packages")
+
+
+def site_folder_of(path: str) -> tuple[str, str] | None:
+    """The nearest site folder above *path*, and *path* relative to it."""
+    parts = path.split("/")
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i] in SITE_FOLDER_NAMES:
+            return "/".join(parts[: i + 1]), "/".join(parts[i + 1 :])
+    return None
+
+
+def record_digest(data: bytes) -> str:
+    """*data*'s digest as a RECORD line writes it."""
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=")
+    return "sha256=" + digest.decode()
+
+
+def record_lines(data: bytes) -> dict[str, set[str]]:
+    """The paths a RECORD file lists, each with its sha256 digests."""
+    out: dict[str, set[str]] = {}
+    for row in csv.reader(io.StringIO(data.decode("utf-8", "replace"))):
+        if len(row) >= 2 and row[1].startswith("sha256="):
+            out.setdefault(row[0], set()).add(row[1])
+    return out
+
+
+def _inside(path: str, roots: Iterable[str]) -> bool:
+    return any(path == r or path.startswith(r.rstrip("/") + "/") for r in roots)
+
+
+async def _site_records(
+    facts: _Facts, site: str, cache: dict[str, dict[str, set[str]]]
+) -> dict[str, set[str]]:
+    if site not in cache:
+        found: dict[str, set[str]] = {}
+        for name, entry in await facts.listdir(site) or ():
+            if name.endswith(".dist-info") and entry.get("type") == "dir":
+                data = await facts.read(posixpath.join(site, name, "RECORD"))
+                for rel, digests in record_lines(data or b"").items():
+                    found.setdefault(rel, set()).update(digests)
+        cache[site] = found
+    return cache[site]
+
+
+async def package_owned(
+    facts: _Facts,
+    path: str,
+    entry: Mapping[str, Any],
+    workspace_roots: Iterable[str],
+    cache: dict[str, dict[str, set[str]]],
+) -> bool:
+    """Whether the conftest.py at *path* is an installed package's own file:
+    a regular file outside the workspace, inside a site-packages or
+    dist-packages folder, that a RECORD in that folder lists with this exact
+    digest. One the agent planted or edited matches no RECORD line, and one
+    in the workspace never counts: the agent writes there, RECORD files
+    included."""
+    where = site_folder_of(path)
+    if where is None or entry.get("type") != "file":
+        return False
+    if _inside(path, workspace_roots):
+        return False
+    site, rel = where
+    data = await facts.read(path)
+    if data is None:
+        return False
+    records = await _site_records(facts, site, cache)
+    return record_digest(data) in records.get(rel, ())
+
+
+async def unchanged_in_workspace(
+    facts: _Facts,
+    path: str,
+    entry: Mapping[str, Any],
+    workspace_roots: Iterable[str],
+    baseline: str | None,
+) -> bytes | None:
+    """The bytes of the conftest.py at *path* when it is the repository's own
+    file (#1171, #1177): a regular file in the workspace, byte for byte the
+    file at the same place in *baseline*, the pre-agent copy, which must be
+    root's and closed to everyone else. ``read`` follows no link at any
+    level of either path. None otherwise, and always without a baseline
+    (the caller passes none when the agent ran as root)."""
+    if not baseline or entry.get("type") != "file":
+        return None
+    base = await facts.lstat(baseline)
+    if (
+        base is None
+        or base.get("type") != "dir"
+        or int(base.get("uid", -1)) != 0
+        or int(base.get("mode") or 0) & 0o077
+    ):
+        return None
+    for root in workspace_roots:
+        prefix = root.rstrip("/") + "/"
+        if not path.startswith(prefix):
+            continue
+        rel = path[len(prefix) :]
+        if any(part in ("", ".", "..") for part in rel.split("/")):
+            return None
+        here = await facts.read(path)
+        if here is None:
+            return None
+        there = await facts.read(posixpath.join(baseline, rel))
+        return here if there == here else None
+    return None
+
+
+async def _workspace_roots(
+    facts: _Facts, workspace: str | None, aliases: tuple[str, ...]
+) -> list[str]:
+    if not workspace:
+        return []
+    roots = [posixpath.normpath(workspace), *(posixpath.normpath(a) for a in aliases)]
+    physical = await facts.resolve(posixpath.normpath(workspace))
+    if physical:
+        roots.append(physical)
+    return roots
+
+
 async def remove_conftests(
-    facts: _Facts, changes: _Changes, verifier_dir: str, keep: tuple[str, ...]
+    facts: _Facts,
+    changes: _Changes,
+    verifier_dir: str,
+    keep: tuple[str, ...],
+    workspace: str | None = None,
+    workspace_aliases: tuple[str, ...] = (),
+    baseline: str | None = None,
 ) -> None:
     prunes = ["/proc", "/sys", "/dev", verifier_dir, *keep]
 
@@ -981,7 +1117,33 @@ async def remove_conftests(
         for path, entry in await _walk_tree(facts, "/", "conftest.py", pruned, mounts)
         if not _find_path("/verifier/*", path) and not _find_path("/tests/*", path)
     ]
-    await _remove_matches(changes, matches)
+    roots = await _workspace_roots(facts, workspace, workspace_aliases)
+    cache: dict[str, dict[str, set[str]]] = {}
+    # Every decision before any change: the matches include the pre-agent
+    # copy's own conftest.py files.
+    doomed: list[tuple[str, dict[str, Any]]] = []
+    kept: list[tuple[str, bytes]] = []
+    for path, entry in matches:
+        if await package_owned(facts, path, entry, roots, cache):
+            continue
+        data = await unchanged_in_workspace(facts, path, entry, roots, baseline)
+        if data is None:
+            doomed.append((path, entry))
+        else:
+            kept.append((path, data))
+    for path, data in kept:
+        # A new root-owned file renamed over the name, as for a kept hook: no
+        # descriptor a kept service holds reaches what the verifier runs.
+        real_dir, name = posixpath.split(path)
+        try:
+            await changes.write_fresh(real_dir, name, ("f", data, 0o644))
+        except _ReadOnly:
+            continue
+        except _Refused:
+            entry = await facts.lstat(path)
+            if entry is not None:
+                doomed.append((path, entry))
+    await _remove_matches(changes, doomed)
 
 
 async def remove_tmp_py(
@@ -1112,7 +1274,7 @@ async def clean_site_hooks(
             exe = posixpath.join(p, "python3")
             if (
                 not posixpath.isabs(p)
-                or p.startswith("/opt/benchflow/")
+                or p.startswith("/opt/runtime/")
                 or not await facts.isfile(exe)
             ):
                 continue
@@ -1276,6 +1438,7 @@ async def run(
     keep: tuple[str, ...] = (),
     deadline: float,
     agent_user: bool = False,
+    baseline: str | None = None,
 ) -> Report:
     """The whole clean-up over *call* (one ``bfx serve`` session), by
     *deadline* (the event loop's clock). Raises :class:`HookCleanupError`
@@ -1284,7 +1447,15 @@ async def run(
     changes = _Changes(facts)
     try:
         if cleanup_conftests:
-            await remove_conftests(facts, changes, verifier_dir, keep)
+            await remove_conftests(
+                facts,
+                changes,
+                verifier_dir,
+                keep,
+                workspace,
+                workspace_aliases,
+                baseline if agent_user else None,
+            )
         await remove_tmp_py(facts, changes, workspace, workspace_aliases)
         await clean_site_hooks(
             facts,

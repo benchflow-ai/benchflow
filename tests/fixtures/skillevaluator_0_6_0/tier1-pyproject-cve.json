@@ -1,0 +1,129 @@
+{
+  "overall_passed": false,
+  "overall_status": "failed",
+  "incomplete_scans": [],
+  "total_validators": 1,
+  "total_skipped": 0,
+  "total_advisory_skipped": 0,
+  "total_errors": 10,
+  "total_warnings": 1,
+  "severity_counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "benchmark_policy": {
+    "tier2_required": true,
+    "tier3_required": true
+  },
+  "publication_status": "fail",
+  "publication": {
+    "status": "fail",
+    "eligible": false,
+    "reasons": [
+      "A validator failed."
+    ],
+    "tier3": {
+      "status": "not_run",
+      "evidence_complete": false,
+      "execution_status": "not_run",
+      "verdict": "not_run",
+      "reason": "Tier 3 lacks publication-complete execution evidence."
+    }
+  },
+  "skills": [
+    {
+      "name": "pip_audit",
+      "passed": true,
+      "issue_count": 0
+    }
+  ],
+  "results": [
+    {
+      "validator": "Dependency Vulnerability Audit",
+      "description": "Scan dependencies for CVE vulnerabilities using pip-audit and Safety",
+      "passed": false,
+      "status": "failed",
+      "skipped": false,
+      "skip_reason": null,
+      "incomplete_scans": [],
+      "summary": {
+        "files_scanned": 0,
+        "checks_performed": 1,
+        "errors": 10,
+        "warnings": 1,
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0
+      },
+      "findings": [],
+      "success_details": [
+        {
+          "check": "pip_audit",
+          "message": "pyproject.toml: Found 10 vulnerability(ies) (pip-audit)",
+          "metadata": null
+        }
+      ],
+      "legacy": {
+        "errors": [
+          "[CVE-HIGH] requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0",
+          "[CVE-HIGH] requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0",
+          "[CVE-HIGH] requests==2.19.0: PYSEC-2023-74 -> upgrade to 2.31.0"
+        ],
+        "warnings": [
+          "Workflow scope: llm skipped. LLM checks disabled by --no-llm."
+        ],
+        "messages": [
+          "Auditing pyproject.toml: direct declared pins, including optional groups; no transitive audit",
+          "[OK] pip_audit: pyproject.toml: Found 10 vulnerability(ies) (pip-audit)",
+          "./pyproject.toml coverage: 1 requested pin(s), 1 audited pin(s); direct declarations only, transitive dependencies not audited"
+        ]
+      },
+      "dependency_coverage": [
+        {
+          "target": ".",
+          "source": "pyproject.toml",
+          "scope": "direct declared pins (all optional groups), scanner-platform markers",
+          "declarations": 1,
+          "requested_pins": [
+            "requests==2.19.0"
+          ],
+          "audited_pins": [
+            "requests==2.19.0"
+          ],
+          "transitive_dependencies": "not audited"
+        }
+      ],
+      "gating": {
+        "tier": 1,
+        "blocking": true
+      },
+      "publication_target": {
+        "skill_name": "dep-pyproject-cve",
+        "skill_digest": "sha256:747e033f88045e9591c41f8c6dd36c9ce46a716f91c966777bf6895549933c55",
+        "skill_digest_algorithm": "skill-evaluator-source-tree/2"
+      },
+      "publication_evidence": {
+        "schema_version": 1,
+        "producer": "skillevaluator.tier1",
+        "tier": 1,
+        "check_id": "dependency"
+      },
+      "workflow": {
+        "tier": 1,
+        "stages": {
+          "validation": {
+            "status": "failed"
+          },
+          "llm": {
+            "status": "skipped",
+            "reason": "LLM checks disabled by --no-llm."
+          }
+        }
+      }
+    }
+  ],
+  "quality_summary": []
+}

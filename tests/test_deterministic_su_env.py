@@ -74,10 +74,10 @@ FROM alpine:3.21
 # readiness probe; iptables the cloud metadata block. Node's own builds are
 # glibc, so the image carries musl Node where BenchFlow's JS agents expect it.
 RUN apk add --no-cache bash python3 curl ca-certificates libstdc++ iptables ip6tables
-COPY --from=node /usr/local/bin/node /opt/benchflow/node/bin/node
-COPY --from=node /usr/local/lib/node_modules /opt/benchflow/node/lib/node_modules
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/benchflow/node/bin/npm \\
-    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /opt/benchflow/node/bin/npx
+COPY --from=node /usr/local/bin/node /opt/runtime/node/bin/node
+COPY --from=node /usr/local/lib/node_modules /opt/runtime/node/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/runtime/node/bin/npm \\
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /opt/runtime/node/bin/npx
 """
 
 COMMON = """
@@ -238,6 +238,10 @@ def test_nothing_of_roots_own_and_no_rc_file_as_root(su_job, name):
     assert found["vars"]["BF_ROOT_ONLY"] == "absent", found
     assert found["vars"]["BENCHFLOW_SU_PATH"] == "absent", found
     assert found["vars"]["BENCHFLOW_SU_NAMES"] == "absent", found
+    # No variable the agent starts with names BenchFlow: BenchFlow's own
+    # arrive under RUNTIME_ names, and every carrier is gone.
+    assert not [k for k in found["keys"] if "BENCHFLOW" in k], found
+    assert any(k.startswith("RUNTIME_") for k in found["keys"]), found
     # BASH_ENV ran, as the agent; nothing of the agent's ran as root.
     assert any(ln.startswith("bash_env uid=") for ln in found["rc"]), found
     assert not [ln for ln in found["rc"] if ln.endswith(" uid=0")], found

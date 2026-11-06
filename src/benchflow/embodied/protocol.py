@@ -1,7 +1,7 @@
 """The episode wire protocol: JSON requests over a Unix socket, one request per connection.
 
 Version 2 adds action groups (`act` with `groups`), typed skills (`skill` with list or dict args), roles, and the
-`embodiment` block in `info`. Every version-1 request still works: flat `act`, `move_to`, `grip`. See docs/reference/embodied.md.
+`embodiment` block in `info`. Every version-1 request still works: flat `act`, `move_to`, `grip`. See docs/tasks/task-format.md#other-task-formats.
 Standard library only.
 """
 

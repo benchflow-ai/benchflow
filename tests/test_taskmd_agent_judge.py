@@ -442,6 +442,20 @@ def test_the_judge_sees_the_submissions_own_text_except_keys() -> None:
     assert "hunter2secret" not in scrub.text(text)
 
 
+def test_the_judge_never_sees_the_proxy_master_key_either_spelling() -> None:
+    """The model proxy's master key, as BenchFlow makes it now (sk-runtime-) and
+    as older trials recorded it (sk-benchflow-), is a prefixed key family for
+    both depths, in prose and in a JSON value; a lowercase slug is not a key."""
+    scrub = judging.Scrub.for_run(None, {})
+    tail = "FAKEproxyKEY_value-1234567890ab"
+    for key in ("sk-" + "runtime-" + tail, "sk-" + "benchflow-" + tail):
+        for text in (f"the proxy key is {key}.", f'{{"note": "{key}"}}'):
+            for depth in (scrub.evidence, scrub.text):
+                assert tail not in depth(text), (key, text)
+    slug = "task-runtime-configuration-files"
+    assert scrub.evidence(slug) == scrub.text(slug) == slug
+
+
 async def test_a_program_that_prints_a_password_is_shown_printing_it(
     tmp_path, monkeypatch
 ) -> None:

@@ -1,7 +1,7 @@
 """Core reward protocols and result type.
 
 The Reward plane has **one canonical contract** — :class:`Reward`, matching the
-architecture's ``score(node) -> VerifyResult`` shape (``docs/architecture.md``
+architecture's ``score(node) -> VerifyResult`` shape (``docs/start/how-it-works.md``
 § "The four contracts"). A ``RolloutNode`` carries its tree context
 (``node.path``, ``node.subtree``, ``node.state``), so one method expresses both
 **outcome** reward (read the leaf) and **process** reward (walk the path).
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 class Reward(Protocol):
     """The canonical Reward-plane contract — ``score(node) -> VerifyResult``.
 
-    Matches the architecture's Reward contract (``docs/architecture.md``
+    Matches the architecture's Reward contract (``docs/start/how-it-works.md``
     § "The four contracts"). One method expresses both outcome reward (read
     the leaf node) and process reward (walk ``node.path``), since a
     ``RolloutNode`` carries its tree/path/subtree context.
@@ -68,7 +68,7 @@ class RewardFunc(Protocol):
 class VerifyResult:
     """Aggregated result from a Rubric or node evaluation.
 
-    The architecture's Reward contract result (``docs/architecture.md``,
+    The architecture's Reward contract result (``docs/start/how-it-works.md``,
     "The four contracts"): ``{reward, items, events, space, granularity}`` —
     ``space`` and ``granularity`` are the ``(space, granularity)`` tag the
     architecture mandates on every reward record.

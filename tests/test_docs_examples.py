@@ -1,10 +1,13 @@
 """Regression tests for bundled docs/example tasks."""
 
 from __future__ import annotations
+import __future__
 
 import ast
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -97,15 +100,31 @@ def test_docs_example_imports_resolve(script: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("task", ["citation-check", "citation-check-network"])
+def test_citation_check_oracle_keeps_type_hints_unevaluated(task: str) -> None:
+    """Guards PR #1160: the oracle's Python runs on whatever python3 the
+    environment has, which can be older than 3.10, so its ``str | None``
+    hints must stay unevaluated or defining the function raises TypeError.
+    The network variant keeps its own copy of the oracle."""
+    script = Path(
+        f"docs/examples/task-md/real-skillsbench/{task}/oracle/solve.sh"
+    ).read_text()
+    body = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    assert "str | None" in body
+    code = compile(body, "solve.sh", "exec", dont_inherit=True)
+    assert code.co_flags & __future__.annotations.compiler_flag
+
+
 def test_use_cases_mcp_import_path_is_experimental() -> None:
-    """docs/tasks/scenes.md must use benchflow.experimental.mcp.*."""
-    text = Path("docs/tasks/scenes.md").read_text()
-    # Reject the stale path; require the current one.
-    assert "from benchflow.mcp.hooks" not in text, (
-        "docs/tasks/scenes.md references the stale benchflow.mcp.hooks path; "
-        "use benchflow.experimental.mcp.hooks instead"
-    )
-    assert "benchflow.experimental.mcp.hooks" in text
+    """docs/tasks/scenes.md must use benchflow.experimental.mcp.*.
+
+    Docs v2 moved scenes.md to docs/tasks/multi-turn.md, which shows
+    no MCP hooks; no page may name the stale path."""
+    for page in [Path("README.md"), *sorted(Path("docs").rglob("*.md"))]:
+        assert "from benchflow.mcp.hooks" not in page.read_text(), (
+            f"{page} references the stale benchflow.mcp.hooks path; "
+            "use benchflow.experimental.mcp.hooks instead"
+        )
 
 
 def test_task_authoring_docs_require_dockerfile() -> None:
@@ -114,8 +133,21 @@ def test_task_authoring_docs_require_dockerfile() -> None:
     `check_task` always requires `environment/Dockerfile`, so the multi-container
     section must not promise compose-only tasks.
     """
-    text = Path("docs/tasks/environment.md").read_text()
+    # Docs v2: docs/tasks/environment.md is a section of task-format.md.
+    text = Path("docs/tasks/task-format.md").read_text()
     assert "alongside (or instead of)" not in text, (
-        "docs/tasks/environment.md claims docker-compose can replace the "
+        "docs/tasks/task-format.md claims docker-compose can replace the "
         "Dockerfile, but `bench tasks check` rejects compose-only tasks"
     )
+
+
+def test_reproduce_page_shows_what_compare_five_prints() -> None:
+    """Reproduce a published score quotes compare_five.py's output; a change
+    to either must show in the other."""
+    out = subprocess.run(
+        [sys.executable, "-I", "docs/examples/reproduce/compare_five.py"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out.strip() in Path("docs/audit/reproduce.md").read_text()

@@ -118,9 +118,9 @@ async def test_loader_env_skips_layer_and_installs_fresh(
     )
     register_agent(
         name,
-        ": R3_LOADER_PROBE; mkdir -p /opt/benchflow; "
+        ": R3_LOADER_PROBE; mkdir -p /opt/runtime; "
         "if test -f /opt/review-loaded; then echo loaded; else echo clean; fi "
-        "> /opt/benchflow/loader.txt",
+        "> /opt/runtime/loader.txt",
         "unused",
         cacheable_version="1",
     )
@@ -162,7 +162,7 @@ async def test_loader_env_skips_layer_and_installs_fresh(
                 sandbox._main_container = container
                 await install_agent(sandbox, name, paths.rollout_dir)
                 marker = _probe_docker(
-                    "exec", container, "/bin/cat", "/opt/benchflow/loader.txt"
+                    "exec", container, "/bin/cat", "/opt/runtime/loader.txt"
                 )
                 record = sandbox.layer_records.get(AGENT)
                 records.append(record)
@@ -475,12 +475,12 @@ async def test_a_task_compose_with_sidecars_still_uses_the_layer(tmp_path, monke
 @pytest.mark.parametrize(
     "main",
     [
-        "tmpfs: [/opt/benchflow/bin]",
-        "volumes: ['agent-bin:/opt/benchflow/bin']",
+        "tmpfs: [/opt/runtime/bin]",
+        "volumes: ['agent-bin:/opt/runtime/bin']",
         "volumes_from: [seed]",
-        "entrypoint: [sh, -c, 'echo changed > /opt/benchflow/bin/gemini']",
-        "command: [sh, -c, 'echo changed > /opt/benchflow/bin/gemini']",
-        "healthcheck: {test: [CMD-SHELL, 'echo changed > /opt/benchflow/bin/gemini']}",
+        "entrypoint: [sh, -c, 'echo changed > /opt/runtime/bin/gemini']",
+        "command: [sh, -c, 'echo changed > /opt/runtime/bin/gemini']",
+        "healthcheck: {test: [CMD-SHELL, 'echo changed > /opt/runtime/bin/gemini']}",
         "environment: {PATH: /custom/bin}",
         "extends: {file: extra.yaml, service: seed}",
     ],
@@ -525,7 +525,7 @@ async def test_compose_include_installs_in_trial(tmp_path, monkeypatch):
 async def test_sdk_mounts_install_in_trial(tmp_path, monkeypatch):
     """Guards U3c-CONFIRM-1: SDK mounts have the same effect as Compose."""
     rig = _rig(tmp_path, monkeypatch)
-    rig.sandbox._mounts_json = [{"type": "volume", "target": "/opt/benchflow/bin"}]
+    rig.sandbox._mounts_json = [{"type": "volume", "target": "/opt/runtime/bin"}]
     await rig.sandbox.start(force_build=False)
     assert not rig.ensure_calls
     assert "mount" in rig.sandbox.layer_records[AGENT]["reason"]

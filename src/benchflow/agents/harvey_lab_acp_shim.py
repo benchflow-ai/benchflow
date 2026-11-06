@@ -353,7 +353,7 @@ def _patch_sandbox_module() -> None:
 def _install_parse_doc_helper() -> None:
     """Install Harvey's in-sandbox document parser for the read tool."""
     helper_dir = Path(
-        os.environ.get("BENCHFLOW_HARVEY_TOOLS_DIR", "/tmp/benchflow-harvey-tools")
+        os.environ.get("BENCHFLOW_HARVEY_TOOLS_DIR", "/tmp/runtime-tools")
     )
     helper_dir.mkdir(parents=True, exist_ok=True)
     helper = helper_dir / "parse-doc"

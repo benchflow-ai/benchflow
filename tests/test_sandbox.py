@@ -61,6 +61,31 @@ class TestSandboxDirs:
         finally:
             del AGENTS["_test_agent"]
 
+    def test_named_agents_get_only_their_own_dirs(self):
+        """Guards the fix from PR #1163 against copying every agent's home dirs
+        into one sandbox.
+
+        That union dates back to the hard-coded list in 28d9acdf and became
+        registry-derived in 39d9b829. A sandbox running some agents must not
+        be handed the config/auth dirs of every other registered agent.
+        """
+        AGENTS["_test_agent_home_dirs"] = AgentConfig(
+            name="_test_agent_home_dirs",
+            install_cmd="true",
+            launch_cmd="true",
+            home_dirs=[".testagent", ".config/testagent"],
+        )
+        try:
+            assert get_sandbox_home_dirs(["codex-acp"]) == {".codex"}
+            assert get_sandbox_home_dirs(["codex-acp", "_test_agent_home_dirs"]) == {
+                ".codex",
+                ".testagent",
+                ".config/testagent",
+            }
+            assert get_sandbox_home_dirs(["oracle", "not-registered"]) == set()
+        finally:
+            del AGENTS["_test_agent_home_dirs"]
+
     def test_subscription_auth_file_dirs_included(self):
         """Dirs from subscription_auth.files container paths are included."""
         AGENTS["_test_agent_subscription_auth"] = AgentConfig(
@@ -122,7 +147,7 @@ class TestDockerVerifierLogMountProbe:
         assert sandbox.is_mounted is False
         assert not list(sandbox.rollout_paths.verifier_dir.iterdir())
         command = sandbox.exec.await_args.args[0]
-        assert command.startswith("test -f /logs/verifier/.benchflow-mount-probe-")
+        assert command.startswith("test -f /logs/verifier/.runtime-mount-probe-")
 
     @pytest.mark.asyncio
     async def test_visible_bind_mount_keeps_mounted_fast_path(self, tmp_path):

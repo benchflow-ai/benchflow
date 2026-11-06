@@ -542,14 +542,14 @@ class TestResumeLoopMismatchSetAside:
 
     def test_pre_feature_config_without_loop_key_is_set_aside(self, tmp_path, caplog):
         """config.json written before loop strategies existed has no "loop"
-        key — it ran single-shot, so resuming with a strategy sets it aside
-        (P2: before, it only warned and blended the two)."""
+        key — it ran single-shot, so restarting it with a strategy sets it
+        aside (P2: before, it only warned and blended the two)."""
         from benchflow.evaluation import EvaluationConfig, _check_resume_mismatch
 
         job_dir = self._job_dir(tmp_path, {"agent": "claude-agent-acp"})
         config = EvaluationConfig(loop_strategy="verify-retry:k=2")
         with caplog.at_level("WARNING"):
-            dest = _check_resume_mismatch(job_dir, config)
+            dest = _check_resume_mismatch(job_dir, config, restart_changed=True)
         assert dest is not None and (dest / "task-a").is_dir()
         assert any(
             "loop=" in r.message and "single-shot" in r.message for r in caplog.records
@@ -568,15 +568,23 @@ class TestResumeLoopMismatchSetAside:
         """Guards PR #789 (CLI error-handling hardening)."""
         # The reported bug: resuming a jobs_dir with a different agent silently
         # folded the prior agent's cached rollouts into the new run's summary,
-        # publishing a blended Score: X/N. An agent mismatch moves the prior
-        # trial aside (P2), preserving it without counting it.
+        # publishing a blended Score: X/N. An agent mismatch refuses the run;
+        # restart_changed moves the prior trial aside (P2), preserving it
+        # without counting it.
         import json
 
-        from benchflow.evaluation import EvaluationConfig, _check_resume_mismatch
+        from benchflow.evaluation import (
+            EvaluationConfig,
+            ResumeMismatchError,
+            _check_resume_mismatch,
+        )
 
         job_dir = self._job_dir(tmp_path, {"agent": "oracle"})
         config = EvaluationConfig(agent="codex-acp")
-        dest = _check_resume_mismatch(job_dir, config)
+        with pytest.raises(ResumeMismatchError, match="agent='oracle'"):
+            _check_resume_mismatch(job_dir, config)
+        assert (job_dir / "task-a").is_dir()
+        dest = _check_resume_mismatch(job_dir, config, restart_changed=True)
         assert dest is not None and not (job_dir / "task-a").exists()
         reason = json.loads((dest / "set-aside.json").read_text())["reason"]
         assert reason == "agent='oracle' (this run: 'codex-acp')"

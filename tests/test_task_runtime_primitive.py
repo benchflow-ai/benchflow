@@ -175,6 +175,7 @@ class _FakePlanes:
         sandbox_user: str,
         *,
         workspace: str,
+        agents: list[str] | None = None,
         timeout_sec: int = 120,
         guard_daemon: bool = True,
     ) -> str:
@@ -316,7 +317,7 @@ async def test_task_runtime_bash_verify_writes_rollout_artifacts(
     (staged,) = [
         path
         for path in planes.sandbox.files
-        if path.startswith("/logs/.benchflow-publish-")
+        if path.startswith("/logs/.runtime-publish-")
         and path.endswith("/acp_trajectory.jsonl")
     ]
     assert planes.sandbox.files[staged]

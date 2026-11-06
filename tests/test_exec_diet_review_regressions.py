@@ -50,7 +50,7 @@ async def test_start_keeps_the_separate_calls_retry_and_deadline_contract(
         monkeypatch.setattr(verifier_core.asyncio, "sleep", sleep)
         verifier = Verifier(MagicMock(), MagicMock(), SimpleNamespace(exec=execute))
         verifier._write_execution_receipt = True
-        verifier.execution_receipt = ("/run/benchflow/verifier-started-old", "main")
+        verifier.execution_receipt = ("/run/runtime/verifier-started-old", "main")
         try:
             if separate:
                 await verifier._setup_step(

@@ -9,9 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from benchflow.errors import UserError
+
 if TYPE_CHECKING:
     from benchflow.sandbox.egress_denylist import EgressDenylist
     from benchflow.task.task import Task
+    from benchflow.usage_tracking import UsageTrackingConfig
 
 
 def agent_egress_policy(
@@ -39,12 +42,85 @@ def agent_egress_policy(
     if (
         is_operator_script(agent)
         and policy is not None
-        and policy.native_claude_model_only
+        and (policy.native_claude_model_only or policy.native_codex_model_only)
     ):
-        raise ValueError("script: cannot use a native Claude model-only network policy")
+        raise ValueError("script: cannot use a native model-only network policy")
     if policy is not None and not sandbox_user:
         raise ValueError(f"network_mode={policy.mode!r} requires a sandbox_user")
     return policy
+
+
+class OwnModelRouteError(ValueError, UserError):
+    """A run an agent that routes its own model calls cannot honor.
+
+    Raised before any sandbox exists; the message says why and what to use.
+    """
+
+
+def own_model_route_usage_refusal(agent: str) -> str:
+    """The refusal of ``--usage-tracking required`` for an agent that routes
+    its own model calls (``model_route = "agent"``)."""
+    return (
+        "--usage-tracking required: BenchFlow cannot meter an agent that routes "
+        f'its own model calls ({agent!r} declares model_route = "agent"). Use '
+        "--usage-tracking auto or off with this agent, or an agent whose model "
+        "calls go through BenchFlow's proxy."
+    )
+
+
+def own_model_route_refusal(
+    task: Task,
+    *,
+    agent: str,
+    usage_tracking: UsageTrackingConfig | str | None = None,
+    no_web: bool = False,
+) -> str | None:
+    """Why this run cannot hold an agent that routes its own model calls, or None.
+
+    Such an agent (``model_route = "agent"``) calls its own endpoint
+    straight from the sandbox, so BenchFlow cannot meter it, and under a
+    network that holds the agent's user only BenchFlow's proxy carries model
+    calls, so it could not reach its endpoint at all. Both are refused before
+    a sandbox exists. A manifest does not name its endpoint, so an allowlist
+    is refused too: BenchFlow cannot check that it admits the endpoint. A
+    denylist leaves every other host reachable through the egress proxy.
+    ``no_web`` is the run's own no-web policy (``--self-gen-no-internet``).
+    """
+    from benchflow.agents.registry import agent_routes_own_model
+    from benchflow.sandbox.egress_denylist import (
+        agent_network_sandbox_config,
+        egress_denylist_for,
+    )
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    if not agent_routes_own_model(agent):
+        return None
+    usage = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
+    if usage.mode == "required":
+        return own_model_route_usage_refusal(agent)
+    config = task.config
+    agent_mode = getattr(getattr(config, "agent", None), "network_mode", None)
+    if getattr(config.sandbox, "allow_internet", True) is False:
+        why = "this task's sandbox has no network (network_mode = 'no-network')"
+    elif str(getattr(agent_mode, "value", agent_mode)) == "no-network":
+        why = "this task keeps the agent offline ([agent] network_mode = 'no-network')"
+    elif no_web:
+        why = "this run turns the agent's internet access off"
+    else:
+        policy = egress_denylist_for(agent_network_sandbox_config(config))
+        if policy is None or not policy.allow_mode:
+            return None
+        why = (
+            "this task's network_mode = 'allowlist' admits only the hosts it "
+            "lists, and BenchFlow cannot check that they include the agent's "
+            "model endpoint (a manifest does not name it)"
+        )
+    return (
+        f'{agent!r} routes its own model calls (model_route = "agent"), so it '
+        f"must reach its own model endpoint from the sandbox, but {why}. Under a "
+        "restricted network only BenchFlow's proxy carries model calls. Run "
+        "this task with an agent whose model calls go through the proxy."
+    )
 
 
 def validate_agent_transport(*, sandbox: str, agent: str, harness: str) -> None:
@@ -90,6 +166,7 @@ def validate_task_plan(
     sandbox_instance: object | None = None,
     disallow_web_tools: bool = False,
     execute_solution: bool | None = None,
+    usage_tracking: UsageTrackingConfig | str | None = None,
 ) -> dict[str, object] | None:
     """Refuse a task this run cannot honor, without creating a sandbox.
 
@@ -98,6 +175,9 @@ def validate_task_plan(
     config overrides and the selected authentication route are validated too.
     ``execute_solution`` overrides the normal oracle execution intent for
     verifier-only children that use oracle provisioning without its solver.
+    ``usage_tracking`` is the run's setting (``BENCHFLOW_USAGE_TRACKING``
+    when unset): an agent that routes its own model calls cannot honor
+    ``required`` (own_model_route_refusal).
     Return the proxy install record the run persists; native-login routes
     return None and do not check extras for a proxy they do not use.
     """
@@ -140,6 +220,11 @@ def validate_task_plan(
         and agent != "task-runtime"
         and (disallow_web_tools or task.config.sandbox.allow_internet is False)
     )
+    reason = own_model_route_refusal(
+        task, agent=agent, usage_tracking=usage_tracking, no_web=disallow_web_tools
+    )
+    if reason is not None:
+        raise OwnModelRouteError(reason)
     policy = agent_egress_policy(
         task,
         agent=agent,

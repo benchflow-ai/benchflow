@@ -109,8 +109,9 @@ def _root_exec_command(
 
     Capture the image PATH for the lock and verifier-PATH probes before
     replacing it. An env-file wrapper inside this prefix may then apply the
-    verifier's explicit, validated PATH. Default-user task/oracle commands
-    keep their image PATH; non-root execution keeps it too.
+    verifier's explicit, validated PATH. Default-user task commands keep
+    their image PATH, and the oracle, which names root, puts it back
+    (``rollout._setup.ORACLE_IMAGE_PATH``); non-root execution keeps it too.
     *explicit_root*: the exec names a user whose uid is 0
     (:attr:`ExecRoute.explicit_root`), whatever its spelling. *path* is the
     sandbox's :attr:`BaseSandbox.root_exec_path`.
@@ -1582,7 +1583,7 @@ class BaseSandbox(ABC):
             self._runtime_kit_probe = False
         if state[1] == "broken":
             raise RuntimeKitBrokenError(
-                "BenchFlow's protected runtime (/opt/benchflow/rt) in this "
+                "BenchFlow's protected runtime (/opt/runtime/rt) in this "
                 "sandbox is not as BenchFlow made it, so no root step runs; "
                 "start the trial in a fresh sandbox"
             )
@@ -2006,7 +2007,7 @@ class BaseSandbox(ABC):
 
     # Container-level snapshot/restore (Branch substrate)
     #
-    # Part of the Sandbox contract (``docs/architecture.md``): the Branch
+    # Part of the Sandbox contract (``docs/start/how-it-works.md``): the Branch
     # lifecycle composes container ⊃ environment-state ⊃ agent-session in
     # that order. Backends that cannot snapshot the container (Modal, the
     # Daytona DinD/compose strategy today) leave the defaults in place and
@@ -2041,7 +2042,7 @@ class BaseSandbox(ABC):
         raise SandboxSnapshotNotSupported(
             f"{type(self).__name__} does not support container-level snapshots. "
             "Branch requires a provider whose Sandbox can checkpoint the "
-            "container layer; see docs/architecture.md, 'The hard part'."
+            "container layer; see docs/start/how-it-works.md, 'The hard part'."
         )
 
     async def restore(self, image: SandboxImage) -> None:
@@ -2052,7 +2053,7 @@ class BaseSandbox(ABC):
         raise SandboxSnapshotNotSupported(
             f"{type(self).__name__} does not support container-level restore. "
             "Branch requires a provider whose Sandbox can checkpoint the "
-            "container layer; see docs/architecture.md, 'The hard part'."
+            "container layer; see docs/start/how-it-works.md, 'The hard part'."
         )
 
     async def delete_snapshot(self, image: SandboxImage) -> bool:

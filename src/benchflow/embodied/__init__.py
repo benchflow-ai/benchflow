@@ -1,4 +1,4 @@
-"""Embodied rollouts: the low-level layer for robot and simulator tasks. See docs/tasks/embodied.md and docs/reference/embodied.md.
+"""Embodied rollouts: the low-level layer for robot and simulator tasks. See docs/tasks/task-format.md#other-task-formats.
 
   spec        Embodiment: sensors, action groups, skills, budgets (one schema for every robot kind);
               the restore boundary (branching, checkpoint restores and replay of embodied tasks)

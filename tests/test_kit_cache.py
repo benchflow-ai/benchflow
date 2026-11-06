@@ -163,7 +163,7 @@ def test_a_staged_tar_keeps_every_member_under_its_stage(tmp_path):
         hard = tarfile.TarInfo("rt/bin/sh2")
         hard.type, hard.linkname = tarfile.LNKTYPE, "rt/libexec_sh"
         tar.addfile(hard)
-    stage = ".benchflow-kit-" + "a" * 32
+    stage = ".runtime-kit-" + "a" * 32
     data = io.BytesIO(_kit_cache.staged_tar(kept, stage))
     with tarfile.open(fileobj=data) as staged:
         members = {m.name: m for m in staged}

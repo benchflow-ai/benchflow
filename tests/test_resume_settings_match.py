@@ -5,8 +5,10 @@ tasks folder, and on a named job ``_check_resume_mismatch`` refused only an
 agent change, so a rerun with a new model, timeout or extra instruction reused
 the old trials and published one score over two runs. Now every setting in
 ``_RESUME_SETTINGS`` is compared: an unnamed rerun that differs starts a new
-job, and a named one moves the earlier trials to ``<job>/.set-aside/`` (never
-deleted, never read as the job's trials), each with a line naming the setting.
+job, and a named one is refused before anything in the job moves, naming each
+setting; with ``restart_changed=True`` it moves the earlier trials to
+``<job>/.set-aside/`` (never deleted, never read as the job's trials) instead,
+with a line naming the setting.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,6 +42,7 @@ from benchflow.evaluation import (
     _recorded_run_differs,
 )
 from benchflow.models import RolloutResult, RunResult
+from benchflow.trial_budget import TrialBudget
 
 SECRET = "sk-test-not-a-real-key-1234567890"
 
@@ -55,7 +59,7 @@ def _tasks(tmp_path: Path, n: int = 2) -> Path:
 
 
 def _config(**overrides) -> EvaluationConfig:
-    base = {
+    base: dict[str, Any] = {
         "agent": "oracle",
         "model": "m1",
         "concurrency": 1,
@@ -93,12 +97,15 @@ def _fake_runner(job: Evaluation):
     return fake_run
 
 
-def _evaluation(tmp_path: Path, config: EvaluationConfig, job_name=None) -> Evaluation:
+def _evaluation(
+    tmp_path: Path, config: EvaluationConfig, job_name=None, *, restart_changed=False
+) -> Evaluation:
     job = Evaluation(
         tasks_dir=_tasks(tmp_path),
         jobs_dir=tmp_path / "jobs",
         config=config,
         job_name=job_name,
+        restart_changed=restart_changed,
     )
     job._run_single_task = AsyncMock(side_effect=_fake_runner(job))
     return job
@@ -139,6 +146,7 @@ _CHANGED = {
     "agent_idle_timeout": {"agent_idle_timeout": 300},
     "sandbox_setup_timeout": {"sandbox_setup_timeout": 600},
     "budget": {"budget": Budget(max_rollouts=50)},
+    "trial_budget": {"trial_budget": TrialBudget(turns=20)},
     "agent_env": {"agent_env": {"MY_BASE_URL": "http://127.0.0.1:9"}},
     "environment": {"environment": "daytona"},
     "sandbox_user": {"sandbox_user": None},
@@ -227,14 +235,34 @@ def _assert_new_job(tmp_path: Path, old: Path, caplog, words: str, **changed) ->
     assert not (old / SET_ASIDE_DIR).exists()
 
 
-def _assert_set_aside(tmp_path: Path, caplog, words: str, **changed) -> None:
-    """A named rerun with ``changed`` sets the earlier trials aside, naming ``words``."""
+def _tree(folder: Path) -> dict[str, bytes]:
+    """Every file under ``folder``, by its relative path, with its bytes."""
+    return {
+        str(p.relative_to(folder)): p.read_bytes()
+        for p in sorted(folder.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _assert_refused_then_set_aside(
+    tmp_path: Path, caplog, words: str, **changed
+) -> None:
+    """A named rerun with ``changed`` is refused, naming ``words``, and moves
+    nothing; with restart_changed it sets the earlier trials aside."""
     old = _first_job(tmp_path, job_name="named")
     (old / "results.jsonl").write_text("{}\n")  # the job-level aggregate
     (old / "results.errors.json").write_text("[]\n")  # and its skipped rows
     before = sorted(p.name for p in old.iterdir() if p.is_dir())
+    files = _tree(old)
+    with pytest.raises(ResumeMismatchError) as refused:
+        _check_resume_mismatch(old, _config(**changed))
+    assert words in str(refused.value)
+    assert "2 finished trials in it ran" in str(refused.value)
+    assert (refused.value.exit_code, refused.value.finished_trials) == (2, 2)
+    assert "--restart-changed" in (refused.value.hint or "")
+    assert _tree(old) == files
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(old, _config(**changed))
+        dest = _check_resume_mismatch(old, _config(**changed), restart_changed=True)
     assert dest is not None and dest.parent == old / SET_ASIDE_DIR
     assert sorted(p.name for p in dest.iterdir() if p.is_dir()) == before
     assert not [p for p in old.iterdir() if p.is_dir() and p.name != SET_ASIDE_DIR]
@@ -259,8 +287,10 @@ def test_model_change_starts_a_new_job(tmp_path, caplog) -> None:
     _assert_new_job(tmp_path, old, caplog, "model='m1' (this run: 'm2')", model="m2")
 
 
-def test_model_change_sets_a_named_jobs_trials_aside(tmp_path, caplog) -> None:
-    _assert_set_aside(tmp_path, caplog, "model='m1' (this run: 'm2')", model="m2")
+def test_model_change_refuses_a_named_job(tmp_path, caplog) -> None:
+    _assert_refused_then_set_aside(
+        tmp_path, caplog, "model='m1' (this run: 'm2')", model="m2"
+    )
 
 
 @pytest.mark.parametrize(
@@ -284,10 +314,8 @@ def test_timeout_change_starts_a_new_job(tmp_path, caplog, changed, words) -> No
         ({"sandbox_setup_timeout": 600}, "sandbox_setup_timeout=120 (this run: 600)"),
     ],
 )
-def test_timeout_change_sets_a_named_jobs_trials_aside(
-    tmp_path, caplog, changed, words
-) -> None:
-    _assert_set_aside(tmp_path, caplog, words, **changed)
+def test_timeout_change_refuses_a_named_job(tmp_path, caplog, changed, words) -> None:
+    _assert_refused_then_set_aside(tmp_path, caplog, words, **changed)
 
 
 def test_extra_instruction_change_starts_a_new_job(tmp_path, caplog) -> None:
@@ -301,10 +329,8 @@ def test_extra_instruction_change_starts_a_new_job(tmp_path, caplog) -> None:
     )
 
 
-def test_extra_instruction_change_sets_a_named_jobs_trials_aside(
-    tmp_path, caplog
-) -> None:
-    _assert_set_aside(
+def test_extra_instruction_change_refuses_a_named_job(tmp_path, caplog) -> None:
+    _assert_refused_then_set_aside(
         tmp_path,
         caplog,
         "extra_instruction=None (this run: 'Answer in French.')",
@@ -323,8 +349,8 @@ def test_budget_change_starts_a_new_job(tmp_path, caplog) -> None:
     )
 
 
-def test_budget_change_sets_a_named_jobs_trials_aside(tmp_path, caplog) -> None:
-    _assert_set_aside(
+def test_budget_change_refuses_a_named_job(tmp_path, caplog) -> None:
+    _assert_refused_then_set_aside(
         tmp_path,
         caplog,
         "budget=None (this run: {'max_cost_usd': 5.0})",
@@ -345,8 +371,8 @@ def test_agent_env_change_starts_a_new_job(tmp_path, caplog) -> None:
     assert "127.0.0.1:9" not in caplog.text
 
 
-def test_agent_env_change_sets_a_named_jobs_trials_aside(tmp_path, caplog) -> None:
-    _assert_set_aside(
+def test_agent_env_change_refuses_a_named_job(tmp_path, caplog) -> None:
+    _assert_refused_then_set_aside(
         tmp_path,
         caplog,
         "agent_env MY_FLAG added",
@@ -365,8 +391,8 @@ def test_sandbox_change_starts_a_new_job(tmp_path, caplog) -> None:
     )
 
 
-def test_sandbox_change_sets_a_named_jobs_trials_aside(tmp_path, caplog) -> None:
-    _assert_set_aside(
+def test_sandbox_change_refuses_a_named_job(tmp_path, caplog) -> None:
+    _assert_refused_then_set_aside(
         tmp_path,
         caplog,
         "environment='docker' (this run: 'daytona')",
@@ -542,7 +568,9 @@ def test_a_raised_cap_on_a_job_the_budget_did_not_stop_is_a_change(tmp_path) -> 
 
 def test_a_named_rerun_with_another_model_runs_every_task_again(tmp_path) -> None:
     old = _first_job(tmp_path, job_name="named")
-    job = _evaluation(tmp_path, _config(model="m2"), job_name="named")
+    job = _evaluation(
+        tmp_path, _config(model="m2"), job_name="named", restart_changed=True
+    )
     result = _run(job)
     assert (result.reused, result.ran, result.passed) == (0, 2, 2)
     loaded = bf.load_job(old)
@@ -610,7 +638,12 @@ def test_a_trial_of_another_agent_is_set_aside_without_a_record(tmp_path) -> Non
                 }
             )
         )
-    dest = _check_resume_mismatch(job_dir, _config())
+    with pytest.raises(ResumeMismatchError) as refused:
+        _check_resume_mismatch(job_dir, _config())
+    assert "1 finished trial in it ran agent='codex-acp'" in str(refused.value)
+    # No evaluation.json: `bench eval resume` cannot rebuild it.
+    assert "the command that started it" in (refused.value.hint or "")
+    dest = _check_resume_mismatch(job_dir, _config(), restart_changed=True)
     assert dest is not None
     assert [p.name for p in dest.iterdir() if p.is_dir()] == ["task-1__1"]
     assert (job_dir / "task-0__1").is_dir()
@@ -625,8 +658,11 @@ def test_a_failed_move_refuses_instead_of_blending(tmp_path, monkeypatch) -> Non
         raise OSError("read-only file system")
 
     monkeypatch.setattr(Path, "rename", no_rename)
-    with pytest.raises(ResumeMismatchError, match="model='m1' \\(this run: 'm2'\\)"):
-        _check_resume_mismatch(old, _config(model="m2"))
+    with pytest.raises(
+        ResumeMismatchError, match="model='m1' \\(this run: 'm2'\\)"
+    ) as e:
+        _check_resume_mismatch(old, _config(model="m2"), restart_changed=True)
+    assert "setting them aside" in str(e.value) and e.value.exit_code == 1
 
 
 # --- readers and resume -----------------------------------------------------
@@ -637,7 +673,7 @@ def test_readers_skip_set_aside_trials(tmp_path) -> None:
     attempt = old / "task-1__dead0000"
     attempt.mkdir()
     (attempt / "config.json").write_text(json.dumps({"agent": "oracle"}))
-    dest = _check_resume_mismatch(old, _config(model="m2"))
+    dest = _check_resume_mismatch(old, _config(model="m2"), restart_changed=True)
     assert dest is not None and (dest / "task-1__dead0000").is_dir()
     assert iter_task_result_paths(old) == []
     from benchflow.jobs import _interrupted
@@ -660,7 +696,7 @@ def test_load_job_does_not_read_a_set_aside_results_file(tmp_path) -> None:
             for i in range(2)
         )
     )
-    dest = _check_resume_mismatch(old, _config(model="m2"))
+    dest = _check_resume_mismatch(old, _config(model="m2"), restart_changed=True)
     assert dest is not None and (dest / "results.jsonl").is_file()
     with pytest.raises(FileNotFoundError):
         load_job(old)
@@ -686,9 +722,22 @@ def test_resume_restores_recorded_env_and_ignores_a_missing_key(tmp_path) -> Non
     assert not (old / SET_ASIDE_DIR).exists()
 
 
-def test_resume_with_a_changed_setting_sets_the_trials_aside(tmp_path) -> None:
+def test_resume_with_a_changed_setting_is_refused(tmp_path) -> None:
     old = _first_job(tmp_path, job_name="named")
+    files = _tree(old)
     resumed = Evaluation.resume(old, timeout_multiplier=2.0)
+    resumed._run_single_task = AsyncMock(side_effect=_fake_runner(resumed))
+    with pytest.raises(ResumeMismatchError, match="timeout_multiplier=None"):
+        _run(resumed)
+    resumed._run_single_task.assert_not_called()
+    assert _tree(old) == files
+
+
+def test_resume_with_a_changed_setting_and_restart_changed_sets_the_trials_aside(
+    tmp_path,
+) -> None:
+    old = _first_job(tmp_path, job_name="named")
+    resumed = Evaluation.resume(old, timeout_multiplier=2.0, restart_changed=True)
     resumed._run_single_task = AsyncMock(side_effect=_fake_runner(resumed))
     result = _run(resumed)
     assert (result.reused, result.ran) == (0, 2)
@@ -714,8 +763,9 @@ def _review_a_trial(job_dir: Path) -> None:
 def test_a_refused_reviewer_leaves_the_trials_for_the_old_settings(
     tmp_path, monkeypatch
 ) -> None:
-    """A rerun with another reviewer model whose key is missing is refused
-    before any trial moves, so rerunning with the old settings reuses them."""
+    """A restarted rerun with another reviewer model whose key is missing is
+    refused before any trial moves, so rerunning with the old settings reuses
+    them."""
     import benchflow.review.automatic as automatic
 
     old = _first_job(tmp_path, job_name="named", reviewer={"model": "judge-1"})
@@ -728,8 +778,9 @@ def test_a_refused_reviewer_leaves_the_trials_for_the_old_settings(
         return real(task_path, reviewer)
 
     monkeypatch.setattr(automatic, "prepare_review", no_key_for_judge_2)
+    judge_2 = _config(reviewer={"model": "judge-2"})
     with pytest.raises(ValueError, match="no key for judge-2"):
-        _run(_evaluation(tmp_path, _config(reviewer={"model": "judge-2"}), "named"))
+        _run(_evaluation(tmp_path, judge_2, "named", restart_changed=True))
     assert not (old / SET_ASIDE_DIR).exists()
     assert len(load_task_results(old)) == 2
     record = json.loads((old / "evaluation.json").read_text())["config"]
@@ -752,7 +803,7 @@ def test_the_record_follows_a_set_aside_when_the_run_then_stops(
     stop = AsyncMock(side_effect=RuntimeError("stopped"))
     monkeypatch.setattr(resume, "resume_pending_reviews", stop)
     with pytest.raises(RuntimeError, match="stopped"):
-        _run(_evaluation(tmp_path, _config(model="m2"), "named"))
+        _run(_evaluation(tmp_path, _config(model="m2"), "named", restart_changed=True))
     assert (old / SET_ASIDE_DIR).is_dir()
     record = json.loads((old / "evaluation.json").read_text())["config"]
     assert record["model"] == "m2"
@@ -760,12 +811,15 @@ def test_the_record_follows_a_set_aside_when_the_run_then_stops(
     assert _evaluation(tmp_path, _config()).job_dir != old
 
 
-def _sequential_job(tmp_path: Path, model: str) -> Evaluation:
+def _sequential_job(
+    tmp_path: Path, model: str, *, restart_changed: bool = False
+) -> Evaluation:
     job = Evaluation(
         tasks_dir=_tasks(tmp_path),
         jobs_dir=tmp_path / "jobs",
         config=_config(job_mode="sequential-shared", model=model),
         job_name="named",
+        restart_changed=restart_changed,
     )
 
     async def fake_run(task_path, *args, **kwargs):
@@ -790,7 +844,7 @@ def test_a_sequential_shared_job_sets_its_learner_store_aside(tmp_path) -> None:
     _run(_sequential_job(tmp_path, "m1"))
     old = tmp_path / "jobs" / "named"
     assert json.loads((old / "learner_store.json").read_text())["generation"] == 2
-    job = _sequential_job(tmp_path, "m2")
+    job = _sequential_job(tmp_path, "m2", restart_changed=True)
     assert job.learner_store is not None and job.learner_store.generation == 2
     result = _run(job)
     assert (result.reused, result.ran) == (0, 2)
@@ -830,6 +884,12 @@ def test_dataclass_fields_are_all_sorted_into_compared_or_not() -> None:
         "usage_tracking",
         "checkpoint_keep",
         "freeze_workspace",
+        "keep_sandbox",
+        "accept_deviations",
+        "planned_trials",
+        "trial_number",
+        "model_given",
+        "agent_idle_timeout_given",
         "integrity",
         "agent_defaulted",
         "fresh_install",
@@ -912,16 +972,24 @@ def _override(token: str, flag: str) -> dict:
     return {"sandbox": {"env": {"HF_TOKEN": token, "HUB": token, "MY_FLAG": flag}}}
 
 
+def _refusal(job_dir: Path, config: EvaluationConfig) -> str:
+    """The refusal to resume ``job_dir`` with ``config``: message and next step."""
+    with pytest.raises(ResumeMismatchError) as refused:
+        _check_resume_mismatch(job_dir, config)
+    return f"{refused.value}\n{refused.value.hint}"
+
+
 def test_config_override_values_stay_out_of_logs_and_set_aside_json(
     tmp_path, caplog
 ) -> None:
     old = _first_job(
         tmp_path, job_name="named", config_override=_override(OLD_HF, "flag-one")
     )
+    changed = _config(config_override=_override(NEW_HF, "flag-two"))
+    refusal = _refusal(old, changed)
+    assert "config_override sandbox.env.MY_FLAG changed" in refusal
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(
-            old, _config(config_override=_override(NEW_HF, "flag-two"))
-        )
+        dest = _check_resume_mismatch(old, changed, restart_changed=True)
     assert dest is not None
     text = (dest / "set-aside.json").read_text()
     reason = json.loads(text)["reason"]
@@ -930,6 +998,7 @@ def test_config_override_values_stay_out_of_logs_and_set_aside_json(
     for value in (OLD_HF, NEW_HF, "flag-one", "flag-two"):
         assert value not in caplog.text
         assert value not in text
+        assert value not in refusal
 
 
 def test_a_rotated_key_inside_config_override_is_not_a_change(tmp_path) -> None:
@@ -971,18 +1040,21 @@ def test_a_prompt_with_a_password_in_it_is_compared(tmp_path, caplog) -> None:
     assert "admin123" not in caplog.text
 
 
-def test_a_prompt_with_a_password_in_it_sets_a_named_jobs_trials_aside(
-    tmp_path, caplog
-) -> None:
+def test_a_prompt_with_a_password_in_it_refuses_a_named_job(tmp_path, caplog) -> None:
     old = _first_job(tmp_path, job_name="named", prompts=[_LOGIN_FIX])
     assert _check_resume_mismatch(old, _config(prompts=[_LOGIN_FIX])) is None
+    refusal = _refusal(old, _config(prompts=[_LOGIN_LIMIT]))
+    assert "ran prompts changed" in refusal
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(old, _config(prompts=[_LOGIN_LIMIT]))
+        dest = _check_resume_mismatch(
+            old, _config(prompts=[_LOGIN_LIMIT]), restart_changed=True
+        )
     assert dest is not None
     text = (dest / "set-aside.json").read_text()
     assert json.loads(text)["reason"] == "prompts changed"
     assert "admin123" not in caplog.text
     assert "admin123" not in text
+    assert "admin123" not in refusal
 
 
 def test_removing_a_prompt_with_a_token_in_it_is_a_change(tmp_path) -> None:
@@ -1037,7 +1109,8 @@ def test_the_reviewer_counts_only_for_a_job_with_a_reviewed_trial(tmp_path) -> N
     )
     assert _check_resume_mismatch(old, changed) is None
     _mark_reviewed(old)
-    dest = _check_resume_mismatch(old, changed)
+    assert "reviewer.model=None (this run: 'judge-2')" in _refusal(old, changed)
+    dest = _check_resume_mismatch(old, changed, restart_changed=True)
     assert dest is not None
     reason = json.loads((dest / "set-aside.json").read_text())["reason"]
     assert "reviewer.model=None (this run: 'judge-2')" in reason
@@ -1060,16 +1133,16 @@ def test_a_token_count_in_agent_env_starts_a_new_job(tmp_path, caplog) -> None:
     assert "32000" not in caplog.text
 
 
-def test_a_token_count_in_agent_env_sets_a_named_jobs_trials_aside(
-    tmp_path, caplog
-) -> None:
+def test_a_token_count_in_agent_env_refuses_a_named_job(tmp_path, caplog) -> None:
     old = _first_job(
         tmp_path, job_name="named", agent_env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "1024"}
     )
+    changed = _config(agent_env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000"})
+    refusal = _refusal(old, changed)
+    assert "agent_env CLAUDE_CODE_MAX_OUTPUT_TOKENS changed" in refusal
+    assert "32000" not in refusal and "1024" not in refusal
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(
-            old, _config(agent_env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000"})
-        )
+        dest = _check_resume_mismatch(old, changed, restart_changed=True)
     assert dest is not None
     reason = json.loads((dest / "set-aside.json").read_text())["reason"]
     assert reason == "agent_env CLAUDE_CODE_MAX_OUTPUT_TOKENS changed"
@@ -1143,14 +1216,18 @@ def test_a_token_count_in_config_override_env_is_a_change(
         return {"sandbox": {"env": {name: value, "HF_TOKEN": OLD_HF}}}
 
     old = _first_job(tmp_path, job_name="named", config_override=override("1024"))
+    changed = _config(config_override=override("32000"))
+    refusal = _refusal(old, changed)
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(old, _config(config_override=override("32000")))
+        dest = _check_resume_mismatch(old, changed, restart_changed=True)
     assert dest is not None
     text = (dest / "set-aside.json").read_text()
     assert json.loads(text)["reason"] == f"config_override sandbox.env.{name} changed"
+    assert f"config_override sandbox.env.{name} changed" in refusal
     for value in ("32000", OLD_HF):
         assert value not in caplog.text
         assert value not in text
+        assert value not in refusal
 
 
 def test_a_schema_field_named_key_is_compared(tmp_path) -> None:
@@ -1241,7 +1318,7 @@ def test_a_job_run_with_a_number_resumes_with_its_string(tmp_path, caplog) -> No
         assert _check_resume_mismatch(old, config) is None
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
         dest = _check_resume_mismatch(
-            old, _config(agent_env={"MAX_THINKING_TOKENS": 64000})
+            old, _config(agent_env={"MAX_THINKING_TOKENS": 64000}), restart_changed=True
         )
     assert dest is not None
     reason = json.loads((dest / "set-aside.json").read_text())["reason"]
@@ -1336,7 +1413,7 @@ def test_sweep_dot_prefixed_trials_are_checked(tmp_path, recorded) -> None:
         (job.job_dir / "evaluation.json").unlink()
     changed = _config(agent="nop")
     assert _recorded_run_differs(job.job_dir, changed, tasks_dir) is not None
-    dest = _check_resume_mismatch(job.job_dir, changed)
+    dest = _check_resume_mismatch(job.job_dir, changed, restart_changed=True)
     assert dest is not None
     assert len(load_task_results(dest)) == 1
     assert load_task_results(job.job_dir) == {}
@@ -1434,12 +1511,13 @@ def test_sweep_pinned_scene_agent_resumes(tmp_path, mode) -> None:
     (tasks / "task-1" / "verifier").mkdir()
     (tasks / "task-1" / "verifier" / "test.sh").write_text("#!/bin/sh\nexit 0\n")
 
-    def job():
+    def job(restart_changed=False):
         evaluation = Evaluation(
             tasks_dir=tasks,
             jobs_dir=tmp_path / "jobs",
             config=_config(job_mode=mode),
             job_name="named",
+            restart_changed=restart_changed,
         )
         fake = _fake_runner(evaluation)
 
@@ -1469,7 +1547,7 @@ def test_sweep_pinned_scene_agent_resumes(tmp_path, mode) -> None:
     assert _run(narrower).ran == 0
     assert not (narrower.job_dir / SET_ASIDE_DIR).exists()
     # Explicit prompts suppress pinned scenes, just as on a fresh rollout.
-    changed = job()
+    changed = job(restart_changed=True)
     changed._config.prompts = ["Use the default agent."]
     assert _run(changed).ran == 2
 
@@ -1517,14 +1595,16 @@ def test_sweep_inline_settings_survive_credential_redaction(
     changed = config(True, NEW_HF)
     assert _recorded_run_differs(job.job_dir, changed, None) is not None
     assert _evaluation(tmp_path, changed).job_dir != job.job_dir
+    refusal = _refusal(job.job_dir, changed)
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(job.job_dir, changed)
+        dest = _check_resume_mismatch(job.job_dir, changed, restart_changed=True)
     assert dest is not None
     reason = (dest / "set-aside.json").read_text()
-    assert name in reason
+    assert name in reason and name in refusal
     for secret in (OLD_HF, NEW_HF):
         assert secret not in reason
         assert secret not in caplog.text
+        assert secret not in refusal
 
 
 def test_sweep_inline_credentials_are_removed_before_fingerprinting(tmp_path) -> None:
@@ -1601,7 +1681,8 @@ def test_confirm_inline_execution_fields_are_compared(
     assert _recorded_run_differs(first.job_dir, config(old), None) is None
     assert _recorded_run_differs(first.job_dir, config(new), None) is not None
     assert _evaluation(tmp_path, config(new)).job_dir != first.job_dir
-    assert _check_resume_mismatch(first.job_dir, config(new)) is not None
+    with pytest.raises(ResumeMismatchError):
+        _check_resume_mismatch(first.job_dir, config(new))
 
 
 def test_confirm_inline_credential_paths_and_public_fields() -> None:
@@ -1750,13 +1831,15 @@ def test_confirm5_public_mapping_changes_prevent_resume(
     changed = config(new, "13572468")
     assert _recorded_run_differs(first.job_dir, changed, None) is not None
     assert _evaluation(tmp_path, changed).job_dir != first.job_dir
+    refusal = _refusal(first.job_dir, changed)
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(first.job_dir, changed)
+        dest = _check_resume_mismatch(first.job_dir, changed, restart_changed=True)
     assert dest is not None
     reason = (dest / "set-aside.json").read_text()
     for marker in ("24681357", "13572468"):
         assert marker not in reason
         assert marker not in caplog.text
+        assert marker not in refusal
 
 
 @pytest.mark.parametrize("scope", [(), ("agent", "headers"), ("mode", "env")])
@@ -1880,14 +1963,16 @@ def test_confirm7_tool_switch_order_prevents_resume(
     changed = config(dict(reversed(switches.items())), "13572468")
     assert _recorded_run_differs(first.job_dir, changed, None) is not None
     assert _evaluation(tmp_path, changed).job_dir != first.job_dir
+    refusal = _refusal(first.job_dir, changed)
     with caplog.at_level(logging.WARNING, logger="benchflow.evaluation"):
-        dest = _check_resume_mismatch(first.job_dir, changed)
+        dest = _check_resume_mismatch(first.job_dir, changed, restart_changed=True)
     assert dest is not None
     reason = (dest / "set-aside.json").read_text()
-    assert "OPENCODE_CONFIG_CONTENT" in reason
+    assert "OPENCODE_CONFIG_CONTENT" in reason and "OPENCODE_CONFIG_CONTENT" in refusal
     for marker in ("24681357", "13572468"):
         assert marker not in reason
         assert marker not in caplog.text
+        assert marker not in refusal
 
 
 @pytest.mark.parametrize("name", ["CODEX_CONFIG", "OPENCODE_CONFIG_CONTENT"])

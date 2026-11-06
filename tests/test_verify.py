@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow._utils.scoring import (
+    NO_USABLE_REWARD,
     VERIFIER_FAILED,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -297,10 +298,10 @@ class TestSdkVerify:
             ),
         ):
             rewards, verifier_error, vti = await sdk._verify(env, task, tp, timing)
-        assert rewards == {"reward": 0.0}
-        assert verifier_error is None
-        assert "verifier returned no rewards" in caplog.text
-        assert "Verifier scored 0" in caplog.text
+        assert rewards is None
+        assert verifier_error is not None
+        assert verifier_error.startswith(NO_USABLE_REWARD)
+        assert "verifier returned no rewards" in verifier_error
         assert "verifier" in timing
         assert vti is None
 
@@ -335,16 +336,19 @@ class TestSdkVerify:
             parsed_rewards, verifier_error, vti = await sdk._verify(
                 env, task, tp, timing
             )
-        assert parsed_rewards == {"reward": 0.0}
         if rewards == {"reward": 1.2}:
             # A finite reward outside [0, 1] is named as such, raw value
             # kept, never clamped (#1178).
-
+            assert parsed_rewards == {"reward": 0.0}
             assert verifier_error is None
             assert "Verifier scored 0" in caplog.text
             assert (vti.key, vti.value) == ("reward", 1.2)
         else:
-            assert "without numeric 'reward'" in caplog.text
+            # No numeric reward: the verifier's error, never a silent 0.
+            assert parsed_rewards is None
+            assert verifier_error is not None
+            assert verifier_error.startswith(NO_USABLE_REWARD)
+            assert "without numeric 'reward'" in verifier_error
             assert vti is None
         assert "verifier" in timing
 

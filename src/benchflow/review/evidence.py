@@ -1,8 +1,9 @@
 """Durable workspace evidence shared by solver and reviewer rollouts.
 
 The caller must stop agent writes before capture. A successful capture is an
-all-or-nothing directory publication: an archive digest validates transport,
-then a file manifest validates the extracted tree and subsequent uploads.
+all-or-nothing directory publication: an archive digest (each file's digest,
+where files travel by name) validates transport, then a file manifest
+validates the extracted tree and subsequent uploads.
 Only the resolved workspace is captured; links cannot import other VM files.
 """
 
@@ -11,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import hashlib
+import io
 import json
 import logging
+import math
 import os
 import posixpath
 import shlex
@@ -20,9 +23,9 @@ import shutil
 import stat
 import tarfile
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Literal, Self
+from typing import IO, Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -72,6 +75,14 @@ WORKSPACE_MAX_BYTES = 20 * 1024**3
 WORKSPACE_MAX_ENTRIES = 200_000
 # The capture script's exit status when the limits are exceeded.
 _LIMIT_EXIT = 3
+#: Scan-root errors that hand the capture back to today's path: a single file,
+#: no such path, a link, a mount. bfx's scan spells them `not-directory`,
+#: `missing`, `link` and `mount` (bfx/src/scan.rs, errno_name); a declared
+#: artifact that is one file arrives as `not-directory`.
+_SCAN_ROOT_FALLBACK = frozenset(
+    {"not-directory", "missing", "link", "mount"}
+    | {"ENOTDIR", "ENOENT", "ELOOP", "EXDEV"}
+)
 _PYTHON_PROBE = "import sys; sys.exit(127) if sys.version_info < (3, 10) else None"
 
 
@@ -162,11 +173,47 @@ class _CaptureReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     archive: str = Field(
-        pattern=r"^/(?:var/)?tmp/benchflow-evidence-[A-Za-z0-9_-]+\.tar$"
+        pattern=r"^/(?:var/)?tmp/runtime-evidence-[A-Za-z0-9_-]+\.tar$"
     )
     workspace: str
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     exclusions: tuple[EvidenceExclusion, ...] = ()
+
+
+_Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+
+
+class _CaptureListing(BaseModel):
+    """What ``_LISTING_STEP`` prints: each kept entry as (path, kind, size,
+    mode, SHA-256 of a file, link text)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workspace: str = Field(pattern=r"^/")
+    sha256: _Digest
+    exclusions: tuple[EvidenceExclusion, ...] = ()
+    entries: tuple[
+        tuple[
+            str,
+            Literal["file", "directory", "symlink"],
+            Annotated[int, Field(ge=0)],
+            Annotated[int, Field(ge=0, le=0o7777)],
+            _Digest | None,
+            str,
+        ],
+        ...,
+    ]
+
+    @model_validator(mode="after")
+    def _entries_are_consistent(self) -> Self:
+        for path, kind, size, _, digest, link in self.entries:
+            if (
+                (kind == "file") != (digest is not None)
+                or (kind == "symlink") != bool(link)
+                or (kind != "file" and size)
+            ):
+                raise ValueError(f"Inconsistent evidence listing entry: {path!r}")
+        return self
 
 
 # Runs in both Docker and Daytona without requiring BenchFlow in the image.
@@ -175,11 +222,13 @@ class _CaptureReceipt(BaseModel):
 # is harness-owned, and a symlink leaving the workspace (an agent CLI's helper
 # link, say) would import another VM file, so each is recorded as a manifest
 # exclusion, a link with its target text. A link is kept only when both its
-# resolution and its text stay inside the root, the rule the host extraction,
-# validate_workspace and the reviewer's admission check apply to it; a link
-# loop has no target to keep. Quota overflows (exit status 3) and concurrent
-# changes still fail the capture.
-_CAPTURE_SCRIPT = r"""
+# resolution and its normalised text stay inside the root (an absolute one is
+# kept as that text, so it must also lead where the link does), the rule the
+# host extraction, validate_workspace and the reviewer's admission check apply
+# to it; a link loop has no target to keep. Quota overflows (exit status 3) and
+# concurrent changes still fail the capture. The walk leaves the kept entries
+# in ``paths`` and the exclusions in ``exclusions`` for the step after it.
+_CAPTURE_WALK = r"""
 import fnmatch, hashlib, json, os, pathlib, posixpath, stat, sys, tarfile, tempfile
 source = pathlib.Path(sys.argv[1]).resolve()
 system_roots = {pathlib.Path(path).resolve() for path in ("/", "/proc", "/sys", "/dev", "/etc", "/run", "/home")}
@@ -207,9 +256,14 @@ def kept_link(path, target):
     if not path.resolve().is_relative_to(root):
         return False
     if target.startswith("/"):
+        # Kept as its normalised text (#1157), which must not climb out and must
+        # lead where the link does: ".." after a linked folder is its parent.
         try:
-            return ".." not in pathlib.PurePosixPath(target).relative_to(root).parts
-        except ValueError:
+            tail = posixpath.normpath(pathlib.PurePosixPath(target).relative_to(root).as_posix())
+            if tail == ".." or tail.startswith("../"):
+                return False
+            return (root / tail).resolve() == path.resolve()
+        except (ValueError, OSError, RuntimeError):
             return False
     parent = posixpath.dirname(path.relative_to(root).as_posix())
     return ".." not in posixpath.normpath(posixpath.join(parent, target)).split("/")
@@ -265,7 +319,12 @@ temp_root = next((p for p in ("/tmp", "/var/tmp")
                   and (not source.is_dir() or not pathlib.Path(p).resolve().is_relative_to(root))), None)
 if temp_root is None:
     raise ValueError("no temporary directory outside the evidence workspace")
-fd, archive_path = tempfile.mkstemp(prefix="benchflow-evidence-", suffix=".tar", dir=temp_root)
+"""
+
+# The archive the host downloads: an uncompressed tar of the kept entries in
+# the sandbox's temporary folder, on the sandbox's own disk.
+_ARCHIVE_STEP = r"""
+fd, archive_path = tempfile.mkstemp(prefix="runtime-evidence-", suffix=".tar", dir=temp_root)
 os.close(fd)
 try:
     with tarfile.open(archive_path, "w", format=tarfile.PAX_FORMAT) as archive:
@@ -293,6 +352,56 @@ except BaseException:
     raise
 """
 
+# Where the host fetches files by name (Daytona's bulk download), nothing is
+# written in the sandbox: a workspace larger than the free space would fill
+# its disk with the archive. The archive step's tar stream goes into a hash
+# instead, so ``sha256`` is the digest of the archive it would have written,
+# and every kept entry is listed with its size, mode and link text, a file
+# with the SHA-256 of the bytes that entered the stream. The temp-root check
+# above still runs: the listing refuses what the archive capture refuses.
+_LISTING_STEP = r"""
+class HashSink:
+    def __init__(self):
+        self.digest, self.offset = hashlib.sha256(), 0
+    def write(self, data):
+        self.digest.update(data)
+        self.offset += len(data)
+        return len(data)
+    def tell(self):
+        return self.offset
+class HashReader:
+    def __init__(self, stream):
+        self.stream, self.digest = stream, hashlib.sha256()
+    def read(self, size=-1):
+        data = self.stream.read(size)
+        self.digest.update(data)
+        return data
+kinds = {tarfile.REGTYPE: "file", tarfile.DIRTYPE: "directory", tarfile.SYMTYPE: "symlink"}
+sink, entries = HashSink(), []
+with tarfile.open(fileobj=sink, mode="w", format=tarfile.PAX_FORMAT) as archive:
+    for path, before in paths:
+        member = archive.gettarinfo(path, arcname=path.relative_to(root).as_posix())
+        digest = None
+        if stat.S_ISREG(before.st_mode):
+            member.type, member.linkname, member.size = tarfile.REGTYPE, "", before.st_size
+            with path.open("rb") as stream:
+                reader = HashReader(stream)
+                archive.addfile(member, reader)
+            digest = reader.digest.hexdigest()
+        else:
+            archive.addfile(member)
+        after = path.lstat()
+        if (before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns) != (
+                after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns):
+            raise ValueError("workspace changed during evidence capture: " + str(path))
+        # The header keeps the permission bits only, as extraction reads them.
+        entries.append([member.name, kinds[member.type], member.size, member.mode & 0o7777, digest, member.linkname])
+print(json.dumps({"workspace": str(root), "sha256": sink.digest.hexdigest(), "exclusions": exclusions, "entries": entries}, separators=(",", ":")))
+"""
+
+_CAPTURE_SCRIPT = _CAPTURE_WALK + _ARCHIVE_STEP
+_LISTING_SCRIPT = _CAPTURE_WALK + _LISTING_STEP
+
 
 def _digest(path: Path) -> str:
     with host_destination(path).open("rb") as stream:
@@ -315,9 +424,15 @@ def _link_target(member: tarfile.TarInfo, workspace: str) -> str:
             raise EvidenceError(
                 f"Evidence symlink escapes workspace: {member.name}"
             ) from exc
-        if str(target) != ".":
-            _relative_path(str(target))
-        return posixpath.relpath(str(target), str(PurePosixPath(member.name).parent))
+        # Normalise as the relative branch below does, so an in-workspace
+        # target spelled with ".." parts is kept (#1157) and one that climbs
+        # out of the workspace is still refused.
+        normalized = posixpath.normpath(str(target))
+        if normalized == ".." or normalized.startswith("../"):
+            raise EvidenceError(f"Evidence symlink escapes workspace: {member.name}")
+        if normalized != ".":
+            _relative_path(normalized)
+        return posixpath.relpath(normalized, str(PurePosixPath(member.name).parent))
     normalized = posixpath.normpath(
         posixpath.join(posixpath.dirname(member.name), str(target))
     )
@@ -335,7 +450,6 @@ def _extract_archive(
     max_entries: int,
 ) -> tuple[EvidenceEntry, ...]:
     """Extract ordinary entries first and links last, never using extractall."""
-    entries: list[EvidenceEntry] = []
     with (
         host_destination(archive_path).open("rb") as raw,
         tarfile.open(fileobj=raw, mode="r:") as archive,
@@ -349,78 +463,99 @@ def _extract_archive(
                 raise EvidenceLimitError(
                     "Workspace evidence exceeds configured capture limits"
                 )
-        names: set[PurePosixPath] = set()
-        links: set[PurePosixPath] = set()
-        inventory = ArchivePaths()
-        for member in members:
-            name = _relative_path(member.name)
-            try:
-                inventory.add(member.name, directory=member.isdir())
-            except ValueError as exc:
-                raise EvidenceError(str(exc)) from exc
-            if name in names:
-                raise EvidenceError(f"Duplicate evidence path: {member.name}")
-            names.add(name)
-            if member.issym():
-                _link_target(member, workspace)
-                links.add(name)
-            elif not (member.isfile() or member.isdir()):
-                raise EvidenceError(f"Unsupported evidence entry: {member.name}")
-        for name in names:
-            if any(parent in links for parent in name.parents):
-                raise EvidenceError(f"Evidence entry is below a symlink: {name}")
-        for member in sorted(
-            members,
-            key=lambda item: (item.issym(), len(PurePosixPath(item.name).parts)),
-        ):
-            path = destination / member.name
-            held_path = host_destination(path)
-            held_path.parent.mkdir(parents=True, exist_ok=True)
-            original_path = str(PurePosixPath(workspace) / member.name)
-            if member.isdir():
-                held_path.mkdir(exist_ok=True)
-                entry = EvidenceEntry(
-                    path=member.name,
-                    original_path=original_path,
-                    kind="directory",
-                    size=0,
-                    mode=member.mode & 0o777,
-                )
-            elif member.issym():
-                target = _link_target(member, workspace)
-                with held_path._folders() as parents:
-                    parent = parents[-1]
-                    if isinstance(parent, Path):
-                        (parent / held_path.name).symlink_to(target)
-                    else:
-                        os.symlink(target, held_path.name, dir_fd=parent)
-                entry = EvidenceEntry(
-                    path=member.name,
-                    original_path=original_path,
-                    kind="symlink",
-                    size=0,
-                    link_target=target,
-                    original_link_target=member.linkname,
-                )
-            else:
-                source = archive.extractfile(member)
-                if source is None:
-                    raise EvidenceError(f"Missing archive file: {member.name}")
-                with source, create_private_file(held_path) as output:
-                    shutil.copyfileobj(source, output)
-                    if hasattr(os, "fchmod"):
-                        os.fchmod(
-                            output.fileno(), 0o755 if member.mode & 0o111 else 0o644
-                        )
-                entry = EvidenceEntry(
-                    path=member.name,
-                    original_path=original_path,
-                    kind="file",
-                    size=member.size,
-                    sha256=_digest(path),
-                    mode=member.mode & 0o777,
-                )
-            entries.append(entry)
+
+        def read(member: tarfile.TarInfo) -> IO[bytes]:
+            source = archive.extractfile(member)
+            if source is None:
+                raise EvidenceError(f"Missing archive file: {member.name}")
+            return source
+
+        return _extract_members(members, destination, workspace, read)
+
+
+def _admit_members(members: Sequence[tarfile.TarInfo], workspace: str) -> None:
+    """Refuse an unsafe, aliased or repeated name, another entry kind, a link
+    leaving the workspace and an entry below a link."""
+    names: set[PurePosixPath] = set()
+    links: set[PurePosixPath] = set()
+    inventory = ArchivePaths()
+    for member in members:
+        name = _relative_path(member.name)
+        try:
+            inventory.add(member.name, directory=member.isdir())
+        except ValueError as exc:
+            raise EvidenceError(str(exc)) from exc
+        if name in names:
+            raise EvidenceError(f"Duplicate evidence path: {member.name}")
+        names.add(name)
+        if member.issym():
+            _link_target(member, workspace)
+            links.add(name)
+        elif not (member.isfile() or member.isdir()):
+            raise EvidenceError(f"Unsupported evidence entry: {member.name}")
+    for name in names:
+        if any(parent in links for parent in name.parents):
+            raise EvidenceError(f"Evidence entry is below a symlink: {name}")
+
+
+def _extract_members(
+    members: Sequence[tarfile.TarInfo],
+    destination: Path,
+    workspace: str,
+    read: Callable[[tarfile.TarInfo], IO[bytes]],
+) -> tuple[EvidenceEntry, ...]:
+    """Write *members* below *destination*, a file's bytes from ``read``:
+    after :func:`_admit_members`, ordinary entries by depth, links last."""
+    _admit_members(members, workspace)
+    entries: list[EvidenceEntry] = []
+    for member in sorted(
+        members,
+        key=lambda item: (item.issym(), len(PurePosixPath(item.name).parts)),
+    ):
+        path = destination / member.name
+        held_path = host_destination(path)
+        held_path.parent.mkdir(parents=True, exist_ok=True)
+        original_path = str(PurePosixPath(workspace) / member.name)
+        if member.isdir():
+            held_path.mkdir(exist_ok=True)
+            entry = EvidenceEntry(
+                path=member.name,
+                original_path=original_path,
+                kind="directory",
+                size=0,
+                mode=member.mode & 0o777,
+            )
+        elif member.issym():
+            target = _link_target(member, workspace)
+            with held_path._folders() as parents:
+                parent = parents[-1]
+                if isinstance(parent, Path):
+                    (parent / held_path.name).symlink_to(target)
+                else:
+                    os.symlink(target, held_path.name, dir_fd=parent)
+            entry = EvidenceEntry(
+                path=member.name,
+                original_path=original_path,
+                kind="symlink",
+                size=0,
+                link_target=target,
+                original_link_target=member.linkname,
+            )
+        else:
+            source = read(member)
+            with source, create_private_file(held_path) as output:
+                shutil.copyfileobj(source, output)
+                if hasattr(os, "fchmod"):
+                    os.fchmod(output.fileno(), 0o755 if member.mode & 0o111 else 0o644)
+            entry = EvidenceEntry(
+                path=member.name,
+                original_path=original_path,
+                kind="file",
+                size=member.size,
+                sha256=_digest(path),
+                mode=member.mode & 0o777,
+            )
+        entries.append(entry)
     return tuple(sorted(entries, key=lambda entry: entry.path))
 
 
@@ -505,8 +640,8 @@ else
 fi
 tmp=/tmp
 case "$root" in /tmp|/tmp/*) tmp=/var/tmp;; esac
-out=$(mktemp "$tmp/benchflow-evidence-XXXXXXXX" 2>/dev/null) || {
-  out="$tmp/benchflow-evidence-$$"; : > "$out"; }
+out=$(mktemp "$tmp/runtime-evidence-XXXXXXXX" 2>/dev/null) || {
+  out="$tmp/runtime-evidence-$$"; : > "$out"; }
 if ! tar -cf "$out" -C "$root" "$name"; then rm -f "$out"; exit 1; fi
 echo "$out"
 echo "$root"
@@ -545,28 +680,50 @@ _MAX_LINK_HOPS = 40
 def _kept_tar_link(name: str, target: str, links: dict[str, str], root: str) -> bool:
     """The capture script's ``kept_link`` rule, applied to a tar listing.
 
-    A link is kept only when its target text and its resolution both stay
-    inside the root. The resolution follows the archive's own links, as
-    ``os.path.realpath`` would in the sandbox; a loop is not kept.
+    A link is kept only when its normalised target text and its resolution
+    both stay inside the root, and an absolute target's normalised text
+    resolves where the link does. The resolution follows the archive's own
+    links, as ``os.path.realpath`` would in the sandbox; a loop is not kept.
     """
+    tail = None
     if target.startswith("/"):
         try:
-            if ".." in PurePosixPath(target).relative_to(root).parts:
-                return False
+            tail = posixpath.normpath(
+                PurePosixPath(target).relative_to(root).as_posix()
+            )
         except ValueError:
+            return False
+        if tail == ".." or tail.startswith("../"):
             return False
     else:
         joined = posixpath.join(posixpath.dirname(name), target)
         if ".." in posixpath.normpath(joined).split("/"):
             return False
-    pending = list(PurePosixPath(name).parts)
+    resolved = _tar_resolution(PurePosixPath(name).parts, links, root)
+    if resolved is None:
+        return False
+    # An absolute target is kept as its normalised text (#1157), so that text
+    # must lead where the link does: ".." after a linked folder is its parent.
+    return (
+        tail is None
+        or _tar_resolution(PurePosixPath(tail).parts, links, root) == resolved
+    )
+
+
+def _tar_resolution(
+    parts: tuple[str, ...], links: dict[str, str], root: str
+) -> list[str] | None:
+    """Where *parts* (relative to the root) resolve through the archive's
+    links, as ``os.path.realpath`` would in the sandbox; None when they leave
+    the root or loop."""
+    pending = list(parts)
     resolved: list[str] = []
     hops = 0
     while pending:
         part = pending.pop(0)
         if part == "..":
             if not resolved:
-                return False
+                return None
             resolved.pop()
             continue
         link = links.get("/".join([*resolved, part]))
@@ -575,17 +732,17 @@ def _kept_tar_link(name: str, target: str, links: dict[str, str], root: str) -> 
             continue
         hops += 1
         if hops > _MAX_LINK_HOPS:
-            return False
+            return None
         if link.startswith("/"):
             try:
                 inside = PurePosixPath(link).relative_to(root)
             except ValueError:
-                return False
+                return None
             resolved = []
             pending = [*inside.parts, *pending]
         else:
             pending = [*PurePosixPath(link).parts, *pending]
-    return True
+    return resolved
 
 
 def _exclusion_reason(
@@ -969,8 +1126,7 @@ async def _plan_bfx_capture(
         if report.get("errors"):
             if directories == [root] and all(
                 error.get("path") == str(root)
-                and error.get("error")
-                in ("ENOENT", "ENOTDIR", "ELOOP", "EXDEV", "link", "mount")
+                and error.get("error") in _SCAN_ROOT_FALLBACK
                 for error in report["errors"]
             ):
                 return None
@@ -1138,6 +1294,95 @@ def _bundle_from_tar(
     return manifest
 
 
+_LISTED_TYPES = {
+    "file": tarfile.REGTYPE,
+    "directory": tarfile.DIRTYPE,
+    "symlink": tarfile.SYMTYPE,
+}
+
+
+async def _bundle_from_listing(
+    download: Callable[[str, Sequence[str], Path], Awaitable[None]],
+    report: str,
+    destination: Path,
+    *,
+    max_bytes: int,
+    max_entries: int,
+) -> EvidenceManifest:
+    """The validated bundle at *destination* from ``_LISTING_SCRIPT``'s
+    *report*, with nothing written in the sandbox: the listed files fetched by
+    name (the sandbox's ``download_files``), each checked against its listed
+    size and digest, the tree built as :func:`_extract_archive` builds it. A
+    file that differs from its listing fails the capture."""
+    try:
+        listing = _CaptureListing.model_validate_json(report)
+    except ValueError as exc:
+        raise EvidenceError("Sandbox did not return a valid evidence listing") from exc
+    members: list[tarfile.TarInfo] = []
+    digests: dict[str, str] = {}
+    total = 0
+    for name, kind, size, mode, digest, link in listing.entries:
+        member = tarfile.TarInfo(name)
+        member.type = _LISTED_TYPES[kind]
+        member.size, member.mode, member.linkname = size, mode, link
+        members.append(member)
+        total += size
+        if len(members) > max_entries or total > max_bytes:
+            raise EvidenceLimitError(
+                "Workspace evidence exceeds configured capture limits"
+            )
+        if digest is not None:
+            digests[name] = digest
+    # The names become host paths below the download folder: check them first.
+    _admit_members(members, listing.workspace)
+    fetch = [member.name for member in members if member.isfile() and member.size]
+    with private_folder(destination) as temp:
+        staging = Path(temp)
+        files = staging / "files"
+        if fetch:
+            await download(listing.workspace, fetch, files)
+
+        def read(member: tarfile.TarInfo) -> IO[bytes]:
+            if not member.size:
+                return io.BytesIO()
+            fetched = host_destination(files / member.name)
+            stream = fetched.open("rb")
+            # The open stream keeps the bytes until the tree holds its copy.
+            fetched.unlink()
+            if os.fstat(stream.fileno()).st_size != member.size:
+                stream.close()
+                raise EvidenceError(
+                    f"Workspace file differs from its listing: {member.name}"
+                )
+            return stream
+
+        bundle = staging / "bundle"
+        tree = bundle / "workspace"
+        host_destination(tree).mkdir(parents=True)
+        entries = _extract_members(members, tree, listing.workspace, read)
+        changed = [
+            entry.path
+            for entry in entries
+            if entry.kind == "file" and entry.sha256 != digests[entry.path]
+        ]
+        if changed:
+            raise EvidenceError(
+                "Workspace file differs from its listing: " + ", ".join(changed[:10])
+            )
+        manifest = EvidenceManifest(
+            workspace=listing.workspace,
+            archive_sha256=listing.sha256,
+            entries=entries,
+            exclusions=listing.exclusions,
+        )
+        validate_workspace(tree, manifest)
+        host_destination(bundle / "manifest.json").write_text(
+            manifest.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
+        host_destination(bundle).rename(host_destination(destination))
+        return manifest
+
+
 def _shell_artifact_probe(line: str) -> _ArtifactProbe:
     exists, _, source = line.partition("\t")
     return _ArtifactProbe(source=source, exists=exists == "1")
@@ -1190,8 +1435,20 @@ async def capture_workspace(
     )
     if captured is not None:
         return captured
+    # A sandbox that fetches files by name (Daytona's bulk download) gets the
+    # listing: no archive is written on its disk.
+    download = (
+        getattr(env, "download_files", None)
+        if getattr(env, "can_download_files", False) is True
+        else None
+    )
     command = await _isolated_python(
-        env, _CAPTURE_SCRIPT, workspace, str(max_bytes), str(max_entries), rules
+        env,
+        _CAPTURE_SCRIPT if download is None else _LISTING_SCRIPT,
+        workspace,
+        str(max_bytes),
+        str(max_entries),
+        rules,
     )
     result = await exec_raw(env.exec, command, user="root", timeout_sec=timeout_sec)
     if result.return_code != 0 and python_missing(result):
@@ -1214,6 +1471,14 @@ async def capture_workspace(
     if result.return_code != 0:
         raise EvidenceError(
             f"Workspace capture failed: {(diagnostic_result(result).stderr.render() or diagnostic_result(result).stdout.render() or '')[-2000:]}"
+        )
+    if download is not None:
+        return await _bundle_from_listing(
+            download,
+            result.stdout or "",
+            destination,
+            max_bytes=max_bytes,
+            max_entries=max_entries,
         )
     try:
         transfer = _CaptureReceipt.model_validate_json(result.stdout or "")
@@ -1577,12 +1842,44 @@ async def capture_task_evidence(
         return manifest
 
 
+# Each step that unpacks or checks evidence in the reviewer sandbox gets 1 s
+# per MiB of it, the rate the rollout's hard deadline allows its uploads
+# (rollout._deadline), and never less than 600 s.
+_EVIDENCE_INSTALL_FLOOR_SEC = 600
+_EVIDENCE_INSTALL_BYTES_PER_SEC = 1024**2
+
+
+def evidence_bytes(bundle: Path) -> int:
+    """The bytes of every file a captured bundle holds: its workspace and each
+    captured artifact."""
+    manifest = EvidenceManifest.model_validate_json(
+        (bundle / "manifest.json").read_text()
+    )
+    total = sum(entry.size for entry in manifest.entries)
+    for artifact in manifest.artifacts:
+        if artifact.bundle_path is not None:
+            captured = EvidenceManifest.model_validate_json(
+                (bundle / artifact.bundle_path / "manifest.json").read_text()
+            )
+            total += sum(entry.size for entry in captured.entries)
+    return total
+
+
+def evidence_install_timeout_sec(size: int) -> int:
+    """Seconds for each step of :func:`install_review_evidence` that handles
+    *size* bytes of evidence."""
+    return max(
+        _EVIDENCE_INSTALL_FLOOR_SEC,
+        math.ceil(size / _EVIDENCE_INSTALL_BYTES_PER_SEC),
+    )
+
+
 async def install_review_evidence(
     env: Sandbox,
     manifest: EvidenceManifest,
     *,
     evidence_root: str = "/evidence",
-    timeout_sec: int = 600,
+    timeout_sec: int = _EVIDENCE_INSTALL_FLOOR_SEC,
 ) -> None:
     """Install workspace plus every captured artifact before reviewer admission."""
     await install_uploaded_workspace(

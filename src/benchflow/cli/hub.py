@@ -28,8 +28,9 @@ def register_hub(app: typer.Typer) -> None:
     """Attach the ``hub`` command group to the top-level benchflow app."""
     hub_app = typer.Typer(
         help=(
-            "External environment hubs: browse a hub's environments "
-            "(list/show/inspect) and check registry tasks (check)."
+            "Environment hubs: browse a hub's environments (list/show/inspect), "
+            "check registry tasks (check), and publish datasets and push runs "
+            "to a BenchFlow Hub (publish/push)."
         )
     )
     app.add_typer(hub_app, name="hub", rich_help_panel="Environments")
@@ -45,6 +46,104 @@ def register_hub(app: typer.Typer) -> None:
     )
     hub_app.add_typer(env_alias, name="env", hidden=True)
     _register_env_verbs(env_alias)
+
+    @hub_app.command("publish")
+    def hub_publish(
+        tasks_dir: Annotated[
+            Path, typer.Argument(help="Folder holding one folder per task")
+        ],
+        name: Annotated[
+            str,
+            typer.Option(
+                "--name",
+                help="The version to publish, as org/name@version (e.g. robouse/metaworld-sample@0.6.1)",
+            ),
+        ],
+        hub: Annotated[
+            str | None,
+            typer.Option("--hub", help="Hub address (default: $BENCHFLOW_HUB_URL)"),
+        ] = None,
+        description: Annotated[
+            str | None, typer.Option("--description", help="One line on what it is")
+        ] = None,
+        license: Annotated[
+            str | None,
+            typer.Option(
+                "--license",
+                help="The tasks' license, as an SPDX expression (e.g. Apache-2.0 AND MIT)",
+            ),
+        ] = None,
+        kind: Annotated[
+            str | None,
+            typer.Option("--kind", help="What its tasks are, e.g. embodied"),
+        ] = None,
+        source_repo: Annotated[
+            str | None,
+            typer.Option(
+                "--source-repo", help="Where the tasks came from (a repository URL)"
+            ),
+        ] = None,
+        source_commit: Annotated[
+            str | None,
+            typer.Option("--source-commit", help="The commit they came from"),
+        ] = None,
+        exporter: Annotated[
+            str | None,
+            typer.Option(
+                "--exporter",
+                help="What wrote the packages, e.g. 'robouse-export@d05027fb' (the tool and its commit)",
+            ),
+        ] = None,
+    ) -> None:
+        """Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub."""
+        from benchflow.cli import _hub_client
+
+        exit_if_missing(
+            tasks_dir, next_step="pass a folder that holds one folder per task"
+        )
+        _hub_client.publish(
+            tasks_dir,
+            name,
+            hub,
+            description=description,
+            license=license,
+            kind=kind,
+            source_repo=source_repo,
+            source_commit=source_commit,
+            exporter=exporter,
+        )
+
+    @hub_app.command("push")
+    def hub_push(
+        job_dir: Annotated[
+            Path,
+            typer.Argument(
+                help="A job folder (jobs/<job>) holding one finished run, or the run (jobs/<job>/<time>)"
+            ),
+        ],
+        hub: Annotated[
+            str | None,
+            typer.Option("--hub", help="Hub address (default: $BENCHFLOW_HUB_URL)"),
+        ] = None,
+        dataset: Annotated[
+            str | None,
+            typer.Option(
+                "--dataset",
+                help="The dataset version the job ran, org/name@version (default: what the job recorded)",
+            ),
+        ] = None,
+        label: Annotated[
+            str | None, typer.Option("--label", help="A label for the run on the Hub")
+        ] = None,
+    ) -> None:
+        """Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub."""
+        from benchflow.cli import _hub_client
+
+        exit_if_missing(
+            job_dir,
+            next_step="pass a job folder under ./jobs (or --jobs-dir) that bench run wrote",
+        )
+        _hub_client.push(job_dir, hub, dataset=dataset, label=label)
 
     @hub_app.command("check")
     def hub_check(
@@ -189,9 +288,11 @@ def _register_env_verbs(target: typer.Typer) -> None:
             str,
             typer.Argument(
                 help=(
-                    "A dataset of BenchFlow's registry as name@version (e.g. "
-                    "terminal-bench@2.0), or a hosted environment (e.g. "
-                    "primeintellect/general-agent)"
+                    "A dataset on a BenchFlow Hub as org/name@version (e.g. "
+                    "robouse/metaworld-sample@0.6.1; read from --hub, or from "
+                    "$BENCHFLOW_HUB_URL when no --provider is given), a dataset of "
+                    "BenchFlow's registry as name@version (e.g. terminal-bench@2.0), "
+                    "or a hosted environment (e.g. primeintellect/general-agent)"
                 )
             ),
         ],
@@ -205,17 +306,48 @@ def _register_env_verbs(target: typer.Typer) -> None:
             str | None,
             typer.Option(
                 "--provider",
-                help="Hub: 'benchflow' (lists the dataset's tasks) or "
-                "'primeintellect' (default: benchflow for name@version, "
-                "primeintellect for owner/name)",
+                help="Where to read it without a Hub: 'benchflow' (BenchFlow's "
+                "registry; lists the dataset's tasks) or 'primeintellect' (default: "
+                "benchflow for name@version, primeintellect for owner/name)",
             ),
         ] = None,
         output_json: Annotated[
             bool,
-            typer.Option("--json", help="Emit the dataset's registry entry as JSON"),
+            typer.Option(
+                "--json",
+                help="Print the dataset's entry as JSON (for a Hub version, the version and its controls)",
+            ),
         ] = False,
+        hub: Annotated[
+            str | None,
+            typer.Option(
+                "--hub",
+                help="A BenchFlow Hub to read org/name@version from, with its control "
+                "results (default: $BENCHFLOW_HUB_URL when set)",
+            ),
+        ] = None,
     ) -> None:
         """Show a dataset's tasks, or a hosted environment's metadata."""
+        import os
+
+        from benchflow.hub.client import HUB_URL_ENV
+
+        spec = (
+            f"{source_env}@{version}"
+            if version and "@" not in source_env
+            else source_env
+        )
+        # As `bench run -d`: --hub reads that Hub; $BENCHFLOW_HUB_URL alone serves org/name datasets, never
+        # BenchFlow's own registry names.
+        name = spec.partition("@")[0]
+        on_hub = hub or (
+            provider is None and "/" in name and os.environ.get(HUB_URL_ENV)
+        )
+        if on_hub and "@" in spec:
+            from benchflow.cli import _hub_client
+
+            _hub_client.show(spec, hub, output_json=output_json)
+            return
         hosted_env_show(
             source_env=source_env,
             version=version,

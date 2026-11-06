@@ -314,7 +314,7 @@ def _rollout(tmp_path):
     trial._env = MagicMock()
     trial._env.exec = AsyncMock(return_value=ExecResult(0, "", ""))
     trial._agent_cfg = AGENTS["muse-code"]
-    trial._agent_launch = "/opt/benchflow/bin/muse-acp-shim"
+    trial._agent_launch = "/opt/runtime/bin/muse-acp-shim"
     trial._agent_env = {"MUSE_AUTH_JSON": LOGIN}
     trial._agent_cwd = "/tmp/fake-workspace"
     trial._phase = "installed"

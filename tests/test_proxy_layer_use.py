@@ -218,7 +218,7 @@ class TestProxyFromTheLayer:
 
 _FAKE_DF = """#!/bin/sh
 echo "Filesystem     1024-blocks  Used Available Capacity Mounted on"
-echo "tmpfs          ${FAKE_DF_FREE_KB} 0 ${FAKE_DF_FREE_KB} 0% /tmp/benchflow-litellm"
+echo "tmpfs          ${FAKE_DF_FREE_KB} 0 ${FAKE_DF_FREE_KB} 0% /tmp/runtime-litellm"
 """
 
 

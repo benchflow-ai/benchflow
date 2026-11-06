@@ -365,8 +365,19 @@ def test_user_visible_diagnostic_sinks_are_registered():
             "print_error": 1,
             "warn_deprecated": 1,
             "_report_checkpoint_retries": 1,
-            "_report_eval_result": 9,
-            "_report_outcomes": 5,
+            # The run checks' lines (benchflow.run_checks): a setting's name,
+            # the value asked for and its source's kind, the values the calls
+            # carried, rates and trial names; never an env value. Then each
+            # failed check's next step, a fixed text (run_checks.NEXT_STEPS).
+            "print_run_check_failures": 2,
+            "_report_eval_result": 12,
+            # The scoring rule's line under the Score (benchflow.scoring): its
+            # interval, task count, rule name, endings counted and warnings;
+            # then the model refusals and budget stops beside it, counts only.
+            "_report_scoring": 4,
+            # Each outcome's trials by name; the model refusals and the budget
+            # stops by name and measure, with a fixed next step.
+            "_report_outcomes": 10,
         },
         # PT's key check (a48cb677): the provider, the variable's name and
         # the HTTP status, never the key.

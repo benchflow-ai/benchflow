@@ -38,7 +38,7 @@ async def test_later_agent_uploads_requirements_without_sandbox_python(
         else registry.HARVEY_LAB_REQUIREMENTS
     )
     assert (
-        uploads[f"/opt/benchflow/agents/{name}-requirements.txt"]
+        uploads[f"/opt/runtime/agents/{name}-requirements.txt"]
         == ("\n".join(requirements) + "\n").encode()
     )
 

@@ -166,7 +166,7 @@ async def test_a_hook_that_cannot_be_removed_fails_the_step():
                 cleanup_conftests=False,
                 workspace=None,
                 workspace_aliases=(),
-                verifier_dir="/opt/benchflow/verifier",
+                verifier_dir="/opt/runtime/verifier",
                 deadline=loop.time() + 5,
             )
     finally:
@@ -371,7 +371,7 @@ def _run_on(fs: _FakeFs, workspace: str | None = "/app", conftests: bool = True)
         cleanup_conftests=conftests,
         workspace=workspace,
         workspace_aliases=(),
-        verifier_dir="/opt/benchflow/verifier",
+        verifier_dir="/opt/runtime/verifier",
         deadline=loop.time() + 30,
     )
 

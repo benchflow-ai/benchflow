@@ -11,6 +11,7 @@ import pytest
 from benchflow.evaluation import (
     Evaluation,
     EvaluationConfig,
+    ResumeMismatchError,
     RetryConfig,
 )
 from benchflow.models import RunResult
@@ -435,8 +436,8 @@ class TestJobResumeScoped:
     @pytest.mark.asyncio
     async def test_config_mismatch_sets_aside_scoped(self, tmp_path):
         """Resume detects an agent mismatch from config.json inside the current
-        job dir and sets that trial aside, rather than blending a different
-        agent's scores (P2: before, it refused the run).
+        job dir and refuses the named job, rather than blending a different
+        agent's scores; with restart_changed it sets that trial aside.
 
         Config check scoped to job dir, not jobs_dir root.
         Guards PR #789 (CLI error-handling hardening).
@@ -453,17 +454,32 @@ class TestJobResumeScoped:
                 "[agent]\ntimeout_sec = 60\n[environment]\n"
             )
         cfg = EvaluationConfig(agent="new-agent --run")
-        job = Evaluation(
-            tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="my-job"
-        )
-        job._run_single_task = AsyncMock(
-            side_effect=lambda task_path, _cfg: RunResult(
-                task_name=task_path.name, rewards={"reward": 1.0}
+
+        def job_with(restart_changed: bool) -> Evaluation:
+            job = Evaluation(
+                tasks_dir=tasks_dir,
+                jobs_dir=jobs_dir,
+                config=cfg,
+                job_name="my-job",
+                restart_changed=restart_changed,
             )
-        )
+            job._run_single_task = AsyncMock(
+                side_effect=lambda task_path, _cfg: RunResult(
+                    task_name=task_path.name, rewards={"reward": 1.0}
+                )
+            )
+            return job
+
         # The recorded agent ("old-agent") is named, proving detection is scoped
-        # to this job dir; its trial is kept aside, not reused, and both tasks
-        # run with this agent.
+        # to this job dir.
+        refused = job_with(False)
+        with pytest.raises(ResumeMismatchError, match="old-agent"):
+            await refused.run()
+        refused._run_single_task.assert_not_called()
+        assert result_file.is_file()
+        # With the override its trial is kept aside, not reused, and both
+        # tasks run with this agent.
+        job = job_with(True)
         result = await job.run()
         assert (result.reused, result.ran) == (0, 2)
         (dest,) = (job_dir / ".set-aside").iterdir()

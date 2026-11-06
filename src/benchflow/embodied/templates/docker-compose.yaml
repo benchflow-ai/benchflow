@@ -12,23 +12,27 @@ services:
       - ${HOST_AGENT_LOGS_PATH}:${ENV_AGENT_LOGS_PATH}
       - ${HOST_ARTIFACTS_PATH}:${ENV_ARTIFACTS_PATH}
       - rpc:/rpc:ro
+      # The simulator's oracle token, root-only (sim-entry): the reference solution (root) reads it, agents cannot.
+      - oracle:/run/runtime-oracle:ro
     depends_on:
       simulator:
         condition: service_healthy
   simulator:
     # No fixed image tag: compose names the image after the trial's project, so BenchFlow's per-trial
     # cleanup (it removes the images the trial's project built) never removes an image another trial is using. Repeat builds of
-    # the same runtime are served from the Docker build cache.
+    # the same runtime are served from the Docker build cache. The context is the package's own environment/simulator/
+    # (CONTEXT_DIR is environment/ on the Docker host and in a Daytona sandbox's VM), so the package needs no other folder.
     build:
       context: __SIM_CONTEXT__
       dockerfile: Dockerfile
     network_mode: none
     init: true
+    # Nothing the agent's container can write is mounted here: the trial's video and camera images are placed in
+    # artifacts/ on the host, from the episode record the verifier downloads (benchflow.embodied.export).
     volumes:
       - rpc:/rpc
       - episode:/episode
-      # The verifier copies the episode video and camera images here after the agent has stopped.
-      - ${HOST_ARTIFACTS_PATH}:/logs/artifacts
+      - oracle:/run/runtime-oracle
     environment:
       # Given only to the reference solution (oracle/solve.sh): unlocks privileged state in vision tasks.
       ROBO_ORACLE_TOKEN: "__ORACLE_TOKEN__"
@@ -50,3 +54,4 @@ __TASK_MD__
 volumes:
   rpc: {}
   episode: {}
+  oracle: {}

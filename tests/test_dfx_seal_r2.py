@@ -141,7 +141,7 @@ async def test_failed_guard_output_is_redacted_in_every_trial_file(
     # Execute a failing guard in Docker and read its actual log through the
     # sandbox receipt. No network or firewall changes are needed.
     command = (
-        "mkdir -p -m 700 /opt/benchflow/run; "
+        "mkdir -p -m 700 /opt/runtime/run; "
         f"printf %s {shlex.quote(progress)} > {lockdown.DAEMON_GUARD_LOG}; "
         f"printf '%s\\n' {shlex.quote('BF daemon-guard install: ' + secret)}; "
         "echo 'BF daemon-guard ports=2280 status=5'"

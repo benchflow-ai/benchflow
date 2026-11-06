@@ -236,7 +236,9 @@ async def test_proxy_route_places_no_credential_in_the_sandbox(
     assert _dummies(files, launch) == {}
     assert not any("application_default_credentials" in p for p in files), files
     assert "GOOGLE_APPLICATION_CREDENTIALS" not in launch
-    assert launch["BENCHFLOW_LITELLM_MASTER_KEY"].startswith("sk-benchflow-")
+    assert launch["RUNTIME_LITELLM_MASTER_KEY"].startswith("sk-runtime-")
+    # The agent's environment names no BenchFlow variable (RUNTIME_ instead).
+    assert not [name for name in launch if "BENCHFLOW" in name], sorted(launch)
 
 
 # (agent, model, explicit login, host names left unset because they would select
@@ -408,4 +410,42 @@ async def test_other_vertex_runs_stay_on_the_proxy_without_adc(
     assert _dummies(files, launch) == {}
     assert not any("application_default_credentials" in p for p in files), files
     assert not any(p.endswith(".gemini/settings.json") for p in files), files
-    assert launch["BENCHFLOW_LITELLM_MASTER_KEY"].startswith("sk-benchflow-")
+    assert launch["RUNTIME_LITELLM_MASTER_KEY"].startswith("sk-runtime-")
+
+
+@pytest.fixture
+def own_route_agent():
+    register_agent(
+        "en191-own-route",
+        "true",
+        "en191-own-route --acp",
+        requires_env=["CLIENT_ID", "CLIENT_SECRET"],
+        model_route="agent",
+    )
+    yield "en191-own-route"
+    for registry in (AGENTS, AGENT_INSTALLERS, AGENT_LAUNCH):
+        registry.pop("en191-own-route", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "label", [None, "openai/gpt-5.5", "claude-sonnet-4-6"], ids=str
+)
+async def test_own_model_route_places_only_its_own_parts(
+    host, monkeypatch, tmp_path, own_route_agent, label
+):
+    """With model_route = "agent" a model is a label. Even with
+    every host login exported and the label's provider key passed, only the
+    agent's own declared parts are placed; no proxy key, no provider key."""
+    host(login_file=True)
+    explicit = {"CLIENT_ID": "dummy-client-a", "CLIENT_SECRET": "dummy-secret-a"}
+    if label is not None:
+        explicit["OPENAI_API_KEY"] = A
+        explicit["ANTHROPIC_API_KEY"] = A
+    files, launch = await _sandbox_view(
+        monkeypatch, tmp_path, own_route_agent, label, explicit
+    )
+    assert launch["CLIENT_ID"] == "dummy-client-a"
+    assert launch["CLIENT_SECRET"] == "dummy-secret-a"
+    assert set(_dummies(files, launch)) == {"dummy-client-a", "dummy-secret-a"}
+    assert files == {}

@@ -138,7 +138,7 @@ async def test_guard_refusal_marker_survives_the_backend(tmp_path, backend, alia
     """A marker that makes the run unscored is never dropped in transit."""
     from benchflow.task.verifier_core import Verifier
 
-    guard = "_benchflow_guard_" + "e" * 32
+    guard = "_runtime_guard_" + "e" * 32
     name = f"{guard}.7-0123abcd.loading"
     line = _signed_line(name, f"plugin {alias}/evil.py", guard)
 

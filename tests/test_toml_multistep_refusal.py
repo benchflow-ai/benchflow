@@ -1,13 +1,11 @@
-"""task.toml multi-step tasks are refused by the runtime capability check.
+"""task.toml multi-step tasks load, pass the launch gate, and run.
 
 A task.toml multi-step task keeps its prompts under ``steps/<name>/instruction.md``
-and has no root ``instruction.md``. The documented behaviour (docs/
-datasets/benchmarks.md, "Refused before launch") is the runtime capability
-refusal naming ``steps``. Before this fix the loader raised "no task document
-... expected task.md (native), or legacy task.toml + instruction.md" first, so
-the refusal was unreachable for any real multi-step task: ``bench eval run``
-recorded a per-trial FileNotFoundError and ``bench tasks check`` told the
-author to add a root instruction.md.
+and has no root ``instruction.md``. Before the gate refused ``steps`` ("multi-step
+tasks are not supported"), the loader had raised "no task document ... expected
+task.md (native), or legacy task.toml + instruction.md" first, and ``bench tasks
+check`` told the author to add a root instruction.md. Now the steps run
+(task/steps.py; tests/test_multi_step_tasks.py), and neither message is printed.
 """
 
 from __future__ import annotations
@@ -19,7 +17,6 @@ from typer.testing import CliRunner
 
 from benchflow.task import Task
 from benchflow.task.runtime_capabilities import (
-    UnsupportedTaskFeatureError,
     raise_for_task_runtime_support,
     validate_task_runtime_support,
 )
@@ -62,18 +59,17 @@ def _multi_step_task(root: Path) -> Path:
     return task
 
 
-def test_multi_step_task_loads_and_is_refused_on_steps(tmp_path: Path) -> None:
+def test_multi_step_task_loads_and_passes_the_launch_gate(tmp_path: Path) -> None:
     task_dir = _multi_step_task(tmp_path)
 
     task = Task(task_dir)
 
     assert len(task.config.steps) == 2
-    issues = validate_task_runtime_support(
-        task.config, sandbox="daytona", task_dir=task_dir
+    assert (
+        validate_task_runtime_support(task.config, sandbox="daytona", task_dir=task_dir)
+        == []
     )
-    assert [issue.path for issue in issues] == ["steps"]
-    with pytest.raises(UnsupportedTaskFeatureError, match="steps"):
-        raise_for_task_runtime_support(task.config, sandbox="docker", task_dir=task_dir)
+    raise_for_task_runtime_support(task.config, sandbox="docker", task_dir=task_dir)
 
 
 def test_multi_step_runtime_view_reads_from_disk(tmp_path: Path) -> None:
@@ -94,9 +90,7 @@ def test_single_step_task_without_instruction_still_names_the_formats(
         Task(task_dir)
 
 
-def test_tasks_check_reports_the_steps_refusal_not_a_missing_instruction(
-    tmp_path: Path,
-) -> None:
+def test_tasks_check_passes_a_multi_step_task(tmp_path: Path) -> None:
     from benchflow.cli.main import app
 
     task_dir = _multi_step_task(tmp_path)
@@ -105,9 +99,9 @@ def test_tasks_check_reports_the_steps_refusal_not_a_missing_instruction(
         app, ["tasks", "check", str(task_dir), "--sandbox", "daytona"]
     )
 
-    assert result.exit_code == 1
     out = " ".join(result.output.split())
-    assert "Unsupported runtime feature: steps" in out
+    assert result.exit_code == 0, out
+    assert "Unsupported runtime feature: steps" not in out
     assert "Missing required file: instruction.md" not in out
     assert "runtime capability parse error" not in out
 

@@ -137,3 +137,25 @@ async def test_switched_accounts_are_killed_through_bfx_too():
     box.agent_identity_switch = ("worker",)
     assert await lockdown.kill_switched_accounts(box) == 2
     assert box.calls == [("kill", {"accounts": [{"uid": 1001, "gid": 1001}]})]
+
+
+@pytest.mark.parametrize("image_user", ["agent", "1000", "1000:1000", "ghost"])
+async def test_an_image_user_that_is_the_account_keeps_the_shell_kill(image_user):
+    """Guards the kill's PID 1 rule (see test_verifier_process_quiescence's
+    PID 1 tests) on the bfx route: PID 1 runs as the image's user, and when
+    that is the sandbox user's account (or cannot be told) bfx's kill, which
+    counts PID 1 like any other process of the account and cannot end it,
+    would fail every trial; the shell kill runs instead."""
+    box = Box({"killed": 3, "receipt": "BF killed 3 end\n"})
+    box._benchflow_identities = Identities(PASSWD, GROUP, image_user)
+    assert await _kill(box) == 0
+    assert box.calls == []
+    assert len(box.shell_commands) == 1
+
+
+@pytest.mark.parametrize("image_user", ["", "root", "0", "0:0"])
+async def test_a_root_image_user_keeps_the_bfx_kill(image_user):
+    box = Box({"killed": 3, "receipt": "BF killed 3 end\n"})
+    box._benchflow_identities = Identities(PASSWD, GROUP, image_user)
+    assert await _kill(box) == 3
+    assert box.calls == [("kill", {"accounts": [{"uid": 1000, "gid": 1000}]})]

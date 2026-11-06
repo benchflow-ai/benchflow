@@ -581,13 +581,13 @@ async def test_a_chmod_that_fails_every_try_leaves_the_receipt_as_it_was(
     )
     verifier = Verifier(MagicMock(), MagicMock(), sandbox)
     verifier._write_execution_receipt = True
-    verifier.execution_receipt = ("/run/benchflow/verifier-started-old", "main")
+    verifier.execution_receipt = ("/run/runtime/verifier-started-old", "main")
     with pytest.raises(
         VerifierOutputParseError,
         match=r"^Verifier setup failed: chmod exited with rc=1$",
     ):
         await verifier._chmod_and_prepare_receipt("chmod +x /tests/test.sh", "main")
-    assert verifier.execution_receipt == ("/run/benchflow/verifier-started-old", "main")
+    assert verifier.execution_receipt == ("/run/runtime/verifier-started-old", "main")
     # Every try keeps chmod's own budget.
     assert [e.timeout_sec for e in sandbox.execs] == [60, 60, 60]
 

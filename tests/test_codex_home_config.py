@@ -71,10 +71,10 @@ def test_litellm_route_home_config_names_the_proxy():
     assert home == codex_home_config(json.loads(env[CODEX_CONFIG_ENV]))
     assert home.splitlines()[0] == CODEX_HOME_CONFIG_MARKER
     parsed = tomllib.loads(home)
-    assert parsed["model_provider"] == "benchflow-litellm"
+    assert parsed["model_provider"] == "runtime-litellm"
     assert parsed["model"] == "gpt-6-astra"
     assert parsed["openai_base_url"] == PROXY
-    assert parsed["model_providers"]["benchflow-litellm"] == {
+    assert parsed["model_providers"]["runtime-litellm"] == {
         "name": "litellm",
         "base_url": PROXY,
         "env_key": "OPENAI_API_KEY",
@@ -117,10 +117,10 @@ def test_other_agents_are_untouched():
 def test_provider_values_survive_toml_quoting():
     tricky = 'quote " backslash \\ newline \n tab \t emoji \U0001f600 del \x7f'
     config = {
-        "model_provider": "benchflow-azure foundry",
+        "model_provider": "runtime-azure foundry",
         "model": tricky,
         "model_providers": {
-            "benchflow-azure foundry": {
+            "runtime-azure foundry": {
                 "name": tricky,
                 "base_url": "https://example.test/openai/v1",
                 "query_params": {"api-version": "2026-01-01-preview"},
@@ -135,7 +135,7 @@ def test_provider_values_survive_toml_quoting():
     rendered = codex_home_config(config)
     assert rendered is not None
     parsed = tomllib.loads(rendered)
-    provider = parsed["model_providers"]["benchflow-azure foundry"]
+    provider = parsed["model_providers"]["runtime-azure foundry"]
     assert parsed["model"] == tricky
     assert provider["name"] == tricky
     assert provider["http_headers"] == {"X-Title": tricky}
@@ -151,9 +151,9 @@ def _launcher(tmp_path: Path) -> tuple[str, Path]:
     fake = tmp_path / "codex-acp"
     fake.write_text(f'#!/bin/sh\ntouch "{ran}"\n')
     fake.chmod(0o755)
-    assert "/opt/benchflow/bin/codex-acp" in CODEX_ACP_BUILTIN_LAUNCH
+    assert "/opt/runtime/bin/codex-acp" in CODEX_ACP_BUILTIN_LAUNCH
     return CODEX_ACP_BUILTIN_LAUNCH.replace(
-        "/opt/benchflow/bin/codex-acp", str(fake)
+        "/opt/runtime/bin/codex-acp", str(fake)
     ), ran
 
 

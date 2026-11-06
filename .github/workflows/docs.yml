@@ -1,0 +1,125 @@
+name: docs
+
+# The first-run journeys' commands, run as written against the wheel built
+# from this checkout, and a link check of README.md and docs/.
+# tests/test_docs_journeys.py (in test.yml's unit job) parses the commands
+# this job cannot run: model runs, subscription logins and Daytona.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "src/**"
+      - "tests/docs_pages.py"
+      - "tests/test_docs_*.py"
+      - "tools/docs_reference.py"
+      - "tools/docs_leaks.py"
+      - "tools/docs_leaks_allow.tsv"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, for external links that break without a change here.
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  journeys:
+    name: docs journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      # Nothing private in what the docs publish: keys, ticket keys, internal hosts and names, home folders,
+      # preview hosts, Office authors, captured runs (tools/docs_leaks.py; tests/test_docs_leaks.py runs it too).
+      - name: Check the docs for leaks
+        run: uv run python tools/docs_leaks.py
+
+      # The wheel a user installs carries bfx; build it the way the release does.
+      - name: Install the bfx toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+
+      - name: Build bfx (pinned)
+        run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
+
+      - name: Serve this checkout's wheel from a package index
+        run: |
+          uv build --no-sources --wheel --out-dir "$RUNNER_TEMP/dist"
+          index="$RUNNER_TEMP/index/simple/benchflow"
+          mkdir -p "$index"
+          cp "$RUNNER_TEMP"/dist/benchflow-*.whl "$index/"
+          for whl in "$index"/*.whl; do
+            name="$(basename "$whl")"
+            printf '<a href="%s#sha256=%s">%s</a>\n' "$name" "$(sha256sum "$whl" | cut -d' ' -f1)" "$name"
+          done > "$index/index.html"
+          printf '<a href="benchflow/">benchflow</a>\n' > "$RUNNER_TEMP/index/simple/index.html"
+          nohup python3 -m http.server 8644 --bind 127.0.0.1 \
+            --directory "$RUNNER_TEMP/index" > "$RUNNER_TEMP/index.log" 2>&1 &
+
+      - name: Docker info
+        run: docker info --format '{{.ServerVersion}} {{.OperatingSystem}}'
+
+      # The README's install and no-model run, the write-a-task tutorial and
+      # the export page, each in an empty HOME with commands read from the page.
+      - name: Run the journeys' commands as written
+        run: uv run python -m pytest tests/test_docs_run_journeys.py -v -rs
+        env:
+          BENCHFLOW_DOCS_E2E: "1"
+          BENCHFLOW_DOCS_INDEX_URL: http://127.0.0.1:8644/simple/
+
+  links:
+    name: docs links
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # Relative links and #anchors are also checked offline, in the unit job
+      # (tests/test_docs_journeys.py); this adds every external URL.
+      - name: Check links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8  # v2.9.0
+        with:
+          args: >-
+            --no-progress
+            --include-fragments
+            --max-retries 3
+            --retry-wait-time 5
+            --accept 200..=299,403,429
+            --exclude-path docs/examples
+            --exclude '^https?://(localhost|127\.0\.0\.1)'
+            --exclude '<[^>]+>'
+            README.md
+            'docs/**/*.md'
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

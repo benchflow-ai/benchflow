@@ -38,6 +38,9 @@ registry_auth = "sandbox"
 disk_full = "other"
 # DX-a round 2: a task file that does not load was "other" before.
 task_config = "other"
+# A trial its token or turn budget stopped (src/benchflow/trial_budget.py):
+# Rust has no per-trial budget, so it is a family of its own.
+trial_budget = "agent_budget"
 other = "other"
 
 [python.verifier_error_category]

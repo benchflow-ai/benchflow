@@ -106,11 +106,11 @@ def _seal_both(name: str) -> dict[str, dict]:
     """Build once, then seal a copy of the built kit on the walk and in sh."""
     built = _dx(name, kit_prepare_command("build"))
     assert built.returncode == 0, built.stderr
-    assert _dx(name, f"cp -a {KIT} /opt/benchflow/rt.built").returncode == 0
+    assert _dx(name, f"cp -a {KIT} /opt/runtime/rt.built").returncode == 0
     out = {}
     for mode, walk in (("walk", True), ("sh", False)):
         assert (
-            _dx(name, f"rm -rf {KIT} && cp -a /opt/benchflow/rt.built {KIT}").returncode
+            _dx(name, f"rm -rf {KIT} && cp -a /opt/runtime/rt.built {KIT}").returncode
             == 0
         )
         done = _dx(name, kit_prepare_command("seal", walk=walk))

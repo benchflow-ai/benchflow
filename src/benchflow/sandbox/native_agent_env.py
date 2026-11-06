@@ -98,7 +98,7 @@ async def uploaded_agent_env(
     account. Only the selected account reads the inherited descriptor. No task
     value enters any process argv, including setup, cleanup or the decoder.
     """
-    folder = "/.benchflow-agent-env-" + uuid4().hex
+    folder = "/.runtime-agent-env-" + uuid4().hex
     path = folder + "/payload"
     made = await root_exec(f"umask 077; /bin/mkdir -- {folder}")
     if made.return_code != 0:

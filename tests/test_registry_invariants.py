@@ -150,7 +150,7 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     install_cmd = AGENTS[name].install_cmd
     launch_cmd = AGENTS[name].launch_cmd
 
-    assert "/opt/benchflow/node" in install_cmd
+    assert "/opt/runtime/node" in install_cmd
     # Assert shared runtime floor, not a brittle exact pin (BF-10).
     pin = re.search(r"BF_NODE_VERSION=(\d+)\.(\d+)\.\d+", install_cmd)
     assert pin, "BF_NODE_VERSION pin missing from JS agent bootstrap"
@@ -158,24 +158,21 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     assert (major, minor) >= (22, 19), (
         f"pinned node {pin.group(0)} is below supported >=22.19 floor"
     )
-    assert "/opt/benchflow/js-agents" in install_cmd
+    assert "/opt/runtime/js-agents" in install_cmd
     if name in DIRECT_JS_ACP_AGENTS:
         m = re.search(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d", launch_cmd)
         assert m, f"{name!r} direct JS ACP launcher is not base64-staged"
         launcher = base64.b64decode(m.group(1)).decode()
-        assert "/opt/benchflow/js-agents/" in launcher
-        assert "/opt/benchflow/node/bin/node" in launcher
+        assert "/opt/runtime/js-agents/" in launcher
+        assert "/opt/runtime/node/bin/node" in launcher
         assert "/tmp/" in launch_cmd
     else:
-        assert "/opt/benchflow/bin" in install_cmd
-        assert "--prefix /opt/benchflow/js-agents" in install_cmd
-        assert "/opt/benchflow/bin" in launch_cmd
+        assert "/opt/runtime/bin" in install_cmd
+        assert "--prefix /opt/runtime/js-agents" in install_cmd
+        assert "/opt/runtime/bin" in launch_cmd
+        assert "/opt/runtime/js-agents/bin:/opt/runtime/node/bin:$PATH" in install_cmd
         assert (
-            "/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" in install_cmd
-        )
-        assert (
-            "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/"
-            in install_cmd
+            "exec /opt/runtime/node/bin/node /opt/runtime/js-agents/bin/" in install_cmd
         )
         # The launched program is the isolated bin — directly, or (codex-acp) after a
         # self-config-writing prefix. 092eb18ad uses `&& exec` after the private
@@ -190,16 +187,16 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
                 in launch_cmd
             )
             assert (
-                launched == '"$bf_shim_python" -I -S /opt/benchflow/bin/pi-acp-launcher'
+                launched == '"$bf_shim_python" -I -S /opt/runtime/bin/pi-acp-launcher'
             )
         else:
-            assert launched.split()[0].startswith("/opt/benchflow/bin/")
+            assert launched.split()[0].startswith("/opt/runtime/bin/")
         assert launched.split()[0] not in {"export", "env"}
         assert not launched.startswith("PATH=")
 
     forbidden_fragments = [
-        'export PATH="/opt/benchflow/node/bin:/opt/benchflow/js-agents/bin:$PATH"',
-        "exec /opt/benchflow/js-agents/bin/",
+        'export PATH="/opt/runtime/node/bin:/opt/runtime/js-agents/bin:$PATH"',
+        "exec /opt/runtime/js-agents/bin/",
         "deb.nodesource.com",
         "apt-get install -y -qq nodejs",
         "apt-get install -y nodejs",
@@ -295,11 +292,12 @@ def test_opencode_install_is_pinned_for_reproducible_harness_runs():
     """Guards PR #931 against silently changing OpenCode between eval stages.
 
     The pinned version moves deliberately (PR #942 bumped it to 1.18.11 when
-    opencode became the default rubric reviewer); pinning itself must stay.
+    opencode became the default rubric reviewer; a later change to 1.19.5 after an
+    agent trial and a rubric review on it); pinning itself must stay.
     """
     install_cmd = AGENTS["opencode"].install_cmd
 
-    assert "opencode-ai@1.18.11" in install_cmd
+    assert "opencode-ai@1.19.5" in install_cmd
     assert "opencode-ai@latest" not in install_cmd
 
 
@@ -308,7 +306,7 @@ def test_gemini_cli_install_is_pinned():
     install_cmd = AGENTS["gemini"].install_cmd
     assert "@google/gemini-cli@0.42.0" in install_cmd
     assert "@google/gemini-cli@latest" not in install_cmd
-    assert "[ -x /opt/benchflow/js-agents/bin/gemini ] ||" not in install_cmd
+    assert "[ -x /opt/runtime/js-agents/bin/gemini ] ||" not in install_cmd
 
 
 def test_pi_acp_installs_the_pi_its_adapter_needs():
@@ -316,7 +314,7 @@ def test_pi_acp_installs_the_pi_its_adapter_needs():
     @mariozechner/pi-coding-agent, deprecated at 0.73.1, whose session/new
     never answered, so every pi-acp trial failed at connect (#1191)."""
     install_cmd = AGENTS["pi-acp"].install_cmd
-    assert "@earendil-works/pi-coding-agent@0.81.1" in install_cmd
+    assert "@earendil-works/pi-coding-agent@1.0.0" in install_cmd
     assert "pi-acp@0.0.34" in install_cmd
     assert "@mariozechner/pi-coding-agent" not in install_cmd
     assert "@latest" not in install_cmd

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import errno
 import os
 import shutil
 import stat
@@ -28,6 +29,7 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 from benchflow.task.env import TaskEnvRequest
@@ -157,6 +159,7 @@ def copy_tree(
     *,
     label: str = "",
     allow_outside: bool = False,
+    _copy_data: Callable[[str, int, int, os.stat_result], None] | None = None,
 ) -> None:
     """Copy *source* to *destination* without following any link.
 
@@ -187,15 +190,24 @@ def copy_tree(
             info = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
                 child = _open_directory(entry.name, directory)
-                os.mkdir(target, 0o700)
                 try:
+                    os.mkdir(target, 0o700)
                     walk(child, rel)
                 finally:
                     os.close(child)
                 os.chmod(target, stat.S_IMODE(info.st_mode) | 0o700)
                 os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
             elif stat.S_ISREG(info.st_mode):
-                _copy_file(entry.name, target, info, directory)
+                if _copy_data is None:
+                    _copy_file(entry.name, target, info, directory)
+                else:
+                    _copy_file(
+                        entry.name,
+                        target,
+                        info,
+                        directory,
+                        copy_data=partial(_copy_data, rel),
+                    )
             elif stat.S_ISLNK(info.st_mode):
                 link = os.readlink(entry.name, dir_fd=directory)
                 parent = os.path.dirname(os.path.join(real, rel))
@@ -249,7 +261,14 @@ def _open_directory(path: str, parent: int | None = None) -> int:
     )
 
 
-def _copy_file(source: str, target: str, info: os.stat_result, directory: int) -> None:
+def _copy_file(
+    source: str,
+    target: str,
+    info: os.stat_result,
+    directory: int,
+    *,
+    copy_data: Callable[[int, int, os.stat_result], None] | None = None,
+) -> None:
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     fd = os.open(source, flags, dir_fd=directory)
     try:
@@ -265,17 +284,42 @@ def _copy_file(source: str, target: str, info: os.stat_result, directory: int) -
             0o600,
         )
         try:
-            with (
-                os.fdopen(fd, "rb", closefd=False) as src,
-                os.fdopen(out, "wb", closefd=False) as dst,
-            ):
-                shutil.copyfileobj(src, dst, 1024 * 1024)
+            if copy_data is None:
+                _copy_file_data(fd, out)
+            else:
+                copy_data(fd, out, opened)
             os.fchmod(out, stat.S_IMODE(opened.st_mode) | 0o600)
+            os.utime(out, ns=(info.st_atime_ns, info.st_mtime_ns))
         finally:
             os.close(out)
     finally:
         os.close(fd)
-    os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns), follow_symlinks=False)
+
+
+def _copy_file_data(source: int, destination: int) -> None:
+    """Copy between the already checked descriptors, without Python buffers
+    where the kernel supports it. Unsupported copies resume at their offsets."""
+    copy_range = getattr(os, "copy_file_range", None)
+    if copy_range is not None:
+        try:
+            while copy_range(source, destination, 8 * 1024 * 1024):
+                pass
+        except OSError as exc:
+            if exc.errno not in (
+                errno.ENOSYS,
+                errno.EXDEV,
+                errno.EINVAL,
+                errno.EOPNOTSUPP,
+                errno.EPERM,
+            ):
+                raise
+    # Some virtual filesystems return zero before EOF. Reading the remainder
+    # also covers an unsupported operation after a partial kernel copy.
+    with (
+        os.fdopen(source, "rb", closefd=False) as src,
+        os.fdopen(destination, "wb", closefd=False) as dst,
+    ):
+        shutil.copyfileobj(src, dst, 1024 * 1024)
 
 
 @dataclass
@@ -382,7 +426,11 @@ class StagedEnvironment:
 
 
 def stage_environment(
-    environment_dir: Path, *, label: str = "environment", allow_outside: bool = False
+    environment_dir: Path,
+    *,
+    label: str = "environment",
+    allow_outside: bool = False,
+    _copy_data: Callable[[str, int, int, os.stat_result], None] | None = None,
 ) -> StagedEnvironment:
     """Copy the task containing *environment_dir* to a new private folder.
 
@@ -406,6 +454,7 @@ def stage_environment(
                 staged.task_dir,
                 label="",
                 allow_outside=allow_outside,
+                _copy_data=_copy_data,
             )
         else:
             staged.environment_dir.mkdir(mode=0o700)

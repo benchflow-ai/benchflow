@@ -14,7 +14,7 @@ New format::
         roles:
           - name: creator
             agent: gemini
-            model: gemini-3.1-flash-lite-preview
+            model: gemini-3.5-flash-lite
         turns:
           - role: creator
             prompt: "Generate a skill for this task..."
@@ -22,7 +22,7 @@ New format::
         roles:
           - name: solver
             agent: gemini
-            model: gemini-3.1-flash-lite-preview
+            model: gemini-3.5-flash-lite
         turns:
           - role: solver
 
@@ -30,7 +30,7 @@ Legacy format (auto-converted)::
 
     task_dir: tasks/
     agent: gemini
-    model: gemini-3.1-flash-lite-preview
+    model: gemini-3.5-flash-lite
     environment: daytona
     concurrency: 64
 """
@@ -128,6 +128,9 @@ def rollout_config_from_dict(
         agent_idle_timeout=raw.get(
             "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
         ),
+        agent_idle_timeout_given=(
+            "agent_idle_timeout_sec" in raw or "agent_idle_timeout" in raw
+        ),
         harness=raw.get("harness", "acp"),
         context_root=raw.get("context_root"),
         base_image_override=raw.get("base_image_override"),
@@ -184,6 +187,11 @@ def _optional_fields(raw: dict[str, Any]) -> dict[str, Any]:
         out["checkpoints"] = parse_checkpoint_policy(
             str(raw["checkpoints"]), keep=int(raw.get("checkpoint_keep") or 3)
         )
+    if raw.get("token_budget") is not None or raw.get("turn_budget") is not None:
+        out["trial_budget"] = {
+            "tokens": raw.get("token_budget"),
+            "turns": raw.get("turn_budget"),
+        }
     return out
 
 
@@ -331,6 +339,8 @@ def rollout_config_to_dict(
             if config.checkpoints is not None
             else None,
             "source_provenance": config.source_provenance,
+            "token_budget": config.trial_budget.tokens if config.trial_budget else None,
+            "turn_budget": config.trial_budget.turns if config.trial_budget else None,
         }
     )
     return json.loads(json.dumps(out, default=str))

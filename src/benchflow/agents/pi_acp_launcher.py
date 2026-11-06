@@ -21,8 +21,8 @@ from pathlib import Path
 # overrides supply values. Conservative — most modern models exceed these.
 _DEFAULT_CONTEXT_WINDOW = 128000
 _DEFAULT_MAX_TOKENS_CAP = 4096
-_BENCHFLOW_BIN_DIR = "/opt/benchflow/bin"
-_PI_ACP_BIN = "/opt/benchflow/bin/pi-acp"
+_BENCHFLOW_BIN_DIR = "/opt/runtime/bin"
+_PI_ACP_BIN = "/opt/runtime/bin/pi-acp"
 
 
 def _lookup_model_metadata(model: str) -> dict:
@@ -43,8 +43,8 @@ def _lookup_model_metadata(model: str) -> dict:
 def _derive_provider_name(model: str) -> str:
     """Derive a unique provider key so concurrent runs don't collide on "custom"."""
     if "/" in model:
-        return f"benchflow-{model.split('/')[0]}"
-    return f"benchflow-{model}" if model else "benchflow-custom"
+        return f"runtime-{model.split('/')[0]}"
+    return f"runtime-{model}" if model else "runtime-custom"
 
 
 def _positive_int(value: object) -> int | None:

@@ -91,7 +91,7 @@ def fleet(monkeypatch):
         ]
     )
     monkeypatch.setattr(sandbox_cli, "_daytona_sdk_available", lambda: True)
-    monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda: client)
+    monkeypatch.setattr(cli_main, "_daytona_client_or_exit", lambda **_: client)
     return client
 
 

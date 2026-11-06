@@ -779,7 +779,7 @@ def _load_verifier(rollout_dir: Path) -> VerifierArtifacts:
     )
 
 
-# Verifier-only recovery artifacts (docs/tasks/verifier-recovery.md): the pointer to
+# Verifier-only recovery artifacts (docs/tasks/verifiers.md): the pointer to
 # the admitted attempt and one receipt per attempt directory.
 _VERIFICATION_POINTER = "verification.json"
 _RECOVERY_DIR = "verifier-recovery"

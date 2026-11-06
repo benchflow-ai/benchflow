@@ -16,11 +16,11 @@ Usage::
 
     python tests/integration/check_adapter_evidence.py \
       --skillsbench-result dogfood/.../result.json \
-      --open-pr-root HILBench=/tmp/benchflow-pr279-triage \
-      --open-pr-root OpaqueToolsBench=/tmp/benchflow-pr280-triage \
-      --open-pr-root ContinualLearningBench=/tmp/benchflow-pr283-triage
+      --open-pr-root HILBench=/tmp/runtime-pr279-triage \
+      --open-pr-root OpaqueToolsBench=/tmp/runtime-pr280-triage \
+      --open-pr-root ContinualLearningBench=/tmp/runtime-pr283-triage
 
-Guards: ENG-89 adapter release-set grooming.
+Guards: adapter release-set grooming.
 """
 
 from __future__ import annotations

@@ -408,6 +408,8 @@ def test_redacts_namespaced_api_key_env_vars(raw, leaked, kept_name):
 
 # Split literals so the verbatim secret never appears in source (push protection).
 _FAKE_MASTER_KEY = "sk-" + "benchflow-" + "FAKEmasterKEYvalue1234567890abcd"
+# The proxy master key as BenchFlow makes it now (sk-runtime-<token_urlsafe(24)>).
+_FAKE_RUNTIME_KEY = "sk-" + "runtime-" + "FAKEruntimeKEY_value-1234567890ab"
 _FAKE_SVCACCT = "sk-" + "svcacct-" + "T3BlbkFJFAKEsvcacct0123456789ab"
 _FAKE_ADMIN = "sk-" + "admin-" + "T3BlbkFJFAKEadminkey0123456789ab"
 _FAKE_OPENROUTER = "sk-" + "or-v1-" + "0123fakeOPENROUTER456789abcdef0123456789"
@@ -461,6 +463,27 @@ _FAKE_JWT = (
             "FAKEmasterKEYvalue1234567890abcd",
             None,
             id="sk-benchflow",
+        ),
+        pytest.param(
+            "proxy master key in a JSON value (sk-runtime- family)",
+            f'{{"note": "{_FAKE_RUNTIME_KEY}"}}',
+            "FAKEruntimeKEY_value-1234567890ab",
+            "note",
+            id="sk-runtime-json",
+        ),
+        pytest.param(
+            "proxy master key in prose (sk-runtime- family)",
+            f"Incorrect API key provided: {_FAKE_RUNTIME_KEY}.",
+            "FAKEruntimeKEY_value-1234567890ab",
+            "Incorrect API key provided",
+            id="sk-runtime-prose",
+        ),
+        pytest.param(
+            "older proxy master key in prose (sk-benchflow- family)",
+            f"Incorrect API key provided: {_FAKE_MASTER_KEY}.",
+            "FAKEmasterKEYvalue1234567890abcd",
+            "Incorrect API key provided",
+            id="sk-benchflow-prose",
         ),
         pytest.param(
             "OpenAI service-account key (sk-svcacct-)",
@@ -764,6 +787,8 @@ def test_redaction_does_not_corrupt_python_authorization_fstrings():
         # sk-proj-/sk-admin- kebab slugs (lowercase → no uppercase → not a key).
         "git checkout sk-proj-refactor-auth-module",
         "kubectl create sa sk-admin-cluster-operator-prod",
+        # `runtime` is a common word too: lowercase slugs around sk-runtime-.
+        "see task-runtime-configuration-files and disk-runtime-limit-exceeded",
         # eyJ-prefixed identifiers / dotted base64 wire formats that aren't JWTs
         # (3rd segment < 20 chars).
         "result = eyJsonObject.parseColumns.getValuesFrom(input)",

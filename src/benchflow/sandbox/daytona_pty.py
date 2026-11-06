@@ -25,7 +25,7 @@ from benchflow.sandbox._base import (
 )
 
 # Kept for the imports that still name it; no env file is written.
-_DAYTONA_ENV_FILE_PREFIX = "/tmp/.benchflow_daytona_env_"
+_DAYTONA_ENV_FILE_PREFIX = "/tmp/.runtime_daytona_env_"
 
 
 def _wrap_daytona_command_with_env_file(

@@ -259,7 +259,9 @@ def test_a_head_commit_runs_the_default_branch(tmp_path, snapshot, monkeypatch):
 
 def test_the_packaged_terminal_bench_entry_pins_every_task():
     entries = json.loads(Path(PACKAGED_REGISTRY_SOURCE).read_text())
-    (entry,) = [e for e in entries if e["name"] == "terminal-bench"]
+    (entry,) = [
+        e for e in entries if e["name"] == "terminal-bench" and e["version"] == "2.0"
+    ]
     assert entry["version"] == "2.0"
     tasks = entry["tasks"]
     assert len(tasks) == 89

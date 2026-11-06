@@ -218,18 +218,21 @@ def test_a_crashed_verifier_says_what_test_sh_did_and_quotes_it(tmp_path):
     code, out, _ = _bench(
         tmp_path, "run", "tasks/b1-crash", "--jobs-dir", "jobs", "--job", "b1-crash"
     )
-    assert code == 0, out
+    # No usable reward is now the verifier's error: the run exits 1.
+    assert code == 1, out
     _no_traceback(out)
     assert "accepting reward" not in out
     assert "<reachable:" not in out
     assert (
-        "Verifier scored 0: test.sh exited 1 and wrote an empty verifier/reward.txt"
+        "verifier wrote no usable reward: test.sh exited 1 and wrote an empty "
+        "verifier/reward.txt"
     ) in out
-    assert "1 scored (0 passed, 1 failed), 0 unscored" in out
+    assert "0 scored (0 passed, 0 failed), 1 unscored" in out
+    assert "the verifier wrote no usable reward (a failure in every score)" in out
     stdout = next(job.glob("*/verifier/test-stdout.txt")).read_text()
     assert "NameError: name 'score' is not defined" in stdout
     assert "bench tasks check" not in out
-    assert _result(job)["verifier_error_category"] is None
+    assert _result(job)["verifier_error_category"] == "verifier_failure"
 
 
 def _pty_run(argv: list[str], cwd: Path, env: dict, after: float) -> tuple[int, str]:

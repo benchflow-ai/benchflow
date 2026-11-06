@@ -138,7 +138,7 @@ def test_reachable_directories_cannot_escape_as_filesystem_paths(tmp_path):
         "taskmd-judge",
         "claude-sessions",
         "declared/artifact.txt",
-        ".benchflow-mount-probe-dummy",
+        ".runtime-mount-probe-dummy",
         "guard-marker",
     ],
 )

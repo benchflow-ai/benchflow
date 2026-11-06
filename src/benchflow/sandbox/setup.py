@@ -721,7 +721,14 @@ def _create_sandbox_environment(
     )
     # Every backend builds and launches from a private, no-follow copy of
     # the environment folder, never the task's own files.
-    staged = _stage_environment(environment_dir, task_path.name)
+    if (
+        sandbox_type == "daytona"
+        and not env_config.docker_image
+        and environment_manifest is None
+    ):
+        staged = _stage_environment(environment_dir, task_path.name, "daytona")
+    else:
+        staged = _stage_environment(environment_dir, task_path.name)
     try:
         sandbox = _make_sandbox(
             sandbox_type,
@@ -747,7 +754,9 @@ def _create_sandbox_environment(
     return sandbox
 
 
-def _stage_environment(environment_dir: Path, task_name: str) -> Any:
+def _stage_environment(
+    environment_dir: Path, task_name: str, sandbox_type: str | None = None
+) -> Any:
     """The private copy of a task's environment folder (refused with the
     task's name for a link out of it or a special file)."""
     from benchflow.task.compose_env import host_access_allowed
@@ -755,6 +764,14 @@ def _stage_environment(environment_dir: Path, task_name: str) -> Any:
     from benchflow.task.staging import StagingRefused, stage_environment
 
     try:
+        if sandbox_type == "daytona":
+            from benchflow.sandbox.daytona_context_stage import (
+                stage_daytona_environment,
+            )
+
+            return stage_daytona_environment(
+                environment_dir, allow_outside=host_access_allowed()
+            )
         return stage_environment(environment_dir, allow_outside=host_access_allowed())
     except StagingRefused as exc:
         raise TaskEnvNotAllowedError({task_name: exc.refused}) from None
@@ -927,6 +944,7 @@ def _make_sandbox(
             auto_delete_interval_mins=1440,
             persistent_env=manifest_env or None,
         )
+        sandbox._daytona_contexts = getattr(staged, "daytona_contexts", None)
         # DinD: checked before the Daytona sandbox is created, on the copy
         # it uploads; the VM checks again before the hook.
         _preflight_daytona_compose(

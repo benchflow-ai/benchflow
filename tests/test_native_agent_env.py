@@ -50,7 +50,7 @@ async def test_private_upload_contains_data_and_is_removed_after_dispatch():
         assert "exec 9<" in opening
         assert "/bin/rmdir" in opening
         assert root.await_args.args[0].startswith(
-            "umask 077; /bin/mkdir -- /.benchflow-agent-env-"
+            "umask 077; /bin/mkdir -- /.runtime-agent-env-"
         )
     assert payloads[0][0] == {"BASH_ENV": "$(dummy)", "ODD": "\n'"}
     assert "/bin/rm -f -- " + payloads[0][1] in root.await_args.args[0]
@@ -83,5 +83,5 @@ async def test_failed_upload_or_dispatch_cleans_only_its_private_file(failure):
             raise RuntimeError("dummy")
     assert root.await_count == 2
     cleanup = root.await_args.args[0]
-    assert "/bin/rm -f -- /.benchflow-agent-env-" in cleanup
+    assert "/bin/rm -f -- /.runtime-agent-env-" in cleanup
     assert "rm -rf" not in cleanup

@@ -3,5 +3,5 @@
  "message": "Verifier setup failed: chmod exited with rc=7",
  "raised": "VerifierSetupError",
  "receipt": null,
- "receipt_dir": "stat: cannot statx '/run/benchflow': No such file or directory"
+ "receipt_dir": "stat: cannot statx '/run/runtime': No such file or directory"
 }

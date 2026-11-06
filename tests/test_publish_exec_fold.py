@@ -20,7 +20,7 @@ from benchflow.rollout._setup import _publish_trajectory_for_verifier
 from tests.reachable_fixture import directory
 
 TRAJECTORY = [{"type": "oracle", "stdout": "x"}]
-STAGE = "/logs/.benchflow-publish-"
+STAGE = "/logs/.runtime-publish-"
 
 
 def _stage_of(calls: list) -> str:

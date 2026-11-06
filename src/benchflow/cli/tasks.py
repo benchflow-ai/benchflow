@@ -198,7 +198,7 @@ def register_tasks(app: typer.Typer) -> None:
                 "lists them), then prove the task with its reference solution:",
                 f"bench check {task_dir}",
                 f"bench run {task_dir} --sandbox docker --jobs-dir {jobs_dir} --fresh",
-                "Guide: https://github.com/benchflow-ai/benchflow/blob/main/docs/tasks/create-a-task.md",
+                "Guide: https://github.com/benchflow-ai/benchflow/blob/main/docs/tasks/write-a-task.md",
             ):
                 print_hint(line)
         except (OSError, ValueError) as e:
@@ -412,6 +412,17 @@ def register_tasks(app: typer.Typer) -> None:
         )
         if linked:
             raise ValueError(linked[0])
+        # Inspect the source package before an adapter materializes a copy:
+        # copying macOS metadata can contaminate an image's task data.
+        if task_dir.is_dir():
+            for sidecar in sorted(task_dir.rglob("._*")):
+                if sidecar.is_file():
+                    relative = sidecar.relative_to(task_dir).as_posix()
+                    console.print(
+                        "  [yellow]warning:[/yellow] AppleDouble metadata file "
+                        f"{escape(relative)}: remove it before staging the task; "
+                        "on macOS, COPYFILE_DISABLE=1 prevents tar from adding it"
+                    )
         fmt = detect_task_format(task_dir)
         refused_before_native = False
         if fmt is not None and fmt.name == "taskmd":

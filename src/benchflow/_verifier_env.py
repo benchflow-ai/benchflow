@@ -49,6 +49,15 @@ from typing import Any
 # Set last, over the task's own values; nothing replaces them.
 VERIFIER_PINNED_ENV: dict[str, str] = {"PIP_CONFIG_FILE": os.devnull}
 
+# A test command with a start receipt exports the receipt's name under this
+# name, so each process of that attempt carries it in /proc/<pid>/environ,
+# also when the command was sent as data and names the receipt on no command
+# line: the kill of a timed-out attempt finds them by it
+# (rollout._setup._kill_verifier_command), where root may read their
+# environment (its own processes', or any with CAP_SYS_PTRACE). No secret:
+# the command's own text names the receipt.
+VERIFIER_ATTEMPT_ENV = "BENCHFLOW_VERIFIER_ATTEMPT"
+
 # Removed from the verifier's environment; never set, not even empty.
 VERIFIER_UNSET_ENV: tuple[str, ...] = (
     "COVERAGE_PROCESS_START",

@@ -80,8 +80,16 @@ def _summary_row(label: str, data: Any, planned: int | None) -> JobRow:
     if not isinstance(data, dict):
         return JobRow(label, "?", "[dim]corrupt summary[/dim]")
     total = data.get("total", "?")
-    passed = data.get("passed", "?")
+    # The scoring rule's passes (summary.json's "passed" is the audit count,
+    # which names a verifier error first even when the trial was scored).
+    scoring = data.get("scoring") if isinstance(data.get("scoring"), dict) else {}
+    passed = scoring.get("passed", data.get("passed", "?"))
     text = f"{passed}/{total} ({data.get('score', '?')})"
+    settings = scoring.get("settings") if isinstance(scoring, dict) else None
+    if (isinstance(settings, dict) and settings.get("mixed")) or isinstance(
+        data.get("restarted_after_change"), dict
+    ):
+        text += " [yellow]mixed settings[/yellow]"
     # summary.json's own plan, else evaluation.json's.
     planned = data.get("planned", planned)
     tasks = str(total)

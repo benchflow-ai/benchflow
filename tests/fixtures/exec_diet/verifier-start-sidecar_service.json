@@ -1,7 +1,7 @@
 {
  "chmod_tries": "1",
  "receipt": [
-  "/run/benchflow/verifier-started-<hex>",
+  "/run/runtime/verifier-started-<hex>",
   "target"
  ],
  "receipt_dir": "1777 directory",

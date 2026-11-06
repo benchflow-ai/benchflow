@@ -35,9 +35,11 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.sandbox.daytona_delete import (
+    SandboxStillBuilding,
     delete_sandbox,
     delete_sandbox_sync,
     list_sandboxes_sync,
+    still_building,
 )
 
 
@@ -151,6 +153,8 @@ class Entry:
     busy: bool = False
     found: bool = False
     errors: list[str] = field(default_factory=list)
+    # Ids of this attempt's sandboxes already reported as still building.
+    building: set[str] = field(default_factory=set)
 
     def record(self) -> dict[str, Any]:
         return {
@@ -318,6 +322,13 @@ class Ledger:
             for sandbox in found:
                 try:
                     await delete_sandbox(sandbox)
+                except SandboxStillBuilding as exc:
+                    # Looked at again every sweep: deleted once it has started.
+                    deleted = False
+                    if str(exc.sandbox_id) not in entry.building:
+                        entry.building.add(str(exc.sandbox_id))
+                        logger.warning(f"{exc} (create attempt {entry.key})")
+                    continue
                 except Exception as exc:
                     if not _is_not_found(exc):
                         deleted = False
@@ -514,6 +525,7 @@ def cleanup_leftovers(
         "closed": 0,
         "kept": 0,
         "failed": 0,
+        "building": 0,
         "other_owner": 0,
         "ids": [],
     }
@@ -536,6 +548,9 @@ def cleanup_leftovers(
                 continue
             try:
                 delete_sandbox_sync(client, client.get(sandbox_id))
+            except SandboxStillBuilding:
+                counts["building"] += 1
+                continue
             except Exception as exc:
                 if not _is_not_found(exc):
                     counts["failed"] += 1
@@ -564,8 +579,12 @@ def cleanup_leftovers(
             else:
                 counts["kept"] += 1
             continue
-        failed = False
+        failed = building = False
         for sandbox in found:
+            if still_building(sandbox):
+                # Kept: a later cleanup deletes it once it has started.
+                building = True
+                continue
             counts["ids"].append(str(getattr(sandbox, "id", "?")))
             if dry_run:
                 counts["deleted"] += 1
@@ -579,6 +598,8 @@ def cleanup_leftovers(
             counts["deleted"] += 1
         if failed:
             counts["failed"] += 1
+        elif building:
+            counts["building"] += 1
         elif not dry_run:
             done.append(key)
     if done:

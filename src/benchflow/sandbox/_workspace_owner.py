@@ -8,7 +8,8 @@ depth. Mounts are entered, as chown -R does. Each change is its own checked
 syscall: the first that fails stops the walk and fails the step.
 
 freeze: every entry becomes root's, except a regular file with more than one
-name, which keeps its owner and mode (TRUSTED-RUNTIME v2 I5).
+name, which keeps its owner and mode. A regular file whose chown is denied
+is replaced by a root-owned copy; other failed changes still stop the walk.
 
 close (after freeze): a regular file that is not root's is replaced at its
 workspace name by a root-owned copy without setuid, setgid or group and other
@@ -88,7 +89,16 @@ def freeze(name, entry):
         and entry.stat(follow_symlinks=False).st_nlink > 1
     ):
         return False
-    os.chown(name, UID, GID, follow_symlinks=False)
+    try:
+        os.chown(name, UID, GID, follow_symlinks=False)
+    except PermissionError:
+        st = os.lstat(name)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise
+        # An unmapped image owner can prevent chown even for namespace root.
+        # Copy instead of trusting the overflow uid as proof of ownership.
+        replace(name, st)
+        print(f"workspace freeze: copied unchownable file {name!r}", file=sys.stderr)
     return entry is None or entry.is_dir(follow_symlinks=False)
 
 

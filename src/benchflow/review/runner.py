@@ -525,6 +525,7 @@ async def run_review(
     only the generated wrapper and its evidence upload copies are temporary.
     """
     from benchflow import run as run_rollout
+    from benchflow.acp.selection import review_rollout
     from benchflow.rollout import RolloutConfig
 
     trial = TrialReview(trial_name=rollout_dir.name, source_rollout=str(rollout_dir))
@@ -550,9 +551,49 @@ async def run_review(
             agent_timeout_sec=config.timeout_sec,
             open_network=config.open_network,
             workspace_bundle=workspace_bundle,
+            memory_mb=config.memory_mb,
+            storage_mb=config.storage_mb,
+            environment=config.environment,
         )
         from benchflow.review.persistence import write_json_atomic
+        from benchflow.task import Task
 
+        # The reviewed run's setup budget; a detached review, which knows no
+        # run, keeps the rollout default.
+        setup_timeout = (
+            config.setup_timeout_sec
+            if config.setup_timeout_sec is not None
+            else RolloutConfig.sandbox_setup_timeout
+        )
+        # The wrapper task declares allow_internet: false, which engages the
+        # no-web pipeline end to end: web tools disabled, the model proxy
+        # forced sandbox-local, and the agent-UID egress firewall scoped to
+        # that loopback gateway.
+        hooks = [_lock_review_evidence]
+        evidence_timeout = None
+        if workspace_bundle is not None:
+            from benchflow.review.evidence import (
+                EvidenceManifest,
+                evidence_bytes,
+                evidence_install_timeout_sec,
+                install_review_evidence,
+            )
+
+            manifest = EvidenceManifest.model_validate_json(
+                (workspace_bundle / "manifest.json").read_text()
+            )
+            evidence_timeout = config.evidence_timeout_sec or (
+                evidence_install_timeout_sec(evidence_bytes(workspace_bundle))
+            )
+            hooks.insert(
+                0,
+                partial(
+                    install_review_evidence,
+                    manifest=manifest,
+                    timeout_sec=evidence_timeout,
+                ),
+            )
+        sandbox = Task(wrapper_dir).config.sandbox
         write_json_atomic(
             runtime_dir / "reviewer-environment.json",
             {
@@ -561,24 +602,13 @@ async def run_review(
                 if config.image == REVIEWER_IMAGE
                 else [],
                 "open_network": config.open_network,
+                "memory_mb": sandbox.memory_mb,
+                "storage_mb": sandbox.storage_mb,
+                "setup_timeout_sec": setup_timeout,
+                "evidence_timeout_sec": evidence_timeout,
             },
         )
         shutil.copyfile(wrapper_dir / "task.md", runtime_dir / "reviewer-task.md")
-        # The wrapper task declares allow_internet: false, which engages the
-        # no-web pipeline end to end: web tools disabled, the model proxy
-        # forced sandbox-local, and the agent-UID egress firewall scoped to
-        # that loopback gateway.
-        hooks = [_lock_review_evidence]
-        if workspace_bundle is not None:
-            from benchflow.review.evidence import (
-                EvidenceManifest,
-                install_review_evidence,
-            )
-
-            manifest = EvidenceManifest.model_validate_json(
-                (workspace_bundle / "manifest.json").read_text()
-            )
-            hooks.insert(0, partial(install_review_evidence, manifest=manifest))
         attempt_dir = runtime_dir
         for attempt in range(1, _REVIEWER_TRANSPORT_ATTEMPTS + 1):
             rollout_config = RolloutConfig(
@@ -592,13 +622,20 @@ async def run_review(
                 parent_rollout=rollout_dir.name,
                 jobs_dir=attempt_dir,
                 timeout=config.timeout_sec,
+                # Also the in-sandbox model proxy's install budget, at least
+                # 600 s (providers/litellm_runtime.py).
+                sandbox_setup_timeout=setup_timeout,
                 # 0 disables the watchdog; the transport's read guard follows
                 # the idle budget (acp/runtime.py, #1143).
                 agent_idle_timeout=config.idle_timeout_sec,
+                agent_idle_timeout_given=True,
                 uploads=uploads,
                 pre_agent_hooks=hooks,
             )
-            result = await run_rollout(rollout_config)
+            # The review's own transport, not the solver's: ssh on Daytona
+            # unless BENCHFLOW_REVIEWER_ACP_TRANSPORT=pty (acp.selection).
+            with review_rollout():
+                result = await run_rollout(rollout_config)
             leaf = _reviewer_rollout_leaf(attempt_dir)
             lost = _reviewer_transport_loss(leaf) if leaf else None
             if lost is None or leaf is None or _leaf_review_result(leaf) is not None:

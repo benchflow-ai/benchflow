@@ -1,7 +1,7 @@
 {
  "chmod_tries": "1",
  "receipt": null,
- "receipt_dir": "stat: cannot statx '/run/benchflow': No such file or directory",
+ "receipt_dir": "stat: cannot statx '/run/runtime': No such file or directory",
  "rewards": {
   "reward": 1.0
  }

@@ -174,7 +174,7 @@ def test_the_tree_holds_the_plugins_and_benchflows_pytest(pypi, tmp_path):
     assert script.index("sha256sum -c") < script.index("exec ")
     assert f"PATH={runtime.KIT_BIN}" in script
     run = (tmp_path / "tree/run.py").read_text()
-    assert "SITE = '/opt/benchflow/verifier/site'" in run
+    assert "SITE = '/opt/runtime/verifier/site'" in run
     assert '"--confcutdir=" + TESTS' in run and "TESTS = '/tests'" in run
     assert "PLUGINS = {'ctrf': 'ctrf_main'}" in run
     sums = (tmp_path / "tree/SHA256SUMS").read_text()
@@ -468,7 +468,7 @@ async def test_hardening_refuses_a_task_whose_runtime_is_missing(tmp_path, monke
     class Built:
         @receipt_aware
         async def exec(self, command, **kwargs):
-            assert "/opt/benchflow/verifier" in command and "sha256sum -c" in command
+            assert "/opt/runtime/verifier" in command and "sha256sum -c" in command
             return SimpleNamespace(
                 stdout=json.dumps(manifest), stderr="", return_code=0
             )

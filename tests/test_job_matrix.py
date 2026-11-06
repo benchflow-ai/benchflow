@@ -168,7 +168,7 @@ def test_two_agents_by_two_datasets_run_four_job_sets(project, ran) -> None:
     assert sorted((r["alias"], r["total"]) for r in summary["runs"]) == [
         ("nop__ds-a", 3), ("nop__ds-b", 1), ("oracle__ds-a", 3), ("oracle__ds-b", 1),
     ]  # fmt: skip
-    assert "Matrix: 4 trial job(s), 8/8 trials passed" in " ".join(
+    assert "Matrix: 4 jobs (4 aliases), 8/8 trials passed" in " ".join(
         result.output.split()
     )
 

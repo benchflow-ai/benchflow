@@ -17,7 +17,7 @@ and ``bench tasks check`` take a draft 2 folder as they take a native one.
 - ``benchflow.taskmd.grading`` and ``benchflow.taskmd.judging``: the
   ``taskmd`` verifier strategy's rubric scoring and model judges.
 
-docs/tasks/taskmd-draft-2.md is the guide.
+docs/tasks/task-format.md is the guide.
 """
 
 from __future__ import annotations

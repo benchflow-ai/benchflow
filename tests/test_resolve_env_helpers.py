@@ -746,11 +746,11 @@ class TestResolveAgentEnvAzureFoundry:
             result["OPENAI_BASE_URL"]
             == "https://example-resource.openai.azure.com/openai/v1"
         )
-        assert result["MODEL_PROVIDER"] == "benchflow-azure-foundry-openai"
+        assert result["MODEL_PROVIDER"] == "runtime-azure-foundry-openai"
         codex_config = json.loads(result["CODEX_CONFIG"])
         assert codex_config["model"] == "gpt-5.5"
-        assert codex_config["model_provider"] == "benchflow-azure-foundry-openai"
-        provider = codex_config["model_providers"]["benchflow-azure-foundry-openai"]
+        assert codex_config["model_provider"] == "runtime-azure-foundry-openai"
+        provider = codex_config["model_providers"]["runtime-azure-foundry-openai"]
         assert provider == {
             "name": "azure-foundry-openai",
             "base_url": "https://example-resource.openai.azure.com/openai/v1",

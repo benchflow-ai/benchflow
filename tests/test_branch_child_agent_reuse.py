@@ -23,7 +23,7 @@ async def test_a_child_with_the_parents_agent_skips_only_the_binary_install(
 ):
     trial = _make_trial(tmp_path, agent="claude-agent-acp", sandbox_setup_timeout=41)
     parent_cfg = MagicMock(name="parent agent config")
-    parent_cfg.launch_cmd = "/opt/benchflow/bin/claude-agent-acp"
+    parent_cfg.launch_cmd = "/opt/runtime/bin/claude-agent-acp"
     trial._installed_agent_cfg = parent_cfg
     # The reuse is verified: the child must come from a
     # branch snapshot and the binary must be present (test_branch_snapshot_start).

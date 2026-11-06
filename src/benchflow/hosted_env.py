@@ -179,7 +179,7 @@ class HostedEnvRunConfig:
     num_examples: int = 1
     rollouts_per_example: int = 1
     max_tokens: int = 1024
-    temperature: float = 0.0
+    temperature: float | None = None
     sampling_args: dict[str, Any] = field(default_factory=dict)
     python: str = "3.12"
     runner: str = "verifiers"
@@ -296,7 +296,14 @@ def vf_eval_cli(venv_dir: Path) -> tuple[str, str | None]:
         except OSError:
             entries = ""
         match = re.search(r"^vf-eval\s*=\s*(\S+)", entries, re.M)
-        cli = "v1" if match and match.group(1).startswith("verifiers.v1.") else "legacy"
+        if not match:
+            raise HostedEnvError(
+                f"Installed verifiers {version or 'unknown'} has no vf-eval entry point. "
+                "This runner requires vf-eval; vf-run is not supported. "
+                "Use --source-env-verifiers-version to pin a release compatible "
+                "with your environment that still provides vf-eval."
+            )
+        cli = "v1" if match.group(1).startswith("verifiers.v1.") else "legacy"
         return cli, version
     return "legacy", None
 
@@ -339,9 +346,9 @@ def build_vf_eval_command(
             model,
             "--sampling.max-tokens",
             str(config.max_tokens),
-            "--sampling.temperature",
-            str(config.temperature),
         ]
+        if config.temperature is not None:
+            command += ["--sampling.temperature", str(config.temperature)]
         for key, value in sorted(config.sampling_args.items()):
             command += [f"--sampling.{key.replace('_', '-')}", _cli_value(value)]
         for key, value in sorted(config.env_args.items()):
@@ -374,11 +381,11 @@ def build_vf_eval_command(
         model,
         "--max-tokens",
         str(config.max_tokens),
-        "--temperature",
-        str(config.temperature),
         "--sampling-args",
         json.dumps(dict(config.sampling_args), sort_keys=True),
     ]
+    if config.temperature is not None:
+        command += ["--temperature", str(config.temperature)]
     if config.api_base_url:
         command += ["--api-base-url", config.api_base_url]
     if config.api_key_var:

@@ -115,7 +115,12 @@ def test_trials_without_matrix_rejected(tmp_path: Path):
         app, ["eval", "run", "--config", str(config), "--trials", "3"]
     )
     assert result.exit_code == 2
-    assert "--trials > 1 needs a task folder or --dataset" in result.stderr
+    assert (
+        "--trials > 1 needs a task folder, a task named by repository or --dataset"
+        in result.stderr
+    )
+    # The refusal names how a config file repeats tasks instead.
+    assert "n_attempts" in result.stderr
 
 
 def test_skill_mode_bogus_clean_error(tmp_path: Path):
@@ -575,3 +580,114 @@ def test_optional_sandbox_hints_agree():
         dist_version=lambda _: None,
     )
     assert check_daytona(probes, required=True, offline=True).fix == hint
+
+
+# --- an agent that routes its own model calls (model_route = "agent") ---
+
+_OWN_ROUTE = "en191-own-route"
+
+
+@pytest.fixture
+def own_route_agent(monkeypatch):
+    from benchflow.agents.registry import (
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+    )
+    from benchflow.agents.registry import AgentConfig as RegistryAgentConfig
+
+    monkeypatch.setitem(
+        AGENTS,
+        _OWN_ROUTE,
+        RegistryAgentConfig(
+            name=_OWN_ROUTE,
+            install_cmd="true",
+            launch_cmd=f"{_OWN_ROUTE} --acp",
+            model_route="agent",
+        ),
+    )
+    monkeypatch.setitem(AGENT_INSTALLERS, _OWN_ROUTE, "true")
+    monkeypatch.setitem(AGENT_LAUNCH, _OWN_ROUTE, f"{_OWN_ROUTE} --acp")
+    monkeypatch.delenv("BENCHFLOW_USAGE_TRACKING", raising=False)
+    return _OWN_ROUTE
+
+
+def test_effective_model_of_an_own_route_agent_is_its_label_or_none(
+    own_route_agent, monkeypatch
+):
+    """An agent that routes its own model calls needs no model.
+    Without one it gets None (its own default), never the global default; a
+    --model or default_model is kept as its label."""
+    from dataclasses import replace
+
+    from benchflow.agents.registry import AGENTS
+    from benchflow.evaluation import effective_model
+
+    assert effective_model(own_route_agent, None) is None
+    assert effective_model(own_route_agent, "deepseek-v4-flash") == "deepseek-v4-flash"
+    monkeypatch.setitem(
+        AGENTS,
+        own_route_agent,
+        replace(AGENTS[own_route_agent], default_model="own-default"),
+    )
+    assert effective_model(own_route_agent, None) == "own-default"
+    # An ordinary agent with no default model is still refused.
+    with pytest.raises(ValueError, match="no default model"):
+        effective_model("codex-acp", None)
+
+
+@pytest.mark.parametrize("label", [None, "deepseek-v4-flash"])
+def test_eval_run_accepts_an_own_route_agent_with_or_without_a_label(
+    tmp_path: Path, own_route_agent, label
+):
+    """The CLI no longer refuses a registered agent with no
+    default_model when it routes its own model calls; the run gets the label
+    or None, never another provider's default model."""
+    seen = {}
+
+    async def run(self):
+        seen["model"] = self._config.model
+        return await _fake_run_pass(self)
+
+    task = _task_dir(tmp_path)
+    model_args = ["--model", label] if label else []
+    with patch.object(Evaluation, "run", new=run):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                own_route_agent,
+                "--sandbox",
+                "docker",
+                *model_args,
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert seen == {"model": label}
+
+
+@pytest.mark.parametrize("env_default", [False, True])
+def test_eval_plan_refuses_required_usage_for_an_own_route_agent(
+    tmp_path: Path, own_route_agent, monkeypatch, env_default
+):
+    """--usage-tracking required (or its environment default)
+    is refused before a job exists for an agent that routes its own calls."""
+    task = _task_dir(tmp_path)
+    if env_default:
+        monkeypatch.setenv("BENCHFLOW_USAGE_TRACKING", "required")
+    request = EvalCreateRequest(
+        tasks_dir=task,
+        agent=own_route_agent,
+        environment="docker",
+        usage_tracking=None if env_default else "required",
+    )
+    with pytest.raises(EvalPlanError, match="BenchFlow cannot meter an agent"):
+        build_eval_plan(request)
+    monkeypatch.delenv("BENCHFLOW_USAGE_TRACKING", raising=False)
+    assert build_eval_plan(
+        EvalCreateRequest(tasks_dir=task, agent=own_route_agent, environment="docker")
+    )

@@ -7,7 +7,7 @@ reuse of the snapshot, and lineage (fork depth, which child a nested fork was
 made from, which forks a child made). It is what a viewer or a script should
 read instead of the raw files, whose fields grew across releases;
 fields an older tree lacks read as null. The document is described by
-``BRANCH_VIEW_SCHEMA`` (JSON Schema) and ``docs/reference/branch-view.md``.
+``BRANCH_VIEW_SCHEMA`` (JSON Schema) and ``docs/train/environment.md``.
 
 Provider snapshot refs are capability handles and never appear; neither do
 prompts (a child's ``requested`` is a short description with a digest) or
@@ -24,7 +24,7 @@ from typing import Any
 
 SCHEMA_ID = "benchflow.branch-view/1"
 #: Minor version within ``/1``: fields are only added (changelog in
-#: docs/reference/branch-view.md).
+#: docs/train/environment.md).
 SCHEMA_VERSION = "1.1"
 KIND = "benchflow.branch-view"
 

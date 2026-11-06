@@ -18,11 +18,14 @@ from benchflow._utils.modal_gpu import ModalGPURequestError, modal_gpu_request
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
+    ALLOWLIST_SERVICE_CHECK_PROVIDERS,
     ALLOWLIST_UNSUPPORTED_PROVIDERS,
     DENYLIST_UNSUPPORTED_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
     SANDBOX_PROVIDER_SET,
+    SANDBOX_PROVIDERS,
     SINGLE_CONTAINER_PROVIDERS,
+    VERIFIER_SERVICE_PROVIDERS,
     providers_phrase,
 )
 from benchflow.task.artifacts import ARTIFACT_SANDBOXES, artifact_spec_issue
@@ -141,6 +144,12 @@ def validate_task_runtime_support(
         task_dir=Path(task_dir) if task_dir is not None else None,
         sandbox=sandbox,
     )
+    _append_allowlist_services_issue(
+        unsupported,
+        config=config,
+        task_dir=Path(task_dir) if task_dir is not None else None,
+        sandbox=sandbox,
+    )
     if document is not None:
         _append_document_issues(unsupported, document=document, sandbox=sandbox)
     if task_dir is not None:
@@ -219,6 +228,43 @@ def _append_identity_switch_issue(
         )
 
 
+def _append_allowlist_services_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    task_dir: Path | None,
+    sandbox: str,
+) -> None:
+    """Refuse an allowlist task with compose services where they go unchecked.
+
+    Only backends that read the running project keep an allowlist's services
+    from fetching what it refuses (``egress_denylist.task_service_policy``).
+    Elsewhere such a task is refused before any sandbox starts: the launch
+    gate always passes the task's folder. A check of the config alone, with
+    no folder, cannot see a compose file and leaves the call to that gate.
+    Single-container backends refuse any compose file on their own.
+    """
+    if (
+        sandbox in ALLOWLIST_SERVICE_CHECK_PROVIDERS
+        or sandbox in SINGLE_CONTAINER_PROVIDERS
+        or NetworkMode.ALLOWLIST
+        not in (config.sandbox.network_mode, config.agent.network_mode)
+    ):
+        return
+    if task_dir is None or compose_definition_path(task_dir / "environment") is None:
+        return
+    checked = " and ".join(sorted(ALLOWLIST_SERVICE_CHECK_PROVIDERS))
+    _issue(
+        unsupported,
+        path="sandbox.network_mode",
+        reason=(
+            "network_mode='allowlist' with compose services needs a sandbox that "
+            f"checks they have no route out ({checked}); {sandbox} does not"
+        ),
+        sandbox=sandbox,
+    )
+
+
 def _append_verifier_image_issue(
     unsupported: list[UnsupportedTaskFeature],
     *,
@@ -291,12 +337,24 @@ def _append_config_issues(
     sandbox: str,
 ) -> None:
     if config.steps:
-        _issue(
-            unsupported,
-            path="steps",
-            reason="multi-step tasks are not supported (one prompt per task)",
-            sandbox=sandbox,
-        )
+        # Multi-step tasks run their steps as rounds of one sandbox
+        # (task/steps.py); each step's soft verify needs the tests in it.
+        if separate_verifier_requested(config):
+            _issue(
+                unsupported,
+                path="steps",
+                reason="a multi-step task's steps are verified in the agent's "
+                "sandbox, so it cannot use a separate verifier sandbox",
+                sandbox=sandbox,
+            )
+        names = [step.name for step in config.steps]
+        if len(set(names)) != len(names):
+            _issue(
+                unsupported,
+                path="steps",
+                reason="step names must be unique (each is a folder under steps/)",
+                sandbox=sandbox,
+            )
         for i, step in enumerate(config.steps):
             if step.artifacts:
                 _issue(
@@ -310,6 +368,14 @@ def _append_config_issues(
                     unsupported,
                     path=f"steps[{i}].healthcheck",
                     reason="step healthchecks are parsed but not implemented",
+                    sandbox=sandbox,
+                )
+            if step.verifier.collect:
+                _issue(
+                    unsupported,
+                    path=f"steps[{i}].verifier.collect",
+                    reason="a step's collect hooks are parsed but not executed "
+                    "(only the task's [[verifier.collect]] hooks run)",
                     sandbox=sandbox,
                 )
 
@@ -386,14 +452,19 @@ def _append_config_issues(
                 sandbox=sandbox,
             )
         _append_verifier_transfer_issues(unsupported, config=config, sandbox=sandbox)
-    if config.verifier.service != "main" and sandbox not in (
-        "docker",
-        "remote-docker",
-    ):
+    if config.verifier.service != "main" and sandbox not in VERIFIER_SERVICE_PROVIDERS:
         _issue(
             unsupported,
             path="verifier.service",
-            reason="non-main verifier services require Docker compose support",
+            reason=(
+                "a verifier in a compose service other than main needs a backend "
+                "that runs it in that service: "
+                + ", ".join(
+                    name
+                    for name in SANDBOX_PROVIDERS
+                    if name in VERIFIER_SERVICE_PROVIDERS
+                )
+            ),
             sandbox=sandbox,
         )
 

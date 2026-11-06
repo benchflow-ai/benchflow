@@ -210,7 +210,7 @@ def controls(task_dir: Path) -> dict[str, str]:
 
 
 class TaskMdFormat:
-    """task.md draft 2, as a BenchFlow task format (docs/tasks/taskmd-draft-2.md)."""
+    """task.md draft 2, as a BenchFlow task format (docs/tasks/task-format.md)."""
 
     name = FORMAT_NAME
     format_version = FORMAT_VERSION

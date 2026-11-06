@@ -7,7 +7,6 @@ from trial results.
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +18,14 @@ from benchflow._utils.scoring import (
     extract_reward,
     finite_reward,
     is_guard_refusal,
+    is_unusable_reward,
     mean_reward_caveat,
     mean_reward_every_trial,
     mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.models import rollout_time
 from benchflow.trajectories.metrics import result_skill_invocations
 from benchflow.usage_tracking import UsageSource, is_trusted_usage_source
 
@@ -161,11 +162,16 @@ class BenchmarkMetrics:
         return pass_rate_excl_errors(
             passed=self.passed,
             failed=self.failed,
-            # Guard refusals stay failures here.
+            # Guard refusals and unusable reward files stay failures here
+            # .
             refused=sum(
                 1
                 for t in self.tasks
-                if t.score_verifier_errored and is_guard_refusal(t.verifier_error)
+                if t.score_verifier_errored
+                and (
+                    is_guard_refusal(t.verifier_error)
+                    or is_unusable_reward(t.verifier_error)
+                )
             ),
         )
 
@@ -330,7 +336,7 @@ class BenchmarkMetrics:
 
     @property
     def integration_failures(self) -> dict[str, Any]:
-        """Trials whose agent integration broke (unscored), by cause."""
+        """Count the unscored trials whose agent integration broke, by cause."""
         causes = Counter(
             t.integration_cause for t in self.tasks if t.integration_cause is not None
         )
@@ -467,10 +473,11 @@ def collect_metrics(
         # Calculate duration
         duration = 0.0
         try:
-            started = datetime.fromisoformat(r["started_at"])
-            finished = datetime.fromisoformat(r["finished_at"])
+            started, finished = (
+                rollout_time(r[key]) for key in ("started_at", "finished_at")
+            )
             duration = (finished - started).total_seconds()
-        except (KeyError, ValueError):
+        except (KeyError, TypeError, ValueError):
             logger.debug("Could not compute duration for task %s", task_name)
 
         tasks.append(

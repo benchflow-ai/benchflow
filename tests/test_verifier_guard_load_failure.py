@@ -1,7 +1,7 @@
 """A reported plugin-guard problem scores 0 with a neutral warning.
 
 Guards the fix for the silent-zero regression introduced by the pytest plugin guard,
-which passes ``-p _benchflow_guard_<hex>`` to every verifier pytest. The
+which passes ``-p _runtime_guard_<hex>`` to every verifier pytest. The
 per-interpreter guard install puts the guard into every interpreter that exists at hardening
 time, but an interpreter test.sh creates itself (uvx, a fresh venv, an
 apk-installed Python) can still run pytest under ``-I`` or with a replaced
@@ -148,7 +148,7 @@ async def _run(
     log="test-stdout.txt",
     plugins=(),
 ):
-    guard = "_benchflow_guard_" + uuid.uuid4().hex
+    guard = "_runtime_guard_" + uuid.uuid4().hex
     guard_dir = tmp_path / guard
     guard_dir.mkdir()
     # What hardening makes next to the guard: its marker directory and key.
@@ -202,7 +202,7 @@ async def test_unloadable_guard_scores_zero_with_a_warning(
     """Guards the fix for the silent zero introduced by the pytest plugin guard.
 
     The solution is correct and test.sh wrote reward 0 only because pytest
-    could not import ``-p _benchflow_guard_<hex>``.
+    could not import ``-p _runtime_guard_<hex>``.
     """
     guard, paths, rewards, error = await _run(
         tmp_path, PASSING, isolated=isolated, pythonpath=pythonpath, log=log
@@ -225,7 +225,7 @@ async def test_loaded_guard_keeps_genuine_results_scored(tmp_path, source, rewar
     A genuine test failure, even one whose output names a guessed guard
     module, is still scored normally.
     """
-    guessed = "_benchflow_guard_" + "0" * 32
+    guessed = "_runtime_guard_" + "0" * 32
     banner = (
         f'ImportError: Error importing plugin "{guessed}": x\n'
         f"ModuleNotFoundError: No module named '{guessed}'\n"
@@ -251,11 +251,11 @@ async def test_missing_guard_copies_do_not_assign_blame(
     reasons survive in both the console warning and the saved trial warning.
     """
     monkeypatch.setattr(
-        PytestSandbox, "_benchflow_guard_unrecorded", unrecorded, raising=False
+        PytestSandbox, "_runtime_guard_unrecorded", unrecorded, raising=False
     )
     monkeypatch.setattr(
         PytestSandbox,
-        "_benchflow_guard_why",
+        "_runtime_guard_why",
         {"/opt/v3/bin/python3.12": "it is not in the pre-agent record as this file"},
         raising=False,
     )
@@ -398,7 +398,7 @@ FORGING_FAILURE = """
 import os, re, subprocess, sys
 from pathlib import Path
 
-GUARD = re.search(r"-p (_benchflow_guard_[0-9a-f]+)", os.environ["PYTEST_ADDOPTS"])[1]
+GUARD = re.search(r"-p (_runtime_guard_[0-9a-f]+)", os.environ["PYTEST_ADDOPTS"])[1]
 VERIFIER = Path(os.environ["FORGE_VERIFIER_DIR"])
 MARKERS = Path(os.environ["FORGE_GUARD_PARENT"]) / GUARD / ".markers"
 

@@ -12,8 +12,8 @@ filesystem. The Scene scheduler manages turn-taking and outbox routing.
 Usage:
     python -m benchmarks.followup_bench.runner \
         --task-dir tasks/terminal-bench-2/some-task \
-        --coder gemini --coder-model gemini-3.1-flash-lite-preview \
-        --reviewer gemini --reviewer-model gemini-3-pro-preview \
+        --coder gemini --coder-model gemini-3.5-flash-lite \
+        --reviewer gemini --reviewer-model gemini-3.1-pro-preview \
         --env daytona
 """
 
@@ -107,9 +107,12 @@ async def _role_runner(env, role: SceneRole, prompt: str) -> None:
 async def run_followup_task(
     task_path: Path,
     coder_agent: str = "gemini",
-    coder_model: str = "gemini-3.1-flash-lite-preview",
+    coder_model: str = "gemini-3.5-flash-lite",
     reviewer_agent: str = "gemini",
-    reviewer_model: str = "gemini-3-pro-preview",
+    # Google shut gemini-3-pro-preview down on 2026-03-09 and names
+    # gemini-3.1-pro-preview as its replacement; 3.1 Flash-Lite preview closed
+    # on 2026-05-25 (ai.google.dev/gemini-api/docs/deprecations, 2026-11-04).
+    reviewer_model: str = "gemini-3.1-pro-preview",
     environment: str = "daytona",
 ) -> FollowupResult:
     """Run one task with the coder→reviewer→coder Scene flow in a shared sandbox."""
@@ -162,9 +165,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run followup-bench on a single task")
     parser.add_argument("--task-dir", type=Path, required=True)
     parser.add_argument("--coder", default="gemini")
-    parser.add_argument("--coder-model", default="gemini-3.1-flash-lite-preview")
+    parser.add_argument("--coder-model", default="gemini-3.5-flash-lite")
     parser.add_argument("--reviewer", default="gemini")
-    parser.add_argument("--reviewer-model", default="gemini-3-pro-preview")
+    parser.add_argument("--reviewer-model", default="gemini-3.1-pro-preview")
     parser.add_argument("--env", default="daytona")
     args = parser.parse_args()
 

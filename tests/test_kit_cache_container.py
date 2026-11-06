@@ -100,7 +100,7 @@ def _export(name: str) -> bytes:
 def _stage(name: str, data: bytes, *, to_root: bool = False, tmp=None) -> str:
     """The kept kit in a fresh stage: a folder made first, or (*to_root*, as
     the sandbox does beside its start) one archive to ``/`` that makes it."""
-    stage = f"/.benchflow-kit-{uuid.uuid4().hex}"
+    stage = f"/.runtime-kit-{uuid.uuid4().hex}"
     if to_root:
         kept = tmp / "kept.tar"
         kept.write_bytes(data)
@@ -187,7 +187,7 @@ def _changes(name: str):
         ),
         ("echo planted > /usr/local/bin/python3", "/usr"),
         ("rm -f /usr/bin/sha256sum", "/usr"),
-        ("mkdir -p /opt/benchflow", "/opt"),
+        ("mkdir -p /opt/runtime", "/opt"),
     ],
 )
 def test_the_daemons_diff_decides_whether_the_cache_is_used(write, decides):
@@ -201,9 +201,9 @@ def test_the_daemons_diff_decides_whether_the_cache_is_used(write, decides):
 
 
 def test_the_recipe_restore_refuses_a_stage_name_it_did_not_make():
-    for stage in ("/tmp/x", "/.benchflow-kit-../etc", "/.benchflow-kit-" + "g" * 32):
+    for stage in ("/tmp/x", "/.runtime-kit-../etc", "/.runtime-kit-" + "g" * 32):
         with pytest.raises(ValueError):
             kit_prepare_command("restore", stage=stage)
-    assert shlex.quote("/.benchflow-kit-" + "a" * 32) in kit_prepare_command(
-        "restore", stage="/.benchflow-kit-" + "a" * 32
+    assert shlex.quote("/.runtime-kit-" + "a" * 32) in kit_prepare_command(
+        "restore", stage="/.runtime-kit-" + "a" * 32
     )

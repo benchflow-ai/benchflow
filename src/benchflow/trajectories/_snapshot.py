@@ -45,13 +45,20 @@ class RedactedJSONLSnapshot:
             if index < len(self._entries) and raw == self._entries[index][0]:
                 redacted = self._entries[index][1]
             else:
-                # Normalize non-JSON leaves before applying the same canonical
-                # value redactor as the uncached serializers. Never redact the
-                # serialized text: that can corrupt backslash escapes.
-                redacted = json.dumps(redact_trajectory_obj(json.loads(raw)))
+                redacted = redact_record(raw)
             entries.append((raw, redacted))
 
         payload = "\n".join(redacted for _raw, redacted in entries)
         self._entries = entries
         self._keys = list(cache_keys) if cache_keys is not None else []
         return payload
+
+
+def redact_record(raw: str) -> str:
+    """The redacted line of one record serialized as *raw*.
+
+    Normalizes non-JSON leaves before applying the same canonical value
+    redactor as the uncached serializers. Never redact the serialized text:
+    that can corrupt backslash escapes.
+    """
+    return json.dumps(redact_trajectory_obj(json.loads(raw)))

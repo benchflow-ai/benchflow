@@ -60,9 +60,9 @@ def coder_reviewer_config(
     task_path: Path,
     env: str,
     coder_agent: str = "gemini",
-    coder_model: str = "gemini-3.1-flash-lite-preview",
+    coder_model: str = "gemini-3.5-flash-lite",
     reviewer_agent: str = "gemini",
-    reviewer_model: str = "gemini-3.1-flash-lite-preview",
+    reviewer_model: str = "gemini-3.5-flash-lite",
 ) -> RolloutConfig:
     """Pattern 3: Coder + Reviewer — explicit multi-role prompts.
 
@@ -156,7 +156,7 @@ def main() -> None:
     )
     parser.add_argument("--sandbox", default="daytona", choices=["daytona", "docker"])
     parser.add_argument("--agent", default="gemini")
-    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
+    parser.add_argument("--model", default="gemini-3.5-flash-lite")
     parser.add_argument(
         "--compare",
         action="store_true",

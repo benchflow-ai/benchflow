@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from benchflow._utils.scoring import NO_USABLE_REWARD
 from benchflow._utils.trusted_path import PATH_QUERY_CMD
 from benchflow.rollout._setup import _verify_rollout
 from benchflow.sandbox import lockdown
@@ -397,10 +398,11 @@ async def test_a_verifier_that_cannot_find_a_program_names_the_folders_left_out(
         _scripted_env(), _task(), paths, {}, _verify_planes(verifier), "agent", "/app"
     )
 
-    assert rewards == {"reward": 0.0}
-    assert error is None
-    assert "Verifier scored 0" in caplog.text
-    assert error is None
+    # No reward file: a verifier error that names the folders left out.
+    assert rewards is None
+    assert error is not None and error.startswith(NO_USABLE_REWARD)
+    assert "the verifier's PATH left out these folders" in error
+    assert "/opt/vendor/bin" in error
     record = json.loads((paths.verifier_dir / "trusted-path.json").read_text())
     assert record == {
         "path": "/opt/root-tool/bin:" + _SAFE_VERIFIER_PATH,
@@ -428,9 +430,8 @@ async def test_other_verifier_failures_keep_their_message(tmp_path, caplog):
         _scripted_env(), _task(), paths, {}, _verify_planes(verifier), "agent", "/app"
     )
 
-    assert error is None
-    assert "Verifier scored 0" in caplog.text
-    assert "left out" not in caplog.text
+    assert error is not None and error.startswith(NO_USABLE_REWARD)
+    assert "left out" not in error
     record = json.loads((paths.verifier_dir / "trusted-path.json").read_text())
     assert record["verifier_missed_a_program"] is False
     assert [d["folder"] for d in record["dropped"]] == ["/opt/vendor/bin"]
@@ -579,9 +580,8 @@ async def test_a_test_stdout_link_is_not_followed(tmp_path, caplog):
         "/app",
     )
 
-    assert error is None
-    assert "Verifier scored 0" in caplog.text
-    assert "left out" not in caplog.text
+    assert error is not None and error.startswith(NO_USABLE_REWARD)
+    assert "left out" not in error
     record = json.loads((paths.verifier_dir / "trusted-path.json").read_text())
     assert record["verifier_missed_a_program"] is False
 
@@ -640,3 +640,48 @@ def test_only_the_last_part_of_a_large_test_stdout_is_read(tmp_path, monkeypatch
     assert _setup._verifier_missed_a_program(verifier, paths) is False
     stdout_path.write_text("y" * 200 + "\nx: command not found\n")
     assert _setup._verifier_missed_a_program(verifier, paths) is True
+
+
+@pytest.mark.asyncio
+async def test_separate_image_path_keeps_nonroot_tools_and_blocks_transfers(box):
+    """Fresh image tools stay; transferred paths stay out."""
+    env = ContainerEnv(box.name)
+    command = lockdown._trusted_path_extras_cmd(
+        IMAGE_PATH, ("/app", "/tmp", "/home/agent"), fresh_image=True
+    )
+    done = await env.exec(command)
+    assert done.return_code == 0, done.stderr
+    kept, _, dropped = lockdown._parse_trusted_path_output(
+        done.stdout, lockdown._path_entries_to_judge(IMAGE_PATH)
+    )
+    assert "/home/sandbox/.cargo/bin" in kept
+    assert "/app/bin" not in kept
+    assert "/tmp/tools" not in kept
+    assert "/opt/linkout/bin" not in kept
+    assert any(path == "/app/bin" for path, _ in dropped)
+
+
+@pytest.mark.asyncio
+async def test_fresh_image_path_can_reserve_missing_directories(box):
+    """Absent image paths are safe, redirects are not."""
+    env = ContainerEnv(box.name)
+    setup = await env.exec(
+        "mkdir -p /app/data/toolchain /outside; "
+        "ln -s /app/output /outside/alias; "
+        "printf '#!/bin/sh\\nexit 0\\n' > /app/data/toolchain/tool; "
+        "chmod 755 /app/data/toolchain/tool"
+    )
+    assert setup.return_code == 0, setup.stderr
+    entries = (
+        "/app/data/toolchain:/home/coq/.local/bin:/app/output/bin:/outside/alias/bin"
+    )
+    command = lockdown._trusted_path_extras_cmd(
+        entries, ("/app/output", "/logs"), fresh_image=True
+    )
+    done = await env.exec(command)
+    assert done.return_code == 0, done.stderr
+    kept, _, dropped = lockdown._parse_trusted_path_output(
+        done.stdout, lockdown._path_entries_to_judge(entries)
+    )
+    assert kept == ["/app/data/toolchain", "/home/coq/.local/bin"]
+    assert {p for p, _ in dropped} == {"/app/output/bin", "/outside/alias/bin"}

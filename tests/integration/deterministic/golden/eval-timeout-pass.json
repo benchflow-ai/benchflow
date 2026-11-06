@@ -48,12 +48,12 @@
       "kind": "execute",
       "observation_id": "obs-2",
       "raw_input": {
-        "command": "sleep 590",
+        "command": "timeout 600 sleep 590",
         "description": "Wait",
         "timeout": 600000
       },
       "status": "in_progress",
-      "title": "sleep 590",
+      "title": "timeout 600 sleep 590",
       "tool_call_id": "toolu_fake_pass-then-hang_1",
       "tool_name": "Bash",
       "type": "tool_call"
@@ -144,7 +144,7 @@
             "arguments": {},
             "extra": {
               "status": "in_progress",
-              "title": "sleep 590"
+              "title": "timeout 600 sleep 590"
             },
             "function_name": "execute",
             "tool_call_id": "toolu_fake_pass-then-hang_1"
@@ -182,7 +182,7 @@
       "tool_calls": [
         {
           "arguments": {
-            "command": "sleep 590",
+            "command": "timeout 600 sleep 590",
             "description": "Wait",
             "timeout": 600000
           },

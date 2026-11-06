@@ -16,6 +16,7 @@ import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -52,7 +53,7 @@ def test_cli_is_read_from_the_installed_entry_point(tmp_path: Path) -> None:
 
 
 def _config(**kw) -> HostedEnvRunConfig:
-    base = dict(
+    base: dict[str, Any] = dict(
         source_env=HostedEnvRef.parse("primeintellect/bf-echo", version="0.1.0"),
         model="gpt-4.1-mini",
         env_args={"word": "OK", "dataset_name": "x/y", "shuffle": True, "n": 3},
@@ -224,3 +225,34 @@ def test_cli_passes_the_pin_and_endpoint(tmp_path: Path, monkeypatch) -> None:
     assert config.verifiers_version == "0.3.2.dev137"
     assert config.api_base_url == "http://127.0.0.1:1/v1"
     assert config.api_key_var == "STUB_KEY"
+
+
+@pytest.mark.parametrize(
+    "cli,flag", [("v1", "--sampling.temperature"), ("legacy", "--temperature")]
+)
+def test_temperature_is_only_sent_when_explicit(tmp_path, cli, flag):
+    """Guards PR #57 (S31): leave provider sampling defaults alone."""
+    config = HostedEnvRunConfig(
+        source_env=HostedEnvRef.parse("primeintellect/bf-echo"), model="claude-opus-5-5"
+    )
+    cmd = build_vf_eval_command(config, vf_eval="vf-eval", output_dir=tmp_path, cli=cli)
+    assert flag not in cmd
+    config.temperature = 0.0
+    cmd = build_vf_eval_command(config, vf_eval="vf-eval", output_dir=tmp_path, cli=cli)
+    assert cmd[cmd.index(flag) + 1] == "0.0"
+
+
+def test_missing_vf_eval_reports_version_and_remedy(tmp_path):
+    """Guards PR #57 (S32): 0.4.1 removed the supported evaluation CLI."""
+    from benchflow.hosted_env import HostedEnvError
+
+    info = tmp_path / "lib/python3.12/site-packages/verifiers-0.4.1.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text("Name: verifiers\nVersion: 0.4.1\n")
+    (info / "entry_points.txt").write_text(
+        "[console_scripts]\nvf-run = verifiers.cli.run:main\n"
+    )
+    with pytest.raises(
+        HostedEnvError, match=r"0\.4\.1.*vf-eval.*--source-env-verifiers-version"
+    ):
+        vf_eval_cli(tmp_path)

@@ -6,7 +6,7 @@ import re
 from benchflow.sandbox.protocol import SandboxImage
 
 _KEY = "benchflow.path-inspector.main"
-_FOLDER = re.compile(r"/etc/\.benchflow-bash-env-[0-9a-f]{32}\Z")
+_FOLDER = re.compile(r"/etc/\.runtime-bash-env-[0-9a-f]{32}\Z")
 
 
 def checkpoint(sandbox, image: SandboxImage) -> SandboxImage:

@@ -1,0 +1,32 @@
+{
+  "criteria": [
+    {
+      "name": "background_modelled",
+      "blocker": 1,
+      "weight": 5,
+      "description": "Ignoring the background biases the half-life high by about 4.5 minutes on this data.",
+      "guidance": "Read /app/report.md, the scripts the agent left in /app and its trajectory under trial/trajectory/. PASS when the fit includes a constant background term, or subtracts a background estimated from the data before fitting. FAIL when it fits a pure exponential to the raw counts, or when no method is shown."
+    },
+    {
+      "name": "uncertainty_from_data",
+      "blocker": 0,
+      "weight": 4,
+      "description": "The stated uncertainty should come from the data, not a guess.",
+      "guidance": "Score 2 when the uncertainty comes from the fit's covariance, a chi-square or likelihood profile, or a resampling of the data, and the report names the method. Score 1 when it comes from the data but the report does not say how. Score 0 when it is guessed, fixed by hand or missing."
+    },
+    {
+      "name": "noise_model",
+      "blocker": 0,
+      "weight": 3,
+      "description": "Counts are Poisson; weighting by it is the standard choice.",
+      "guidance": "Score 2 when the report names Poisson counting noise and the fit uses it, through weights or a Poisson likelihood. Score 1 when it names the noise but the fit does not use it. Score 0 when it says nothing about the noise."
+    },
+    {
+      "name": "reproducible",
+      "blocker": 0,
+      "weight": 3,
+      "description": "Someone else should get the same numbers from the workspace.",
+      "guidance": "Score 2 when a script in /app produces the numbers in /app/answer.json and the report says how to run it. Score 1 when the method is described but no script is left, or the script does not match the answer. Score 0 otherwise."
+    }
+  ]
+}

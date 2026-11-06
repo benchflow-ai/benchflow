@@ -8,7 +8,7 @@ everything else that happens *inside* the sandbox live in that shim; this
 module holds only what the registry entry needs on the host:
 
 - the pinned agy release (version, per-architecture download URL + SHA-512)
-  and the POSIX ``sh`` snippet that installs it under ``/opt/benchflow``;
+  and the POSIX ``sh`` snippet that installs it under ``/opt/runtime``;
 - the discovery paths agy reads (skills, hooks, MCP config);
 - the ``hooks.json`` mutator behind BenchFlow's web-tool policies. agy has no
   tool-exclusion setting; its documented switch is a ``PreToolUse`` lifecycle
@@ -21,7 +21,7 @@ import json
 import shlex
 
 AGY_VERSION = "1.3.5"
-AGY_BIN = "/opt/benchflow/antigravity/agy"
+AGY_BIN = "/opt/runtime/antigravity/agy"
 _AGY_RELEASE_BASE = (
     "https://storage.googleapis.com/antigravity-public/antigravity-cli/"
     "1.3.5-6164039479459840"
@@ -66,7 +66,7 @@ ANTIGRAVITY_WEB_TOOL_MATCHERS = (
 
 
 def agy_install_cmd(apt_install_curl: str) -> str:
-    """POSIX ``sh`` snippet installing the pinned agy binary under /opt/benchflow.
+    """POSIX ``sh`` snippet installing the pinned agy binary under /opt/runtime.
 
     Idempotent: a binary already there is kept only when its SHA-512 matches
     the one this installer recorded beside it after a verified download

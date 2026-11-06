@@ -215,3 +215,25 @@ def test_discovery_walks_three_category_paths(tmp_path):
 
     loaded = load_agents_from_dir(tmp_path)
     assert set(loaded) == {"cat-acp-agent", "cat-aisdk-agent", "cat-omnigent-agent"}
+
+
+def test_register_keeps_a_manifest_model_route(tmp_path: Path):
+    """model_route is manifest data, so registration and the
+    compatible merge over a core entry keep the manifest's value."""
+    _put(tmp_path, "own", "own", extra='model_route = "agent"\n')
+    manifest = tmp_path / "own" / "manifest.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            'contract_version = "1.0"', 'contract_version = "1.1"'
+        )
+    )
+    m = _maps()
+    register_manifest_agents(load_agents_from_dir(tmp_path), **m)
+    assert m["agents"]["own"].model_route == "agent"
+
+    m = _maps()
+    m["agents"]["own"] = AgentConfig(
+        name="own", install_cmd="echo install", launch_cmd="echo launch"
+    )
+    register_manifest_agents(load_agents_from_dir(tmp_path), **m, merge_shim_only=True)
+    assert m["agents"]["own"].model_route == "agent"

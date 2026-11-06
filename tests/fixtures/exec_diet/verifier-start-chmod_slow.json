@@ -1,6 +1,6 @@
 {
  "receipt": [
-  "/run/benchflow/verifier-started-<hex>",
+  "/run/runtime/verifier-started-<hex>",
   "main"
  ],
  "receipt_dir": "1777 directory",

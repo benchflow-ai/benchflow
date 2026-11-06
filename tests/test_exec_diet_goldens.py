@@ -189,6 +189,13 @@ def _verifier_task(tmp_path: Path, toml: str = "") -> MagicMock:
 # path_extras declares the empty tool contract its left-out PATH entries
 # need (c84e6eb8c); without one it was a refusal, so it alone missed the
 # runner stub's BENCHFLOW_PYTEST (96155b555) every other case gained.
+# Regenerated after a later merge: a root verifier in main gets an empty,
+# writable global git config in its fresh tool-state folder
+# (GIT_CONFIG_GLOBAL=<that folder>/gitconfig, never the agent's or the
+# image's) instead of /dev/null, in every case; nothing else changed.
+# Regenerated for the workspace git purge: every case gains GIT_CONFIG_COUNT
+# and its six key and value pairs (hooks, fsmonitor, an external diff and
+# signing off at command-line scope); nothing else changed.
 @pytest.mark.parametrize("case", sorted(_ENV_CASES))
 async def test_build_verifier_env(box_factory, tmp_path, case):  # noqa: F811
     spec = _ENV_CASES[case]
@@ -269,11 +276,11 @@ _START_CASES: dict[str, dict] = {
     "ok": {},
     "chmod_fails": {"setup": "echo 9 > /tmp/chmod-fail"},
     "chmod_fails_twice": {"setup": "echo 2 > /tmp/chmod-fail"},
-    "receipt_dir_fails": {"setup": "mkdir -p /run && touch /run/benchflow"},
+    "receipt_dir_fails": {"setup": "mkdir -p /run && touch /run/runtime"},
     "receipt_dir_times_out": {
         "faults": Faults(
             raise_on={
-                "mkdir -p /run/benchflow": RuntimeError(
+                "mkdir -p /run/runtime": RuntimeError(
                     "Command timed out after 10 seconds"
                 )
             }
@@ -339,7 +346,7 @@ async def test_verifier_start(box_factory, tmp_path, monkeypatch, case):  # noqa
         else [_normalized(verifier.execution_receipt[0]), verifier.execution_receipt[1]]
     )
     outcome["receipt_dir"] = as_root(
-        box, "stat -c '%a %F' /run/benchflow 2>&1 || true"
+        box, "stat -c '%a %F' /run/runtime 2>&1 || true"
     ).strip()
     if case != "chmod_slow":
         # How often chmod ran for test.sh (the slow case runs it once more on

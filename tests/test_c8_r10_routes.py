@@ -156,7 +156,7 @@ async def test_daytonas_ssh_session_gets_a_protected_home_not_a_refusal():
 
     ok, calls = _home_sandbox(ExecResult(return_code=0, stdout="moved\n"))
     await protect_root_terminal_home(ok, "Daytona's SSH session")
-    assert "/opt/benchflow/run/home" in calls[0] and "/etc/passwd" in calls[0]
+    assert "/opt/runtime/run/home" in calls[0] and "/etc/passwd" in calls[0]
     bad, _ = _home_sandbox(ExecResult(return_code=1, stdout="/etc/passwd\n"))
     with pytest.raises(RuntimeError, match="/etc/passwd"):
         await protect_root_terminal_home(bad, "Daytona's SSH session")

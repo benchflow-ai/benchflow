@@ -80,7 +80,11 @@ from benchflow._utils import path_lock_record, timing_spans
 from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow._utils.log_context import trial_log_context
 from benchflow._utils.reachable_write import ReachablePath, destination
-from benchflow._utils.scoring import ORIGINAL_ERROR, PROVIDER_STALL
+from benchflow._utils.scoring import (
+    ORIGINAL_ERROR,
+    PROVIDER_STALL,
+    is_output_cap_error,
+)
 from benchflow._utils.text import describe_exception
 from benchflow._utils.trial_warnings import recording_trial_warnings
 from benchflow.acp.types import McpServerSpec
@@ -95,11 +99,12 @@ from benchflow.agents.credentials import (
     upload_credential,
 )
 from benchflow.agents.env import with_prompt_budget
-from benchflow.agents.errors import UsageLimitError
+from benchflow.agents.errors import ModelCatalogMiss, UsageLimitError
 from benchflow.agents.launch_env import agent_launch_env, credential_policy
 from benchflow.agents.muse_config import validate_muse_roles
 from benchflow.agents.registry import (
     AGENTS,
+    agent_routes_own_model,
     has_builtin_install,
     infer_env_key_for_model,
     is_operator_script,
@@ -129,6 +134,7 @@ from benchflow.diagnostics import (
     UsageLimitDiagnostic,
 )
 from benchflow.errors import UserError, user_message
+from benchflow.integration_health import IntegrationFailure
 from benchflow.loop_strategies import (
     LoopStrategyUser,
     collect_loop_metadata,
@@ -172,7 +178,11 @@ from benchflow.rollout._review import (
     read_admitted_result,
 )
 from benchflow.rollout._separate_verifier import run_separate_verifier
-from benchflow.rollout._session_log import price_from_session_log
+from benchflow.rollout._session_log import (
+    count_compactions,
+    keep_session_logs,
+    price_from_session_log,
+)
 from benchflow.rollout._setup import VerifierPublicationError
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
@@ -221,6 +231,10 @@ from benchflow.rollout._usage import (
 from benchflow.rollout._usage import (
     ProviderFailure as ProviderFailure,
 )
+from benchflow.rollout._usage import (
+    _add_agent_reported_usage as _add_agent_reported_usage,
+)
+from benchflow.rollout._usage import _api_error_subcategory
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
 from benchflow.rollout._usage import (
@@ -234,6 +248,12 @@ from benchflow.rollout._usage import (
 )
 from benchflow.rollout._usage import (
     _provider_failure_from_status as _provider_failure_from_status,
+)
+from benchflow.rollout._usage import (
+    _with_agent_reported_usage as _with_agent_reported_usage,
+)
+from benchflow.rollout._usage import (
+    _zero_agent_reported_usage_metrics as _zero_agent_reported_usage_metrics,
 )
 from benchflow.rollout._usage import (
     _zero_native_acp_usage_metrics as _zero_native_acp_usage_metrics,
@@ -266,6 +286,12 @@ from benchflow.sandbox._base import system_shell_exec
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox._in_order import in_order, runs_steps_at_once
 from benchflow.sandbox._task_route import as_task_command
+from benchflow.sandbox.agent_otel import (
+    agent_otel_env,
+    start_agent_otel,
+    stop_agent_otel,
+    wants_agent_otel,
+)
 from benchflow.sandbox.cloud_metadata import (
     CLOUD_METADATA_RECORD,
     NOT_REACHABLE,
@@ -277,7 +303,11 @@ from benchflow.sandbox.cloud_metadata import (
     cloud_metadata_refusal,
     uncovered_services_note,
 )
-from benchflow.sandbox.egress_denylist import EgressDenylist, denylist_agent_env
+from benchflow.sandbox.egress_denylist import (
+    EgressDenylist,
+    denylist_agent_env,
+    task_service_policy,
+)
 from benchflow.sandbox.firewall_power import (
     FIREWALL_POWER_RECORD,
     FirewallPowerError,
@@ -289,6 +319,7 @@ from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.sandbox.native_oauth import (
     allowlist_model_transport,
     native_oauth_egress_policy,
+    validate_native_codex_transport,
     validate_native_oauth_transport,
 )
 from benchflow.scenes import compile_scenes_to_steps, scene_step_role
@@ -302,12 +333,14 @@ from benchflow.skill_policy import (
 )
 from benchflow.skill_policy import SKILL_MODE_WITH_SKILL as SKILL_MODE_WITH_SKILL
 from benchflow.task import keep_services
+from benchflow.task.steps import StepsUser, has_steps
 from benchflow.task.verifier_errors import (
     verifier_failure_reason,
     verifier_infrastructure_failure,
 )
 from benchflow.task.verifier_sandbox import separate_verifier_requested
 from benchflow.trajectories._capture import (
+    ProviderToolEvidence,
     TrajectoryWriter,
     _capture_session_trajectory,
     _parse_provider_tool_evidence,
@@ -316,8 +349,24 @@ from benchflow.trajectories._capture import (
     make_trajectory_sink,
 )
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
+from benchflow.trajectories.model_calls import (
+    agent_outcome,
+    summarize_proxy_log,
+    write_model_calls,
+)
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.trajectories.types import Trajectory as ProviderTrajectory
+from benchflow.trial_budget import (
+    SPENT_RULE,
+    TrialBudget,
+    TrialBudgetSpentError,
+    TrialBudgetUnenforceableError,
+    budget_refusal,
+    effective_budget,
+    stop_text,
+    task_budget,
+    unenforceable_reason,
+)
 from benchflow.usage_tracking import (
     USAGE_SOURCE_AGENT_NATIVE_ACP,
     USAGE_SOURCE_PROVIDER_RESPONSE,
@@ -325,6 +374,22 @@ from benchflow.usage_tracking import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _role_agents(cfg: RolloutConfig) -> list[str]:
+    """The agent of every role in every scene, in order.
+
+    All roles share one sandbox user whose home is prepared once, before later
+    roles connect, so it receives /root's config/auth dirs for these agents
+    and for no other. An agent given with arguments counts under its first
+    word, as the agent install looks it up.
+    """
+    return [
+        role.agent.split()[0]
+        for scene in cfg.effective_scenes
+        for role in scene.roles
+        if role.agent and role.agent.split()
+    ]
 
 
 def _write_path_lock_record(rollout_dir: Path, record: dict[str, Any]) -> None:
@@ -409,6 +474,23 @@ _TERMINAL_PHASES = frozenset({"verifying", "verified", "reviewing", "cleaned"})
 # transfer. Only a wedged stop reaches it (Docker's own steps are bounded at
 # 30 + 120 s, then a forced kill); cleanup() then stops the sandbox again.
 _AGENT_STOP_TIMEOUT_SEC = 300
+
+# What soft_verify() hands a user as RoundResult.verifier_output when the task
+# writes no log of its own: test.sh's stdout and stderr, as the verifier brought
+# them back to the trial folder (RolloutPaths.test_stdout_path). Without it,
+# every user got None for such a task, and --loop-strategy retries carried no
+# feedback. Read through the trial folder's no-follow handle, capped.
+_SOFT_VERIFY_OUTPUT_MAX_BYTES = 1 << 20
+
+
+def _host_test_stdout(path: ReachablePath) -> str | None:
+    """The verifier's copy of test.sh's output in the trial folder, or None."""
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(_SOFT_VERIFY_OUTPUT_MAX_BYTES)
+    except (OSError, ValueError):
+        return None
+    return data.decode("utf-8", "replace").strip() or None
 
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
@@ -873,6 +955,113 @@ def _classify_integration_failure(rollout: Any) -> bool:
     return True
 
 
+_CATALOG_NOTICE = ("model metadata for ", "not found")
+
+
+def model_catalog_failure(
+    agent: str, model: str | None, evidence: str, source: str
+) -> IntegrationFailure:
+    """The ``agent_model_catalog`` integration failure: the agent's model
+    catalog has no entry for the model, so it ran on fallback tools."""
+    return IntegrationFailure(
+        cause="agent_model_catalog",
+        evidence=f"{agent} ran {model or 'its model'} on fallback model metadata: "
+        + evidence,
+        evidence_source=source,
+    )
+
+
+def _classify_model_catalog_fallback(rollout: Any) -> bool:
+    """Fail a Codex trial that ran on Codex's fallback tool surface.
+
+    Codex runs a model its catalog lacks on fallback metadata: other tools
+    than the model is used with (no apply_patch, no code mode), so the trial
+    measured another agent (#1145). codex-acp's warning stops the trial at
+    once (``ModelCatalogMiss``); the native harness records the same
+    warning as a notice, and the tools the agent's first request offered
+    show it when no warning was given (``model-calls.json``
+    ``first_agent_tools``, :func:`codex_fallback_tools`). The trial is an
+    unscored ``agent_model_catalog`` integration failure, not retried, with
+    the verifier's reward kept as ``reward_withheld``. A usage limit or an
+    integration failure already recorded keeps its cause.
+    """
+    from benchflow.agents.codex_config import codex_fallback_tools
+    from benchflow.rollout._results import _model_calls_summary
+
+    config = rollout._config
+    rollout_dir = getattr(rollout, "_rollout_dir", None)
+    if config.primary_agent != "codex-acp" or rollout_dir is None:
+        return False
+    diagnostics = rollout._diagnostics
+    if diagnostics.get(UsageLimitDiagnostic.field) or diagnostics.get(
+        IntegrationFailureDiagnostic.field
+    ):
+        return False
+    failure = None
+    for event in getattr(rollout, "_trajectory", None) or []:
+        text = " ".join(str(event.get(k) or "") for k in ("title", "description"))
+        if event.get("type") == "notice" and all(
+            marker in text.lower() for marker in _CATALOG_NOTICE
+        ):
+            failure = model_catalog_failure(
+                "codex-acp", config.primary_model, text.strip(), "session notice"
+            )
+            break
+    tools = (_model_calls_summary(rollout_dir) or {}).get("first_agent_tools")
+    names = tools.get("names") if isinstance(tools, dict) else None
+    if failure is None and isinstance(names, list) and codex_fallback_tools(names):
+        failure = model_catalog_failure(
+            "codex-acp",
+            config.primary_model,
+            f"its first request offered {len(names)} tools "
+            f"({', '.join(map(str, names[:12]))}), neither apply_patch nor code "
+            "mode's functions.exec, which Codex offers every model its catalog "
+            "lists",
+            "trajectory/llm_trajectory.jsonl (the agent's first request)",
+        )
+    if failure is None:
+        return False
+    rollout._bare_timeout = False
+    rollout._judge_timed_out_agent = False
+    diagnostics.set(failure.diagnostic(reward_withheld=rollout._rewards))
+    rollout._error = failure.error_text()
+    logger.warning(
+        "Agent integration failure [agent_model_catalog]: %s", failure.evidence
+    )
+    rollout._rewards = None
+    return True
+
+
+def _terminal_provider_failure(rollout_dir: Path | None) -> dict[str, Any] | None:
+    """The api_error verdict for a trial whose agent's last model call failed
+    with HTTP 429 or a 5xx (``model-calls.json``), or None.
+
+    Its status is the dominant one; the counts are every call's, so a
+    reader sees the failed calls the agent survived before the last.
+    """
+    from benchflow.rollout._results import _model_calls_summary
+
+    summary = _model_calls_summary(rollout_dir) if rollout_dir is not None else None
+    last = (summary or {}).get("last_agent_call") or {}
+    status = last.get("http_status")
+    if not (isinstance(status, int) and (status == 429 or 500 <= status < 600)):
+        return None
+    assert summary is not None
+    subcategory, transient = _api_error_subcategory(status)
+    counts = summary.get("http_status_counts") or {}
+    return {
+        "subcategory": subcategory,
+        "transient": transient,
+        "dominant_status": status,
+        "status_counts": {
+            code: n for code, n in counts.items() if code.isdigit() and int(code) >= 400
+        },
+        "total_requests": summary.get("calls") or 0,
+        "failed_requests": summary.get("http_errors") or 0,
+        "fingerprint": f"{subcategory}:{status}",
+    }
+
+
 def _log_task(rollout: Any) -> str:
     """The task a rollout's log lines name (empty for a Rollout built
     without its config, as some callers and tests make one)."""
@@ -923,6 +1112,10 @@ class Rollout:
     # PERF-B's queued sandbox stop of this trial, when it was queued: a
     # discarded warm-pool trial removes its folder only after it.
     _queued_stop: asyncio.Task[None] | None = None
+    # A multi-step task's current step and its scripted user (task/steps.py);
+    # None scores with the task itself.
+    _verify_task: Any = None
+    _steps_user: StepsUser | None = None
 
     def __init__(self, config: RolloutConfig) -> None:
         self._planes = config.planes or default_rollout_planes()
@@ -984,6 +1177,7 @@ class Rollout:
         self._verifier_warmup: Any = None
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._script_agent_offline: bool = False
         # What the run does about the cloud metadata endpoints (setup() sets
         # it; None: no agent, or a network that is not open).
         self._cloud_metadata: CloudMetadataPlan | None = None
@@ -1023,6 +1217,12 @@ class Rollout:
         self._native_usage_agents: set[str] = set()
         self._has_unproxied_native_session = False
         self._mixed_usage_finalized = False
+        # What an agent that routes its own model calls reported over ACP
+        # kept apart, never added to metered or native totals.
+        self._agent_reported_usage_metrics: dict[str, Any] = (
+            _zero_agent_reported_usage_metrics()
+        )
+        self._agent_routed_session = False
         self._native_usage_checkpoint: dict[str, int | None] | None = None
         # Provider failure snapshotted during cleanup, after the usage proxy
         # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
@@ -1052,6 +1252,33 @@ class Rollout:
         # Populated by connect()
         self._acp_client: Any = None
         self._session: Any = None
+        # The installed harness versions, probed before the agent starts
+        # (benchflow.agents.receipt). Kept here and written from here: the
+        # copy in agent/ is in a folder the agent can write.
+        self._harness_versions: dict[str, Any] | None = None
+        # How the last execute()'s prompts ended (the ACP stop reason, e.g.
+        # "end_turn"), for result.json's agent_outcome; None when they did not
+        # end (a timeout, an error). Kept out of the trajectory.
+        self._agent_stop_reason: str | None = None
+        # The reasoning effort the agent session applied, and one the model
+        # proxy's route sets (connect()), for result.json's effort.
+        self._effort_applied: str | None = None
+        self._effort_route: str | None = None
+        # Every prompt turn's stop reason across the trial's execute() calls,
+        # None for a turn that did not end: result.json's agent_outcome.
+        self._turn_stop_reasons: list[str | None] = []
+        # Claude Code's compactions, counted at teardown (_session_log); None
+        # when not counted.
+        self._compactions: dict[str, Any] | None = None
+        # The trial's token and turn budget once setup read the task
+        # (benchflow.trial_budget), where each measure came from, and the
+        # proxy's record of the call it refused once the budget was spent.
+        self._trial_budget: TrialBudget | None = None
+        self._trial_budget_sources: dict[str, str] = {}
+        self._trial_budget_stop: dict[str, Any] | None = None
+        # Every call the proxies refused for the budget, read from their logs
+        # at teardown (the runtimes are let go then).
+        self._trial_budget_refused: list[dict[str, Any]] = []
         self._is_session_factory: bool = False
         # ``_session_adapter`` carries the Agent-plane :class:`Session` contract
         # over the live ACP client (architecture.md, "The four contracts").
@@ -1164,6 +1391,11 @@ class Rollout:
 
         # Populated by verify()
         self._rewards: dict | None = None
+        # A multi-step task's current step, as the step's verifies score it
+        # (task/steps.py); None scores with the task itself.
+        self._verify_task: Any = None
+        self._steps_user: StepsUser | None = None
+        self._step_check_outputs: list[str | None] = []
         # Counts verify() calls; the branch engine reads it to tell whether a
         # custom child runner's number came from the verifier.
         self._verify_calls = 0
@@ -1242,6 +1474,13 @@ class Rollout:
     def acp_client(self) -> Any:
         """The agent's ACP client while connected, else None."""
         return self._acp_client
+
+    def model_requests_in_flight(self) -> int | None:
+        """Model requests this rollout's proxy has in flight, when the proxy
+        runs on this machine (the utilization watcher); else None."""
+        server = getattr(getattr(self, "_usage_runtime", None), "server", None)
+        reader = getattr(server, "requests_in_flight", None)
+        return reader() if callable(reader) else None
 
     def activity_snapshot(self) -> ActivitySnapshot:
         """The eval dashboard's per-task :class:`ActivitySnapshot`: the
@@ -1459,6 +1698,11 @@ class Rollout:
             self._task.config = apply_config_override(
                 self._task.config, cfg.config_override
             )
+        # The budget the model proxy enforces: the run's measures over the
+        # task's own [agent] ones.
+        self._trial_budget, self._trial_budget_sources = effective_budget(
+            cfg.trial_budget, task_budget(self._task.config.agent)
+        )
 
         from benchflow.integrity.trial import resolve_verifier_isolation
         from benchflow.task.verifier_sandbox import effective_verifier_sandbox
@@ -1539,6 +1783,12 @@ class Rollout:
         self._disallow_web_tools = has_agent_launch and (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         )
+        # An operator script under an offline agent phase in an online sandbox
+        # gets the same sandbox and uid firewall as a model agent, minus the
+        # model route (it has none).
+        self._script_agent_offline = is_operator_script(
+            cfg.primary_agent
+        ) and _task_agent_offline(self._task)
         from benchflow.task.plan_validation import agent_egress_policy
 
         self._egress_denylist = agent_egress_policy(
@@ -1570,7 +1820,8 @@ class Rollout:
         self._cloud_metadata = cloud_metadata_plan(
             getattr(self._task, "config", None),
             sandbox_user=cfg.sandbox_user,
-            launches_agent=has_agent_launch,
+            # An operator script runs as the agent's user, as an agent does.
+            launches_agent=has_agent_launch or is_operator_script(cfg.primary_agent),
             environment_dir=task_environment_dir,
             allow_cloud_metadata=bool(getattr(cfg, "allow_cloud_metadata", False)),
         )
@@ -1602,7 +1853,30 @@ class Rollout:
             or self._egress_denylist is not None,
             disallow_web_tools=self._disallow_web_tools,
             execute_solution=cfg.primary_agent == "oracle" and not verifier_only,
+            usage_tracking=cfg.usage_tracking,
         )
+        # A scene's other roles share this sandbox and network: one that routes
+        # its own model calls is held to the primary agent's refusal.
+        # A verifier-only rollout launches no agent.
+        from benchflow.task.plan_validation import (
+            OwnModelRouteError,
+            own_model_route_refusal,
+        )
+
+        role_agents = (
+            set()
+            if verifier_only
+            else {role.agent for scene in cfg.scenes for role in scene.roles}
+        )
+        for role_agent in sorted(role_agents - {cfg.primary_agent}):
+            reason = own_model_route_refusal(
+                self._task,
+                agent=role_agent,
+                usage_tracking=cfg.usage_tracking,
+                no_web=self._disallow_web_tools,
+            )
+            if reason is not None:
+                raise OwnModelRouteError(reason)
         env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
             task_path=cfg.task_path,
@@ -1718,7 +1992,8 @@ class Rollout:
                 effective_task_path,
                 self._rollout_name,
                 self._rollout_paths,
-                preserve_agent_network=self._disallow_web_tools,
+                preserve_agent_network=self._disallow_web_tools
+                or self._script_agent_offline,
                 environment_manifest=cfg.environment_manifest,
                 block_cloud_metadata=self._cloud_metadata is not None
                 and self._cloud_metadata.armed,
@@ -1831,6 +2106,7 @@ class Rollout:
             verifier_sandbox=cfg.verifier_sandbox,
             harness=cfg.harness,
             litellm_proxy=self._litellm_proxy_record,
+            harness_versions=self._harness_versions,
         )
 
         self._phase = "setup"
@@ -1959,7 +2235,23 @@ class Rollout:
             required_skill_names=self._required_skill_names,
             force_sandbox_local=self._disallow_web_tools
             or self._egress_denylist is not None,
+            trial_budget=self._trial_budget,
         )
+
+    def _require_budget_proxy(self, agent: str, model: str | None) -> None:
+        """Refuse to run an agent whose model calls go around BenchFlow's
+        model proxy when the trial has a budget: the proxy is what counts
+        and enforces it, so the agent never starts unbounded."""
+        budget = self._trial_budget
+        runtime = self._usage_runtime
+        if budget is None or (
+            runtime is not None and getattr(runtime, "kind", None) == "litellm"
+        ):
+            return
+        why = unenforceable_reason(agent, model, self._agent_env) or (
+            "the trial started no model proxy for it"
+        )
+        raise TrialBudgetUnenforceableError(agent, budget, why)
 
     def _release_host_proxy(self) -> None:
         reservation, self._host_proxy_reservation = self._host_proxy_reservation, None
@@ -2210,6 +2502,14 @@ class Rollout:
         from benchflow.sandbox.daytona_layers import fresh_install_requested
 
         cfg = self._config
+        guarded_user = (
+            bool(cfg.sandbox_user)
+            and not self._verifier_only
+            and (
+                not is_scripted_agent(cfg.primary_agent)
+                or is_operator_script(cfg.primary_agent)
+            )
+        )
         configure_layers(
             self._env,
             agent=cfg.primary_agent,
@@ -2220,6 +2520,8 @@ class Rollout:
             install_agent=not cfg.skip_agent_install,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             only_if_reused=True,
+            guard_daemon=guarded_user,
+            stage_python=guarded_user,
         )
 
     def _request_agent_layer(self) -> None:
@@ -2510,6 +2812,7 @@ class Rollout:
             )
 
         if is_scripted_agent(cfg.primary_agent):
+            await self._record_harness_versions(cfg.primary_agent)
             if cfg.sandbox_user:
                 # Nothing runs as the sandbox user (the oracle runs as root),
                 # so the sandbox-daemon guard has nobody to keep away.
@@ -2522,6 +2825,7 @@ class Rollout:
                         self._env,
                         cfg.sandbox_user,
                         workspace=self._agent_cwd,
+                        agents=_role_agents(cfg),
                         timeout_sec=cfg.sandbox_setup_timeout,
                         guard_daemon=is_operator_script(cfg.primary_agent),
                     )
@@ -2599,6 +2903,7 @@ class Rollout:
                         install_layer_bypass_reason=self._agent_layer_bypass_reason(),
                     )
                     await self._install_native_cli(agent_name, rollout_dir)
+        await self._record_harness_versions(agent_name)
         if cfg.sandbox_user:
             path_lock: dict[str, Any] = {}
             # The daemon guard records its span here.
@@ -2610,6 +2915,7 @@ class Rollout:
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
+                    agents=_role_agents(cfg),
                     timeout_sec=cfg.sandbox_setup_timeout,
                 )
             _write_path_lock_record(rollout_dir, path_lock)
@@ -2651,6 +2957,7 @@ class Rollout:
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
             harness=cfg.harness,
+            mcp_servers=_task_mcp_specs(self._task),
         )
         await verifier_baseline()
 
@@ -2688,6 +2995,26 @@ class Rollout:
         which has no ACP server); everything else connects over ACP. Resolution
         failures degrade to ACP (None) rather than raising."""
         return session_factory_entrypoint(agent_name, resolver=resolve_agent)
+
+    async def _record_harness_versions(self, agent: str) -> None:
+        """Probe the installed harness versions before the agent starts and
+        record them: config.json now, result.json when it is built, and a
+        copy for a reader in ``agent/runtime.json``, written through the
+        reachable-folder helper and never read back."""
+        from benchflow.agents.receipt import probe_receipt
+        from benchflow.rollout._results import _record_harness_versions_in_config
+
+        receipt = await probe_receipt(self._env, agent, self._config.harness)
+        self._harness_versions = receipt
+        if self._rollout_dir is None or self._rollout_paths is None:
+            return
+        _record_harness_versions_in_config(self._rollout_dir, receipt)
+        try:
+            (self._rollout_paths.agent_dir / "runtime.json").write(
+                json.dumps(receipt, indent=2) + "\n"
+            )
+        except OSError as exc:
+            logger.warning("Could not write agent/runtime.json: %s", exc)
 
     async def _install_native_cli(self, agent: str, rollout_dir: Path) -> None:
         """Add the native harness's CLI to an agent install that lacks it.
@@ -2915,9 +3242,19 @@ class Rollout:
                 timing_spans.CLOUD_METADATA_BLOCK, into=self._timing
             ):
                 # A root agent (no sandbox user) is held as root.
-                record = await self._planes.block_cloud_metadata(
-                    self._env, self._config.sandbox_user
-                )
+                try:
+                    record = await self._planes.block_cloud_metadata(
+                        self._env, self._config.sandbox_user
+                    )
+                except CloudMetadataPowerError as refused:
+                    # The refusal's own record first, so the trial folder and
+                    # result.json name what refused it.
+                    refused_record = getattr(refused, "record", None)
+                    if isinstance(refused_record, dict):
+                        self._record_cloud_metadata(
+                            rollout_dir, refused_record, opt_out
+                        )
+                    raise
             if plan.uncovered:
                 record = {
                     **record,
@@ -2930,13 +3267,7 @@ class Rollout:
                 f"{plan.why}, so the agent can reach the cloud metadata endpoints",
                 **({"opt_out": opt_out} if opt_out else {}),
             )
-        (rollout_dir / CLOUD_METADATA_RECORD).write_text(
-            json.dumps(record, indent=2) + "\n"
-        )
-        self._cloud_metadata_result = {
-            "state": record["state"],
-            **({"opt_out": opt_out} if opt_out else {}),
-        }
+        self._record_cloud_metadata(rollout_dir, record, opt_out)
         if record["state"] == NOT_REACHABLE and not opt_out:
             # The provider gives the sandbox no route to the endpoints, and
             # this trial's connects proved it: nothing to block.
@@ -2960,6 +3291,117 @@ class Rollout:
         if record["state"] != "on" and not opt_out:
             raise cloud_metadata_refusal(str(record["state"]), str(record["why"]))
 
+    def _record_cloud_metadata(
+        self, rollout_dir: Path, record: dict[str, Any], opt_out: str
+    ) -> None:
+        """Write the block's record to cloud-metadata.json, and what
+        result.json's ``cloud_metadata`` says: the state, the run's opt-out,
+        and, on a refusal, the files the delegate inventory named.
+
+        A later connect writing to the same trial folder (a sandbox restored
+        from a snapshot, such as a branch's parent at the end) finds the files
+        this trial disarmed still disarmed: its record names none, or names
+        them as ``earlier`` (root's record listed them). The entries the
+        connect that disarmed them wrote stay in the record."""
+        path = rollout_dir / CLOUD_METADATA_RECORD
+        if record.get("state") == "on":
+            earlier: dict[Any, Any] = {}
+            with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+                before = json.loads(path.read_text())
+                if before.get("state") == "on":
+                    earlier = {
+                        d["path"]: d
+                        for d in before.get("delegates_disarmed") or ()
+                        if isinstance(d, dict) and "path" in d
+                    }
+            now = [
+                d for d in record.get("delegates_disarmed") or () if isinstance(d, dict)
+            ]
+            merged = [
+                earlier.get(d.get("path"), d) if d.get("earlier") else d for d in now
+            ]
+            named = {d.get("path") for d in merged}
+            merged += [d for p, d in earlier.items() if p not in named]
+            if merged != now:
+                record = {**record, "delegates_disarmed": merged}
+        path.write_text(json.dumps(record, indent=2) + "\n")
+        delegates = record.get("delegates")
+        disarmed = [d["path"] for d in record.get("delegates_disarmed") or ()]
+        self._cloud_metadata_result = {
+            "state": record["state"],
+            **({"opt_out": opt_out} if opt_out else {}),
+            **(
+                {"delegates": delegates}
+                if delegates and record["state"] != "on"
+                else {}
+            ),
+            **({"delegates_disarmed": disarmed} if disarmed else {}),
+        }
+
+    def _record_delegate_restore(self) -> None:
+        """After grading's hardening tried to put back what the cloud metadata
+        block disarmed: add each file's outcome to
+        cloud-metadata.json (``delegates_restored``, and the processes that
+        withheld the restore in ``restore_withheld_for``), and to result.json's
+        ``cloud_metadata`` how many went back and the files that did not, with
+        a trial warning saying why: the agent changed the file, a process
+        outside no_new_privs was alive, or BenchFlow failed (the trial is then
+        unscored, :class:`~benchflow.sandbox._delegate_disarm.DelegateRestoreError`)."""
+        from benchflow.sandbox._delegate_disarm import RESTORED_ATTR
+
+        env = getattr(self, "_env", None)
+        report = getattr(env, RESTORED_ATTR, None)
+        rows = list(getattr(report, "rows", None) or ())
+        live = list(getattr(report, "live", None) or ())
+        if not rows and not live:
+            return
+        with contextlib.suppress(AttributeError, TypeError):
+            setattr(env, RESTORED_ATTR, None)
+        path = self._require_rollout_dir() / CLOUD_METADATA_RECORD
+        with contextlib.suppress(OSError, ValueError):
+            record = json.loads(path.read_text())
+            record["delegates_restored"] = rows
+            if live:
+                record["restore_withheld_for"] = live
+            path.write_text(json.dumps(record, indent=2) + "\n")
+        kept = [r for r in rows if r["outcome"] != "restored"]
+        result = dict(self._cloud_metadata_result or {})
+        result["delegates_restored"] = len(rows) - len(kept)
+        warnings = vars(self).setdefault("_warnings", [])
+        if kept:
+            result["delegates_not_restored"] = kept
+        if live:
+            result["restore_withheld_for"] = live
+            warnings.append(
+                "the cloud metadata block put back none of the files it disarmed "
+                "for the agent's turn: processes outside no_new_privs were alive "
+                "at the restore ("
+                + ", ".join(
+                    f"pid {p['pid']} uid {p['uid']} {p['comm']}" for p in live[:5]
+                )
+                + "), so the files stayed without their set-ID bits or "
+                "capability while the verifier ran"
+            )
+        changed = [r for r in kept if r["outcome"] == "kept_stripped" and not live]
+        if changed:
+            warnings.append(
+                "the cloud metadata block disarmed files for the agent's turn and "
+                "did not put "
+                + ", ".join(f"{r['path']} ({r['why']})" for r in changed[:5])
+                + " back: it is not the file it disarmed any more (content, owner, "
+                "link count, mode or path changed); it stayed without its set-ID "
+                "bits or capability while the verifier ran"
+            )
+        failed = [r for r in kept if r["outcome"] == "failed"]
+        if failed:
+            warnings.append(
+                "BenchFlow could not put back "
+                + ", ".join(f"{r['path']} ({r['why']})" for r in failed[:5])
+                + ", which the cloud metadata block disarmed for the agent's "
+                "turn; the verifier did not run and the trial is unscored"
+            )
+        self._cloud_metadata_result = result
+
     async def _stop_active_egress(self) -> None:
         if self._active_egress_policy is not None:
             await self._planes.stop_egress_denylist(
@@ -2982,6 +3424,10 @@ class Rollout:
                 self._config.sandbox_user,
                 agent_launch or self._agent_launch,
                 harness=self._config.harness,
+            )
+        elif denylist.native_codex_model_only:
+            admission = await validate_native_codex_transport(
+                self._env, self._config.sandbox_user
             )
         await self._stop_active_egress()
         # Track attempted startup too: cleanup must remove partially staged policy.
@@ -3020,6 +3466,8 @@ class Rollout:
             cfg.primary_model,
             self._agent_env,
         )
+        # The task's services as they run now (a restored sandbox moves them).
+        egress_denylist = await task_service_policy(self._env, egress_denylist)
 
         previous_runtime = self._usage_runtime
         force_sandbox_local = self._disallow_web_tools or egress_denylist is not None
@@ -3079,6 +3527,7 @@ class Rollout:
                     disallow_web_tools=self._disallow_web_tools
                     or egress_denylist is not None,
                     install_layer_bypass_reason=self._proxy_layer_bypass_reason(),
+                    trial_budget=self._trial_budget,
                 )
 
         if beside:
@@ -3090,12 +3539,18 @@ class Rollout:
             self._agent_env, self._usage_runtime = await start_proxy()
         # A reservation this connection did not take goes back.
         self._release_host_proxy()
+        self._require_budget_proxy(cfg.primary_agent, cfg.primary_model)
         if previous_runtime is not None and previous_runtime is not self._usage_runtime:
             self._retain_usage_runtime(previous_runtime)
             self._add_reported_models(previous_runtime)
         self._record_proxy_layer_use()
         if egress_denylist is not None:
             self._agent_env = denylist_agent_env(self._agent_env, egress_denylist)
+        if wants_agent_otel(self._agent_env) and await start_agent_otel(self._env):
+            # The run asked the agent for OpenTelemetry and named no collector:
+            # BenchFlow's loopback receiver takes it (sandbox/agent_otel.py).
+            self._agent_env = agent_otel_env(self._agent_env)
+            self._agent_otel = True
         self._pin_credential_homes(cfg.primary_agent, self._agent_env)
         if not beside:
             sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
@@ -3128,6 +3583,7 @@ class Rollout:
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
             harness=cfg.harness,
+            mcp_servers=_task_mcp_specs(self._task),
         )
         # After proxy wiring and admission: a slot holding the proxy key is
         # written as a file (C24), and a refused connection stages nothing.
@@ -3195,6 +3651,7 @@ class Rollout:
                 ),
                 resume_session_id=self._resume_session_id,
             )
+            self._record_effort_applied(rollout_dir)
             replayed = getattr(self._session, "replayed_prefix", None)
             if isinstance(replayed, tuple):
                 # session/load replayed the parent's conversation: that is the
@@ -3211,6 +3668,29 @@ class Rollout:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
 
         self._phase = "connected"
+
+    def _record_effort_applied(self, rollout_dir: Path) -> None:
+        """Keep the reasoning effort the session says it applied, and the one
+        the model proxy's route sets on each request, for config.json now and
+        result.json's ``effort`` later."""
+        from benchflow.rollout._results import _record_effort_in_config
+
+        applied = getattr(self._session, "effort_applied", None)
+        self._effort_applied = applied if isinstance(applied, str) else None
+        override = (self._agent_env or {}).get("CLAUDE_CODE_EFFORT_LEVEL")
+        if (
+            self._config.primary_agent == "claude-agent-acp"
+            and isinstance(override, str)
+            and override.strip().lower() not in ("", "auto", "unset")
+        ):
+            # Claude Code applies its env's effort over the session's (the
+            # run card names the variable; run_checks compares it).
+            self._effort_applied = override.strip().lower()
+        route = getattr(getattr(self._usage_runtime, "server", None), "route", None)
+        params = getattr(route, "litellm_params", None)
+        pinned = params.get("reasoning_effort") if isinstance(params, Mapping) else None
+        self._effort_route = pinned if isinstance(pinned, str) else None
+        _record_effort_in_config(rollout_dir, self._effort_applied, self._effort_route)
 
     def _attach_trajectory_writer(self, rollout_dir: Path) -> None:
         """Wire the current session's ``on_change`` to stream cumulative
@@ -3645,6 +4125,7 @@ class Rollout:
         # at least one is present; both None means connect() never ran.
         if self._acp_client is None and self._session is None:
             raise RuntimeError("Rollout.connect() must run before execute()")
+        self._agent_stop_reason = None
         prev_session_tools = self._session_tool_count
         t0 = datetime.now()
         active_role = self._active_role
@@ -3663,6 +4144,7 @@ class Rollout:
         if self._session is not None and server is not None and callable(activity):
             self._session.model_request_activity = server.model_request_activity
 
+        turns_before = len(self._session_turns())
         try:
             if self._is_session_factory:
                 (
@@ -3694,6 +4176,8 @@ class Rollout:
                 partial_trajectory=not e.terminal_trajectory_complete,
             )
             raise
+        finally:
+            self._turn_stop_reasons.extend(self._session_turns()[turns_before:])
 
         self._commit_acp_execution(
             trajectory=trajectory,
@@ -3703,7 +4187,18 @@ class Rollout:
             started_at=t0,
             node=node,
         )
+        stop = getattr(self._session, "stop_reason", None)
+        stop = getattr(stop, "value", stop)
+        self._agent_stop_reason = stop if isinstance(stop, str) else None
         return trajectory, n_tool_calls
+
+    def _session_turns(self) -> list[str | None]:
+        """Each prompt turn's stop reason the session has seen so far
+        (``ACPSession.stop_reasons``); empty for a session that keeps none."""
+        reasons = getattr(self._session, "stop_reasons", None)
+        if not isinstance(reasons, list):
+            return []
+        return [reason if isinstance(reason, str) else None for reason in reasons]
 
     def _commit_acp_execution(
         self,
@@ -3766,20 +4261,28 @@ class Rollout:
         self._phase = "executed"
 
     def _collect_native_acp_usage(self) -> None:
-        """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
+        """Accumulate ACP PromptResponse.usage deltas for native subscription runs.
+
+        An agent that routes its own model calls reports usage nothing
+        metered: its deltas go to a separate agent-reported total.
+        """
         agent = (
             getattr(self._active_role, "agent", "")
             if self._active_role is not None
             else self._config.primary_agent
         ) or ""
+        own_route = agent_routes_own_model(agent)
         # Missing telemetry is missing cost coverage too. Record the harness
         # before inspecting its optional usage, including zero-token sessions.
         # A proxy can also fail to return telemetry. Its ACP fallback still
         # needs harness ownership before any session-log estimate is allowed.
         if self._session is not None:
-            self._native_usage_agents.add(agent)
-            if not self._native_usage_proxy_covered:
-                self._has_unproxied_native_session = True
+            if own_route:
+                self._agent_routed_session = True
+            else:
+                self._native_usage_agents.add(agent)
+                if not self._native_usage_proxy_covered:
+                    self._has_unproxied_native_session = True
         latest_fn = getattr(self._session, "latest_usage_totals", None)
         if not callable(latest_fn):
             return
@@ -3789,6 +4292,11 @@ class Rollout:
         delta = _native_acp_usage_delta(self._native_usage_checkpoint, latest)
         self._native_usage_checkpoint = dict(latest)
         if not any(delta.values()):
+            return
+        if own_route:
+            self._agent_reported_usage_metrics = _add_agent_reported_usage(
+                self._agent_reported_usage_metrics, delta
+            )
             return
 
         metrics = dict(self._native_usage_metrics)
@@ -3937,7 +4445,7 @@ class Rollout:
         image of the sandbox at the cursor, such as an automatic checkpoint,
         used as the fork's snapshot instead of taking another; the fork never
         deletes it.
-        See ``docs/jobs/branching-reference.md``.
+        See ``docs/train/environment.md``.
         """
         return await _branch_engine(
             self,
@@ -4093,7 +4601,7 @@ class Rollout:
                     verifier_timeout_diag,
                 ) = await _verify_rollout(
                     self._env,
-                    self._task,
+                    self._verify_task or self._task,
                     self._rollout_paths,
                     self._timing,
                     self._planes,
@@ -4105,6 +4613,7 @@ class Rollout:
                     # paths keep (host writers follow _rollout_dir).
                     record_dir=self._require_rollout_dir(),
                 )
+            self._record_delegate_restore()
         except Exception as exc:
             if getattr(
                 self._env, "_benchflow_test_command_issued", False
@@ -4351,6 +4860,7 @@ class Rollout:
                 "soft_verify is unavailable: the task uses a separate verifier "
                 "sandbox, so tests never enter the agent's sandbox",
             )
+        task = self._verify_task or self._task
         require_safe_branch_world(self)
         if self._muse_credentials_staged:
             await self.disconnect()
@@ -4405,7 +4915,7 @@ class Rollout:
         verifier_error = None
         try:
             verifier = self._planes.verifier(
-                task=self._task,
+                task=task,
                 rollout_paths=self._rollout_paths,
                 sandbox=self._env,
             )
@@ -4425,11 +4935,9 @@ class Rollout:
             verifier.bash_env = bash_env if isinstance(bash_env, str) else ""
             verifier_result = await asyncio.wait_for(
                 verifier.verify(),
-                timeout=self._task.config.verifier.timeout_sec,
+                timeout=task.config.verifier.timeout_sec,
             )
-            rewards = _ensure_canonical_rewards(
-                verifier_result.rewards, task=self._task
-            )
+            rewards = _ensure_canonical_rewards(verifier_result.rewards, task=task)
             # Capture raw verifier output for the user. The agent is alive and
             # the image's PATH may lead into its folders: root's cat comes
             # from the system shell (C8).
@@ -4442,11 +4950,16 @@ class Rollout:
                 timeout_sec=10,
             )
             verifier_output = (cat.stdout or "").strip() or None
-            logger.info(f"[soft_verify] rewards={rewards}")
+            stdout_path = getattr(self._rollout_paths, "test_stdout_path", None)
+            if verifier_output is None and stdout_path is not None:
+                verifier_output = _host_test_stdout(stdout_path)
+            # A multi-step task logs the step by name instead (task/steps.py).
+            (logger.debug if self._active_steps_user() else logger.info)(
+                f"[soft_verify] rewards={rewards}"
+            )
         except TimeoutError:
             verifier_error = (
-                f"soft verifier timed out after "
-                f"{self._task.config.verifier.timeout_sec}s"
+                f"soft verifier timed out after {task.config.verifier.timeout_sec}s"
             )
             logger.error(verifier_error)
         except Exception as e:
@@ -4533,6 +5046,7 @@ class Rollout:
             ("skill_export", self._teardown_skill_export),
             ("usage_runtime_stop", self._teardown_usage_runtime),
             ("egress_stop", self._teardown_egress),
+            ("agent_otel_stop", self._teardown_agent_otel),
             ("finalize_usage", self._teardown_finalize_usage),
             ("price_session_log", self._teardown_price),
         )
@@ -4633,6 +5147,18 @@ class Rollout:
             self._api_failure_summary_cached = (
                 _provider_api_failure_summary_from_runtime(usage_runtime)
             )
+            # The calls the proxies refused for the trial's budget, from their
+            # imported logs, before the runtimes are let go below.
+            if self._trial_budget is not None:
+                self._trial_budget_refused = [
+                    entry
+                    for trajectory in self._usage_trajectories()
+                    if isinstance(
+                        metadata := getattr(trajectory, "metadata", None), dict
+                    )
+                    for entry in metadata.get("refused_requests") or []
+                    if isinstance(entry, dict) and entry.get("rule") == SPENT_RULE
+                ]
             self._add_reported_models(usage_runtime)
             try:
                 self._write_llm_trajectory(usage_runtime)
@@ -4661,6 +5187,14 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"Egress denylist proxy stop failed: {e}")
 
+    async def _teardown_agent_otel(self) -> None:
+        if (
+            getattr(self, "_agent_otel", False)
+            and self._env is not None
+            and self._rollout_dir is not None
+        ):
+            await stop_agent_otel(self._env, self._rollout_dir)
+
     async def _teardown_finalize_usage(self) -> None:
         self._finalize_usage_metrics()
 
@@ -4668,6 +5202,152 @@ class Rollout:
         # Unpriced Claude Code usage (a subscription): estimate its USD from
         # Claude Code's session log while the sandbox is still up.
         await price_from_session_log(self)
+        # One record per model call, from the proxy or the agent's own log.
+        await keep_session_logs(self)
+        # Claude Code's compactions, while its session log is reachable.
+        await count_compactions(self)
+        if self._rollout_paths is not None:
+            # Once per trial, off the event loop: a long run's proxy log is
+            # tens of MB. result.json's agent_outcome reads the totals.
+            try:
+                await asyncio.to_thread(
+                    write_model_calls, Path(self._rollout_paths.rollout_dir)
+                )
+            except Exception as exc:
+                logger.info("Could not write the trial's model calls: %s", exc)
+
+    async def _run_scripted_steps(self, *, solve: bool) -> tuple[list[dict], str]:
+        """The oracle (*solve*) or nop on a multi-step task: each step's
+        solve.sh in turn (none for nop), then that step's tests as a soft
+        verify, stopping where a step misses its min_reward (task/steps.py).
+        The last step that ran stays the one the final verify scores with."""
+        from benchflow.rollout._user_loop import _keep_round_output
+
+        user = StepsUser(self._task)
+        self._steps_user = user
+        # Each step's soft-check output, kept as the user loop keeps a
+        # model agent's (rounds/round-<n>-check.txt).
+        self._step_check_outputs = []
+        trajectory: list[dict] = []
+        for index, step in enumerate(user.steps):
+            view = user.task_for_round(index)
+            self._verify_task = view
+            if solve:
+                trajectory.extend(await self._solve_step(view, step.name))
+            rewards, output, error = await self.soft_verify()
+            self._step_check_outputs.append(
+                _keep_round_output(self, index + 1, output, error)
+            )
+            if not user.record(index, rewards):
+                break
+        return trajectory, "oracle"
+
+    async def _solve_step(self, view: Any, name: str) -> list[dict]:
+        """Run one step's solve.sh (its own solution/, else the task's)."""
+        from benchflow.task.paths import SandboxPaths
+        from benchflow.trust.state import TRUSTED_TRANSFER, admit
+
+        if view.paths.solution_dir.is_dir():
+            sandbox_paths = SandboxPaths()
+            target = (
+                sandbox_paths.oracle_dir
+                if view.paths.uses_native_oracle_dir
+                else sandbox_paths.solution_dir
+            )
+            await self._env.upload_dir(
+                view.paths.solution_dir,
+                str(target),
+                admission=admit(
+                    self._env,
+                    "main",
+                    TRUSTED_TRANSFER,
+                    reason="the task's own files (a step's solution)",
+                ),
+            )
+        trajectory, _agent = await _run_oracle(
+            self._env,
+            self._config.task_path,
+            int(view.config.agent.timeout_sec or self._timeout),
+            sandbox_user=None,
+            rollout_dir=self._rollout_dir,
+            task=view,
+        )
+        return trajectory
+
+    def _active_steps_user(self) -> StepsUser | None:
+        if self._steps_user is not None:
+            return self._steps_user
+        user = getattr(self._config, "user", None)
+        return user if isinstance(user, StepsUser) else None
+
+    def _apply_step_rewards(self) -> None:
+        """A multi-step task's reward by its multi_step_reward_strategy, and
+        steps.json beside the result (task/steps.py)."""
+        user = self._active_steps_user()
+        if user is None or self._rollout_dir is None:
+            return
+        from benchflow.review.persistence import write_json_atomic
+        from benchflow.task.steps import RECORD_NAME, combine, describe
+
+        rewards, record = combine(
+            self._task.config.multi_step_reward_strategy,
+            user.steps,
+            user.soft_rewards,
+            self._rewards,
+        )
+        if user.stopped_after is not None:
+            record["stopped_after"] = user.steps[user.stopped_after].name
+        # Each step's soft-check output: from the user loop's round log (a
+        # model agent), or the scripted steps' list (the oracle and nop). Both
+        # line up with the steps one to one.
+        rounds = getattr(self, "_user_rounds_log", None) or []
+        kept = [
+            entry.get("check_output") if isinstance(entry, dict) else None
+            for entry in rounds
+        ] or list(getattr(self, "_step_check_outputs", None) or [])
+        for row, output in zip(record["steps"], kept, strict=False):
+            if output:
+                row["check_output"] = output
+        self._rewards = rewards
+        write_json_atomic(self._rollout_dir / RECORD_NAME, record)
+        logger.info(describe(record))
+
+    async def _keep_sandbox(self, env: Any, task_tmp: Path | None) -> bool:
+        """Whether ``--keep-sandbox`` keeps this trial's sandbox; a kept one
+        has ``kept-sandbox.json`` written beside its result."""
+        from benchflow.rollout import _keep_sandbox
+
+        policy = getattr(self._config, "keep_sandbox", "never")
+        if self._rollout_dir is None or not _keep_sandbox.wants_keep(
+            policy,
+            rewards=self._rewards,
+            error=self._error,
+            verifier_error=self._verifier_error,
+        ):
+            return False
+        try:
+            record = await _keep_sandbox.keep(
+                env,
+                self._rollout_dir,
+                environment=self._config.environment,
+                task_copy=task_tmp,
+            )
+        except Exception as exc:
+            logger.warning(f"Could not keep the sandbox (deleting it): {exc}")
+            return False
+        if record is None:
+            return False
+        # The sandbox stays up; this process's own connections to it close now,
+        # so none outlives the event loop (a traceback at exit otherwise).
+        detach = getattr(env, "detach", None)
+        if callable(detach):
+            with contextlib.suppress(Exception):
+                await detach()
+        logger.warning(
+            f"Kept the sandbox for inspection: {record['attach']} "
+            f"(delete it with {record['release']})"
+        )
+        return True
 
     async def _teardown_sandbox(self) -> None:
         if self._environment is not None:
@@ -4690,6 +5370,10 @@ class Rollout:
         # themselves. #388.
         task_tmp = self._task_tmp
         lease = getattr(self, "_recovery_lease_owned", False)
+        if env is not None and await self._keep_sandbox(env, task_tmp):
+            # Kept for `bench sandbox attach`: not stopped, and the task copy
+            # it may still mount stays until `bench sandbox release`.
+            env, task_tmp = None, None
 
         async def stop_and_remove() -> None:
             if env is not None:
@@ -4734,7 +5418,21 @@ class Rollout:
         self._phase = "cleaned"
 
     def _finalize_usage_metrics(self) -> None:
-        """Prefer provider usage for covered roles; add only uncovered ACP usage."""
+        """Prefer provider usage for covered roles; add only uncovered ACP usage.
+
+        A trial with an agent that routes its own model calls then
+        records that agent's own report beside those totals, never in them;
+        with nothing else, its usage is agent-reported, or none.
+        """
+        self._finalize_metered_usage_metrics()
+        if self._agent_routed_session or agent_routes_own_model(
+            self._config.primary_agent
+        ):
+            self._usage_metrics = _with_agent_reported_usage(
+                self._usage_metrics, self._agent_reported_usage_metrics
+            )
+
+    def _finalize_metered_usage_metrics(self) -> None:
         if self._usage_metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE:
             native = self._unproxied_native_usage_metrics
             if (
@@ -5117,6 +5815,7 @@ class Rollout:
         """
         cfg = self._config
         agent_timed_out = False
+        budget_stopped = False
         pending_acp_error: AgentProtocolError | None = None
         if cfg.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
@@ -5128,8 +5827,10 @@ class Rollout:
 
             if cfg.primary_agent == "nop":
                 # The empty control: nothing runs, the verifier scores the
-                # untouched workspace.
+                # untouched workspace (each step's, on a multi-step task).
                 await self._install_agent_step()
+                if has_steps(self._task):
+                    await self._run_scripted_steps(solve=False)
                 self._trajectory, self._agent_name = _nop_trajectory()
                 from benchflow.rollout._verifier_recovery import mark_solver_complete
 
@@ -5150,14 +5851,20 @@ class Rollout:
                 # A task network policy covers the oracle's turn; its arming
                 # records the oracle_network_policy span here.
                 with timing_spans.recording_into(self._timing):
-                    self._trajectory, self._agent_name = await _run_oracle(
-                        self._env,
-                        cfg.task_path,
-                        self._timeout,
-                        sandbox_user=None,
-                        rollout_dir=self._rollout_dir,
-                        task=self._task,
-                    )
+                    if has_steps(self._task):
+                        (
+                            self._trajectory,
+                            self._agent_name,
+                        ) = await self._run_scripted_steps(solve=True)
+                    else:
+                        self._trajectory, self._agent_name = await _run_oracle(
+                            self._env,
+                            cfg.task_path,
+                            self._timeout,
+                            sandbox_user=None,
+                            rollout_dir=self._rollout_dir,
+                            task=self._task,
+                        )
                 self._timing["agent_execution"] = (
                     datetime.now() - oracle_started
                 ).total_seconds()
@@ -5169,15 +5876,24 @@ class Rollout:
                 script_env: dict[str, str] = {}
                 script_started = datetime.now()
                 try:
-                    if self._egress_denylist is not None:
-                        await self._start_egress_denylist(self._egress_denylist)
-                        script_env = denylist_agent_env({}, self._egress_denylist)
+                    script_policy = await task_service_policy(
+                        self._env, self._egress_denylist
+                    )
+                    if script_policy is not None:
+                        await self._start_egress_denylist(script_policy)
+                        script_env = denylist_agent_env({}, script_policy)
                     await self._planes.enforce_agent_egress_firewall(
                         self._env, cfg.sandbox_user, script_env
                     )
                     assert (
                         cfg.sandbox_user is not None and cfg._script_bytes is not None
                     )
+                    if self._script_agent_offline:
+                        # No model to route: the script's uid keeps only loopback.
+                        await self._planes.enforce_offline_uid_egress(
+                            self._env, cfg.sandbox_user
+                        )
+                    await self._apply_cloud_metadata_block(self._require_rollout_dir())
                     self._trajectory, self._agent_name = await _run_script(
                         self._env,
                         cfg._script_bytes,
@@ -5216,14 +5932,45 @@ class Rollout:
                                 )
                             )
                         )
+                    # An agent may end its turn itself on a call the model
+                    # proxy refused for the trial's budget: still a budget stop.
+                    refused = await self._settled_budget_refusal()
+                    if refused is not None:
+                        raise TrialBudgetSpentError(refused)
                     from benchflow.rollout._verifier_recovery import (
                         mark_solver_complete,
                     )
 
                     mark_solver_complete(self)
+                except TrialBudgetSpentError as e:
+                    budget_stopped = True
+                    self._record_budget_stop(e.record)
                 except TimeoutError as e:
                     agent_timed_out = True
                     self._record_agent_timeout(e, agent_phase=True)
+                except AgentProtocolError as e:
+                    refused = await self._settled_budget_refusal()
+                    if refused is not None:
+                        # The agent's error is its answer to the call the
+                        # proxy refused: the budget ended the trial, and the
+                        # workspace is graded as after a timeout.
+                        budget_stopped = True
+                        self._record_budget_stop(refused)
+                    elif await self._model_refused_so_far():
+                        # The agent's error is its answer to its model's
+                        # refusal: the model's own ending, so the workspace is
+                        # graded and the trial, a model refusal, is final.
+                        self._error = str(e)
+                        logger.error(self._error)
+                    elif not is_output_cap_error(getattr(e, "message", str(e))):
+                        raise
+                    else:
+                        # The model's answer ran past the output cap and the
+                        # agent ended its turn on it: the model's own ending,
+                        # so the workspace is scored as after a turn that
+                        # stopped at max_tokens, and the trial is not retried.
+                        self._error = str(e)
+                        logger.error(self._error)
 
             if not cfg.skip_verify:
                 # The trial's own last verify(): a separate verifier may stop
@@ -5233,8 +5980,9 @@ class Rollout:
                     await self.verify()
                 finally:
                     self._release_agent_before_verify = False
+                self._apply_step_rewards()
                 if (
-                    agent_timed_out
+                    (agent_timed_out or budget_stopped)
                     and self._rewards is None
                     and self._verifier_error is None
                 ):
@@ -5263,13 +6011,15 @@ class Rollout:
             logger.error(self._error)
         except AgentModelNotOfferedError as e:
             # Already an agent-integration error text; keep it verbatim so
-            # its category and the batch circuit breaker see the cause.
+            # its category and the batch circuit breaker see the cause
+            # (agent_model, or agent_effort for a model it offers at other
+            # efforts).
             self._error = str(e)
             self._diagnostics.set(
                 IntegrationFailureDiagnostic(
-                    cause="agent_model",
+                    cause=e.cause,
                     evidence=str(e).split(": ", 1)[-1],
-                    evidence_source="session/new availableModels",
+                    evidence_source=e.evidence_source,
                 )
             )
             logger.error(self._error)
@@ -5527,21 +6277,113 @@ class Rollout:
 
         When :meth:`_stop_agent_at_deadline` cancelled it, the cancellation
         becomes the agent's ``TimeoutError`` and the lifecycle goes on to
-        verify, as for any other agent timeout (#1134). Any other
-        cancellation, including one of the lifecycle itself, propagates.
+        verify, as for any other agent timeout (#1134). With a trial budget,
+        :meth:`_watch_trial_budget` stops it the same way once the model proxy
+        refused a call for the budget, and the cancellation becomes
+        :class:`TrialBudgetSpentError`. Any other cancellation, including one
+        of the lifecycle itself, propagates.
         """
         agent = asyncio.ensure_future(phase)
         self._agent_phase = agent
+        watch = (
+            asyncio.ensure_future(self._watch_trial_budget(agent))
+            if self._trial_budget is not None
+            else None
+        )
         try:
             await agent
         except asyncio.CancelledError:
             reason = self._agent_deadline_reason
             current = asyncio.current_task()
-            if reason is None or (current is not None and current.cancelling()):
+            if current is not None and current.cancelling():
+                raise
+            if reason is None and self._trial_budget_stop is not None:
+                raise TrialBudgetSpentError(self._trial_budget_stop) from None
+            if reason is None:
                 raise
             raise TimeoutError(reason) from None
         finally:
+            if watch is not None:
+                watch.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watch
             self._agent_phase = None
+
+    async def _watch_trial_budget(self, agent: asyncio.Future[Any]) -> None:
+        """Stop the agent once the model proxy refused one of its calls
+        because the trial's budget is spent (the live capture reads the
+        proxy's record of it): an agent may retry the refused call, or go on
+        without the model, until its time runs out."""
+        while not agent.done():
+            await asyncio.sleep(_TRIAL_BUDGET_POLL_SEC)
+            record = self._trial_budget_refusal()
+            if record is not None and not agent.done():
+                self._trial_budget_stop = record
+                agent.cancel()
+                return
+
+    def _trial_budget_refusal(self) -> dict[str, Any] | None:
+        """The proxy's record of the first call it refused for the budget,
+        as the trial's proxies show it (a stopped one's import among them),
+        or after teardown as their logs did."""
+        for runtime in self._usage_runtimes():
+            server = getattr(runtime, "server", None)
+            read = getattr(server, "trial_budget_refusal", None)
+            record = read() if callable(read) else None
+            if record is None:
+                trajectory = getattr(server, "trajectory", None)
+                metadata = getattr(trajectory, "metadata", None)
+                record = (
+                    budget_refusal(metadata.get("refused_requests"))
+                    if isinstance(metadata, dict)
+                    else None
+                )
+            if record is not None:
+                return record
+        return budget_refusal(self._trial_budget_refused)
+
+    async def _settle_live_capture(self) -> None:
+        """Let the trial's proxies' live capture read their logs as they
+        stand now (``settle_live_capture``)."""
+        for runtime in self._usage_runtimes():
+            server = getattr(runtime, "server", None)
+            settle = getattr(server, "settle_live_capture", None)
+            if callable(settle):
+                await settle()
+
+    async def _settled_budget_refusal(self) -> dict[str, Any] | None:
+        """:meth:`_trial_budget_refusal` once the live capture has read the
+        proxy's log as it stands when the agent's turn ended; None at once
+        for a trial with no budget."""
+        if self._trial_budget is None:
+            return None
+        if self._trial_budget_stop is None and self._trial_budget_refusal() is None:
+            await self._settle_live_capture()
+        return self._trial_budget_stop or self._trial_budget_refusal()
+
+    async def _model_refused_so_far(self) -> bool:
+        """Whether the agent's own last model call so far was a refusal or
+        a content filter's stop, by the rule result.json's ``agent_outcome``
+        reads, from the proxy's live record of the trial's calls."""
+        if self._rollout_dir is None or not self._usage_runtimes():
+            return False
+        await self._settle_live_capture()
+        path = self._rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+        try:
+            summary = await asyncio.to_thread(summarize_proxy_log, path)
+        except OSError:
+            return False
+        return (
+            summary is not None
+            and agent_outcome(summary, agent_error=True)["status"] == "refusal"
+        )
+
+    def _record_budget_stop(self, record: dict[str, Any]) -> None:
+        """Record a trial its budget stopped: the trial's error (category
+        ``trial_budget``) and the proxy's record for result.json."""
+        self._trial_budget_stop = dict(record)
+        self._error = stop_text(record)
+        logger.error(self._error)
 
     def _stop_agent_at_deadline(self, reason: str) -> bool:
         """Stop a still-running agent phase; False once it has ended."""
@@ -5637,6 +6479,7 @@ class Rollout:
         ) or allowlist_model_transport(
             egress_denylist, role.agent, role.model, agent_env
         )
+        egress_denylist = await task_service_policy(self._env, egress_denylist)
         previous_runtime = self._usage_runtime
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (
@@ -5700,6 +6543,7 @@ class Rollout:
                     force_sandbox_local=force_sandbox_local,
                     disallow_web_tools=disallow_web_tools or disallow_hosted_search,
                     install_layer_bypass_reason=self._proxy_layer_bypass_reason(),
+                    trial_budget=self._trial_budget,
                 )
 
         if beside:
@@ -5710,6 +6554,7 @@ class Rollout:
             agent_env, self._usage_runtime = await start_proxy()
         # A reservation this connection did not take goes back.
         self._release_host_proxy()
+        self._require_budget_proxy(role.agent, role.model)
         # A role on another model or route stopped the previous proxy: keep
         # the models it recorded.
         if previous_runtime is not None and previous_runtime is not self._usage_runtime:
@@ -5718,6 +6563,10 @@ class Rollout:
         self._record_proxy_layer_use()
         if egress_denylist is not None:
             agent_env = denylist_agent_env(agent_env, egress_denylist)
+        if wants_agent_otel(agent_env) and await start_agent_otel(self._env):
+            # As connect() does: the role's OpenTelemetry goes to the receiver.
+            agent_env = agent_otel_env(agent_env)
+            self._agent_otel = True
 
         if role_agent_differs:
             if cfg.skip_agent_install:
@@ -5786,6 +6635,7 @@ class Rollout:
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
             harness=cfg.harness,
+            mcp_servers=_task_mcp_specs(self._task),
         )
         # Every connection stages its own credentials, after proxy wiring
         # and admission; the previous connection's are removed first.
@@ -5860,6 +6710,13 @@ class Rollout:
                     role.agent, self._task, agent_cfg
                 ),
             )
+            if (role.agent, role.reasoning_effort) == (
+                cfg.primary_agent,
+                cfg.primary_reasoning_effort,
+            ):
+                # The run's own agent at the run's effort: result.json's
+                # effort compares this session with what was asked for.
+                self._record_effort_applied(rollout_dir)
         self._native_usage_checkpoint = None
         self._native_usage_proxy_covered = bool(
             getattr(self._usage_runtime, "proxy_active", False)
@@ -5884,9 +6741,14 @@ class Rollout:
         if diag is None or self._env is None:
             return
         try:
+            # The same exec reads the sandbox cgroup's OOM-kill count (cgroup
+            # v2 memory.events): the evidence an exit is a memory kill needs.
             result = await asyncio.wait_for(
                 exec_raw(
-                    self._env.exec, "echo __BENCHFLOW_HEALTH_OK__", timeout_sec=10
+                    self._env.exec,
+                    "echo __BENCHFLOW_HEALTH_OK__; "
+                    "cat /sys/fs/cgroup/memory.events 2>/dev/null",
+                    timeout_sec=10,
                 ),
                 timeout=15,
             )
@@ -5896,6 +6758,10 @@ class Rollout:
             if "__BENCHFLOW_HEALTH_OK__" in stdout:
                 diag.sandbox_reachable = True
                 diag.sandbox_probe_rc = rc
+                for line in stdout.splitlines():
+                    name, _, count = line.partition(" ")
+                    if name == "oom_kill" and count.strip().isdigit():
+                        diag.oom_kills = int(count)
             else:
                 diag.sandbox_reachable = False
                 diag.sandbox_probe_rc = rc
@@ -5910,6 +6776,20 @@ class Rollout:
             diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: AgentProtocolError) -> str:
+        if isinstance(e, ModelCatalogMiss):
+            # Codex warned that its catalog lacks the model and the client
+            # stopped the trial rather than run it on fallback tools (see
+            # _classify_model_catalog_fallback): the setup's problem, not the
+            # agent's, and every retry would warn the same way.
+            failure = model_catalog_failure(
+                self._config.primary_agent,
+                self._config.primary_model,
+                getattr(e, "message", str(e)).rsplit("this model. ", 1)[-1],
+                "session notice",
+            )
+            self._diagnostics.set(failure.diagnostic(reward_withheld=self._rewards))
+            self._rewards = None
+            return failure.error_text()
         if isinstance(e, UsageLimitError):
             # Name the login (a label, never the token) and record the typed
             # diagnostic: the trial is an unscored usage_limit, never retried.
@@ -6017,6 +6897,17 @@ class Rollout:
         priced = [t for t in trajectories if t.has_provider_usage]
         if priced and all(t.total_cost_usd is not None for t in priced):
             combined.metadata["cost_usd"] = sum(t.total_cost_usd or 0.0 for t in priced)
+        if any(t._tool_evidence is not None for t in trajectories):
+            # A stopped proxy's exchanges keep no request bodies; its import
+            # read their tool evidence, which merges as their exchanges would.
+            evidence = ProviderToolEvidence()
+            for trajectory in trajectories:
+                evidence.merge(
+                    trajectory._tool_evidence
+                    if trajectory._tool_evidence is not None
+                    else _parse_provider_tool_evidence(trajectory.exchanges)
+                )
+            combined._tool_evidence = evidence.items()
         return SimpleNamespace(
             kind="litellm", server=SimpleNamespace(trajectory=combined)
         )
@@ -6041,7 +6932,11 @@ class Rollout:
         exchanges = getattr(trajectory, "exchanges", None)
         if not isinstance(exchanges, list) or not exchanges:
             return
-        provider_evidence = _parse_provider_tool_evidence(exchanges)
+        # A stopped proxy read the evidence before its exchanges shed their
+        # request bodies (LiteLLMProcess._import_callback_lines).
+        provider_evidence = getattr(trajectory, "_tool_evidence", None)
+        if not isinstance(provider_evidence, list):
+            provider_evidence = _parse_provider_tool_evidence(exchanges)
         self._trajectory, repaired = _reconcile_tool_evidence(
             self._trajectory, provider_evidence
         )
@@ -6128,9 +7023,11 @@ class Rollout:
         # failures still surface via the agent error channels.
         from benchflow.agents.env import uses_native_subscription_auth
 
+        # An agent that routes its own model calls has no BenchFlow usage
+        # channel either: it may report no tokens at all.
         native = uses_native_subscription_auth(
             self._config.agent, self._config.model, self._agent_env
-        )
+        ) or agent_routes_own_model(self._config.agent)
         total_tokens = _as_nonnegative_int(self._usage_metrics.get("total_tokens"))
         verdict, info = (
             (None, {})
@@ -6146,6 +7043,15 @@ class Rollout:
         # proxy-proven provider failure keeps its more specific verdict.
         if verdict != "api_error" and _classify_integration_failure(self):
             return
+        last_call = ""
+        if verdict is None and self._error is None:
+            # The agent's turn ended on a model call that failed with 429 or
+            # a 5xx: its model never answered that call, so the verifier's
+            # score of the workspace is not the model's answer.
+            terminal = _terminal_provider_failure(self._rollout_dir)
+            if terminal is not None:
+                verdict, info = "api_error", terminal
+                last_call = " (the agent's last model call)"
         if verdict is None:
             return
         self._bare_timeout = False
@@ -6160,11 +7066,12 @@ class Rollout:
                 total_requests=info.get("total_requests") or 0,
                 failed_requests=info.get("failed_requests") or 0,
                 fingerprint=info.get("fingerprint") or "",
+                reward_withheld=self._rewards if last_call else None,
             )
             self._diagnostics.set(diag)
             self._error = (
                 f"provider api error [{subcategory}/{kind}] "
-                f"HTTP {info.get('dominant_status')} on "
+                f"HTTP {info.get('dominant_status')}{last_call} on "
                 f"{diag.failed_requests}/{diag.total_requests} requests"
             )
             if getattr(self, "_invalid_provider_response_cached", None):
@@ -6215,6 +7122,8 @@ class Rollout:
         # Provider telemetry is imported during cleanup; a pre-cleanup stage
         # checkpoint must not classify its temporarily missing usage as failure.
         if result_filename != "solver-complete.json":
+            self._note_late_budget_stop()
+            _classify_model_catalog_fallback(self)
             self._maybe_classify_api_error()
         # For Scene/multi-turn rollouts, each execute() call records the
         # prompt(s) it sent into self._executed_prompts. Use that as the
@@ -6238,6 +7147,13 @@ class Rollout:
             trajectory=self._trajectory,
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
+            stop_reason=self._agent_stop_reason,
+            stop_reasons=self._turn_stop_reasons,
+            compactions=getattr(self, "_compactions", None),
+            harness_versions=self._harness_versions,
+            reasoning_effort=self._config.primary_reasoning_effort,
+            effort_applied=getattr(self, "_effort_applied", None),
+            effort_route=getattr(self, "_effort_route", None),
             rewards=self._rewards,
             started_at=self._require_started_at(),
             timing=self._timing,
@@ -6277,14 +7193,50 @@ class Rollout:
             verifier_isolation=self._verifier_isolation,
             cloud_metadata=self._cloud_metadata_result,
             warnings=getattr(self, "_warnings", None),
+            trial_budget=self._trial_budget_block(),
             **self._usage_metrics,
         )
+
+    def _note_late_budget_stop(self) -> None:
+        """A budget stop the live capture had not read when the agent's turn
+        ended, found in the proxy's imported log: recorded as the trial's
+        ending too, so a budget is never read as a clean ending."""
+        if self._trial_budget is None or self._trial_budget_stop is not None:
+            return
+        record = self._trial_budget_refusal()
+        if record is None:
+            return
+        self._trial_budget_stop = dict(record)
+        if self._error is None:
+            self._error = stop_text(record)
+            logger.error(self._error)
+
+    def _trial_budget_block(self) -> dict[str, Any] | None:
+        """result.json's ``trial_budget`` as the rollout knows it: the
+        budget, where each measure came from, which one stopped the trial and
+        what the proxy had counted when it refused the next call, and the
+        calls it refused for the budget. None without a budget."""
+        if self._trial_budget is None:
+            return None
+        stop = self._trial_budget_stop or {}
+        return {
+            "budget": self._trial_budget.to_dict(),
+            "source": dict(self._trial_budget_sources),
+            "stopped_by": stop.get("budget"),
+            "stopped_at": stop.get("used"),
+            "refused_calls": max(len(self._trial_budget_refused), 1 if stop else 0),
+        }
 
     def _branch_summary(self) -> dict[str, Any] | None:
         """result.json's ``branches`` block; None when the rollout never branched."""
         from benchflow.branch_lineage import branch_summary
 
         return branch_summary(getattr(self, "_branch_forks", []))
+
+
+#: How often a trial with a budget looks for the proxy's refusal record (the
+#: live capture itself reads the proxy's log once a second).
+_TRIAL_BUDGET_POLL_SEC = 0.5
 
 
 def _credit_prestart_seconds(rollout: Rollout) -> None:

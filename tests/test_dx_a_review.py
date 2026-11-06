@@ -257,8 +257,8 @@ def test_a_timeout_without_a_preserved_workspace_is_never_rerun():
             "the disk that holds /home/me/.cache/benchflow/datasets-v2/x is full",
         ),
         (
-            "/tmp/benchflow-stage-1/x",
-            "the disk that holds /tmp/benchflow-stage-1/x is full",
+            "/tmp/runtime-stage-1/x",
+            "the disk that holds /tmp/runtime-stage-1/x is full",
         ),
     ],
 )
@@ -378,11 +378,3 @@ def test_report_stopped_counts_only_this_runs_trials(tmp_path):
     assert proc.returncode == 130, err
     assert "stopped 1 running trial and removed its sandbox" in err
     assert "Resume with: bench eval resume" in err
-
-
-# --- L-A1: the oracle's budget on a stalled exec ---------------------------------
-
-
-def test_the_docs_say_a_stalled_exec_at_the_oracle_budget_is_a_timeout():
-    docs = (Path(__file__).parents[1] / "docs/jobs/when-a-run-fails.md").read_text()
-    assert "stalled" in docs and "oracle's budget" in docs

@@ -46,15 +46,16 @@ _GROUP_TITLES = {
     "proxy": "Model proxy",
     "network": "Network",
 }
-_GETTING_STARTED_URL = "https://github.com/benchflow-ai/benchflow/blob/main/docs/getting-started/quick-start.md"
+_GETTING_STARTED_URL = (
+    "https://github.com/benchflow-ai/benchflow/blob/main/docs/start/quick-start.md"
+)
 
 
 def oracle_quickstart(sandbox: str = "docker") -> str:
     """The README's step 2: one SkillsBench task with the oracle, no login."""
     return (
-        "bench run --source-repo benchflow-ai/skillsbench --source-path "
-        f"tasks/citation-check --agent oracle --sandbox {sandbox} "
-        "--jobs-dir jobs/oracle"
+        "bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation "
+        f"--agent oracle --sandbox {sandbox} --jobs-dir jobs/oracle"
     )
 
 
@@ -72,6 +73,32 @@ def _doctor_next_lines(report: DoctorReport, sandbox: str) -> list[str]:
             "      runs one task with the oracle, which needs no login.",
             "      For a model agent, log in (the agent credentials fix above), "
             "then run bench eval smoke.",
+        ]
+    logins = {
+        c.id for c in report.checks if c.id.startswith("auth.") and c.status == "pass"
+    }
+    if logins == {"auth.providers"}:
+        # Only provider keys: a bare smoke tries the logged-in agents and has
+        # none, so name an agent that runs on the key.
+        providers = next(c for c in report.checks if c.id == "auth.providers")
+        names = [
+            str(s.get("name", ""))
+            for s in (providers.details or {}).get("sources", [])
+            if s.get("usable", True)
+        ]
+        prefix = next(
+            (
+                n.removesuffix("_API_KEY").lower()
+                for n in names
+                if n.endswith("_API_KEY")
+            ),
+            "<provider>",
+        )
+        return [
+            head,
+            "      runs one task with the oracle (no model); then "
+            f"bench eval smoke --agent openhands={prefix}/<model> runs a model "
+            "on your provider key.",
         ]
     return [
         head,
@@ -363,7 +390,7 @@ def eval_preflight(
         from benchflow.evaluation import effective_model
 
         try:
-            route_model = effective_model(agent, model)
+            route_model = effective_model(agent, model, dict(agent_env or {}))
         except ValueError:
             # No --model and no default: reported below, with its fix.
             route_model = None
@@ -390,7 +417,7 @@ def eval_preflight(
         try:
             # The model the job's trials will use (bench eval run resolves the
             # agent's default the same way).
-            trial_model = effective_model(agent, model)
+            trial_model = effective_model(agent, model, dict(agent_env or {}))
         except ValueError as exc:
             # An agent with no default model and no --model: the job would
             # fail on the same error once it started, so say it here.

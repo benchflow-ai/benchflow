@@ -376,6 +376,8 @@ def solve_rates(
     per_task: dict[str, list[bool | None]] = {}
     unscored = 0
     nonbinary = 0
+    # Rewards other than 0 or 1 that the reward rule failed; a rubric verdict decides its own trials.
+    nonbinary_failed = 0
     for s in samples:
         reward = _finite(s.reward)
         if reward is None:
@@ -390,6 +392,7 @@ def solve_rates(
             ok = bool(s.passed)
         else:
             ok = reward == 1.0
+            nonbinary_failed += reward not in (0.0, 1.0)
         per_task.setdefault(s.task, []).append(ok)
 
     # (n, c) per task: over every trial, and over scored trials only (a task
@@ -442,9 +445,9 @@ def solve_rates(
             f"{controls_excluded} control run(s) (oracle, empty/nop) are left out: "
             f"they check the task, not an agent ({CONTROLS_HINT})."
         )
-    if nonbinary and solve_threshold is None:
+    if nonbinary_failed and solve_threshold is None:
         caveats.append(
-            f"{nonbinary} scored trial(s) have a reward other than 0 or 1 and count "
+            f"{nonbinary_failed} scored trial(s) have a reward other than 0 or 1 and count "
             "as not passed; pass --solve-threshold (solve_threshold=) to count "
             "partial credit."
         )

@@ -62,11 +62,13 @@ class _VirtualHostOrigin(socketserver.StreamRequestHandler):
                     if body:
                         self.server.body_prefix_seen.set()
                     body += self.rfile.read(length - len(body))
+                    if len(body) != length:
+                        return  # EOF before Content-Length is not a complete request.
                 record = {
                     "method": method,
                     "path": path,
                     "host": headers["host"],
-                    "body": body.decode("ascii"),
+                    "body": body.decode("latin-1"),
                 }
                 self.server.requests.append(record)
                 if record["host"] == "paper.test" and path == "/protected":
@@ -129,6 +131,9 @@ def authority_stack(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(proxy_mod, "_connect_upstream", connect_shared_origin)
     monkeypatch.setattr(proxy_mod, "_resolve", lambda host, port: ["93.184.216.34"])
+    # The first model-shaped body imports LiteLLM in the handler thread (about
+    # 3 s on a busy machine), past the clients' 3 s read timeout. Load it now.
+    proxy_mod._request_guard().split_provider("warm-up")
     log = tmp_path / "denied.jsonl"
     proxy = proxy_mod.serve(
         0,

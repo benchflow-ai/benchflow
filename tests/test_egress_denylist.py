@@ -22,6 +22,7 @@ import pytest
 
 from benchflow.sandbox import _egress_denylist_proxy as proxy_mod
 from benchflow.sandbox.egress_denylist import (
+    ALLOWED_LOG_NAME,
     CA_BUNDLE_PATH,
     CA_CERT_PATH,
     EGRESS_DENYLIST_ENV,
@@ -485,21 +486,21 @@ class TestStartStop:
             env, "agent", EgressDenylist(("https://a.test/x",), ("b.test",))
         )
         expected = {
-            "/opt/benchflow-egress/policy.json",
-            "/opt/benchflow-egress/proxy.py",
-            "/opt/benchflow-egress/ca.crt",
-            "/opt/benchflow-egress/ca.key",
-            "/opt/benchflow-egress/certs/a.test.pem",
+            "/opt/runtime-egress/policy.json",
+            "/opt/runtime-egress/proxy.py",
+            "/opt/runtime-egress/ca.crt",
+            "/opt/runtime-egress/ca.key",
+            "/opt/runtime-egress/certs/a.test.pem",
         }
         # One admitted transfer into the root-only runtime folder, not one per file.
         assert set(env.uploaded) == expected
         env.upload_file.assert_not_awaited()
         (call,) = env.upload_dir.await_args_list
-        assert call.args[1] == "/opt/benchflow-egress"
+        assert call.args[1] == "/opt/runtime-egress"
         assert set(call.kwargs) == {"admission"}
         commands = [call.args[0] for call in env.exec.await_args_list]
         assert all(call.kwargs["user"] == "root" for call in env.exec.await_args_list)
-        assert commands[0].startswith("mkdir -p /opt/benchflow-egress/certs")
+        assert commands[0].startswith("mkdir -p /opt/runtime-egress/certs")
         # Every uploaded file is made private before the proxy starts.
         assert commands[1].startswith("chmod 600 ")
         assert set(commands[1].split()[2:]) == expected
@@ -521,14 +522,21 @@ class TestStartStop:
         # through it and never opens a new root (TASKMD-R14 P-H1).
         rollout = pin_destination(tmp_path)
         await stop_egress_denylist(env, tmp_path)
-        target = rollout / "trajectory" / TRAJECTORY_LOG_NAME
-        env.download_file.assert_awaited_once_with(
-            "/opt/benchflow-egress/blocked.jsonl", target
-        )
+        # The block log, then the allowed log, each to its own file.
+        assert [c.args for c in env.download_file.await_args_list] == [
+            (
+                "/opt/runtime-egress/blocked.jsonl",
+                rollout / "trajectory" / TRAJECTORY_LOG_NAME,
+            ),
+            (
+                "/opt/runtime-egress/allowed.jsonl",
+                rollout / "trajectory" / ALLOWED_LOG_NAME,
+            ),
+        ]
         (kill_cmd,) = [c.args[0] for c in env.exec.await_args_list]
         assert (
             "kill -TERM" in kill_cmd
-            and "rm -rf /opt/benchflow-egress /etc/benchflow-egress" in kill_cmd
+            and "rm -rf /opt/runtime-egress /etc/runtime-egress" in kill_cmd
         )
 
     async def test_stop_falls_back_to_cat_and_never_raises(self, tmp_path: Path):

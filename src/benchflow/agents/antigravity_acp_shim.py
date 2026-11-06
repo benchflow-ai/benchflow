@@ -43,7 +43,7 @@ import uuid
 from pathlib import Path
 
 AGY_BIN_ENV = "BENCHFLOW_AGY_BIN"
-DEFAULT_AGY_BIN = "/opt/benchflow/antigravity/agy"
+DEFAULT_AGY_BIN = "/opt/runtime/antigravity/agy"
 MODEL_ENV = "ANTIGRAVITY_MODEL"
 EFFORT_ENV = "ANTIGRAVITY_EFFORT"
 
@@ -277,6 +277,14 @@ def agy_model_arg(bare):
     return _CUSTOM_MODEL_SCHEME + bare
 
 
+# agy's boolean settings and the values a headless run needs.
+_BOOLEAN_SETTINGS = {
+    "enableTelemetry": False,
+    "enableTerminalSandbox": False,
+    "allowNonWorkspaceAccess": True,
+}
+
+
 def prepare_settings():
     """Write ``~/.gemini/antigravity-cli/settings.json`` for headless runs.
 
@@ -287,7 +295,10 @@ def prepare_settings():
     (BenchFlow's sandbox owns isolation; nested sandboxes fail inside
     Docker/Daytona), non-workspace paths readable (tasks keep inputs under
     ``/logs``, ``/tests`` and friends), and every review gate set to proceed.
-    Returns the settings path, or ``None`` when it could not be written.
+    The three switches are JSON booleans: agy rejects ``"on"`` / ``"off"``
+    there ("failed to load cli settings, using defaults"), so a file an earlier
+    shim wrote that way is corrected. Returns the settings path, or ``None``
+    when it could not be written.
     """
     base = Path(agent_home()) / ".gemini" / "antigravity-cli"
     path = base / "settings.json"
@@ -302,9 +313,11 @@ def prepare_settings():
                     data = {}
         if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
             data["modelProvider"] = "gemini"
-        data.setdefault("enableTelemetry", "off")
-        data.setdefault("enableTerminalSandbox", "off")
-        data.setdefault("allowNonWorkspaceAccess", "on")
+        for key, value in _BOOLEAN_SETTINGS.items():
+            current = data.get(key)
+            if isinstance(current, str) and current.strip().lower() in ("on", "off"):
+                current = current.strip().lower() == "on"
+            data[key] = current if isinstance(current, bool) else value
         data.setdefault("toolPermission", "always-proceed")
         data.setdefault("artifactReviewPolicy", "always-proceed")
         data.setdefault("agentMode", "accept-edits")
@@ -480,6 +493,9 @@ class AgySession:
         env = dict(os.environ)
         env.setdefault("AGY_CLI_HIDE_LOGO", "1")
         env.setdefault("NO_COLOR", "1")
+        # agy otherwise replaces its own pinned binary within about 90 s;
+        # only "true" turns that off ("1" is ignored).
+        env.setdefault("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
         log(f"starting agy: model={model} effort={effort} cwd={self.cwd}")
         self.proc = subprocess.Popen(
             args,
@@ -900,7 +916,10 @@ class Server:
                 response["usage"] = usage
             _respond(req_id, response)
             return
-        if status in ("ERROR", "INVALID"):
+        if status == "ERROR" and _recovered_turn(result):
+            notice = str(result.get("error")).splitlines()[0][:200]
+            log(f"agy kept a retry notice the model recovered from: {notice}")
+        elif status in ("ERROR", "INVALID"):
             message = str(result.get("error") or session.last_agy_error or status)
             _fail(req_id, f"agy turn ended with {status}: {message}")
             return
@@ -922,6 +941,32 @@ class Server:
             session.stop()
         if req_id is not None:
             _respond(req_id, {})
+
+
+# How agy's retry notices start (a response cut off at the output token
+# limit, or holding an improperly formatted function call): agy sends the
+# notice to the model, which goes on.
+_RETRY_NOTICE = "Your previous response "
+_RETRIES_LEFT = re.compile(r"Retries remaining: (\d+)")
+
+
+def _recovered_turn(result):
+    """Whether an ERROR result is a retry notice the model recovered from.
+
+    agy keeps such a notice as the turn's status even when the model went on
+    and gave its final response; that turn finished. A notice with no retry
+    left, or a turn with no final response, did not.
+    """
+    error = str(result.get("error") or "")
+    retries = _RETRIES_LEFT.search(error)
+    response = result.get("response")
+    return (
+        error.startswith(_RETRY_NOTICE)
+        and retries is not None
+        and int(retries.group(1)) > 0
+        and isinstance(response, str)
+        and bool(response.strip())
+    )
 
 
 def _prompt_text(prompt):

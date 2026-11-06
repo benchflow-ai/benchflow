@@ -67,6 +67,7 @@ def _activity_count(session: WatchdogSession) -> int:
         len(session.tool_calls)
         + len(session.message_chunks)
         + len(session.thought_chunks)
+        + getattr(session, "usage_update_count", 0)
     )
 
 

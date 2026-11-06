@@ -28,6 +28,6 @@ Before a release, 9 agents run 9 SkillsBench tasks on Daytona. Every benchmark a
 
 ## Next steps
 
-- [Integration CI](https://github.com/benchflow-ai/benchflow/blob/main/.github/integration/README.md): how CI picks the runs for each PR.
-- [Review rubric](https://github.com/benchflow-ai/benchflow/blob/main/.github/integration/REVIEW_RUBRIC.md): every check and what it can't prove.
-- [Integration tests](https://github.com/benchflow-ai/benchflow/blob/main/tests/integration/README.md): run the release suite yourself.
+- [Integration CI](../../.github/integration/README.md): how CI picks the runs for each PR.
+- [Review rubric](../../.github/integration/REVIEW_RUBRIC.md): every check and what it can't prove.
+- [Integration tests](../../tests/integration/README.md): run the release suite yourself.

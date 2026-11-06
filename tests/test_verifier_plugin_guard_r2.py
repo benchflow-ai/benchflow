@@ -45,7 +45,7 @@ from tests.test_verifier_uv_state import (
 FAILING = "def test_solution():\n    assert False\n"
 REFUSAL = (
     "verifier crashed: PluginGuardLoadError: the pytest plugin guard "
-    "_benchflow_guard_0123abcd refused a pytest plugin it could not trust, so "
+    "_runtime_guard_0123abcd refused a pytest plugin it could not trust, so "
     "pytest stopped and this run is not scored (Verifier plugin trust "
     "rejected: ctrf (/app/connection reset/x.py is under /app, which the "
     "agent could write)); listed in verifier/x.refused"
@@ -134,7 +134,7 @@ class _MarkerTrouble(load_failure.PytestSandbox):
 
     async def exec(self, command, env=None, **kwargs):
         if "test-stdout.txt" in command and self.trouble == "many":
-            name = re.search(r"-p (_benchflow_guard_[0-9a-f]+)", env["PYTEST_ADDOPTS"])
+            name = re.search(r"-p (_runtime_guard_[0-9a-f]+)", env["PYTEST_ADDOPTS"])
             markers = Path(lockdown.pytest_plugin_guard_markers_dir(name[1]))
             for i in range(300):
                 (markers / f"{name[1]}.1-{i:08x}.registered").write_text("x\n")
@@ -170,7 +170,7 @@ async def test_a_marker_read_that_is_incomplete_is_not_scored(
 
 def test_the_marker_read_puts_verdicts_before_registrations(tmp_path, guard_parent):
     """Registrations never push a refusal out of the read."""
-    name = "_benchflow_guard_" + "ab" * 16
+    name = "_runtime_guard_" + "ab" * 16
     markers = Path(lockdown.pytest_plugin_guard_markers_dir(name))
     markers.mkdir(parents=True)
     for i in range(lockdown._GUARD_MARKER_MAX_COUNT + 5):
@@ -239,9 +239,9 @@ def test_a_completed_check_leaves_no_checking_marker(tmp_path, monkeypatch):
     markers = tmp_path / "markers"
     markers.mkdir()
     key = tmp_path / "key"
-    key.write_text(lockdown.pytest_plugin_guard_key("_benchflow_guard_test"))
+    key.write_text(lockdown.pytest_plugin_guard_key("_runtime_guard_test"))
     monkeypatch.setattr(
-        guard, "_BENCHFLOW_MARKERS", str(markers / "_benchflow_guard_test")
+        guard, "_BENCHFLOW_MARKERS", str(markers / "_runtime_guard_test")
     )
     monkeypatch.setattr(guard, "_BENCHFLOW_KEY_FILE", str(key))
     monkeypatch.setattr(guard, "_CHECKING", [0])
@@ -358,7 +358,7 @@ def test_a_refusal_counts_as_a_failure_in_the_error_excluding_scores():
 def test_agent_text_cannot_pass_for_a_refusal():
     """Only the guard's own opening counts, not the same words later on."""
     assert not scoring.is_guard_refusal(
-        "verifier crashed: ValueError: the pytest plugin guard _benchflow_guard_ab "
+        "verifier crashed: ValueError: the pytest plugin guard _runtime_guard_ab "
         "refused a pytest plugin it could not trust"
     )
 

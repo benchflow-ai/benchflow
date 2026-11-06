@@ -471,13 +471,23 @@ def _hardening_task():
 
 @pytest.mark.asyncio
 async def test_every_hardening_step_has_its_sub_key(monkeypatch, clock):
+    from benchflow.sandbox import _delegate_disarm
     from benchflow.sandbox.lockdown import harden_before_verify
 
     _stub_hardening(monkeypatch, clock)
+    # Something the cloud metadata block disarmed for the agent's turn, put
+    # back right after the kill.
+    monkeypatch.setattr(
+        _delegate_disarm, "restore_disarmed_delegates", _ticking(clock, 0.25, [])
+    )
+    env = _hardening_env(clock)
+    setattr(
+        env, _delegate_disarm.DISARMED_ATTR, {"stripped": [{"path": "/usr/bin/su"}]}
+    )
     timing: dict = {}
     with timing_spans.recording_into(timing):
         await harden_before_verify(
-            _hardening_env(clock),
+            env,
             _hardening_task(),
             "agent",
             workspace="/app",
@@ -486,6 +496,7 @@ async def test_every_hardening_step_has_its_sub_key(monkeypatch, clock):
     assert timing == {
         "harden_before_verify": {
             "kill_sandbox_user_procs": 1.0,
+            "restore_disarmed_delegates": 0.25,
             "clear_verifier_output": 2.0,
             "prepare_app_dir": 3.0,
             "reclaim_disk": 4.0,
@@ -509,6 +520,7 @@ async def test_hardening_steps_that_do_not_run_have_no_sub_key(monkeypatch, cloc
         await harden_before_verify(_hardening_env(clock), _hardening_task(), None)
     steps = timing["harden_before_verify"]
     assert "kill_sandbox_user_procs" not in steps
+    assert "restore_disarmed_delegates" not in steps  # nothing was disarmed
     assert "restore_workspace" not in steps
     assert "freeze_workspace" not in steps
     assert set(steps) == {
@@ -558,3 +570,43 @@ async def test_cleanup_is_timed(tmp_path, monkeypatch, clock):
     monkeypatch.setattr("benchflow.rollout.price_from_session_log", _ticking(clock, 0))
     await rollout.cleanup()
     assert rollout.timing == {"cleanup": 3.5}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label", [None, "claude-haiku-4-5"])
+async def test_no_proxy_spans_for_an_agent_that_routes_its_own_calls(
+    clock, monkeypatch, label
+):
+    """model_route = "agent" records no litellm_install and no
+    proxy_health_wait. The same fake sandbox records both for a proxied agent
+    (test_the_in_sandbox_proxy_records_its_install_and_health_wait)."""
+    from benchflow.agents.registry import AGENTS, AgentConfig
+    from benchflow.providers.litellm_runtime import ensure_litellm_runtime
+
+    name = "en191-own-route"
+    monkeypatch.setitem(
+        AGENTS,
+        name,
+        AgentConfig(
+            name=name,
+            install_cmd="true",
+            launch_cmd=f"{name} --acp",
+            model_route="agent",
+        ),
+    )
+    sandbox = _FakeSandbox(clock)
+    timing: dict = {}
+    with timing_spans.recording_into(timing):
+        _env, runtime = await ensure_litellm_runtime(
+            agent=name,
+            agent_env={"ANTHROPIC_API_KEY": "k"},
+            model=label,
+            runtime=None,
+            environment="daytona",
+            sandbox=sandbox,
+        )
+    assert runtime is None
+    assert sandbox.started is False
+    assert "litellm_install" not in timing
+    assert "proxy_health_wait" not in timing
+    assert timing == {}

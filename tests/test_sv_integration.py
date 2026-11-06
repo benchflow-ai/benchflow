@@ -93,7 +93,7 @@ async def test_repeated_cancel_while_discard_settles_prestart_still_deletes(
     assert run.record["status"] == "interrupted"
 
 
-@pytest.mark.parametrize("path", ["/opt/benchflow/rt/bin/sh", "/opt/benchflow", "/opt"])
+@pytest.mark.parametrize("path", ["/opt/runtime/rt/bin/sh", "/opt/runtime", "/opt"])
 @pytest.mark.parametrize(
     "fields", [{"verifier_sandbox": "separate"}, {"integrity": "strict"}]
 )
@@ -113,7 +113,7 @@ def test_protected_runtime_is_refused_before_a_job_or_sandbox(
         config=EvaluationConfig(agent="oracle", environment="docker", **fields),
         preflight=False,
     )
-    with pytest.raises(ValueError, match=r"verifier.sandbox.transfer.*opt/benchflow"):
+    with pytest.raises(ValueError, match=r"verifier.sandbox.transfer.*opt/runtime"):
         asyncio.run(job.run())
     assert not started
     assert not jobs.exists()

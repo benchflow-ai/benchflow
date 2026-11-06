@@ -1,6 +1,7 @@
 """Tests for task.toml parsing into TaskConfig."""
 
 import pytest
+from pydantic import ValidationError
 
 from benchflow.task.config import (
     MultiStepRewardStrategy,
@@ -480,4 +481,30 @@ def test_task_config_toml_converts_step_verifier_environment_with_indexed_error(
             'version = "1.0"\n[[steps]]\nname = "one"\n'
             "[steps.verifier.environment]\ncpus = 2\n"
             "[steps.verifier.sandbox]\ncpus = 3\n"
+        )
+
+
+def test_a_terminal_bench_schema_2_task_reads_as_1x():
+    """Terminal-Bench 4.1 labels some tasks schema_version "2.0" with the 1.x
+    keys (embedding-drift-monitor's shape); they were refused as an unknown
+    major. A 2.x task reads as 1.x; an unknown key is still refused, and a
+    major no runner writes still is."""
+    from benchflow.task.config import TaskConfig
+
+    cfg = TaskConfig.model_validate_toml(
+        'schema_version = "2.0"\nartifacts = ["/app/drift_monitor", "/app/data"]\n'
+        '[verifier]\ntimeout_sec = 300.0\nenvironment_mode = "separate"\n'
+        "[agent]\ntimeout_sec = 28800.0\n"
+        "[environment]\ncpus = 2\nmemory_mb = 4096\nstorage_mb = 10240\ngpus = 0\n"
+    )
+    assert cfg.schema_version == "2.0"
+    assert [getattr(a, "source", a) for a in cfg.artifacts] == [
+        "/app/drift_monitor",
+        "/app/data",
+    ]
+    with pytest.raises(Exception, match="Unsupported schema_version major 3"):
+        TaskConfig.model_validate_toml('schema_version = "3.0"\n')
+    with pytest.raises(ValidationError, match="unknown_vendor_field"):
+        TaskConfig.model_validate_toml(
+            'schema_version = "2.0"\n[environment]\nunknown_vendor_field = true\n'
         )

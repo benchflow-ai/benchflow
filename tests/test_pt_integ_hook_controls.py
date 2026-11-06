@@ -116,8 +116,8 @@ def _venv_site(workspace: Path) -> Path:
 
 def _with_record(command: str, record: Path) -> str:
     return command.replace(
-        "/opt/benchflow/rt/IMAGE_PYTHON_PATHS.json", str(record)
-    ).replace("/opt/benchflow/rt/IMAGE_PYTHON_PATHS.jsonl", str(record) + "l")
+        "/opt/runtime/rt/IMAGE_PYTHON_PATHS.json", str(record)
+    ).replace("/opt/runtime/rt/IMAGE_PYTHON_PATHS.jsonl", str(record) + "l")
 
 
 @pytest.mark.parametrize("recorded", [True, False])

@@ -19,6 +19,14 @@ start-up probe (results/DAYTONA-START.md in the PY8 round):
   The one exception is a ``BUILD_FAILED`` of a recipe with cached install
   layers: the strategy has its own recovery for that (the task image alone),
   so it gets one build and then that fallback, never a fresh layered build.
+- Two start failures repeat for every create of the same recipe, so a fresh
+  create of it is futile (:func:`rebuild_reason`): a build Daytona keeps as
+  cancelled (``BUILD_FAILED`` with "context canceled", left by a delete
+  while it built), and a create of a built image whose runner accepted it
+  and never started it (Daytona places every create of a recipe on a runner
+  that holds its image). ``DaytonaSandbox._create_or_rebuild`` creates the
+  same image under a new build key instead (``daytona_build_keys``); a
+  cancelled build is not retried here at all.
 - Anything else (a 400 validation error) is the request's own error and is
   not retried.
 
@@ -96,6 +104,28 @@ _START_BUILD_FAILED_TEXT = re.compile(
     r"(?:SandboxState\.)?BUILD_FAILED\b",
     re.IGNORECASE,
 )
+# A build a delete cancelled: Daytona keeps it failed under the recipe's
+# build key, and every later create of the recipe fails with it in a second.
+_CANCELLED_BUILD_TEXT = re.compile(
+    r"\b(?:failed to start with|entered error) state:?\s*"
+    r"(?:SandboxState\.)?BUILD_FAILED, error reason: context cancell?ed\b",
+    re.IGNORECASE,
+)
+# A create its runner accepted and never started (seen 2026-11-01: every
+# create of one recipe went to one runner that never acted). Daytona
+# sets the sandbox to ERROR after about 15 minutes, and the SDK can read the
+# state before Daytona fills in the reason ("None", but not "None of the
+# runners ..."); or the API answers 502 while the SDK waits for the start.
+_STUCK_START_TEXT = re.compile(
+    r"\b(?:failed to start with|entered error) state:?\s*(?:SandboxState\.)?"
+    r"ERROR, error reason: (?:Timeout while creating sandbox"
+    r"|Job timed out - no update received|None(?![ \t]*\w))",
+    re.IGNORECASE,
+)
+_STUCK_WAIT_TEXT = re.compile(
+    r"waiting for sandbox to start: Failed to refresh sandbox data:.*?\b502\b",
+    re.IGNORECASE | re.DOTALL,
+)
 # The SDK's own timeouts. From 0.201 a transport timeout is a
 # DaytonaConnectionTimeoutError; from 0.207 an HTTP 408 or 504 is a
 # DaytonaTimeoutError too, which keeps the status: Daytona's answer, judged by
@@ -159,6 +189,14 @@ def error_kind(exc: BaseException | None) -> ErrorKind:
     return "other"
 
 
+def is_build_failure(exc: BaseException) -> bool:
+    """A provider BUILD_FAILED state, not a transport error or a deadline."""
+    if error_kind(exc) != "start_failed":
+        return False
+    state = _START_FAILED_TEXT.search(str(exc))
+    return bool(state and _START_BUILD_FAILED_TEXT.fullmatch(state.group()))
+
+
 def key_rejected_status(exc: BaseException) -> int | None:
     """401 or 403 when *exc* is the API rejecting the key, else None."""
     if error_kind(exc) != "config":
@@ -167,6 +205,25 @@ def key_rejected_status(exc: BaseException) -> int | None:
     if status in (401, 403):
         return status
     return 401 if type(exc).__name__ == "DaytonaAuthenticationError" else 403
+
+
+def rebuild_reason(exc: BaseException | None) -> Literal["cancelled", "stuck"] | None:
+    """Why a fresh create of the same recipe would fail as *exc* did, if it
+    would: ``"cancelled"`` (Daytona keeps the build as cancelled) or
+    ``"stuck"`` (the runner holding the image never started it). Only the
+    SDK's own error counts, not BenchFlow's startup error wrapping it: that
+    one means the failed sandbox's removal is not confirmed."""
+    if not isinstance(exc, Exception) or not _is_daytona_error(exc):
+        return None
+    text = str(exc)
+    status = _status(exc)
+    if status is None and _CANCELLED_BUILD_TEXT.search(text):
+        return "cancelled"
+    if status is None and _STUCK_START_TEXT.search(text):
+        return "stuck"
+    if status in (None, 502) and _STUCK_WAIT_TEXT.search(text):
+        return "stuck"
+    return None
 
 
 def retry_after_sec(exc: BaseException | None) -> float | None:
@@ -228,6 +285,10 @@ def _outcome_error(retry_state: Any) -> BaseException | None:
 
 def create_should_retry(retry_state: Any) -> bool:
     exc = _outcome_error(retry_state)
+    if rebuild_reason(exc) == "cancelled":
+        # The same recipe fails the same way within a second: the image is
+        # built again under a new key instead (_create_or_rebuild).
+        return False
     kind = error_kind(exc)
     if kind == "start_failed" and _layer_build_falls_back(retry_state):
         # A fresh sandbox retries only what a fresh sandbox can fix: a

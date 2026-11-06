@@ -108,7 +108,7 @@ Do not publish a release if any check below fails.
 | Check | Passes when |
 |---|---|
 | SkillsBench agent matrix | the 9 tasks with every agent that has a key write a valid `result.json`, trajectory and summary |
-| Adapter release set | each benchmark on [Running adapted benchmarks](../../docs/datasets/benchmarks.md#available-benchmarks), and each adapter targeted at the release, has one smoke or parity run with its verifier and reward schema checked |
+| Adapter release set | each benchmark on [Running adapted benchmarks](../../docs/evaluate/find-a-benchmark.md), and each adapter targeted at the release, has one smoke or parity run with its verifier and reward schema checked |
 | Trace-to-task | `bench tasks generate` turns one local or JSONL trace and one Hugging Face trace into tasks, and each task runs and is graded |
 | Agent decoupling | core import and task checks work without optional agent packages; two non-oracle agents run the same task |
 | Sandbox decoupling | `import benchflow` works without sandbox extras; Docker and Daytona run the same task; a missing extra prints install steps |

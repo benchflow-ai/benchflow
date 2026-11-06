@@ -15,7 +15,7 @@ from benchflow.cli._shared import JOBS_FOLDER_NEXT, console, print_error
 def register_embodied(app: typer.Typer) -> None:
     """Attach the ``embodied`` command group to the top-level benchflow app."""
     emb_app = typer.Typer(
-        help="Embodied rollouts (robots and simulators): reports, export, specs."
+        help="Embodied rollouts (robots and simulators): reports, evidence checks, export, specs."
     )
     app.add_typer(emb_app, name="embodied", rich_help_panel="Core")
 
@@ -70,6 +70,41 @@ def register_embodied(app: typer.Typer) -> None:
         console.print(
             f"{res['episodes']} episode(s), {res['steps']} step(s) -> {escape(res['out'])}"
         )
+
+    @emb_app.command("verify")
+    def embodied_verify(
+        job_dir: Annotated[
+            Path,
+            typer.Argument(
+                help="A job folder (jobs/<job>: every run in it) or one run (jobs/<job>/<time>)"
+            ),
+        ],
+        as_json: Annotated[
+            bool, typer.Option("--json", help="Print the checks as JSON")
+        ] = False,
+    ) -> None:
+        """Check each trial's files against its verdict now: record hashes, video copies, reward vs the record.
+
+        It catches files edited, added or mixed up after the trial. It doesn't re-run the simulator, and it can't tell who wrote the folder.
+        """
+        from benchflow.embodied.verify import format_report, verify_job
+
+        if not job_dir.is_dir():
+            print_error(f"no job directory {job_dir}", next_step=JOBS_FOLDER_NEXT)
+            raise typer.Exit(2)
+        report = verify_job(job_dir)
+        if not report["trials"]:
+            print_error(
+                f"no embodied trials in {job_dir}",
+                next_step="pass the job folder of an embodied run",
+            )
+            raise typer.Exit(2)
+        if as_json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(format_report(report))  # a fixed-width table: no console wrapping
+        if not report["ok"]:
+            raise typer.Exit(1)
 
     @emb_app.command("check-spec")
     def embodied_check_spec(

@@ -585,7 +585,7 @@ def _u12_group(e: _Exec) -> str:
     # root exec, so that exec is the snapshot's (with U12, the manifest too).
     if innermost == "lockdown._snapshot_build_config" or (
         innermost == "lockdown._prepare_bash_env_inspector"
-        and "benchflow_build_snapshot" in command
+        and "runtime_build_snapshot" in command
     ):
         return "snapshot"
     if innermost == "lockdown._seed_verifier_workspace":
@@ -601,7 +601,7 @@ def _u12_group(e: _Exec) -> str:
     ):
         return "environment_reads"
     if ("chmod +x" in command and "test.sh" in command) or (
-        "mkdir -p /run/benchflow" in command and "verifier-started" not in command
+        "mkdir -p /run/runtime" in command and "verifier-started" not in command
     ):
         return "verifier_start"
     return "other"

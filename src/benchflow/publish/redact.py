@@ -251,7 +251,9 @@ def _redact_cli_text(
     try:
         argv = shlex.split(value)
     except ValueError:
-        return value, 0
+        # An unbalanced quote or a trailing backslash: the options in the text
+        # still carry their values, so they are masked where they stand.
+        return _redact_unsplit_cli_text(value, categories=categories)
     # Count categories only for the accepted result: a zero-replacement parse
     # returns the original text, so nothing may be attributed for it.
     argv_categories: Counter[str] | None = None if categories is None else Counter()
@@ -263,6 +265,67 @@ def _redact_cli_text(
     if categories is not None and argv_categories is not None:
         categories.update(argv_categories)
     return shlex.join(redacted), replacements
+
+
+def _redact_unsplit_cli_text(
+    value: str, *, categories: Counter[str] | None = None
+) -> tuple[str, int]:
+    """``_redact_cli_text`` for text ``shlex`` cannot split: the same option
+    rules over :func:`_cli_words`, each masked value replaced in place."""
+    words = _cli_words(value)
+    argv_categories: Counter[str] | None = None if categories is None else Counter()
+    redacted, replacements = _redact_argv(
+        [word for _, _, word in words],
+        redact_other_values=False,
+        categories=argv_categories,
+    )
+    if not replacements:
+        return value, 0
+    if categories is not None and argv_categories is not None:
+        categories.update(argv_categories)
+    pieces: list[str] = []
+    last = 0
+    for (start, end, word), clean in zip(words, redacted, strict=True):
+        if clean == word:
+            continue
+        if clean == REDACTED:
+            pieces.append(value[last:start])
+        else:  # --option=value: the raw text keeps everything to the "="
+            pieces.append(value[last : value.index("=", start, end) + 1])
+        pieces.append(REDACTED)
+        last = end
+    pieces.append(value[last:])
+    return "".join(pieces), replacements
+
+
+def _cli_words(text: str) -> list[tuple[int, int, str]]:
+    """The words of *text* as a POSIX shell splits them, with their spans.
+
+    For text ``shlex.split`` refuses: an unterminated quote runs to the end
+    of the text and a trailing backslash stays, so every word is returned.
+    """
+    words: list[tuple[int, int, str]] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i].isspace():
+            i += 1
+            continue
+        start, chars = i, []
+        while i < n and not text[i].isspace():
+            char = text[i]
+            if char in "'\"":
+                close = text.find(char, i + 1)
+                close = n if close < 0 else close
+                chars.append(text[i + 1 : close])
+                i = close + 1
+            elif char == "\\" and i + 1 < n:
+                chars.append(text[i + 1])
+                i += 2
+            else:
+                chars.append(char)
+                i += 1
+        words.append((start, min(i, n), "".join(chars)))
+    return words
 
 
 def _redact_argv(

@@ -8,7 +8,7 @@ route (:meth:`benchflow.sandbox._base.BaseSandbox.exec_route`) uses them.
 The tree
 --------
 
-:data:`RUNTIME_ROOT` (``/opt/benchflow``) is a reserved path: no workspace
+:data:`RUNTIME_ROOT` (``/opt/runtime``) is a reserved path: no workspace
 ownership grant ever covers it (``setup_sandbox_user`` refuses a workspace of
 ``/`` or inside the tree, and keeps a workspace above it, ``/opt``, root's and
 sticky so the agent user can add files there but never rename the tree). It
@@ -19,7 +19,7 @@ of those with :func:`benchflow._root_only.root_only_tree_check` (or
 :func:`~benchflow._root_only.root_only_path_check` for one program) in the
 same command, before it runs anything from it, version probes included.
 
-The kit, :data:`KIT` (``/opt/benchflow/rt``), is what root's helpers run on
+The kit, :data:`KIT` (``/opt/runtime/rt``), is what root's helpers run on
 once the agent has had a turn. Prepared by root before the agent's first
 turn, from root-only files of the image (copies, never links out):
 
@@ -42,16 +42,16 @@ turn, from root-only files of the image (copies, never links out):
   proved root's alone (each folder, every folder above it, every file in it
   and every hop of every link in it); ``MANIFEST``: the sha256 of every file in the kit.
 
-Root's PATH once the kit exists is ``/opt/benchflow/rt/bin`` followed by the
+Root's PATH once the kit exists is ``/opt/runtime/rt/bin`` followed by the
 proven folders, never one the proof did not pass and never the image's PATH.
 
-:data:`RUN_DIR` (``/opt/benchflow/run``, mode 700) is where root stages a
+:data:`RUN_DIR` (``/opt/runtime/run``, mode 700) is where root stages a
 launch's environment file (one fresh name per launch, created exclusively).
 
 V2's verifier environment (contract)
 ------------------------------------
 
-:data:`VERIFIER_DIR` (``/opt/benchflow/verifier``) is made empty, root's,
+:data:`VERIFIER_DIR` (``/opt/runtime/verifier``) is made empty, root's,
 mode 755, by the same preparation, before the agent's turn. The pytest plugin
 guard (V2) unpacks its pinned pytest wheels into ``VERIFIER_DIR/site`` there,
 at setup (before the agent's turn), and then:
@@ -77,6 +77,7 @@ from __future__ import annotations
 import posixpath
 import re
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,6 +97,7 @@ __all__ = [
     "KIT",
     "KIT_BASH",
     "KIT_BIN",
+    "KIT_CHANNEL_PYTHON",
     "KIT_PYTHON",
     "KIT_SH",
     "KIT_TOOLS",
@@ -112,7 +114,7 @@ __all__ = [
     "workspace_grant_problem",
 ]
 
-RUNTIME_ROOT = "/opt/benchflow"
+RUNTIME_ROOT = "/opt/runtime"
 KIT = f"{RUNTIME_ROOT}/rt"
 KIT_BIN = f"{KIT}/bin"
 KIT_SH = f"{KIT_BIN}/sh"
@@ -121,6 +123,8 @@ KIT_BASH = f"{KIT_BIN}/bash"
 # plugin guard's discovery inspects it on purpose); BenchFlow's own helpers
 # name this one by path.
 KIT_PYTHON = f"{KIT}/py/python3"
+# The stdlib-only command channel may use a separate authenticated CPython.
+KIT_CHANNEL_PYTHON = f"{KIT}/py/channel-python3"
 RUN_DIR = f"{RUNTIME_ROOT}/run"
 #: root's HOME on the route: empty and root's alone (never the image's HOME).
 ROOT_HOME = f"{RUN_DIR}/home"
@@ -675,8 +679,34 @@ _BUILD = "# --- build ---"
 _SEAL = "# --- seal ---"
 
 
+def _transfer_roots_func(roots: Sequence[str]) -> str:
+    """sh defining ``bf_names_transfer VALUE``: exit 0 when a path *VALUE*
+    names lies at or under one of *roots*: the deepest folder of it that
+    exists now resolved (links, '..'), the rest as written."""
+    resolve = "; ".join(
+        f"bf_r{i}=$(cd -P -- {shlex.quote(root)} 2>/dev/null && pwd -P) "
+        f"|| bf_r{i}={shlex.quote(root)}"
+        for i, root in enumerate(roots)
+    )
+    under = "|".join(f'"$bf_r{i}"/*' for i in range(len(roots)))
+    return (
+        f"{resolve}; "
+        "bf_names_transfer() ( set -f; IFS=': =,'; for v in $1; do "
+        "case $v in /*) ;; *) continue;; esac; p=$v; t=; "
+        'until d=$(cd -P -- "$p" 2>/dev/null && pwd -P); do '
+        '[ "$p" != / ] || continue 2; t=${p##*/}${t:+/$t}; p=${p%/*}; '
+        '[ -n "$p" ] || p=/; done; '
+        f"case ${{d%/}}/$t in {under}) exit 0;; esac; "
+        "done; exit 1 )"
+    )
+
+
 def kit_prepare_command(
-    phase: str = "all", *, walk: bool = True, stage: str | None = None
+    phase: str = "all",
+    *,
+    walk: bool = True,
+    stage: str | None = None,
+    transfer_roots: Sequence[str] = (),
 ) -> str:
     """sh, run as root on the plumbing route before the agent's first turn:
     make (or keep) the protected runtime tree and print its record.
@@ -703,8 +733,13 @@ def kit_prepare_command(
     proofs and MANIFEST on the kit's Python (:mod:`benchflow._kit_seal`)
     when there is one; False (tests only) runs the sh they mirror. The seal prints ``BF kit-seal walk`` or
     ``BF kit-seal sh``.
+
+    *transfer_roots*: where a separate verifier will unpack the agent's
+    bytes as root after this seal. No image value naming a path there is
+    admitted, as in the agent's sandbox, whose seal comes after the grant.
     """
     from benchflow.sandbox._base import IMAGE_RESTORED_VARS, env_value_check_func
+    from benchflow.sandbox._channel_python import prepare_command as channel_python
 
     image_names = "|".join(IMAGE_RESTORED_VARS)
     rt = shlex.quote(RUNTIME_ROOT)
@@ -783,7 +818,7 @@ def kit_prepare_command(
             # though off PATH; `conda activate` in test.sh puts one first
             # (PT-R14-A-1, SWE-bench's testbed env).
             "  bf_nl='\n'; bf_conda=; IFS=:; set -f; for d in $bf_ipath; do unset IFS; set +f; "
-            "case $d in /opt/benchflow|/opt/benchflow/*) continue;; /*) ;; *) continue;; esac; "
+            "case $d in /opt/runtime|/opt/runtime/*) continue;; /*) ;; *) continue;; esac; "
             'for py in "$d"/python "$d"/python3 "$d"/python3.[0-9] "$d"/python3.[0-9][0-9]; do '
             'bf_capture_py "$py" || break 2; done; '
             '[ -d "${d%/*}/conda-meta" ] && bf_conda="$bf_conda${bf_conda:+$bf_nl}${d%/*}"; '
@@ -863,11 +898,13 @@ def kit_prepare_command(
             '  bf_info=$(cd / && "$bf_py" -I -S -c '
             + shlex.quote(
                 'import sys, sysconfig; print("%d.%d" % sys.version_info[:2]); '
-                'print(sysconfig.get_paths()["stdlib"])'
+                'print(sysconfig.get_paths()["stdlib"]); '
+                'print(getattr(sys, "platlibdir", "lib"))'
             )
             + " 2>/dev/null) || bf_info=",
             '  bf_v=$(printf %s "$bf_info" | head -n 1); '
-            'bf_std=$(printf %s "$bf_info" | sed -n 2p)',
+            'bf_std=$(printf %s "$bf_info" | sed -n 2p); '
+            'bf_platlib=$(printf %s "$bf_info" | sed -n 3p)',
             '  [ -n "$bf_v" ] && [ -d "$bf_std" ] && bfc_chain "$bf_std" 0 && bf_pyok=1; return 0',
             "}",
             "bf_pyprobe",
@@ -902,6 +939,11 @@ def kit_prepare_command(
             "bf_pyjob() (",
             '  [ -n "$bf_pyok" ] || exit 1',
             '  mkdir -p "$KIT/lib/python$bf_v"',
+            # Fedora's interpreter searches lib64 relative to its executable.
+            # Keep both spellings inside the sealed tree; never fall back to
+            # the live image's standard library when the isolated copy fails.
+            '  if [ "$bf_platlib" = lib64 ] && [ ! -e "$KIT/lib64" ]; then '
+            'ln -s lib "$KIT/lib64" || exit 1; fi',
             # The same entries in one cp -a; any that fails leaves the kit
             # without its Python, as before.
             '  set --; for e in "$bf_std"/* "$bf_std"/.[!.]*; do [ -e "$e" ] || continue; '
@@ -992,6 +1034,7 @@ def kit_prepare_command(
             'BenchFlow could copy"',
             'if [ "$py" != 1 ]; then rm -rf "$KIT/py" "$KIT/libexec/python3" '
             '"$KIT/lib"; mkdir -p "$KIT/lib" "$KIT/py"; fi',
+            channel_python(),
         ]
 
     lines = [
@@ -1003,7 +1046,7 @@ def kit_prepare_command(
         # /opt: a link, or a folder others may write and not sticky,
         # would let the agent user replace the tree.
         '[ ! -L /opt ] || bf_die "/opt is a link; BenchFlow keeps its '
-        'runtime tree in /opt/benchflow and needs /opt to be a folder"',
+        'runtime tree in /opt/runtime and needs /opt to be a folder"',
         "mkdir -p /opt || bf_die 'cannot make /opt'",
         "if ! bfc_dir /opt s; then chown 0:0 /opt && chmod 1777 /opt "
         "|| bf_die 'cannot make /opt root-owned'; fi",
@@ -1012,7 +1055,7 @@ def kit_prepare_command(
         '[ ! -L "$RT" ] && [ ! -L "$KIT" ] || bf_die "$RT and $KIT must be '
         'folders, not links; remove the link from the image"',
         'mkdir -p "$RT" && chown 0:0 "$RT" && chmod go-w "$RT" '
-        "|| bf_die 'cannot make /opt/benchflow root-only'",
+        "|| bf_die 'cannot make /opt/runtime root-only'",
         'bfc_chain "$RT" 0 || bf_die "BenchFlow\'s runtime tree $RT is not '
         "root's alone (a folder or link on the way to it can be written by "
         'another user); remove that from the image"',
@@ -1178,6 +1221,7 @@ def kit_prepare_command(
         # (bf_value_ok): path lists root's alone, options naming no file the
         # agent could write (PT-C8-CONF-6).
         env_value_check_func(),
+        *([_transfer_roots_func(transfer_roots)] if transfer_roots else []),
         "if [ -r /proc/1/environ ]; then",
         "  tr '\\000' '\\n' < /proc/1/environ | while IFS= read -r l; do",
         "    case $l in *=) continue;; esac",
@@ -1187,7 +1231,9 @@ def kit_prepare_command(
         "    n=${l%%=*}; n=${n#_BF_IMAGE_}",
         f"    case $n in {image_names}) ;; *) continue;; esac",
         "    l=$n=${l#*=}",
-        '    bf_value_ok "$n" "${l#*=}" && printf \'%s\\n\' "$l" >> "$KIT/IMAGE_ENV_OK"',
+        '    bf_value_ok "$n" "${l#*=}" && '
+        + ('! bf_names_transfer "${l#*=}" && ' if transfer_roots else "")
+        + 'printf \'%s\\n\' "$l" >> "$KIT/IMAGE_ENV_OK"',
         "  done",
         "fi",
         # RECORD first, MANIFEST (which hashes it) last: a kit without a
@@ -1213,7 +1259,7 @@ def kit_prepare_command(
     if phase == "build":
         body = [*head, *build, ': > "$KIT/.built"', 'echo "BF kit-built"']
     elif phase == "restore":
-        if not stage or not re.fullmatch(r"/\.benchflow-kit-[0-9a-f]{32}", stage):
+        if not stage or not re.fullmatch(r"/\.runtime-kit-[0-9a-f]{32}", stage):
             raise ValueError(f"not a kit stage: {stage!r}")
         q = shlex.quote(stage)
         restore = [

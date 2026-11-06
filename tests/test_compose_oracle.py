@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -1327,7 +1328,7 @@ def test_env_files_compose_does_not_show_fail_closed(tmp_path):
 
 
 def _dind(tmp_path: Path, task: Path):
-    """A DinD strategy whose VM is a folder here: /benchflow is mapped onto
+    """A DinD strategy whose VM is a folder here: /runtime is mapped onto
     it, with BenchFlow's Compose files and the uploaded environment folder
     (links skipped, as Daytona's upload does), and its commands run the real
     docker compose."""
@@ -1339,7 +1340,7 @@ def _dind(tmp_path: Path, task: Path):
     from benchflow.sandbox.daytona import _DaytonaDinD
     from benchflow.task import Task
 
-    vm = (tmp_path / "vm").resolve() / "benchflow"
+    vm = (tmp_path / "vm").resolve() / "runtime"
     (vm / "compose").mkdir(parents=True)
     for path in _DaytonaDinD._BENCHFLOW_COMPOSE_FILES:
         shutil.copy(path, vm / "compose" / path.name)
@@ -1371,20 +1372,23 @@ def _dind(tmp_path: Path, task: Path):
     strategy._build_image_name = "bs1dind"
     commands: list[str] = []
 
+    # The VM's own /runtime folder only, never /opt/runtime in a command.
+    vm_root = re.compile(r"(?<![\w.-])/runtime(?=/|$|[^\w.-])")
+
     async def vm_exec(command, cwd=None, env=None, timeout_sec=None, **_):
         commands.append(command)
         here = str(vm)
-        mapped = {k: v.replace("/benchflow", here) for k, v in (env or {}).items()}
+        mapped = {k: vm_root.sub(lambda _: here, v) for k, v in (env or {}).items()}
         done = subprocess.run(
-            ["sh", "-c", command.replace("/benchflow", here)],
+            ["sh", "-c", vm_root.sub(lambda _: here, command)],
             env={"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], **mapped},
             capture_output=True,
             text=True,
             timeout=60,
         )
         return ExecResult(
-            stdout=done.stdout.replace(here, "/benchflow"),
-            stderr=done.stderr.replace(here, "/benchflow"),
+            stdout=done.stdout.replace(here, "/runtime"),
+            stderr=done.stderr.replace(here, "/runtime"),
             return_code=done.returncode,
         )
 
@@ -1407,7 +1411,7 @@ async def _dind_refused(strategy) -> str:
         ),
         (
             "services:\n  main:\n    volumes: ['../:/up']\n",
-            "mounts /benchflow/task writable over the launch source",
+            "mounts /runtime/task writable over the launch source",
         ),
         (
             "services:\n  main:\n    volumes: [/var/run/docker.sock:/s]\n",
@@ -1478,7 +1482,7 @@ async def test_dind_follows_a_link_the_hook_made(tmp_path):
     await strategy._check_compose_project()
     shutil.rmtree(vm / "task" / "environment" / "data")
     (vm / "task" / "environment" / "data").symlink_to("/")
-    assert "/benchflow/task/environment/data for service main" in await _dind_refused(
+    assert "/runtime/task/environment/data for service main" in await _dind_refused(
         strategy
     )
 
@@ -1518,7 +1522,7 @@ async def test_dind_checks_before_the_hook_and_again_after_it(monkeypatch, tmp_p
     env = strategy._env
     env._kwargs = {}
     env._auto_delete_interval = env._auto_stop_interval = 0
-    env._create_sandbox = AsyncMock()
+    env._create_or_rebuild = AsyncMock()
     env._sdk_upload_file = AsyncMock()
     env._sdk_upload_dir = AsyncMock()
     monkeypatch.setattr(

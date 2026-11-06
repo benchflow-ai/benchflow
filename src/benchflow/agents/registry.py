@@ -51,7 +51,7 @@ Common optional fields
 
 Look at the existing entries below for worked examples:
 ``claude-agent-acp`` (subscription auth + env_mapping), ``codex-acp``
-(credential_files), ``gemini`` (multi-file subscription auth), and
+(credential_files), and
 ``antigravity`` (pinned native binary + Python ACP shim, hook-based web
 policy, native MCP config).
 """
@@ -106,6 +106,7 @@ from benchflow.agents.muse_config import (
     MUSE_SKILLS_PATH,
     muse_install_cmd,
 )
+from benchflow.agents.visible_runtime import visible_script
 
 
 def _install_python_script(
@@ -126,7 +127,7 @@ def _install_python_script(
     A shared base is not yet justified —
     divergence is cheap, premature abstraction isn't.
     """
-    encoded = base64.b64encode(source.encode()).decode()
+    encoded = base64.b64encode(visible_script(source).encode()).decode()
     parent = shlex.quote(str(Path(container_path).parent))
     q_path = shlex.quote(container_path)
     ensure_python = (
@@ -227,12 +228,12 @@ class RequirementsFile:
 # Isolated Node.js bootstrap for JavaScript-based ACP agents.
 #
 # Keep this out of system prefixes. Task images may need their own Node/npm
-# versions, so BenchFlow installs agent runtime bits under /opt/benchflow.
+# versions, so BenchFlow installs agent runtime bits under /opt/runtime.
 # Install commands can put that prefix on PATH, but launch wrappers call the
 # private Node binary explicitly so task subprocesses keep the task's PATH.
-_BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
-_BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
-_BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+_BENCHFLOW_NODE_PREFIX = "/opt/runtime/node"
+_BENCHFLOW_JS_AGENT_PREFIX = "/opt/runtime/js-agents"
+_BENCHFLOW_BIN_PREFIX = "/opt/runtime/bin"
 _AGENT_UV_ROOT = f"{BENCHFLOW_ROOT}/agents"
 _AGENT_UV_BIN = f"{_AGENT_UV_ROOT}/bin"
 # OpenHands' uv tool (its venv and the entry point uv links into
@@ -314,7 +315,7 @@ def _agent_uv_setup() -> str:
 # so the gateway alias must be registered under a *separate* provider id that
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
-OPENCODE_PROXY_PROVIDER_ID = "benchflow"
+OPENCODE_PROXY_PROVIDER_ID = "runtime"
 # Gemini models skip that chat-completions alias: OpenCode keeps its native
 # ``google`` provider (``@ai-sdk/google``, which carries Gemini's thought
 # signatures and thinking config) and the ``-proxy`` wrapper points it at
@@ -334,26 +335,37 @@ _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.81.2"
 # CLAUDE_CODE_EXECUTABLE, which claude-agent-acp reads before looking for its
 # SDK's bundled binary. That binary is still installed (npm keeps a global
 # package's optional dependencies even with --omit=optional) but never runs;
-# the native no-web gate verifies the launcher. 2.1.280 is the release the
-# adapter's SDK (0.3.280) was built against.
-_CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code@2.1.280"
+# the native no-web gate verifies the launcher.
+# 2.1.316 (2026-11-04): 2.1.280 predates claude-sonnet-5-5 (2.1.284) and
+# claude-haiku-5-5 (2.1.293, with its token counts behind a gateway fixed in
+# 2.1.296), and its "haiku" alias still meant Haiku 4.5, so 0.81.2 refused
+# claude-haiku-5-5 at connect. 2.1.316 is the CLI claude-agent-acp 0.100.0's
+# SDK was built against; it is past 2.1.304-2.1.313 (tool search turned on
+# behind a custom ANTHROPIC_BASE_URL, which failed requests until 2.1.305 and
+# repeated refusals until 2.1.314) and before 2.1.317's change to Read.
+_CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code@2.1.316"
 _CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@2.0.1"
 # Pi moved to @earendil-works (same maintainers); the old package stopped at
 # 0.73.1, deprecated, and pi-acp 0.0.34 needs pi 0.81.0 or later: with 0.73.1
 # session/new never answered, so every pi-acp trial failed at connect.
-_PI_PACKAGE = "@earendil-works/pi-coding-agent@0.81.1"
+# 1.0.0 (2026-11-04): its catalog has Opus 5.5, Sonnet 5.5, Fable 5.1 and
+# gpt-6.1-sol, which 0.81.1's lacks; it is the last release that ships
+# npm-shrinkwrap.json (1.0.1 dropped it, so later installs float their
+# dependencies).
+_PI_PACKAGE = "@earendil-works/pi-coding-agent@1.0.0"
 _PI_ACP_PACKAGE = "pi-acp@0.0.34"
-# The Codex CLI the native harness runs (``harness="native"`` on codex-acp),
-# pinned exactly. 0.159.3 is the release codex-acp 2.0.1 resolves its
-# ``@openai/codex ^0.159.1`` dependency to (npm had no later 0.159.x on
-# 2026-10-02), so both harnesses run the same Codex core. codex-acp still
-# runs its own nested copy; pinning the ACP path to this CLI too (as
-# CLAUDE_CODE_EXECUTABLE does for Claude) is a follow-up.
+# Both harnesses use this exact engine. The ACP install replaces its adapter's
+# caret dependency with the pin in the same tree the launcher and policy probe
+# resolve, then verifies the running CLI before accepting the installation.
 _CODEX_CLI_PACKAGE = "@openai/codex@0.159.3"
 CODEX_APP_SERVER_EXECUTABLE = f"{_BENCHFLOW_BIN_PREFIX}/codex-app-server"
 
 
-_OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
+# OpenHands-CLI's last commit (2026-10-22; unmaintained since 2026-08-11):
+# only workflows, README and pyproject/uv.lock, raising certifi to
+# 2026.10.19, which drops the eMudhra and emSign roots. Its main still pins
+# openhands-sdk 1.28.1, so the SDK stays there.
+_OPENHANDS_CLI_GIT_REV = "283c6ac3610f4299f405f7389f65766dcb83e12a"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
 _JS_AGENT_PATH = (
@@ -361,12 +373,12 @@ _JS_AGENT_PATH = (
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
 # Shared JavaScript-agent runtime pin. Root installs into and runs from
-# /opt/benchflow only while it is root's alone (C8): a workspace grant
+# /opt/runtime only while it is root's alone (C8): a workspace grant
 # (``WORKDIR /opt``) can hand it to the agent user, whose Node or npm root
 # would run next. The install then stops instead.
 _NODE_INSTALL = (
-    "mkdir -p /opt/benchflow && "
-    + root_only_tree_check("/opt/benchflow", "BenchFlow's agent runtime folder")
+    "mkdir -p /opt/runtime && "
+    + root_only_tree_check("/opt/runtime", "BenchFlow's agent runtime folder")
     + " || exit 1; "
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
@@ -394,7 +406,7 @@ _NODE_INSTALL = (
     '    *) echo "Unsupported architecture for Node.js: $arch" >&2; exit 1 ;; '
     "  esac; "
     '  tmp="$(mktemp -d)"; '
-    "  mkdir -p /opt/benchflow; "
+    "  mkdir -p /opt/runtime; "
     '  curl -fsSLo "$tmp/node.tar.xz" '
     '"https://nodejs.org/dist/v${BF_NODE_VERSION}/node-v${BF_NODE_VERSION}-linux-${node_arch}.tar.xz"; '
     '  rm -rf "$BF_NODE_DIR"; '
@@ -442,7 +454,7 @@ CODEX_CLI_EXECUTABLE_PATH = f"{_BENCHFLOW_BIN_PREFIX}/codex"
 
 
 def js_agent_launcher(binary: str, env: tuple[tuple[str, str], ...] = ()) -> str:
-    """The launcher script ``_js_agent_install`` writes to ``/opt/benchflow/bin``.
+    """The launcher script ``_js_agent_install`` writes to ``/opt/runtime/bin``.
 
     It exports ``env`` and runs the agent on BenchFlow's private Node. The
     native Claude admission gate compares the installed launcher against it.
@@ -490,7 +502,7 @@ def _js_agent_install(
         f"printf '%s\\n' {' '.join(shlex.quote(line) for line in launcher_lines)} "
         f"> {wrapper} && "
         f"chmod +x {wrapper} && "
-        f"chmod -R a+rX /opt/benchflow && "
+        f"chmod -R a+rX /opt/runtime && "
         f"[ -x {agent_bin} ] && [ -x {wrapper} ]" + (f" && {verify}" if verify else "")
     )
 
@@ -597,9 +609,15 @@ def _codex_acp_install() -> str:
         "@openai/codex/bin/codex.js",
         module_root=f"{_BENCHFLOW_JS_AGENT_PREFIX}/lib/node_modules/@agentclientprotocol/codex-acp",
     )
-    encoded = base64.b64encode(wrapper.encode()).decode()
+    encoded = base64.b64encode(visible_script(wrapper).encode()).decode()
     return (
         _js_agent_install("codex-acp", _CODEX_ACP_PACKAGE)
+        + f" && {_BENCHFLOW_NODE_PREFIX}/bin/npm install --omit=dev"
+        + f" --prefix {_BENCHFLOW_JS_AGENT_PREFIX}/lib/node_modules/@agentclientprotocol/codex-acp"
+        + f" {_CODEX_CLI_PACKAGE}"
+        + f' && ( v="$({_BENCHFLOW_BIN_PREFIX}/codex-acp cli -V 2>&1)"; '
+        + f'[ "$v" = "codex-cli {pinned_npm_package("codex")[1]}" ] || '
+        + '{ echo "Pinned Codex engine version check failed: $v" >&2; exit 1; } )'
         + f" && printf '%s' {shlex.quote(encoded)} | base64 -d > {CODEX_APP_SERVER_EXECUTABLE}"
         + f" && chmod 755 {CODEX_APP_SERVER_EXECUTABLE}"
     )
@@ -608,14 +626,14 @@ def _codex_acp_install() -> str:
 _MIMO_MANIFEST_INSTALL_CMD = (
     _NODE_INSTALL
     + " && "
-    + "mkdir -p /opt/benchflow/js-agents/mimo-acp && "
+    + "mkdir -p /opt/runtime/js-agents/mimo-acp && "
     + 'printf \'%s\' \'{"name":"bf-mimo-acp","private":true,"type":"module"}\' '
-    + "> /opt/benchflow/js-agents/mimo-acp/package.json && "
-    + "cd /opt/benchflow/js-agents/mimo-acp && "
-    + "/opt/benchflow/node/bin/npm install @mimo-ai/cli@0.1.15 "
+    + "> /opt/runtime/js-agents/mimo-acp/package.json && "
+    + "cd /opt/runtime/js-agents/mimo-acp && "
+    + "/opt/runtime/node/bin/npm install @mimo-ai/cli@0.1.15 "
     + "--no-audit --no-fund --loglevel=error && "
-    + "chmod -R a+rX /opt/benchflow && "
-    + "[ -f /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo ]"
+    + "chmod -R a+rX /opt/runtime && "
+    + "[ -f /opt/runtime/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo ]"
 )
 _MIMO_MANIFEST_LAUNCHER = r"""
 A="${BENCHFLOW_LITELLM_MODEL_ALIAS:-}"
@@ -639,15 +657,15 @@ if [ -n "$B" ] && [ -n "$A" ]; then
   CFG_JSON='{
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "benchflow": {
+    "runtime": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "BenchFlow Proxy",
-      "options": { "baseURL": "'"$B"'", "apiKey": "'"${K:-benchflow}"'" },
+      "name": "Model endpoint",
+      "options": { "baseURL": "'"$B"'", "apiKey": "'"${K:-runtime}"'" },
       "models": { "'"$A"'": { "name": "'"$A"'" } }
     }
   },
-  "model": "benchflow/'"$A"'",
-  "small_model": "benchflow/'"$A"'"
+  "model": "runtime/'"$A"'",
+  "small_model": "runtime/'"$A"'"
 }'
   printf '%s\n' "$CFG_JSON" > "$CFG_HOME/mimocode.json"
   printf '%s\n' "$CFG_JSON" > ./mimocode.json
@@ -680,11 +698,11 @@ if [ -n "$A" ]; then
   # In direct mode the env IS the provider config — leave it intact.
   unset OPENAI_BASE_URL OPENAI_API_KEY
 fi
-exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo acp
+exec /opt/runtime/node/bin/node /opt/runtime/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo acp
 """
 _MIMO_MANIFEST_LAUNCH_CMD = (
     "printf '%s' '"
-    + base64.b64encode(_MIMO_MANIFEST_LAUNCHER.encode()).decode()
+    + base64.b64encode(visible_script(_MIMO_MANIFEST_LAUNCHER).encode()).decode()
     + "' | base64 -d > /tmp/mimo-acp-launch.sh && sh /tmp/mimo-acp-launch.sh"
 )
 
@@ -794,14 +812,14 @@ def _js_deny_list(key: str, tools: tuple[str, ...]) -> str:
 
 # OpenCode-family proxy fix: OpenCode and its MiMo fork validate provider/model
 # ids against the models.dev catalog and reject the synthetic
-# ``openai/benchflow-<alias>`` that BenchFlow's LiteLLM proxy serves the model
+# ``openai/runtime-<alias>`` that BenchFlow's LiteLLM proxy serves the model
 # under (ProviderModelNotFoundError -> zero requests -> no
 # ``trajectory/llm_trajectory.jsonl``, which ``benchflow-experiment-review``
 # requires). Registering the alias under ``provider.openai.models`` (with the
 # gateway baseURL) bypasses that catalog check so the agent accepts the id and
 # routes through the proxy.
 def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
-    """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
+    """Install ``/opt/runtime/bin/<binary>-proxy``: a thin wrapper that, in
     proxy mode, registers the LiteLLM gateway alias under a dedicated
     OpenCode provider, then execs the isolated agent binary. Idempotent
     (preserves existing config); no-op outside proxy mode.
@@ -861,6 +879,13 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
             "    if (key) opts.apiKey = key;",
             "    const models = prov.models ||= {};",
             "    models[alias] ||= { name: alias };",
+            '    const catalog = JSON.parse(process.env.BENCHFLOW_PROVIDER_MODELS || "[]");',
+            "    const metadata = Array.isArray(catalog) && catalog.find(m => m.id === alias);",
+            "    if (metadata && Array.isArray(metadata.input)) {",
+            '      const input = metadata.input.filter(x => ["text", "image", "audio", "video", "pdf"].includes(x));',
+            '      models[alias].modalities = {input, output: ["text"]};',
+            '      models[alias].attachment = input.includes("image");',
+            "    }",
             f'    d.small_model = "{provider_id}/" + alias;',
             "  } else {",
             # Gemini: the built-in google provider, pointed at the gateway's
@@ -902,7 +927,7 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         f'  PATH="{_BENCHFLOW_NODE_PREFIX}/bin:$PATH" exec {agent_bin} "$@"\n'
         "fi\n"
     )
-    b64 = base64.b64encode(wrapper.encode()).decode()
+    b64 = base64.b64encode(visible_script(wrapper).encode()).decode()
     return f"printf '%s' '{b64}' | base64 -d > {target} && chmod +x {target}"
 
 
@@ -941,6 +966,14 @@ class SubscriptionAuth:
     files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
 
 
+# Who carries an agent's model calls (AgentConfig.model_route). "proxy": the
+# LiteLLM proxy BenchFlow starts for the trial, which meters usage and records
+# the model trajectory. "agent": the agent's own endpoint.
+MODEL_ROUTE_PROXY = "proxy"
+MODEL_ROUTE_AGENT = "agent"
+MODEL_ROUTES = (MODEL_ROUTE_PROXY, MODEL_ROUTE_AGENT)
+
+
 @dataclass
 class AgentConfig:
     """Configuration for a supported agent."""
@@ -958,6 +991,11 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     install_timeout: int = 900  # seconds
     default_model: str = ""  # default model ID when --model is omitted
+    model_route: str = MODEL_ROUTE_PROXY
+    # "agent": the agent calls its own model endpoint with its own declared
+    # credentials (manifest contract 1.1). BenchFlow then starts no proxy for
+    # it, a model is optional, and a given model is only a label: recorded,
+    # and sent over ACP where the agent takes one (agent_routes_own_model).
     api_protocol: str = ""
     # The LLM API protocol the agent natively speaks:
     # "anthropic-messages" | "openai-completions" | "openai-responses" |
@@ -1056,8 +1094,11 @@ def routes_gemini_natively(agent_cfg: AgentConfig | None) -> bool:
     )
 
 
-_GEMINI_EXCLUDE_WEB_TOOLS_CMD = _json_settings_merge(
+_GEMINI_EXCLUDE_WEB_TOOLS_CMD = _json_settings_merge_node(
     "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
+    "d.tools=d.tools||{};d.tools.exclude=d.tools.exclude||[];"
+    '["google_web_search","web_fetch"].forEach(function(t){'
+    "if(d.tools.exclude.indexOf(t)<0)d.tools.exclude.push(t);})",
     'd.setdefault("tools",{}).setdefault("exclude",[]);'
     '[d["tools"]["exclude"].append(t) for t in '
     '["google_web_search","web_fetch"] '
@@ -1111,7 +1152,7 @@ CODEX_ACP_BUILTIN_LAUNCH = (
     "fi; "
     'c="${CODEX_HOME:-$h/.codex}"; '
     'if [ "$(head -n 1 "$c/config.toml" 2>/dev/null)" = '
-    "'# benchflow-codex-home-config' ]; then "
+    "'# runtime-codex-home-config' ]; then "
     'rm -f "$c/config.toml" || exit 1; '
     "fi ) && "
     f"export CODEX_PATH={CODEX_APP_SERVER_EXECUTABLE} && exec "
@@ -1356,7 +1397,13 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "gemini": AgentConfig(
         name="gemini",
-        description="Google Gemini CLI via ACP",
+        # Google folded Gemini CLI into the Antigravity CLI (developer blog,
+        # 2026-05-19) and stopped serving AI Pro, Ultra and free users on it on
+        # 2026-06-18; only paid API keys and enterprise licences remain.
+        description=(
+            "Google Gemini CLI via ACP (legacy, API key only: Google folded it "
+            "into the Antigravity CLI, --agent antigravity)"
+        ),
         skill_paths=["$HOME/.gemini/skills"],
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
         # BenchFlow already isolates the agent inside the task sandbox and
@@ -1383,20 +1430,11 @@ AGENTS: dict[str, AgentConfig] = {
             # GOOGLE_API_KEY for compatibility with users who set that alias.
             "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
         },
-        subscription_auth=SubscriptionAuth(
-            replaces_env="GEMINI_API_KEY",
-            detect_file="~/.gemini/oauth_creds.json",
-            files=[
-                HostAuthFile(
-                    "~/.gemini/oauth_creds.json", "{home}/.gemini/oauth_creds.json"
-                ),
-                HostAuthFile("~/.gemini/settings.json", "{home}/.gemini/settings.json"),
-                HostAuthFile(
-                    "~/.gemini/google_accounts.json",
-                    "{home}/.gemini/google_accounts.json",
-                ),
-            ],
-        ),
+        # No subscription_auth: a Google sign-in no longer runs Gemini CLI for
+        # AI Pro, Ultra or free accounts, and every BenchFlow Gemini run goes
+        # through the LiteLLM proxy, which needs GEMINI_API_KEY. Copying the
+        # sign-in's OAuth files into the sandbox gave the agent a refresh token
+        # the run could not use.
         disallow_web_tools_setup_cmd=_GEMINI_EXCLUDE_WEB_TOOLS_CMD,
         disallow_web_tools_owned_paths=["$HOME/.gemini"],
         # web_fetch tries the hosted urlContext path before any local fetch, so
@@ -1488,9 +1526,11 @@ AGENTS: dict[str, AgentConfig] = {
         name="opencode",
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
-        home_dirs=[".opencode"],
+        # OpenCode reads its config from ~/.config/opencode; declaring that
+        # subdir copies an image-provided config without all of ~/.config.
+        home_dirs=[".opencode", ".config/opencode"],
         install_cmd=(
-            _js_agent_install("opencode", "opencode-ai@1.18.11")
+            _js_agent_install("opencode", "opencode-ai@1.19.5")
             + " && "
             + _opencode_family_proxy_wrapper_install(
                 "opencode", ".config/opencode/opencode.json"
@@ -1507,8 +1547,9 @@ AGENTS: dict[str, AgentConfig] = {
         # OpenCode adds an "effort" config option once a reasoning model is
         # selected (its model variants; gemini-4-argon: low/medium/high) and
         # defaults it to the lowest, which then overrides any thinking level
-        # in its config (1.18.11, checked 2026-10-14). The model is set first,
-        # so the option is there when the effort is set.
+        # in its config (1.18.11, checked 2026-10-14; 1.19.5 also offers a
+        # "default" value and builds the variants itself, checked 2026-11-04).
+        # The model is set first, so the option is there when the effort is set.
         acp_effort_config_id="effort",
         # OpenCode uses models.dev provider IDs — its parseModel() splits
         # modelId on "/" so set_model must send "google/gemini-3.1-pro-preview",
@@ -1516,13 +1557,15 @@ AGENTS: dict[str, AgentConfig] = {
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
         },
-        disallow_web_tools_setup_cmd=_json_settings_merge(
+        disallow_web_tools_setup_cmd=_json_settings_merge_node(
             "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
+            "d.tools=d.tools||{};d.tools.webfetch=false",
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
-        disallow_hosted_search_setup_cmd=_json_settings_merge(
+        disallow_hosted_search_setup_cmd=_json_settings_merge_node(
             "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
+            "d.tools=d.tools||{};d.tools.websearch=false",
             'd.setdefault("tools",{})["websearch"]=False',
         ),
     ),
@@ -1561,7 +1604,7 @@ AGENTS: dict[str, AgentConfig] = {
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.
-        # "benchflow/benchflow-<alias>" in proxy mode (the dedicated
+        # "runtime/runtime-<alias>" in proxy mode (the dedicated
         # OPENCODE_PROXY_PROVIDER_ID chat-completions provider the -proxy wrapper
         # registers — NOT the built-in "openai" id, whose Responses-API hard-coding
         # the gateway cannot serve), or "xiaomi/mimo-v2.5" in non-proxy mode via the
@@ -1573,13 +1616,15 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
         },
-        disallow_web_tools_setup_cmd=_json_settings_merge(
+        disallow_web_tools_setup_cmd=_json_settings_merge_node(
             "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
+            "d.tools=d.tools||{};d.tools.webfetch=false",
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/mimocode"],
-        disallow_hosted_search_setup_cmd=_json_settings_merge(
+        disallow_hosted_search_setup_cmd=_json_settings_merge_node(
             "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
+            "d.tools=d.tools||{};d.tools.websearch=false",
             'd.setdefault("tools",{})["websearch"]=False',
         ),
     ),
@@ -1861,7 +1906,7 @@ def has_builtin_install(agent: str) -> bool:
 
 # The install split. An agent's ``install_cmd`` is the cacheable
 # part: system packages, BenchFlow's private Node and the agent's pinned
-# package, all under /opt/benchflow, written the same way every trial. What
+# package, all under /opt/runtime, written the same way every trial. What
 # stays per trial is in the other fields and runs in Rollout.install_agent
 # after it: the sandbox user, credential files, subscription auth, the web
 # policy, skills and lockdown. The agents below install exactly the pinned
@@ -1881,7 +1926,7 @@ CACHEABLE_INSTALLS: dict[str, str] = {
     ),
     "codex-acp": pinned_npm_package("codex-acp")[1],
     "gemini": "0.42.0",
-    "opencode": "1.18.11",
+    "opencode": "1.19.5",
     "mimo": "0.1.15",
     "antigravity": AGY_VERSION,
 }
@@ -1911,10 +1956,12 @@ def cacheable_install(agent: str) -> tuple[str, str] | None:
     return version, install_cmd
 
 
-def get_sandbox_home_dirs() -> set[str]:
+def get_sandbox_home_dirs(agents: list[str] | None = None) -> set[str]:
     """Collect user home config/auth dirs BenchFlow may materialize for the sandbox user.
 
-    Derives from three sources across all registered agents:
+    Derives from three sources across the registered agents named in
+    ``agents`` (all registered agents when ``agents`` is None; names that are
+    not registered contribute nothing):
     - credential_files: {home}/.foo/... → ".foo"
     - subscription_auth.files: {home}/.foo/... → ".foo"
     - home_dirs: explicit extra home directories
@@ -1923,7 +1970,11 @@ def get_sandbox_home_dirs() -> set[str]:
     shared skills tree instead of relying on sandbox-home copies.
     """
     dirs: set[str] = set()
-    for cfg in AGENTS.values():
+    if agents is None:
+        cfgs = list(AGENTS.values())
+    else:
+        cfgs = [AGENTS[name] for name in agents if name in AGENTS]
+    for cfg in cfgs:
         for cf in cfg.credential_files:
             # path uses {home}/.foo/... placeholder
             path = cf.path
@@ -2091,6 +2142,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         skill_paths=config.skill_paths,
         install_timeout=config.install_timeout,
         default_model=config.default_model,
+        model_route=config.model_route,
         api_protocol=config.api_protocol,
         env_mapping=config.env_mapping,
         credential_files=config.credential_files,
@@ -2165,6 +2217,36 @@ def is_scripted_agent(name: str | None) -> bool:
 def is_operator_script(name: str | None) -> bool:
     """An operator's bash file, not the task's root oracle solution."""
     return isinstance(name, str) and name.startswith("script:")
+
+
+def agent_routes_own_model(agent: str | None) -> bool:
+    """True when ``agent`` declares ``model_route = "agent"``.
+
+    Such an agent calls its own model endpoint from the sandbox: BenchFlow
+    starts no proxy for it and cannot meter its usage. The agent is looked up
+    by its registered name, an alias or an acpx spec; anything else (a raw
+    command, a scripted agent) keeps the proxy route.
+    """
+    if not agent:
+        return False
+    config = AGENTS.get(agent)
+    if config is None:
+        _protocol, name = parse_agent_spec(agent)
+        config = AGENTS.get(name) or AGENTS.get(name.removeprefix(ACPX_KEY_PREFIX))
+    # Read like the other optional fields: a plugin's or a test's stand-in
+    # config without the field keeps the proxy route.
+    return getattr(config, "model_route", MODEL_ROUTE_PROXY) == MODEL_ROUTE_AGENT
+
+
+def routed_model(agent: str | None, model: str | None) -> str | None:
+    """The model BenchFlow routes for ``agent``: ``model``, or None for an
+    agent that routes its own model calls, whatever label it was given.
+
+    Route and credential decisions read this instead of the label, so such
+    an agent takes the no-model DIRECT route: no proxy, no provider
+    resolution, and only its own declared credentials.
+    """
+    return None if agent_routes_own_model(agent) else model
 
 
 def resolve_agent(spec: str) -> AgentConfig:
@@ -2348,6 +2430,7 @@ def register_agent(
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
     default_model: str = "",
+    model_route: str = MODEL_ROUTE_PROXY,
     api_protocol: str = "",
     env_mapping: dict[str, str] | None = None,
     credential_files: list[CredentialFile] | None = None,
@@ -2380,14 +2463,21 @@ def register_agent(
 
     ``cacheable_version`` marks ``install_cmd`` as pinned, the way
     ``CACHEABLE_INSTALLS`` marks the built-in ones: it installs exactly what
-    the version names, under /opt/benchflow, the same way every trial, so on
+    the version names, under /opt/runtime, the same way every trial, so on
     Docker it is built once into the agent's cached image layer and reused
     (the version is part of the layer's key and record). Only a plugin whose
     install pins every package should pass it. Without it the install runs in
     every trial, as before.
 
+    ``model_route="agent"`` registers an agent that calls its own model
+    endpoint, as the manifest field does (see AgentConfig.model_route).
+
     Returns the created AgentConfig.
     """
+    if model_route not in MODEL_ROUTES:
+        raise ValueError(
+            f"model_route must be one of {', '.join(MODEL_ROUTES)}; got {model_route!r}"
+        )
     config = AgentConfig(
         name=name,
         install_cmd=install_cmd,
@@ -2399,6 +2489,7 @@ def register_agent(
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,
         default_model=default_model,
+        model_route=model_route,
         api_protocol=api_protocol,
         env_mapping=env_mapping or {},
         credential_files=credential_files or [],

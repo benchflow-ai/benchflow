@@ -2,9 +2,9 @@
 
 REPORT B18 of the Oct 13 dogfood (round PY8, target D2b): two messages a
 user sees when BenchFlow refuses a task.toml task named a third-party
-runner. The multi-step refusal now says "multi-step tasks are not supported
-(one prompt per task)", and the collect-hook refusal names task.toml's
-``[[verifier.collect]]`` hooks; the unknown-key refusal beside them says "a
+runner. The multi-step refusal said "multi-step tasks are not supported
+(one prompt per task)" until a later change made them run, and the collect-hook
+refusal names task.toml's ``[[verifier.collect]]`` hooks; the unknown-key refusal beside them says "a
 newer task.toml key", and the separate verifier's "no verifier image"
 refusal names ``[verifier.environment]`` as task.toml's. Each is checked where it is made and where
 ``bench tasks check`` prints it.
@@ -98,14 +98,14 @@ def _check_output(task_dir: Path) -> str:
     return " ".join(result.output.split())
 
 
-def test_the_multi_step_refusal_names_no_other_runner(tmp_path: Path) -> None:
+def test_a_multi_step_task_passes_the_launch_gate(tmp_path: Path) -> None:
+    """Multi-step tasks run (task/steps.py); before, every one was
+    refused with "multi-step tasks are not supported (one prompt per task)"."""
     task_dir = _multi_step_task(tmp_path)
     issues = validate_task_runtime_support(
         Task(task_dir).config, sandbox="docker", task_dir=task_dir
     )
-    assert [(i.path, i.reason) for i in issues] == [
-        ("steps", "multi-step tasks are not supported (one prompt per task)")
-    ]
+    assert issues == []
 
 
 VERIFIER_SANDBOX = "\n[verifier.environment]\ncpus = 1\n"

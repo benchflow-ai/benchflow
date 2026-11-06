@@ -102,7 +102,7 @@ def _visited(path: str) -> list[str]:
         # A space, and glob characters, are part of the folder's name.
         ("/opt/my env/bin:/opt/[x]*", ["/opt/my env/bin", "/opt/[x]*", *SYSTEM]),
         # The kit's own folders are never the image's.
-        ("/opt/benchflow/bin:/opt/a", ["/opt/a", *SYSTEM]),
+        ("/opt/runtime/bin:/opt/a", ["/opt/a", *SYSTEM]),
     ],
 )
 def test_the_capture_visits_the_installers_folders_once_in_order(path, expected):
@@ -156,7 +156,7 @@ def test_the_scan_finds_the_round_2_loop():
 def test_no_kit_or_installer_word_list_glues_an_expansion_to_text():
     scripts = {phase: kit_prepare_command(phase) for phase in ("build", "seal", "all")}
     scripts["restore"] = kit_prepare_command(
-        "restore", stage="/.benchflow-kit-" + "0" * 32
+        "restore", stage="/.runtime-kit-" + "0" * 32
     )
     scripts["installer"] = lockdown._INSTALL_PYTEST_PLUGIN_GUARD_CMD_TEMPLATE
     scripts["installer kit branch"] = lockdown._install_guard_kit_cmd(

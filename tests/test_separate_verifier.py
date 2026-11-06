@@ -375,10 +375,13 @@ async def test_agent_paths_cover_every_path_the_transfer_writes(tmp_path: Path) 
     summary = build_transfer_payload(trial, tmp_path / "payload.tar")
 
     agent_paths = summary["agent_paths"]
-    # A declared file is captured with its directory as the bundle's root,
-    # so that whole directory counts as the agent's: conservative, and what
-    # the shared sandbox blocks for /tmp anyway.
-    assert agent_paths == [str(workspace), str(box / "tmp"), "/logs/artifacts"]
+    # The bundle's parent is only scaffolding; the declared file alone is
+    # agent input (regression from abcf2781c).
+    assert agent_paths == [
+        str(workspace),
+        str(box / "tmp" / "configured.txt"),
+        "/logs/artifacts",
+    ]
     for name in _members(tmp_path / "payload.tar"):
         path = "/" + name
         assert any(
@@ -387,10 +390,17 @@ async def test_agent_paths_cover_every_path_the_transfer_writes(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent_paths",
+    [
+        ("/app", "/out/report.txt", "/logs/artifacts"),
+        ("/app/output", "/out/report.txt", "/logs/artifacts"),
+    ],
+)
 async def test_default_verify_hardens_with_the_transferred_paths(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, agent_paths
 ) -> None:
-    """Guards the separate-mode trust rule: hardening is told the sandbox is fresh."""
+    """Hardening gets only the transferred paths."""
     from benchflow.rollout import _separate_verifier, _setup
 
     calls = []
@@ -417,13 +427,13 @@ async def test_default_verify_hardens_with_the_transferred_paths(
         SimpleNamespace(agent_dir=directory(tmp_path)),
         {},
         workspace="/app",
-        agent_paths=("/app", "/out/report.txt", "/logs/artifacts"),
+        agent_paths=agent_paths,
     )
 
     (kwargs,) = calls
     assert kwargs["sandbox_user"] is None
     assert kwargs["workspace"] == "/app"
-    assert set(kwargs["agent_paths"]) == {"/app", "/out/report.txt", "/logs/artifacts"}
+    assert tuple(kwargs["agent_paths"]) == agent_paths
 
 
 @pytest.mark.asyncio
@@ -894,7 +904,7 @@ class FakeVerifierSandbox:
         self.commands.append(cmd)
         if self.fail_exec and self.fail_exec in cmd:
             return ExecResult(1, "", "tar: boom")
-        if "benchflow-verifier-destinations-" in cmd:
+        if "runtime-verifier-destinations-" in cmd:
             # The destination probe runs for real, rooted at this folder.
             script = next(
                 p for t, p in reversed(self.uploads.items()) if "destinations" in t
@@ -1693,9 +1703,12 @@ def _include_capture_rollout(
 
 # PY8 main sync: uses _include_capture_rollout.
 @pytest.mark.asyncio
-async def test_include_paths_and_the_scan_apply_only_to_a_separate_verifier(
+async def test_include_paths_apply_only_to_a_separate_verifier_and_the_scan_to_any_saved_workspace(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Include paths cross only to a separate verifier. Files written outside
+    the workspace are listed whenever it is saved: a rubric review's evidence
+    does not hold them either, and the warning names folders only."""
     from benchflow.rollout import _review
 
     captured: list[list[str]] = []
@@ -1730,7 +1743,10 @@ async def test_include_paths_and_the_scan_apply_only_to_a_separate_verifier(
     shared = _include_capture_rollout(tmp_path, TaskConfig(), review=True)
     await _review.capture_terminal_workspace(shared)
     assert captured[-1] == []
-    assert len(scanned) == 1 and shared._outside_workspace_writes is None
+    assert scanned[-1] == (100.0, ["/app", "/home/agent"])
+    assert shared._outside_workspace_writes == report
+    (warning,) = shared._warnings
+    assert "not in the saved evidence" in warning and "paper.pdf" not in warning
 
 
 @pytest.mark.asyncio
@@ -1781,9 +1797,9 @@ async def test_files_written_outside_everything_that_crosses_are_listed(
         "var/log/y",
         "logs/verifier/reward.txt",
         "oracle/__pycache__/solve.cpython-312.pyc",  # harness mount
-        "opt/benchflow-egress/policy.json",  # BenchFlow's egress proxy
-        "opt/benchflow_agentcore_shim.py",
-        "opt/benchflow/node/bin/node",
+        "opt/runtime-egress/policy.json",  # BenchFlow's egress proxy
+        "opt/runtime_agentcore_shim.py",
+        "opt/runtime/node/bin/node",
         "root/.cache/uv/wheel",  # package cache
         "root/.daytona/sessions/s",  # provider runtime state
     ):

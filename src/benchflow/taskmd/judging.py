@@ -177,7 +177,7 @@ _KEY_FAMILIES = re.compile(
     r"(?<![A-Za-z0-9_-])(?:"
     r"sk-ant-[A-Za-z0-9_-]{12,}"
     r"|sk-(?:benchflow|svcacct|or-v1)-[A-Za-z0-9_-]{12,}"
-    r"|sk-(?:proj|admin)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
+    r"|sk-(?:proj|admin|runtime)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
     r"|AIzaSy[A-Za-z0-9_-]{20,}"
     r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"
     r"|dtn_[A-Za-z0-9_]{16,}"

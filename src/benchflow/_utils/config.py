@@ -70,6 +70,21 @@ def normalize_reasoning_effort(effort: object) -> str | None:
 
 
 DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 600
+#: BenchFlow's idle limit at the efforts where a model can reason for a quarter
+#: of an hour without a word: a published run's model at max effort answered
+#: after 12 to 15 minutes of reasoning that streams no summary, and the 600 s
+#: default stopped it. Twice that, with room to spare.
+LONG_THINKING_IDLE_TIMEOUT_SEC = 1800
+_LONG_THINKING_EFFORTS = frozenset({"xhigh", "max"})
+
+
+def default_agent_idle_timeout(effort: str | None) -> tuple[int, str]:
+    """BenchFlow's idle limit for a run that sets none, and why: by its
+    reasoning effort (``xhigh`` and ``max`` think longest). A run's own
+    ``--agent-idle-timeout`` always wins."""
+    if effort in _LONG_THINKING_EFFORTS:
+        return LONG_THINKING_IDLE_TIMEOUT_SEC, f"effort_{effort}"
+    return DEFAULT_AGENT_IDLE_TIMEOUT_SEC, "default"
 
 
 def normalize_agent_idle_timeout(timeout: object) -> int | None:

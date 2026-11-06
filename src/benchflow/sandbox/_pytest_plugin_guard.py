@@ -794,15 +794,71 @@ def _after_arm(path):
 
     A file that test.sh installed, wherever it put it and however root's it
     is, changed then (V2-REDESIGN-R3-2); the image's own files did not.
-    Anything that cannot be told counts as changed.
+    Anything that cannot be told counts as changed. One change is not: a
+    package folder of the image into which Python wrote byte-code caches of
+    its own sources (:func:`_only_caches_since_arm`).
     """
     arm = _arm_time()
     if arm is None:
         return True
     try:
-        return max(os.lstat(path).st_ctime, os.stat(path).st_ctime) >= arm
+        if max(os.lstat(path).st_ctime, os.stat(path).st_ctime) < arm:
+            return False
+        return not _only_caches_since_arm(path, arm)
     except OSError:
         return True
+
+
+def _only_caches_since_arm(directory, arm):
+    """Whether the folder *directory* changed after the arm only by Python
+    writing ``__pycache__`` folders of compilations of its own sources.
+
+    An image built with no byte code, imported by test.sh's ``python3 -I``
+    (which ignores PYTHONDONTWRITEBYTECODE), gets them at its first import:
+    Terminal-Bench 4.1's verifier image and its ``anyio`` plugin. Every other
+    entry, in every folder below, must predate the arm (an install, rename or
+    replacement changes the entry's own change time), each ``__pycache__``
+    must be a real folder made after the arm, and each cache in it must be
+    this Python's compilation of the source beside it (:func:`_pyc_matches`),
+    however old: Python writes its caches into the folder after making it, so
+    an older one was moved there, or came with a folder renamed into place. A
+    pytest rewrite cache cannot be told from another rewrite, so one counts
+    as changed.
+    """
+    if not stat.S_ISDIR(os.lstat(directory).st_mode):
+        return False
+    caches = None
+    for name in os.listdir(directory):
+        entry = os.path.join(directory, name)
+        info = os.lstat(entry)
+        if name == "__pycache__":
+            if not stat.S_ISDIR(info.st_mode) or info.st_ctime < arm:
+                return False
+            caches = entry
+        elif info.st_ctime >= arm and not (
+            stat.S_ISDIR(info.st_mode) and _only_caches_since_arm(entry, arm)
+        ):
+            return False
+    if caches is None:
+        return False
+    tag = "." + str(sys.implementation.cache_tag) + "."
+    for name in os.listdir(caches):
+        pyc = os.path.join(caches, name)
+        info = os.lstat(pyc)
+        if not stat.S_ISREG(info.st_mode):
+            return False
+        stem, sep, rest = name.partition(tag)
+        if not sep or not stem:
+            return False
+        if rest == "pyc":
+            optimize = 0
+        elif rest in ("opt-1.pyc", "opt-2.pyc"):
+            optimize = int(rest[4])
+        else:
+            return False
+        if not _pyc_matches(pyc, os.path.join(directory, stem + ".py"), optimize):
+            return False
+    return True
 
 
 def _image_owned(path, blocked):
@@ -814,13 +870,42 @@ def _image_owned(path, blocked):
     return not _after_arm(real) and _root_alone(real)
 
 
+def _same_code(cached, compiled):
+    """Whether the code objects *cached* and *compiled* run the same instructions.
+
+    ``==`` compares instructions with their specializations undone, so on
+    Python 3.11 and later a cache can carry specialized instructions and
+    inline-cache data that compare equal and run other code (a global load
+    that reads another name). The raw instructions, the stack size and the
+    local names must match too, in every nested code object.
+    """
+    if cached != compiled:
+        return False
+    for attr in (
+        "_co_code_adaptive",
+        "co_stacksize",
+        "co_nlocals",
+        "co_varnames",
+        "co_cellvars",
+        "co_freevars",
+    ):
+        if getattr(cached, attr, None) != getattr(compiled, attr, None):
+            return False
+    code = type(compiled)
+    inner = [c for c in cached.co_consts if isinstance(c, code)]
+    expected = [c for c in compiled.co_consts if isinstance(c, code)]
+    return len(inner) == len(expected) and all(
+        _same_code(a, b) for a, b in zip(inner, expected, strict=True)
+    )
+
+
 def _pyc_matches(pyc, source, optimize):
     """Whether this Python, reading *pyc* for *source*, runs *source*'s code.
 
-    True when *pyc* holds the compilation of *source* at *optimize*, or
-    carries another magic number (this Python ignores it). Any other byte
-    code would run in the source's place: Python reads a cache whose header
-    matches, and an unchecked hash-based one always.
+    True when *pyc* holds the compilation of *source* at *optimize*
+    (:func:`_same_code`), or carries another magic number (this Python
+    ignores it). Any other byte code would run in the source's place: Python
+    reads a cache whose header matches, and an unchecked hash-based one always.
     """
     try:
         if not stat.S_ISREG(os.stat(pyc).st_mode):
@@ -833,7 +918,7 @@ def _pyc_matches(pyc, source, optimize):
             text = handle.read()
         header = 16 if sys.version_info >= (3, 7) else 12
         compiled = compile(text, source, _MODULE, dont_inherit=True, optimize=optimize)
-        return marshal.loads(data[header:]) == compiled
+        return _same_code(marshal.loads(data[header:]), compiled)
     except Exception:
         return False
 
@@ -1610,9 +1695,43 @@ def _validate(names, *, entry_points=True):
         raise Rejected(message)
 
 
+def _no_cache_folder():
+    """A folder that is never made, in the guard's own folder: root's, made
+    at hardening under a random name, so the agent can neither make it nor
+    write into the folder above it."""
+    return os.path.join(os.path.dirname(_BENCHFLOW_KEY_FILE), ".no-pycache")
+
+
+def _keep_byte_code_out():
+    """Write no byte code in this pytest, and read none: every module
+    imported from here on compiles from its source.
+
+    A cache this process wrote is one the guard cannot tell from a planted
+    one: pytest's assertion rewriter wrote one for each plugin it imported,
+    and the guard then refused that plugin (Terminal-Bench 4.1's anyio).
+    Caches are read only under :func:`_no_cache_folder`, as BenchFlow's
+    protected runner does (``-X pycache_prefix``), never under a folder the
+    environment names: ``python3 -I`` leaves PYTHONPYCACHEPREFIX unapplied,
+    and the folder it names (the task's verifier environment, or test.sh)
+    may be one the agent can write.
+    """
+    sys.dont_write_bytecode = True
+    if not hasattr(sys, "pycache_prefix"):  # Python 3.7: no prefix to set
+        return
+    folder = _no_cache_folder()
+    if os.path.lexists(folder):
+        raise Rejected(
+            "Verifier plugin trust: " + folder + " exists; the guard reads byte "
+            "code only from a folder that is never made"
+        )
+    sys.pycache_prefix = folder
+
+
 def pytest_addhooks(pluginmanager):
     """Validate actual invocation -p imports before pytest visits later aliases."""
     try:
+        if _BENCHFLOW_ARMED:
+            _keep_byte_code_out()
         # pytest reads this after the -p plugins, the guard first among them:
         # a .pth or a startup hook that cleared it cannot turn autoload back on
         # for registrations nothing has checked (V2-REDESIGN-R3-4).

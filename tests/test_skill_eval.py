@@ -210,12 +210,12 @@ class TestLoadEvalDataset:
     def test_configurable_skill_mount_dir(self, skill_dir):
         evals_json = skill_dir / "evals" / "evals.json"
         data = json.loads(evals_json.read_text())
-        data["defaults"]["skill_mount_dir"] = "/opt/benchflow/skill-eval"
+        data["defaults"]["skill_mount_dir"] = "/opt/runtime/skill-eval"
         evals_json.write_text(json.dumps(data))
 
         ds = load_eval_dataset(skill_dir)
 
-        assert ds.skill_mount_dir == "/opt/benchflow/skill-eval"
+        assert ds.skill_mount_dir == "/opt/runtime/skill-eval"
 
     @pytest.mark.parametrize(
         "mount_dir",
@@ -422,7 +422,7 @@ class TestGenerateTasks:
     ):
         evals_json = skill_dir / "evals" / "evals.json"
         data = json.loads(evals_json.read_text())
-        data["defaults"]["skill_mount_dir"] = "/opt/benchflow/skill-eval"
+        data["defaults"]["skill_mount_dir"] = "/opt/runtime/skill-eval"
         evals_json.write_text(json.dumps(data))
 
         ds = load_eval_dataset(skill_dir)
@@ -430,10 +430,8 @@ class TestGenerateTasks:
         task_dirs = generate_tasks(ds, output, with_skill=True)
 
         dockerfile = (task_dirs[0] / "environment" / "Dockerfile").read_text()
-        assert (
-            Task(task_dirs[0]).config.sandbox.skills_dir == "/opt/benchflow/skill-eval"
-        )
-        assert "COPY skills/ /opt/benchflow/skill-eval/" in dockerfile
+        assert Task(task_dirs[0]).config.sandbox.skills_dir == "/opt/runtime/skill-eval"
+        assert "COPY skills/ /opt/runtime/skill-eval/" in dockerfile
 
 
 # cleanup_tasks

@@ -160,7 +160,7 @@ async def test_async_paths_confirm_deletion_before_return(path, gone, isolated):
         )
         provider.on_poll = lambda: _assert_open(isolated, entry)
     if path == "stop":
-        await env._stop_sandbox()
+        await env._stop_sandbox(box)  # deletion owns its captured provider.
     elif path in {"ledger", "attempt"}:
         assert await isolated._sweep_one(entry)
     elif path == "labelled":

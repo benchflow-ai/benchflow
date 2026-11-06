@@ -9,7 +9,7 @@ uv run python docs/examples/python-sdk/run-oracle.py --help    # its options
 
 `--sandbox docker`, the default, needs Docker running. `--sandbox daytona` needs `DAYTONA_API_KEY` and the `sandbox-daytona` extra.
 
-Agent runs need that agent's credential; `bench doctor` shows which one it would use. For Claude, that is `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` ([Auth](../../agents/auth.md)).
+Agent runs need that agent's credential; `bench doctor` shows which one it would use. For Claude, that is `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` ([Auth](../../evaluate/agents.md#log-in-or-set-a-key)).
 
 | Example | Shows | Needs |
 |---|---|---|
@@ -26,5 +26,5 @@ Agent runs need that agent's credential; `bench doctor` shows which one it would
 
 ## Next steps
 
-- The API: [Python API reference](../../reference/python-api.md).
-- Read jobs back: [Analyse runs](../../results/analysing-runs.md).
+- The API: [Python API reference](../../reference/python.md).
+- Read jobs back: [Analyse runs](../../evaluate/read-results.md).

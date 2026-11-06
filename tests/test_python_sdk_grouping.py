@@ -145,3 +145,18 @@ def test_trial_and_job_reprs_are_compact(tmp_path: Path) -> None:
         "reward=1.0, execution='completed', assessment='scored')"
     )
     assert repr(loaded) == f"Job(path={str(job)!r}, trials=1, kind='directory')"
+
+
+def test_compare_headline_says_task_for_one_task() -> None:
+    """A docs review found a one-task comparison saying "On the 1 tasks both sides
+    ran", and a docs page quoted it. No page quotes the plural for one task
+    (the docs v2 pages quote no one-task comparison at all)."""
+    from pathlib import Path as _P
+
+    docs = _P(__file__).resolve().parents[1] / "docs"
+    quoting = [
+        str(page.relative_to(docs))
+        for page in docs.rglob("*.md")
+        if "On the 1 tasks" in page.read_text(encoding="utf-8")
+    ]
+    assert not quoting

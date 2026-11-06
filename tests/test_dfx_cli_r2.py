@@ -85,7 +85,14 @@ def test_the_review_runner_logs_a_user_error_without_its_traceback(
     rollout = tmp_path / "rollout"
     rollout.mkdir()
     rubric = SimpleNamespace(contract="v1", criteria=[])
-    config = SimpleNamespace(image="i", timeout_sec=1, open_network=False)
+    config = SimpleNamespace(
+        image="i",
+        timeout_sec=1,
+        open_network=False,
+        memory_mb=2048,
+        storage_mb=None,
+        environment="docker",
+    )
     caplog.set_level(logging.ERROR, logger="benchflow")
     trial = asyncio.run(
         review_runner.run_review(
@@ -391,13 +398,17 @@ def test_a_bad_value_exits_2(args, tmp_path, monkeypatch):
 
 
 def test_the_exit_code_docs_say_what_the_cli_does():
-    """M4: analysing-runs.md said an unknown agent exits 1."""
+    """M4: analysing-runs.md said an unknown agent exits 1. Docs v2:
+    analysing-runs.md is docs/evaluate/read-results.md, and the exit codes
+    are on docs/scale/ci.md (a bad value, such as an unknown agent, exits 2)."""
     docs = Path(__file__).resolve().parents[1] / "docs"
-    analysing = (docs / "results" / "analysing-runs.md").read_text(encoding="utf-8")
-    assert "a config error (an unknown agent" not in analysing
-    assert "an unknown agent, sandbox or dataset" in analysing
-    cli = (docs / "reference" / "cli.md").read_text(encoding="utf-8")
-    assert "`bench skills validate` exits 1 before checking anything" in cli
+    results = (docs / "evaluate" / "read-results.md").read_text(encoding="utf-8")
+    ci = (docs / "scale" / "ci.md").read_text(encoding="utf-8")
+    assert "a config error (an unknown agent" not in results + ci
+    assert (
+        "| 2 | the command was wrong: a bad flag or value, refused before "
+        "anything ran |" in ci
+    )
 
 
 # --- L1-L5 ------------------------------------------------------------------------

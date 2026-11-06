@@ -19,7 +19,7 @@ import shlex
 import time
 import types
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -97,7 +97,8 @@ from benchflow.sandbox._transport import (
     stage_folder,
     stage_proof,
 )
-from benchflow.sandbox.daytona_delete import delete_sandbox
+from benchflow.sandbox.daytona_build_keys import BUILD_SALTS, salted_params
+from benchflow.sandbox.daytona_delete import SandboxStillBuilding, delete_sandbox
 from benchflow.sandbox.daytona_dind import _DaytonaDinD
 from benchflow.sandbox.daytona_layers import (
     InstallLayer,
@@ -161,6 +162,7 @@ from benchflow.task.paths import RolloutPaths
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    from benchflow.sandbox.daytona_context_stage import _ContextStage
     from benchflow.sandbox.process import LiveProcess
 
 # ``SandboxStartupError`` used to live in this module. It now lives in
@@ -258,6 +260,10 @@ def _load_daytona_sdk() -> None:
     Resources = _daytona.Resources
     SessionExecuteRequest = _daytona.SessionExecuteRequest
     SnapshotState = _snapshot.SnapshotState
+
+    from benchflow.sandbox.daytona_context import patch_context_hashing
+
+    patch_context_hashing()
     # The SDK's PTY transport rides socket.io; engineio's write loop logs
     # "packet queue is empty, aborting" at ERROR on a benign disconnect race
     # every time a PTY closes normally (fresh-user dogfood 2026-08-09: two such
@@ -354,6 +360,10 @@ def _on_stdin(payload: bytes | None) -> dict[int, bytes] | None:
 # Files per SDK ``upload_files`` call where a sandbox has no tar to unpack
 # one archive: the SDK opens each batch's files at once.
 _UPLOAD_BATCH = 100
+# download_files: files per SDK ``download_files`` request, and requests in
+# flight. Each request streams its files to disk one after another.
+_DOWNLOAD_BATCH = 256
+_DOWNLOAD_CONCURRENCY = 4
 
 # Daytona's toolbox runs every exec (session commands, ``process.exec``, the
 # PTY) through a shell it starts with the sandbox's own environment, the
@@ -805,13 +815,18 @@ class _ExecCounts:
     which repeat about once a second for the whole agent run, and short probes
     (health checks, the credential stager's root shell). How many of those
     run depends on how long the agent runs and on how fast each poll returns,
-    so they are kept out of the first three."""
+    so they are kept out of the first three.
+
+    Both groups count every exec, whether it ran in a session or through the
+    command channel. Session execs are exec_calls + transient_exec_calls
+    - channel_exec_calls + channel_fallbacks."""
 
     exec_calls: int = 0
     # Status requests of the polls, retries included.
     status_requests: int = 0
-    # Wall time of each exec, from creating the session to the result, summed;
-    # execs that run at the same time are each counted in full.
+    # Wall time of each exec, from its start (creating the session, or
+    # handing the command to the channel) to the result, summed; execs that
+    # run at the same time are each counted in full.
     exec_seconds: float = 0.0
     transient_exec_calls: int = 0
     transient_status_requests: int = 0
@@ -820,9 +835,35 @@ class _ExecCounts:
     # are also in the counts above. One that came back without its result
     # polls like any other, and its status requests are counted above.
     sync_exec_calls: int = 0
+    # Helpers that became ready before their provider generation retired.
+    channel_starts: int = 0
+    # Control execs: kit reads, environment capture, verdicts and folder removal.
+    channel_setup_requests: int = 0
+    # PTY writes, including launch, frame chunks and control frames.
+    channel_send_requests: int = 0
+    # Commands attempted through a ready channel, before any fallback.
+    channel_exec_calls: int = 0
+    # Summed command time through result or provider release.
+    channel_exec_seconds: float = 0.0
+    # Proven-unstarted channel attempts returned to the session path.
+    channel_fallbacks: int = 0
+    # Commands still unsettled when their provider was released.
+    channel_exec_pending_at_release: int = 0
+    # Uploads of the protected Python helper source.
+    channel_upload_requests: int = 0
+    # Requests to create the helper's PTY.
+    channel_pty_create_requests: int = 0
+    # PTY kill requests, with or without a returned handle.
+    channel_kill_requests: int = 0
+    # Disconnect requests for owned PTY handles.
+    channel_disconnect_requests: int = 0
+    # Expired disconnect or owner-join bounds, not provider requests.
+    channel_cleanup_timeouts: int = 0
 
 
 class DaytonaSandbox(BaseSandbox):
+    _daytona_contexts: _ContextStage | None = None
+    exec_channel: ClassVar[bool] = True
     # a root agent here runs under the provider's own metadata
     # policy (the block's record says provider-managed).
     cloud_metadata_provider_managed = True
@@ -834,6 +875,12 @@ class DaytonaSandbox(BaseSandbox):
     # before it returned): Daytona may still create a sandbox this process has
     # no handle for. A class default so stop() can read it on any instance.
     _create_outcome_unknown = False
+    # Evidence for layer failure memory, separate from fallback eligibility.
+    _layer_build_failure_confirmed = False
+    _startup_create_succeeded = False
+    # Set while the sandbox comes from a salted recipe (_create_or_rebuild):
+    # why, and the salt. sandbox.json records it.
+    _daytona_rebuild: dict[str, Any] | None = None
     # harden_before_verify runs its preparation steps as one script in one
     # exec (lockdown._run_prep_script): every exec here is a polled round trip.
     verifier_prep_script: ClassVar[bool] = True
@@ -977,6 +1024,7 @@ class DaytonaSandbox(BaseSandbox):
         ``on_started`` callback still runs after ``start()`` returns as an
         idempotent fallback.
         """
+        self._publish_command_channels()
         if self.rollout_paths is None:
             return
         persist_sandbox_info(self, self.rollout_paths.rollout_dir)
@@ -1005,16 +1053,21 @@ class DaytonaSandbox(BaseSandbox):
         self._create_attempts += 1
 
         # Clean up any previous failed sandbox before retry
-        if self._sandbox is not None:
+        sandbox = self._sandbox
+        if sandbox is not None:
             try:
                 self.logger.warning("Cleaning up previous sandbox before retry")
-                await delete_sandbox(self._sandbox)
+                await delete_sandbox(sandbox)
             except BaseException as cleanup_err:
-                self._log_sandbox_left_behind(cleanup_err, when="before a retry")
+                self._log_sandbox_left_behind(
+                    cleanup_err, when="before a retry", sandbox=sandbox
+                )
                 if not isinstance(cleanup_err, Exception):
                     raise
                 raise self._startup_failure(cleanup_err) from cleanup_err
-            self._sandbox = None
+            self._release_command_channels(sandbox)
+            if self._sandbox is sandbox:
+                self._sandbox = None
 
         daytona = await self._client_manager.get_client()
         # A recipe with cached install layers also builds them (daytona_layers).
@@ -1024,12 +1077,16 @@ class DaytonaSandbox(BaseSandbox):
         hard_timeout = build_timeout + _STARTUP_HARD_TIMEOUT_BUFFER_SEC
         attempt_labels = _tag_create_attempt(params, hard_timeout)
 
-        create_task = asyncio.ensure_future(
-            daytona.create(
+        async def create():
+            sandbox = await daytona.create(
                 params=params,
                 timeout=build_timeout,
             )
-        )
+            # A deadline may send this handle to reconciliation instead.
+            self._startup_create_succeeded = True
+            return sandbox
+
+        create_task = asyncio.ensure_future(create())
         try:
             self._sandbox = await asyncio.wait_for(
                 asyncio.shield(create_task), timeout=hard_timeout
@@ -1155,6 +1212,69 @@ class DaytonaSandbox(BaseSandbox):
                 ) from exc
             raise
 
+    async def _create_or_rebuild(self, params: _SandboxParams) -> _SandboxParams:
+        """``_create_sandbox``, then the same image under a new build key when
+        a create of this recipe cannot start (``daytona_start.rebuild_reason``):
+        Daytona keeps its build as cancelled, or the runner holding its image
+        never starts it. Returns the params the sandbox came from.
+
+        Salts go 1 to ``BUILD_SALTS`` (``daytona_build_keys``), each a fixed
+        text, so a later run reuses the salted build. A salted create that
+        fails for good too moves on to the next salt; any other error is
+        raised as it is, and after the last salt the first error stands. The
+        rebuild starts only once the failed create's sandbox is confirmed
+        deleted: a cleanup that failed is a startup error, never rebuilt, and
+        no create starts while an earlier one's outcome is unknown.
+        """
+        try:
+            await self._create_sandbox(params=params)
+            return params
+        except Exception as exc:
+            reason = daytona_start.rebuild_reason(exc)
+            if (
+                reason is None
+                or self._create_outcome_unknown
+                or salted_params(params, 1) is None
+            ):
+                raise
+            first = exc
+        if reason == "cancelled":
+            why = (
+                "Daytona keeps this image's build as cancelled (a sandbox was "
+                "deleted while it built)"
+            )
+        else:
+            why = (
+                "the Daytona runner holding this image never started the "
+                "sandbox, and every create of the image goes to it"
+            )
+        self.logger.warning(
+            f"{why}: {_one_line_error(first)}. Building the same image again "
+            f"under a new build key (a Dockerfile comment, salts 1 to {BUILD_SALTS})"
+        )
+        for salt in range(1, BUILD_SALTS + 1):
+            salted = salted_params(params, salt)
+            self._daytona_rebuild = {"reason": reason, "salt": salt}
+            try:
+                await self._create_sandbox(params=salted)
+            except Exception as exc:
+                again = daytona_start.rebuild_reason(exc)
+                if again is None or self._create_outcome_unknown:
+                    self._daytona_rebuild = None
+                    raise
+                self.logger.warning(
+                    f"The create with Dockerfile salt {salt} failed the same "
+                    f"way ({again}): {_one_line_error(exc)}"
+                )
+                continue
+            self.logger.warning(
+                f"Sandbox {self.sandbox_id} started from the image rebuilt with "
+                f"Dockerfile salt {salt}; later runs reuse that build"
+            )
+            return salted
+        self._daytona_rebuild = None
+        raise first
+
     async def _toolbox_startup_env(self) -> dict[str, str]:
         _transport.sent("Daytona", _TOOLBOX_STARTUP_PROBE)
         # The probe only reads the environment, so a transient failure (a 5xx,
@@ -1221,11 +1341,11 @@ class DaytonaSandbox(BaseSandbox):
         environment before the first shell, never probe its original values.
         """
 
-        def hidden(values: dict[str, str]) -> _SandboxParams:
-            return params.model_copy(
+        def hidden(source: _SandboxParams, values: dict[str, str]) -> _SandboxParams:
+            return source.model_copy(
                 update={
                     "env_vars": {
-                        **(params.env_vars or {}),
+                        **(source.env_vars or {}),
                         **dict.fromkeys(SYSTEM_SHELL_EMPTY_VARS, ""),
                         # BASH_ENV's copy always (RESTORE_BASH_ENV reads it),
                         # every other name's when the image sets it.
@@ -1240,25 +1360,39 @@ class DaytonaSandbox(BaseSandbox):
             )
 
         self._toolbox_startup_receipt = None
+        self._startup_create_succeeded = False
+        self._daytona_rebuild = None
         try:
             if startup_env is None:
-                await self._create_sandbox(params=params)
+                # The recipe that started: a rebuilt image's salted one, so
+                # the second create reuses that build.
+                created = await self._create_or_rebuild(params)
                 values = await self._toolbox_startup_env()
                 if any(values.values()):
-                    await delete_sandbox(self._require_sandbox())
-                    self._sandbox = None
-                    await self._create_sandbox(params=hidden(values))
+                    sandbox = self._require_sandbox()
+                    await delete_sandbox(sandbox)
+                    self._release_command_channels(sandbox)
+                    if self._sandbox is sandbox:
+                        self._sandbox = None
+                    await self._create_or_rebuild(hidden(created, values))
                     if any((await self._toolbox_startup_env()).values()):
                         raise RuntimeError(
                             "Daytona did not clear toolbox startup inputs"
                         )
             else:
                 values = startup_env
-                await self._create_sandbox(params=hidden(values))
+                await self._create_or_rebuild(hidden(params, values))
                 if any((await self._toolbox_startup_env()).values()):
                     raise RuntimeError("Daytona did not clear toolbox startup inputs")
             self._toolbox_startup_receipt = dict(values)
         except BaseException as exc:
+            # A successful create already proved this recipe can build, even
+            # if a later read or recreation fails. Timeouts alone prove neither.
+            self._layer_build_failure_confirmed = (
+                not self._startup_create_succeeded
+                and self._sandbox is None
+                and daytona_start.is_build_failure(exc)
+            )
             # A refusal must not leave a usable handle or an untracked probe
             # sandbox. Keep the handle if deletion fails so stop() can retry.
             sandbox = self._sandbox
@@ -1276,7 +1410,9 @@ class DaytonaSandbox(BaseSandbox):
                         RuntimeError("Could not delete refused Daytona startup sandbox")
                     ) from None
                 else:
-                    self._sandbox = None
+                    self._release_command_channels(sandbox)
+                    if self._sandbox is sandbox:
+                        self._sandbox = None
             if isinstance(exc, StartupNamesRefused):
                 # The image's own setting: no content-snapshot or layer-build
                 # fallback would start it either.
@@ -1520,29 +1656,41 @@ class DaytonaSandbox(BaseSandbox):
             )
 
     def _log_sandbox_left_behind(
-        self, exc: BaseException, *, when: str = "at stop"
+        self,
+        exc: BaseException,
+        *,
+        when: str = "at stop",
+        sandbox: Any = None,
+        release_channels: bool = False,
     ) -> None:
         """The delete failed or was cancelled: the ledger retries it while
         the job lives and at its exit, and records it for `bench sandbox
         cleanup`. A cancelled delete may still go through; its 404 then
         closes the entry."""
+        sandbox = self._sandbox if sandbox is None else sandbox
+        sandbox_id = sandbox.id if sandbox is not None else None
         error = _one_line_error(exc) or type(exc).__name__
-        self.logger.error(
-            f"Could not delete Daytona sandbox {self.sandbox_id} {when}: "
-            f"{error}. It is retried until the job exits; one still left then "
-            "is recorded for `bench sandbox cleanup`."
-        )
-        sandbox_id = self.sandbox_id
+        if isinstance(exc, SandboxStillBuilding):
+            # Refused, not failed: the delete would cancel the build.
+            self.logger.warning(f"{when.capitalize()}: {exc}")
+        else:
+            self.logger.error(
+                f"Could not delete Daytona sandbox {sandbox_id} {when}: "
+                f"{error}. It is retried until the job exits; one still left "
+                "then is recorded for `bench sandbox cleanup`."
+            )
         if sandbox_id:
             LEDGER.open_sandbox(
                 None,
                 sandbox_id,
                 f"delete {when} failed: {error}",
                 managed=_benchflow_managed_value(),
-                handle=self._sandbox,
+                handle=sandbox,
                 holder=self,
             )
             LEDGER.ensure_sweeper()
+            if release_channels:
+                self._release_command_channels(sandbox)
 
     @retry(
         stop=_stop_retries_exhausted,
@@ -1550,11 +1698,12 @@ class DaytonaSandbox(BaseSandbox):
         retry=retry_if_exception(_is_daytona_delete_retry_error),
         reraise=True,
     )
-    async def _stop_sandbox(self) -> None:
-        if not self._sandbox:
+    async def _stop_sandbox(self, sandbox: Any) -> None:
+        self._retire_command_channels(sandbox)
+        if not sandbox:
             return
         try:
-            await delete_sandbox(self._sandbox)
+            await delete_sandbox(sandbox)
         except Exception as exc:
             if _daytona_status(exc) != 404 and type(exc).__name__ != (
                 "DaytonaNotFoundError"
@@ -1563,11 +1712,12 @@ class DaytonaSandbox(BaseSandbox):
             # Already gone: an earlier attempt's delete went through behind a
             # failed gateway response, or Daytona deleted it on its own.
             self.logger.debug(
-                f"Daytona sandbox {self._sandbox.id} is already deleted: "
+                f"Daytona sandbox {sandbox.id} is already deleted: "
                 f"{_one_line_error(exc)}"
             )
         # An earlier failed delete of it may be open in the ledger.
-        LEDGER.close_sandbox(self._sandbox.id)
+        LEDGER.close_sandbox(sandbox.id)
+        self._release_command_channels(sandbox)
 
     @stamp_transient_transport
     @_SDK_POLL_RETRY
@@ -1840,6 +1990,7 @@ class DaytonaSandbox(BaseSandbox):
                 route=route,
                 timeout_sec=timeout_sec,
                 cleanup_session=cleanup_session,
+                use_channel=True,
             )
         fitted = fit(session, inner, cat=cat)
         return await self._sandbox_session_exec(
@@ -1848,6 +1999,7 @@ class DaytonaSandbox(BaseSandbox):
             route=route,
             timeout_sec=timeout_sec,
             cleanup_session=cleanup_session,
+            use_channel=True,
         )
 
     @staticmethod
@@ -2001,6 +2153,7 @@ class DaytonaSandbox(BaseSandbox):
         route: ExecRoute,
         timeout_sec: int | None,
         cleanup_session: bool,
+        use_channel: bool = False,
     ) -> ExecResult:
         """Send the session command *command* (built by
         :meth:`_session_command`) and poll it to completion.
@@ -2070,6 +2223,31 @@ class DaytonaSandbox(BaseSandbox):
             else:
                 counts.exec_calls += 1
             started = time.monotonic()
+            if use_channel:
+                from benchflow.sandbox.daytona_channel import DaytonaChannels, eligible
+
+                if eligible(self, route):
+                    channels = getattr(self, "_command_channels", None)
+                    if channels is None:
+                        channels = self._command_channels = DaytonaChannels(self, route)
+                    try:
+                        result = await channels.run(
+                            command, route, timeout_sec, cleanup_session=cleanup_session
+                        )
+                    except BaseException:
+                        elapsed = time.monotonic() - started
+                        if cleanup_session:
+                            counts.transient_exec_seconds += elapsed
+                        else:
+                            counts.exec_seconds += elapsed
+                        raise
+                    if result is not None:
+                        elapsed = time.monotonic() - started
+                        if cleanup_session:
+                            counts.transient_exec_seconds += elapsed
+                        else:
+                            counts.exec_seconds += elapsed
+                        return result
             session_id = str(uuid4())
             await sandbox.process.create_session(session_id)
             transient_token = _IN_TRANSIENT_EXEC.set(cleanup_session)
@@ -2438,37 +2616,72 @@ class DaytonaSandbox(BaseSandbox):
                 )
 
         if file_downloads:
+            await self._download_requests(source_dir, file_downloads)
+
+    @stamp_transient_transport
+    @private_download(directory=True)
+    async def _sdk_download_files(
+        self, source_dir: str, target_dir: Path | str, names: tuple[str, ...]
+    ) -> None:
+        target_dir = Path(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        requests = [
+            FileDownloadRequest(
+                source=str(PurePosixPath(source_dir) / name),
+                destination=str(target_dir / name),
+            )
+            for name in names
+        ]
+        limit = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
+
+        async def fetch(batch: list[Any]) -> None:
+            async with limit:
+                await self._download_requests(source_dir, batch)
+
+        # The first batch that fails cancels the others; its error is the
+        # download's.
+        try:
+            async with asyncio.TaskGroup() as group:
+                for start in range(0, len(requests), _DOWNLOAD_BATCH):
+                    group.create_task(fetch(requests[start : start + _DOWNLOAD_BATCH]))
+        except ExceptionGroup as failure:
+            raise failure.exceptions[0] from None
+
+    async def _download_requests(self, source: str, file_downloads: list[Any]) -> None:
+        """One bulk SDK request for *file_downloads*; a file it did not return
+        whole is fetched again on its own (*source* names them in the log)."""
+        sandbox = self._require_sandbox()
+        for request in file_downloads:
+            Path(request.destination).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            responses = await sandbox.fs.download_files(files=file_downloads)
+            # The SDK returns per-file failures without raising. A
+            # complete request needs exactly one successful response
+            # and an actual destination file for each source.
+            by_source: dict[str, list[Any]] = {}
+            for response in responses or []:
+                by_source.setdefault(response.source, []).append(response)
+            failed = []
             for request in file_downloads:
-                Path(request.destination).parent.mkdir(parents=True, exist_ok=True)
-            try:
-                responses = await sandbox.fs.download_files(files=file_downloads)
-                # The SDK returns per-file failures without raising. A
-                # complete request needs exactly one successful response
-                # and an actual destination file for each source.
-                by_source: dict[str, list[Any]] = {}
-                for response in responses or []:
-                    by_source.setdefault(response.source, []).append(response)
-                failed = []
-                for request in file_downloads:
-                    matches = by_source.get(request.source, [])
-                    if (
-                        len(matches) != 1
-                        or matches[0].error is not None
-                        or matches[0].result != request.destination
-                        or not Path(request.destination).is_file()
-                    ):
-                        failed.append(request)
-            except Exception as batch_error:
-                self.logger.warning(
-                    "Daytona batch download_dir failed for %s (%d files); "
-                    "retrying files individually: %s",
-                    source_dir,
-                    len(file_downloads),
-                    batch_error,
-                )
-                failed = file_downloads
-            if failed:
-                await self._download_files_individually(failed)
+                matches = by_source.get(request.source, [])
+                if (
+                    len(matches) != 1
+                    or matches[0].error is not None
+                    or matches[0].result != request.destination
+                    or not Path(request.destination).is_file()
+                ):
+                    failed.append(request)
+        except Exception as batch_error:
+            self.logger.warning(
+                "Daytona batch download failed for %s (%d files); "
+                "retrying files individually: %s",
+                source,
+                len(file_downloads),
+                batch_error,
+            )
+            failed = file_downloads
+        if failed:
+            await self._download_files_individually(failed)
 
     async def _download_files_individually(self, file_downloads: list[Any]) -> None:
         sandbox = self._require_sandbox()
@@ -2522,14 +2735,16 @@ class DaytonaSandbox(BaseSandbox):
         install_agent: bool = True,
         sandbox_setup_timeout: int = 120,
         only_if_reused: bool = False,
+        guard_daemon: bool = False,
+        stage_python: bool = False,
     ) -> None:
-        """Plan the trial's proxy and agent installs; call before :meth:`start`.
+        """Plan the trial's cached installs; call before :meth:`start`.
 
         The direct strategy builds them into the image recipe as cached layers
         unless ``fresh_install`` (with ``only_if_reused``, only as
         ``daytona_layers.claim_layer_build`` decides), and asks for disk to
         hold them either way (#1169). Compose tasks keep installing in the
-        sandbox.
+        sandbox. Guard packages do not require planned reuse.
         """
         if getattr(self, "_compose_mode", False):
             return
@@ -2544,6 +2759,8 @@ class DaytonaSandbox(BaseSandbox):
             install_agent=install_agent,
             sandbox_setup_timeout=sandbox_setup_timeout,
             only_if_reused=only_if_reused,
+            guard_daemon=guard_daemon and self.sandbox_daemon_guard == "container",
+            stage_python=stage_python,
         )
 
     def cached_install_layer(
@@ -2554,10 +2771,10 @@ class DaytonaSandbox(BaseSandbox):
         key = getattr(self, "_install_layer_keys", {}).get(f"{kind}-{name}")
         if plan is None or key is None:
             return None
-        layer = plan.proxy if kind == "proxy" else plan.agent
-        if layer is None or layer.name != name:
-            return None
-        return layer, key
+        for layer in (plan.guard, plan.proxy, plan.agent, plan.python):
+            if layer is not None and (layer.kind, layer.name) == (kind, name):
+                return layer, key
+        return None
 
     def note_install_layer(self, kind: str, name: str, outcome: str) -> None:
         """Record in sandbox.json whether the trial used a cached layer."""
@@ -2580,7 +2797,32 @@ class DaytonaSandbox(BaseSandbox):
         else:
             self._runtime_kit_fresh()
             trust_state.begin_fresh(self)
-        return await self._strategy.start(force_build)
+        self._retire_command_channels()
+        try:
+            from benchflow.sandbox.daytona_context_stage import staged_contexts
+            from benchflow.task.env import TaskEnvNotAllowedError
+            from benchflow.task.staging import StagingRefused
+
+            try:
+                with staged_contexts(getattr(self, "_daytona_contexts", None)):
+                    return await self._strategy.start(force_build)
+            except Exception as exc:
+                # The SDK and startup code wrap failures from context uploads.
+                cause: BaseException | None = exc
+                seen: set[int] = set()
+                while cause is not None and id(cause) not in seen:
+                    if isinstance(cause, StagingRefused):
+                        raise TaskEnvNotAllowedError(
+                            {self.environment_name: cause.refused}
+                        ) from None
+                    seen.add(id(cause))
+                    cause = cause.__cause__
+                raise
+        finally:
+            try:
+                await self._join_released_command_channels()
+            finally:
+                self._queue_command_channel_cleanup()
 
     async def metadata_main_restarts(self) -> str:
         """Why the cloud metadata block cannot hold ``main`` because it could
@@ -2612,19 +2854,103 @@ class DaytonaSandbox(BaseSandbox):
         return await super().identity_exec(command, service=service, **kwargs)
 
     async def stop(self, delete: bool) -> None:
+        sandbox = getattr(self, "_sandbox", None)
         self._forget_kept_identity()
         # The sandbox is going away: its lease stops being renewed.
         self._stop_lease_renewal()
+        self._retire_command_channels()
         # Written after the strategy stops, so the execs of stopping (a
         # compose task's ``compose down``) are counted too.
         try:
             return await self._strategy.stop(delete)
         finally:
+            if sandbox is not None:
+                self._release_command_channels(sandbox)
             try:
                 # Every create attempt is accounted for before stop returns.
                 await self._drain_create_attempts()
             finally:
+                try:
+                    await self._join_released_command_channels()
+                finally:
+                    self._write_exec_counts()
+                    self._queue_command_channel_cleanup()
+
+    def _publish_command_channels(self) -> None:
+        provider = getattr(self, "_sandbox", None)
+        if provider is getattr(self, "_command_channel_provider", None):
+            return
+        self._retire_command_channels()
+        self._command_channel_provider = provider
+        self._command_channels_closing = False
+
+    def _retire_command_channels(self, provider: Any = None) -> None:
+        if provider is None or provider is getattr(self, "_sandbox", None):
+            self._command_channels_closing = True
+        channels = getattr(self, "_command_channels", None)
+        if channels is not None and (provider is None or channels.provider is provider):
+            channels.retire()
+            self._command_channels = None
+            retired = getattr(self, "_retired_command_channels", None)
+            if retired is None:
+                retired = self._retired_command_channels = []
+            retired.append(channels)
+
+    def _queue_command_channel_cleanup(self) -> None:
+        for channels in getattr(self, "_retired_command_channels", ()):
+            if channels.cleanup_task is None or channels.cleanup_task.done():
+                channels.cleanup_task = asyncio.create_task(
+                    self._cleanup_command_channels(channels)
+                )
+
+    def _release_command_channels(self, provider: Any) -> None:
+        self._retire_command_channels(provider)
+        retired = getattr(self, "_retired_command_channels", [])
+        owned = [channels for channels in retired if channels.provider is provider]
+        retired[:] = [
+            channels for channels in retired if channels.provider is not provider
+        ]
+        for channels in owned:
+            channels.finalize()
+        released = getattr(self, "_released_command_channels", None)
+        if released is None:
+            released = self._released_command_channels = []
+        released.extend(owned)
+
+    async def _join_released_command_channels(self) -> None:
+        released = getattr(self, "_released_command_channels", [])
+        cancelled = None
+        for channels in list(released):
+            try:
+                await channels.join()
+            except asyncio.CancelledError as exc:
+                if cancelled is None:
+                    cancelled = exc
+            if channels in released:
+                released.remove(channels)
+        if cancelled is not None:
+            raise cancelled
+
+    async def _cleanup_command_channels(self, channels: Any) -> None:
+        try:
+            await channels.close()
+        except Exception as exc:
+            self.logger.debug("Could not close retired Daytona channel: %s", exc)
+        else:
+            if channels in self._retired_command_channels:
+                self._retired_command_channels.remove(channels)
+        finally:
+            if not channels.finalized:
                 self._write_exec_counts()
+
+    async def _close_command_channels(self) -> None:
+        # Surviving providers keep cleanup ownership until it settles.
+        await self._join_released_command_channels()
+        self._retire_command_channels()
+        self._queue_command_channel_cleanup()
+        for channels in list(getattr(self, "_retired_command_channels", ())):
+            if channels.cleanup_task is not None:
+                await asyncio.shield(channels.cleanup_task)
 
     def _exec_counts(self) -> _ExecCounts:
         # Made on first use: tests build sandboxes with __new__, without
@@ -2645,7 +2971,7 @@ class DaytonaSandbox(BaseSandbox):
         if counts is None or paths is None:
             return
         record = asdict(counts)
-        for field in ("exec_seconds", "transient_exec_seconds"):
+        for field in ("exec_seconds", "transient_exec_seconds", "channel_exec_seconds"):
             record[field] = round(record[field], 3)
         try:
             (paths.rollout_dir / EXEC_COUNTS_FILE).write_text(
@@ -2769,6 +3095,36 @@ class DaytonaSandbox(BaseSandbox):
             source_dir, target_dir, service=service
         )
 
+    @property
+    def can_download_files(self) -> bool:
+        """Whether :meth:`download_files` runs here: a started single-container
+        sandbox on an SDK with bulk download. A compose task's files sit in a
+        service container on the DinD VM, out of the SDK's reach."""
+        fs = getattr(getattr(self, "_sandbox", None), "fs", None)
+        return isinstance(getattr(self, "_strategy", None), _DaytonaDirect) and (
+            callable(getattr(fs, "download_files", None))
+        )
+
+    async def download_files(
+        self, source_dir: str, names: Sequence[str], target_dir: Path | str
+    ) -> None:
+        """Download the regular files *names* (paths relative to *source_dir*)
+        to the same paths below *target_dir*, which they replace: SDK bulk
+        requests of :data:`_DOWNLOAD_BATCH` files, :data:`_DOWNLOAD_CONCURRENCY`
+        at a time, each streamed to disk. Nothing is written in the sandbox.
+        Only where :attr:`can_download_files`."""
+        from benchflow._utils.archive_paths import ArchivePaths
+
+        if not self.can_download_files:
+            raise NotImplementedError(
+                "download_files needs a started single-container Daytona sandbox"
+            )
+        # The SDK writes each file at its name below the staging folder.
+        inventory = ArchivePaths()
+        for name in names:
+            inventory.add(name, directory=False)
+        await self._sdk_download_files(source_dir, target_dir, tuple(names))
+
     async def is_dir(
         self, path: str, user: str | int | None = None, service: str = "main"
     ) -> bool:
@@ -2794,18 +3150,25 @@ class DaytonaSandbox(BaseSandbox):
         )
 
     async def live_process(self, *, agent: str | None = None) -> LiveProcess:
-        """Pick the Daytona ACP transport (PTY by default, SSH for gemini).
+        """Pick the Daytona ACP transport (PTY by default, SSH for gemini and
+        for a review's own rollout: ``acp.selection``).
 
         Selection lives here rather than at the ACP layer so the choice and the
         provenance string reported by ``selected_acp_transport`` stay derived
         from the same helper.
         """
-        from benchflow.acp.selection import selected_acp_transport
+        from benchflow.acp.selection import in_review_rollout, selected_acp_transport
         from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess
+        from benchflow.sandbox.process.daytona import PTY_SESSION_ENV
 
         transport = selected_acp_transport(agent=agent or "", environment="daytona")
         if transport == "ssh":
             logger.info("Using SSH transport for %s on Daytona", agent)
+            if in_review_rollout():
+                # A reviewer's agent sees what it would under the PTY.
+                return await DaytonaProcess.from_sandbox_env(
+                    self, terminal_env=PTY_SESSION_ENV
+                )
             return await DaytonaProcess.from_sandbox_env(self)
         logger.info("Using PTY transport for Daytona sandbox")
         return await DaytonaPtyProcess.from_sandbox_env(self)
@@ -2854,9 +3217,16 @@ class DaytonaSandbox(BaseSandbox):
         from benchflow.trust import state as trust_state
 
         trust_state.restore_from(self, image)
-        restored = await self._strategy.restore(image)
-        _path_inspector_state.restored(self, path_inspector)
-        return restored
+        self._retire_command_channels()
+        try:
+            restored = await self._strategy.restore(image)
+            _path_inspector_state.restored(self, path_inspector)
+            return restored
+        finally:
+            try:
+                await self._join_released_command_channels()
+            finally:
+                self._queue_command_channel_cleanup()
 
     async def adopt_snapshot(self, image: SandboxImage) -> None:
         """Associate the live credential files with ``image`` for restores."""

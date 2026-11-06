@@ -525,7 +525,7 @@ async def test_kept_services_never_see_the_verifier_env_on_a_command_line(tmp_pa
     # K2-R6-A-1: never under /tmp, whose folders anyone may rename when its
     # sticky bit is gone; under a parent only root can enter, set up and
     # checked first.
-    assert folder.startswith("/var/lib/benchflow/verifier-env/.benchflow-verifier-env-")
+    assert folder.startswith("/var/lib/runtime/verifier-env/.runtime-verifier-env-")
     cmds = [c for c, _, _ in calls]
     made = [c for c in cmds if f"mkdir {folder}" in c]
     assert made == [f"umask 077 && mkdir {folder}"], made
@@ -567,7 +567,7 @@ async def test_the_verifier_env_never_goes_into_a_folder_that_already_exists(
 
     async def exec_(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("command", "")
-        if "mkdir" in cmd and ".benchflow-verifier-env-" in cmd:
+        if "mkdir" in cmd and ".runtime-verifier-env-" in cmd:
             folder = cmd.split()[-1]
             made.append(folder)
             if not planted:

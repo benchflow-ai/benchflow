@@ -117,7 +117,7 @@ def test_full_runtime_build_seal_and_tamper_refusal(shell_box):
         shell_box[0],
         "/bin/sh",
         "-c",
-        "echo tampered >> /opt/benchflow/rt/RECORD",
+        "echo tampered >> /opt/runtime/rt/RECORD",
     )
     assert tamper.returncode == 0, tamper.stderr
     refused = run_receipt(shell_box, kit_prepare_command("seal"))

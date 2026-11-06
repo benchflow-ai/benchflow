@@ -46,7 +46,7 @@ async def test_symlink_workspace_root_is_frozen_without_following_nested_links(
             commands = []
 
             async def execute(command, **kwargs):
-                if "-exec chown -h root:root" in command:
+                if "chown -h root:root" in command:
                     commands.append(command)
                 return ExecResult(stdout="", stderr="", return_code=0)
 

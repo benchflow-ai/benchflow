@@ -26,6 +26,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.daytona import _DaytonaDinD
 from benchflow.sandbox.docker import DockerSandbox
@@ -462,6 +464,103 @@ async def test_a_wedged_kill_falls_through_to_the_force_kill(tmp_path):
     sandbox._force_kill_project.assert_awaited_once()
 
 
+async def test_a_hung_docker_call_in_the_force_kill_is_killed_and_named(
+    tmp_path, monkeypatch, caplog
+):
+    """A busy daemon: the force-kill's docker ps outlives its timeout. The call
+    is killed and reaped inside the loop (one left running prints "Event loop
+    is closed" once the loop ends), and the warning names the step."""
+    import asyncio
+    import sys
+
+    import benchflow.sandbox.docker as docker_module
+
+    sandbox, _daemon = _docker_sandbox(tmp_path)
+    real_exec = asyncio.create_subprocess_exec
+    spawned: list[asyncio.subprocess.Process] = []
+
+    async def hangs(*_argv, **_kwargs):
+        proc = await real_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(docker_module, "_FORCE_KILL_CALL_TIMEOUT_SEC", 0.2)
+    monkeypatch.setattr(docker_module.asyncio, "create_subprocess_exec", hangs)
+    with caplog.at_level(logging.WARNING):
+        await sandbox._force_kill_project()
+
+    assert len(spawned) == 1
+    assert spawned[0].returncode is not None
+    assert "docker ps gave no answer within 0.2 s" in caplog.text
+
+
+async def test_a_listing_that_times_out_names_the_images_it_leaves(
+    tmp_path, monkeypatch, caplog
+):
+    """str(TimeoutError()) is empty: the warning said '... built failed: '."""
+    import asyncio
+
+    import benchflow.sandbox.docker as docker_module
+
+    sandbox, _daemon = _docker_sandbox(tmp_path)
+    project = sandbox.compose_project_name
+    listing = asyncio.ensure_future(asyncio.sleep(3600))
+    original = asyncio.wait_for
+
+    async def short_wait(awaitable, timeout):
+        return await original(awaitable, timeout=0.05)
+
+    monkeypatch.setattr(docker_module.asyncio, "wait_for", short_wait)
+    with caplog.at_level(logging.WARNING):
+        await sandbox._remove_built_images(listing)
+    assert (
+        f"Listing the images {project} built gave no answer within 30 s" in caplog.text
+    )
+    assert f"label=com.docker.compose.project={project}" in caplog.text
+
+
+async def test_a_docker_cli_call_cancelled_by_its_caller_is_reaped(
+    tmp_path, monkeypatch
+):
+    """Teardown's image listing waits 30 s for docker image ls; on a busy daemon
+    the wait ran out and the cancelled call's process was left running, so
+    asyncio printed "Event loop is closed" when the job ended."""
+    import asyncio
+    import sys
+
+    import benchflow.sandbox.docker as docker_module
+
+    sandbox, _daemon = _docker_sandbox(tmp_path)
+    real_exec = asyncio.create_subprocess_exec
+    spawned: list[asyncio.subprocess.Process] = []
+
+    async def hangs(*_argv, **_kwargs):
+        proc = await real_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(docker_module.asyncio, "create_subprocess_exec", hangs)
+    with pytest.raises(TimeoutError):
+        # The class's own method: the sandbox fixture fakes the instance's.
+        await asyncio.wait_for(
+            DockerSandbox._docker_cli(sandbox, ["image", "ls"]), timeout=0.2
+        )
+    assert len(spawned) == 1
+    assert spawned[0].returncode is not None
+
+
 # --- one teardown for every compose backend ------------------------------------
 
 
@@ -518,7 +617,7 @@ async def test_daytona_dind_tears_down_with_the_same_commands():
         session_id="dind-project",
     )
     strategy._env = env
-    strategy._compose_file_flags = lambda: ["-f", "/benchflow/compose/a.yaml"]
+    strategy._compose_file_flags = lambda: ["-f", "/runtime/compose/a.yaml"]
     strategy._compose_env_vars = lambda: {}
     commands: list[str] = []
 

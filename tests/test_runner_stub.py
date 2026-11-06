@@ -67,7 +67,7 @@ async def test_a_target_service_also_gets_a_runner_stub(monkeypatch, tmp_path):
         monkeypatch, tmp_path, "#!/bin/sh\n/opt/grade\n", service="target"
     )
     assert env["BENCHFLOW_PYTEST"].endswith("/benchflow-pytest")
-    assert "_benchflow_guard_" not in env["PYTEST_ADDOPTS"]
+    assert "_runtime_guard_" not in env["PYTEST_ADDOPTS"]
     install.assert_not_awaited()
     assert any(
         "benchflow-pytest" in str(call.args) and call.kwargs.get("service") == "target"

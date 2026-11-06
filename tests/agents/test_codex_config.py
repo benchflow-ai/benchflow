@@ -15,7 +15,7 @@ from benchflow.agents.codex_config import apply_codex_launch_config
 def test_launch_config_rejects_missing_invalid_or_mismatched_model(raw_config):
     """Guards PR #1076: only exact valid Codex config owns model selection."""
     agent_env = {
-        "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
+        "BENCHFLOW_PROVIDER_MODEL": "runtime-openai-gpt-5.4-mini",
         "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
     }
     if raw_config is not None:
@@ -32,9 +32,9 @@ def test_launch_config_rejects_missing_invalid_or_mismatched_model(raw_config):
 def test_launch_config_applies_effort_to_exact_model():
     """Guards PR #1076: launch-owned model carries requested effort."""
     agent_env = {
-        "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
+        "BENCHFLOW_PROVIDER_MODEL": "runtime-openai-gpt-5.4-mini",
         "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
-        "CODEX_CONFIG": '{"model":"benchflow-openai-gpt-5.4-mini"}',
+        "CODEX_CONFIG": '{"model":"runtime-openai-gpt-5.4-mini"}',
     }
 
     updated_env, owns_model = apply_codex_launch_config(
@@ -50,9 +50,9 @@ def test_launch_config_applies_effort_to_exact_model():
 def test_launch_config_rejects_alias_for_a_different_requested_model():
     """Guards PR #1076: stale proxy aliases cannot claim requested-model ownership."""
     agent_env = {
-        "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
+        "BENCHFLOW_PROVIDER_MODEL": "runtime-openai-gpt-5.4-mini",
         "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
-        "CODEX_CONFIG": '{"model":"benchflow-openai-gpt-5.4-mini"}',
+        "CODEX_CONFIG": '{"model":"runtime-openai-gpt-5.4-mini"}',
     }
 
     updated_env, owns_model = apply_codex_launch_config(
@@ -90,7 +90,19 @@ def test_web_policy_overrides_search_without_clobbering_provider_config(policy):
     result, owns_model = apply_codex_launch_config(
         "codex-acp", env, model="custom/opaque-model", reasoning_effort=None
     )
-    assert json.loads(result["CODEX_CONFIG"]) == {**config, "web_search": "disabled"}
+    # #38: under no-web the rest of Codex's own network use is off too.
+    assert json.loads(result["CODEX_CONFIG"]) == {
+        **config,
+        "web_search": "disabled",
+        "features": {
+            "enable_request_compression": False,
+            "image_generation": False,
+            "plugins": False,
+        },
+        "analytics": {"enabled": False},
+        "feedback": {"enabled": False},
+        "check_for_update_on_startup": False,
+    }
     assert json.loads(env["CODEX_CONFIG"])["web_search"] == "live"
     assert not owns_model
 

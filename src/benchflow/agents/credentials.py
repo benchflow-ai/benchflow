@@ -158,7 +158,7 @@ async def upload_credential(
     upload, ownership transfer and cleanup a parent the agent cannot replace.
     """
     parent_steps = _credential_parent_steps(path)
-    stage = f"/.benchflow-credential-{uuid4().hex}"
+    stage = f"/.runtime-credential-{uuid4().hex}"
     prepare = (
         "case $(stat -c '%u:%a' /) in 0:755|0:555|0:711|0:700) ;; *) exit 1;; esac; "
         f"umask 077; mkdir -m 700 {stage}"

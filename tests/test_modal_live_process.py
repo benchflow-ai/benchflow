@@ -225,12 +225,12 @@ async def test_no_env_means_no_env_line():
 @pytest.mark.asyncio
 async def test_launch_uses_the_routes_bash_and_path():
     """On the protected kit, root's shell and PATH are the kit's (C8)."""
-    kit_path = "/opt/benchflow/kit/bin:" + SYSTEM_PATH
+    kit_path = "/opt/runtime/kit/bin:" + SYSTEM_PATH
     route = ExecRoute(
         pin=kit_path,
         task_root=False,
         system_shell=True,
-        bash="/opt/benchflow/kit/bin/bash",
+        bash="/opt/runtime/kit/bin/bash",
         tools=kit_path,
         kit=True,
     )
@@ -247,7 +247,7 @@ async def test_launch_uses_the_routes_bash_and_path():
     lp = ModalProcess.from_sandbox_env(bf_env)
     await lp.start("agent")
     args = bf_env._sandbox.calls[0][0]
-    assert args[0] == "/opt/benchflow/kit/bin/bash"
+    assert args[0] == "/opt/runtime/kit/bin/bash"
     assert f"PATH={kit_path}" in args[5]
 
 

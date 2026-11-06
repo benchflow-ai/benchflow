@@ -238,39 +238,66 @@ def task_digest(task_dir: Path) -> str | None:
     None when it cannot be the digest of a listed task: the folder has a
     ``.gitignore`` of its own (none of the list's tasks has one, and BenchFlow
     does not read gitignore patterns), its published files are over 64 MiB,
-    or a file cannot be read.
+    or a file cannot be read. The listing stops where the files pass 64 MiB,
+    so such a folder is neither read nor walked to the end.
     """
     if not task_dir.is_dir() or (task_dir / ".gitignore").exists():
         return None
-    files: list[tuple[bytes, Path]] = []
-    for single in _PUBLISHED_FILES:
-        path = task_dir / single
-        if path.is_file():
-            files.append((single.encode(), path))
-    for folder in _PUBLISHED_DIRS:
-        top = task_dir / folder
-        if not top.is_dir():
-            continue
-        for dirpath, _dirnames, filenames in os.walk(top):
-            for filename in filenames:
-                path = Path(dirpath) / filename
-                if path.is_file():
-                    rel = path.relative_to(task_dir).as_posix()
-                    files.append((os.fsencode(rel), path))
-    files = [
-        (rel, path) for rel, path in files if not _ignored_by_default(os.fsdecode(rel))
-    ]
+    files = _published_files(task_dir)
+    if files is None:
+        return None
+    outer = hashlib.sha256()
     try:
-        if sum(path.stat().st_size for _rel, path in files) > _DIGEST_MAX_BYTES:
-            return None
-        outer = hashlib.sha256()
         for rel, path in sorted(files):
             outer.update(rel + b"\0")
-            outer.update(hashlib.sha256(path.read_bytes()).hexdigest().encode())
+            with path.open("rb") as f:
+                outer.update(hashlib.file_digest(f, "sha256").hexdigest().encode())
             outer.update(b"\n")
     except OSError:
         return None
     return f"sha256:{outer.hexdigest()}"
+
+
+def _published_files(task_dir: Path) -> list[tuple[bytes, Path]] | None:
+    """The published files :func:`task_digest` hashes, as (path bytes, path),
+    or None once their sizes add up to more than :data:`_DIGEST_MAX_BYTES`
+    or one cannot be measured.
+
+    The relative paths are cut from the walk's own strings (one
+    ``Path.relative_to`` per file took most of the time on a large folder).
+    """
+    files: list[tuple[bytes, Path]] = []
+    total = 0
+
+    def fits(rel: str, path: Path) -> bool:
+        nonlocal total
+        if _ignored_by_default(rel):
+            return True
+        try:
+            total += path.stat().st_size
+        except OSError:
+            return False
+        files.append((os.fsencode(rel), path))
+        return total <= _DIGEST_MAX_BYTES
+
+    for single in _PUBLISHED_FILES:
+        path = task_dir / single
+        if path.is_file() and not fits(single, path):
+            return None
+    for folder in _PUBLISHED_DIRS:
+        top = task_dir / folder
+        if not top.is_dir():
+            continue
+        start = len(str(top))
+        for dirpath, _dirnames, filenames in os.walk(top):
+            # The folder below ``top`` that os.walk joined onto its string.
+            below = dirpath[start:].lstrip("/")
+            prefix = f"{folder}/{below}/" if below else f"{folder}/"
+            for filename in filenames:
+                path = Path(dirpath, filename)
+                if path.is_file() and not fits(prefix + filename, path):
+                    return None
+    return files
 
 
 def _is_split_layout(task_dir: Path) -> bool:
@@ -303,8 +330,8 @@ def run_identity(task: Any, agent: str | None, sandbox_user: str | None) -> str 
     """The account a run's agent processes run as, for service retention.
 
     The oracle's solve.sh runs as the task's ``[agent].user`` when that is a
-    string (su reads it as an account name, digits included), else as the
-    image's default user, ``""`` here (``_run_oracle``);
+    string (su reads it as an account name, digits included), else as root,
+    ``""`` here (``_run_oracle``), whatever the image's USER;
     ``--sandbox-user`` is not used by it (DT2-R9-2). Every other agent runs as
     ``sandbox_user`` (None: root, nothing is killed or kept).
     """
@@ -321,7 +348,7 @@ async def prepare_identities(
     """Resolve service policy before any agent runs, never from its spelling.
 
     With ``inherit`` (the oracle) ``sandbox_user`` is the account solve.sh runs
-    as, an empty one the image's default user (:func:`run_identity`). Each
+    as, an empty one root (:func:`run_identity`). Each
     account is the one its own launcher selects, measured in the sandbox
     before any agent code (DT2-R11-1): the oracle's through the same su that
     runs solve.sh; the verifier's by ``docker exec -u``'s rule on Docker,
@@ -355,9 +382,14 @@ async def prepare_identities(
             oracle_command(sandbox_user, ID_PROBE),
             key=("oracle", sandbox_user),
             what="[agent] user",
+            # su from root, as the oracle runs it, whatever the image's USER.
+            user="root",
         )
     else:
-        agent = resolve(table, sandbox_user)
+        # An oracle with no account of its own runs as root (_run_oracle), not
+        # as the image's USER: setup gives the workspace and /logs/agent to
+        # the sandbox user, so an image user such as nobody could use neither.
+        agent = resolve(table, "0" if inherit else sandbox_user)
         if not inherit and agent.uid == 0 and sandbox_user != "root":
             # The kill before grading refuses UID 0, and check counts every
             # sandbox user but root as non-root: refuse it here, first.

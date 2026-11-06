@@ -74,15 +74,15 @@ class TestRegistryEntry:
             assert sha in cfg.install_cmd
             assert f"version={cfgmod.MUSE_VERSION}" in url
         assert "sha256sum -c" in cfg.install_cmd
-        assert "/opt/benchflow/muse/muse --version" in cfg.install_cmd
+        assert "/opt/runtime/muse/muse --version" in cfg.install_cmd
         assert cfg.install_cmd.index(
-            "/opt/benchflow/muse/muse --version"
+            "/opt/runtime/muse/muse --version"
         ) < cfg.install_cmd.index("muse-acp-shim")
         assert "npm install" not in cfg.install_cmd
         assert "bf_shim_python=/usr/bin/python3" in cfg.launch_cmd
         assert "bf_shim_python=/usr/local/bin/python3" in cfg.launch_cmd
         assert (
-            'exec "$bf_shim_python" -I -S /opt/benchflow/bin/muse-acp-shim'
+            'exec "$bf_shim_python" -I -S /opt/runtime/bin/muse-acp-shim'
             in cfg.launch_cmd
         )
 
@@ -93,7 +93,7 @@ class TestRegistryEntry:
         fake.write_text(f"#!/bin/sh\necho 'Muse Code 1.4.7 ({cfgmod.MUSE_VERSION})'\n")
         fake.chmod(0o755)
         cmd = cfgmod.muse_install_cmd("exit 99").replace(
-            "/opt/benchflow/muse", str(fake.parent)
+            "/opt/runtime/muse", str(fake.parent)
         )
         result = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
@@ -821,7 +821,7 @@ def _muse_rollout(tmp_path):
     trial._env = MagicMock()
     trial._env.exec = AsyncMock(return_value=ExecResult(0, "", ""))
     trial._rollout_dir = tmp_path
-    trial._agent_launch = "/opt/benchflow/bin/muse-acp-shim"
+    trial._agent_launch = "/opt/runtime/bin/muse-acp-shim"
     trial._agent_env = {"MUSE_AUTH_JSON": "{}"}
     trial._timeout = 1800
     trial._phase = "installed"
@@ -853,7 +853,7 @@ async def test_a_role_hands_the_shim_its_own_prompt_budget(tmp_path):
 
     trial = _muse_rollout(tmp_path)
     trial._agent_cfg = AGENTS["muse-code"]
-    trial._planes.agent_launch.return_value = "/opt/benchflow/bin/muse-acp-shim"
+    trial._planes.agent_launch.return_value = "/opt/runtime/bin/muse-acp-shim"
     trial._planes.resolve_agent_env.side_effect = lambda _agent, _model, env: {
         "MUSE_AUTH_JSON": "{}",
         **(env or {}),

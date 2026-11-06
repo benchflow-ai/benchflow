@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from benchflow._utils.reachable_write import StagedTar, destination
+from benchflow._utils.scoring import NO_USABLE_REWARD
 from tests.test_verifier_own_failures import _assess, _task
 
 
@@ -74,8 +75,10 @@ async def test_canonical_recovery_never_accepts_a_higher_partial_reward(
     elif failure == "absent":
         assert rewards == {"reward": 1.0} and error is None and not warnings
     else:
-        assert rewards == {"reward": 0.0} and error is None
-        assert any(companion in warning for warning in warnings)
+        # An unsafe or unreadable companion is no usable reward: the verifier's
+        # error, never a higher partial reward.
+        assert rewards is None and error.startswith(NO_USABLE_REWARD)
+        assert companion in error
 
 
 class _Files:
@@ -159,11 +162,13 @@ async def test_daytona_capture_preserves_unsafe_or_absent_companions(
     saved = json.loads(
         json.dumps({"rewards": rewards, "verifier_error": error, "warnings": warnings})
     )
-    assert saved["rewards"] == {"reward": 0.0 if directory else 1.0}
-    assert saved["verifier_error"] is None
     if directory:
-        assert any("reward.json" in warning for warning in warnings)
+        assert saved["rewards"] is None
+        assert saved["verifier_error"].startswith(NO_USABLE_REWARD)
+        assert "reward.json" in saved["verifier_error"]
     else:
+        assert saved["rewards"] == {"reward": 1.0}
+        assert saved["verifier_error"] is None
         assert not warnings
     if not recovery:
         assert fs.batch_calls == 1

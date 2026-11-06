@@ -150,11 +150,18 @@ def _load_fake_llm_module():
 
 
 @contextmanager
-def host_fake_llm(log_path: Path | None = None) -> Iterator[str]:
-    """Run the fake provider on the host; yield its base URL."""
+def host_fake_llm(
+    log_path: Path | None = None, wire_log_path: Path | None = None
+) -> Iterator[str]:
+    """Run the fake provider on the host; yield its base URL.
+
+    ``wire_log_path`` keeps every request body as the provider received it,
+    after the proxy.
+    """
     fake = _load_fake_llm_module()
     fake._Handler.scripts = json.loads((FAKE_LLM_DIR / "scripts.json").read_text())
     fake._Handler.log_path = log_path
+    fake._Handler.wire_log_path = wire_log_path
     server = ThreadingHTTPServer(("127.0.0.1", 0), fake._Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -344,7 +351,10 @@ def route_env(route: str, sandbox: str, host_fake_url: str | None) -> dict[str, 
 
 
 def check_route_is_hermetic(
-    route: str, agent_env: dict[str, str], agent: str | None = None
+    route: str,
+    agent_env: dict[str, str],
+    agent: str | None = None,
+    model: str | None = None,
 ) -> None:
     """Refuse a route that would upload host credentials or skip the fake.
 
@@ -354,7 +364,7 @@ def check_route_is_hermetic(
     """
     from benchflow.agents.env import resolve_agent_env, uses_native_subscription_auth
 
-    model = route_model(route)
+    model = model or route_model(route)
     agent = agent or route_agent(route)
     resolved = resolve_agent_env(agent, model, dict(agent_env))
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in resolved, (
@@ -388,10 +398,12 @@ def bench_command(
     route: str = "proxy",
     extra: Sequence[str] = (),
     agent: str | None = None,
+    model: str | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """The ``bench`` argv and process env for one scripted run (checked hermetic).
 
-    ``agent`` replaces the route's agent (a plugin agent on the same route).
+    ``agent`` replaces the route's agent (a plugin agent on the same route),
+    ``model`` the route's model.
     """
     agent_env = route_env(route, sandbox, host_fake_url)
     args = [
@@ -402,7 +414,7 @@ def bench_command(
         "--agent",
         agent or route_agent(route),
         "--model",
-        route_model(route),
+        model or route_model(route),
         "--sandbox",
         sandbox,
         "--jobs-dir",
@@ -431,7 +443,7 @@ def bench_command(
     env["BENCHFLOW_LITELLM_WIRE_LOG_DIR"] = str(wire_dir(jobs_dir))
     saved = {k: os.environ.pop(k) for k in list(os.environ) if k not in env}
     try:
-        check_route_is_hermetic(route, agent_env, agent)
+        check_route_is_hermetic(route, agent_env, agent, model)
     finally:
         os.environ.update(saved)
     jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -450,6 +462,7 @@ def run_bench(
     timeout_sec: float = 1500,
     agent: str | None = None,
     env_extra: dict[str, str] | None = None,
+    model: str | None = None,
 ) -> CliRun:
     args, env = bench_command(
         subcommand,
@@ -460,6 +473,7 @@ def run_bench(
         route=route,
         extra=extra,
         agent=agent,
+        model=model,
     )
     env.update(env_extra or {})
     started = time.monotonic()

@@ -76,8 +76,9 @@ class TestPruneScopedToLabel:
             docker_eval._prune_docker()
 
         # Three listings (stopped containers, running containers since
-        # DF-p3-eval-runner-9, networks; run at once); nothing to remove.
-        assert mock_run.call_count == 3
+        # DF-p3-eval-runner-9, networks; run at once), and the kept
+        # sandboxes' marks on the daemon; nothing to remove.
+        assert mock_run.call_count == 4
         container_cmds = [
             c.args[0] for c in mock_run.call_args_list if c.args[0][1] == "ps"
         ]
@@ -105,10 +106,15 @@ class TestPruneScopedToLabel:
         with patch(self.SWEEP_RUN, side_effect=self._empty) as mock_run:
             docker_eval._prune_docker()
 
+        kept_marks = [
+            "docker", "volume", "ls", "--filter", "label=benchflow.kept",
+            "--format", '{{.Label "benchflow.kept"}}',
+        ]  # fmt: skip
         for call in mock_run.call_args_list:
             cmd = call.args[0]
             assert "prune" not in cmd, f"Daemon-wide Docker prune: {cmd}"
-            assert f"label={BENCHFLOW_OWNED_LABEL}" in cmd, (
+            # The kept marks are BenchFlow's own volumes, listed by their label.
+            assert f"label={BENCHFLOW_OWNED_LABEL}" in cmd or cmd == kept_marks, (
                 f"Unscoped Docker listing would consider unrelated resources: {cmd}"
             )
 

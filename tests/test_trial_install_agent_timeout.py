@@ -8,7 +8,13 @@ import pytest
 
 from benchflow.agents.install import effective_install_timeout, install_agent
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS
-from benchflow.rollout import Rollout, RolloutConfig, _write_config
+from benchflow.rollout import (
+    Role,
+    Rollout,
+    RolloutConfig,
+    Scene,
+    _write_config,
+)
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_WITH_SKILL,
@@ -244,6 +250,76 @@ async def test_install_agent_leaves_web_policy_to_the_connection(tmp_path, monke
 
     # Neither credentials (C23) nor the web-tool setup (C30) run at install.
     assert order == ["sandbox"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scene_roles", "skip_agent_install", "expected_agents"),
+    [
+        ([[("solver", "codex-acp")]], False, ["codex-acp"]),
+        ([[("solver", "claude-agent-acp")]], True, ["claude-agent-acp"]),
+        (
+            [[("coder", "codex-acp")], [("reviewer", "claude-agent-acp")]],
+            False,
+            ["codex-acp", "claude-agent-acp"],
+        ),
+        (
+            [[("reference", "oracle"), ("solver", "codex-acp")]],
+            False,
+            ["oracle", "codex-acp"],
+        ),
+    ],
+    ids=["one-agent", "skip-install", "two-scenes", "scripted-primary"],
+)
+async def test_install_agent_scopes_sandbox_home_to_rollout_agents(
+    tmp_path, monkeypatch, scene_roles, skip_agent_install, expected_agents
+):
+    """Guards the fix from PR #1163 against copying every agent's home dirs
+    into one sandbox. The sandbox user's home is prepared once, before later
+    roles connect, so the scope covers the agent of every role in every scene,
+    on the agent and the scripted-primary paths, and does not depend on the
+    installer having run."""
+    trial = _make_trial(tmp_path, agent="openhands", sandbox_setup_timeout=41)
+    trial._config = RolloutConfig(
+        task_path=tmp_path / "task",
+        scenes=[
+            Scene(roles=[Role(name=name, agent=agent) for name, agent in roles])
+            for roles in scene_roles
+        ],
+        sandbox_user="agent",
+        skip_agent_install=skip_agent_install,
+        codex_apps_policy="inherit",
+    )
+    setup = AsyncMock(return_value="/home/agent")
+    for plane in (
+        "install_agent",
+        "write_credential_files",
+        "upload_subscription_auth",
+        "apply_web_tool_policy",
+        "snapshot_build_config",
+        "seed_verifier_workspace",
+        "deploy_skills",
+        "lockdown_paths",
+    ):
+        monkeypatch.setattr(trial._planes, plane, AsyncMock())
+    monkeypatch.setattr(trial._planes, "setup_sandbox_user", setup)
+
+    await trial.install_agent()
+
+    setup.assert_awaited_once()
+    assert setup.await_args.kwargs["agents"] == expected_agents
+
+
+def test_role_agents_name_an_agent_given_with_arguments_by_its_first_word(tmp_path):
+    """Guards the port of PR #1163: an agent spec with arguments installs as
+    the registered agent its first word names, so its home dirs must follow."""
+    from benchflow.rollout import _role_agents
+
+    cfg = RolloutConfig(
+        task_path=tmp_path / "task",
+        scenes=[Scene(roles=[Role(name="solver", agent="codex-acp --profile x")])],
+    )
+    assert _role_agents(cfg) == ["codex-acp"]
 
 
 def _write_config_for(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> dict:

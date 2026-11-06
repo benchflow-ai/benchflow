@@ -264,7 +264,7 @@ def emit_integrity(evidence: TrialEvidence) -> dict[str, Any]:
         # What the agent user could reach (the root probes): decides vectors.
         "access": access.as_dict(),
         # What the agent's commands may have touched, read from their text.
-        # Notes only: never a flag, a gap or blame (docs/integrity.md).
+        # Notes only: never a flag, a gap or blame (docs/tasks/reward-hacking.md#audit-how-each-reward-was-earned).
         "annotations": annotations,
         "reward": _scalar_reward(evidence.rewards),
         # BenchFlow never changes a reward because of this verdict.

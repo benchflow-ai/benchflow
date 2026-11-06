@@ -27,8 +27,8 @@ def test_large_layer_preserves_installer_bytes(tmp_path, monkeypatch):
     script = "# unicode café ' $ \\\n" * 20000 + "printf installed"
     line = layer_run_line(InstallLayer("agent", "test", script), "key")
     assert max(len(part.encode()) for part in line.splitlines()) < 65535
-    assert line.index("chmod 700 /opt/benchflow/daytona-proxy") > line.index(
-        "chmod -R a+rX /opt/benchflow"
+    assert line.index("chmod 700 /opt/runtime/daytona-proxy") > line.index(
+        "chmod -R a+rX /opt/runtime"
     )
     # Run the Dockerfile's actual decoder, before it invokes the installer.
     commands = line.splitlines()
@@ -49,7 +49,7 @@ def test_later_agent_layer_keeps_proxy_private(tmp_path):
     root.mkdir(mode=0o700)
     line = layer_run_line(InstallLayer("agent", "test", "true"), "key")
     command = "chmod -R" + line.split("chmod -R", 1)[1]
-    command = command.replace("/opt/benchflow", shlex.quote(str(tmp_path)))
+    command = command.replace("/opt/runtime", shlex.quote(str(tmp_path)))
     subprocess.run(["sh", "-c", command], check=True)
     assert root.stat().st_mode & 0o777 == 0o700
 
@@ -61,10 +61,10 @@ def test_large_layer_builds_and_matches_fresh_install_in_docker(tmp_path):
     """DFR-p3-3: a real builder and two containers produce identical files."""
     payload = ("installed café ' $ \\\n" * 15000).encode()
     script = (
-        "mkdir -p /opt/benchflow/daytona-proxy\n"
-        "chmod 700 /opt/benchflow/daytona-proxy\nprintf '%s' "
+        "mkdir -p /opt/runtime/daytona-proxy\n"
+        "chmod 700 /opt/runtime/daytona-proxy\nprintf '%s' "
         + shlex.quote(payload.decode())
-        + " > /opt/benchflow/payload\n"
+        + " > /opt/runtime/payload\n"
     )
     layer = InstallLayer("agent", "dfx", script)
     tag = "dfx-scale-layer-" + uuid.uuid4().hex[:12]
@@ -87,13 +87,13 @@ def test_large_layer_builds_and_matches_fresh_install_in_docker(tmp_path):
                 tag + "-cached",
                 tag,
                 "cat",
-                "/opt/benchflow/payload",
+                "/opt/runtime/payload",
             ],
             timeout=30,
         )
         fresh = subprocess.check_output(
             ["docker", "run", "--rm", "-i", "--name", tag + "-fresh", base, "bash"],
-            input=(script + "cat /opt/benchflow/payload").encode(),
+            input=(script + "cat /opt/runtime/payload").encode(),
             timeout=30,
         )
         assert cached == fresh == payload
@@ -109,7 +109,7 @@ def test_large_layer_builds_and_matches_fresh_install_in_docker(tmp_path):
                     "stat",
                     "-c",
                     "%a",
-                    "/opt/benchflow/daytona-proxy",
+                    "/opt/runtime/daytona-proxy",
                 ],
                 timeout=30,
             ).strip()

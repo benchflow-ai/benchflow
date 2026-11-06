@@ -393,3 +393,52 @@ def test_source_env_refuses_ci_gates_it_cannot_apply(tmp_path, monkeypatch, flag
     assert f"{flags[0]} is not supported with --source-env" in result.output
     assert ran == []
     assert not (tmp_path / "summary.json").exists()
+
+
+@pytest.mark.parametrize(
+    "flags,expected", [([], None), (["--source-env-temperature", "0.2"], 0.2)]
+)
+def test_source_env_cli_sends_a_temperature_only_when_asked(
+    tmp_path, monkeypatch, flags, expected
+):
+    """Stale-audit hosted temperature fix on top of PR #57:
+    the dataclass default was None, but the CLI option still passed 0.0, and
+    Anthropic's 2026-10-21 API version rejects temperature."""
+    seen: dict[str, object] = {}
+
+    def fake_run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
+        seen["config"] = config
+        return HostedEnvRunResult(
+            source_env=config.source_env,
+            run_dir=tmp_path / "run",
+            command=["vf-eval"],
+            returncode=0,
+            stdout="",
+            stderr="",
+            model=config.model,
+            normalized_model=normalize_verifiers_model(config.model),
+            reward=1.0,
+            total_tool_calls=0,
+        )
+
+    monkeypatch.setattr("benchflow.hosted_env.run_hosted_env", fake_run_hosted_env)
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--source-env",
+            "primeintellect/general-agent",
+            "--source-env-version",
+            "0.1.1",
+            "--model",
+            "claude-opus-5-5",
+            "--jobs-dir",
+            str(tmp_path),
+            *flags,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    config = seen["config"]
+    assert isinstance(config, HostedEnvRunConfig)
+    assert config.temperature == expected

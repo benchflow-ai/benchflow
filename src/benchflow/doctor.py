@@ -8,7 +8,7 @@ Daytona SDK); everything else is a warning, including a machine with no agent
 credential at all (the oracle and nop controls still run).
 
 The Claude subscription check is the one model request doctor makes: one
-8-token ``claude-haiku-4-5-20251001`` request with the login's OAuth token,
+8-token ``claude-haiku-5-5`` request with the login's OAuth token,
 whose ``anthropic-ratelimit-unified-*`` headers give the 5-hour and 7-day
 windows' use and resets (``--offline`` skips it).
 
@@ -56,7 +56,10 @@ PROBE_TIMEOUT_SEC = 5.0
 # Below this Docker's data root runs out while building task images.
 MIN_DOCKER_FREE_BYTES = 10 * GIB
 HEADROOM_TIMEOUT_SEC = 20.0
-HEADROOM_MODEL = "claude-haiku-4-5-20251001"
+# The current Haiku. Haiku 4.5 is a legacy model (Anthropic's models page,
+# read 2026-11-04); a 2026-11-04 request with a subscription login answered 200
+# with the unified usage headers.
+HEADROOM_MODEL = "claude-haiku-5-5"
 ANTHROPIC_API = "https://api.anthropic.com"
 # Where a Daytona sandbox installs the LiteLLM model proxy from.
 PYPI_ENDPOINT = "https://pypi.org/simple/"
@@ -386,18 +389,29 @@ _SECRET_NAME_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|AUTH_JSON|CREDENTIAL)"
 _NOT_SECRET_NAMES = frozenset({"BENCHFLOW_KEY_CHECK"})
 
 
+# Fields of the agents' login files that name a mode, a plan or a time, not a
+# credential. Masking them hid words everywhere: a Codex login with
+# "auth_mode": "apikey" turned doctor's own Google AI Studio link into
+# https://aistudio.google.com/***.
+_NOT_SECRET_JSON_KEYS = frozenset(
+    {"auth_mode", "last_refresh", "scopes", "subscriptionType", "rateLimitTier"}
+)
+
+
 def _json_string_leaves(raw: str) -> list[str]:
     try:
-        stack: list[Any] = [json.loads(raw)]
+        stack: list[tuple[str | None, Any]] = [(None, json.loads(raw))]
     except json.JSONDecodeError:
         return []
     leaves: list[str] = []
     while stack:
-        node = stack.pop()
+        key, node = stack.pop()
+        if key in _NOT_SECRET_JSON_KEYS:
+            continue
         if isinstance(node, dict):
-            stack.extend(node.values())
+            stack.extend((str(k), v) for k, v in node.items())
         elif isinstance(node, list):
-            stack.extend(node)
+            stack.extend((key, item) for item in node)
         elif isinstance(node, str) and node:
             leaves.append(node)
     return leaves
@@ -667,9 +681,9 @@ def check_bfx() -> Check:
 RUST_BENCH_MARKER = b"ai.benchflow.owner"
 # A Rust binary is tens of MiB; stop looking for the marker after this much.
 _MARKER_SCAN_LIMIT = 256 * 1024**2
-INSTALL_GUIDE_URL = (
-    "https://github.com/benchflow-ai/benchflow/blob/main/docs/install.md"
-)
+# The published install page, not a file path in the repo: the site keeps
+# old page paths working with redirects.
+INSTALL_GUIDE_URL = "https://www.benchflow.ai/docs/benchflow/getting-started/install"
 _ENTRY_NAMES = ("bench", "benchflow")
 
 BenchKind = Literal["python", "rust", "other"]
@@ -1155,7 +1169,12 @@ def check_docker_leftovers(probes: DoctorProbes) -> list[Check]:
     Containers of a live run, of another host, or without the label are not
     counted. No row when nothing is left or the listing fails.
     """
-    from benchflow.sandbox._docker_sweep import OWNED_LABEL, OWNED_VALUE, owner_state
+    from benchflow.sandbox._docker_sweep import (
+        OWNED_LABEL,
+        OWNED_VALUE,
+        kept_projects,
+        owner_state,
+    )
 
     listing = probes.run(
         [
@@ -1173,12 +1192,15 @@ def check_docker_leftovers(probes: DoctorProbes) -> list[Check]:
     if listing.returncode != 0:
         return []
     left: list[tuple[str, str, str]] = []
+    # Kept with --keep-sandbox: outlives its run on purpose, and `bench
+    # sandbox release` deletes it.
+    kept = kept_projects()
     for line in listing.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) != 4 or not parts[0].strip():
             continue
         cid, token, project, state = (p.strip() for p in parts)
-        if owner_state(token) == "gone":
+        if project not in kept and owner_state(token) == "gone":
             left.append((cid[:12], project, state))
     if not left:
         return []
@@ -1483,8 +1505,10 @@ def _codex_auth_json_source(
             name, "auth-json", origin, usable=False, note="not a JSON object"
         )
     if raw.get("OPENAI_API_KEY"):
+        # Codex signs in with this key, not a ChatGPT login: an API key, whose
+        # endpoint is the API's.
         return CredentialSource(
-            name, "auth-json", origin, note="API key stored in file"
+            name, "api-key", origin, note="API key stored in file; sign-in not tested"
         )
     tokens = raw.get("tokens")
     if not isinstance(tokens, dict) or not tokens.get("refresh_token"):
@@ -1677,10 +1701,13 @@ def provider_key_sources(probes: DoctorProbes) -> list[CredentialSource]:
         key = cfg.auth_env
         if not key or key in _NOT_PROVIDER_KEYS or probes.get(key) is None:
             continue
+        # A parameter with a default (DeepSeek's base URL) is never missing:
+        # the run uses the default when the variable is unset.
         missing = [
             var
-            for var in cfg.url_params.values()
-            if probes.get(var) is None
+            for param, var in cfg.url_params.items()
+            if not cfg.url_param_defaults.get(param)
+            and probes.get(var) is None
             and probes.get(_URL_PARAM_ALTERNATIVES.get(var, var)) is None
         ]
         by_key.setdefault(key, []).append((provider_name, missing))
@@ -1984,7 +2011,8 @@ def check_provider_keys(sources: list[CredentialSource], now: datetime) -> Check
     fix = "" if status == "pass" else "Set the missing base-URL variables listed above"
     summary = (
         "; ".join(_describe_source(s, now) for s in sources)
-        + " (use with openhands/opencode/pi-acp and a provider-prefixed --model)"
+        + ": set, not tested against the provider (use with openhands, opencode or "
+        "pi-acp and a provider-prefixed --model)"
     )
     return row(status, summary, fix, details)
 

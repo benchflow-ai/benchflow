@@ -425,11 +425,11 @@ class TestCrossContainerHardeningPolicy:
         await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
 
         injected = task.config.verifier.env
-        assert "_benchflow_guard_" not in injected["PYTEST_ADDOPTS"]
-        assert "_benchflow_guard_" not in injected["PYTHONPATH"]
+        assert "_runtime_guard_" not in injected["PYTEST_ADDOPTS"]
+        assert "_runtime_guard_" not in injected["PYTHONPATH"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
         stub = injected["BENCHFLOW_PYTEST"]
-        guard_commands = [c for c in commands if "_benchflow_guard_" in c]
+        guard_commands = [c for c in commands if "_runtime_guard_" in c]
         assert len(guard_commands) == 1
         assert stub in guard_commands[0]
         assert "no protected test runner was prepared" in guard_commands[0]

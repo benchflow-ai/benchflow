@@ -16,7 +16,7 @@ from tests.test_litellm_hardening import _FakeSandbox
 @pytest.mark.asyncio
 async def test_proxy_launch_uses_only_private_import_directory(pythonpath, monkeypatch):
     async def layer(*args, **kwargs):
-        return "/opt/benchflow/litellm/bin/python", None
+        return "/opt/runtime/litellm/bin/python", None
 
     monkeypatch.setattr(runtime, "_proxy_from_layer", layer)
     sandbox = _FakeSandbox()
@@ -74,7 +74,7 @@ async def test_launcher_cannot_import_an_agent_workspace_module(tmp_path, monkey
     # Drive production launch configuration rather than constructing the fixed
     # environment in the test itself.
     async def layer(*args, **kwargs):
-        return "/opt/benchflow/litellm/bin/python", None
+        return "/opt/runtime/litellm/bin/python", None
 
     monkeypatch.setattr(runtime, "_proxy_from_layer", layer)
     sandbox = _FakeSandbox()
@@ -137,7 +137,7 @@ async def test_launcher_cannot_import_an_agent_workspace_module(tmp_path, monkey
 @pytest.mark.asyncio
 async def test_proxy_never_restores_agent_startup_controls(name, monkeypatch):
     async def layer(*args, **kwargs):
-        return "/opt/benchflow/litellm/bin/python", None
+        return "/opt/runtime/litellm/bin/python", None
 
     monkeypatch.setattr(runtime, "_proxy_from_layer", layer)
     sandbox = _FakeSandbox()

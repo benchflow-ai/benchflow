@@ -298,7 +298,9 @@ _HEADERS = frozenset(
 # Responses input is a second protocol envelope, not arbitrary message data:
 # some items load tools. Admit only inspected forms under web restrictions so
 # a new input item cannot silently acquire provider-hosted capabilities.
-_ITEM_FIELDS = {"id", "type", "status"}
+# Codex (0.159 on) labels every input item with its own provenance metadata,
+# admitted only as plain values (_plain_tree).
+_ITEM_FIELDS = {"id", "type", "status", "internal_chat_message_metadata_passthrough"}
 _RESPONSE_INPUT_FIELDS = {
     "message": {"role", "content", "phase"},
     "function_call": {"name", "namespace", "call_id", "arguments"},
@@ -313,6 +315,8 @@ _RESPONSE_INPUT_FIELDS = {
     "additional_tools": {"role", "tools"},
     "tool_search_call": {"call_id", "execution", "arguments"},
     "tool_search_output": {"call_id", "execution", "tools"},
+    # Codex's mid-thread reasoning settings (effort, summary).
+    "configuration_update": {"reasoning"},
 }
 _RESPONSE_CONTENT_FIELDS = {
     "input_text": {"text"},
@@ -576,6 +580,26 @@ def _local_gemini_content(body):
     )
 
 
+# Keys that name something a provider could fetch or expand.
+_REFERENCE_KEYS = frozenset(
+    {"url", "image_url", "file_url", "file_id", "source", "uri", "href"}
+)
+
+
+def _plain_tree(value):
+    """Strings, numbers, booleans and nulls nested in lists and objects, with no
+    key that names a reference (bookkeeping, never content to expand)."""
+    if value is None or isinstance(value, str | int | float | bool):
+        return True
+    if isinstance(value, list):
+        return all(_plain_tree(v) for v in value)
+    if isinstance(value, dict):
+        return all(
+            k not in _REFERENCE_KEYS and _plain_tree(v) for k, v in value.items()
+        )
+    return False
+
+
 def _local_response_input(body):
     if not _text_fields_are_data(body, {"instructions"}):
         return False
@@ -598,6 +622,12 @@ def _local_response_input(body):
         if not isinstance(kind, str) or kind not in _RESPONSE_INPUT_FIELDS:
             return False
         if not item.keys() <= (_RESPONSE_INPUT_FIELDS[kind] | _ITEM_FIELDS):
+            return False
+        # Codex's bookkeeping carries only plain values: no part, tool or
+        # reference the provider would expand.
+        if not _plain_tree(item.get("internal_chat_message_metadata_passthrough")):
+            return False
+        if kind == "configuration_update" and not _plain_tree(item.get("reasoning")):
             return False
         if not _text_fields_are_data(
             item,
@@ -1007,6 +1037,9 @@ ANTHROPIC_CLIENT_CALLERS = frozenset(
 # model identity (model_identity), never on a spelling: "model" entries
 # match the base model, "provider" entries the provider or a vendor path
 # segment. Each entry: (kind, pattern, why, examples the tests refuse).
+# Refresh: `python -m tools.hosted_retrieval_scan` lists the search-like
+# models in LiteLLM's current price table that no entry refuses; run it when
+# LiteLLM is bumped and before a no-web campaign (last run 2026-11-04).
 HOSTED_RETRIEVAL_MODELS = (
     (
         "model",
@@ -1038,6 +1071,30 @@ HOSTED_RETRIEVAL_MODELS = (
             "empiriolabs/perplexity-deep-research",
             "empiriolabs/perplexity-advanced-deep-research",
         ),
+    ),
+    (
+        # Resellers' deep research models (LiteLLM main, 2026-11-04).
+        "model",
+        r".+-deep-research(?:-.+)?",
+        "Deep research models browse the web themselves",
+        (
+            "empiriolabs/perplexity-deep-research",
+            "empiriolabs/perplexity-advanced-deep-research",
+        ),
+    ),
+    (
+        "model",
+        r"perplexity-.+",
+        "Perplexity's models answer from live web search",
+        ("empiriolabs/perplexity-pro-search",),
+    ),
+    (
+        # A search variant of another model, e.g. a reseller's Gemini with
+        # Google Search grounding always on (LiteLLM main, 2026-11-04).
+        "model",
+        r".+-search",
+        "A model sold as a search variant searches the web before it answers",
+        ("aihubmix/gemini-3-flash-preview-search",),
     ),
     (
         "provider",
@@ -1570,6 +1627,63 @@ _OUT_CHECKS = {
     "gemini": lambda body, path: _gemini_refusal(body, _OUT_GEMINI),
     "gemini_cache": lambda body, path: _gemini_refusal(body, _OUT_GEMINI_CACHE),
 }
+
+
+def restricted_responses_refusal(body, content):
+    """Why a Responses API request may not reach a provider without web tools, or None.
+
+    The gateway's two boundaries in one call, for a client that talks to its
+    provider directly (native Codex on a ChatGPT login, through the egress
+    proxy's model-only gate): the client boundary's fields, client-executed
+    tools and self-contained input, then the outbound check of the bytes that
+    leave. ``body`` is ``content`` parsed.
+    """
+    if not isinstance(body, dict):
+        return "request body is not an object"
+    extra = sorted(body.keys() - _RESPONSES)
+    if extra:
+        return "unsupported request field(s) " + ", ".join(extra)
+    if not _local_tools(body, native=False, messages=False):
+        return "a tool is not client-executed"
+    if not _local_response_input(body):
+        return "input is not self-contained" + _input_refusal_detail(body)
+    return outbound_refusal("POST", "/responses", content)
+
+
+def _input_refusal_detail(body):
+    """Which input item the self-contained check refuses, by its index, type and
+    field names (never a value), found with that same check item by item."""
+    if not _local_response_input({**body, "input": []}):
+        return " (instructions, or a reference to remote state)"
+    items = body.get("input")
+    if not isinstance(items, list):
+        return ""
+    for i, item in enumerate(items):
+        if _local_response_input({**body, "input": [item]}):
+            continue
+        if not isinstance(item, dict):
+            return f" (item {i}: not an object)"
+        entry = dict(item)
+        parts = []
+        for field in ("content", "summary", "output"):
+            if field not in entry:
+                continue
+            value = entry[field]
+            if isinstance(value, list):
+                kinds = ",".join(
+                    f"{dict(p).get('type')}[{'/'.join(sorted(map(str, p)))}]"
+                    if isinstance(p, dict)
+                    else type(p).__name__
+                    for p in value
+                )
+                parts.append(f"{field}={kinds}")
+            elif not isinstance(value, str):
+                parts.append(f"{field}={type(value).__name__}")
+        fields = ",".join(sorted(map(str, entry)))
+        return f" (item {i}: {entry.get('type')}; fields {fields}" + (
+            "; " + "; ".join(parts) + ")" if parts else ")"
+        )
+    return ""
 
 
 def outbound_refusal(method, path, content):

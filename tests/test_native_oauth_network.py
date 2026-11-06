@@ -38,16 +38,16 @@ VERSIONS = {
     "acp": "0.81.2",
     "acp_sdk": "0.3.280",
     "sdk": "0.3.280",
-    "cli": "2.1.280",
-    "native": "2.1.280 (Claude Code)",
+    "cli": "2.1.316",
+    "native": "2.1.316 (Claude Code)",
     "launcher": CLAUDE_AGENT_ACP_LAUNCHER,
 }
 # The launcher before the CLI pin: the adapter ran its SDK's bundled binary.
 BUNDLED_CLI_LAUNCHER = (
     "#!/bin/sh\n"
-    'exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/claude-agent-acp "$@"\n'
+    'exec /opt/runtime/node/bin/node /opt/runtime/js-agents/bin/claude-agent-acp "$@"\n'
 )
-LAUNCHER = "/opt/benchflow/bin/claude-agent-acp"
+LAUNCHER = "/opt/runtime/bin/claude-agent-acp"
 TOKEN_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": "fake-oauth"}
 
 
@@ -116,9 +116,14 @@ def test_policy_selection_preserves_api_key_and_open_native_paths():
             {**TOKEN_ENV, "ANTHROPIC_BASE_URL": "https://other.example"},
             no_web=True,
         )
+    # Codex on a ChatGPT login now has its own model-only transport
+    # (tests/test_native_codex_network.py); other native logins are refused.
+    assert native_oauth_egress_policy(
+        "codex-acp", "gpt-5", {"CODEX_AUTH_JSON": "{}"}, no_web=True
+    ).native_codex_model_only
     with pytest.raises(ValueError, match="only"):
         native_oauth_egress_policy(
-            "codex-acp", "gpt-5", {"CODEX_AUTH_JSON": "{}"}, no_web=True
+            "muse-code", "muse-spark", {"MUSE_AUTH_JSON": "{}"}, no_web=True
         )
 
 
@@ -130,7 +135,7 @@ async def test_actual_uid_is_checked_even_for_nonroot_name(uid):
     )
     with pytest.raises(ValueError, match="nonzero"):
         await validate_native_oauth_transport(
-            env, "agent-alias", "/opt/benchflow/bin/claude-agent-acp"
+            env, "agent-alias", "/opt/runtime/bin/claude-agent-acp"
         )
     assert env.exec.await_count == 1
 
@@ -153,7 +158,7 @@ async def test_native_client_gate_admits_the_registry_pins():
     assert admission["versions"] == {
         "acp": "0.81.2",
         "sdk": "0.3.280",
-        "native": "2.1.280 (Claude Code)",
+        "native": "2.1.316 (Claude Code)",
     }
 
 
@@ -237,7 +242,7 @@ def _native_cli_env(found, *, uid="1500\n", status=0):
     return SimpleNamespace(exec=execute, commands=commands)
 
 
-NATIVE_CLI = {"cli": "2.1.280", "native": "2.1.280 (Claude Code)", "inside": True}
+NATIVE_CLI = {"cli": "2.1.316", "native": "2.1.316 (Claude Code)", "inside": True}
 
 
 @pytest.mark.asyncio
@@ -248,7 +253,7 @@ async def test_native_harness_admission_checks_the_cli_itself():
         env, "agent", "ignored", harness="native"
     )
     assert admission["harness"] == "native"
-    assert admission["versions"] == {"native": "2.1.280 (Claude Code)"}
+    assert admission["versions"] == {"native": "2.1.316 (Claude Code)"}
     assert admission["sandbox_uid"] == 1500
     check = env.commands[-1]
     # The check refuses routing overrides and an API key in the CLI's env.
@@ -303,7 +308,7 @@ def make_rollout(tmp_path):
     r._rollout_dir = tmp_path
     r._rollout_name = "run"
     r._agent_env = dict(TOKEN_ENV)
-    r._agent_launch = "/opt/benchflow/bin/claude-agent-acp"
+    r._agent_launch = "/opt/runtime/bin/claude-agent-acp"
     r._disallow_web_tools = True
     r._reapply_ask_user_handler = lambda: None
     r._attach_trajectory_writer = lambda _: None
@@ -316,7 +321,7 @@ def make_rollout(tmp_path):
         if command.startswith("id -u"):
             calls.append("uid")
             return ExecResult(stdout="1500\n", return_code=0)
-        if "/opt/benchflow/node/bin/node -e " in command:
+        if "/opt/runtime/node/bin/node -e " in command:
             calls.append("version")
             return ExecResult(stdout=json.dumps(VERSIONS), return_code=0)
         calls.append("firewall")
@@ -396,7 +401,7 @@ async def test_failed_firewall_never_publishes_admission_and_remains_cleanup_eli
     real_exec = r._env.exec
 
     async def failing_exec(command, **kwargs):
-        if command.startswith("id -u") or "/opt/benchflow/node/bin/node -e " in command:
+        if command.startswith("id -u") or "/opt/runtime/node/bin/node -e " in command:
             return await real_exec(command, **kwargs)
         return ExecResult(stdout="", return_code=1)
 

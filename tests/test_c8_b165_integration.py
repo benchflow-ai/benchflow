@@ -12,7 +12,7 @@ import pytest
 from benchflow.sandbox._base import ExecResult
 from tests._firewall_tools import audit_image_tools  # noqa: F401
 
-KIT = "/opt/benchflow/rt"
+KIT = "/opt/runtime/rt"
 
 
 def route():

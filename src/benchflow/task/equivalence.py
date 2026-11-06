@@ -215,7 +215,10 @@ def task_instruction(task_dir: Path) -> str:
 
 def verifier_sources(task_dir: Path) -> dict[str, str]:
     """Python files of the task's verifier, keyed by task-relative path."""
-    root = TaskPaths(task_dir).tests_dir
+    paths = TaskPaths(task_dir)
+    # TaskPaths resolves the task folder, so a relative task_dir (bench check
+    # tasks/x) is compared as the absolute path its files are found under.
+    root = paths.tests_dir
     out: dict[str, str] = {}
     if not root.is_dir():
         return out
@@ -223,7 +226,7 @@ def verifier_sources(task_dir: Path) -> dict[str, str]:
         if "__pycache__" in path.parts or not path.is_file():
             continue
         try:
-            out[path.relative_to(task_dir).as_posix()] = path.read_text(
+            out[path.relative_to(paths.task_dir).as_posix()] = path.read_text(
                 errors="replace"
             )
         except OSError:
@@ -582,6 +585,15 @@ async def check_equivalence_async(
             await _start_env_and_upload(env, task_dir, {}, upload_solution=True)
             workspace = await _resolve_agent_cwd(env, task)
             await planes.prepare_log_dirs(env, sandbox_user=None)
+            # As a trial does before the agent's turn: seed the verifier's copy
+            # of the workspace, then build the protected runtime the verifier's
+            # plugins load from, while nothing but BenchFlow has run. Without
+            # it every graded variant stops with "protected verifier runtime
+            # was not built before the agent's turn".
+            await planes.seed_verifier_workspace(
+                env, workspace=workspace, sandbox_user=None
+            )
+            await planes.prepare_verifier_runtime(env, task=task, sandbox_user=None)
             await exec_raw(
                 env.exec, f": > {_MARKER} && sleep 1", user="root", timeout_sec=30
             )

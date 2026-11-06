@@ -406,7 +406,7 @@ wheels = [
 
 [[package]]
 name = "benchflow"
-version = "0.9.1"
+version = "0.10.0rc2"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -420,6 +420,7 @@ dependencies = [
     { name = "litellm", extra = ["proxy"] },
     { name = "packaging" },
     { name = "pydantic" },
+    { name = "pypdf" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "tomli-w" },
@@ -451,6 +452,7 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "ty" },
@@ -485,11 +487,13 @@ trl = [
 litellm-proxy = [
     { name = "boto3" },
     { name = "litellm", extra = ["proxy"] },
+    { name = "pypdf" },
 ]
 litellm-proxy-vertex = [
     { name = "boto3" },
     { name = "google-cloud-aiplatform" },
     { name = "litellm", extra = ["proxy"] },
+    { name = "pypdf" },
 ]
 
 [package.metadata]
@@ -526,8 +530,10 @@ requires-dist = [
     { name = "playwright", marker = "extra == 'dev'", specifier = ">=1.49" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
     { name = "pydantic", specifier = ">=2.7" },
+    { name = "pypdf", specifier = ">=6.21.4,<7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
+    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
@@ -547,11 +553,13 @@ provides-extras = ["azure", "azure-service", "dev", "train", "trl", "sandbox-day
 litellm-proxy = [
     { name = "boto3", specifier = ">=1.40" },
     { name = "litellm", extras = ["proxy"], specifier = "==1.103.3" },
+    { name = "pypdf", specifier = ">=6.21.4,<7" },
 ]
 litellm-proxy-vertex = [
     { name = "boto3", specifier = ">=1.40" },
     { name = "google-cloud-aiplatform", specifier = ">=1.133.0,<2.0" },
     { name = "litellm", extras = ["proxy"], specifier = "==1.103.3" },
+    { name = "pypdf", specifier = ">=6.21.4,<7" },
 ]
 
 [[package]]
@@ -4076,6 +4084,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pypdf"
+version = "6.21.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/e1/ec8f4d155c997c45917153a5521e60d6ee6389d68abdcbc8e44e564caffc/pypdf-6.21.4.tar.gz", hash = "sha256:c8817e3f888d47a087872ded69812c1ef30cacb871d6e053e0c00bbaf0bc2163", size = 7109255, upload-time = "2026-10-28T17:00:54.81Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/4b/77e8ad4ac42c9d93600f40541a50e9feb3a61d2bbee2d76f659346072051/pypdf-6.21.4-py3-none-any.whl", hash = "sha256:33e4fb41ca352810eb4e9838aa0d82d6888a5f8bf682f43e99cce5faa666255c", size = 410430, upload-time = "2026-10-28T17:00:53.146Z" },
+]
+
+[[package]]
 name = "pyroscope-io"
 version = "0.8.16"
 source = { registry = "https://pypi.org/simple" }
@@ -4116,6 +4133,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/90/2c/8af215c0f776415f3590cac4f9086ccefd6fd463befeae41cd4d3f193e5a/pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5", size = 50087, upload-time = "2025-11-10T16:07:47.256Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/35/f8b19922b6a25bc0880171a2f1a003eaeb93657475193ab516fd87cac9da/pytest_asyncio-1.3.0-py3-none-any.whl", hash = "sha256:611e26147c7f77640e6d0a92a38ed17c3e9848063698d5c93d5aa7aa11cebff5", size = 15075, upload-time = "2025-11-10T16:07:45.537Z" },
+]
+
+[[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
 ]
 
 [[package]]

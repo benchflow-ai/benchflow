@@ -103,6 +103,10 @@ def one_line(step: str | None) -> str | None:
     return " ".join(part.strip() for part in step.splitlines() if part.strip()) or None
 
 
+class DaytonaUnconfigured(Exception):
+    """No Daytona key is set: there is no Daytona account to look at."""
+
+
 def print_hint(message: str, *, style: str = "", stderr: bool = False) -> None:
     """Render a hint as literal text: no markup, emoji expansion or wrapping.
 
@@ -233,10 +237,32 @@ def _format_requires(agent) -> str:
     return ", ".join(requires)
 
 
+def print_run_check_failures(result: object) -> list[str]:
+    """Print each run check that failed the run (benchflow.run_checks), then
+    what to do about it; returns the failure lines."""
+    checks = getattr(result, "run_checks", None) or {}
+    failures = [str(line) for line in checks.get("failures") or []]
+    for line in failures:
+        err_console.print(
+            f"[red]Run check failed:[/red] {escape(line)}",
+            highlight=False,
+            soft_wrap=True,
+        )
+    if failures:
+        for step in checks.get("next_steps") or []:
+            err_console.print(
+                f"  next: {escape(str(step))}", highlight=False, soft_wrap=True
+            )
+    return failures
+
+
 def _exit_if_evaluation_had_errors(result: object) -> None:
     errored = int(getattr(result, "errored", 0) or 0)
     verifier_errored = int(getattr(result, "verifier_errored", 0) or 0)
-    if errored or verifier_errored:
+    # A run check that failed fails the run as on `bench run`
+    # (cli.main._finish_run).
+    failures = print_run_check_failures(result)
+    if errored or verifier_errored or failures:
         raise typer.Exit(1)
 
 
@@ -245,6 +271,39 @@ def _exit_if_evaluation_had_errors(result: object) -> None:
 # count suffix, which deliberately run ~40 chars past the budget.
 _MAX_FAILURE_LINES = 5
 _FAILURE_LINE_LIMIT = 100
+
+
+def _steps_line(job_dir: Path, rollout: str) -> str | None:
+    """Where a multi-step trial's reward came from, when the final verify's
+    folder alone does not say: a mean of the steps, or a task stopped early."""
+    import json
+
+    from benchflow.task.steps import RECORD_NAME
+
+    path = job_dir / rollout / RECORD_NAME
+    try:
+        if path.stat().st_size > 256 * 1024:
+            return None
+        record = json.loads(path.read_text())
+        if record.get("strategy") == "mean":
+            parts = []
+            for row in record["steps"]:
+                if row["source"] == "not-run":
+                    parts.append(f"{row['name']} not run")
+                    continue
+                value = row["reward"]
+                shown = "no reward" if value is None else f"{float(value):.2f}"
+                kind = "soft check" if row["source"] == "soft" else "final verify"
+                parts.append(f"{row['name']} {shown} ({kind})")
+            return f"mean of {', '.join(parts)}; steps.json"
+        if record.get("stopped_after"):
+            return (
+                f"stopped after step {record['stopped_after']}, below its "
+                "min_reward; steps.json"
+            )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return None
 
 
 def _failure_reason(failure: TaskFailure, job_dir: Path | None = None) -> FailureLine:
@@ -267,6 +326,12 @@ def _failure_reason(failure: TaskFailure, job_dir: Path | None = None) -> Failur
         return FailureLine(" ".join(_captured_text(failure.verifier_error).split()))
     rewards = failure.rewards or {}
     reward = rewards.get("reward")
+    if job_dir is not None and failure.rollout_name:
+        steps = _steps_line(job_dir, failure.rollout_name)
+        if steps is not None:
+            # A multi-step trial: the final verify's folder alone does not say
+            # where a mean reward came from.
+            return FailureLine(f"reward {reward} — {steps}")
     shown = metric_breakdown(rewards)
     if shown is not None:
         return FailureLine(f"reward {reward} — {shown}")
@@ -395,7 +460,7 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
             )
         err_console.print(
             f"[yellow]Resumed job{escape(where)}:[/yellow] {note}. Pass --fresh "
-            "(or a new --job-name) for a new run.",
+            "(or another --job-name) for a new run.",
             highlight=False,
             soft_wrap=True,
         )
@@ -449,8 +514,13 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     if total_errors:
         if mean_reward is not None:
             mean_part += f" over all {result.total} trials (unscored as 0)"
-        # The score buckets are disjoint: scored = passed + failed.
-        scored = result.total - total_errors
+        # The score buckets are disjoint: scored = passed + failed. A refusal
+        # (the plugin guard's, or no usable reward) stays in as a failure, as
+        # in summary.json's score_excl_errors (benchflow.scoring).
+        refused = int(getattr(result, "guard_refused", 0) or 0) + int(
+            getattr(result, "unusable_rewards", 0) or 0
+        )
+        scored = result.total - total_errors + refused
         mean_scored = getattr(result, "mean_reward_scored_only", None)
         scored_part = (
             f"; scored only: {result.passed}/{scored} ({result.passed / scored:.1%})"
@@ -466,7 +536,14 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     if not_run:
         planned = result.total + not_run
         budget_block = getattr(result, "budget", None) or {}
-        why = "budget" if budget_block.get("stopped") else "usage limit"
+        checks_block = getattr(result, "run_checks", None) or {}
+        why = (
+            "budget"
+            if budget_block.get("stopped")
+            else "a run check"
+            if checks_block.get("stopped")
+            else "usage limit"
+        )
         plan_part = (
             f"; [yellow]{not_run} of {planned} planned tasks not run ({why})[/yellow]"
             f", so {result.passed}/{planned} ({result.passed / planned:.1%}) of the plan"
@@ -476,6 +553,24 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         f"{' run' if not_run else ''} "
         f"({result.score:.1%})[/{style}]{mean_part}{err_part}{scored_part}{plan_part}"
     )
+    _report_scoring(getattr(result, "scoring", None))
+    if agent.lower() == "oracle" and total_errors == 0 and result.passed < result.total:
+        # The oracle control's own verdict, as nop's: a task its reference
+        # solution fails measures nothing until that is fixed.
+        failed = [
+            str(getattr(f, "task_name", "") or "")
+            for f in getattr(result, "task_failures", None) or []
+        ]
+        named = ", ".join(n for n in failed[:5] if n)
+        if named and len(failed) > 5:
+            named += f" and {len(failed) - 5} more"
+        print_hint(
+            f"oracle control: {result.passed}/{result.total}: the reference "
+            f"solution fails {result.total - result.passed} of the tasks"
+            + (f" ({named})" if named else "")
+            + "; they measure nothing until their solution or verifier is fixed",
+            style="yellow",
+        )
     if empty_control and total_errors == 0:
         if result.passed == 0:
             print_hint(
@@ -500,6 +595,15 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
             f"{len(budget.get('cancelled') or [])} running trial(s) cancelled, "
             f"{len(budget.get('not_started') or [])} not started (not counted as "
             "failures; resume the job to run them)"
+        )
+    checks = getattr(result, "run_checks", None) or {}
+    for line in checks.get("warnings") or []:
+        console.print(f"[yellow]Run check:[/yellow] {escape(str(line))}")
+    if checks.get("stopped"):
+        console.print(
+            f"[red]Run check:[/red] {escape(str(checks.get('reason')))}; "
+            f"{len(checks.get('not_started') or [])} trial(s) not started (not "
+            "counted as failures)"
         )
     # One dim reason line per FAILED task, so "0/1" doesn't force a dig into
     # summary.json to learn why. getattr(): sharded aggregation and older
@@ -554,7 +658,47 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
             f"[dim]Summary:  [/dim] {escape(str(job_dir))}/summary.json",
             soft_wrap=True,
         )
+        if (job_dir / "report.md").is_file():
+            console.print(
+                f"[dim]Report:   [/dim] {escape(str(job_dir))}/report.md",
+                soft_wrap=True,
+            )
         print_hint(f"View:      bench view {local_path_arg(job_dir, '<job dir>')}")
+
+
+def _report_scoring(scoring: Any) -> None:
+    """The line under the Score: its 95% interval, the rule that counted it,
+    who ended the trials with no score, and the rule's warnings (few tries
+    per task; an error, timeout or rate-limit rate above 5%). Nothing for a
+    result that carries no ``scoring`` (summary.json's block)."""
+    from benchflow.scoring import Score
+
+    if not isinstance(scoring, dict) or not scoring.get("n"):
+        return
+    rule = Score.from_dict(scoring)
+    se = f", standard error {rule.se * 100:.1f} points" if rule.se is not None else ""
+    console.print(
+        f"[dim]  {escape(rule.interval_text())}, {rule.n_tasks} "
+        f"task{'' if rule.n_tasks == 1 else 's'}{se}; counted by {rule.rule}[/dim]",
+        highlight=False,
+        soft_wrap=True,
+    )
+    endings = rule.endings_text()
+    if endings and sum(rule.endings.values()):
+        console.print(
+            f"[dim]  {escape(endings)}[/dim]", highlight=False, soft_wrap=True
+        )
+    for text in (rule.model_refusals_text(), rule.budget_stops_text()):
+        if text:
+            console.print(
+                f"[dim]  {escape(text)}[/dim]", highlight=False, soft_wrap=True
+            )
+    for warning in rule.warnings():
+        console.print(
+            f"[yellow]Score:[/yellow] {escape(warning)}",
+            highlight=False,
+            soft_wrap=True,
+        )
 
 
 # The empty controls (benchflow.jobs' empty agents): an expected 0.
@@ -611,6 +755,102 @@ def _print_verifier_tail(job_dir: Path, rollouts: list[str]) -> None:
         return
 
 
+def _kept_trials(job_dir: Path | None) -> list[tuple[str, str]]:
+    """The job's trials whose sandbox --keep-sandbox kept (and not released),
+    with each one's backend."""
+    if job_dir is None:
+        return []
+    import json
+    from pathlib import Path
+
+    from benchflow.rollout._keep_sandbox import RECORD_NAME
+
+    kept = []
+    for record in sorted(Path(job_dir).glob(f"*/{RECORD_NAME}")):
+        try:
+            data = json.loads(record.read_text())
+            state, backend = data.get("state"), str(data.get("backend") or "")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if state == "kept":
+            kept.append((record.parent.name, backend))
+    return kept
+
+
+def _scored_zero_by_verifier(trial: object, job_dir: Path | None) -> bool:
+    """A failed trial the verifier scored 0 on its own evidence ("Verifier
+    scored 0: ..." in its result.json warnings), not a wrong answer."""
+    import json
+    from collections.abc import Mapping
+    from pathlib import Path
+    from typing import cast
+
+    from benchflow._utils.scoring import verifier_scored_zero
+
+    if isinstance(trial, Mapping):
+        row = cast("Mapping[str, Any]", trial)
+        if "warnings" in row:
+            return verifier_scored_zero(row)
+        rollout = row.get("rollout_name")
+    else:
+        rollout = getattr(trial, "rollout_name", None)
+    if job_dir is None or not rollout:
+        return False
+    try:
+        data = json.loads((Path(job_dir) / str(rollout) / "result.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and verifier_scored_zero(data)
+
+
+def _grading_timed_out(trial: object, job_dir: Path | None) -> bool:
+    """A failed trial whose tests ran past the verifier's time limit."""
+    import json
+    from collections.abc import Mapping
+    from pathlib import Path
+    from typing import cast
+
+    from benchflow._utils.scoring import grading_timed_out
+
+    if isinstance(trial, Mapping):
+        row = cast("Mapping[str, Any]", trial)
+        if "verifier_timeout_info" in row:
+            return grading_timed_out(row)
+        rollout = row.get("rollout_name")
+    else:
+        rollout = getattr(trial, "rollout_name", None)
+    if job_dir is None or not rollout:
+        return False
+    try:
+        data = json.loads((Path(job_dir) / str(rollout) / "result.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and grading_timed_out(data)
+
+
+def _trial_ending(trial: object) -> tuple[bool, str | None]:
+    """Whether a trial ended on a model refusal, and the measure of its
+    trial budget that stopped it, from its result alone: a RolloutResult's
+    fields or a result row's, a row written before ``model_refusal`` existed
+    by its ``agent_outcome``, as the scoring rule reads it. No file is read."""
+    from collections.abc import Mapping
+    from typing import cast
+
+    if isinstance(trial, Mapping):
+        row = cast("Mapping[str, Any]", trial)
+        if "model_refusal" in row:
+            refused = isinstance(row.get("model_refusal"), Mapping)
+        else:
+            found = row.get("agent_outcome")
+            refused = isinstance(found, Mapping) and found.get("status") == "refusal"
+        budget = row.get("trial_budget")
+    else:
+        refused = isinstance(getattr(trial, "model_refusal", None), Mapping)
+        budget = getattr(trial, "trial_budget", None)
+    stopped = budget.get("stopped_by") if isinstance(budget, Mapping) else None
+    return refused, stopped if isinstance(stopped, str) else None
+
+
 def _report_outcomes(result: object, job_dir: Path | None) -> None:
     """Scored, unscored and errored trials, by cause, with whose fault and what next.
 
@@ -623,18 +863,31 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
     from typing import cast
 
     from benchflow._utils.scoring import classify_score_outcome
-    from benchflow.failures import RUST_CODES, cause_of, task_dir_finder
+    from benchflow.failures import RUST_CODES, _read_result, cause_of, task_dir_finder
+    from benchflow.scoring import OUTCOMES, no_score_text
+    from benchflow.scoring import outcome as rule_outcome
 
     results = getattr(result, "results", None)
     if not isinstance(results, dict) or not results:
         return
     task_dir = task_dir_finder(job_dir)
     groups: dict[tuple[str, str, str], list[tuple[str, str, str]]] = {}
-    counts = {"passed": 0, "failed": 0, "unscored": 0, "errored": 0}
+    counts = dict.fromkeys(OUTCOMES, 0)
+    zeroed: list[str] = []
+    timed_out: list[str] = []
+    refused: list[str] = []
+    budget_stops: dict[str, list[str]] = {}
     for key, trial in sorted(results.items()):
         name = str(key)
-        # The Score line's buckets: its errors are "errored" here and its
-        # verifier errors "unscored". Only those trials' files are read.
+        # A model refusal and a trial budget's stop are endings of their own,
+        # whatever the trial scored (each counts 0 unless its tests passed).
+        ending = _trial_ending(trial)
+        if ending[0]:
+            refused.append(name)
+        if ending[1]:
+            budget_stops.setdefault(ending[1], []).append(name)
+        # The Score line's buckets decide passed and failed. Only the other
+        # trials' files are read.
         outcome = (
             classify_score_outcome(cast("Mapping[str, Any]", trial))
             if isinstance(trial, Mapping)
@@ -642,14 +895,28 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         )
         if outcome in ("passed", "failed"):
             counts[outcome] += 1
+            if outcome == "failed" and _scored_zero_by_verifier(trial, job_dir):
+                if _grading_timed_out(trial, job_dir):
+                    timed_out.append(name)
+                else:
+                    zeroed.append(name)
             continue
-        if outcome is None:
-            outcome = "errored" if getattr(trial, "error", None) else "unscored"
-        bucket = "errored" if outcome == "errored" else "unscored"
-        # The bucket follows the Score line even when no cause is known (a
-        # trial whose result.json cannot be read): the two lines always
-        # agree, and only the explanation below is missing.
-        counts[bucket] += 1
+        # No score: the scoring rule's class, the words `bench results` uses
+        # for the same trial (benchflow.scoring): unscored as a verifier
+        # error or a refusal, or errored, a trial with no verdict among them.
+        data = (
+            cast("Mapping[str, Any]", trial)
+            if isinstance(trial, Mapping)
+            else _read_result(trial)
+        )
+        kind = rule_outcome(data)
+        if kind in ("passed", "failed"):
+            # A record read apart from the Score line's: it had no score there.
+            kind = "errored" if outcome != "verifier_errored" else "verifier_errored"
+        counts[kind] += 1
+        # The Score line's buckets: a trial with no verdict is one of its
+        # errors, a refusal one of its verifier errors.
+        bucket = "errored" if kind in ("errored", "no_verdict") else "unscored"
         cause = cause_of(trial, job_dir=job_dir, task_dir=task_dir(name))
         if cause is not None:
             rollout = (
@@ -663,10 +930,73 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
     scored = counts["passed"] + counts["failed"]
     console.print(
         f"Outcomes: {scored} scored ({counts['passed']} passed, {counts['failed']} "
-        f"failed), {counts['unscored']} unscored, {counts['errored']} errored",
+        f"failed), {no_score_text(counts)}",
         highlight=False,
         soft_wrap=True,
     )
+    if zeroed:
+        shown = ", ".join(zeroed[:_MAX_CAUSE_TASKS])
+        if len(zeroed) > _MAX_CAUSE_TASKS:
+            shown += f" and {len(zeroed) - _MAX_CAUSE_TASKS} more"
+        console.print(
+            f"  [yellow]{len(zeroed)} of the failed[/yellow]: the verifier scored "
+            f"them 0 on its own evidence, not on an answer (a failure, not an "
+            f"error): {escape(_captured_text(shown))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        print_hint(
+            "      next: the warnings in each trial's result.json say why (a test "
+            "timeout, a reward out of range, a guard marker); summary.json counts "
+            "them as verifier_scored_zero"
+        )
+    if timed_out:
+        shown = ", ".join(timed_out[:_MAX_CAUSE_TASKS])
+        if len(timed_out) > _MAX_CAUSE_TASKS:
+            shown += f" and {len(timed_out) - _MAX_CAUSE_TASKS} more"
+        console.print(
+            f"  [yellow]{len(timed_out)} of the failed[/yellow]: the tests were "
+            f"still running at the verifier's time limit, so they scored 0 (slow "
+            f"code, or a slow grading machine): {escape(_captured_text(shown))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        print_hint(
+            "      next: rerun only the verifier on the saved outputs, `bench "
+            "regrade <job dir>` (a run with --save-outputs), or raise the task's "
+            "[verifier] timeout_sec; summary.json counts them as grading_timeouts"
+        )
+    if refused:
+        shown = ", ".join(refused[:_MAX_CAUSE_TASKS])
+        if len(refused) > _MAX_CAUSE_TASKS:
+            shown += f" and {len(refused) - _MAX_CAUSE_TASKS} more"
+        console.print(
+            f"  [yellow]{len(refused)} ended on a model refusal[/yellow] or a content "
+            f"filter (each counts 0 unless its tests passed; never retried): "
+            f"{escape(_captured_text(shown))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        print_hint(
+            "      next: model_refusal in each trial's result.json names the call "
+            "and its reason; summary.json counts them as model_refusals"
+        )
+    if budget_stops:
+        names = [n for measure in sorted(budget_stops) for n in budget_stops[measure]]
+        shown = ", ".join(names[:_MAX_CAUSE_TASKS])
+        if len(names) > _MAX_CAUSE_TASKS:
+            shown += f" and {len(names) - _MAX_CAUSE_TASKS} more"
+        by = ", ".join(f"{len(n)} by {m}" for m, n in sorted(budget_stops.items()))
+        console.print(
+            f"  [yellow]{len(names)} stopped at their trial budget[/yellow] ({by}; "
+            f"each counts 0 unless its tests passed): {escape(_captured_text(shown))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        print_hint(
+            "      next: trial_budget in each trial's result.json has what it used; "
+            "raise --token-budget or --turn-budget if the task needs more"
+        )
     shown_codes: list[str] = []
     for bucket in ("unscored", "errored"):
         for (group_bucket, headline, key), members in groups.items():
@@ -694,6 +1024,29 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
     pointer = explain_pointer(shown_codes)
     if pointer is not None:
         console.print(f"  {escape(pointer)}", highlight=False, soft_wrap=True)
+    kept = _kept_trials(job_dir)
+    if kept:
+        assert job_dir is not None
+        first = command_arg(job_dir / kept[0][0], "<trial>")
+        more = (
+            f" (and {len(kept) - 1} more: each trial folder with kept-sandbox.json)"
+            if len(kept) > 1
+            else ""
+        )
+        # Daytona stops and later deletes a kept sandbox by itself.
+        how_long = (
+            "Daytona stops it after 15 idle minutes (attach starts it again) and "
+            "deletes it 24 hours after it stopped"
+            if all(backend == "daytona" for _, backend in kept)
+            else "still running until released"
+        )
+        console.print(
+            f"Kept: {len(kept)} sandbox{'es' if len(kept) != 1 else ''} for inspection, "
+            f"{how_long}: bench sandbox attach {first}{more}; "
+            f"bench sandbox release {first} deletes it",
+            highlight=False,
+            soft_wrap=True,
+        )
     summary: dict = {}
     if job_dir is not None:
         try:

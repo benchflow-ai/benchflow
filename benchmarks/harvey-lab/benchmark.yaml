@@ -32,7 +32,8 @@ conversion:
 # ── Verification ─────────────────────────────────────────────────────
 verification:
   method: llm-as-judge
-  judge_model: gemini-3.1-flash-lite-preview
+  # The converter's evaluate.py judges with Harvey LAB's own default (PR #264).
+  judge_model: claude-sonnet-4-6
   reward: proportional       # passed_criteria / total_criteria
   aggregation: per-criterion # each criterion judged individually
 

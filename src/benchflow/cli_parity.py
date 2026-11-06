@@ -7,7 +7,7 @@ Every CLI flag maps to one :class:`Equivalent`: a target in the public SDK
 (``module``), or ``cli`` with the reason there is no Python equivalent (console
 output, or a flag that only records a value). ``tests/test_cli_python_parity.py``
 fails when a flag is added or removed without updating these tables, or when a
-target stops resolving; ``docs/reference/cli-python-parity.md`` is generated
+target stops resolving; ``docs/reference/cli-python.md`` is generated
 from them (``python -m benchflow.cli_parity``).
 
 Targets are dotted paths: ``module.Object`` (the object must exist),
@@ -101,6 +101,8 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--checkpoints": _sdk(f"{_EC}.checkpoints"),
     "--checkpoint-keep": _sdk(f"{_EC}.checkpoint_keep"),
     "--freeze-workspace": _sdk(f"{_EC}.freeze_workspace"),
+    "--keep-sandbox": _sdk(f"{_EC}.keep_sandbox"),
+    "--accept-deviations": _sdk(f"{_EC}.accept_deviations"),
     "--fresh-install": _sdk(f"{_EC}.fresh_install"),
     "--allow-cloud-metadata": _sdk(f"{_EC}.allow_cloud_metadata"),
     "--integrity": _sdk(f"{_EC}.integrity"),
@@ -109,6 +111,9 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--jobs-dir": _sdk(f"{_EV}.__init__(jobs_dir)"),
     "--fresh": _sdk(f"{_EV}.__init__(job_name)", "pass a new job_name"),
     "--job-name": _sdk(f"{_EV}.__init__(job_name)"),
+    "--restart-changed": _sdk(
+        f"{_EV}.__init__(restart_changed)", "also Evaluation.resume(restart_changed=)"
+    ),
     "--fail-under": _sdk(
         "benchflow.EvaluationResult.score_of_plan", "compare it to your threshold"
     ),
@@ -138,6 +143,10 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--reviewer-sandbox": _sdk(f"{_RC}.environment"),
     "--reviewer-timeout-sec": _sdk(f"{_RC}.timeout_sec"),
     "--reviewer-idle-timeout": _sdk(f"{_RC}.idle_timeout_sec"),
+    "--reviewer-storage-mb": _sdk(f"{_RC}.storage_mb"),
+    "--reviewer-memory-mb": _sdk(f"{_RC}.memory_mb"),
+    "--reviewer-setup-timeout": _sdk(f"{_RC}.setup_timeout_sec"),
+    "--reviewer-evidence-timeout": _sdk(f"{_RC}.evidence_timeout_sec"),
     "--reviewer-concurrency": _sdk(f"{_RC}.concurrency"),
     "--reviewer-image": _sdk(f"{_RC}.image"),
     "--reviewer-agent-env": _sdk(f"{_RC}.agent_env"),
@@ -177,6 +186,13 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--max-sandbox-seconds": _sdk("benchflow.Budget.max_sandbox_seconds"),
     "--max-tokens": _sdk("benchflow.Budget.max_tokens"),
     "--max-rollouts": _sdk("benchflow.Budget.max_rollouts"),
+    "--token-budget": _sdk(
+        "benchflow.TrialBudget.tokens",
+        "EvaluationConfig(trial_budget=TrialBudget(...)); a task's agent.token_budget",
+    ),
+    "--turn-budget": _sdk(
+        "benchflow.TrialBudget.turns", "as --token-budget; a task's agent.turn_budget"
+    ),
     "--retry-policy": _cli("reserved: only recorded in the --run-config-out file"),
     "--retry-attempts": _sdk(
         "benchflow.RetryConfig.max_retries", "EvaluationConfig.retry"
@@ -277,6 +293,24 @@ EVAL_REGRADE: dict[str, Equivalent] = {
     "--json": _sdk(
         "benchflow.RegradeSummary.to_dict", "also written to regrade-summary.json"
     ),
+    "--review": _sdk("benchflow.regrade(review)"),
+    "--reviewer-agent": _sdk(
+        f"{_RC}.agent",
+        "benchflow.regrade(reviewer); set fields replace the trial's recorded ones",
+    ),
+    "--reviewer-model": _sdk(f"{_RC}.model"),
+    "--reviewer-reasoning-effort": _sdk(f"{_RC}.reasoning_effort"),
+    "--reviewer-sandbox": _sdk(f"{_RC}.environment"),
+    "--reviewer-timeout-sec": _sdk(f"{_RC}.timeout_sec"),
+    "--reviewer-idle-timeout": _sdk(f"{_RC}.idle_timeout_sec"),
+    "--reviewer-storage-mb": _sdk(f"{_RC}.storage_mb"),
+    "--reviewer-memory-mb": _sdk(f"{_RC}.memory_mb"),
+    "--reviewer-setup-timeout": _sdk(f"{_RC}.setup_timeout_sec"),
+    "--reviewer-evidence-timeout": _sdk(f"{_RC}.evidence_timeout_sec"),
+    "--reviewer-concurrency": _sdk(f"{_RC}.concurrency"),
+    "--reviewer-image": _sdk(f"{_RC}.image"),
+    "--reviewer-agent-env": _sdk(f"{_RC}.agent_env"),
+    "--reviewer-open-network": _sdk(f"{_RC}.open_network"),
 }
 
 _PRIME = "benchflow.trajectories.export_prime_sft.export_prime_sft_jsonl"
@@ -378,7 +412,7 @@ def resolve(target: str) -> object:
 
 
 def markdown() -> str:
-    """The parity tables as markdown (docs/reference/cli-python-parity.md)."""
+    """The parity tables as markdown (docs/reference/cli-python.md)."""
     lines = [
         "# CLI and Python equivalents",
         "",

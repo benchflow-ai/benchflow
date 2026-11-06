@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from tests._receipt_fakes import receipt_aware
-from tests.test_cloud_metadata_block import AGENT_REFUSED, ROOT_OK, FakeEnv, Sandbox
+from tests.test_cloud_metadata_block import (
+    AGENT_REFUSED,
+    DELEGATES_CLEAN,
+    ROOT_OK,
+    FakeEnv,
+    Sandbox,
+)
 
 TOOLS = (
     "iptables",
@@ -45,7 +52,7 @@ def _isolate_inventory(box, monkeypatch):
         monkeypatch.setattr(
             lockdown,
             "_cloud_metadata_delegate_check_cmd",
-            lambda: inventory(str(box.root)),
+            lambda **kwargs: inventory(str(box.root), **kwargs),
         )
 
 
@@ -185,8 +192,15 @@ async def test_failed_wrapper_probe_cannot_clear_delegate_privilege(
 async def test_delegate_inventory_is_required_on_every_return_and_reconnect(
     status, supports_system_shell, broken
 ):
-    """Guards S2-CONF-7 at 705249aa across backend contracts and failures."""
+    """Guards S2-CONF-7 at 705249aa across backend contracts and failures.
+
+    The inventory is required in fact: a timed-out, empty,
+    repeated or failed report used to record "unavailable" and start the
+    agent; now each refuses startup like positive evidence does, and the
+    refusal carries its record."""
     from benchflow.sandbox.lockdown import CloudMetadataPowerError, block_cloud_metadata
+
+    su = "BF metadata-delegates-setid u-0 " + b"/usr/bin/su".hex() + "\n"
 
     class InventoryEnv(FakeEnv):
         @receipt_aware
@@ -198,10 +212,10 @@ async def test_delegate_inventory_is_required_on_every_return_and_reconnect(
                     raise TimeoutError("dummy inventory timeout")
                 return SimpleNamespace(
                     stdout={
-                        "power": "BF metadata-delegates power=1\n",
+                        "power": su + DELEGATES_CLEAN,
                         "empty": "",
-                        "duplicate": "BF metadata-delegates power=0\n" * 2,
-                    }.get(broken, "BF metadata-delegates power=0\n"),
+                        "duplicate": DELEGATES_CLEAN * 2,
+                    }.get(broken, DELEGATES_CLEAN),
                     return_code={"nonzero": 1, "boolean": False}.get(broken, 0),
                 )
             result = await super().exec(command, user=user, **kwargs)
@@ -215,12 +229,19 @@ async def test_delegate_inventory_is_required_on_every_return_and_reconnect(
     for _ in range(2):
         env = InventoryEnv(root, AGENT_REFUSED, "BF metadata-hits 1\n")
         env.supports_system_shell = supports_system_shell
+        with pytest.raises(CloudMetadataPowerError, match="delegate") as refused:
+            await block_cloud_metadata(env, "agent")
+        record = refused.value.record
+        assert record["state"] == "refused"
         if broken == "power":
-            with pytest.raises(CloudMetadataPowerError, match="delegate"):
-                await block_cloud_metadata(env, "agent")
+            assert "/usr/bin/su (setuid root)" in str(refused.value)
+            assert record["delegates"] == [
+                {"path": "/usr/bin/su", "why": "setuid root"}
+            ]
+            assert record["delegate_privilege_audit"] == "complete"
         else:
-            record = await block_cloud_metadata(env, "agent")
-            assert record["delegate_privilege_audit"] == "unavailable"
+            assert record["delegate_privilege_audit"] == "incomplete"
+            assert "could not finish the file privilege inventory" in str(refused.value)
 
 
 @pytest.mark.parametrize("helper", ["find", "getcap"])
@@ -228,7 +249,11 @@ async def test_delegate_inventory_is_required_on_every_return_and_reconnect(
 def test_delegate_enumeration_failure_cannot_report_clean(
     sandbox, monkeypatch, helper, failure
 ):
-    """Guards S2-CONF-7 at 705249aa: incomplete inventory fails closed."""
+    """Guards S2-CONF-7 at 705249aa: incomplete inventory fails closed.
+
+    The shell inventory now also needs sh, od, tr, mktemp and rm
+    (it reports paths in hex); they are kept here, so the helper under test
+    is what fails the inventory, as its report's reason says."""
     from benchflow.sandbox import lockdown
 
     isolated = sandbox.root / "inspection"
@@ -238,14 +263,22 @@ def test_delegate_enumeration_failure_cannot_report_clean(
         (isolated / name).write_bytes((sandbox.bin / name).read_bytes())
         (isolated / name).chmod(0o755)
     (isolated / "find").unlink()
-    (isolated / "find").symlink_to("/usr/bin/find")
+    (isolated / "find").symlink_to(shutil.which("find"))
     # Keep inspection bootstrap utilities without the helper under test.
-    for name in ("ls", "readlink"):
-        (isolated / name).symlink_to(f"/usr/bin/{name}")
+    for name in ("ls", "readlink", "sh", "od", "tr", "mktemp", "rm"):
+        (isolated / name).symlink_to(shutil.which(name))
     (isolated / helper).unlink()
     if failure == "nonzero":
         (isolated / helper).write_text("#!/bin/sh\nexit 1\n")
         (isolated / helper).chmod(0o755)
     monkeypatch.setattr(lockdown, "_CLOUD_METADATA_ROOT_PATH", str(isolated))
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(subprocess.CalledProcessError) as failed:
         sandbox.run(lockdown._cloud_metadata_delegate_check_cmd(str(sandbox.root)))
+    assert failed.value.returncode == 7
+    why = {
+        ("find", "missing"): "why=tools",
+        ("find", "nonzero"): "why=setid,caps",
+        ("getcap", "missing"): "why=reader",
+        ("getcap", "nonzero"): "why=caps",
+    }[helper, failure]
+    assert failed.value.stdout.rstrip("\n").endswith(why), failed.value.stdout

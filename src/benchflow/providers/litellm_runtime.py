@@ -24,10 +24,11 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -49,12 +50,17 @@ from benchflow._uv_pin import (
     uv_lock_seal_command,
 )
 from benchflow.agents.codex_config import apply_codex_provider_config
-from benchflow.agents.env import uses_native_subscription_auth
+from benchflow.agents.env import (
+    uses_direct_anthropic_endpoint,
+    uses_native_subscription_auth,
+)
 from benchflow.agents.registry import (
     AGENTS,
     GEMINI_NATIVE_BASE_URL_ENV,
     OPENCODE_GOOGLE_BASE_URL_ENV,
+    agent_routes_own_model,
     is_scripted_agent,
+    routed_model,
     routes_gemini_natively,
 )
 from benchflow.providers.litellm_bedrock_preflight import (
@@ -74,6 +80,7 @@ from benchflow.providers.litellm_config import (
     strip_provider_prefix,
 )
 from benchflow.providers.litellm_logging import (
+    CallbackLogReader,
     callback_module_source,
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
@@ -98,8 +105,14 @@ from benchflow.sandbox.env_layers import (
     ProxyLayerRecipe,
 )
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
-from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
+from benchflow.trajectories._capture import ProviderToolEvidence
+from benchflow.trajectories._llm_capture import (
+    LiveLLMTrajectoryWriter,
+    exchange_record,
+    published_exchange,
+)
 from benchflow.trajectories.types import Trajectory
+from benchflow.trial_budget import TrialBudget, budget_refusal
 from benchflow.trust.state import TRUSTED_TRANSFER, admit
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -113,7 +126,7 @@ logger = logging.getLogger(__name__)
 LITELLM_VERSION_SPEC = "litellm[proxy]==1.103.3"
 # In BenchFlow's reserved runtime tree, which no workspace grant covers: an
 # honest /tmp workspace keeps its proxy (PY8-PT-R8-9).
-LITELLM_SANDBOX_ROOT = "/opt/benchflow/proxy"
+LITELLM_SANDBOX_ROOT = "/opt/runtime/proxy"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 # Read by the callback's model gate (litellm_logging.callback_module_source).
 _SERVED_MODELS_ENV = "BENCHFLOW_LITELLM_SERVED_MODELS"
@@ -126,6 +139,8 @@ _LOGGED_MARK_SUFFIX = ".logged"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 _GEMINI_PATCH_MODULE = "benchflow_litellm_gemini_passthrough_patch"
 _TOKEN_CAPTURE_PATCH_MODULE = "benchflow_litellm_token_capture_patch"
+# MiMo's transient "Invalid request parameters" 400s are retried in the proxy, twice (litellm_provider_retry_patch).
+_PROVIDER_RETRY_PATCH_MODULE = "benchflow_litellm_provider_retry_patch"
 _REQUEST_GUARD_MODULE = "benchflow_litellm_request_guard"
 # Host proxies only: route analysis and model builds deferred to first use
 # (litellm_lazy_start). ``0`` starts the proxy as before.
@@ -226,7 +241,10 @@ def _warn_refused_requests(trajectory: Trajectory | None) -> None:
         return
     refused = trajectory.metadata.get("refused_requests") or []
     counts = Counter(
-        str(entry.get("request_model")) for entry in refused if isinstance(entry, dict)
+        str(entry.get("request_model"))
+        for entry in refused
+        # A call the trial's budget no longer allowed is the trial's ending.
+        if isinstance(entry, dict) and entry.get("rule") != "trial-budget"
     )
     if counts:
         logger.warning(
@@ -235,6 +253,37 @@ def _warn_refused_requests(trajectory: Trajectory | None) -> None:
             sum(counts.values()),
             ", ".join(f"{model} x{n}" for model, n in sorted(counts.items())),
         )
+
+
+async def _capture_to_thread[T](
+    work: Callable[[], T], publish: Callable[[T], None] | None = None
+) -> T:
+    """Run a capture step in a worker thread, and drain it before a
+    cancellation lets teardown proceed. ``publish`` takes the step's result on
+    the event loop, also when a cancellation arrived while the step ran: what
+    the worker already wrote to disk is then also in the live view."""
+    task = asyncio.create_task(asyncio.to_thread(work))
+    try:
+        result = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Cancelling to_thread does not stop its thread. Final reconciliation
+        # and scratch cleanup must wait for the active writer, even when
+        # shutdown cancels the polling task more than once (public #1055).
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                break
+        if publish is not None and not task.cancelled() and task.exception() is None:
+            publish(task.result())
+        with contextlib.suppress(Exception):
+            task.result()
+        raise
+    if publish is not None:
+        publish(result)
+    return result
 
 
 class LiteLLMProcess:
@@ -254,6 +303,10 @@ class LiteLLMProcess:
     _live_capture_lag_bytes: int | None = 0
     _live_capture_stall_ticks: int = 0
     _live_capture_stall_warned: bool = False
+    # Polls the live capture has finished, and the first call the proxy
+    # refused for the trial's budget (benchflow.trial_budget) that one read.
+    _live_capture_passes: int = 0
+    _trial_budget_refusal: dict[str, Any] | None = None
 
     @property
     def base_url(self) -> str:
@@ -293,6 +346,7 @@ class LiteLLMProcess:
         )
         self._live_callback_offset = 0
         self._live_callback_remainder = b""
+        self._live_reconciled = False
         self._request_events = {}
         # Clear ``seen`` BEFORE the total so a racing render-thread read can
         # only observe None (fresh capture) — never a transient "0 tokens".
@@ -321,11 +375,36 @@ class LiteLLMProcess:
             return None
         return self._live_usage_total_tokens
 
+    def trial_budget_refusal(self) -> dict[str, Any] | None:
+        """The proxy's record of the first call it refused because the
+        trial's budget was spent, as the live capture has read it; None
+        before (or without) one. O(1), like :meth:`live_usage_tokens`."""
+        return self._trial_budget_refusal
+
+    async def settle_live_capture(self, timeout: float = 5.0) -> None:
+        """Wait until the live capture has read the callback log as it
+        stands now (two polls that reached its end), or ``timeout`` seconds:
+        an agent's turn can end on a call before the next poll reads it."""
+        task = getattr(self, "_live_capture_task", None)
+        if task is None or task.done():
+            return
+        start = self._live_capture_passes
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if (
+                self._live_capture_passes >= start + 2
+                and self._live_capture_lag_bytes == 0
+            ):
+                return
+            await asyncio.sleep(0.1)
+
     def _capture_request_events(self, text: str) -> None:
         path = getattr(self, "_live_trajectory_path", None)
         if path is None:
             return
-        events = self._request_events
+        # Final imports run in a worker. Readers iterate an immutable snapshot
+        # while this method builds the next one.
+        events = dict(self._request_events)
         for line in text.splitlines():
             try:
                 row = json.loads(line)
@@ -345,6 +424,7 @@ class LiteLLMProcess:
             events[key] = row
             with path.with_name("provider_requests.jsonl").open("a") as stream:
                 stream.write(json.dumps(row) + "\n")
+        self._request_events = events
 
     def model_request_activity(self) -> tuple[int, float, float]:
         """Active requests, oldest age, last event time; no extra sandbox poll."""
@@ -422,7 +502,6 @@ class LiteLLMProcess:
             return
 
         start_offset = int(getattr(self, "_live_callback_offset", 0))
-        changed = False
         caught_up = False
         log_size: int | None = None
         for _ in range(_LIVE_CAPTURE_MAX_READS_PER_TICK):
@@ -457,36 +536,78 @@ class LiteLLMProcess:
             for raw_line in lines:
                 if not raw_line.strip():
                     continue
-                self._capture_request_events(raw_line.decode("utf-8", errors="replace"))
-                parsed = trajectory_from_litellm_callback_log(
-                    raw_line.decode("utf-8", errors="replace"),
-                    session_id=self.session_id,
-                    agent_name=self.agent_name,
+                await _capture_to_thread(
+                    lambda raw_line=raw_line: self._parse_live_record(raw_line, writer),
+                    lambda result: self._publish_live_record(trajectory, result),
                 )
-                if parsed.exchanges:
-                    trajectory.exchanges.extend(parsed.exchanges)
-                    # Live token counter for the eval dashboard: accumulate the
-                    # same canonical per-exchange accounting scoring sums at
-                    # stop() (Trajectory.total_provider_tokens over the same
-                    # parser's output), so the live figure converges to the
-                    # trusted total as the capture catches up. Failure records
-                    # carry no usage and leave the counter untouched.
-                    if parsed.has_provider_usage:
-                        # Total before ``seen``: a racing reader can never
-                        # observe seen=True with a not-yet-updated total.
-                        self._live_usage_total_tokens += int(
-                            parsed.total_provider_tokens
-                        )
-                        self._live_usage_seen = True
-                    changed = True
             if len(chunk.data) < _LIVE_CAPTURE_CHUNK_BYTES:
                 caught_up = True
                 break
-        if changed:
-            writer.write(trajectory)
         self._note_live_capture_lag(
             start_offset=start_offset, caught_up=caught_up, log_size=log_size
         )
+        self._live_capture_passes += 1
+
+    def _publish_live_record(
+        self, trajectory: Trajectory, result: tuple[Trajectory, str | None]
+    ) -> None:
+        """On the event loop: one parsed record's request event, exchanges and
+        tokens into the live view."""
+        parsed, event = result
+        if event is not None:
+            self._capture_request_events(event)
+        if self._trial_budget_refusal is None:
+            self._trial_budget_refusal = budget_refusal(
+                parsed.metadata.get("refused_requests")
+            )
+        if parsed.exchanges:
+            # Each exchange is published once, as it arrives; the mirror keeps
+            # only what a stopped proxy is read for.
+            trajectory.exchanges.extend(parsed.exchanges)
+            # Live token counter for the eval dashboard: accumulate the same
+            # canonical per-exchange accounting scoring sums at stop()
+            # (Trajectory.total_provider_tokens over the same parser's output),
+            # so the live figure converges to the trusted total as the capture
+            # catches up. Failure records carry no usage and leave the counter
+            # untouched.
+            if parsed.has_provider_usage:
+                # Total before ``seen``: a racing reader can never observe
+                # seen=True with a not-yet-updated total.
+                self._live_usage_total_tokens += int(parsed.total_provider_tokens)
+                self._live_usage_seen = True
+
+    def _parse_live_record(
+        self, raw_line: bytes, writer: LiveLLMTrajectoryWriter
+    ) -> tuple[Trajectory, str | None]:
+        """Parse, redact and publish off-loop; return only the compact mirror."""
+        text = raw_line.decode("utf-8", errors="replace")
+        parsed = trajectory_from_litellm_callback_log(
+            text, session_id=self.session_id, agent_name=self.agent_name
+        )
+        if parsed.exchanges:
+            writer.append(parsed.exchanges)
+            parsed.exchanges = [published_exchange(e) for e in parsed.exchanges]
+            return parsed, None
+        # Lifecycle records are small. Only those return to the event loop;
+        # an unrecognised record's potentially large body stays in the worker.
+        try:
+            row = json.loads(text)
+        except ValueError:
+            return parsed, None
+        event = (
+            text
+            if isinstance(row, dict)
+            and row.get("event")
+            in {
+                "request_start",
+                "response_start",
+                "request_end",
+                "upstream_start",
+                "upstream_end",
+            }
+            else None
+        )
+        return parsed, event
 
     def _note_live_capture_lag(
         self, *, start_offset: int, caught_up: bool, log_size: int | None
@@ -574,8 +695,70 @@ class LiteLLMProcess:
 
     def _reconcile_live_capture(self) -> None:
         writer = getattr(self, "_live_writer", None)
+        if writer is None or getattr(self, "_live_reconciled", False):
+            return
+        # The import's reconcile wrote the whole file but could not replace
+        # the old one: publish it now.
+        try:
+            if writer.retry_pending():
+                self._live_reconciled = True
+                return
+        except OSError as exc:
+            logger.warning(
+                "Could not publish %s; it holds what the live mirror wrote: %s",
+                writer.path,
+                exc,
+            )
+            return
+        writer.reconcile(self.trajectory)
+
+    def _import_callback_lines(self, lines: Iterable[str]) -> None:
+        """Import the stopped proxy's callback log, one line at a time.
+
+        The trajectory is what :func:`trajectory_from_litellm_callback_log`
+        makes of the whole log. When the live mirror publishes this run's
+        ``llm_trajectory.jsonl``, each exchange goes whole to the mirror's
+        reconcile as it is read (a line the mirror already published is not
+        redacted again), its provider tool evidence is read from it, and only
+        the published exchange stays in memory: a long run's log is never
+        held in the runner, let alone twice.
+        """
+        writer = getattr(self, "_live_writer", None)
+        evidence = ProviderToolEvidence() if writer is not None else None
+        reader = CallbackLogReader(
+            session_id=self.session_id,
+            agent_name=self.agent_name,
+            keep=published_exchange if writer is not None else None,
+        )
+
+        def records() -> Iterator[dict[str, Any]]:
+            for line in lines:
+                self._capture_request_events(line)
+                exchange = reader.add_line(line)
+                if exchange is not None and evidence is not None:
+                    evidence.add(exchange)
+                    yield exchange_record(exchange)
+
+        imported = records()
+        published = writer is not None
         if writer is not None:
-            writer.reconcile(self.trajectory)
+            try:
+                writer.reconcile_records(imported)
+            except OSError as exc:
+                published = False
+                logger.warning("Could not publish %s: %s", writer.path, exc)
+        for _ in imported:
+            pass
+        trajectory = reader.finish()
+        if evidence is not None:
+            trajectory._tool_evidence = evidence.items()
+            self._live_reconciled = published
+        self.trajectory = trajectory
+        _warn_refused_requests(trajectory)
+
+    def _import_callback_file(self, path: Path) -> None:
+        with path.open() as lines:
+            self._import_callback_lines(lines)
 
 
 def _live_usage_gateway_conformance(process: LiteLLMProcess) -> LiveUsageGateway:
@@ -636,8 +819,8 @@ class HostLiteLLMProcess(LiteLLMProcess):
                 self.process.kill()
                 await asyncio.to_thread(self.process.wait, 10)
         _HOST_PROXY_PROCESSES.pop(self.process, None)
-        self._load_callback_log()
-        self._reconcile_live_capture()
+        await _capture_to_thread(self._load_callback_log)
+        await _capture_to_thread(self._reconcile_live_capture)
         with contextlib.suppress(Exception):
             shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
@@ -647,23 +830,33 @@ class HostLiteLLMProcess(LiteLLMProcess):
         except OSError:
             return -1
 
+    def requests_in_flight(self) -> int | None:
+        """Requests the proxy has taken and not yet logged: the lines of its
+        request mark file less those of its logged mark file. None when they
+        cannot be read."""
+        counts = []
+        for suffix in (_REQUEST_MARK_SUFFIX, _LOGGED_MARK_SUFFIX):
+            try:
+                counts.append(Path(f"{self.log_path}{suffix}").read_text().count("\n"))
+            except FileNotFoundError:
+                counts.append(0)
+            except OSError:
+                return None
+        return max(0, counts[0] - counts[1])
+
     def _requested(self) -> bool:
         """Whether any request reached the proxy (the callback's mark file)."""
         return Path(f"{self.log_path}{_REQUEST_MARK_SUFFIX}").exists()
 
     def _all_logged(self) -> bool:
         """Whether every request that reached the proxy has its whole record
-        in the callback log: each call id in the request marks is in the
-        logged marks. A request without a call id never counts as logged."""
+        in the callback log (:func:`_marks_all_logged`)."""
         try:
             requests = Path(f"{self.log_path}{_REQUEST_MARK_SUFFIX}").read_text()
             logged = Path(f"{self.log_path}{_LOGGED_MARK_SUFFIX}").read_text()
         except OSError:
             return False
-        if not requests.endswith("\n") or not logged.endswith("\n"):
-            return False
-        wanted = set(requests.splitlines())
-        return bool(wanted) and "?" not in wanted and wanted <= set(logged.splitlines())
+        return _marks_all_logged(requests, logged)
 
     async def _read_callback_chunk(self, offset: int, limit: int) -> _CallbackChunk:
         def _read() -> _CallbackChunk:
@@ -688,14 +881,8 @@ class HostLiteLLMProcess(LiteLLMProcess):
                 agent_name=self.agent_name,
             )
             return
-        text = self.log_path.read_text()
-        self._capture_request_events(text)
-        self.trajectory = trajectory_from_litellm_callback_log(
-            text,
-            session_id=self.session_id,
-            agent_name=self.agent_name,
-        )
-        _warn_refused_requests(self.trajectory)
+        with self.log_path.open() as lines:
+            self._import_callback_lines(lines)
 
     def log_tail(self) -> str:
         chunks: list[str] = []
@@ -756,7 +943,21 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
 
     async def stop(self) -> None:
         await self._stop_live_capture()
-        await _await_log_stable(self._remote_log_size)
+        # The host proxy's settle rule: without the request/logged
+        # marks, an agent that never called this proxy held every Daytona
+        # trial's teardown for the whole 12 s deadline. One exec per poll
+        # reads the log size and both marks; an unreadable probe keeps the
+        # old wait.
+        marks = _RemoteMarks(size=-1, requested=True, all_logged=False)
+
+        async def _probe() -> int:
+            nonlocal marks
+            marks = await self._remote_marks()
+            return marks.size
+
+        await _await_log_stable(
+            _probe, requested=lambda: marks.requested, logged=lambda: marks.all_logged
+        )
         # Checked again at use: root kills the pid the file names and removes
         # the folder (FF-install-C2, C10).
         guard = _runtime_use_guard(self.runtime_dir, self.pid_path)
@@ -771,13 +972,31 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 timeout_sec=10,
             )
         await self._load_callback_log()
-        self._reconcile_live_capture()
+        await _capture_to_thread(self._reconcile_live_capture)
         with contextlib.suppress(Exception):
             await exec_raw(
                 self.sandbox.exec,
                 f"{guard} && rm -rf {shlex.quote(self.runtime_dir)}",
                 timeout_sec=10,
             )
+
+    async def _remote_marks(self) -> _RemoteMarks:
+        """The callback log's size, whether any request reached the proxy
+        (``<log>.requests`` exists) and whether every one of them is whole in
+        the log (``<log>.logged``, :func:`_marks_all_logged`), in one exec.
+        ``base64 -w 0`` is already required by the chunk reads below."""
+        log = shlex.quote(self.log_path)
+        requests = shlex.quote(f"{self.log_path}{_REQUEST_MARK_SUFFIX}")
+        logged = shlex.quote(f"{self.log_path}{_LOGGED_MARK_SUFFIX}")
+        command = (
+            f"stat -c %s {log} 2>/dev/null || echo -1; "
+            f"if [ -e {requests} ]; then echo R; base64 -w 0 {requests} 2>/dev/null; echo; "
+            f"base64 -w 0 {logged} 2>/dev/null; echo; else echo N; fi"
+        )
+        with contextlib.suppress(Exception):
+            result = await exec_raw(self.sandbox.exec, command, timeout_sec=5)
+            return _parse_remote_marks(result.stdout or "")
+        return _RemoteMarks(size=-1, requested=True, all_logged=False)
 
     async def _remote_log_size(self) -> int:
         with contextlib.suppress(Exception):
@@ -842,33 +1061,32 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             return _CallbackChunk(b"", None)
 
     async def _load_callback_log(self) -> None:
-        text = ""
         download_file = getattr(self.sandbox, "download_file", None)
         if download_file is not None:
             with tempfile.NamedTemporaryFile("r", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
             try:
                 await download_file(self.log_path, tmp_path)
-                text = tmp_path.read_text()
+                if tmp_path.stat().st_size:
+                    # Read from the downloaded file line by line, never as
+                    # one string (_import_callback_lines).
+                    await _capture_to_thread(
+                        lambda: self._import_callback_file(tmp_path)
+                    )
+                    return
             except Exception as exc:
                 logger.debug("LiteLLM callback download failed: %s", exc)
             finally:
                 tmp_path.unlink(missing_ok=True)
-        if not text:
-            result = await exec_raw(
-                self.sandbox.exec,
-                f"cat {shlex.quote(self.log_path)} 2>/dev/null || true",
-                timeout_sec=15,
-            )
-            if result.return_code == 0:
-                text = result.stdout or ""
-        self._capture_request_events(text)
-        self.trajectory = trajectory_from_litellm_callback_log(
-            text,
-            session_id=self.session_id,
-            agent_name=self.agent_name,
+        text = ""
+        result = await exec_raw(
+            self.sandbox.exec,
+            f"cat {shlex.quote(self.log_path)} 2>/dev/null || true",
+            timeout_sec=15,
         )
-        _warn_refused_requests(self.trajectory)
+        if result.return_code == 0:
+            text = result.stdout or ""
+        await _capture_to_thread(lambda: self._import_callback_lines(text.splitlines()))
 
     async def log_tail(self) -> str:
         chunks: list[str] = []
@@ -886,14 +1104,62 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
 
 
 def needs_litellm_runtime(agent: str, model: str | None) -> bool:
-    """True when an agent/model pair should be routed through LiteLLM."""
-    return bool(model) and not is_scripted_agent(agent)
+    """True when an agent/model pair should be routed through LiteLLM.
+
+    Never for an agent that routes its own model calls (``model_route =
+    "agent"``): its model, if any, is a label.
+    """
+    return bool(routed_model(agent, model)) and not is_scripted_agent(agent)
 
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _marks_all_logged(requests: str, logged: str) -> bool:
+    """Whether every request that reached a proxy has its whole record in the
+    callback log: each call id in the request marks is in the logged marks.
+    A request without a call id ("?") never counts as logged, and a mark
+    file still being written (no final newline) is not read as complete."""
+    if not requests.endswith("\n") or not logged.endswith("\n"):
+        return False
+    wanted = set(requests.splitlines())
+    return bool(wanted) and "?" not in wanted and wanted <= set(logged.splitlines())
+
+
+@dataclass(frozen=True)
+class _RemoteMarks:
+    """One read of a sandbox proxy's callback log and its marks."""
+
+    size: int
+    requested: bool
+    all_logged: bool
+
+
+def _parse_remote_marks(stdout: str) -> _RemoteMarks:
+    """Parse ``_remote_marks``'s output: the size line, then ``N`` (no request
+    reached the proxy) or ``R`` with both mark files as base64. Anything else
+    is read as "a request may be in flight" so the caller keeps waiting."""
+    lines = stdout.split("\n")
+    try:
+        size = int(lines[0].strip() or -1)
+    except ValueError:
+        size = -1
+    flag = lines[1].strip() if len(lines) > 1 else ""
+    if flag == "N":
+        return _RemoteMarks(size=size, requested=False, all_logged=False)
+    if flag != "R" or len(lines) < 4:
+        return _RemoteMarks(size=size, requested=True, all_logged=False)
+    try:
+        requests = base64.b64decode(lines[2].strip(), validate=True).decode("utf-8")
+        logged = base64.b64decode(lines[3].strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return _RemoteMarks(size=size, requested=True, all_logged=False)
+    return _RemoteMarks(
+        size=size, requested=True, all_logged=_marks_all_logged(requests, logged)
+    )
 
 
 async def _await_log_stable(
@@ -1179,6 +1445,7 @@ def _sitecustomize_source(
         + f"import {_PATCH_MODULE}\n"
         f"import {_GEMINI_PATCH_MODULE}\n"
         f"import {_TOKEN_CAPTURE_PATCH_MODULE}\n"
+        f"import {_PROVIDER_RETRY_PATCH_MODULE}\n"
         f"{_PATCH_MODULE}.register_claude_effort_capabilities({models!r})\n"
         "try:\n"
         f"    import {_REQUEST_GUARD_MODULE}\n"
@@ -1211,6 +1478,9 @@ def _write_runtime_files(
     )
     (runtime_dir / f"{_TOKEN_CAPTURE_PATCH_MODULE}.py").write_text(
         Path(__file__).with_name("litellm_token_capture_patch.py").read_text()
+    )
+    (runtime_dir / f"{_PROVIDER_RETRY_PATCH_MODULE}.py").write_text(
+        Path(__file__).with_name("litellm_provider_retry_patch.py").read_text()
     )
     (runtime_dir / f"{_REQUEST_GUARD_MODULE}.py").write_text(
         Path(__file__).with_name("litellm_request_guard.py").read_text()
@@ -1299,7 +1569,11 @@ def _proxy_process_env(source: dict[str, str], runtime_dir: str) -> dict[str, st
         if key not in SYSTEM_SHELL_UNSET_VARS and not key.startswith(("PYTHON", "LD_"))
     }
     env.update(
-        PYTHONPATH=runtime_dir, PYTHONSAFEPATH="1", PYTHONNOUSERSITE="1", **DOTENV_OFF
+        PYTHONPATH=runtime_dir,
+        PYTHONSAFEPATH="1",
+        PYTHONNOUSERSITE="1",
+        LITELLM_LOCAL_MODEL_COST_MAP="True",
+        **DOTENV_OFF,
     )
     return env
 
@@ -1566,13 +1840,19 @@ def _host_proxy_warm() -> int:
 
 
 def _host_proxy_env(
-    agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
+    agent: str,
+    agent_env: dict[str, str],
+    required_skill_names: tuple[str, ...],
+    trial_budget: TrialBudget | None = None,
 ) -> dict[str, str]:
-    """The proxy env ensure_litellm_runtime starts a host proxy with when web
-    tools are allowed (a run that disallows them gets the sandbox proxy)."""
+    """The proxy env ensure_litellm_runtime starts a trial's first host proxy
+    with when web tools are allowed (a run that disallows them gets the
+    sandbox proxy)."""
     env = _litellm_proxy_env(
         agent=agent, agent_env=agent_env, required_skill_names=required_skill_names
     )
+    if trial_budget is not None:
+        env.update(trial_budget.proxy_env())
     env["BENCHFLOW_LITELLM_DISALLOW_WEB_TOOLS"] = "0"
     return env
 
@@ -1629,7 +1909,7 @@ def _host_proxy_spawner(
     env = dict(proxy_env)
 
     async def spawn() -> tuple[Any, str]:
-        master_key = f"sk-benchflow-{secrets.token_urlsafe(24)}"
+        master_key = f"sk-runtime-{secrets.token_urlsafe(24)}"
         server = await _start_host_litellm(
             route=route,
             master_key=master_key,
@@ -1871,6 +2151,7 @@ def reserve_host_proxy(
     environment: str,
     required_skill_names: tuple[str, ...] = (),
     force_sandbox_local: bool = False,
+    trial_budget: TrialBudget | None = None,
 ) -> HostProxyReservation | None:
     """Start, while the trial's sandbox starts, the host proxy its agent will
     connect through (see ``_HostProxyPool``); None when this connection
@@ -1892,7 +2173,9 @@ def reserve_host_proxy(
         route = resolve_litellm_route(model, agent_env)
         if _missing_required_env(route, agent_env):
             return None
-        proxy_env = _host_proxy_env(agent, agent_env, required_skill_names)
+        proxy_env = _host_proxy_env(
+            agent, agent_env, required_skill_names, trial_budget
+        )
         fields = _host_proxy_fields(
             route=route, agent=agent, environment=environment, proxy_env=proxy_env
         )
@@ -2019,6 +2302,7 @@ env["PYTHONNOUSERSITE"] = "1"
 # No .env either: LiteLLM's import would read one from the image's folders
 # above the runtime folder.
 env["PYTHON_DOTENV_DISABLED"] = "1"
+env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 stdout = open(cfg["stdout"], "ab")
 stderr = open(cfg["stderr"], "ab")
 cmd = [
@@ -2079,6 +2363,7 @@ async def _upload_runtime_files_to_sandbox(
         "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
         "gemini_patch": f"{runtime_dir}/{_GEMINI_PATCH_MODULE}.py",
         "token_capture_patch": f"{runtime_dir}/{_TOKEN_CAPTURE_PATCH_MODULE}.py",
+        "provider_retry_patch": f"{runtime_dir}/{_PROVIDER_RETRY_PATCH_MODULE}.py",
         "request_guard": f"{runtime_dir}/{_REQUEST_GUARD_MODULE}.py",
         "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
@@ -2092,7 +2377,7 @@ async def _upload_runtime_files_to_sandbox(
         "preflight": f"{runtime_dir}/bedrock_patch_preflight.py",
     }
     # Root writes the proxy's config and launcher here and runs them: only
-    # in a folder that is root's alone (C8; /opt/benchflow/proxy is root's),
+    # in a folder that is root's alone (C8; /opt/runtime/proxy is root's),
     # new and private to root (the config holds the proxy's key; a folder
     # that already exists is refused, FF-install-C2).
     result = await exec_raw(
@@ -2113,6 +2398,7 @@ async def _upload_runtime_files_to_sandbox(
             ("litellm_bedrock_patch.py", "patch"),
             ("litellm_gemini_passthrough_patch.py", "gemini_patch"),
             ("litellm_token_capture_patch.py", "token_capture_patch"),
+            ("litellm_provider_retry_patch.py", "provider_retry_patch"),
         ):
             await _upload_text(
                 sandbox,
@@ -2909,6 +3195,7 @@ def _litellm_proxy_env(
     *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
 ) -> dict[str, str]:
     updated = dict(agent_env)
+    updated["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
     updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
     expected = sorted(set(required_skill_names))
@@ -3091,6 +3378,7 @@ def proxy_install_record(
         model is None
         or not needs_litellm_runtime(agent, model)
         or uses_native_subscription_auth(agent, model, agent_env)
+        or uses_direct_anthropic_endpoint(agent, model, agent_env)
     ):
         return None
     try:
@@ -3103,6 +3391,37 @@ def proxy_install_record(
     install.check()
     sandbox_local = force_sandbox_local or environment in _SANDBOX_LOCAL_ENVIRONMENTS
     return install.record(location="sandbox" if sandbox_local else "host")
+
+
+def _name_own_endpoint_model(
+    agent: str, model: str | None, agent_env: dict[str, str]
+) -> dict[str, str]:
+    """Claude Code off the proxy on another provider's Anthropic-compatible
+    endpoint (a direct provider such as MiMo or Kimi): the provider's model id
+    in ``ANTHROPIC_MODEL`` when nothing set it there.
+
+    claude-agent-acp 0.81 lists only Claude names for its model option and
+    refuses any other, so the id goes in the env, whose model is the
+    adapter's ``default``; connect then leaves the option unset
+    (``acp.runtime._model_left_to_env``). Against Anthropic itself, or with
+    the variable set, the env is unchanged.
+    """
+    cfg = AGENTS.get(agent)
+    mapping = getattr(cfg, "env_mapping", None) or {}
+    model_env = mapping.get("BENCHFLOW_PROVIDER_MODEL")
+    url_env = mapping.get("BENCHFLOW_PROVIDER_BASE_URL")
+    if (
+        not model
+        or getattr(cfg, "api_protocol", "") != "anthropic-messages"
+        or not model_env
+        or not url_env
+        or agent_env.get(model_env)
+    ):
+        return agent_env
+    host = (urlparse(agent_env.get(url_env) or "").hostname or "").lower()
+    if not host or host == "anthropic.com" or host.endswith(".anthropic.com"):
+        return agent_env
+    return {**agent_env, model_env: strip_provider_prefix(model)}
 
 
 async def _skip_litellm_runtime(
@@ -3153,6 +3472,7 @@ async def ensure_litellm_runtime(
     force_sandbox_local: bool = False,
     install_layer_bypass_reason: str | None = None,
     disallow_web_tools: bool = False,
+    trial_budget: TrialBudget | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -3163,7 +3483,9 @@ async def ensure_litellm_runtime(
     *required* (``required`` fails closed when usage cannot be captured at all).
     The only agents that skip the proxy are those that physically cannot be
     routed through it: ``oracle`` (no model) and native-subscription auth (no
-    API key to proxy). Gemini uses LiteLLM's native GenerateContent endpoints.
+    API key to proxy), and explicit token/URL pairs for non-Claude models in
+    Claude Code. Direct endpoints cannot satisfy required capture or hosted-tool
+    restrictions. Gemini uses LiteLLM's native GenerateContent endpoints.
     """
     # Re-entrant connects pass back proxy-owned env, which cannot reconstruct
     # upstream routing or credentials. Restore controller-held source config.
@@ -3180,12 +3502,28 @@ async def ensure_litellm_runtime(
 
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
 
+    if uses_direct_anthropic_endpoint(agent, model, agent_env):
+        if usage_cfg.mode == "required" or disallow_web_tools:
+            await _raise_litellm_unavailable(
+                runtime=runtime,
+                error="A direct Claude Code endpoint cannot enforce required usage "
+                "capture or hosted-tool restrictions; configure a proxy provider route.",
+            )
+        _warn_token_capture_without_gateway(
+            agent_env, "explicit direct Claude Code endpoint"
+        )
+        return await _skip_litellm_runtime(
+            _name_own_endpoint_model(agent, model, agent_env),
+            runtime,
+            reason="explicit direct Claude Code endpoint; no proxy call capture or cost accounting",
+        )
+
     if uses_native_subscription_auth(agent, model, agent_env):
         _warn_token_capture_without_gateway(
             agent_env, "the agent uses subscription (OAuth) auth"
         )
         return await _skip_litellm_runtime(
-            agent_env,
+            _name_own_endpoint_model(agent, model, agent_env),
             runtime,
             reason="native subscription auth will use agent ACP usage telemetry",
         )
@@ -3199,7 +3537,15 @@ async def ensure_litellm_runtime(
         _warn_token_capture_without_gateway(
             agent_env, f"agent {agent!r} is not routed through the LiteLLM gateway"
         )
-        return await _skip_litellm_runtime(agent_env, runtime)
+        return await _skip_litellm_runtime(
+            agent_env,
+            runtime,
+            reason=(
+                f'agent {agent!r} routes its own model calls (model_route = "agent")'
+                if agent_routes_own_model(agent)
+                else None
+            ),
+        )
     assert model is not None
 
     sandbox_local = not proxy_runs_on_host(
@@ -3253,7 +3599,7 @@ async def ensure_litellm_runtime(
 
     master_key = (
         agent_env.get(LITELLM_MASTER_KEY_ENV)
-        or f"sk-benchflow-{secrets.token_urlsafe(24)}"
+        or f"sk-runtime-{secrets.token_urlsafe(24)}"
     )
     skill_gate_key = json.dumps(
         sorted(set(required_skill_names)), separators=(",", ":")
@@ -3293,6 +3639,10 @@ async def ensure_litellm_runtime(
             required_skill_names=required_skill_names,
         )
         proxy_env.update(restricted_endpoint_env)
+        if trial_budget is not None:
+            # The proxy enforces the trial's budget, counting on from what the
+            # trial's earlier proxies (another scene role's) already counted.
+            proxy_env.update(trial_budget.proxy_env(_budget_used(prior_runtimes)))
         # Controller policy overrides any role/env spelling before launch.
         proxy_env["BENCHFLOW_LITELLM_DISALLOW_WEB_TOOLS"] = (
             "1" if disallow_web_tools else "0"
@@ -3387,6 +3737,19 @@ async def ensure_litellm_runtime(
         ),
         new_runtime,
     )
+
+
+def _budget_used(runtimes: Iterable[Any]) -> dict[str, int]:
+    """What the trial's stopped proxies counted against its budget: their
+    calls (turns) and tokens, from their imported callback logs."""
+    used = {"tokens": 0, "turns": 0}
+    for prior in runtimes:
+        trajectory = getattr(getattr(prior, "server", None), "trajectory", None)
+        if trajectory is None:
+            continue
+        used["turns"] += len(trajectory.exchanges)
+        used["tokens"] += int(trajectory.total_provider_tokens)
+    return used
 
 
 async def stop_litellm_runtime(runtime: Any | None) -> None:

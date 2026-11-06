@@ -117,7 +117,7 @@ def test_create_adapter_defaults_unknown_models_to_openai(monkeypatch):
     assert isinstance(shim._create_adapter("deepseek-v4-flash"), OpenAIAdapter)
     assert isinstance(shim._create_adapter("qwen-3-max"), OpenAIAdapter)
     assert isinstance(
-        shim._create_adapter("benchflow-openai-gpt-5.4-mini"), OpenAIAdapter
+        shim._create_adapter("runtime-openai-gpt-5.4-mini"), OpenAIAdapter
     )
     assert isinstance(shim._create_adapter("claude-opus-4-5"), AnthropicAdapter)
     assert isinstance(shim._create_adapter("gemini-3-flash"), GoogleAdapter)

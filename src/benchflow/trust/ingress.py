@@ -212,6 +212,12 @@ NOT_SANDBOX: dict[str, str] = {
         "staging folder, read by root's shell as that exec's stdin and removed "
         "after it; it lands no file any later step reads"
     ),
+    # the channel stages only BenchFlow's protected helper source.
+    "benchflow.sandbox.daytona_channel:DaytonaChannels._stage_source": (
+        "the captured Daytona SDK's fs.upload_file for BenchFlow's own helper, "
+        "into a fresh root staging folder proved by the protected route before "
+        "launch; its provider generation owns both the helper and cleanup"
+    ),
     "benchflow.sandbox.daytona_strategies:_DaytonaCredentialOps.run_as": (
         "the Daytona SDK's fs.upload_file for a credential file the host kept "
         "out of a snapshot, put back on restore"

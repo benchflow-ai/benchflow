@@ -143,7 +143,7 @@ description = "Does it work?"
         cfg = load_rubric_toml(rubric_file)
 
         # Defaults
-        assert cfg.judge.model == "claude-sonnet-4-6"
+        assert cfg.judge.model == "claude-sonnet-5-5"
         assert cfg.judge.mode == "individual"
         assert cfg.scoring.aggregation == "weighted_mean"
         assert len(cfg.criteria) == 1
@@ -263,7 +263,7 @@ match_criteria = "A."
 class TestDefaults:
     def test_judge_config_defaults(self) -> None:
         j = JudgeConfig()
-        assert j.model == "claude-sonnet-4-6"
+        assert j.model == "claude-sonnet-5-5"
         assert j.mode == "individual"
         assert j.files == []
         assert j.timeout == 120
@@ -276,7 +276,7 @@ class TestDefaults:
     def test_rubric_config_defaults(self) -> None:
         r = RubricConfig()
         assert r.criteria == []
-        assert r.judge.model == "claude-sonnet-4-6"
+        assert r.judge.model == "claude-sonnet-5-5"
 
 
 # Harvey LAB style rubric.json parsing (#270)
@@ -314,7 +314,7 @@ class TestLoadRubricJson:
         assert cfg.criteria[0].description == "The memo states the $X price."
         assert cfg.criteria[0].type == "binary"
         # judge/scoring defaults apply when absent
-        assert cfg.judge.model == "claude-sonnet-4-6"
+        assert cfg.judge.model == "claude-sonnet-5-5"
         assert cfg.scoring.aggregation == "weighted_mean"
 
     def test_rubric_json_with_judge_and_scoring(self, tmp_path: Path) -> None:

@@ -203,8 +203,10 @@ def test_claude_usage_limit_keeps_the_clis_words_and_its_record():
         ClaudeCodeParser("/work"), CLAUDE / "usage-limit.jsonl"
     )
     assert outcome.completed and outcome.stop_reason is None
+    # The recorder's reset time is a past date, which Claude Code 2.1.316
+    # prints as a time of day (2.1.280 printed "resets Oct 3, 6:08pm (UTC)").
     assert outcome.agent_text == (
-        "You've hit your weekly limit \u00b7 resets Oct 3, 6:08pm (UTC)"
+        "You've hit your weekly limit \u00b7 resets 6:08pm (UTC)"
     )
     # The message the rollout files adds the status; the agent's words do not.
     assert outcome.error == f"{outcome.agent_text} (HTTP 429)"
@@ -662,6 +664,34 @@ def test_codex_resume_continues_the_thread():
     ).argv
     assert argv[:3] == ("exec", "resume", "t-1")
     assert 'model_reasoning_effort="high"' in argv
+
+
+def test_native_codex_takes_the_max_effort_codex_acp_takes(tmp_path):
+    """--reasoning-effort max reached the model through
+    codex-acp (CODEX_CONFIG model_reasoning_effort; Codex 0.159.3 sends
+    reasoning.effort "max"), but the native harness refused it at connect
+    ("'max' is not a codex effort"), so every native trial errored."""
+    import asyncio
+
+    from benchflow.native_harness.runtime import NativeRouteRefused, connect_native
+
+    # Past the effort check, the next refusal is the route's: no proxy here.
+    with pytest.raises(NativeRouteRefused):
+        asyncio.run(
+            connect_native(
+                None,
+                "codex-acp",
+                {},
+                "agent",
+                "gpt-5.5",
+                tmp_path,
+                "docker",
+                "/app",
+                reasoning_effort="max",
+            )
+        )
+    argv = codex_launch(NativeTurn(cwd="/app", reasoning_effort="max"), _CONFIG).argv
+    assert 'model_reasoning_effort="max"' in argv
 
 
 def test_codex_mcp_servers_become_config_tables():

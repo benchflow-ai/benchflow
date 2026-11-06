@@ -127,6 +127,7 @@ NESTED_SPANS = frozenset({HARDEN_BEFORE_VERIFY})
 #: Stable names: a later one-script version of the steps fills the same keys.
 HARDEN_STEPS = (
     "kill_sandbox_user_procs",
+    "restore_disarmed_delegates",
     "clear_verifier_output",
     "prepare_app_dir",
     "reclaim_disk",

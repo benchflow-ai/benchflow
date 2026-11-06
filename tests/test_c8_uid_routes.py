@@ -359,7 +359,7 @@ def test_agentcore_ping_shim_gets_the_image_loader_values(tmp_path):
     assert runtime_env["LD_LIBRARY_PATH"] == ""
     ran = _run(argv, runtime_env)
     assert ran.return_code == 0, ran.stderr
-    assert out.read_text() == "/opt/python/lib|/opt/benchflow_agentcore_shim.py"
+    assert out.read_text() == "/opt/python/lib|/opt/runtime_agentcore_shim.py"
 
 
 # FF-install-C16..C20 (at 8af3461b), as C8 on this
@@ -460,12 +460,12 @@ def test_the_root_only_check_refuses_a_tree_the_agent_user_owns(tmp_path):
 
 def test_the_js_runtime_is_checked_before_root_reuses_or_installs_into_it():
     """C18: every JS agent install (and the native Codex one) starts with the
-    check of /opt/benchflow, before root runs its Node or npm."""
+    check of /opt/runtime, before root runs its Node or npm."""
     from benchflow._root_only import root_only_tree_check
     from benchflow.agents import registry
 
-    check = root_only_tree_check("/opt/benchflow", "BenchFlow's agent runtime folder")
-    assert registry._NODE_INSTALL.startswith(f"mkdir -p /opt/benchflow && {check}")
+    check = root_only_tree_check("/opt/runtime", "BenchFlow's agent runtime folder")
+    assert registry._NODE_INSTALL.startswith(f"mkdir -p /opt/runtime && {check}")
     node_use = registry._NODE_INSTALL.index('"$BF_NODE_DIR/bin/node"')
     assert registry._NODE_INSTALL.index(check) < node_use
 

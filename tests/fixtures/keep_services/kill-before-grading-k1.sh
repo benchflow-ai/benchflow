@@ -79,10 +79,42 @@ each() {
     [ -n "$mine" ] || return 0
     asuser "for p in$mine; do kill -s $sig \$p 2>/dev/null; done; echo BF as-user" || helpless "$sig"
 }
+# PID 1 as BenchFlow's keep-alive that nothing in the sandbox could have traced
+# (see the rule above): looked at once, before anything is signalled.
+pid1_inert() {
+    i1s=
+    { read -r i1s <"$P/sys/kernel/yama/ptrace_scope"; } 2>/dev/null
+    case "$i1s" in 1|2|3) ;; *) return 1 ;; esac
+    i1t=
+    i1b=
+    { while read -r key first rest || [ -n "$key" ]; do
+        case "$key" in
+            TracerPid:) i1t=$first ;;
+            CapBnd:) i1b=$first ;;
+        esac
+        key=
+    done <"$P/1/status"; } 2>/dev/null
+    [ "$i1t" = 0 ] || return 1
+    if [ "$i1s" != 3 ]; then
+        # CAP_SYS_PTRACE is bit 19: the high bit of the fifth hex digit from
+        # the right of the 16-digit mask.
+        case "$i1b" in ''|*[!0-9a-f]*) return 1 ;; esac
+        [ "${#i1b}" -eq 16 ] || return 1
+        i1d=${i1b%????}
+        i1d=${i1d#"${i1d%?}"}
+        case "$i1d" in [0-7]) ;; *) return 1 ;; esac
+    fi
+    i1c=$(tr '\000' '|' <"$P/1/cmdline" 2>/dev/null) || return 1
+    case "$i1c" in 'sleep|infinity|'|'/opt/runtime/rt/bin/sleep|infinity|') return 0 ;; esac
+    return 1
+}
+inert1=
+pid1_inert && inert1=1
 live() {
     for entry in "$P"/[0-9]*; do
         pid=${entry##*/}
         case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ "$pid" = 1 ] && [ -n "$inert1" ] && continue
         state=
         ruid=
         euid=

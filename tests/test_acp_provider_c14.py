@@ -12,6 +12,7 @@ import base64
 import copy
 import json
 import re
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -125,16 +126,35 @@ def test_every_catalogued_model_is_refused_as_configured_and_as_named(
                 assert reason and BY_ITSELF in reason, (model, path)
 
 
+def _pinned_price_table() -> dict[str, Any]:
+    """The price table the pinned LiteLLM wheel ships.
+
+    Not litellm.model_cost: unless LITELLM_LOCAL_MODEL_COST_MAP is set when
+    LiteLLM is imported, that is LiteLLM main's table downloaded at import, so
+    this test failed on any machine with network once main added a model
+    (empiriolabs/perplexity-deep-research, seen 2026-11-04).
+    """
+    import importlib.util
+
+    spec = importlib.util.find_spec("litellm")
+    assert spec and spec.submodule_search_locations
+    folder = Path(next(iter(spec.submodule_search_locations)))
+    return json.loads(
+        (folder / "model_prices_and_context_window_backup.json").read_text()
+    )
+
+
+SELF_SEARCHING_FAMILY = re.compile(
+    r"search-preview|search-api|deep-research|sonar|compound|-online|-search$"
+)
+
+
 def test_catalog_covers_every_pinned_self_searching_model(deployed):
     """Every pinned LiteLLM chat model of a self-searching family is caught."""
-    import litellm
-
     guard = _guard(deployed)
-    family = re.compile(
-        r"search-preview|search-api|deep-research|sonar|compound|-online"
-    )
+    family = SELF_SEARCHING_FAMILY
     found = []
-    for name, info in litellm.model_cost.items():
+    for name, info in _pinned_price_table().items():
         if not isinstance(info, dict) or info.get("mode") not in {
             "chat",
             "responses",
@@ -152,6 +172,22 @@ def test_catalog_covers_every_pinned_self_searching_model(deployed):
 @pytest.mark.parametrize(
     "model",
     [
+        # Search-like chat models in LiteLLM main's table on 2026-11-04 that
+        # the pinned table does not hold (tools/hosted_retrieval_scan.py).
+        "aihubmix/gemini-3-flash-preview-search",
+        "empiriolabs/perplexity-advanced-deep-research",
+        "empiriolabs/perplexity-deep-research",
+        "empiriolabs/perplexity-pro-search",
+    ],
+)
+def test_newer_self_searching_models_are_catalogued(deployed, model):
+    """Stale-audit refresh of HOSTED_RETRIEVAL_MODELS."""
+    assert _guard(deployed)["hosted_retrieval_model"](model), model
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
         "openai/gpt-4.1",
         "gpt-5.5",
         "anthropic/claude-sonnet-4-5",
@@ -161,6 +197,13 @@ def test_catalog_covers_every_pinned_self_searching_model(deployed):
         "vllm/fake-policy",
         "groq/llama-3.3-70b-versatile",
         "openrouter/openai/gpt-4o",
+        # Searched-for names that do not search: OpenAI's life-sciences model
+        # (nothing on OpenAI's page or in LiteLLM says it searches) and an OCR
+        # model.
+        "openai/gpt-rosalind-research",
+        "fireworks_ai/accounts/fireworks/models/firesearch-ocr-v6",
+        "gemini/gemini-3.5-flash-lite",
+        "anthropic/claude-sonnet-5-5",
     ],
 )
 def test_ordinary_models_are_not_catalogued(deployed, model):

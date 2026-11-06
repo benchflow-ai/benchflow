@@ -125,6 +125,14 @@ def isolate_local_dotenv(monkeypatch, tmp_path) -> None:
 
 
 @pytest.fixture(autouse=True)
+def isolate_failed_daytona_layers(monkeypatch) -> None:
+    """Independent tests represent independent process build histories."""
+    from benchflow.sandbox import daytona_layers
+
+    monkeypatch.setattr(daytona_layers, "_FAILED", set())
+
+
+@pytest.fixture(autouse=True)
 def isolate_daytona_ledger(monkeypatch, tmp_path) -> Iterator[None]:
     """Keep Daytona leftovers out of the developer's state file, and give
     each test an empty in-process ledger (sandbox/daytona_ledger.py)."""
@@ -250,6 +258,34 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers",
         "verifier_runtime: run hardening's real protected-verifier-runtime check",
+    )
+    config.addinivalue_line(
+        "markers",
+        "claude_connector_policy: run Claude Code's real managed connector policy",
+    )
+
+
+@pytest.fixture(autouse=True)
+def no_claude_connector_policy(monkeypatch, request) -> None:
+    """Admit Claude Code's managed connector policy in unit tests (#79).
+
+    The real check (agents/claude_connector_policy.py) runs one root command
+    in the sandbox: BenchFlow's Node and the pinned CLI, then the root-owned
+    managed settings, for the managed launcher only. A unit test's fake
+    sandbox launches Claude Code by name and cannot answer it. Tests of the
+    policy, and of where a connection runs it, mark themselves
+    ``claude_connector_policy``; a ``bench`` the deterministic tier starts
+    runs it as any run does.
+    """
+    if request.node.get_closest_marker("claude_connector_policy"):
+        return
+    from benchflow.agents import claude_connector_policy
+
+    async def admitted(env, *, agent_env, **kwargs):
+        return agent_env
+
+    monkeypatch.setattr(
+        claude_connector_policy, "enforce_claude_connector_policy", admitted
     )
 
 

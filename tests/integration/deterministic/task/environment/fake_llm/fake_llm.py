@@ -22,6 +22,10 @@ The server is stateless. Every reply is a function of the request alone:
   get a fixed ``ok`` with ``SIDE_USAGE`` (0 in, 1 out).
 - A step with ``delay_sec`` answers after that many seconds (a slow model,
   for timeouts that hit a model call rather than a tool).
+- A step with ``refusal`` is the model refusing: Anthropic's ``stop_reason:
+  refusal`` with no content, ``finish_reason: content_filter`` on chat
+  completions, and an ``incomplete`` Responses answer whose reason is
+  ``content_filter``.
 
 Every main-loop reply reports fixed usage (``USAGE``) so token and cost fields
 of a rollout are exact. Each request is appended to ``--log`` as JSONL.
@@ -141,6 +145,8 @@ def plan_reply(
         return _message(f"msg_fake_{name}_{step}", model, content, "end_turn", USAGE)
 
     entry = script[step]
+    if entry.get("refusal"):
+        return _message(f"msg_fake_{name}_{step}", model, [], "refusal", USAGE)
     content: list[dict[str, Any]] = []
     if entry.get("text"):
         content.append({"type": "text", "text": entry["text"]})
@@ -356,10 +362,14 @@ def plan_chat_reply(
         if b["type"] == "tool_use"
     ]
     sampled = text + _render_tool_calls(tool_calls) + END
+    finish = "tool_calls" if tool_calls else "stop"
+    if plan["stop_reason"] == "refusal":
+        # An OpenAI-compatible provider's content filter.
+        finish = "content_filter"
     return {
         "content": text or None,
         "tool_calls": tool_calls,
-        "finish_reason": "tool_calls" if tool_calls else "stop",
+        "finish_reason": finish,
         "sampled": sampled,
     }
 
@@ -608,11 +618,13 @@ def plan_responses_reply(
                     "status": "completed",
                 }
             )
+    refused = plan["stop_reason"] == "refusal"
     return {
         "id": plan["id"].replace("msg_", "resp_"),
         "object": "response",
         "created_at": 1,
-        "status": "completed",
+        "status": "incomplete" if refused else "completed",
+        **({"incomplete_details": {"reason": "content_filter"}} if refused else {}),
         "model": model,
         "output": output,
         "usage": {
@@ -694,7 +706,13 @@ def responses_events(response: dict[str, Any]) -> list[dict[str, Any]]:
         events.append(
             {"type": "response.output_item.done", "output_index": index, "item": item}
         )
-    events.append({"type": "response.completed", "response": response})
+    # A content filter ends the stream as OpenAI's does: response.incomplete.
+    final = (
+        "response.incomplete"
+        if response["status"] == "incomplete"
+        else "response.completed"
+    )
+    events.append({"type": final, "response": response})
     for number, event in enumerate(events):
         event["sequence_number"] = number
     return events

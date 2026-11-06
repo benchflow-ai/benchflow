@@ -1,10 +1,10 @@
-"""Guards V2-REDESIGN-R3 (b41, Astra and Sol) through hardening, the guard and pytest.
+"""Guards V2-REDESIGN-R3 (b41, two reviews) through hardening, the guard and pytest.
 
 At 3571f2c5 the guard judged plugin bytes that sit where the agent can write,
 and each review found another way past that: a symlink plus a parent spelling
-(R3-1), root installs into the system's site-packages (Astra R3-2), byte-code
-caches of image code (R3-3), a shadowed hashlib (Sol R3-2), a ``.pth`` that
-turns autoload back on (Astra R3-4). Now the verifier's plugins
+(R3-1), root installs into the system's site-packages (one review's R3-2), byte-code
+caches of image code (R3-3), a shadowed hashlib (the other's R3-2), a ``.pth`` that
+turns autoload back on (R3-4). Now the verifier's plugins
 come from BenchFlow's protected runtime and nothing test.sh installed after
 the agent stopped loads. These tests use only what the guard's scoring
 harness has had since 3571f2c5, so they run unchanged on that base.
@@ -104,7 +104,7 @@ async def test_a_parent_spelling_through_a_link_never_loads_other_bytes(
 async def test_a_root_install_into_the_system_site_packages_never_loads(
     tmp_path, monkeypatch, runtime
 ):
-    """Astra R3-2: test.sh's ``python3 -m pip install -r /app/requirements.txt``
+    """One review's R3-2: test.sh's ``python3 -m pip install -r /app/requirements.txt``
     runs as root, and the agent's requirements name its own ctrf wheel; pip
     puts it in the system's site-packages, outside the agent's trees and
     root's. Ownership alone admitted it."""
@@ -133,12 +133,15 @@ async def test_a_root_install_into_the_system_site_packages_never_loads(
 
 
 async def test_a_cache_the_agent_left_for_an_image_plugin_never_runs(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch
 ):
     """R3-3 (both): the image's plugin is unchanged, but test.sh runs pytest
     with ``PYTHONPYCACHEPREFIX=/app/bytecache`` and the agent left an
     unchecked-hash cache for the plugin's module there. Image trust skipped
-    every cache check, and Python ran the agent's byte code."""
+    every cache check, and Python ran the agent's byte code. The guard then
+    refused such a cache; now the guarded pytest reads byte code
+    only from a folder that is never made, so the cache is never read: the
+    plugin's own code runs and the failing test fails."""
     proof = tmp_path / "hostile-imported"
     image = tmp_path / "image-site-packages"
 
@@ -177,14 +180,13 @@ async def test_a_cache_the_agent_left_for_an_image_plugin_never_runs(
     )
 
     assert not proof.exists()
-    assert refused_scored_zero(rewards, error), (rewards, error)
-    assert "pytest plugin guard not confirmed" in caplog.text
+    assert not_passed(rewards, error), (rewards, error)
 
 
 async def test_a_hashlib_the_agent_left_never_runs_inside_the_guard(
     tmp_path, monkeypatch
 ):
-    """Sol R3-2: pytest runs with the workspace first on sys.path, and the
+    """The other review's R3-2: pytest runs with the workspace first on sys.path, and the
     agent left /app/hashlib.py. The guard imported hashlib lazily, from
     there, while it wrote its loading marker: the agent's code ran inside the
     guard and could switch its checks off."""
@@ -220,7 +222,7 @@ async def test_a_hashlib_the_agent_left_never_runs_inside_the_guard(
 
 
 async def test_autoload_turned_back_on_loads_no_unchecked_plugin(tmp_path, monkeypatch):
-    """Astra R3-4: a ``.pth`` in the environment test.sh built clears
+    """R3-4: a ``.pth`` in the environment test.sh built clears
     PYTEST_DISABLE_PLUGIN_AUTOLOAD at interpreter start (modelled here by the
     variable arriving empty), and a dependency the agent chose registers an
     unrequested pytest11 plugin. pytest autoloaded it unchecked."""

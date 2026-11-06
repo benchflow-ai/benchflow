@@ -89,7 +89,7 @@ def _interpreter():
         glibc=(2, 36),
         musl=None,
         markers={},
-        stdlib=["/opt/benchflow/rt/lib/python3.12"],
+        stdlib=["/opt/runtime/rt/lib/python3.12"],
         image_sites=["/usr/local/lib/python3.12/site-packages"],
     )
 
@@ -143,7 +143,7 @@ def _clean(fs, *, agent_user=True, workspace="/app"):
         cleanup_conftests=False,
         workspace=workspace,
         workspace_aliases=(),
-        verifier_dir="/opt/benchflow/verifier",
+        verifier_dir="/opt/runtime/verifier",
         deadline=loop.time() + 30,
         agent_user=agent_user,
     )

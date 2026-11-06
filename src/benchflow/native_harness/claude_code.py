@@ -4,13 +4,17 @@ The harness runs the pinned CLI (the one ``claude-agent-acp`` also drives,
 ``CLAUDE_CODE_EXECUTABLE``) as::
 
     claude -p --output-format stream-json --verbose --include-partial-messages
-           --forward-subagent-text --permission-mode bypassPermissions
+           --forward-subagent-text --thinking-display summarized
+           --permission-mode bypassPermissions
            (--session-id <uuid> | --resume <uuid>) [--model M] [--effort E]
            [--mcp-config <json>]
 
 with the prompt on stdin. ``--include-partial-messages`` makes text and
 thinking arrive as they are generated, as they do over ACP, so the idle
-watchdog sees a long answer being written.
+watchdog sees a long answer being written. ``--thinking-display summarized``
+is what the ACP session asks for (:data:`THINKING_DISPLAY`): without it print
+mode asks for ``updates``, so the two harnesses sent the model different
+requests and recorded different thinking.
 
 The parser is a port of the part of ``claude-agent-acp`` 0.81.2 that turns the
 same messages into ACP updates (``toAcpNotifications``, ``toolInfoFromToolUse``,
@@ -37,6 +41,10 @@ from benchflow.native_harness.spec import (
 )
 
 CLI = "claude-code"
+# The thinking Claude Code asks the API to return, on both harnesses: the ACP
+# session passes it to the adapter's SDK (acp/runtime.py), print mode takes
+# it as --thinking-display. Print mode's own default is ``updates``.
+THINKING_DISPLAY = "summarized"
 # The CLI's --effort values. BenchFlow's "none" and "minimal" have no Claude
 # Code equivalent; they are refused rather than silently widened.
 CLAUDE_CODE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
@@ -48,6 +56,8 @@ _BASE_ARGS = (
     "--verbose",
     "--include-partial-messages",
     "--forward-subagent-text",
+    "--thinking-display",
+    THINKING_DISPLAY,
     # The sandbox is the isolation boundary, as for the ACP adapter, whose
     # permission requests BenchFlow answers with its most permissive option.
     "--permission-mode",

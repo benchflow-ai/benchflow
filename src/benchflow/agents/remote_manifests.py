@@ -23,17 +23,17 @@ AGENTS_DIR_ENV = "BENCHFLOW_AGENTS_DIR"
 AGENTS_SOURCE_ENV = "BENCHFLOW_AGENTS_SOURCE"
 # The catalog a release loads when nothing overrides it: a commit, never a
 # branch, so a release keeps resolving the manifests it was tested with.
-# agents 9aaec336b, agents main after #71-#81 merged: mini-swe-acp 0.1.1
-# installs a private managed CPython instead of apt-installing Python into the
-# task image, keeping #80's mini-swe-agent 2.4.6 / LiteLLM
-# 1.105.1 pins and its cacheable install. Its tree is the tested 8b2fd24c plus
-# 7 files outside mini-swe-acp (codex-acp's manifest synced to 2.0.1, a
-# contract test, capture scripts, a README line). The deterministic mini-swe
-# test loads the plugin from this same commit; the agents commit and this pin
-# ship together.
+# agents 6f19d628d: agents main 9aaec336b (after #71-#81 merged) plus three
+# fixes for the agent's neutral names. mini-swe-acp 0.1.2 installs under
+# benchflow._runtime_tree.RUNTIME_ROOT, and mini-swe, OpenClaw and Prime
+# Agent read RUNTIME_* before BENCHFLOW_*, so the same commit runs on
+# BenchFlow before and after the rename. mini-swe keeps its private managed
+# CPython, the mini-swe-agent 2.4.6 / LiteLLM 1.105.1 pins and its cacheable
+# install. The deterministic mini-swe test loads the plugin from this same
+# commit; the agents commit and this pin ship together.
 # BENCHFLOW_AGENTS_SOURCE overrides it (any ref, `benchflow-ai/agents@main`,
 # a directory, or `off`); a nonblank BENCHFLOW_AGENTS_DIR overrides both.
-DEFAULT_AGENTS_SOURCE = "benchflow-ai/agents@9aaec336b68426058db1bd83fd2c463be2935ce7"
+DEFAULT_AGENTS_SOURCE = "benchflow-ai/agents@6f19d628d1c761d56bafa0b24add66b403f69c5a"
 _OFF_VALUES = frozenset({"off", "0", "none", "disabled", "false"})
 
 

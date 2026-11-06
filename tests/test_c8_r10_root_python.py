@@ -69,7 +69,7 @@ NOT_ROOT_HELPERS = {
     # The kit's own interpreter, smoke-tested while the kit is built (before
     # the agent's turn).
     ("_runtime_tree.py", "kit_prepare_command"): "the kit's build",
-    # BenchFlow's own protected runtimes under /opt/benchflow (their venvs,
+    # BenchFlow's own protected runtimes under /opt/runtime (their venvs,
     # custody-checked in the same command), not stdlib helpers.
     ("providers/litellm_runtime.py", "_ensure_sandbox_litellm"): "proxy venv",
     ("providers/litellm_runtime.py", "proxy_layer_recipe"): "proxy venv build",
@@ -80,11 +80,15 @@ NOT_ROOT_HELPERS = {
     ("sandbox/agentcore_image.py", "_STARTUP_NAMES_CHECK"): "image build check",
     ("agents/registry.py", "<module>"): "agent venvs (harvey-lab, deepagents) by path",
     ("acp/runtime.py", "_prepare_openhands_direct_execution"): (
-        "OpenHands' own interpreter in /opt/benchflow/uv-tools, custody-checked"
+        "OpenHands' own interpreter in /opt/runtime/uv-tools, custody-checked"
     ),
     # Root's interpreter picked in the sandbox as root_python_sh picks it:
     # the kit's Python, the image's only where no kit exists (PT-C8-CONF-2).
     ("sandbox/egress_denylist.py", "_setup_cmd"): "root_python_pick_sh (the proxy)",
+    # The loopback OpenTelemetry receiver and its health probe, picked the
+    # same way as the proxy's.
+    ("sandbox/agent_otel.py", "_start_command"): "root_python_pick_sh (OTel receiver)",
+    ("sandbox/agent_otel.py", "_health_command"): "root_python_pick_sh (its probe)",
     ("sandbox/_hardening_python.py", "hardening_python_cmd"): "the kit's or judged",
     ("sandbox/_verifier_runtime.py", "probe_interpreter"): "the kit's; image without",
     # The solver's own launch (the oracle joining its group), not after it.

@@ -27,6 +27,7 @@ import pytest
 from typer.testing import CliRunner
 
 from benchflow.acp.session import ACPSession
+from benchflow.evaluation import DEFAULT_MODEL
 from benchflow.rewards.validation import validate_reward_map
 from benchflow.rollout import _ensure_canonical_rewards
 from benchflow.task.verifier import Verifier, VerifierOutputParseError
@@ -586,7 +587,7 @@ class TestNoAgentNamed:
         assert res.exit_code == 0, res.output
         assert res.output.count("No agent named") == 1, res.output
         assert "claude-agent-acp" in res.output
-        assert "claude-haiku-4-5-20251001" in res.output
+        assert DEFAULT_MODEL in res.output
 
     def test_names_the_model_given(self, tmp_path) -> None:
         res = self._run(tmp_path, "--model", "claude-sonnet-4-5")
@@ -608,7 +609,7 @@ class TestNoAgentNamed:
         record = _config_to_record(plan.make_eval_config())
         assert record.get("agent_defaulted") is True
         assert record["agent"] == "claude-agent-acp"
-        assert record["model"] == "claude-haiku-4-5-20251001"
+        assert record["model"] == DEFAULT_MODEL
         named = build_eval_plan(EvalCreateRequest(tasks_dir=tasks, agent="oracle"))
         assert (
             _config_to_record(named.make_eval_config()).get("agent_defaulted") is False

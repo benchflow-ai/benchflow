@@ -42,9 +42,12 @@ CLOUD_METADATA_V6 = (
     "fd00:c1::a9fe:a9fe",
 )
 #: The trial folder's record of the block (state ``on``, ``off``,
-#: ``not_reachable``, ``provider-managed``, ``not_installed`` or ``unproven``,
-#: and why).
+#: ``not_reachable``, ``provider-managed``, ``not_installed``, ``unproven``
+#: or ``refused``, and why).
 CLOUD_METADATA_RECORD = "cloud-metadata.json"
+#: The record's state when the block's own audit refused sandbox startup
+#: (:class:`CloudMetadataPowerError`): the agent never starts.
+REFUSED = "refused"
 
 
 class CloudMetadataPowerError(RuntimeError):
@@ -53,7 +56,16 @@ class CloudMetadataPowerError(RuntimeError):
     The message starts with "sandbox startup refused", so the trial is a
     sandbox-setup failure, never run with an unverified privilege boundary.
     This policy error is shared by admission and the concrete firewall audit.
+
+    ``record``: the trial's ``cloud-metadata.json`` for the refusal (state
+    ``refused``, why, and what the audit found), when the block got far
+    enough to make one. The rollout writes it before the error goes on, so
+    the trial folder and result.json name what refused the trial.
     """
+
+    def __init__(self, *args: object, record: dict[str, Any] | None = None) -> None:
+        super().__init__(*args)
+        self.record = record
 
 
 class CloudMetadataUnprotectedError(CloudMetadataPowerError):
@@ -122,7 +134,9 @@ class ComposeTopology:
     """What the task's own compose file says about the block's reach.
 
     ``main_network_mode``: ``main``'s ``network_mode`` (``None`` without
-    one). ``other_services``: every service but ``main``, sorted.
+    one). ``other_services``: every service but ``main`` that has a network,
+    sorted; one with ``network_mode: none`` (and no ``networks`` or
+    ``extends`` that could give it one) can't reach the endpoints.
     ``unresolved``: why ``main``'s network cannot be read from the file
     (it does not parse, it uses ``include``, ``main`` uses ``extends``, or it
     joins a network named ``host`` or by a variable); empty when
@@ -248,6 +262,17 @@ def _compose_loader() -> Any:
     return ComposeLoader
 
 
+def _offline(service: Any) -> bool:
+    """A compose service with no network: ``network_mode: none``, with no
+    ``networks`` and no ``extends`` that could give it one."""
+    return (
+        isinstance(service, dict)
+        and str(service.get("network_mode", "")).strip() == "none"
+        and "extends" not in service
+        and not service.get("networks")
+    )
+
+
 def task_compose_topology(environment_dir: Path | None) -> ComposeTopology:
     """Read the task's ``docker-compose.yaml`` (the file the Docker and
     Daytona compose backends stack on BenchFlow's own) in *environment_dir*.
@@ -285,7 +310,11 @@ def task_compose_topology(environment_dir: Path | None) -> ComposeTopology:
     services = loaded.get("services")
     if not isinstance(services, dict):
         services = {}
-    others = tuple(sorted(str(n) for n in services if n != "main"))
+    others = tuple(
+        sorted(
+            str(n) for n, svc in services.items() if n != "main" and not _offline(svc)
+        )
+    )
     main = services.get("main")
     if main is None:
         # The backend's base file supplies main even when the task override

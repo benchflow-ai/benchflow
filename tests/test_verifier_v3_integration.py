@@ -50,9 +50,11 @@ async def test_path_judgment_keeps_the_pre_freeze_or_transfer_exclusions(
 ):
     """Guards merging 85b87bc9: freezing cannot make an agent mount trusted."""
     seen = []
+    fresh = []
 
-    async def judge(env, raw, blocked, agent):
+    async def judge(env, raw, blocked, agent, *, fresh_image=False):
         seen.extend(blocked)
+        fresh.append(fresh_image)
         return TrustedPathReport(path=lockdown._SAFE_VERIFIER_PATH)
 
     @receipt_aware
@@ -99,5 +101,7 @@ async def test_path_judgment_keeps_the_pre_freeze_or_transfer_exclusions(
         SimpleNamespace(exec=answer), task, "agent", None, **kwargs
     )
     assert "/opt/shared" in seen
+    # Only a separate verifier's image is judged as fresh (#69).
+    assert fresh and set(fresh) == {separate}
     if separate:
         assert "/root" not in seen

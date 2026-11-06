@@ -53,7 +53,7 @@ def test_venv_python_is_uv_managed_not_the_images(agent):
     """The venv runs on a uv-managed CPython the sandbox user can read."""
     cmd = AGENTS[agent].install_cmd
     assert "export UV_PYTHON_PREFERENCE=only-managed" in cmd
-    assert "UV_PYTHON_INSTALL_DIR=/opt/benchflow/python" in cmd
+    assert "UV_PYTHON_INSTALL_DIR=/opt/runtime/python" in cmd
     assert "UV_PYTHON_DOWNLOADS=automatic" in cmd
     assert "--python 3.12.15" in cmd
     assert "umask 022;" in cmd
@@ -82,10 +82,10 @@ def test_openhands_keeps_its_pinned_source_and_sdk_overrides():
     cmd = AGENTS["openhands"].install_cmd
     assert (
         "uv tool install --force "
-        "--overrides /opt/benchflow/agents/oh-sdk-overrides.txt "
+        "--overrides /opt/runtime/agents/oh-sdk-overrides.txt "
         "--from "
         "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-        "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
+        "283c6ac3610f4299f405f7389f65766dcb83e12a' "
         "openhands --python 3.12" in cmd
     )
     assert "openhands-sdk==1.28.1" in cmd
@@ -101,10 +101,10 @@ def test_deepagents_installs_exact_versions_from_a_requirements_file():
     # Transitive packages are pinned too, not only the two named ones.
     assert _has_arg(cmd, "langchain-core==1.6.11")
     assert _has_arg(cmd, "langgraph==1.2.15")
-    assert "> /opt/benchflow/agents/deepagents-requirements.txt" in cmd
+    assert "> /opt/runtime/agents/deepagents-requirements.txt" in cmd
     assert (
-        "uv pip install -q --require-hashes --python /opt/benchflow/agents/deepagents-venv/bin/python "
-        "-r /opt/benchflow/agents/deepagents-requirements.txt" in cmd
+        "uv pip install -q --require-hashes --python /opt/runtime/agents/deepagents-venv/bin/python "
+        "-r /opt/runtime/agents/deepagents-requirements.txt" in cmd
     )
     # The old unpinned spelling is gone.
     assert "deepagents langchain-openai" not in cmd
@@ -127,15 +127,14 @@ def test_harvey_lab_fetches_a_pinned_commit_not_the_head():
     assert f"checkout -q --force {_HARVEY_COMMIT}" in cmd
     assert f'"{_HARVEY_COMMIT}" ]' in cmd
     assert "sparse-checkout set harness sandbox utils" in cmd
-    assert "test -f /opt/benchflow/agents/harvey-labs/harness/tools.py" in cmd
+    assert "test -f /opt/runtime/agents/harvey-labs/harness/tools.py" in cmd
 
 
 def test_harvey_lab_installs_exact_versions_with_uv_on_managed_python():
     cmd = AGENTS["harvey-lab-harness"].install_cmd
     assert "python3 -m venv" not in cmd
     assert (
-        "uv venv -q --clear --python 3.12.15 /opt/benchflow/agents/harvey-lab-venv"
-        in cmd
+        "uv venv -q --clear --python 3.12.15 /opt/runtime/agents/harvey-lab-venv" in cmd
     )
     for pin in (
         "anthropic==0.88.0",
@@ -150,11 +149,11 @@ def test_harvey_lab_installs_exact_versions_with_uv_on_managed_python():
     ):
         assert _has_arg(cmd, pin)
     assert (
-        "uv pip install -q --require-hashes --python /opt/benchflow/agents/harvey-lab-venv/bin/python "
-        "-r /opt/benchflow/agents/harvey-lab-requirements.txt" in cmd
+        "uv pip install -q --require-hashes --python /opt/runtime/agents/harvey-lab-venv/bin/python "
+        "-r /opt/runtime/agents/harvey-lab-requirements.txt" in cmd
     )
     assert AGENTS["harvey-lab-harness"].launch_cmd.startswith(
-        "HARVEY_LABS_ROOT=/opt/benchflow/agents/harvey-labs /opt/benchflow/agents/harvey-lab-venv/bin/python "
+        "HARVEY_LABS_ROOT=/opt/runtime/agents/harvey-labs /opt/runtime/agents/harvey-lab-venv/bin/python "
     )
 
 
@@ -184,10 +183,10 @@ def test_every_requirement_is_an_exact_pin_written_verbatim(agent, name, tmp_pat
     snippet = _write_requirements(str(target), requirements)
     assert (
         _write_requirements(
-            f"/opt/benchflow/agents/{'deepagents' if agent == 'deepagents' else 'harvey-lab'}"
+            f"/opt/runtime/agents/{'deepagents' if agent == 'deepagents' else 'harvey-lab'}"
             "-requirements.txt",
             requirements,
-            python=f"/opt/benchflow/agents/{'deepagents' if agent == 'deepagents' else 'harvey-lab'}-venv/bin/python",
+            python=f"/opt/runtime/agents/{'deepagents' if agent == 'deepagents' else 'harvey-lab'}-venv/bin/python",
         )
         in AGENTS[agent].install_cmd
     )
@@ -230,15 +229,15 @@ def test_failed_required_step_cannot_use_an_old_agent(agent, failure, tmp_path):
         path = bin_dir / name
         path.write_text(f"#!/bin/sh\n{body}\n")
         path.chmod(0o755)
-    old_python = tmp_path / "opt/benchflow/agents/deepagents-venv/bin/python"
+    old_python = tmp_path / "opt/runtime/agents/deepagents-venv/bin/python"
     old_python.parent.mkdir(parents=True)
     old_python.write_text("#!/bin/sh\nexit 0\n")
     old_python.chmod(0o755)
-    harvey_python = tmp_path / "opt/benchflow/agents/harvey-lab-venv/bin/python"
+    harvey_python = tmp_path / "opt/runtime/agents/harvey-lab-venv/bin/python"
     harvey_python.parent.mkdir(parents=True)
     harvey_python.write_text("#!/bin/sh\nexit 0\n")
     harvey_python.chmod(0o755)
-    harness = tmp_path / "opt/benchflow/agents/harvey-labs/harness/tools.py"
+    harness = tmp_path / "opt/runtime/agents/harvey-labs/harness/tools.py"
     harness.parent.mkdir(parents=True)
     harness.touch()
     home = tmp_path / "home"

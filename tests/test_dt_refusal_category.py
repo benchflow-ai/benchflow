@@ -133,7 +133,10 @@ workdir = "/app"
 [verifier]
 timeout_sec = 60.0
 
-[[verifier.collect]]
+[[steps]]
+name = "one"
+
+[[steps.verifier.collect]]
 command = "echo collected > /tmp/collected.txt"
 timeout_sec = 30.0
 """
@@ -200,7 +203,7 @@ async def test_a_refused_split_task_records_the_category_through_the_real_except
     assert record["error"].startswith(
         "UnsupportedTaskFeatureError: Task uses parsed runtime features"
     )
-    assert "- verifier.collect: " in record["error"]
+    assert "- steps[0].verifier.collect: " in record["error"]
     assert record["error_category"] == CATEGORY
     assert record["rewards"] is None
     summary = json.loads((jobs_dir / "refused" / "summary.json").read_text())

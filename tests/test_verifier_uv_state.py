@@ -256,7 +256,7 @@ class Layout:
             # Plugin discovery: by default this image ships no pytest11 plugins.
             found = {"plugins": self.discovered, "rejected": []}
             return ExecResult(stdout=json.dumps(found), stderr="", return_code=0)
-        if command.startswith("mkdir -m 755") and "_benchflow_guard_" in command:
+        if command.startswith("mkdir -m 755") and "_runtime_guard_" in command:
             # Write the guard; no Python here takes a site-packages copy.
             command = command.split(" && {", 1)[0]
         return self.run(command)
@@ -479,7 +479,7 @@ def home_cache_under_umask_0000(env, layout):
 
 def markers(layout, kind):
     """The guard's signed markers of *kind*, as the verifier copied them to the trial."""
-    return sorted(layout.paths.verifier_dir.glob(f"_benchflow_guard_*.*.{kind}"))
+    return sorted(layout.paths.verifier_dir.glob(f"_runtime_guard_*.*.{kind}"))
 
 
 def plugin_never_ran(rewards, error) -> bool:
@@ -672,7 +672,7 @@ async def test_separate_verifier_guard_blocks_the_transfer_not_the_runtime_dirs(
         agent_paths=(str(layout.workspace), "/out/report.txt", "/logs/artifacts"),
     )
 
-    (guard,) = layout.fs.glob("_benchflow_guard_*/_benchflow_guard_*.py")
+    (guard,) = layout.fs.glob("_runtime_guard_*/_runtime_guard_*.py")
     source = guard.read_text()
     blocked = (str(layout.workspace), "/out/report.txt", "/logs/artifacts", "/logs")
     assert f"_BENCHFLOW_BLOCKED = {blocked!r}" in source
@@ -694,7 +694,7 @@ async def test_workdir_root_state_moves_to_one_fresh_root_directory(
         layout, task, "agent", str(layout.workspace)
     )
 
-    (directory,) = layout.fs.glob("_benchflow_verifier_*")
+    (directory,) = layout.fs.glob("_runtime_verifier_*")
     assert directory.stat().st_mode & 0o777 == 0o755
     assert {key: env.get(key) for key in MOVED_KEYS} == {
         "UV_CACHE_DIR": str(directory / "uv-cache"),
@@ -730,7 +730,7 @@ async def test_home_outside_the_workspace_moves_too_with_fixed_pip_policy(
         layout, task, "agent", str(layout.workspace)
     )
 
-    (directory,) = layout.fs.glob("_benchflow_verifier_*")
+    (directory,) = layout.fs.glob("_runtime_verifier_*")
     assert {key: env.get(key) for key in MOVED_KEYS} == {
         "UV_CACHE_DIR": str(directory / "uv-cache"),
         "UV_TOOL_DIR": str(directory / "uv-tools"),
@@ -741,7 +741,7 @@ async def test_home_outside_the_workspace_moves_too_with_fixed_pip_policy(
     }
     # Now the guard trusts nothing below it by path: a plugin
     # test.sh installs there comes from the protected runtime instead.
-    assert len(list(layout.fs.glob("_benchflow_guard_*/_benchflow_guard_*.py"))) == 1
+    assert len(list(layout.fs.glob("_runtime_guard_*/_runtime_guard_*.py"))) == 1
 
 
 # Attacks: what the agent can plant must still never pass the task.

@@ -57,7 +57,7 @@ def _docker(tmp_path: Path, paths: RolloutPaths, image_env: dict) -> DockerSandb
         return (
             command.replace("/logs/verifier", str(paths.rollout_dir / "verifier"))
             .replace("/tests/", f"{tests}/")
-            .replace("/var/lib/benchflow/verifier-env", str(root_env))
+            .replace("/var/lib/runtime/verifier-env", str(root_env))
         )
 
     async def run(
@@ -102,7 +102,7 @@ def _docker(tmp_path: Path, paths: RolloutPaths, image_env: dict) -> DockerSandb
         subprocess.run(["cp", "-R", str(source_dir), str(tests)], check=True)
 
     async def upload_file(source_path, target_path, **kwargs):
-        if not target_path.startswith("/var/lib/benchflow/verifier-env/"):
+        if not target_path.startswith("/var/lib/runtime/verifier-env/"):
             return  # the trajectory published for the verifier: not read here
         target = Path(local(target_path))
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -196,7 +196,7 @@ async def test_soft_verify_never_runs_a_base64_the_agent_put_on_path(tmp_path):
     assert not marker.exists(), "the agent's base64 ran as root"
     assert rewards == {"reward": 1.0}, (sandbox.out / "pip.log").read_text()
     (command,) = sandbox.ran
-    assert "base64" not in command and "/tmp/.benchflow_exec_env_" not in command
+    assert "base64" not in command and "/tmp/.runtime_exec_env_" not in command
     assert "export PIP_CONFIG_FILE=/dev/null" in command
 
 

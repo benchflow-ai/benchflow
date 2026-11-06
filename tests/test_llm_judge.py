@@ -1,4 +1,4 @@
-"""Tests for the first-class LLM-as-judge verifier (ENG-55).
+"""Tests for the first-class LLM-as-judge verifier.
 
 All tests that touch LLM providers are mocked — no real API calls.
 """
@@ -14,6 +14,7 @@ import pytest
 
 from benchflow.rewards.builtins import LLMJudgeRewardFunc
 from benchflow.rewards.llm import (
+    THINKING_JUDGE_MAX_TOKENS,
     JudgeEnvironmentError,
     _call_anthropic,
     _call_google,
@@ -102,8 +103,8 @@ class TestCallJudgeProviderFallback:
     """Guards the fix from PR #319 (rewards-code audit) for cross-provider
     judge fallback."""
 
-    async def test_api_failure_surfaces_original_error(self) -> None:
-        """A real API failure on the matching provider is raised as-is.
+    async def test_api_failure_surfaces_sanitized_error(self) -> None:
+        """A matching provider failure is sanitized at the boundary.
 
         The cross-provider fallback must NOT advance to a provider whose
         API cannot serve this model name — otherwise the surfaced error is
@@ -119,12 +120,13 @@ class TestCallJudgeProviderFallback:
             patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
             patch("benchflow.rewards.llm._call_openai", openai_mock),
             patch("benchflow.rewards.llm._call_google", google_mock),
-            pytest.raises(RuntimeError, match="invalid x-api-key") as exc_info,
+            pytest.raises(RuntimeError, match="judge call failed") as exc_info,
         ):
             await call_judge("claude-haiku-4-5", "prompt", retries=2)
 
-        # The exact original exception object propagates.
-        assert exc_info.value is original
+        # The SDK exception must not carry credentials into a traceback.
+        assert exc_info.value is not original
+        assert exc_info.value.__context__ is None
         # The matching provider was retried, but no other provider tried.
         assert anthropic_mock.await_count == 2
         openai_mock.assert_not_awaited()
@@ -162,6 +164,7 @@ class TestCallJudgeProviderFallback:
 
         assert result == "ok from github models"
         openai_mock.assert_awaited_once()
+        assert openai_mock.await_args is not None
         assert openai_mock.await_args.args[0] == "openai/gpt-4.1-mini"
         anthropic_mock.assert_not_awaited()
         google_mock.assert_not_awaited()
@@ -261,10 +264,12 @@ class TestCallJudgeProviderFallback:
         assert openai_mock.await_count == 1
         google_mock.assert_not_awaited()
 
-    async def test_unknown_prefix_all_providers_fail_raises_last_error(self) -> None:
+    async def test_unknown_prefix_all_providers_fail_raises_sanitized_error(
+        self,
+    ) -> None:
         """PR #319 follow-up: when every provider fails at the API for an
-        unknown-prefix model, the genuine API error surfaces — not a
-        misleading missing-SDK ``JudgeEnvironmentError``."""
+        unknown-prefix model, a sanitized API error surfaces,
+        not a misleading missing-SDK ``JudgeEnvironmentError``."""
         anthropic_err = RuntimeError("anthropic refused")
         google_err = RuntimeError("google refused")
 
@@ -281,12 +286,13 @@ class TestCallJudgeProviderFallback:
                 "benchflow.rewards.llm._call_google",
                 AsyncMock(side_effect=google_err),
             ),
-            pytest.raises(RuntimeError, match="google refused") as exc_info,
+            pytest.raises(RuntimeError, match="judge call failed") as exc_info,
         ):
             await call_judge("deepseek-chat", "prompt", retries=1)
 
-        # The last provider's real error is surfaced, not JudgeEnvironmentError.
-        assert exc_info.value is google_err
+        # An API error is surfaced without retaining SDK traceback frames.
+        assert exc_info.value is not google_err
+        assert exc_info.value.__context__ is None
         assert not isinstance(exc_info.value, JudgeEnvironmentError)
 
     async def test_known_prefix_still_raises_immediately(self) -> None:
@@ -302,7 +308,7 @@ class TestCallJudgeProviderFallback:
                 AsyncMock(side_effect=original),
             ),
             patch("benchflow.rewards.llm._call_openai", openai_mock),
-            pytest.raises(RuntimeError, match="invalid x-api-key"),
+            pytest.raises(RuntimeError, match="judge call failed"),
         ):
             await call_judge("claude-haiku-4-5", "prompt", retries=1)
 
@@ -440,6 +446,61 @@ class TestCallAnthropicContent:
         with self._patch_sdk(_FakeResponse([_FakeTextBlock("hello")])):
             result = await _call_anthropic("claude-haiku-4-5", "prompt", 100)
         assert result == "hello"
+
+
+class _FakeThinkingBlock:
+    """A thinking block: ``.thinking`` (empty by default on 5-family models)."""
+
+    def __init__(self) -> None:
+        self.thinking = ""
+
+
+class TestClaudeFiveJudgeBudget:
+    """Stale-audit judge default (claude-sonnet-5-5): a
+    5-family model thinks unless told not to, and the thinking counts toward
+    max_tokens, so the judge's 2,048-token budget is raised for it."""
+
+    def _patch_sdk(
+        self, response: _FakeResponse, seen: dict
+    ) -> AbstractContextManager[None]:
+        async def create(**kwargs):
+            seen.update(kwargs)
+            return response
+
+        client = AsyncMock()
+        client.messages.create = create
+        fake_anthropic = type(
+            "FakeAnthropic", (), {"AsyncAnthropic": staticmethod(lambda: client)}
+        )
+        return patch.dict("sys.modules", {"anthropic": fake_anthropic})
+
+    async def test_a_five_family_judge_gets_room_to_think(self) -> None:
+        seen: dict = {}
+        response = _FakeResponse([_FakeThinkingBlock(), _FakeTextBlock("verdict")])
+        with self._patch_sdk(response, seen):
+            text = await _call_anthropic("claude-sonnet-5-5", "prompt", 2048)
+        assert text == "verdict"
+        assert seen["max_tokens"] == THINKING_JUDGE_MAX_TOKENS
+        # Sonnet 5.5 and Haiku 5.5 refuse a non-default temperature and top_p.
+        assert not {"temperature", "top_p", "top_k", "thinking"} & set(seen)
+
+    @pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-haiku-4-5"])
+    async def test_a_model_without_default_thinking_keeps_its_budget(
+        self, model: str
+    ) -> None:
+        seen: dict = {}
+        with self._patch_sdk(_FakeResponse([_FakeTextBlock("ok")]), seen):
+            await _call_anthropic(model, "prompt", 2048)
+        assert seen["max_tokens"] == 2048
+
+    async def test_a_verdict_cut_off_by_the_budget_is_an_error(self) -> None:
+        response = _FakeResponse([_FakeThinkingBlock()])
+        response.stop_reason = "max_tokens"  # ty: ignore[unresolved-attribute]
+        with (
+            self._patch_sdk(response, {}),
+            pytest.raises(RuntimeError, match="budget before it answered"),
+        ):
+            await _call_anthropic("claude-haiku-5-5", "prompt", 2048)
 
 
 # _call_google: text-part handling

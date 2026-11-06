@@ -24,10 +24,13 @@ Design choices:
   looks pinned packages up in a vulnerability database.
 - **benchflow's gate.** A skill blocks when a schema, security or dependency
   finding is at or above ``fail_on`` (default ``high``), or when a checker
-  fails to run. SkillEvaluator 0.5.0 reports dependency CVEs and banned
-  packages only as legacy strings (``results[].legacy``), so they are read
-  from there. SkillEvaluator's own verdict also fails on the quality score,
-  on dead links and on missing scanners; those stay advisory here.
+  fails to run. SkillEvaluator 0.5.0 and 0.6.0 report dependency CVEs and
+  banned packages only as legacy strings (``results[].legacy``), so they are
+  read from there. SkillEvaluator's own verdict also fails on the quality
+  score, on dead links and on missing scanners; those stay advisory here.
+- **Reports are written outside the skill.** SkillEvaluator 0.6.0 refuses a
+  report directory inside the skill it checks, so it always writes to a
+  private directory and the report is copied to the one the caller asked for.
 """
 
 from __future__ import annotations
@@ -52,13 +55,14 @@ BIN_ENV = {
     SKILLSPECTOR: "BENCHFLOW_SKILLSPECTOR_BIN",
 }
 
-#: Oldest versions whose JSON reports this module was checked against.
-MIN_VERSIONS = {SKILLEVALUATOR: (0, 5, 0), SKILLSPECTOR: (2, 12, 0)}
+#: Oldest versions this module is tested against. SkillEvaluator 0.6.0's own
+#: install instructions pin SkillSpector 2.12.0, so SkillSpector stays there.
+MIN_VERSIONS = {SKILLEVALUATOR: (0, 6, 0), SKILLSPECTOR: (2, 12, 0)}
 
 INSTALL_COMMANDS = {
     SKILLEVALUATOR: (
         "uv tool install --python 3.13 "
-        '"skillevaluator[all] @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.5.0"'
+        '"skillevaluator[all] @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.6.0"'
     ),
     SKILLSPECTOR: (
         "uv tool install "
@@ -66,8 +70,8 @@ INSTALL_COMMANDS = {
     ),
 }
 
-#: SkillEvaluator 0.5.0's default ``tier1`` checks minus ``security`` (which
-#: mainly reruns SkillSpector, run here as its own pass), plus the opt-in
+#: SkillEvaluator's default ``tier1`` checks minus ``security`` (which mainly
+#: reruns SkillSpector, run here as its own pass), plus the opt-in
 #: ``dependency`` CVE audit (pip-audit; needs network access).
 DEFAULT_TIER1_CHECKS: tuple[str, ...] = (
     "schema",
@@ -92,8 +96,8 @@ _SECURITY_CATEGORIES = frozenset(
     {"SECURITY", "BANDIT", "SEMGREP", "SECRET", "PII", "UNICODE", "DEPENDENCY"}
 )
 
-#: SkillEvaluator 0.5.0 reports dependency CVEs through its legacy string API
-#: only: ``[CVE-HIGH] requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0``
+#: SkillEvaluator 0.5.0 and 0.6.0 report dependency CVEs through their legacy
+#: string API only: ``[CVE-HIGH] requests==2.19.0: PYSEC-2018-28 -> upgrade to 2.20.0``
 #: in ``results[].legacy.errors`` (or ``warnings`` below its error
 #: threshold), never in ``results[].findings``. Only these tags are read: the
 #: other legacy strings repeat structured findings.
@@ -101,6 +105,9 @@ _LEGACY_DEPENDENCY = re.compile(
     r"\[(CVE|SAFETY)-(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\s*(.*)", re.DOTALL
 )
 _DEPENDENCY_VALIDATOR = "Dependency Vulnerability Audit"
+#: SkillEvaluator 0.6.0 mirrors a passed check into ``legacy.messages`` as
+#: ``[OK] <check name>: <message>``; 0.5.0 logged the bare message.
+_LEGACY_OK_PREFIX = re.compile(r"^\[OK\] [\w.-]+: ")
 #: Part of ``code-integrity``; reports banned packages and dead links only as
 #: legacy error strings.
 _HYGIENE_VALIDATOR = "Code Integrity & Hygiene"
@@ -147,7 +154,8 @@ class Tool:
         if _version_tuple(self.version) < MIN_VERSIONS[self.name]:
             return (
                 f"{self.name} {self.version} is older than {self.minimum}; its "
-                f"report may not parse. Upgrade: {INSTALL_COMMANDS[self.name]}"
+                "report may not parse or may be misread. "
+                f"Upgrade: {INSTALL_COMMANDS[self.name]}"
             )
         return None
 
@@ -366,7 +374,7 @@ def _int_or_none(value: Any) -> int | None:
 def _legacy_findings(
     result: Mapping[str, Any], name: str, structured: list[Finding]
 ) -> list[Finding]:
-    """Findings SkillEvaluator 0.5.0 reports only as ``legacy`` strings.
+    """Findings SkillEvaluator 0.5.0 and 0.6.0 report only as ``legacy`` strings.
 
     Reads ``[CVE-*]`` and ``[SAFETY-*]`` strings from any validator, and the
     untagged errors of the hygiene validator (banned packages gate as
@@ -420,18 +428,24 @@ def _legacy_findings(
 def _audit_unverified(result: Mapping[str, Any]) -> bool:
     """Whether a dependency audit started on a file but logged no outcome.
 
-    SkillEvaluator 0.5.0 logs ``Auditing requirements.txt`` and then
+    SkillEvaluator logs ``Auditing requirements.txt`` and then
     ``requirements.txt: Found 2 vulnerability(ies) (pip-audit)`` or ``...: No
-    vulnerabilities found (pip-audit)``. When pip-audit fails without JSON
-    (for example on pins that cannot be resolved together) it logs nothing
-    more and the audit passes, so benchflow lists it as an incomplete scan.
+    vulnerabilities found (pip-audit)``. 0.6.0 mirrors that outcome as
+    ``[OK] pip_audit: requirements.txt: Found ...`` and, for ``pyproject.toml``,
+    follows the file name with what it audits (``Auditing pyproject.toml:
+    direct declared pins, ...``). When pip-audit fails without JSON (for
+    example on pins that cannot be resolved together) 0.5.0 logs nothing more
+    and the audit passes, so benchflow lists it as an incomplete scan. 0.6.0
+    marks the scan incomplete itself; the two agree.
     """
     legacy = result.get("legacy")
     if not isinstance(legacy, Mapping):
         return False
-    messages = [str(m) for m in legacy.get("messages") or []]
+    messages = [_LEGACY_OK_PREFIX.sub("", str(m)) for m in legacy.get("messages") or []]
     started = [
-        m.removeprefix("Auditing ") for m in messages if m.startswith("Auditing ")
+        m.removeprefix("Auditing ").split(": ", 1)[0]
+        for m in messages
+        if m.startswith("Auditing ")
     ]
     return any(not any(m.startswith(f"{f}: ") for m in messages) for f in started)
 
@@ -669,28 +683,45 @@ def run_tier1(
     env: Mapping[str, str] | None = None,
     run: RunFn = subprocess.run,
 ) -> Tier1Result:
-    """Run SkillEvaluator Tier 1 (no LLM) on one skill and parse its report."""
+    """Run SkillEvaluator Tier 1 (no LLM) on one skill and parse its report.
+
+    The tool writes to a private directory and the report is copied to
+    *output_dir* afterwards: SkillEvaluator 0.6.0 refuses a report directory
+    inside the skill it checks, and callers may keep reports next to a skill.
+    """
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         for stale in output_dir.glob("skillevaluator-*.json"):
             stale.unlink()  # a rerun into -o must not read the last run's report
     except OSError as e:
         raise SkillCheckError(f"cannot use report directory {output_dir}: {e}") from e
-    argv = build_tier1_command(
-        tool.path, skill_dir.resolve(), output_dir, checks=checks, min_score=min_score
-    )
-    proc = _run(
-        argv,
-        what=SKILLEVALUATOR,
-        skill_dir=skill_dir,
-        timeout_sec=timeout_sec,
-        env=env,
-        run=run,
-    )
-    reports = sorted(
-        output_dir.glob("skillevaluator-*.json"), key=lambda p: p.stat().st_mtime
-    )
-    report_path = reports[-1] if reports else None
+    with tempfile.TemporaryDirectory(prefix="benchflow-skillevaluator-") as private:
+        argv = build_tier1_command(
+            tool.path,
+            skill_dir.resolve(),
+            Path(private),
+            checks=checks,
+            min_score=min_score,
+        )
+        proc = _run(
+            argv,
+            what=SKILLEVALUATOR,
+            skill_dir=skill_dir,
+            timeout_sec=timeout_sec,
+            env=env,
+            run=run,
+        )
+        reports = sorted(
+            Path(private).glob("skillevaluator-*.json"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        report_path: Path | None = None
+        if reports:
+            report_path = output_dir / reports[-1].name
+            try:
+                shutil.copy2(reports[-1], report_path)
+            except OSError as e:
+                raise SkillCheckError(f"cannot write report {report_path}: {e}") from e
     data = _read_report(report_path, proc, what=SKILLEVALUATOR, skill_dir=skill_dir)
     result = _parse(
         parse_tier1_report, data, skill_dir, what=SKILLEVALUATOR, path=report_path

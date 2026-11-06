@@ -4,6 +4,10 @@
 re-runs the task's *current* verifier against each trial's frozen final
 workspace, in a fresh sandbox, and writes the new score next to the original.
 Nothing the original run wrote is changed: ``result.json`` keeps its rewards.
+A trial the separate verifier scored (or whose task asks for one) is scored
+by that verifier's own path: a sandbox from the task's verifier image gets
+the transfer the run packed, from the trial folder, and no sandbox is built
+from the agent's environment.
 
 Inputs, per trial:
 
@@ -18,10 +22,15 @@ Inputs, per trial:
   verifiers.
 
 Outputs, per trial: ``regrade/<id>/`` (the new verifier's outputs, a copy of
-the verifier files, ``regrade.json``) and ``regrade.json`` beside
+the verifier files, ``regrade.json``, and a separate verifier's
+``verifier-sandbox.json``) and ``regrade.json`` beside
 ``result.json`` (the original score plus every regrade block: verifier
 digest, original and new reward, reason). The job gets ``regrade-summary.json``
 listing changed verdicts and every not-regradable trial with its reason.
+
+With ``review`` the trial's rubric review runs again too, on the same saved
+outputs and gated by the new test, and the combined score is compared
+(:func:`_review_again`; its files are under ``regrade/<id>/review/``).
 """
 
 from __future__ import annotations
@@ -38,12 +47,17 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from benchflow._root_python import root_python_command
 from benchflow._utils.reachable_write import ReachablePath, pin_destination
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.trust.state import IngressKind, admit
+
+if TYPE_CHECKING:
+    from benchflow.review.automatic import PreparedReview
+    from benchflow.review.options import ReviewerConfig
+    from benchflow.review.outcome import ScoringResult
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +97,9 @@ class TrialRegrade:
     reason: str | None = None
     regrade_id: str | None = None
     task_changed: bool | None = None
+    # "verifier_reward" for a trial with a rubric review: a regrade reruns only
+    # the test, so it compares the test's own reward, not the reviewed one.
+    compared: str = "reward"
 
     @property
     def changed(self) -> bool:
@@ -277,59 +294,40 @@ def original_score(trial: Path) -> dict[str, Any]:
     result = _read_json(trial / "result.json") or _read_json(trial / "solver.json")
     rewards = result.get("rewards")
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
+    # A rubric-reviewed trial's reward is the review's, gated by the test
+    # (result.json's scoring block); its test's own reward is verifier_reward.
+    verifier_reward = (
+        rewards.get("verifier_reward")
+        if isinstance(rewards, dict) and isinstance(result.get("scoring"), dict)
+        else None
+    )
     return {
         "rewards": rewards,
         "reward": reward,
+        "verifier_reward": verifier_reward,
         "verifier_error": result.get("verifier_error"),
         "task_digest": result.get("task_digest")
         or _read_json(trial / "config.json").get("task_digest"),
     }
 
 
-SEPARATE_NOT_REGRADABLE = (
-    "separate verifier trials cannot be regraded yet: a regrade runs the "
-    "verifier in a sandbox built from the agent's environment, not in the "
-    "separate verifier sandbox; re-run the trial with `bench run` to grade "
-    "it again"
-)
+def ran_separate_verifier(trial: Path) -> bool:
+    """Whether the run scored ``trial`` in the separate verifier sandbox.
 
-
-def separate_verifier_reason(
-    trial: Path, task_dir: Path | None = None, task_config: Any = None
-) -> str | None:
-    """Why a separate verifier trial is not regraded here, or ``None``.
-
-    A regrade restores the frozen workspace into a sandbox built from the
-    task's agent environment and runs the verifier there: another image, no
-    transfer and no custody record, so a separate trial would be scored
-    outside the separate verifier (as workspace recovery would).
-    A trial is separate when it wrote the separate verifier's record, ran
-    under strict integrity, or its effective task config (``task_config``,
-    or ``task_dir``'s with the run's overlay) asks for a separate verifier.
+    It wrote the separate verifier's record, or put every verifier there
+    (``--verifier-sandbox separate``, strict integrity). The regrade then
+    runs there too, whatever the task now declares: like a run, a regrade
+    never moves a verifier out of the separate verifier sandbox. A task that
+    asks for one is regraded there as well (the runner reads its config).
     """
     from benchflow.rollout._separate_verifier import RECORD_DIR, RECORD_FILE
-    from benchflow.task.verifier_sandbox import separate_verifier_requested
 
-    if (trial / RECORD_DIR / RECORD_FILE).is_file():
-        return SEPARATE_NOT_REGRADABLE
     config = _read_json(trial / "config.json")
-    if config.get("integrity") == "strict":
-        return SEPARATE_NOT_REGRADABLE
-    if task_config is None and task_dir is not None:
-        from benchflow._utils.config_override import apply_config_override
-        from benchflow.task import Task
-
-        try:
-            task_config = apply_config_override(
-                Task(task_dir).config,
-                (config.get("config_override") or {}).get("patch"),
-            )
-        except Exception:
-            # The runner loads the task again and checks its config there.
-            return None
-    if separate_verifier_requested(task_config):
-        return SEPARATE_NOT_REGRADABLE
-    return None
+    return (
+        (trial / RECORD_DIR / RECORD_FILE).is_file()
+        or config.get("verifier_sandbox") == "separate"
+        or config.get("integrity") == "strict"
+    )
 
 
 def regradable_reason(trial: Path) -> str | None:
@@ -343,6 +341,11 @@ def regradable_reason(trial: Path) -> str | None:
     config = _read_json(trial / "config.json")
     if config.get("purpose", "task") != "task":
         return "reviewer rollouts are not scored by a task verifier"
+    if (trial / "steps.json").is_file():
+        return (
+            "a multi-step trial's reward comes from each step's tests "
+            "(steps.json), and a regrade runs one verifier on the final workspace"
+        )
     bundle = trial / "evidence"
     if not (bundle / "manifest.json").is_file():
         return (
@@ -483,7 +486,7 @@ async def _restore_logs_artifacts(env: Any, trial: Path, staging: Path) -> int:
     (bundle / "manifest.json").write_text(manifest_obj.model_dump_json())
     archive = staging / "logs-artifacts.tar"
     prepare_workspace_upload(bundle, archive)
-    remote = "/tmp/benchflow-regrade-logs-" + uuid.uuid4().hex
+    remote = "/tmp/runtime-regrade-logs-" + uuid.uuid4().hex
     admission = admit(env, "main", IngressKind.REGRADE_TRANSFER)
     await env.upload_file(archive, remote + ".tar", admission=admission)
     await env.upload_file(
@@ -510,7 +513,7 @@ async def _install_bundle(env: Any, bundle: Path, staging: Path, name: str) -> s
 
     archive = staging / f"{name}.tar"
     await asyncio.to_thread(prepare_workspace_upload, bundle, archive)
-    remote = f"/tmp/benchflow-regrade-{name}-" + uuid.uuid4().hex
+    remote = f"/tmp/runtime-regrade-{name}-" + uuid.uuid4().hex
     admission = admit(env, "main", IngressKind.REGRADE_TRANSFER)
     await env.upload_file(archive, remote + ".tar", admission=admission)
     await env.upload_file(
@@ -557,6 +560,10 @@ async def run_verifier_on_frozen_trial(
     for a *changed* task: the sandbox is built from ``task_dir``, the oracle
     install only sets up users and lockdown (no solver runs), and the frozen
     workspace replaces the fresh one byte for byte before hardening.
+
+    A trial the separate verifier scored, or whose task asks for one, takes
+    the separate verifier's own path instead (:func:`_verify_in_verifier_sandbox`):
+    no sandbox is built from the task's agent environment.
     """
     from benchflow._types import Scene
     from benchflow.agents.registry import is_scripted_agent
@@ -567,11 +574,8 @@ async def run_verifier_on_frozen_trial(
         _publish_trajectory_for_verifier,
         _verify_rollout,
     )
+    from benchflow.task.verifier_sandbox import separate_verifier_requested
 
-    # Also here, for callers that skip the regrade gate: before any sandbox.
-    separate = separate_verifier_reason(trial, task_dir)
-    if separate is not None:
-        raise EvidenceError(separate)
     config = _read_json(trial / "config.json")
     bundle = trial / "evidence"
     manifest = EvidenceManifest.model_validate_json(
@@ -598,6 +602,8 @@ async def run_verifier_on_frozen_trial(
             context_root=config.get("context_root"),
             base_image_override=config.get("base_image_override"),
             config_override=override,
+            verifier_sandbox="separate" if ran_separate_verifier(trial) else "task",
+            separate_verifier_include=tuple(config.get("verifier_include") or ()),
             skip_verify=True,
             jobs_dir=attempt,
             job_name="runtime",
@@ -608,9 +614,10 @@ async def run_verifier_on_frozen_trial(
     try:
         await child.setup(verifier_only=True)
         # The task config as the run's rollout sees it (overlay applied).
-        separate = separate_verifier_reason(trial, task_config=child._task.config)
-        if separate is not None:
-            raise EvidenceError(separate)
+        if separate_verifier_requested(child._task.config):
+            return await _verify_in_verifier_sandbox(
+                child, trial, workspace, attempt_root
+            )
         await child.start()
         env = child._env
         await ensure_evidence_python(
@@ -668,21 +675,13 @@ async def run_verifier_on_frozen_trial(
                 timeout_sec=child._config.sandbox_setup_timeout,
                 guard_daemon=False,
             )
-        trajectory_path = trial / "trajectory" / "acp_trajectory.jsonl"
-        if trajectory_path.is_file():
-            trajectory = [
-                json.loads(line)
-                for line in trajectory_path.read_text().splitlines()
-                if line.strip()
-            ]
+        trajectory = _stored_trajectory(trial)
+        if trajectory is not None:
             await _publish_trajectory_for_verifier(
                 env,
                 trajectory,
                 ReachablePath.rollout(attempt, "agent"),
-                publish_reply=not is_scripted_agent(
-                    _read_json(trial / "result.json").get("agent")
-                    or config.get("agent")
-                ),
+                publish_reply=not is_scripted_agent(_trial_agent(trial)),
             )
         paths = child._rollout_paths
         timing: dict[str, Any] = {}
@@ -707,6 +706,188 @@ async def run_verifier_on_frozen_trial(
         shutil.rmtree(task_input, ignore_errors=True)
 
 
+def _stored_trajectory(trial: Path) -> list[dict] | None:
+    """The trial's saved ACP trajectory, for verifiers that read /logs/agent."""
+    path = trial / "trajectory" / "acp_trajectory.jsonl"
+    if not path.is_file():
+        return None
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _trial_agent(trial: Path) -> str | None:
+    return _read_json(trial / "result.json").get("agent") or _read_json(
+        trial / "config.json"
+    ).get("agent")
+
+
+async def _verify_in_verifier_sandbox(
+    child: Any, trial: Path, workspace: str, attempt_root: ReachablePath
+) -> tuple[dict | None, str | None]:
+    """Score ``trial`` by the separate verifier's own path, from its saved outputs.
+
+    What the run's verify() does once the agent has stopped
+    (``run_separate_verifier``), with no agent sandbox at all: a fresh
+    sandbox from the task's verifier image (``plan_verifier_image``) gets one
+    transfer packed from the trial folder (the frozen workspace, the declared
+    artifacts and ``--separate-verifier-include`` paths, and
+    ``/logs/artifacts``, each checked against its manifest), and the
+    verifier runs there. The run's clean control and workspace come from its
+    record, so the transfer is judged as the run judged it. The new record
+    is copied beside the new ``verifier/``.
+    """
+    from benchflow.rollout._separate_verifier import (
+        RECORD_DIR,
+        RECORD_FILE,
+        SERIAL,
+        VerifierSandboxRun,
+        _default_verify,
+        read_record,
+    )
+    from benchflow.rollout._setup import _configured_task_workdir
+
+    record = read_record(trial) or {}
+    pristine = record.get("pristine")
+    child._pristine_outputs = pristine
+    child._outside_workspace_writes = record.get("outside_workspace_writes")
+    # The workspace the task declares, else the one the run measured.
+    child._agent_cwd = (
+        _configured_task_workdir(child._task)
+        or (pristine or {}).get("workspace")
+        or workspace
+    )
+    # The run collected them; this rollout's own sandbox never starts.
+    child._artifacts_collected = True
+    run = VerifierSandboxRun(child, order=SERIAL, source_dir=trial)
+    # A regrade has no agent sandbox: none runs beside the verifier.
+    run.agent_stopped(None)
+    rewards, error = await run.finish(
+        _default_verify(
+            child, _stored_trajectory(trial) or [], agent=_trial_agent(trial)
+        )
+    )
+    paths = child._rollout_paths
+    if paths.verifier_dir.is_dir():
+        paths.verifier_dir.copy_to(attempt_root / "verifier")
+    written = Path(child._rollout_dir) / RECORD_DIR / RECORD_FILE
+    if written.is_file():
+        (attempt_root / RECORD_FILE).write_bytes(written.read_bytes())
+    return rewards, error
+
+
+# --- the rubric review, again ------------------------------------------------
+
+# What a trial's reviewer never saw, or a regrade replaces: the records written
+# when its review committed, its reviews and regrades, its test stage
+# (solver.json, verifier/, the separate verifier's folder, recovery
+# revisions), and the frozen bundle, which the view links instead.
+_NOT_REVIEWED = frozenset(
+    {
+        "evidence",
+        "regrade",
+        REGRADE_FILE,
+        "result.json",
+        "timing.json",
+        "rewards.jsonl",
+        "results.jsonl",
+        "trainer",
+        "reviews",
+        "scoring",
+        "solver.json",
+        "verifier",
+        "verifier-sandbox",
+        "verification.json",
+        "verifier-recovery",
+        ".scoring.lock",
+    }
+)
+
+
+def _review_plan(
+    trial: Path, task_dir: Path, reviewer: ReviewerConfig | None
+) -> PreparedReview:
+    """The fixed task's rubric and the trial's reviewer settings
+    (config.json ``review.reviewer``) with ``reviewer``'s on top.
+
+    Raises ``ValueError`` before any sandbox when the task has no review
+    rubric or the reviewer cannot run (no model, no key, no backend).
+    """
+    from benchflow.review.automatic import prepare_review
+    from benchflow.review.resume import _recorded_setup_timeout, _reviewer_options
+
+    plan = prepare_review(
+        task_dir,
+        _reviewer_options(trial, reviewer),
+        sandbox_setup_timeout=_recorded_setup_timeout(trial),
+    )
+    if plan is None:
+        raise ValueError(f"task {task_dir.name!r} has no review rubric")
+    return plan
+
+
+def _review_view(
+    trial: Path, attempt: Path, view: Path, rewards: dict | None, task_digest: str
+) -> None:
+    """The trial folder as its reviewer saw it, with this regrade's test stage.
+
+    Everything in ``_NOT_REVIEWED`` is left out; the regrade's ``verifier/``
+    and separate verifier record take the run's places, and ``solver.json``
+    carries the new rewards and the fixed task's digest.
+    """
+    from benchflow._utils.reachable_write import snapshot_tree
+    from benchflow.review.persistence import write_json_atomic
+    from benchflow.rollout._separate_verifier import RECORD_DIR, RECORD_FILE
+
+    def ignore(folder: str, names: list[str]) -> set[str]:
+        if Path(folder) != trial:
+            return set()
+        return {name for name in names if name in _NOT_REVIEWED}
+
+    shutil.copytree(trial, view, symlinks=True, ignore=ignore)
+    (view / "evidence").symlink_to(trial / "evidence", target_is_directory=True)
+    if (attempt / "verifier").is_dir():
+        # The regrade's verifier/ was the verifier sandbox's /logs/verifier:
+        # copied through the helper, links kept as entries, never followed.
+        snapshot_tree(attempt / "verifier", view / "verifier")
+    if (attempt / RECORD_FILE).is_file():
+        (view / RECORD_DIR).mkdir()
+        shutil.copyfile(attempt / RECORD_FILE, view / RECORD_DIR / RECORD_FILE)
+    solver = _read_json(trial / "solver.json") or _read_json(trial / "result.json")
+    solver.pop("scoring", None)
+    solver.update(rewards=rewards, verifier_error=None, task_digest=task_digest)
+    if "verifier_error_category" in solver:
+        solver["verifier_error_category"] = None
+    write_json_atomic(view / "solver.json", solver)
+
+
+async def _review_again(
+    plan: PreparedReview,
+    trial: Path,
+    attempt: Path,
+    rewards: dict | None,
+    task_digest: str,
+) -> ScoringResult:
+    """The trial's rubric review, run again on its saved outputs.
+
+    ``finish_review``, the run's own review step, over a view of the trial
+    (:func:`_review_view`) in ``regrade/<id>/review/<trial>/``: the reviewer
+    gets the same frozen workspace and records, the new verifier's outputs,
+    and the fixed task; the new test gates the verdict. Every failure is a
+    scoring error, as in the run.
+    """
+    from benchflow._utils.text import describe_exception
+    from benchflow.review.automatic import finish_review
+    from benchflow.review.outcome import scoring_error
+
+    view = attempt / "review" / trial.name
+    try:
+        await asyncio.to_thread(
+            _review_view, trial, attempt, view, rewards, task_digest
+        )
+    except OSError as exc:
+        return scoring_error(f"review staging failed: {describe_exception(exc)}")
+    return await finish_review(plan, view)
+
+
 # --- orchestration ---------------------------------------------------------
 
 
@@ -722,16 +903,28 @@ async def _regrade_one(
     reason: str | None,
     regrade_id: str,
     runner: Runner,
+    review: bool = False,
+    reviewer: ReviewerConfig | None = None,
 ) -> TrialRegrade:
     config = _read_json(trial / "config.json")
     result = _read_json(trial / "result.json")
     task_name = _task_dirname(trial, config, result)
     original = original_score(trial)
+    # The regrade reruns the test, and the rubric review only with ``review``.
+    # Without it, a reviewed trial's recorded reward is the review's, so the
+    # test is compared with the test.
+    compared = (
+        "verifier_reward"
+        if original["verifier_reward"] is not None and not review
+        else "reward"
+    )
+    before = original[compared]
     row = TrialRegrade(
         trial=trial.name,
         task=task_name,
         status="not_regradable",
-        original_reward=original["reward"],
+        original_reward=before,
+        compared=compared,
     )
     why = regradable_reason(trial)
     task_dir = None
@@ -739,8 +932,6 @@ async def _regrade_one(
         task_dir, why = resolve_task(trial, tasks_dir)
     if why is None and task_dir is not None:
         task_dir, why = _restorable_task(trial, task_dir)
-    if why is None:
-        why = separate_verifier_reason(trial, task_dir)
     if why is not None or task_dir is None:
         row.reason = why
         return row
@@ -761,22 +952,46 @@ async def _regrade_one(
         "task_digest": task_digest(task_dir),
         "verifier_digest": verifier_digest(task_dir),
         "original_rewards": original["rewards"],
-        "original_reward": original["reward"],
+        "original_reward": before,
+        "compared": compared,
         "original_verifier_error": original["verifier_error"],
     }
     block["task_changed"] = block["original_task_digest"] != block["task_digest"]
+    rewards: dict | None = None
+    error: str | None = None
+    plan = scoring = None
     try:
+        # A missing rubric or reviewer key fails here, before any sandbox.
+        plan = _review_plan(trial, task_dir, reviewer) if review else None
         rewards, error = await runner(trial, task_dir, attempt, sandbox=sandbox)
+        if plan is not None and not error:
+            scoring = await _review_again(
+                plan, trial, attempt, rewards, block["task_digest"]
+            )
     except asyncio.CancelledError:
-        block.update(status="interrupted")
+        block.update(status="interrupted", new_rewards=rewards)
         _write_block(trial, attempt, block)
         raise
     except Exception as exc:
         logger.exception("Regrade of %s failed", trial)
-        rewards, error = None, f"{type(exc).__name__}: {exc}"
+        error = f"{type(exc).__name__}: {exc}"
     new_reward = rewards.get("reward") if isinstance(rewards, dict) else None
+    if plan is not None and scoring is not None:
+        # The combined score (tests, blockers, quality), as result.json has it.
+        combined = scoring.numeric_rewards()
+        new_reward = combined["reward"] if combined is not None else None
+        if combined is None:
+            error = f"review failed: {scoring.error}"
+        block["review"] = {
+            "rubric_sha256": plan.rubric_sha256,
+            "original_rubric_sha256": (config.get("review") or {}).get("rubric_sha256"),
+            "reviewer": plan.config.to_config_artifact(),
+            "rewards": combined,
+            "scoring": scoring.to_dict(),
+            "view": f"regrade/{regrade_id}/review/{trial.name}",
+        }
     # A failed sandbox run is no verdict, not an "unscored" one.
-    change = None if error else verdict_change(original["reward"], new_reward)
+    change = None if error else verdict_change(before, new_reward)
     block.update(
         status="failed" if error else "complete",
         new_rewards=rewards,
@@ -784,6 +999,15 @@ async def _regrade_one(
         verifier_error=error,
         change=change,
     )
+    from benchflow.rollout._separate_verifier import RECORD_FILE
+
+    separate = _read_json(attempt / RECORD_FILE)
+    if separate:
+        # The separate verifier scored it; its record lies beside verifier/.
+        block["verifier_sandbox"] = {
+            "image_source": separate.get("image_source"),
+            "status": separate.get("status"),
+        }
     _write_block(trial, attempt, block)
     row.regrade_id = regrade_id
     row.new_reward = new_reward
@@ -815,6 +1039,8 @@ async def aregrade(
     concurrency: int = 4,
     reason: str | None = None,
     runner: Runner | None = None,
+    review: bool = False,
+    reviewer: ReviewerConfig | None = None,
 ) -> RegradeSummary:
     """Async :func:`regrade`."""
     from benchflow.review.persistence import write_json_atomic
@@ -835,6 +1061,8 @@ async def aregrade(
                 reason=reason,
                 regrade_id=regrade_id,
                 runner=run,
+                review=review,
+                reviewer=reviewer,
             )
 
     rows = await asyncio.gather(*(one(t) for t in trials))
@@ -857,13 +1085,18 @@ def regrade(
     concurrency: int = 4,
     reason: str | None = None,
     runner: Runner | None = None,
+    review: bool = False,
+    reviewer: ReviewerConfig | None = None,
 ) -> RegradeSummary:
     """Re-run each trial's task verifier (from ``tasks_dir`` when given) on
     the trial's frozen final workspace, in a fresh sandbox.
 
     ``path`` is a job folder or one trial folder. ``sandbox`` defaults to the
-    backend each trial ran on. The original ``result.json`` is never touched;
-    see the module docstring for what is written. Blocking form of
+    backend each trial ran on. ``review`` also reruns each trial's rubric
+    review on the same saved outputs, gated by the new test, with the
+    reviewer settings the trial recorded under ``reviewer``'s; the combined
+    score is then what is compared. The original ``result.json`` is never
+    touched; see the module docstring for what is written. Blocking form of
     :func:`aregrade`, with the same arguments; it also works inside a running
     event loop, such as a Jupyter cell.
     """
@@ -877,5 +1110,7 @@ def regrade(
             concurrency=concurrency,
             reason=reason,
             runner=runner,
+            review=review,
+            reviewer=reviewer,
         )
     )
