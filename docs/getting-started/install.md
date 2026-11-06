@@ -44,7 +44,7 @@ Each cloud sandbox also needs its own login. [Auth](../agents/auth.md#sandbox-cr
 uv tool install --python 3.12 benchflow==<version> --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v<version>/constraints.txt
 ```
 
-Use the same version in both places, for example `benchflow==0.9.1` with `v0.9.1/constraints.txt`. uv keeps the constraints with the tool, so `uv tool upgrade` stays inside them.
+Use the same version in both places, for example `benchflow==0.9.2` with `v0.9.2/constraints.txt`. uv keeps the constraints with the tool, so `uv tool upgrade` stays inside them.
 
 With an extra, put it before the version: `'benchflow[sandbox-daytona]==<version>'`.
 
@@ -109,11 +109,11 @@ uv tool upgrade benchflow
 This moves to the newest release your install allows. A pinned install (`benchflow==<version>`) stays on its version, and a constraints file keeps every dependency at its pin. To move a pinned install, run the install line again with the new version in both places:
 
 ```bash
-uv tool install --python 3.12 --upgrade 'benchflow==0.9.1' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.1/constraints.txt
+uv tool install --python 3.12 --upgrade 'benchflow==0.9.2' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
 ```
 
-Keep any extras your installation needs, for example `'benchflow[sandbox-daytona]==0.9.1'`. See [What's new in 0.9](../whats-new-0.9.md) before resuming an older job.
+Keep any extras your installation needs, for example `'benchflow[sandbox-daytona]==0.9.2'`. See [What's new in 0.9](../whats-new-0.9.md) before resuming an older job.
 
 If `uv tool upgrade` says `Nothing to upgrade` and suggests reinstalling with `benchflow@latest`, run `uv tool install --python 3.12 benchflow@latest`. uv's hint leaves out `--python 3.12`, and without it uv can pick an old `benchflow` release that has no `bench` command.
 

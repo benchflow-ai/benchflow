@@ -1830,6 +1830,7 @@ VERIFIER_TASK_FIELDS: dict[str, str] = {
     "verifier.memory.expected_skills": "carried",
     "verifier.hardening": "carried",
     "verifier.hardening.cleanup_conftests": "carried",
+    "verifier.hardening.cleanup_git": "carried",
     "verifier.pytest_plugins": "carried",
     "verifier.pytest_plugin_releases": "carried",
     # The trusted task's tool contract must be checked in the verifier's

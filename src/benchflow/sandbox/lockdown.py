@@ -360,12 +360,18 @@ def _agent_egress_firewall_cmd(
     *,
     allow_networks: tuple[str, ...] | None = None,
     root_gid: int | None = None,
+    refuse_dns: bool = False,
 ) -> str:
     """The uid firewall: the agent's packets leave only on loopback.
 
     ``root_gid``: the agent runs as uid 0 with that primary group
     (:func:`build_root_no_web_launch`), and the rules match uid 0 *and* that
-    group, so BenchFlow's own root processes (gid 0) are not held."""
+    group, so BenchFlow's own root processes (gid 0) are not held.
+
+    ``refuse_dns`` (an offline agent): DNS on loopback is refused too. A
+    resolver there answers from outside the sandbox (Docker's embedded one,
+    127.0.0.11 on a rewritten port, forwards to the host's), so it would
+    resolve any name and carry data out in the names asked."""
     user = shlex.quote(sandbox_user)
     owner = (
         f"-m owner --uid-owner 0 --gid-owner {int(root_gid)}"
@@ -377,6 +383,26 @@ def _agent_egress_firewall_cmd(
         if allow_networks is not None
         else ""
     )
+    dns4 = dns6 = ""
+    if refuse_dns:
+        # Above the loopback ACCEPT (each goes in at the top).
+        rules4 = [
+            f"OUTPUT -d 127.0.0.11 {owner} -j REJECT",
+            *(
+                f"OUTPUT -o lo -p {p} --dport 53 {owner} -j REJECT"
+                for p in ("udp", "tcp")
+            ),
+        ]
+        dns4 = "".join(
+            f"iptables -C {r} 2>/dev/null || "
+            f"iptables -I {r.replace('OUTPUT', 'OUTPUT 1', 1)}; "
+            for r in rules4
+        )
+        dns6 = "".join(
+            f"ip6tables -C {r} 2>/dev/null || "
+            f"ip6tables -I {r.replace('OUTPUT', 'OUTPUT 1', 1)}; "
+            for r in rules4[1:]
+        )
     return (
         "set -e; "
         "if ! command -v iptables >/dev/null 2>&1; then "
@@ -400,10 +426,11 @@ def _agent_egress_firewall_cmd(
         f"iptables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
         f"iptables -A OUTPUT {owner} -j REJECT; "
+        + dns4
         # procfs reports zero stat size even when this interface has content.
         # Install IPv6 rules whenever the kernel exposes the stack, including
         # before a non-loopback interface acquires an address.
-        "if [ -e /proc/net/if_inet6 ]; then "
+        + "if [ -e /proc/net/if_inet6 ]; then "
         "command -v ip6tables >/dev/null 2>&1 || "
         "{ echo 'IPv6 enabled but ip6tables unavailable' >&2; exit 86; }; "
         f"ip6tables -C OUTPUT -o lo {owner} "
@@ -412,9 +439,7 @@ def _agent_egress_firewall_cmd(
         "-j ACCEPT; "
         f"ip6tables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
-        f"ip6tables -A OUTPUT {owner} -j REJECT; "
-        "fi"
-        f"{allow}"
+        f"ip6tables -A OUTPUT {owner} -j REJECT; " + dns6 + f"fi{allow}"
     )
 
 
@@ -840,14 +865,18 @@ async def enforce_agent_egress_firewall(
     if not sandbox_user:
         # A uid-0 agent under no-web: its launch put it in
         # NO_WEB_ROOT_GID (build_root_no_web_launch); hold that.
-        await enforce_sandbox_uid_egress(env, "root", root_gid=NO_WEB_ROOT_GID)
+        await enforce_sandbox_uid_egress(
+            env, "root", root_gid=NO_WEB_ROOT_GID, refuse_dns=True
+        )
         return
     allow_networks = None
     if denylist and agent_env.get(EGRESS_ALLOWLIST_ENV) == "1":
         allow_networks = tuple(
             n for n in agent_env.get(EGRESS_ALLOW_NETWORKS_ENV, "").split(",") if n
         )
-    await enforce_sandbox_uid_egress(env, sandbox_user, allow_networks=allow_networks)
+    await enforce_sandbox_uid_egress(
+        env, sandbox_user, allow_networks=allow_networks, refuse_dns=no_web
+    )
 
 
 async def enforce_sandbox_uid_egress(
@@ -856,16 +885,21 @@ async def enforce_sandbox_uid_egress(
     *,
     allow_networks: tuple[str, ...] | None = None,
     root_gid: int | None = None,
+    refuse_dns: bool = False,
 ) -> None:
     """Install the shared loopback-only UID firewall without inference setup.
 
     ``allow_networks`` (allowlist mode) adds the DNS redirect and the direct
     rules for listed IP ranges; see ``_allowlist_firewall_cmd``.
+    ``refuse_dns`` (an offline agent) refuses DNS on loopback too.
     """
     result = await exec_raw(
         env.exec,
         _agent_egress_firewall_cmd(
-            sandbox_user, allow_networks=allow_networks, root_gid=root_gid
+            sandbox_user,
+            allow_networks=allow_networks,
+            root_gid=root_gid,
+            refuse_dns=refuse_dns,
         ),
         user="root",
         timeout_sec=120,
@@ -2640,7 +2674,12 @@ async def check_loader_custody(env, workspace: str, *, timeout_sec: int = 120) -
 
 
 async def prepare_runtime_tree(
-    env, *, phase: str = "all", timeout_sec: int = 300, service: str = "main"
+    env,
+    *,
+    phase: str = "all",
+    timeout_sec: int = 300,
+    service: str = "main",
+    transfer_roots: tuple[str, ...] = (),
 ) -> bool:
     """Make (or keep) root's protected runtime kit in *env*, before the
     agent's turn, and route root's steps through it (C8).
@@ -2654,7 +2693,8 @@ async def prepare_runtime_tree(
     :func:`benchflow._runtime_tree.kit_prepare_command`). *service*: the
     compose service whose own kit this is (PY8-PT-R8-6); a service other
     than ``main`` that cannot have one is recorded without one, and root's
-    plumbing there is refused after the agent's turn.
+    plumbing there is refused after the agent's turn. *transfer_roots*: a
+    separate verifier's (:func:`prepare_separate_verifier_runtime`).
     """
     from benchflow._runtime_tree import kit_prepare_command, parse_kit_record
 
@@ -2668,7 +2708,10 @@ async def prepare_runtime_tree(
             result, miss = await _restore_cached_kit(env, timeout_sec)
         if result is None:
             result = await _read_exec(
-                env, kit_prepare_command(phase), user="root", timeout_sec=timeout_sec
+                env,
+                kit_prepare_command(phase, transfer_roots=transfer_roots),
+                user="root",
+                timeout_sec=timeout_sec,
             )
             lines = (getattr(result, "stdout", "") or "").splitlines()
             if (
@@ -3335,6 +3378,24 @@ VERIFIER_ENV: dict[str, str] = {
     # git reads no ~/.gitconfig or ~/.config/git/config (git >= 2.32); the
     # system file /etc/gitconfig still applies.
     "GIT_CONFIG_GLOBAL": "/dev/null",
+    # The freeze makes the workspace's repositories root's, so root's git
+    # trusts what the agent wrote in them. At command-line scope (git >= 2.31)
+    # git runs no hook, fsmonitor, external diff or signing program of theirs;
+    # a test.sh that wants one names it with -c, which comes later. Drivers and
+    # includes named in the repository's config are purged with the freeze.
+    "GIT_CONFIG_COUNT": "6",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "GIT_CONFIG_VALUE_0": "/dev/null",
+    "GIT_CONFIG_KEY_1": "core.fsmonitor",
+    "GIT_CONFIG_VALUE_1": "false",
+    "GIT_CONFIG_KEY_2": "diff.external",
+    "GIT_CONFIG_VALUE_2": "",
+    "GIT_CONFIG_KEY_3": "commit.gpgSign",
+    "GIT_CONFIG_VALUE_3": "false",
+    "GIT_CONFIG_KEY_4": "tag.gpgSign",
+    "GIT_CONFIG_VALUE_4": "false",
+    "GIT_CONFIG_KEY_5": "log.showSignature",
+    "GIT_CONFIG_VALUE_5": "false",
     # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
     # system-site without this flag. Verifier runs as root and system-site is
     # root-owned, so allowing it is safe; without it, tasks that pip-install
@@ -7803,8 +7864,10 @@ async def prepare_separate_verifier_runtime(
     # The kit, and with it the record of the image's interpreters
     # (IMAGE_PYTHON_GUARD), whether or not the task pins plugins: the guard
     # installer then starts none of the interpreters the transfer brings,
-    # which the record does not hold (PT-C8-CONF-2b round 3).
-    await prepare_runtime_tree(env)
+    # which the record does not hold (PT-C8-CONF-2b round 3). The transfer
+    # unpacks as root, so its files would pass for the image's: an image
+    # LD_PRELOAD or LD_LIBRARY_PATH naming the workspace is not admitted.
+    await prepare_runtime_tree(env, transfer_roots=(workspace, "/logs/artifacts"))
     pins, ctrf = runtime_requested(task)
     if not pins and not ctrf and not runner_requested(task):
         return
@@ -9404,6 +9467,7 @@ NO_PROTECTED_PYTHON_SKIP = (
 #   cleanup_conftests = false   # don't delete conftest.py before verify
 HARDENING_DEFAULTS: dict[str, bool] = {
     "cleanup_conftests": True,
+    "cleanup_git": True,
 }
 
 
@@ -10567,6 +10631,195 @@ def _purge_external_symlinks_cmd(workspace: str) -> str:
 def _purge_pycache_cmd(workspace: str) -> str:
     """Render the baseline-aware __pycache__ purge command for the workspace."""
     return _PURGE_PYCACHE_CMD_TEMPLATE.replace("__WSQ__", shlex.quote(workspace))
+
+
+# The freeze makes the workspace's repositories root's, so root's git in test.sh
+# would trust what the agent wrote there: a hook, an fsmonitor command, a
+# filter, diff or merge driver the attributes name, an include, a shell alias
+# for a subcommand the image lacks. In every git
+# directory of the workspace, each hook and each such config entry that is not
+# in root's pre-agent copy (/testbed_verify, trusted as the other purges trust
+# it) goes; the repository's own stay. The config is read and written with the
+# image's root-owned git, includes off; without one, a changed config file is
+# put back from the copy or removed (git runs on its defaults). A commondir
+# file sends git to another folder's config and hooks: one in the workspace is
+# purged too; one outside it, like a .git file naming a folder outside it, goes
+# where the agent ran in this sandbox, unless the copy holds the same pointer.
+_PURGE_GIT_CONTROLS_SCRIPT = """\
+import os, re, shutil, stat, subprocess, sys
+root = sys.argv[1]
+baseline = sys.argv[2] if len(sys.argv) > 2 else ''
+RUNS = re.compile(
+    r'(filter\\..*|diff\\.[^.]+\\..+|merge\\.[^.]+\\..+|include\\..*|includeif\\..*'
+    r'|core\\.(fsmonitor|hookspath|sshcommand|gitproxy|askpass|editor|pager'
+    r'|alternaterefscommand)|alias\\..*|(diff|merge)tool\\..*'
+    r'|diff\\.external|sequence\\.editor|gpg\\..*program|credential\\..*|pager\\..*'
+    r'|uploadpack\\..*|remote\\..+\\.(uploadpack|receivepack)|interactive\\.difffilter'
+    r'|submodule\\..+\\.update)$', re.I)
+DEVNULL = subprocess.DEVNULL
+ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'LC_ALL': 'C',
+       'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
+trusted = False
+if baseline:
+    try:
+        st = os.lstat(baseline)
+        trusted = (stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid()
+                   and not st.st_mode & 0o077)
+    except OSError:
+        trusted = False
+def base_of(path):
+    if not trusted:
+        return None
+    candidate = os.path.join(baseline, os.path.relpath(path, root))
+    try:
+        if stat.S_ISREG(os.lstat(candidate).st_mode):
+            return candidate
+    except OSError:
+        pass
+    return None
+def read(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return b''.join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+git = None
+for candidate in ('/usr/bin/git', '/bin/git', '/usr/local/bin/git'):
+    try:
+        st = os.stat(candidate)
+    except OSError:
+        continue
+    if stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022:
+        git = candidate
+        break
+def entries(path):
+    out = subprocess.check_output(
+        [git, 'config', '--file', path, '--no-includes', '--null', '--list'],
+        env=ENV, stderr=DEVNULL)
+    pairs = []
+    for item in out.split(b'\\0'):
+        if item:
+            key, _, value = item.partition(b'\\n')
+            pairs.append((key, value))
+    return pairs
+def put_back(path, base):
+    os.unlink(path)
+    if base is not None:
+        with open(base, 'rb') as source, open(path, 'xb') as target:
+            shutil.copyfileobj(source, target)
+def config(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        put_back(path, base_of(path))
+        return
+    if not stat.S_ISREG(st.st_mode):
+        return
+    base = base_of(path)
+    if base is not None and read(base) == read(path):
+        return
+    if git is None:
+        put_back(path, base)
+        return
+    try:
+        now = entries(path)
+        before = entries(base) if base is not None else []
+    except (OSError, subprocess.CalledProcessError):
+        put_back(path, base)
+        return
+    keys = []
+    for key, _ in now:
+        if RUNS.match(key.decode('utf-8', 'surrogateescape')) and key not in keys:
+            keys.append(key)
+    for key in keys:
+        kept = [v for k, v in before if k == key]
+        if [v for k, v in now if k == key] == kept:
+            continue
+        code = subprocess.call([git, 'config', '--file', path, '--unset-all', key],
+                               env=ENV, stdout=DEVNULL, stderr=DEVNULL)
+        if code not in (0, 5):
+            raise SystemExit('git config --unset-all failed: %d' % code)
+        for value in kept:
+            subprocess.check_call([git, 'config', '--file', path, '--add', key, value],
+                                  env=ENV, stdout=DEVNULL, stderr=DEVNULL)
+def hooks(gitdir):
+    folder = os.path.join(gitdir, 'hooks')
+    try:
+        st = os.lstat(folder)
+    except OSError:
+        return
+    if not stat.S_ISDIR(st.st_mode):
+        os.unlink(folder)
+        return
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        st = os.lstat(path)
+        if stat.S_ISREG(st.st_mode):
+            if name.endswith('.sample'):
+                continue
+            base = base_of(path)
+            if (base is not None and read(base) == read(path)
+                    and os.lstat(base).st_mode & 0o111 == st.st_mode & 0o111):
+                continue
+        if stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+real_root = os.path.realpath(root)
+def follow(path, prefix):
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        data = read(path)
+    except OSError:
+        return None
+    if not data.startswith(prefix):
+        return None
+    target = os.fsdecode(data[len(prefix):].rstrip(b'\\r\\n'))
+    target = os.path.realpath(os.path.join(os.path.dirname(path), target))
+    if target == real_root or target.startswith(real_root.rstrip('/') + '/'):
+        return os.path.join(root, os.path.relpath(target, real_root))
+    base = base_of(path)
+    if baseline and (base is None or read(base) != read(path)):
+        os.unlink(path)
+    return None
+def repository(gitdir):
+    config(os.path.join(gitdir, 'config'))
+    config(os.path.join(gitdir, 'config.worktree'))
+    hooks(gitdir)
+for folder, dirs, files in os.walk(root):
+    names = set(dirs) | set(files)
+    if '.git' in files:
+        follow(os.path.join(folder, '.git'), b'gitdir: ')
+    if 'HEAD' in names and ('objects' in names or 'commondir' in names):
+        repository(folder)
+        common = follow(os.path.join(folder, 'commondir'), b'')
+        if common is not None:
+            repository(common)
+        dirs[:] = [d for d in dirs if d not in ('objects', 'hooks', 'refs', 'logs')]
+"""
+
+
+def _purge_git_controls_cmd(workspace: str, *, agent_user: bool = False) -> str:
+    """Render the git hook and config purge for the workspace's repositories.
+
+    The pre-agent copy is the baseline only where the agent ran as a user
+    other than root in this sandbox (*agent_user*, the conftest sweep's rule);
+    elsewhere, as in a separate verifier, every such entry goes.
+    """
+    baseline = _VERIFIER_WORKSPACE_COPY if agent_user else ""
+    return hardening_python_cmd(
+        _PURGE_GIT_CONTROLS_SCRIPT,
+        f"{shlex.quote(workspace)} {shlex.quote(baseline)}",
+        workspace,
+    )
 
 
 def _purge_workspace_python_hooks_cmd(workspace: str) -> str:
@@ -12359,7 +12612,9 @@ def _chown_workspace_cmd(workspace: str, *, bfx: bool = False) -> str:
     )
 
 
-def _freeze_steps(workspace: str, *, bfx: bool = False) -> list[_PrepStep]:
+def _freeze_steps(
+    workspace: str, *, bfx: bool = False, git: bool = True
+) -> list[_PrepStep]:
     """Purge external symlinks, stale caches and startup hooks, then chown.
 
     The cache purge runs before the hooks purge and leaves only the image's
@@ -12393,6 +12648,21 @@ def _freeze_steps(workspace: str, *, bfx: bool = False) -> list[_PrepStep]:
             _purge_workspace_python_hooks_cmd(workspace),
             VERIFIER_SETUP_TIMEOUT_SEC,
             "Verifier hardening failed: purging workspace Python startup hooks",
+        ),
+        *(
+            [
+                _PrepStep(
+                    "purge_git_controls",
+                    "freeze_workspace",
+                    _purge_git_controls_cmd(
+                        workspace, agent_user=_hook_agent_user.get()
+                    ),
+                    VERIFIER_SETUP_TIMEOUT_SEC,
+                    "Verifier hardening failed: purging workspace git hooks and config",
+                )
+            ]
+            if git
+            else []
         ),
         _PrepStep(
             "chown_workspace",
@@ -12923,10 +13193,10 @@ async def _restore_workspace_state(env, workspace: str) -> None:
     )
 
 
-async def _freeze_workspace(env, workspace: str) -> None:
+async def _freeze_workspace(env, workspace: str, *, git: bool = True) -> None:
     """Purge external symlinks, stale caches and startup hooks, then chown
     (see _freeze_steps), one exec each."""
-    for step in _freeze_steps(workspace, bfx=_bfx_in_scripts(env)):
+    for step in _freeze_steps(workspace, bfx=_bfx_in_scripts(env), git=git):
         await _run_prep_step(env, step)
 
 
@@ -13511,7 +13781,11 @@ async def _harden_steps(
             ]
             after = [
                 *(
-                    _freeze_steps(workspace, bfx=_bfx_in_scripts(env))
+                    _freeze_steps(
+                        workspace,
+                        bfx=_bfx_in_scripts(env),
+                        git=hardening.get("cleanup_git", True),
+                    )
                     if workspace
                     else []
                 ),
@@ -13574,7 +13848,13 @@ async def _harden_steps(
             #    (a regular file with another name keeps its owner).
             if workspace:
                 with _prep_timing(seconds, "freeze_workspace"):
-                    await _freeze_workspace(env, workspace)
+                    await _freeze_workspace(
+                        env,
+                        workspace,
+                        git=_read_hardening_config(getattr(task, "task_dir", None)).get(
+                            "cleanup_git", True
+                        ),
+                    )
                     if keep is not None and sandbox_user:
                         # Closing the workspace and checking its ancestors both
                         # run root's judged Python; without one,

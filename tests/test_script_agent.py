@@ -301,6 +301,35 @@ async def test_script_setup_keeps_container_block_and_agent_policy(
 
 
 @pytest.mark.asyncio
+async def test_script_under_an_offline_agent_phase_gets_the_offline_sandbox(
+    inputs, tmp_path
+):
+    """Fails on c0d0122e, where a script: agent under [agent] no-network kept the sandbox's whole network."""
+    from benchflow.contracts import default_rollout_planes
+
+    task, _, spec = inputs
+    (task / "task.toml").write_text(
+        'version = "1.0"\n[agent]\ntimeout_sec = 1\nnetwork_mode = "no-network"\n'
+        '[environment]\nworkdir = "/app"\n'
+    )
+    planes = MagicMock(wraps=default_rollout_planes())
+    planes.resolve_agent_env.return_value = {}
+    planes.create_environment.return_value = SimpleNamespace()
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=task, agent=spec, jobs_dir=tmp_path / "jobs", planes=planes
+        )
+    )
+    await rollout.setup()
+    # The sandbox is made as for an offline model agent: NET_ADMIN for the
+    # uid firewall, the sandbox itself still online for setup and the verifier.
+    assert planes.create_environment.call_args.kwargs["preserve_agent_network"] is True
+    assert rollout._script_agent_offline is True
+    assert rollout._egress_denylist is None
+    assert "BENCHFLOW_DISALLOW_WEB_TOOLS" not in rollout._agent_env
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("agent", ["script", "oracle", "nop"])
 async def test_script_install_guards_daemon_keeps_lockdown_and_skips_credentials(
     inputs, tmp_path, monkeypatch, agent
@@ -396,6 +425,55 @@ async def test_script_proxy_firewall_exec_stop_verify_order(
     result = await rollout.run()
     assert result.error is None and result.rewards == {"reward": 1.0}
     assert calls == ["proxy", "firewall", "script", "stop", "verify"]
+
+
+@pytest.mark.asyncio
+async def test_an_offline_script_starts_behind_the_uid_firewall(
+    inputs, tmp_path, monkeypatch
+):
+    """Fails on c0d0122e: the loopback-only uid firewall must be armed before an offline script runs."""
+    import benchflow.rollout as module
+
+    task, _, spec = inputs
+    rollout = Rollout(RolloutConfig(task_path=task, agent=spec))
+    rollout._rollout_dir = tmp_path
+    rollout._rollout_name = "script-trial"
+    rollout._started_at = datetime.now()
+    rollout._agent_cwd = "/app"
+    rollout._env = SimpleNamespace()
+    rollout._egress_denylist = None
+    rollout._script_agent_offline = True
+    for name in ("setup", "start", "install_agent", "cleanup"):
+        setattr(rollout, name, AsyncMock())
+    calls = []
+
+    async def policy_firewall(env, user, variables):
+        assert variables == {}
+        calls.append("policy")
+
+    async def uid_firewall(env, user):
+        assert env is rollout._env
+        calls.append(f"uid firewall for {user}")
+
+    async def run(env, data, label, timeout, user, cwd, variables, **kwargs):
+        calls.append("script")
+        return [{"type": "script", "return_code": 0, "timed_out": False}], label
+
+    async def verify():
+        calls.append("verify")
+        rollout._rewards = {"reward": 0.0}
+
+    rollout.verify = verify
+    monkeypatch.setattr(
+        rollout._planes, "enforce_agent_egress_firewall", policy_firewall, raising=False
+    )
+    monkeypatch.setattr(
+        rollout._planes, "enforce_offline_uid_egress", uid_firewall, raising=False
+    )
+    monkeypatch.setattr(module, "_run_script", run, raising=False)
+    result = await rollout.run()
+    assert result.error is None
+    assert calls == ["policy", "uid firewall for agent", "script", "verify"]
 
 
 @pytest.mark.asyncio

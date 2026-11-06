@@ -21,7 +21,7 @@ async def test_ancestry_is_checked_after_closure_before_verifier(
 ):
     events = []
 
-    async def freeze(*args):
+    async def freeze(*args, **kwargs):
         events.append("freeze")
 
     async def restore_state(*args):

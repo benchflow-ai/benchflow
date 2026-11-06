@@ -238,6 +238,9 @@ class DefaultRolloutPlanes:
     ) -> None:
         await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
 
+    async def enforce_offline_uid_egress(self, env: Any, sandbox_user: str) -> None:
+        await enforce_sandbox_uid_egress(env, sandbox_user, refuse_dns=True)
+
     async def install_agent(
         self,
         env: Any,

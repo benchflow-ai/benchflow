@@ -112,8 +112,9 @@ cleanup_conftests = false
 | Key | Default | When `false` |
 |---|---|---|
 | `cleanup_conftests` | `true` | `conftest.py` files outside `/tests` and `/verifier` are kept |
+| `cleanup_git` | `true` | The workspace repositories' hooks, and the config entries that run commands, are kept; `test.sh` then names a hook with `git -c core.hooksPath=...` |
 
-The other hardening steps cannot be turned off. No real task needs a planted `sitecustomize.py`, `.pth` file or `/tmp` script. `cleanup_conftests` is the only key. Example: [progressive disclosure](../tasks/scripted-users.md#keep-a-tasks-own-conftestpy).
+The other hardening steps cannot be turned off. No real task needs a planted `sitecustomize.py`, `.pth` file or `/tmp` script. `cleanup_conftests` and `cleanup_git` are the only keys. Example: [progressive disclosure](../tasks/scripted-users.md#keep-a-tasks-own-conftestpy).
 
 A task about the cloud metadata service itself can allow it in its environment table (the older `metadata.x-allow-cloud-metadata: true` still works). Without it, a trial whose metadata block is not proven stops before the agent:
 

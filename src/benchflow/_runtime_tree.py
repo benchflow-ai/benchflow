@@ -77,6 +77,7 @@ from __future__ import annotations
 import posixpath
 import re
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -675,8 +676,34 @@ _BUILD = "# --- build ---"
 _SEAL = "# --- seal ---"
 
 
+def _transfer_roots_func(roots: Sequence[str]) -> str:
+    """sh defining ``bf_names_transfer VALUE``: exit 0 when a path *VALUE*
+    names lies at or under one of *roots*: the deepest folder of it that
+    exists now resolved (links, '..'), the rest as written."""
+    resolve = "; ".join(
+        f"bf_r{i}=$(cd -P -- {shlex.quote(root)} 2>/dev/null && pwd -P) "
+        f"|| bf_r{i}={shlex.quote(root)}"
+        for i, root in enumerate(roots)
+    )
+    under = "|".join(f'"$bf_r{i}"/*' for i in range(len(roots)))
+    return (
+        f"{resolve}; "
+        "bf_names_transfer() ( set -f; IFS=': =,'; for v in $1; do "
+        "case $v in /*) ;; *) continue;; esac; p=$v; t=; "
+        'until d=$(cd -P -- "$p" 2>/dev/null && pwd -P); do '
+        '[ "$p" != / ] || continue 2; t=${p##*/}${t:+/$t}; p=${p%/*}; '
+        '[ -n "$p" ] || p=/; done; '
+        f"case ${{d%/}}/$t in {under}) exit 0;; esac; "
+        "done; exit 1 )"
+    )
+
+
 def kit_prepare_command(
-    phase: str = "all", *, walk: bool = True, stage: str | None = None
+    phase: str = "all",
+    *,
+    walk: bool = True,
+    stage: str | None = None,
+    transfer_roots: Sequence[str] = (),
 ) -> str:
     """sh, run as root on the plumbing route before the agent's first turn:
     make (or keep) the protected runtime tree and print its record.
@@ -703,6 +730,10 @@ def kit_prepare_command(
     proofs and MANIFEST on the kit's Python (:mod:`benchflow._kit_seal`)
     when there is one; False (tests only) runs the sh they mirror. The seal prints ``BF kit-seal walk`` or
     ``BF kit-seal sh``.
+
+    *transfer_roots*: where a separate verifier will unpack the agent's
+    bytes as root after this seal. No image value naming a path there is
+    admitted, as in the agent's sandbox, whose seal comes after the grant.
     """
     from benchflow.sandbox._base import IMAGE_RESTORED_VARS, env_value_check_func
 
@@ -1178,6 +1209,7 @@ def kit_prepare_command(
         # (bf_value_ok): path lists root's alone, options naming no file the
         # agent could write (PT-C8-CONF-6).
         env_value_check_func(),
+        *([_transfer_roots_func(transfer_roots)] if transfer_roots else []),
         "if [ -r /proc/1/environ ]; then",
         "  tr '\\000' '\\n' < /proc/1/environ | while IFS= read -r l; do",
         "    case $l in *=) continue;; esac",
@@ -1187,7 +1219,9 @@ def kit_prepare_command(
         "    n=${l%%=*}; n=${n#_BF_IMAGE_}",
         f"    case $n in {image_names}) ;; *) continue;; esac",
         "    l=$n=${l#*=}",
-        '    bf_value_ok "$n" "${l#*=}" && printf \'%s\\n\' "$l" >> "$KIT/IMAGE_ENV_OK"',
+        '    bf_value_ok "$n" "${l#*=}" && '
+        + ('! bf_names_transfer "${l#*=}" && ' if transfer_roots else "")
+        + 'printf \'%s\\n\' "$l" >> "$KIT/IMAGE_ENV_OK"',
         "  done",
         "fi",
         # RECORD first, MANIFEST (which hashes it) last: a kit without a

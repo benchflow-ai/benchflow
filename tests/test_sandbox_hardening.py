@@ -1008,6 +1008,8 @@ class TestVerifierEnv:
             "PIP_USER",
             "PIP_CONFIG_FILE",
             "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_COUNT",
+            *(f"GIT_CONFIG_{kind}_{i}" for kind in ("KEY", "VALUE") for i in range(6)),
             "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",
@@ -1029,6 +1031,13 @@ class TestVerifierEnv:
         assert VERIFIER_ENV["LD_PRELOAD"] == ""
         assert VERIFIER_ENV["LD_LIBRARY_PATH"] == ""
         assert VERIFIER_ENV["PYTHONPATH"] == ""
+        git = {
+            VERIFIER_ENV[f"GIT_CONFIG_KEY_{i}"]: VERIFIER_ENV[f"GIT_CONFIG_VALUE_{i}"]
+            for i in range(int(VERIFIER_ENV["GIT_CONFIG_COUNT"]))
+        }
+        assert git["core.hooksPath"] == "/dev/null"
+        assert git["core.fsmonitor"] == "false"
+        assert git["diff.external"] == ""
         assert VERIFIER_ENV["PYTHONDONTWRITEBYTECODE"] == "1"
         assert (
             VERIFIER_ENV["PATH"]

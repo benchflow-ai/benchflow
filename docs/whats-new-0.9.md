@@ -2,22 +2,22 @@
 
 BenchFlow 0.9.0 is a major rework of the existing Python SDK and CLI, following 0.7.11 as the first Python 0.9 release. Python remains the main implementation, with a static Linux `bfx` helper for sandbox operations. This page is for users upgrading from 0.7 or switching from the separate Rust engine 0.8.2. It lists what changes how you work. The [CHANGELOG](https://github.com/benchflow-ai/benchflow/blob/main/CHANGELOG.md) has every entry, with reasons and evidence, and its known limitations.
 
-To move to 0.9.1, including from an exactly pinned tool installation, install the new version with its matching constraints:
+To move to 0.9.2, including from an exactly pinned tool installation, install the new version with its matching constraints:
 
 ```bash
-uv tool install --python 3.12 --upgrade 'benchflow==0.9.1' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.1/constraints.txt
-bench --version     # benchflow 0.9.1
+uv tool install --python 3.12 --upgrade 'benchflow==0.9.2' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
+bench --version     # benchflow 0.9.2
 bench doctor
 ```
 
-Keep any extras your installation needs, for example `'benchflow[sandbox-daytona]==0.9.1'`. `uv tool upgrade benchflow` respects an existing version pin and therefore does not move a pinned 0.7.11 installation to 0.9.1.
+Keep any extras your installation needs, for example `'benchflow[sandbox-daytona]==0.9.2'`. `uv tool upgrade benchflow` respects an existing version pin and therefore does not move a pinned 0.7.11 installation to 0.9.2.
 
 Python 3.12 or newer is needed; 3.12 and 3.13 are tested. The CLI and SDK require a [POSIX host](./getting-started/install.md#host-platforms); native Windows Python is unsupported. See [Install](./getting-started/install.md), including how to keep the Rust engine's `bench` beside this one.
 
 ## Coming from the Rust engine 0.8.2
 
-Install the Python package beside the Rust engine using [Which bench runs](./getting-started/install.md#which-bench-runs): keep Rust in its own folder and use `benchflow` for Python. To replace the command instead, add `--force` to your Python install line, preserving its version, extras and constraints; this replaces the existing `bench` executable. Check `bench --version`: Python prints `benchflow 0.9.1`, Rust prints `bench 0.8.2` with build information.
+Install the Python package beside the Rust engine using [Which bench runs](./getting-started/install.md#which-bench-runs): keep Rust in its own folder and use `benchflow` for Python. To replace the command instead, add `--force` to your Python install line, preserving its version, extras and constraints; this replaces the existing `bench` executable. Check `bench --version`: Python prints `benchflow 0.9.2`, Rust prints `bench 0.8.2` with build information.
 
 Start Python runs in a new `--jobs-dir`. `bench results` can read Rust trial folders that contain the compatible `result.json` layout. `bench eval resume` cannot reconstruct a Rust job without Python's `evaluation.json`; keep the Rust executable to resume it. Do not point a Python run at a Rust job to migrate it: sharing verbs and score rules does not make the saved run settings interchangeable.
 

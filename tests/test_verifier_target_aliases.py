@@ -149,7 +149,7 @@ async def test_target_path_excludes_shared_agent_content_before_freeze(
             dropped=tuple(dropped),
         )
 
-    async def freeze(*args):
+    async def freeze(*args, **kwargs):
         events.append(("freeze", "main"))
 
     async def check_tools(env, report, verifier):

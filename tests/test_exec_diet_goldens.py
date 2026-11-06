@@ -189,6 +189,9 @@ def _verifier_task(tmp_path: Path, toml: str = "") -> MagicMock:
 # path_extras declares the empty tool contract its left-out PATH entries
 # need (c84e6eb8c); without one it was a refusal, so it alone missed the
 # runner stub's BENCHFLOW_PYTEST (96155b555) every other case gained.
+# Regenerated for the workspace git purge: every case gains GIT_CONFIG_COUNT
+# and its six key and value pairs (hooks, fsmonitor, an external diff and
+# signing off at command-line scope); nothing else changed.
 @pytest.mark.parametrize("case", sorted(_ENV_CASES))
 async def test_build_verifier_env(box_factory, tmp_path, case):  # noqa: F811
     spec = _ENV_CASES[case]

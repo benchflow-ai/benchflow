@@ -984,6 +984,7 @@ class Rollout:
         self._verifier_warmup: Any = None
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._script_agent_offline: bool = False
         # What the run does about the cloud metadata endpoints (setup() sets
         # it; None: no agent, or a network that is not open).
         self._cloud_metadata: CloudMetadataPlan | None = None
@@ -1539,6 +1540,12 @@ class Rollout:
         self._disallow_web_tools = has_agent_launch and (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         )
+        # An operator script under an offline agent phase in an online sandbox
+        # gets the same sandbox and uid firewall as a model agent, minus the
+        # model route (it has none).
+        self._script_agent_offline = is_operator_script(
+            cfg.primary_agent
+        ) and _task_agent_offline(self._task)
         from benchflow.task.plan_validation import agent_egress_policy
 
         self._egress_denylist = agent_egress_policy(
@@ -1570,7 +1577,8 @@ class Rollout:
         self._cloud_metadata = cloud_metadata_plan(
             getattr(self._task, "config", None),
             sandbox_user=cfg.sandbox_user,
-            launches_agent=has_agent_launch,
+            # An operator script runs as the agent's user, as an agent does.
+            launches_agent=has_agent_launch or is_operator_script(cfg.primary_agent),
             environment_dir=task_environment_dir,
             allow_cloud_metadata=bool(getattr(cfg, "allow_cloud_metadata", False)),
         )
@@ -1718,7 +1726,8 @@ class Rollout:
                 effective_task_path,
                 self._rollout_name,
                 self._rollout_paths,
-                preserve_agent_network=self._disallow_web_tools,
+                preserve_agent_network=self._disallow_web_tools
+                or self._script_agent_offline,
                 environment_manifest=cfg.environment_manifest,
                 block_cloud_metadata=self._cloud_metadata is not None
                 and self._cloud_metadata.armed,
@@ -5178,6 +5187,12 @@ class Rollout:
                     assert (
                         cfg.sandbox_user is not None and cfg._script_bytes is not None
                     )
+                    if self._script_agent_offline:
+                        # No model to route: the script's uid keeps only loopback.
+                        await self._planes.enforce_offline_uid_egress(
+                            self._env, cfg.sandbox_user
+                        )
+                    await self._apply_cloud_metadata_block(self._require_rollout_dir())
                     self._trajectory, self._agent_name = await _run_script(
                         self._env,
                         cfg._script_bytes,

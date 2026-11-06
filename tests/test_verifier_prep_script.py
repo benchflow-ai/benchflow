@@ -9,7 +9,8 @@ in one exec, which prints a status line per step.
 
 ``tests/fixtures/verifier_prep_golden.json`` is what the step-by-step code
 did on integ/py-0.8 (85b87bc9, regenerated on V3's merge of 66471e95 for
-its pre-freeze probes and the clean-up's interpreter) for success
+its pre-freeze probes and the clean-up's interpreter; and for the
+freeze's git hook and config purge and the verifier env's GIT_CONFIG keys) for success
 and for each step failing or timing out: which steps ran, the kill defense row, as which user and
 with which budget, each step's exact command, the error hardening raised, the
 verifier env's keys, and the ``harden_before_verify`` sub-keys the trial's
@@ -58,6 +59,7 @@ CHECKED = (
     # (V8-R1-B-1), and the workspace venv's startup hooks are purged.
     "purge_external_symlinks",
     "purge_workspace_python_hooks",
+    "purge_git_controls",
 )
 UNCHECKED = (
     "reclaim_disk",
@@ -71,6 +73,7 @@ SPAN = {
     "purge_external_symlinks": "freeze_workspace",
     "purge_pycache": "freeze_workspace",
     "purge_workspace_python_hooks": "freeze_workspace",
+    "purge_git_controls": "freeze_workspace",
     "chown_workspace": "freeze_workspace",
 }
 
@@ -143,6 +146,10 @@ def step_name(command: str, workspace: str | None) -> str | None:
         known[lockdown._purge_workspace_python_hooks_cmd(workspace)] = (
             "purge_workspace_python_hooks"
         )
+        for agent_user in (False, True):
+            known[
+                lockdown._purge_git_controls_cmd(workspace, agent_user=agent_user)
+            ] = "purge_git_controls"
         known[lockdown._chown_workspace_cmd(workspace)] = "chown_workspace"
     return known.get(command)
 
@@ -586,8 +593,8 @@ async def test_failed_step_seconds_come_from_its_status_line(tmp_path):
         "freeze_workspace",
     ]
     # purge_external_symlinks, purge_pycache, the workspace venv hooks purge
-    # (V8) and chown_workspace: steps 3-6.
-    assert seconds["freeze_workspace"] == STEP_SECONDS * (4 + 5 + 6 + 7)
+    # (V8), the git purge and chown_workspace: steps 3-7.
+    assert seconds["freeze_workspace"] == STEP_SECONDS * (4 + 5 + 6 + 7 + 8)
 
 
 def _step(name: str, command: str, timeout: int = 5, **kwargs: Any) -> Any:

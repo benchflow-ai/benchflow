@@ -500,6 +500,10 @@ class VerifierHardeningConfig(TaskConfigModel):
     """The ``[verifier.hardening]`` section for per-task opt-outs."""
 
     cleanup_conftests: bool = True
+    # False keeps the workspace repositories' hooks and the config entries
+    # that run commands, for a task whose answer is one (test.sh then names
+    # a hook with git -c core.hooksPath=...).
+    cleanup_git: bool = True
 
 
 # A pinned PyPI release: a project name, then == and a version.

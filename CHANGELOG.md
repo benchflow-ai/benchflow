@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.2]
+
+0.9.1 with five grading-integrity fixes from the 0.10 line, without its new features. Each comes with a test that fails on 0.9.1.
+
+### Security
+
+- **An offline agent can no longer resolve names.** Under `agent.network_mode: no-network`, the agent user's uid firewall admitted all loopback traffic, and Docker's embedded resolver answers on loopback (127.0.0.11) and forwards to the host's. The agent resolved any name, and a name it made up carried data out. The firewall now refuses the agent's DNS on loopback, as an allowlist already did (its DNS goes to the allowlist's filter). A denylist agent's resolver is unchanged.
+- **A `script:` agent under `agent.network_mode: no-network` runs offline.** It had the sandbox's whole network: its sandbox got no `NET_ADMIN` and no uid firewall was armed. It now gets the sandbox and the loopback-only firewall a model agent gets, DNS refused as above.
+- **A `script:` agent under an open network can't reach the cloud metadata endpoints.** A model agent's uid gets the block there, but an operator script, which runs as the same user, ran without it. It now starts only once the block is proven on, as a model agent does, and `cloud-metadata.json` records it. `--allow-cloud-metadata` still opts out.
+- **Root's git in `test.sh` no longer runs the agent's hooks, filters or aliases.** Grading makes the workspace root's, so root's git trusted the `.git` folders the agent wrote: a hook, an `fsmonitor` command, a filter or driver, an include, an alias or a `commondir` pointer ran as root when `test.sh` ran git, and a wrong answer could score 1. Before grading, BenchFlow now removes each one the repository lacked before the agent's turn (all of them in a separate verifier), and the grader's git runs with hooks, `fsmonitor`, external diff and signing off. A `test.sh` that needs one passes it with `git -c`; a task whose answer is a hook or a driver sets `cleanup_git = false` in `[verifier.hardening]`.
+- **A separate verifier no longer loads the agent's files through the image's `LD_PRELOAD` or `LD_LIBRARY_PATH`.** A value naming the workspace (`ENV LD_LIBRARY_PATH=/app/build` is common in C and C++ tasks) passed the check before the transfer, when nothing was there yet, and BenchFlow's root steps then loaded the agent's files from it. Values naming the workspace or `/logs/artifacts` no longer reach root's commands there, as in the agent's sandbox.
+
+### Known issues
+
+- **Under `python3 -m pytest`, a workspace module named like a standard-library module still loads first.** Before grading, BenchFlow removes a workspace `pytest`, `_pytest`, `pluggy`, `iniconfig` or `py` module the task did not ship, but not one named like a module pytest imports after start-up (`argparse.py`, for example). A task can run the `pytest` console script instead, or set `PYTHONSAFEPATH=1` in test.sh.
+- 0.9.1's two known issues remain: the model proxy's lazy start is off with LiteLLM 1.103.3, and a repository's own `conftest.py` in the workspace is still removed before grading (#1171; `cleanup_conftests = false` keeps it).
+
 ## [0.9.1]
 
 0.9.0 with fixes for problems found after its acceptance. Each was fixed first on the 0.10 line or on public main, with a test that fails on 0.9.0 and a real run.
@@ -15,7 +32,7 @@
 - **gemini on Daytona starts again** (#1208). Daytona refuses SSH access longer than 1440 minutes, and 0.9.0 asked for 2880, so every launch on the SSH transport failed with `expiresInMinutes must be between 1 and 1440`.
 - **A root-owned reward on rootful Docker is read** (#1202). A verifier that wrote its reward as root with mode 0600 on mounted outputs scored 0 without an error.
 - **A workspace `pytest.py` no longer replaces pytest.** When test.sh ran `python3 -m pytest` from the workspace, an agent's `/app/pytest.py` (or a `_pytest`, `pluggy`, `iniconfig` or `py` module or package) ran as root in place of the grader, and an unsolved task scored 1.0. Before grading, BenchFlow now removes each such module the pre-agent copy of the workspace has no entry for; a repository's own stays.
-- **pi-acp connects again** (#1191). It installed the deprecated `@mariozechner/pi-coding-agent` (0.73.1), whose `session/new` never answered. Pinned to `@earendil-works/pi-coding-agent@0.81.1` and `pi-acp@0.0.34`.
+- **pi-acp connects again** (as public #1158). It installed the deprecated `@mariozechner/pi-coding-agent` (0.73.1), whose `session/new` never answered. Pinned to `@earendil-works/pi-coding-agent@0.81.1` and `pi-acp@0.0.34`.
 - **openhands runs a model on Daytona.** uv's git cache lock was left writable by everyone, so the in-sandbox model proxy refused BenchFlow's uv cache and the trial failed before the first prompt.
 - **A Docker without buildx runs local trials.** Its legacy builder cannot build a cached layer's `RUN --mount` and deletes the image-id file when it fails, so a trial that needed the model proxy's, the agent's or the verifier's layer stopped with `FileNotFoundError` on `benchflow-layer-*.iid`. A failed layer build is now reported with the build's last lines, and the trial installs in the sandbox instead.
 - **A score in `reward.txt` beside a `reward.json` of details scores** (#1192). Details that are not numbers are kept beside the score; a number among them is still a metric held to the reward range.
@@ -1698,9 +1715,9 @@ These changes came with the renames:
 - Route Codex ACP through responses API (#224).
 - Deploy skills and forward `solution.env` for oracle runs (#223).
 - Honor no-internet tasks for agent runs; disable web tools without prompt mutation (#215).
-- Propagate `OPENAI_API_KEY` for vllm provider (#3).
-- Preserve arrival order of thought/message within flush windows (#214).
-- Record user messages and per-turn agent text in ACP trajectory (#745).
+- Propagate `OPENAI_API_KEY` for vllm provider (#215).
+- Preserve arrival order of thought/message within flush windows (#215).
+- Record user messages and per-turn agent text in ACP trajectory (#215).
 - Chown skill-link parent dirs so sandbox user can write into them.
 - Dynamic `--rootdir` in `PYTEST_ADDOPTS` based on task workspace.
 - Unique env-file path in `DaytonaPtyProcess` to avoid race conditions (#200).

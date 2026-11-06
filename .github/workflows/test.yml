@@ -144,6 +144,38 @@ jobs:
           path: ${{ runner.temp }}/deterministic-jobs
           retention-days: 7
 
+  grading-integrity:
+    # What the agent leaves behind never changes its grade, grading material
+    # stays closed to it, and the agent-phase network policies hold, on a real
+    # Docker sandbox: script and oracle agents, and claude-agent-acp on the
+    # fake model; no model keys. Its own job, so the deterministic tier keeps
+    # its time limit.
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      - name: Grading-integrity, grader-access and network-bypass tests
+        run: >-
+          uv run python -m pytest tests/test_grading_integrity_docker.py
+          tests/test_grader_access_docker.py tests/test_network_bypass_docker.py
+          -m deterministic -v -rs --durations=0
+        env:
+          BENCHFLOW_DETERMINISTIC_SANDBOX: docker
+
   pip-audit:
     runs-on: ubuntu-latest
     steps:
