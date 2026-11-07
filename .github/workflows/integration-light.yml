@@ -47,7 +47,7 @@ on:
       task:
         description: SkillsBench task to force-run on the smoke lane.
         type: string
-        default: jax-computing-basics
+        default: citation-check
 
 # Cancel superseded L1 runs on the same PR branch — this is the fast-feedback
 # lane, so a newer push supersedes the older run.
@@ -231,7 +231,10 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
       # The L1 smoke task. workflow_dispatch can override it.
-      SMOKE_TASK: ${{ github.event.inputs.task || 'jax-computing-basics' }}
+      # Not jax-computing-basics: its image puts /app/kona (inside the
+      # workspace) on PATH and it declares no [verifier] required_tools, so
+      # 0.10's verifier hardening refuses to grade it, as designed.
+      SMOKE_TASK: ${{ github.event.inputs.task || 'citation-check' }}
       BASE_REF: ${{ needs.detect-scope.outputs.base_ref }}
       HEAD_SHA: ${{ needs.detect-scope.outputs.head_sha }}
     steps:
