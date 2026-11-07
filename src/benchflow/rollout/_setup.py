@@ -715,6 +715,7 @@ def _init_rollout(
     rollout_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("agent", "verifier", "artifacts", "trajectory"):
         (rollout_dir / subdir).mkdir(exist_ok=True)
+    (rollout_dir / "trajectory" / "llm_trajectory.jsonl").unlink(missing_ok=True)
     # Pin the rollout's own root before any agent runs: late publication
     # (egress logs, TASKMD-R14 P-H1) selects it, never a fresh root.
     rollout_paths.mkdir()
