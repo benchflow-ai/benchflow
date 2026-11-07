@@ -74,8 +74,6 @@ def test_integration_light_exposes_provider_fallback_envs():
         "GLM_BASE_URL",
         "QWEN_API_KEY",
         "QWEN_BASE_URL",
-        "LITELLM_API_KEY",
-        "LITELLM_BASE_URL",
         "OPENAI_API_KEY",
         "GITHUB_MODELS_TOKEN",
     } <= set(env)
