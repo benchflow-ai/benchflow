@@ -1,4 +1,9 @@
-"""The gateway model retains declared image input."""
+"""The gateway model retains declared image input.
+
+Since 7146ceae (0.10.0rc2) the deployed wrapper reads the neutral RUNTIME_*
+names the agent process gets, so the test passes the host's names through the
+same translation. It only runs where Node is installed (GitHub's runner).
+"""
 
 import base64
 import json
@@ -10,6 +15,7 @@ import subprocess
 import pytest
 
 from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
+from benchflow.agents.visible_runtime import visible_env
 
 
 @pytest.mark.parametrize("inputs", [["text", "image"], ["text"], None])
@@ -28,10 +34,15 @@ def test_proxy_model_receives_only_declared_modalities(tmp_path, inputs):
         ["node", "-e", js],
         env={
             **os.environ,
-            "BENCHFLOW_AGENT_HOME": str(tmp_path),
-            "BENCHFLOW_LITELLM_MODEL_ALIAS": "alias",
-            "BENCHFLOW_PROVIDER_MODELS": json.dumps(
-                [{"id": "other", "input": ["image"]}, entry]
+            # The agent process gets the neutral names (acp/runtime.py).
+            **visible_env(
+                {
+                    "BENCHFLOW_AGENT_HOME": str(tmp_path),
+                    "BENCHFLOW_LITELLM_MODEL_ALIAS": "alias",
+                    "BENCHFLOW_PROVIDER_MODELS": json.dumps(
+                        [{"id": "other", "input": ["image"]}, entry]
+                    ),
+                }
             ),
         },
         capture_output=True,
