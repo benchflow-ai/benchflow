@@ -196,3 +196,6 @@ tutorials/
 
 # bfx binaries are built (make bfx) or come with the wheel; never committed.
 src/benchflow/_bfx/bin/
+
+# Written by tests/conformance/run_conformance.py on each run.
+tests/conformance/conformance-results.json

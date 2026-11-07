@@ -18,7 +18,3 @@ bench eval run --tasks-dir tests/conformance/acp_smoke --agent <agent-name> --mo
 ```
 
 Every agent in the registry must return `reward=1` on the smoke task against the oracle solution, and must complete cleanly for Haiku 4.5 as the driving model.
-
-## Gate for 0.3
-
-Release is blocked until every registered agent has at least one green conformance run on record. Agents that can't pass the smoke are either fixed or removed from the registry.

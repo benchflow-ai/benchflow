@@ -7,9 +7,9 @@
 #   - Docker running, or DAYTONA_API_KEY set for --daytona
 #
 # Usage:
-#   bash examples/test_antigravity.sh             # gemini-3.8-flash at the default (high) effort
-#   bash examples/test_antigravity.sh low         # explicit --reasoning-effort low
-#   bash examples/test_antigravity.sh --daytona   # use Daytona
+#   bash tests/examples/test_antigravity.sh             # gemini-3.8-flash at the default (high) effort
+#   bash tests/examples/test_antigravity.sh low         # explicit --reasoning-effort low
+#   bash tests/examples/test_antigravity.sh --daytona   # use Daytona
 
 set -euo pipefail
 

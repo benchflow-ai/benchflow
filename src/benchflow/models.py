@@ -31,7 +31,7 @@ hub (e.g. PrimeIntellect Verifiers). The events are reconstructed from
 class AgentInstallError(RuntimeError):
     """Agent installation failed in the sandbox.
 
-    Raised by ``_agent_setup.install_agent()`` when the agent's install
+    Raised by ``agents.install.install_agent()`` when the agent's install
     script exits non-zero. ``diagnostics`` contains the last N lines of
     output for triage; ``log_path`` points to the full log on disk.
     """

@@ -8,10 +8,10 @@
 #   - Docker running, or DAYTONA_API_KEY + DAYTONA_API_URL set for --daytona
 #
 # Usage:
-#   bash examples/test_claude.sh                  # run all
-#   bash examples/test_claude.sh subscription     # subscription auth only
-#   bash examples/test_claude.sh zai-glm5         # run one
-#   bash examples/test_claude.sh --daytona        # use Daytona
+#   bash tests/examples/test_claude.sh                  # run all
+#   bash tests/examples/test_claude.sh subscription     # subscription auth only
+#   bash tests/examples/test_claude.sh zai-glm5         # run one
+#   bash tests/examples/test_claude.sh --daytona        # use Daytona
 
 set -euo pipefail
 
