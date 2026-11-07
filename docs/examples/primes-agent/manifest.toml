@@ -1,0 +1,70 @@
+contract_version = "1.0"
+name = "primes-agent"
+description = "A model-free ACP agent for the primes example task: counts the primes below 50,000"
+launch_cmd = "python3 /opt/primes-agent/agent.py"
+install_cmd = '''
+set -e
+command -v python3 >/dev/null || { apt-get update -qq && apt-get install -y -qq python3; }
+mkdir -p /opt/primes-agent
+cat > /opt/primes-agent/agent.py <<'PY'
+"""primes-agent: a tiny agent that speaks the Agent Client Protocol (ACP) on stdin and stdout.
+
+It reads JSON-RPC requests, one per line, and answers on stdout. For each prompt it runs one
+command in the session's working folder: it counts the primes below 50,000 and writes the count
+to /app/answer.txt. It calls no model, so it needs no API key.
+"""
+import json
+import os
+import subprocess
+import sys
+
+COMMAND = (
+    "python3 -c \"n=50000; s=bytearray([1])*n; s[0]=s[1]=0\n"
+    "for i in range(2, int(n**0.5)+1):\n"
+    "    if s[i]: s[i*i::i]=bytearray(len(s[i*i::i]))\n"
+    "print(sum(s))\" > /app/answer.txt && cat /app/answer.txt"
+)
+
+
+def send(message):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+    sys.stdout.flush()
+
+
+def update(session_id, body):
+    send({"method": "session/update", "params": {"sessionId": session_id, "update": body}})
+
+
+def solve(session_id, cwd):
+    update(session_id, {"sessionUpdate": "tool_call", "toolCallId": "call-1",
+                        "title": "count primes below 50000", "kind": "execute",
+                        "status": "in_progress"})
+    done = subprocess.run(["bash", "-c", COMMAND], cwd=cwd, capture_output=True, text=True,
+                          timeout=120)
+    output = (done.stdout + done.stderr)[-4000:]
+    update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": "call-1",
+                        "status": "completed",
+                        "content": [{"type": "content",
+                                     "content": {"type": "text", "text": output}}]})
+    update(session_id, {"sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "Wrote the count to /app/answer.txt."}})
+
+
+cwd = os.getcwd()
+for line in sys.stdin:
+    request = json.loads(line)
+    method, request_id = request.get("method"), request.get("id")
+    params = request.get("params") or {}
+    if method == "initialize":
+        send({"id": request_id, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    elif method == "session/new":
+        cwd = params.get("cwd") or cwd
+        send({"id": request_id, "result": {"sessionId": "session-1"}})
+    elif method == "session/prompt":
+        solve(params["sessionId"], cwd)
+        send({"id": request_id, "result": {"stopReason": "end_turn"}})
+    elif request_id is not None:
+        send({"id": request_id, "result": {}})
+PY
+chmod -R a+rX /opt/primes-agent
+'''

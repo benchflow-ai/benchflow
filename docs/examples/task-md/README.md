@@ -56,5 +56,5 @@ bash /path/to/verifier/test.sh
 
 ## Next steps
 
-- Write your own: [task.md authoring](../../task-authoring-task-md.md).
-- What each check level checks: [CLI reference: bench check](../../reference/cli.md).
+- Write your own: [task.md authoring](../../tasks/task-format.md).
+- What each check level checks: [CLI reference: bench check](../../reference/commands.md).

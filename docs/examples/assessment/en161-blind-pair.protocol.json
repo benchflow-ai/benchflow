@@ -1,0 +1,30 @@
+{
+  "schema_version": "benchflow.assessment-judge-protocol.v1",
+  "id": "en161-blind-pair",
+  "version": "1",
+  "collector": {
+    "implementation": "en161-design-bench-prototype",
+    "commit": "f2650b0542ac788401e8f5f8e48af121ac320249",
+    "sources": {
+      "model.py": "5c37da85723e4f334deccab88786df2a57a9a1ec518a5233f7ae68f3fa5507c4",
+      "app.py": "67801353e81646d06d82ad9fc75427b5c34d40e7c96f55fea737a397dc9b5f53",
+      "sites.py": "6560dc132d9138ec440ab4830e8cab8d3d13176f16faff6e7c84ac41a8a13cee",
+      "case_tldr.py": "0dcf93fdbbb4ccd477819d83b46bc456bc42efef1ef265c0ba85a62b55838636",
+      "web/app.js": "39440b4074aab53b16590f30bdcf5d6169e78b35dd4f09c5d3ac5cb780138ea6",
+      "web/index.html": "1ed8012f70b1a2805a8d84db64556746379edfe0c161342bb0442b7df68c51c0"
+    }
+  },
+  "choices": {
+    "left": "left",
+    "right": "right",
+    "tie": "tie",
+    "skip": "abstain"
+  },
+  "rules": [
+    "Two outputs of one task are shown side by side as A and B. The collector assigns the sides at random once, persists them with the assignment, and returns the same assignment and sides after a restart.",
+    "The blind payload carries the case brief, its TL;DR and the two previews or live sites only. Producer, model, source, prior rating and score are never shown.",
+    "The reviewer chooses A, B, tie or skip, with an optional reason and feedback tags. A skip is recorded as an abstention, not a tie or a loss.",
+    "A repeated identical vote is idempotent; a different vote on the same assignment is refused. Corrections and retractions are recorded only in the SDK sidecar; collector votes are never rewritten.",
+    "Reviewer names are self-declared collector identities, not authenticated accounts."
+  ]
+}

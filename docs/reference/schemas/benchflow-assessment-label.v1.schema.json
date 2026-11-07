@@ -1,0 +1,511 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://benchflow.ai/schemas/benchflow-assessment-label.v1.schema.json",
+  "title": "The deterministic label an assessment sidecar's events reduce to",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "assessment_id",
+    "label_id",
+    "revision",
+    "status",
+    "state",
+    "consumable",
+    "resolved",
+    "unresolved_revisions",
+    "task_digest",
+    "presentation",
+    "attempts",
+    "rubric",
+    "judge_protocol",
+    "collector",
+    "reviewer_subject",
+    "source",
+    "revisions",
+    "event_chain",
+    "reducer"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "benchflow.assessment-label.v1"
+    },
+    "assessment_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "label_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "withheld",
+        "withdrawn",
+        "stale"
+      ]
+    },
+    "state": {
+      "enum": [
+        "answered",
+        "retracted",
+        "label_ready",
+        "consumed",
+        "withheld",
+        "withdrawn_for_future_use"
+      ]
+    },
+    "consumable": {
+      "type": "boolean"
+    },
+    "resolved": {
+      "type": "boolean"
+    },
+    "unresolved_revisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label_revision",
+          "consumption_event_ids"
+        ],
+        "properties": {
+          "label_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "consumption_event_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          }
+        }
+      }
+    },
+    "task_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "presentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "A",
+        "B"
+      ],
+      "properties": {
+        "A": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "B": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "attempts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "A",
+        "B"
+      ],
+      "properties": {
+        "A": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempt_id",
+            "rollout_id",
+            "result_sha256",
+            "output_manifest_sha256",
+            "review_artifact_sha256"
+          ],
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "rollout_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "result_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "output_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "review_artifact_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "B": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempt_id",
+            "rollout_id",
+            "result_sha256",
+            "output_manifest_sha256",
+            "review_artifact_sha256"
+          ],
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "rollout_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "result_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "output_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "review_artifact_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "rubric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "judge_protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "collector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementation",
+        "commit",
+        "assignment_id",
+        "assignment_export_sha256"
+      ],
+      "properties": {
+        "implementation": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "assignment_id": {
+          "type": "string"
+        },
+        "assignment_export_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "reviewer_subject": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "event_sha256",
+        "kind"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "event_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "kind": {
+          "enum": [
+            "assessment.created",
+            "compute.released",
+            "assignment.issued",
+            "review.submitted",
+            "review.corrected",
+            "review.retracted",
+            "label.reduced",
+            "label.consumed",
+            "label.withdrawn"
+          ]
+        }
+      }
+    },
+    "revisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision",
+          "status",
+          "source_event_id",
+          "source_event_sha256",
+          "reduced_event_id",
+          "reduced_event_sha256",
+          "consumptions",
+          "withdrawals"
+        ],
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "withheld"
+            ]
+          },
+          "source_event_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "source_event_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "reduced_event_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "reduced_event_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "consumptions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "event_id",
+                "event_sha256",
+                "consumer_id",
+                "consumer_receipt"
+              ],
+              "properties": {
+                "event_id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "event_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "consumer_id": {
+                  "type": "string"
+                },
+                "consumer_receipt": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "withdrawals": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "event_id",
+                "event_sha256",
+                "consumer_disposition",
+                "reason"
+              ],
+              "properties": {
+                "event_id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "event_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "consumer_disposition": {
+                  "enum": [
+                    "not_applicable",
+                    "queued_compensation",
+                    "compensated"
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "value": {
+            "enum": [
+              1,
+              0,
+              0.5
+            ]
+          },
+          "withheld_reason": {
+            "enum": [
+              "human_abstention",
+              "answer_retracted"
+            ]
+          },
+          "supersedes_revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "event_chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "length",
+        "head_event_seq",
+        "head_event_sha256"
+      ],
+      "properties": {
+        "length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "head_event_seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "head_event_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "reducer": {
+      "const": {
+        "id": "benchflow.assessment.reduce",
+        "version": "1"
+      }
+    },
+    "value": {
+      "enum": [
+        1,
+        0,
+        0.5
+      ]
+    },
+    "withheld_reason": {
+      "enum": [
+        "human_abstention",
+        "answer_retracted"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "ready"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "value"
+        ],
+        "not": {
+          "required": [
+            "withheld_reason"
+          ]
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "withheld"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "withheld_reason"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "withheld_reason"
+          ]
+        }
+      }
+    }
+  ]
+}

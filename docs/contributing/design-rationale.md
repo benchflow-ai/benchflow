@@ -1,6 +1,6 @@
 # Design rationale
 
-This page explains why BenchFlow is built the way [Architecture](../architecture.md) describes. It is for contributors. Users need only the architecture page.
+This page explains why BenchFlow is built the way [Architecture](../start/how-it-works.md) describes. It is for contributors. Users need only the architecture page.
 
 ## The bet
 
@@ -46,7 +46,7 @@ So a tree-native rollout with environment snapshot and restore is new. The hard 
 
 ## More design principles
 
-[Architecture](../architecture.md#design-principles) lists the five principles users meet. These are the rest:
+[Architecture](../start/how-it-works.md) lists the five principles users meet. These are the rest:
 
 1. **Rolling back is part of an environment.** An environment that cannot snapshot and restore its state is incomplete.
 2. **Eval, monitoring and reward are one activity,** scored on the same trajectory across five spaces. Monitor mode is not built yet.
@@ -84,7 +84,7 @@ The architecture has to carry eight capabilities. Capabilities 1 to 6 and 8 are 
 
 | # | Capability | How it fits the architecture |
 |---|---|---|
-| 1 | SkillsBench | An Environment-plane benchmark package with skills and skill-eval tasks. Skills are memory, so the memory space scores skill use and skill updates. Skills are mounted into the sandbox where the agent looks for them ([Skill loading](../architecture.md#skill-loading)). |
+| 1 | SkillsBench | An Environment-plane benchmark package with skills and skill-eval tasks. Skills are memory, so the memory space scores skill use and skill updates. Skills are mounted into the sandbox where the agent looks for them ([Skill loading](../start/how-it-works.md)). |
 | 2 | ClawsBench | A stateful multi-service benchmark: `base_image` + `[[environment.services]]` started by BenchFlow, with `image` task selection. |
 | 3 | chi-bench | The same kind of benchmark: `image` + `owns_lifecycle = true` + `env_var` task selection, with its environment unchanged. |
 | 4 | followupbench (NudgeBench) | The ACP user model (`session/prompt` nudges, `ask_user` through `Session.on_ask_user`), explicit branches at chosen points, and action-space scoring of whether the agent asked. |
@@ -133,7 +133,7 @@ The design matches the recent agentic-RL literature:
 
 ## Branch guarantees
 
-How branching keeps a fork faithful to its parent, for maintainers. Users need only [Branching](../jobs/branching.md) and the [Branching reference](../jobs/branching-reference.md).
+How branching keeps a fork faithful to its parent, for maintainers. Users need only [Branching](../train/environment.md) and the [Branching reference](../train/environment.md).
 
 Capture runs environment first, then sandbox; restore runs sandbox first, then environment, which preserves the in-container SQLite backup files. Collision-safe `StateSnapshot.files` mappings stay attached to the environment handle. If both a child's and the parent's restore fail, both errors are kept in an exception group.
 
@@ -149,7 +149,7 @@ Already-active shared provider runtimes are rejected before branching: backgroun
 
 ## Next steps
 
-- [Architecture](../architecture.md): the planes, contracts and lifecycles.
-- [Composed checkpoints](../jobs/branching-reference.md): how branch layers are captured and restored.
-- [Environment plane](../environment-plane.md): manifests and state.
+- [Architecture](../start/how-it-works.md): the planes, contracts and lifecycles.
+- [Composed checkpoints](../train/environment.md): how branch layers are captured and restored.
+- [Environment plane](../tasks/task-format.md#services-the-agent-works-with): manifests and state.
 - [Release](./release.md): how BenchFlow ships.

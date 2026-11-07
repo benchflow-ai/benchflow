@@ -1,0 +1,418 @@
+{
+  "stable": "0.9.2",
+  "prerelease": "0.10.0rc2",
+  "sections": [
+    {
+      "id": "start",
+      "title": "Start",
+      "pages": [
+        {
+          "path": "README",
+          "title": "BenchFlow",
+          "job": "Know in one screen what BenchFlow is, what you can do with it, and which page is your job.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "start/install",
+          "title": "Install",
+          "job": "Install `bench` and the Python package at a pinned version, check the machine, and move between versions.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "start/quick-start",
+          "title": "Quick start",
+          "job": "Score one task with its reference solution, with an agent that does nothing, and with Claude Code, then read the results.",
+          "since": null,
+          "kind": "tutorial"
+        },
+        {
+          "path": "start/how-it-works",
+          "title": "How BenchFlow works",
+          "job": "The rollout, BenchFlow's unit: what goes into one (task, environment, agent, model), what comes out (trajectory, reward, artifacts), and what reads them.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "start/why-benchflow",
+          "title": "Why BenchFlow",
+          "job": "See what an agent evaluation needs beyond a score, from Han-chung Lee's posts, and which part of BenchFlow answers each need.",
+          "since": null,
+          "kind": "guide"
+        }
+      ]
+    },
+    {
+      "id": "evaluate",
+      "title": "Evaluate an agent",
+      "pages": [
+        {
+          "path": "evaluate/find-a-benchmark",
+          "title": "Find a benchmark",
+          "job": "See which benchmarks you can run: the registry, any folder of tasks in a Git repository, and your own folders.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/agents",
+          "title": "Agents and models",
+          "job": "Pick an agent (Claude Code, Codex, OpenCode, Pi and more), log in or set a key, and choose the model and effort.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/before-you-run",
+          "title": "Before you run an eval",
+          "job": "Settle the settings that change a score (harness, effort, sampling, tries, limits, controls, cost) and see the plan before anything runs.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/run-a-benchmark",
+          "title": "Run a benchmark",
+          "job": "Run an agent on many tasks at once, choose which tasks and how many tries, and know where the results go.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/read-results",
+          "title": "Read the results",
+          "job": "Read a job's score, each trial's outcome and reward, what the agent did and what it cost, from the shell, the browser or Python.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/failed-trials",
+          "title": "When a trial fails",
+          "job": "Find out why a trial failed or has no score, whose problem it is, and what to do next.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/skills",
+          "title": "Skills",
+          "job": "Give the agent skills, confirm it used them, and measure whether they help.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/your-own-agent",
+          "title": "Run your own agent",
+          "job": "Score an agent you wrote, over ACP or as a script, like any built-in agent.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/embodied",
+          "title": "Embodied tasks (Robo Use)",
+          "job": "Run Robo Use's simulated robot tasks from several seeds, read the results seed by seed, and give the reference solution its token.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "evaluate/bring-what-you-have",
+          "title": "Bring what you have",
+          "job": "Run tasks in the Terminal-Bench (task.toml) format, convert or export them, read old BenchFlow jobs, and hand trajectories to tools that read ATIF; see what doesn't carry over yet.",
+          "since": null,
+          "kind": "guide"
+        }
+      ]
+    },
+    {
+      "id": "audit",
+      "title": "Audit and report",
+      "pages": [
+        {
+          "path": "audit/check-a-benchmark",
+          "title": "Check a benchmark",
+          "job": "Before trusting a benchmark's scores, show that every task can be solved, none passes for free, the verifiers hold, and the tasks aren't flaky.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "audit/compare-runs",
+          "title": "Compare runs",
+          "job": "Pick the metric, count failures the right way, and tell with an interval whether two runs really differ.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "audit/reproduce",
+          "title": "Reproduce a published score",
+          "job": "Take a published number, match its settings, rerun it, and say whether it holds.",
+          "since": null,
+          "kind": "tutorial"
+        },
+        {
+          "path": "audit/report",
+          "title": "Report a result",
+          "job": "Publish a score with the settings, controls, intervals and files another researcher needs to check it.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "audit/pitfalls",
+          "title": "Known pitfalls",
+          "job": "Problems that quietly change a score or break a run, each with its symptom, cause, how to detect it, and the fix.",
+          "since": null,
+          "kind": "reference"
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "title": "Build a benchmark",
+      "pages": [
+        {
+          "path": "tasks/write-a-task",
+          "title": "Write a task",
+          "job": "Write a small research task (data in, a number out, a stated tolerance), check it, prove it with the controls, and run an agent on it.",
+          "since": null,
+          "kind": "tutorial"
+        },
+        {
+          "path": "tasks/task-format",
+          "title": "Task format",
+          "job": "The files of a task, what each is for, and the task.toml layout BenchFlow also reads; where both forms exist, they must match.",
+          "since": null,
+          "kind": "reference"
+        },
+        {
+          "path": "tasks/multi-turn",
+          "title": "Multi-turn tasks",
+          "job": "Give the agent several prompts in one sandbox: a scripted user that writes each next prompt, or several agents taking turns.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/multi-step",
+          "title": "Multi-step tasks",
+          "job": "Split a task into steps that are each checked before the next one starts.",
+          "since": "0.10",
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/verifiers",
+          "title": "Verifiers",
+          "job": "Score a trial with a test script: pass or fail, partial credit, tolerances, and a separate verifier for long tasks.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/rubric-review",
+          "title": "Rubric review",
+          "job": "Grade the work a test can't check, such as the method behind an answer, with a weighted rubric and a reviewer agent, and read its verdicts.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/llm-judge",
+          "title": "LLM judge",
+          "job": "Grade what no script can check, a piece of writing or a web page, with a model and criteria you write, and know what the judge records.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/human-preferences",
+          "title": "Human preferences",
+          "job": "Judge two outputs at a time, blind, live and with reasons, by a person or a model, then rank the agents with intervals.",
+          "since": "0.10",
+          "kind": "tutorial"
+        },
+        {
+          "path": "tasks/network-and-secrets",
+          "title": "Network and secrets",
+          "job": "Control what the agent can reach, keep it off the web or away from given sites, and know which keys and files enter the sandbox.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/reward-hacking",
+          "title": "Stop reward hacking",
+          "job": "Make sure an agent can't score without doing the work, and prove it with probes.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/publish",
+          "title": "Publish a benchmark",
+          "job": "Share a folder of tasks through Git or the registry, version it, and declare the setup runs should match.",
+          "since": null,
+          "kind": "guide"
+        }
+      ]
+    },
+    {
+      "id": "scale",
+      "title": "Run at scale",
+      "pages": [
+        {
+          "path": "scale/sandboxes",
+          "title": "Sandboxes",
+          "job": "Choose where trials run, and set up Docker, remote Docker or AgentCore.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "scale/daytona",
+          "title": "Daytona",
+          "job": "Run trials in Daytona cloud sandboxes: setup, limits, and cleanup.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "scale/modal",
+          "title": "Modal",
+          "job": "Run trials in Modal sandboxes, including tasks that need GPUs.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "scale/cost",
+          "title": "Concurrency and budgets",
+          "job": "Run many trials at once, cap what a job may spend, and watch a long run.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "scale/telemetry",
+          "title": "Usage and telemetry",
+          "job": "What BenchFlow records for every model call (tokens, cost, timing, settings), where each number comes from, and what happens when an agent exports no OpenTelemetry.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "scale/resume",
+          "title": "Resume, retries and regrade",
+          "job": "Continue a stopped job, know which failures are retried, and rescore saved work with a fixed verifier.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "scale/configs",
+          "title": "Configs and variables",
+          "job": "Keep a whole run in a YAML file, and send each environment variable where it's needed.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "scale/ci",
+          "title": "Run in CI",
+          "job": "Run a benchmark in CI and fail the build when the pass rate drops.",
+          "since": null,
+          "kind": "guide"
+        }
+      ]
+    },
+    {
+      "id": "train",
+      "title": "Train with RL",
+      "pages": [
+        {
+          "path": "train/environment",
+          "title": "BenchFlow as an RL environment",
+          "job": "Run groups of rollouts on a task, score them, and read rewards and advantages, with token capture on from the start.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "train/export",
+          "title": "Export training data",
+          "job": "Turn finished trials into rows a trainer reads, check the rows, and know each file a trial writes for trainers and other tools, with its schema.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "train/trainer",
+          "title": "Connect a trainer",
+          "job": "Stream rollouts to a trainer while a job runs, check token capture, launch a Prime-RL SFT job, and connect other trainers through files.",
+          "since": null,
+          "kind": "guide"
+        }
+      ]
+    },
+    {
+      "id": "versions",
+      "title": "Versions",
+      "pages": [
+        {
+          "path": "versions/upgrade-from-0.7",
+          "title": "Upgrade from 0.7",
+          "job": "Move an install and a project from 0.7.x to 0.9.2, and go back if you need to.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "versions/0.10",
+          "title": "What's in 0.10.0rc2",
+          "job": "The prerelease's features, how to install it, and what may still change.",
+          "since": "0.10",
+          "kind": "guide"
+        },
+        {
+          "path": "versions/changelog",
+          "title": "Changelog",
+          "job": "Every release's changes, from the repository's CHANGELOG.",
+          "since": null,
+          "kind": "generated"
+        }
+      ]
+    },
+    {
+      "id": "reference",
+      "title": "Reference",
+      "pages": [
+        {
+          "path": "reference/commands",
+          "title": "Commands",
+          "job": "Look up every `bench` command and flag, including the ones `--help` hides and the ones new in 0.10.",
+          "since": null,
+          "kind": "generated"
+        },
+        {
+          "path": "reference/python",
+          "title": "Python API",
+          "job": "Look up every public name in the `benchflow` package.",
+          "since": null,
+          "kind": "generated"
+        },
+        {
+          "path": "reference/cli-python",
+          "title": "CLI and Python",
+          "job": "Find the Python argument that does what each `bench` flag does.",
+          "since": null,
+          "kind": "generated"
+        },
+        {
+          "path": "reference/files",
+          "title": "Files BenchFlow reads and writes",
+          "job": "Look up every key of the task files you write and every field of the job and trial files BenchFlow writes.",
+          "since": null,
+          "kind": "generated"
+        },
+        {
+          "path": "reference/errors",
+          "title": "Error messages",
+          "job": "Look up a fixed message BenchFlow prints and what to do about it.",
+          "since": null,
+          "kind": "generated"
+        },
+        {
+          "path": "reference/environment-variables",
+          "title": "Environment variables",
+          "job": "Every variable BenchFlow reads, and where it goes: your machine, the sandbox, the agent or the verifier.",
+          "since": null,
+          "kind": "reference"
+        },
+        {
+          "path": "reference/glossary",
+          "title": "Glossary",
+          "job": "Every term in these docs, one line each, with the page that covers it.",
+          "since": null,
+          "kind": "reference"
+        }
+      ]
+    }
+  ]
+}
