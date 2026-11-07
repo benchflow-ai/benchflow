@@ -338,6 +338,14 @@ requires_deepagents = pytest.mark.skipif(
 )
 
 
+# The scenarios below run real `bench` trials, whose verifiers need BenchFlow's
+# protected verifier runtime. The suite keeps PyPI out of tests
+# (BENCHFLOW_PLUGIN_RELEASES=offline, which the `bench` subprocess inherits);
+# this marker has tests/conftest.py fill the release cache first, which is
+# empty on a fresh CI runner.
+real_verifier = pytest.mark.verifier_runtime
+
+
 @pytest.fixture(scope="module")
 def real_tasks(tmp_path_factory) -> Path:
     """A staged copy of the three runnable real-skillsbench tasks."""
@@ -350,6 +358,7 @@ def real_tasks(tmp_path_factory) -> Path:
 
 
 @pytest.mark.integration
+@real_verifier
 @requires_docker
 def test_oracle_determinism_docker(real_tasks: Path, tmp_path: Path):
     # An oracle (ground-truth solve.sh) MUST score reward 1.0 on its own
@@ -370,6 +379,7 @@ def test_oracle_determinism_docker(real_tasks: Path, tmp_path: Path):
 
 
 @pytest.mark.integration
+@real_verifier
 @requires_docker
 @requires_daytona
 def test_sandbox_parity_docker_daytona(real_tasks: Path, tmp_path: Path):
@@ -395,6 +405,7 @@ def test_sandbox_parity_docker_daytona(real_tasks: Path, tmp_path: Path):
 
 
 @pytest.mark.integration
+@real_verifier
 @requires_docker
 @requires_deepseek
 @requires_gemini
@@ -453,6 +464,7 @@ def test_reaper_dryrun_is_safe():
 
 
 @pytest.mark.integration
+@real_verifier
 @requires_docker
 @requires_deepseek
 @requires_judge_sdk
