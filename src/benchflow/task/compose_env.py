@@ -812,7 +812,12 @@ def _host_settings(document: dict, project: str | None = None) -> Iterator[str]:
         provider = service.get("provider")
         if provider is not None:
             # Compose runs the provider's program on this machine, as you.
-            shown = provider.get("type") if isinstance(provider, dict) else provider
+            # Compose 2.38's JSON names the program "driver"; YAML says "type".
+            shown = (
+                provider.get("type") or provider.get("driver")
+                if isinstance(provider, dict)
+                else provider
+            )
             yield f"runs the program {shown} on this machine for {where} (provider)"
         if service.get("models"):
             yield f"gives {where} models, which this machine's model runner serves"
