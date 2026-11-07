@@ -589,7 +589,9 @@ def test_the_proxy_child_gets_only_the_checked_runtime_python_path(tmp_path):
     runtime.mkdir()
     child = runtime / "litellm"
     child.write_text(
-        f"#!/bin/sh\n{{ env; echo CWD=$(pwd); }} > {runtime}/child-env\nsleep 0.1\n"
+        # Renamed into place whole: the poll below reads it once it exists.
+        f"#!/bin/sh\n{{ env; echo CWD=$(pwd); }} > {runtime}/child-env.tmp\n"
+        f"mv {runtime}/child-env.tmp {runtime}/child-env\nsleep 0.1\n"
     )
     child.chmod(0o755)
     launcher = runtime / "launcher.py"
