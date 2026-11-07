@@ -11,8 +11,12 @@ from benchflow.agents.env import resolve_agent_env
 
 
 def test_managed_paths_do_not_identify_runner():
+    """Core's own agents. registry.AGENTS also holds the manifest agents an
+    earlier test in this process loaded from the pinned agents catalog (any
+    lookup of a name core lacks fetches it), so iterating it made the result
+    depend on test order. Those manifests still use /opt/benchflow: EN-309."""
     assert "benchflow" not in RUNTIME_ROOT.lower()
-    for config in registry.AGENTS.values():
+    for config in registry._CORE_AGENT_CONFIGS.values():
         assert "/opt/benchflow" not in config.install_cmd
         assert "/opt/benchflow" not in config.launch_cmd
 
