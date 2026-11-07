@@ -18,6 +18,7 @@ import logging
 import os
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -988,13 +989,17 @@ async def test_root_steps_stop_starting_a_docker_client_each(kit_sandbox, kit_bo
     calls = sandbox.calls
     await _channel_ready(sandbox)
     before = len(calls)
-    started = time.monotonic()
+    steps = []
     for i in range(40):
+        started = time.monotonic()
         result = await sandbox.exec(f"echo {i}", user="root")
+        steps.append(time.monotonic() - started)
         assert result.stdout == f"{i}\n"
-    took = time.monotonic() - started
     assert calls[before:] == []
-    assert took / 40 < 0.05
+    # The typical step, not the mean: on GitHub's loaded 4-CPU runner a few
+    # stalled steps put the mean at 52-54 ms. A docker exec per step would put
+    # every step, so the median too, over 0.05 s.
+    assert statistics.median(steps) < 0.05
 
 
 @pytest.mark.asyncio
