@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from benchflow.sandbox import docker as d
+from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.daytona_dind import _DaytonaDinD
 from benchflow.task.config import SandboxConfig
 from tests.test_compose_image_mounts import SPELLINGS
@@ -13,6 +14,19 @@ from tests.test_daytona_dind_build_isolation import resolved_services
 from tests.test_daytona_dind_followup import strategy
 from tests.test_docker_build_identity import sandbox
 from tests.test_docker_prebuilt_choice import services, stub_start
+
+
+@pytest.fixture(autouse=True)
+def _docker29(monkeypatch):
+    """Every backend reports Docker 29, whose image mounts hex-encode ID,
+    source and destination (an unknown daemon gets the same rule). Without
+    this the docker backend asked the host's daemon: on Docker 28 (GitHub's
+    runner has 28.0.4) the long destinations below fit, so the refusals were
+    never reached. Docker 28's rule: tests/test_compose_daemon_mount_bounds.py.
+    """
+    from tests.test_compose_daemon_mount_bounds import daemon_reply
+
+    daemon_reply(monkeypatch, ExecResult(stdout="29.1.3\n", return_code=0))
 
 
 async def prepare(tmp_path, monkeypatch, backend, document, prebuilt, trial):
