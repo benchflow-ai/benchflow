@@ -103,6 +103,12 @@ def _run(monkeypatch, *argv: str, proc: Path | None = None) -> tuple[str, int]:
         extra = [str(proc if proc is not None else Path(tempfile.mkdtemp()))]
     out = io.BytesIO()
     saved = sys.argv, sys.stdout, sys.stdin
+    # The program sets umask 077 for the process it runs in. Here that is the
+    # test worker: left at 077, it made later tests in the same xdist worker
+    # write private files (test_verifier_confirm7's non-root verifier could
+    # not read its test.sh; test_local_daemon_docker's runtime could not
+    # remove a sandbox-owned folder).
+    mask = os.umask(0o077)
     sys.argv = ["-c", action, record, f"0,{os.getuid()}", *extra]
     sys.stdout = SimpleNamespace(buffer=out)
     sys.stdin = SimpleNamespace(buffer=io.BytesIO(stdin))
@@ -114,6 +120,7 @@ def _run(monkeypatch, *argv: str, proc: Path | None = None) -> tuple[str, int]:
             )
     finally:
         sys.argv, sys.stdout, sys.stdin = saved
+        os.umask(mask)
     return out.getvalue().decode(), ended.value.code
 
 
