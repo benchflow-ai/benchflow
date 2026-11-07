@@ -375,7 +375,7 @@ class PackageInfo(TaskConfigModel):
     )
     description: str = Field(
         default="",
-        description="Human-readable description of the task",
+        description="What the task asks, in a sentence or two, for people browsing tasks",
     )
     authors: list[Author] = Field(
         default_factory=list,
@@ -383,7 +383,7 @@ class PackageInfo(TaskConfigModel):
     )
     keywords: list[str] = Field(
         default_factory=list,
-        description="Keywords for search and categorization",
+        description="Tags that help people find and group the task",
     )
 
     @field_validator("name")
@@ -646,7 +646,7 @@ class VerifierConfig(TaskConfigModel):
     )
     user: str | int | None = Field(
         default=None,
-        description="Username or UID to run the verifier as.",
+        description="Account (name or numeric id) the verifier's commands run under.",
     )
     network_mode: NetworkMode | None = Field(
         default=None,
@@ -804,7 +804,7 @@ class AgentConfig(TaskConfigModel):
     )
     user: str | int | None = Field(
         default=None,
-        description="Username or UID to run the agent as.",
+        description="Account (name or numeric id) the agent's commands run under.",
     )
     network_mode: NetworkMode | None = Field(
         default=None,
@@ -1038,7 +1038,7 @@ class SandboxConfig(TaskConfigModel):
     )
     os: TaskOS = Field(
         default=TaskOS.LINUX,
-        description="Target operating system for the task container.",
+        description="Operating system the task's container runs.",
     )
     cpus: int = 1
     memory_mb: int = 2048
@@ -1054,8 +1054,9 @@ class SandboxConfig(TaskConfigModel):
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     env: dict[str, str] = Field(
         default_factory=dict,
-        description="Environment variables resolved from host at runtime. "
-        "Supports ${VAR} and ${VAR:-default} template syntax.",
+        description="Variables set in the sandbox, read from the host when the "
+        "trial starts. A value can name a host variable as ${VAR}, or as "
+        "${VAR:-default} to fall back to a default.",
     )
     tpu: TpuSpec | None = Field(
         default=None,
