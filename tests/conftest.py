@@ -118,6 +118,40 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     items.sort(key=lambda item: item.get_closest_marker("deterministic") is None)
 
 
+def _process_umask() -> int:
+    """This process's umask, read without changing it where Linux allows."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("Umask:"):
+                    return int(line.split()[1], 8)
+    except (OSError, ValueError):
+        pass
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
+
+
+@pytest.fixture(autouse=True)
+def keep_process_umask() -> Iterator[None]:
+    """Fail a test that leaves this worker's umask changed, and put it back.
+
+    Every later test in the worker would write files with it: a disarm test
+    left 077, so test_verifier_confirm7's non-root verifier could not read
+    its test.sh and test_local_daemon_docker's runtime could not remove a
+    sandbox-owned folder (#1220).
+    """
+    before = _process_umask()
+    yield
+    after = _process_umask()
+    if after != before:
+        os.umask(before)
+        pytest.fail(
+            f"the test left the process umask at {after:04o} (it was {before:04o})",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def isolate_local_dotenv(monkeypatch, tmp_path) -> None:
     """Keep developer-machine `.env` secrets out of unit tests."""
