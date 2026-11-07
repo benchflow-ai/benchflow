@@ -36,9 +36,9 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 |---|---|---|---|
 | `name` | text | required | Package name in org/name format (e.g., 'benchflow/hello-world') |
 | `version` | text | `""` | Package version (task.toml schema 1.3 [task] field). Informational only; recorded, never interpreted. Absent from this model it was extra_forbidden, which made schema-1.3 tasks that set it unloadable. |
-| `description` | text | `""` | Human-readable description of the task |
+| `description` | text | `""` | What the task asks, in a sentence or two, for people browsing tasks |
 | `authors` | list of tables ([`task.authors[]`](#taskauthors)) | `[]` | List of package authors |
-| `keywords` | list of text | `[]` | Keywords for search and categorization |
+| `keywords` | list of text | `[]` | Tags that help people find and group the task |
 
 #### `task.authors[]`
 
@@ -60,7 +60,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `required_tools` | list of text |  | Complete list of PATH program names whose availability or lookup can affect grading, including subprocesses and later-created helpers. Required when any image PATH entry is omitted by hardening. Every name must already resolve in the trusted verifier PATH; use absolute paths for uploaded/generated helpers. [] declares no required PATH tools. |
 | `optional_tools` | list of text | `[]` | PATH program names used only for optional probes. The task author guarantees that every use tolerates the program being unavailable without changing grading. Refusals of any other program invalidate every reward. |
 | `reward_range` | [number, number] |  | Declared [lo, hi] reward contract for this task. Omitted (None) keeps BenchFlow's strict canonical [0.0, 1.0]. A declared range may only WIDEN the canonical range (lo &lt;= 0.0, hi &gt;= 1.0, lo &lt; hi, both finite) so 0 ('did nothing') and 1 ('solved') stay meaningful for every task; e.g. safety-floor benchmarks declare reward_range = [-1.0, 1.0] to score deliberate violations below doing nothing. Applies to the test-script reward contract (reward.txt / reward.json scalar reward, numeric metrics, aggregate results) and the final reward canonicalization gate; LLM-judge rubric scores stay [0, 1]. |
-| `user` | text or integer |  | Username or UID to run the verifier as. |
+| `user` | text or integer |  | Account (name or numeric id) the verifier's commands run under. |
 | `network_mode` | `no-network` \| `public` \| `allowlist` \| `denylist` |  | Optional verifier-specific network policy override. |
 | `allowed_hosts` | list of text |  | Hostnames reachable when network_mode='allowlist'. |
 | `sandbox_mode` | `shared` \| `separate` |  | Whether the verifier runs in the agent sandbox ('shared') or a dedicated verifier sandbox ('separate'). |
@@ -112,7 +112,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `timeout_sec` | number (> 0) |  | Wall-clock budget in seconds for the agent harness. Omitting the field gives the agent no limit of its own: the rollout's whole deadline bounds it (as in 0.7.11) unless the caller passes a timeout; zero, negative, and non-finite budgets are rejected at validation time, matching verifier.timeout_sec. |
 | `token_budget` (unreleased) | integer (> 0) |  | The most tokens a trial's model calls may use, input (cached included) plus output, subagents' calls included. BenchFlow's model proxy refuses the next call once they are spent and the agent is stopped (benchflow.trial_budget). A run's --token-budget replaces it. |
 | `turn_budget` (unreleased) | integer (> 0) |  | The most model calls (turns) a trial may make through BenchFlow's model proxy, subagents' and side calls included; the proxy refuses the next one and the agent is stopped. A run's --turn-budget replaces it. |
-| `user` | text or integer |  | Username or UID to run the agent as. |
+| `user` | text or integer |  | Account (name or numeric id) the agent's commands run under. |
 | `network_mode` | `no-network` \| `public` \| `allowlist` \| `denylist` |  | Optional agent-specific network policy override. |
 | `allowed_hosts` | list of text |  | Hostnames reachable when network_mode='allowlist'. |
 
@@ -126,14 +126,14 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `blocked_hosts` | list of text |  | Hostnames (and their subdomains) the agent cannot reach when network_mode='denylist' |
 | `build_timeout_sec` | number | `600.0` |  |
 | `docker_image` | text |  | Prebuilt image name; legacy SkillsBench tasks may use image. Also read as `image`. |
-| `os` | `linux` \| `windows` | `linux` | Target operating system for the task container. |
+| `os` | `linux` \| `windows` | `linux` | Operating system the task's container runs. |
 | `cpus` | integer | `1` |  |
 | `memory_mb` | integer | `2048` |  |
 | `storage_mb` | integer | `10240` |  |
 | `gpus` | integer (>= 0) | `0` |  |
 | `gpu_types` | list of text |  | Acceptable GPU types. Modal accepts one entry, e.g. ['H100']; omit for any type when gpus is positive. |
 | `mcp_servers` | list of tables ([`sandbox.mcp_servers[]`](#sandboxmcp_servers)) | `[]` |  |
-| `env` | mapping of names to text | `{}` | Environment variables resolved from host at runtime. Supports $&#123;VAR&#125; and $&#123;VAR:-default&#125; template syntax. |
+| `env` | mapping of names to text | `{}` | Variables set in the sandbox, read from the host when the trial starts. A value can name a host variable as $&#123;VAR&#125;, or as $&#123;VAR:-default&#125; to fall back to a default. |
 | `tpu` | table ([`sandbox.tpu`](#sandboxtpu)) |  | Optional TPU accelerator request. |
 | `skills_dir` | text |  | Path to skills directory in the sandbox. |
 | `healthcheck` | table ([`sandbox.healthcheck`](#sandboxhealthcheck)) |  | Healthcheck to run after environment start. |
