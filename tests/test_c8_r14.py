@@ -40,15 +40,23 @@ def _clean(name: str, value: str) -> str:
     return _run(env_value_clean_func() + 'bf_value_clean "$1" "$2"', name, value).stdout
 
 
+def _root_only(path: str) -> bool:
+    found = os.stat(path)
+    return found.st_uid == 0 and not found.st_mode & 0o022
+
+
+# The kept entries must be root's alone. /usr/bin, not /usr/share: GitHub's
+# ubuntu-24.04 runner image runs `chmod -R 777 /usr/share`, which the check
+# rightly refuses.
 @pytest.mark.skipif(
-    os.getuid() == 0 or os.stat("/usr/lib").st_uid != 0,
-    reason="needs a root-owned /usr/lib and a non-root test user",
+    os.getuid() == 0 or not (_root_only("/usr/lib") and _root_only("/usr/bin")),
+    reason="needs /usr/lib and /usr/bin root's alone and a non-root test user",
 )
 @pytest.mark.parametrize(
     ("name", "value", "ok"),
     [
         ("PYTHONPATH", ":/usr/lib", True),  # fails on e4ec66fa
-        ("PYTHONPATH", "/usr/lib::/usr/share", True),  # fails on e4ec66fa
+        ("PYTHONPATH", "/usr/lib::/usr/bin", True),  # fails on e4ec66fa
         ("PYTHONPATH", "/usr/lib:", True),  # fails on e4ec66fa
         ("NODE_PATH", ":/usr/lib", True),  # fails on e4ec66fa
         ("PERL5LIB", ":/usr/lib", True),  # fails on e4ec66fa
@@ -62,8 +70,8 @@ def _clean(name: str, value: str) -> str:
         # splits on too, is still refused, as is a value with nothing left.
         ("LD_LIBRARY_PATH", ":/usr/lib", True),
         ("LD_LIBRARY_PATH", "/usr/lib:", True),
-        ("LD_LIBRARY_PATH", "/usr/lib::/usr/share", True),
-        ("LD_LIBRARY_PATH", "/usr/lib;/usr/share", False),
+        ("LD_LIBRARY_PATH", "/usr/lib::/usr/bin", True),
+        ("LD_LIBRARY_PATH", "/usr/lib;/usr/bin", False),
         ("LD_LIBRARY_PATH", ":", False),
         ("LD_LIBRARY_PATH", "/usr/lib:{own}", False),
         ("LD_PRELOAD", "/usr/lib/x.so:", True),
@@ -71,7 +79,7 @@ def _clean(name: str, value: str) -> str:
         # ... and in a language list it is dropped wherever it is.
         ("PYTHONPATH", "/usr/lib:", True),
         ("PYTHONPATH", ":/usr/lib:", True),
-        ("NODE_PATH", "/usr/lib::/usr/share", True),
+        ("NODE_PATH", "/usr/lib::/usr/bin", True),
     ],
 )
 def test_an_empty_entry_is_dropped_from_every_path_list(tmp_path, name, value, ok):
