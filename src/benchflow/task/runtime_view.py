@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
 
@@ -38,7 +39,7 @@ class TaskRuntimeView:
     """Single runtime-facing interpretation of a task package.
 
     The authoring layer can parse both native ``task.md`` packages and legacy
-    Harbor split packages. Runtime callers should consult this view instead
+    task.toml split packages. Runtime callers should consult this view instead
     of re-deciding path precedence at every launch or verifier boundary.
     """
 
@@ -51,8 +52,18 @@ class TaskRuntimeView:
     oracle_dir: Path
     environment_dir: Path
     scenes: tuple[Scene, ...]
-    source_hashes: Mapping[str, str]
     compatibility: TaskRuntimeCompatibility
+
+    @cached_property
+    def source_hashes(self) -> Mapping[str, str]:
+        """SHA-256 of each source file, by task-relative POSIX path.
+
+         Read on first use, not when the view is built: the launch checks
+         build a view twice per trial for its paths and capabilities alone,
+         and hashing a large ``environment/`` there cost seconds each time
+        .
+        """
+        return _source_hashes(TaskPaths(self.task_dir))
 
     @classmethod
     def from_task_dir(cls, task_dir: str | Path) -> TaskRuntimeView:
@@ -69,12 +80,23 @@ class TaskRuntimeView:
                 scenes=document.scenes,
             )
 
-        config = TaskConfig.model_validate_toml(paths.config_path.read_text())
+        from benchflow.task.imports import load_task_config_toml
+
+        config = load_task_config_toml(
+            paths.config_path.read_text(), source=str(paths.config_path)
+        )
+        # A task.toml multi-step task has no root prompt (see Task); the runtime
+        # capability check refuses its ``steps``.
+        prompt = (
+            ""
+            if config.steps and not paths.instruction_path.is_file()
+            else paths.instruction_path.read_text()
+        )
         return cls.from_parsed(
             paths.task_dir,
             document=None,
             config=config,
-            prompt=paths.instruction_path.read_text(),
+            prompt=prompt,
             scenes=[],
         )
 
@@ -123,7 +145,6 @@ class TaskRuntimeView:
             oracle_dir=paths.solution_dir,
             environment_dir=paths.environment_dir,
             scenes=tuple(scenes),
-            source_hashes=_source_hashes(paths),
             compatibility=TaskRuntimeCompatibility(
                 has_task_md=paths.task_document_path.exists(),
                 has_legacy_definition=(

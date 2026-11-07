@@ -14,16 +14,24 @@ travel with it here.
 from __future__ import annotations
 
 import logging
+import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from benchflow._types import Role, Scene
 from benchflow._utils.config import (
+    DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
+    default_agent_idle_timeout,
+    normalize_agent_idle_timeout,
     normalize_agent_name,
     normalize_reasoning_effort,
     normalize_sandbox_user,
 )
+from benchflow.agents.registry import is_operator_script, is_scripted_agent
+from benchflow.agents.scripts import normalize_script, read_script, validate_script_user
+from benchflow.checkpoints import CheckpointPolicy
 from benchflow.contracts import BaseUser, RolloutPlanes
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.loop_strategies import (
@@ -31,12 +39,14 @@ from benchflow.loop_strategies import (
     build_loop_user,
     parse_loop_strategy_spec,
 )
+from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
     SKILL_MODE_WITH_SKILL,
     normalize_skill_mode,
 )
+from benchflow.trial_budget import TrialBudget
 from benchflow.usage_tracking import UsageTrackingConfig
 
 logger = logging.getLogger(__name__)
@@ -49,19 +59,68 @@ def _task_document_scenes(
     *,
     prompts: list[str | None] | None,
     skill_mode: str,
+    agent: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[Scene]:
-    """Load scene declarations from ``task.md`` when it is the task entrypoint."""
+    """Load scene declarations from ``task.md`` when it is the task entrypoint.
+
+    A materialized task.md draft 2 package declares no scenes. Its stages that
+    unlock one after another become turns of the run's own agent, in one
+    session: the instruction, then each stage's prompt after the agent ends its
+    previous turn (``benchflow.taskmd``). A scripted seat (oracle, nop) runs
+    its script instead.
+    """
     if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
         return []
     document_path = task_path / "task.md"
     if not document_path.exists():
         return []
+    from benchflow.taskmd.materialize import taskmd_metadata
+
+    taskmd = taskmd_metadata(task_path)
+    if taskmd is not None:
+        turns = [str(t.get("prompt", "")) for t in taskmd.get("turns") or []]
+        if not turns or agent is None or is_scripted_agent(agent):
+            return []
+        return [
+            Scene.single(
+                agent=agent,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                prompts=[None, *turns],
+            )
+        ]
 
     from benchflow.task.document import TaskDocument
     from benchflow.task.prompts import materialize_prompt_plan_scenes
 
     document = TaskDocument.from_path(document_path)
     return materialize_prompt_plan_scenes(document)
+
+
+def _task_steps_user(task_path: Path, agent: Callable[[], str | None]) -> Any:
+    """The scripted user of a task.toml multi-step task, or None (no steps,
+    a task.md task, or a scripted seat: the oracle runs each step's
+    solve.sh itself). *agent* is read only for a task with steps."""
+    if (task_path / "task.md").exists() or not (task_path / "task.toml").is_file():
+        return None
+    import tomllib
+
+    try:
+        steps = tomllib.loads((task_path / "task.toml").read_text()).get("steps")
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        # The task's own load says what is wrong with it.
+        return None
+    if not isinstance(steps, list) or not steps:
+        return None
+    seat = agent()
+    if seat is None or is_scripted_agent(seat):
+        return None
+    from benchflow.task import Task
+    from benchflow.task.steps import StepsUser
+
+    return StepsUser(Task(task_path))
 
 
 def _task_document_user_runtime(
@@ -102,6 +161,14 @@ class RolloutConfig:
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
     skip_agent_install: bool = False
+    # Install the model proxy and the agent in the trial, with no cached
+    # layer (``--fresh-install``; ``BENCHFLOW_FRESH_INSTALL=1`` does the same).
+    fresh_install: bool = False
+    # Let the agent reach the cloud metadata endpoints under an open network
+    # (``--allow-cloud-metadata``): no block, recorded in the result. Without
+    # it (or the task's own opt-out) the agent starts only once the block is
+    # proven on.
+    allow_cloud_metadata: bool = False
     services: list[str] | None = None
     job_name: str | None = None
     rollout_name: str | None = None
@@ -121,13 +188,29 @@ class RolloutConfig:
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection.
     agent_idle_timeout: int | None = 600
+    # The caller set agent_idle_timeout instead of taking BenchFlow's default
+    # for the effort (_utils.config.default_agent_idle_timeout), as
+    # EvaluationConfig's field of that name; None: any value but 600 was set.
+    agent_idle_timeout_given: bool | None = None
     # Hard wall-clock budget for the agent prompt, in seconds. When set,
     # overrides the per-task default (task config [agent] timeout_sec).
     # ``None`` keeps the task's own default — this is the seam through which
     # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
     # budget without editing every task definition (#378).
     timeout: int | None = None
+    # Text appended to every resolved prompt (``bench eval run --extra-instruction``):
+    # prompt ablations without editing tasks. Recorded in the rollout config.
+    prompt_suffix: str | None = None
+    # The trial's token and turn budget (benchflow.trial_budget): a measure
+    # set here replaces the task's [agent] token_budget / turn_budget. The
+    # model proxy enforces the result while the agent runs.
+    trial_budget: TrialBudget | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
+    # How the agent runs: "acp" (default) through its ACP adapter, or "native"
+    # through its own CLI in headless JSON mode (benchflow.native_harness;
+    # Claude Code and Codex). One option for the whole run: every role's agent
+    # must have a native harness when it is "native".
+    harness: str = "acp"
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -139,6 +222,11 @@ class RolloutConfig:
     # exclusive with an explicit ``user``. A dict (the to_mapping() shape) is
     # also accepted at runtime and materialized via from_mapping.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Extra host paths uploaded into the sandbox after start, before the
+    # agent runs: host directory/file -> absolute sandbox path. Used by
+    # callers whose task ships data that is not baked into the image (e.g.
+    # rubric review evidence); every sandbox backend supports the upload.
+    uploads: dict[str, str] = field(default_factory=dict)
     # Whether a task.md-declared user may be adopted when neither an explicit
     # ``user`` nor a loop strategy materializes one. ``None`` (default)
     # derives the answer from scene authorship: programmatic scene callers
@@ -154,12 +242,51 @@ class RolloutConfig:
     reasoning_effort: str | None = None
     agent_env: dict[str, str] | None = None
     skills_dir: str | Path | None = None
+    # The skills in skills_dir came from earlier agents (a learner store), not
+    # from the task or the operator: they are admitted as agent-derived bytes.
+    skills_agent_derived: bool = False
     skill_mode: str = SKILL_MODE_NO_SKILL
     artifact_skill_mode: str | None = None
     skill_creator_dir: str | Path | None = None
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
     skip_verify: bool = False
+    # Freeze the agent's final workspace (and declared artifacts) into the
+    # trial's evidence/ folder before verifier hardening, so ``bench eval
+    # regrade`` can re-run a changed verifier later. Rubric review and
+    # verifier recovery freeze it anyway; this makes any trial regradable.
+    freeze_workspace: bool = False
+    # Keep the trial's sandbox instead of deleting it at teardown
+    # (``--keep-sandbox``): "never", "on-failure" (a trial that did not pass)
+    # or "always"; docker and daytona only. ``bench sandbox attach`` opens a
+    # root shell in a kept one and ``bench sandbox release`` deletes it
+    # (rollout/_keep_sandbox.py).
+    keep_sandbox: str = "never"
+    # Reward integrity (benchflow.integrity): "audit" records host-side
+    # evidence of what the agent did and writes integrity/claim_verdict.json;
+    # "strict" also runs the verifier in the separate verifier sandbox. Never
+    # changes a reward.
+    integrity: str = "off"
+    # Where the verifier runs (benchflow.task.verifier_sandbox): "task" keeps
+    # each task's declared mode; "separate" moves it into the separate
+    # verifier sandbox. No value makes a task that declares separate shared.
+    # integrity="strict" implies "separate".
+    verifier_sandbox: str = "task"
+    codex_apps_policy: Literal["disabled", "inherit"] | None = field(
+        default=None, kw_only=True
+    )
+    # Run the verifier in a fresh sandbox that receives only the frozen
+    # workspace, whatever the task declares (``--separate-verifier``).
+    separate_verifier: bool = False
+    # Paths outside the workspace that a separate verifier sandbox receives
+    # too, at the same path (``--separate-verifier-include``).
+    separate_verifier_include: tuple[str, ...] = ()
+    reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
+    purpose: Literal["task", "reviewer"] = "task"
+    parent_rollout: str | None = None
+    # Opt-in automatic checkpoints (benchflow.checkpoints): a retained
+    # sandbox snapshot after the chosen prompts, for later --from-checkpoint.
+    checkpoints: CheckpointPolicy | None = None
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
     # Registry dataset identity: {"name", "version"} — stamped into
@@ -171,12 +298,55 @@ class RolloutConfig:
     # for dev runs — every result stays attributable to exact task content.
     task_digest: str | None = None
     planes: RolloutPlanes | None = field(default=None, repr=False, compare=False)
+    _script_bytes: bytes | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def to_dict(self, *, include_agent_env: bool = False) -> dict[str, Any]:
+        """This config as the rollout YAML mapping ``from_dict``/``from_yaml`` read.
+
+        agent_env values are written only with ``include_agent_env=True``.
+        Raises ``ValueError`` when ``user``, ``pre_agent_hooks`` or ``planes``
+        (Python objects) are set.
+        """
+        from benchflow._utils.yaml_loader import rollout_config_to_dict
+
+        return rollout_config_to_dict(self, include_agent_env=include_agent_env)
+
+    def to_yaml(self, path: str | Path, *, include_agent_env: bool = False) -> Path:
+        """Write :meth:`to_dict` as YAML and return the path."""
+        import yaml
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump(
+                self.to_dict(include_agent_env=include_agent_env), sort_keys=False
+            )
+        )
+        return path
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> RolloutConfig:
+        """Build a config from a rollout YAML mapping (``to_dict``'s shape)."""
+        from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+        return rollout_config_from_dict(raw)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> RolloutConfig:
+        """Read a rollout YAML file (same as ``bf.rollout_config_from_yaml``)."""
+        from benchflow._utils.yaml_loader import rollout_config_from_yaml
+
+        return rollout_config_from_yaml(path)
 
     def __post_init__(self) -> None:
-        from benchflow._utils.config import normalize_agent_idle_timeout
-
         if not isinstance(self.task_path, Path):
             self.task_path = Path(self.task_path)
+        # A task in a registered task format runs as its native package.
+        from benchflow.task.formats import materialize_task_dir
+
+        self.task_path = materialize_task_dir(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
             self.context_root = Path(self.context_root)
         if self.base_image_override is not None:
@@ -188,15 +358,48 @@ class RolloutConfig:
             self.base_image_override = base_image
         if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
             self.skills_dir = Path(self.skills_dir)
+        from benchflow.task.verifier_sandbox import normalize_include_paths
+
+        self.separate_verifier_include = normalize_include_paths(
+            self.separate_verifier_include or ()
+        )
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if self.artifact_skill_mode is not None:
             self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)
         explicit_scenes = bool(self.scenes)
+        if any(
+            is_operator_script(role.agent)
+            for scene in self.scenes
+            for role in scene.roles
+        ):
+            raise ValueError(
+                "script: cannot be a role agent; use the top-level agent instead"
+            )
+        if is_operator_script(self.agent):
+            self.agent = normalize_script(self.agent)
+            self._script_bytes = read_script(self.agent)
+            validate_script_user(self.sandbox_user)
+            if (
+                self.agent_env
+                or self.harness != "acp"
+                or self.skill_mode == SKILL_MODE_SELF_GEN
+            ):
+                raise ValueError(
+                    "script: has no agent options or model harness; drop them or choose a model agent"
+                )
+            self.model = None
         if not explicit_scenes:
             self.scenes = _task_document_scenes(
                 self.task_path,
                 prompts=self.prompts,
                 skill_mode=self.skill_mode,
+                agent=self.agent,
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
+            )
+        if is_operator_script(self.agent) and self.scenes:
+            raise ValueError(
+                "script: cannot run document scenes; choose a single-shot task"
             )
         if self.allow_document_user is None:
             self.allow_document_user = not explicit_scenes
@@ -218,6 +421,10 @@ class RolloutConfig:
                 f"got {type(self.loop_strategy).__name__}"
             )
         self._resolve_user()
+        if is_operator_script(self.agent) and self.user is not None:
+            raise ValueError(
+                "script: cannot run a --user loop; drop the user/loop strategy"
+            )
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")
         if not isinstance(self.jobs_dir, Path):
@@ -227,13 +434,90 @@ class RolloutConfig:
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
+        # None keeps the task's own budget; 0 is "no limit of its own", as in
+        # 0.7.11 (the rollout deadline bounds it). Anything else is whole
+        # seconds: a value under 1 s would be truncated to 0 and time the agent
+        # out at once (DF-p1-first-run-2).
+        if (
+            self.timeout is not None
+            and self.timeout != 0
+            and not (math.isfinite(self.timeout) and self.timeout >= 1)
+        ):
+            raise ValueError(
+                f"timeout must be at least 1 second, got {self.timeout!r}; pass "
+                "None (or 0) to use the task's agent.timeout_sec, or the "
+                "rollout's deadline when the task sets none"
+            )
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.trial_budget = TrialBudget.coerce(self.trial_budget)
+        self.reviewer = ReviewerConfig.coerce(self.reviewer)
+        if self.codex_apps_policy not in {None, "disabled", "inherit"}:
+            raise ValueError("codex_apps_policy must be disabled, inherit, or None")
+        if self.purpose not in {"task", "reviewer"}:
+            raise ValueError("purpose must be task or reviewer")
+        from benchflow.rollout._keep_sandbox import check_backend, normalize_policy
+
+        self.keep_sandbox = normalize_policy(self.keep_sandbox)
+        check_backend(self.keep_sandbox, self.environment)
+        from benchflow.integrity.constants import normalize_integrity_mode
+
+        self.integrity = normalize_integrity_mode(self.integrity)
+        from benchflow.task.verifier_sandbox import normalize_verifier_sandbox
+
+        self.verifier_sandbox = normalize_verifier_sandbox(self.verifier_sandbox)
+        if self.separate_verifier:
+            # --separate-verifier is the same setting as --verifier-sandbox
+            # separate: one effective isolation for plan validation, the
+            # rollout's resolver and the records (b127 PY8-MAIN-27).
+            self.verifier_sandbox = "separate"
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
                 role.reasoning_effort = normalize_reasoning_effort(
                     role.reasoning_effort
                 )
+        if self.agent_idle_timeout_given is None:
+            self.agent_idle_timeout_given = (
+                self.agent_idle_timeout != DEFAULT_AGENT_IDLE_TIMEOUT_SEC
+            )
+        if not self.agent_idle_timeout_given:
+            # bf.run, the SDK and bench eval branch get the effort's default,
+            # as bench run does: 1800 s at xhigh or max. The first role's
+            # effort, read without effective_scenes (a self-gen config has
+            # no scenes of its own yet).
+            first = (
+                self.scenes[0].roles[0]
+                if self.scenes and self.scenes[0].roles
+                else None
+            )
+            effort = (
+                first.reasoning_effort if first is not None else self.reasoning_effort
+            )
+            self.agent_idle_timeout = default_agent_idle_timeout(effort)[0]
+        from benchflow.agents.muse_config import validate_muse_roles
+
+        validate_muse_roles(
+            [
+                (role.agent, role.model)
+                for scene in self.effective_scenes
+                for role in scene.roles
+            ]
+            if self.skill_mode != SKILL_MODE_SELF_GEN
+            else [(self.agent, self.model)],
+            sandbox_user=self.sandbox_user,
+        )
+        from benchflow.native_harness.harnesses import (
+            check_harness,
+            normalize_harness,
+        )
+
+        self.harness = normalize_harness(self.harness)
+        check_harness(
+            self.harness,
+            [role.agent for scene in self.effective_scenes for role in scene.roles]
+            if self.skill_mode != SKILL_MODE_SELF_GEN
+            else [self.agent],
+        )
 
     def _resolve_user(self) -> None:
         """The single user-materialization point for every construction path.
@@ -300,6 +584,18 @@ class RolloutConfig:
             self.user, max_rounds = document_user
             if max_rounds is not None:
                 self.max_user_rounds = max_rounds
+            return
+        # Self-gen's orchestrator builds its own scenes (effective_scenes
+        # refuses it here).
+        steps_user = (
+            None
+            if self.skill_mode == SKILL_MODE_SELF_GEN
+            else _task_steps_user(self.task_path, lambda: self.primary_agent)
+        )
+        if steps_user is not None:
+            # One round per step, and one more call that ends the loop: the
+            # user records the last step's soft verify there (task/steps.py).
+            self.user, self.max_user_rounds = steps_user, len(steps_user.steps) + 1
 
     @classmethod
     def from_legacy(
@@ -315,19 +611,32 @@ class RolloutConfig:
         skill_creator_dir: str | Path | None = None,
         generated_skills_root: str = GENERATED_SKILLS_ROOT,
         self_gen_no_internet: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
+        from benchflow.task.formats import materialize_task_dir
+
+        # A task-format folder reads as its native package from here on.
+        task_path = materialize_task_dir(Path(task_path))
         mode = normalize_skill_mode(skill_mode)
         document_scenes = _task_document_scenes(
             Path(task_path),
             prompts=prompts,
             skill_mode=mode,
+            agent=agent,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
-        if mode == SKILL_MODE_SELF_GEN:
+        if is_operator_script(agent):
+            if document_scenes:
+                raise ValueError(
+                    "script: cannot run document scenes; choose a single-shot task"
+                )
+            scenes = []
+        elif mode == SKILL_MODE_SELF_GEN:
             scenes = []
         elif document_scenes:
-            if agent == "oracle":
+            if agent in ("oracle", "nop"):
                 # The task.md pins its own scene agents (document_scenes), which
                 # become the primary agent — so an explicit `--agent oracle`
                 # is silently dropped and oracle mode never engages. Warn loudly
@@ -394,6 +703,7 @@ class RolloutConfig:
 
     @property
     def recorded_skill_mode(self) -> str:
+        """The skill mode written to the rollout's records."""
         return self.artifact_skill_mode or self.skill_mode
 
     @property

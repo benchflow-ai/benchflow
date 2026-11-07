@@ -19,15 +19,15 @@ from string import Template
 from typing import Any, Literal
 
 import tomli_w
-import yaml
 
 from benchflow._paths import assert_within, safe_path_segment
+from benchflow._utils.reachable_write import ReachablePath
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_WITH_SKILL,
     validate_container_mount_path,
 )
-from benchflow.task.document import render_task_md
+from benchflow.task.document import dump_frontmatter_yaml, render_task_md
 
 from .schema import DEFAULT_SKILL_MOUNT_DIR, validate_evals_json
 
@@ -263,24 +263,24 @@ def _build_task_toml(dataset: EvalDataset, case: EvalCase, with_skill: bool) -> 
     if present_judge_keys:
         verifier["env"] = {k: f"${{{k}}}" for k in present_judge_keys}
 
-    environment_block: dict[str, Any] = {
+    sandbox_block: dict[str, Any] = {
         "cpus": 1,
         "memory_mb": 2048,
         "allow_internet": True,
     }
     if with_skill:
-        environment_block["skills_dir"] = dataset.skill_mount_dir
+        sandbox_block["skills_dir"] = dataset.skill_mount_dir
     # Forward per-case ``environment`` overrides (#392). The runner reads
-    # ``[environment.env]`` and forwards entries to the sandbox.
+    # ``[sandbox.env]`` and forwards entries to the sandbox.
     if case.environment:
-        environment_block["env"] = dict(case.environment)
+        sandbox_block["env"] = dict(case.environment)
 
     doc: dict[str, Any] = {
         "version": "1.0",
         "metadata": metadata,
         "agent": {"timeout_sec": dataset.timeout_sec},
         "verifier": verifier,
-        "environment": environment_block,
+        "sandbox": sandbox_block,
     }
 
     return tomli_w.dumps(doc)
@@ -314,7 +314,7 @@ def _build_verifier_md(dataset: EvalDataset, case: EvalCase) -> str:
             },
         },
     }
-    rendered_frontmatter = yaml.safe_dump(frontmatter, sort_keys=False)
+    rendered_frontmatter = dump_frontmatter_yaml(frontmatter)
     return (
         f"---\n{rendered_frontmatter}---\n\n## role:reviewer\n\n"
         "Judge whether the agent trajectory satisfies the case-specific "
@@ -708,48 +708,54 @@ class SkillEvaluator:
                 skill_mode=SKILL_MODE_WITH_SKILL if with_skill else SKILL_MODE_NO_SKILL,
             ),
         )
-        await j.run()
+        from benchflow.task.env import allow_task_env
+
+        # The generated tasks' [verifier.env] reads the judge keys from this
+        # machine (_build_task_toml); they are this run's own tasks.
+        with allow_task_env(JUDGE_API_ENV_KEYS):
+            evaluation_result = await j.run()
 
         results = []
-        # Walk the jobs directory to collect per-case results
-        jobs_path = Path(jobs_dir)
         for case in self.dataset.cases:
             case_id = case.id
-            # Evaluation writes rollout dirs as `{case_id}__{uuid8}`; match the
-            # exact naming contract so e.g. `case-1` never picks up `case-10`.
-            # Also accept a dir named exactly `case_id` (old direct layout).
-            rollout_dirs = [
-                path
-                for path in jobs_path.glob(f"**/{case_id}*")
-                if path.is_dir()
-                and (path.name == case_id or path.name.startswith(f"{case_id}__"))
-                and (path / "result.json").exists()
-            ]
-            if rollout_dirs:
-                rollout_dir = sorted(
-                    rollout_dirs, key=lambda p: p.stat().st_mtime, reverse=True
-                )[0]
-                result_file = rollout_dir / "result.json"
-                reward = None
-                error = None
-                n_tool_calls = 0
-                rubric_results = None
+            # Only Evaluation's returned mapping owns scores. Artifact mounts
+            # are agent-writable, so a matching name or newer mtime anywhere
+            # under jobs_dir cannot establish that a result belongs to this run.
+            trial = evaluation_result.results.get(case_id)
+            if trial is None:
+                results.append(
+                    CaseResult(
+                        case_id=case_id,
+                        agent=agent,
+                        model=model or "",
+                        with_skill=with_skill,
+                        reward=None,
+                        error="No evaluation result found",
+                        prompt=case.question,
+                    )
+                )
+                continue
 
-                if result_file.exists():
-                    try:
-                        result_data = json.loads(result_file.read_text())
-                        rewards = result_data.get("rewards")
-                        if rewards:
-                            reward = rewards.get(
-                                "reward", next(iter(rewards.values()), None)
-                            )
-                        error = result_data.get("error")
-                        n_tool_calls = result_data.get("n_tool_calls", 0)
-                    except (json.JSONDecodeError, KeyError) as e:
-                        error = f"Failed to parse result.json: {e}"
+            rewards = trial.rewards
+            reward = (
+                rewards.get("reward", next(iter(rewards.values()), None))
+                if rewards
+                else None
+            )
+            rubric_results = None
+            trajectory = None
+            prompt = case.question
+
+            # Best-effort trace enrichment uses this evaluation's recorded
+            # job and rollout only, including when older results lack artifacts.
+            # It never supplies or replaces the authoritative score above.
+            if evaluation_result.job_dir is not None and trial.rollout_name:
+                rollout_dir = evaluation_result.job_dir / trial.rollout_name
 
                 # Read judge rubric details if available
-                judge_file = rollout_dir / "verifier" / "judge_result.json"
+                judge_file = (
+                    ReachablePath.rollout(rollout_dir, "verifier") / "judge_result.json"
+                )
                 if judge_file.exists():
                     with contextlib.suppress(json.JSONDecodeError, KeyError):
                         rubric_results = json.loads(judge_file.read_text()).get("items")
@@ -761,31 +767,20 @@ class SkillEvaluator:
                 trajectory = _load_acp_trajectory(rollout_dir)
                 prompt = _load_prompt(rollout_dir, case)
 
-                results.append(
-                    CaseResult(
-                        case_id=case_id,
-                        agent=agent,
-                        model=model or "",
-                        with_skill=with_skill,
-                        reward=reward,
-                        error=error,
-                        n_tool_calls=n_tool_calls,
-                        rubric_results=rubric_results,
-                        trajectory=trajectory,
-                        prompt=prompt,
-                    )
+            results.append(
+                CaseResult(
+                    case_id=case_id,
+                    agent=agent,
+                    model=model or "",
+                    with_skill=with_skill,
+                    reward=reward,
+                    error=trial.error or trial.verifier_error,
+                    n_tool_calls=trial.n_tool_calls,
+                    rubric_results=rubric_results,
+                    trajectory=trajectory,
+                    prompt=prompt,
                 )
-            else:
-                results.append(
-                    CaseResult(
-                        case_id=case_id,
-                        agent=agent,
-                        model=model or "",
-                        with_skill=with_skill,
-                        reward=None,
-                        error="No trial directory found",
-                    )
-                )
+            )
 
         return results
 
@@ -799,10 +794,11 @@ class SkillEvaluator:
         """Compute per-agent lift from case results."""
         lifts = []
         for agent, model in zip(agents, models, strict=False):
-            with_results = [r for r in all_results if r.agent == agent and r.with_skill]
-            baseline_results = [
-                r for r in all_results if r.agent == agent and not r.with_skill
+            pair_results = [
+                r for r in all_results if (r.agent, r.model) == (agent, model or "")
             ]
+            with_results = [r for r in pair_results if r.with_skill]
+            baseline_results = [r for r in pair_results if not r.with_skill]
 
             with_rewards = [
                 r.reward if r.reward is not None else 0.0 for r in with_results

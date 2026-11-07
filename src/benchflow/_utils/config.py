@@ -13,16 +13,32 @@ def normalize_agent_name(agent: str) -> str:
     stable runtime key is returned, so the Rollout/Evaluation path resolves
     acpx install/launch commands instead of the literal spec string.
 
-    Unknown specs are returned unchanged.
+    Unknown bare IDs fail closed. Explicit raw commands pass through unchanged.
+    A close misspelling of a registered or scripted agent (``claud-agent-acp``,
+    ``oracel``) raises the pre-run check's ``ValueError`` with a suggestion;
+    any other unknown bare ID raises the registry's ``KeyError``.
     """
-    return resolve_agent_key(agent)
+    try:
+        return resolve_agent_key(agent)
+    except KeyError:
+        # Checked after the lookup, so an agent the catalog provides is never
+        # mistaken for a misspelling of a built-in.
+        from benchflow.runtime import check_agent_names
+
+        check_agent_names([agent])
+        raise
 
 
 def normalize_sandbox_user(sandbox_user: str | None) -> str | None:
-    """Map text root-user sentinels to ``None``."""
+    """Map text root-user sentinels to ``None``, and root itself (``root``
+    or uid ``0``) too: an agent that runs as root is one case everywhere
+    (the firewall-power check, the cloud metadata block), whichever way the
+    run spelled it."""
     if sandbox_user is None:
         return None
     if sandbox_user.lower() in {"none", "null"}:
+        return None
+    if sandbox_user.strip() in {"root", "0"}:
         return None
     return sandbox_user
 
@@ -54,6 +70,21 @@ def normalize_reasoning_effort(effort: object) -> str | None:
 
 
 DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 600
+#: BenchFlow's idle limit at the efforts where a model can reason for a quarter
+#: of an hour without a word: a published run's model at max effort answered
+#: after 12 to 15 minutes of reasoning that streams no summary, and the 600 s
+#: default stopped it. Twice that, with room to spare.
+LONG_THINKING_IDLE_TIMEOUT_SEC = 1800
+_LONG_THINKING_EFFORTS = frozenset({"xhigh", "max"})
+
+
+def default_agent_idle_timeout(effort: str | None) -> tuple[int, str]:
+    """BenchFlow's idle limit for a run that sets none, and why: by its
+    reasoning effort (``xhigh`` and ``max`` think longest). A run's own
+    ``--agent-idle-timeout`` always wins."""
+    if effort in _LONG_THINKING_EFFORTS:
+        return LONG_THINKING_IDLE_TIMEOUT_SEC, f"effort_{effort}"
+    return DEFAULT_AGENT_IDLE_TIMEOUT_SEC, "default"
 
 
 def normalize_agent_idle_timeout(timeout: object) -> int | None:

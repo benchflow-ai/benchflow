@@ -43,7 +43,7 @@ Or via Python SDK:
 import asyncio
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow._utils.benchmark_repos import resolve_source
+from benchflow import resolve_source
 
 async def main():
     config = RolloutConfig(
@@ -57,7 +57,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Note: `resolve_source()` is required for remote repos in the SDK. The CLI
+Note: `bf.resolve_source()` is required for remote repos in the SDK. The CLI
 handles this transparently via `--source-repo` / `--source-path`.
 
 API keys are auto-inherited from `os.environ` into the sandbox.
@@ -147,7 +147,7 @@ bench skills eval skills/citation-management \
 ### `hub` — check external-environment-hub compatibility
 
 ```bash
-bench hub check          # inventory/structurally-check representative Harbor-registry tasks
+bench hub check          # inventory/structurally-check representative BenchFlow registry tasks
 ```
 
 ### `agents` — list available agents
@@ -159,6 +159,7 @@ bench agent list
 | Agent | Protocol | Auth |
 |-------|----------|------|
 | `gemini` | ACP | GEMINI_API_KEY or host login |
+| `antigravity` (alias: `agy`) | ACP (bundled shim over `agy --output-format stream-json`) | GEMINI_API_KEY |
 | `claude-agent-acp` (alias: `claude`) | ACP | ANTHROPIC_API_KEY or host login |
 | `codex-acp` (alias: `codex`) | ACP | OPENAI_API_KEY or host login |
 | `opencode` | ACP | inferred from model |
@@ -197,8 +198,8 @@ asyncio.run(main())
 ## Setup
 
 ```bash
-# Install benchflow 0.6.0 from PyPI (--prerelease allow is for the pinned LiteLLM rc dep):
-uv tool install --prerelease allow benchflow
+# Install benchflow from PyPI. BenchFlow CLI releases require Python 3.12+.
+uv tool install --python 3.12 --upgrade benchflow
 # (or from source: uv sync --extra dev --locked)
 export GEMINI_API_KEY=...     # or ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
 export DAYTONA_API_KEY=...    # for cloud sandboxes
@@ -230,8 +231,7 @@ bench eval run \
   --agent claude-agent-acp \
   --sandbox daytona \
   --skills-dir skills/ \
-  --skill-mode with-skill \
-  --agent-env BENCHFLOW_SKILL_NUDGE=name
+  --skill-mode with-skill
 ```
 
 `--skill-mode with-skill` is required whenever you pass `--skills-dir` (omitting

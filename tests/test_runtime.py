@@ -30,17 +30,25 @@ def test_agent_basic() -> None:
 
 
 def test_agent_alias_resolves_config_and_launch() -> None:
-    """Guards ENG-91 P0 dogfood alias regression in runtime.Agent."""
+    """Dogfood alias regression in runtime.Agent."""
     a = Agent(name="codex", model="gpt-5.4")
     assert a.config is not None
     assert a.config.name == "codex-acp"
     assert a.launch_cmd != "codex"
 
 
-def test_agent_unknown() -> None:
+def test_agent_unknown_bare_launch_fails_closed() -> None:
+    """Guards PR #1090 runtime launch bypass."""
     a = Agent(name="nonexistent-agent", model="some-model")
     assert a.config is None
-    assert a.launch_cmd == "nonexistent-agent"
+    with pytest.raises(KeyError, match="Unknown agent"):
+        _ = a.launch_cmd
+
+
+def test_agent_explicit_raw_command_launches() -> None:
+    """Guards PR #1090 explicit runtime command compatibility."""
+    command = "python agent.py"
+    assert Agent(name=command, model="some-model").launch_cmd == command
 
 
 def test_agent_env_default_empty() -> None:
@@ -55,7 +63,9 @@ def test_runtime_config_defaults() -> None:
     assert c.max_rounds == 10
     assert c.snapshot_policy == "none"
     assert c.reward_stream is True
-    assert c.timeout == 900
+    # None = the task's own [agent] timeout_sec; the hidden 900 s default was
+    # retired (see tests/test_python_sdk_timeouts.py).
+    assert c.timeout is None
 
 
 def test_runtime_result_passed() -> None:

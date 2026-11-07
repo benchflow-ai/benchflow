@@ -1,11 +1,11 @@
 ---
 name: benchflow-create-task
-description: Create benchmark tasks for BenchFlow in the Harbor task format. Use when asked to create a new benchmark task, write a verifier, or set up a task environment.
+description: Create benchmark tasks for BenchFlow in the task.toml task layout. Use when asked to create a new benchmark task, write a verifier, or set up a task environment.
 ---
 
 # BenchFlow Create Task Skill
 
-Use this skill to create benchmark tasks that BenchFlow can run. Tasks follow the Harbor format — a directory with an instruction, environment, and verifier.
+Use this skill to create benchmark tasks that BenchFlow can run. Tasks follow the task.toml task layout — a directory with an instruction, environment, and verifier.
 
 ## When to Use
 
@@ -145,12 +145,12 @@ fi
 # Run with benchflow
 bench eval run --tasks-dir my-task/ --agent claude-agent-acp --sandbox daytona
 
-# Or with SDK
+# Or from Python
 python -c "
 import asyncio
-from benchflow import SDK
-result = asyncio.run(SDK().run('my-task', agent='claude-agent-acp', environment='daytona'))
-print(f'Reward: {result.rewards}, Error: {result.error}')
+import benchflow as bf
+result = asyncio.run(bf.run(bf.RolloutConfig(task_path='my-task', agent='claude-agent-acp', environment='daytona')))
+print(f'Reward: {result.reward}, Error: {result.error}')
 "
 ```
 

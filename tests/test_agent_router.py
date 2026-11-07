@@ -767,7 +767,7 @@ def test_roundtrip_conformance_status_real_import_binding() -> None:
     """Exercise the real report_fn=None branch so the import wiring can't rot.
 
     Every other test injects a fake report_fn; this one runs the actual
-    benchflow.task.build_harbor_roundtrip_conformance_report against a real
+    benchflow.task.build_task_toml_roundtrip_conformance_report against a real
     example task, locking the import path and the (status, reasons) shape.
     """
     task_dir = Path(__file__).parent / "examples" / "hello-world-task"
@@ -878,7 +878,11 @@ def test_cli_verify_nonexistent_roundtrip_task_no_traceback(tmp_path: Path) -> N
     # Collapse rich's line-wrapping before substring checks.
     out = " ".join(click.unstyle(result.output).split())
     assert "round-trip: error" in out
-    assert bad.name in out  # names the --roundtrip-task value the user passed
+    # Names the --roundtrip-task value the user passed. Rich wraps the path
+    # at the console width, inside the name once the temp root is long (an
+    # xdist worker's popen-gwN folder, or pytest-NN), so compare without any
+    # whitespace.
+    assert bad.name in "".join(out.split())
     assert "Traceback" not in out
     assert "FileNotFoundError" not in out
 

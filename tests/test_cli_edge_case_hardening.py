@@ -233,19 +233,23 @@ def test_yaml_string_prompts_are_wrapped_in_a_list(tmp_path):
 # ── markup in user input crashes error handlers (H10/M13) ─────────────────────
 
 
-def test_hub_check_markup_registry_does_not_crash_handler(monkeypatch):
-    import benchflow.hub.harbor_registry as hr
+def test_hub_check_markup_registry_does_not_crash_handler(monkeypatch, tmp_path):
+    import benchflow.hub.registry as hr
+
+    registry = tmp_path / "[" / "red]x.json"
+    registry.parent.mkdir()
+    registry.write_text("{}")
 
     def boom(*args, **kwargs):
-        raise RuntimeError("bad registry /tmp/[/red]x.json")
+        raise RuntimeError(f"bad registry {registry}")
 
-    monkeypatch.setattr(hr, "check_harbor_registry", boom)
-    res = runner.invoke(app, ["hub", "check", "--registry", "/tmp/[/red]x.json"])
+    monkeypatch.setattr(hr, "check_registry_tasks", boom)
+    res = runner.invoke(app, ["hub", "check", "--registry", str(registry)])
     assert res.exit_code == 1
     # If the [red] markup were not escaped, the handler's own console.print
     # would raise MarkupError instead of exiting cleanly.
     assert isinstance(res.exception, SystemExit)
-    assert "Harbor compatibility check failed" in res.output
+    assert "Registry check failed" in res.output
 
 
 # ── environment create: existing non-task dir (H11) ──────────────────────────
@@ -287,7 +291,7 @@ def test_eval_list_non_directory_exits_clean(tmp_path):
     afile = tmp_path / "afile"
     afile.write_text("x")
     res = runner.invoke(app, ["eval", "list", str(afile)])
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert "Not a directory" in res.output
 
 
@@ -324,19 +328,25 @@ def test_cli_errors_go_to_stderr_not_stdout(tmp_path):
     # print_error is the single CLI error sink; it must write to stderr so a
     # `bench … --json | jq` pipeline never gets a non-JSON line on stdout.
     res = runner.invoke(app, ["eval", "metrics", str(tmp_path / "nope"), "--json"])
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert res.stdout == ""  # JSON channel stays clean
     assert "Not a directory" in res.stderr
 
 
 def test_eval_create_bad_source_repo_no_raw_traceback(monkeypatch):
-    # A clone failure used to escape as a raw CalledProcessError traceback.
+    """Guards the source error fix, narrowed to connection failures after 66495284a."""
     import subprocess
+    from unittest.mock import patch
 
     import benchflow._utils.benchmark_repos as br
 
     def boom(*a, **k):
-        raise subprocess.CalledProcessError(128, ["git", "clone"])
+        command = ["git", "clone", "https://github.com/x/y.git"]
+        failure = subprocess.CalledProcessError(
+            128, command, stderr="fatal: Could not resolve host: github.com\n"
+        )
+        with patch.object(br.subprocess, "run", side_effect=failure):
+            br._run_clone(command, "x", "y")
 
     monkeypatch.setattr(br, "resolve_source_with_metadata", boom)
     res = runner.invoke(app, ["eval", "create", "--source-repo", "x/y"])
@@ -351,7 +361,7 @@ def test_eval_create_tasks_dir_is_a_file_clean_error(tmp_path):
     res = runner.invoke(
         app, ["eval", "create", "--tasks-dir", str(afile), "--agent", "oracle"]
     )
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert "Traceback (most recent call last)" not in res.output
     assert "Not a directory" in res.stderr
 
@@ -365,7 +375,7 @@ def test_hub_env_list_json_is_valid_json_even_when_narrow(monkeypatch):
     payload = json.dumps({"environments": [{"name": "a/b", "description": long_desc}]})
     monkeypatch.setattr(hosted, "prime_env_list", lambda **kw: payload)
     monkeypatch.setenv("COLUMNS", "40")
-    res = runner.invoke(app, ["hub", "list", "--json"])
+    res = runner.invoke(app, ["hub", "list", "--provider", "primeintellect", "--json"])
     assert res.exit_code == 0
     assert json.loads(res.stdout) == json.loads(payload)  # round-trips cleanly
 
@@ -446,20 +456,21 @@ def test_viewer_renders_corrupt_artifacts_without_raising(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "argv, needle",
+    "argv, needle, code",
     [
-        (["tasks", "generate"], "Specify a source"),
+        (["tasks", "generate"], "Specify a source", 2),
         (
             ["eval", "create", "--source-ref", "abc", "--tasks-dir", "."],
             "require --source-repo",
+            2,  # a usage mistake
         ),
     ],
 )
-def test_arg_validation_errors_route_to_stderr(argv, needle):
+def test_arg_validation_errors_route_to_stderr(argv, needle, code):
     # The print_error sink is uniform: sibling arg-validation guards (not just the
     # ones the sweep happened to hit) put their error on stderr, leaving stdout clean.
     res = runner.invoke(app, argv)
-    assert res.exit_code == 1
+    assert res.exit_code == code
     assert needle in res.stderr
     assert needle not in res.stdout
 
@@ -527,7 +538,7 @@ def test_skills_eval_rejects_model_agent_length_mismatch_before_header(tmp_path)
         ],
     )
 
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert (
         "--model may be provided once for all agents or once per --agent" in res.stderr
     )
@@ -585,7 +596,7 @@ def test_tasks_generate_from_file_directory_is_clean_error(tmp_path):
     res = runner.invoke(
         app, ["tasks", "generate", "--from-file", str(tmp_path), "--dry-run"]
     )
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert not isinstance(res.exception, OSError), res.exception
     assert "Not a file" in res.output
 
@@ -608,7 +619,7 @@ def test_tasks_generate_rejects_invalid_outcome(tmp_path):
             "--dry-run",
         ],
     )
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert "Invalid --outcome" in res.output
 
 
@@ -616,7 +627,7 @@ def test_continue_batch_rejects_nonexistent_root(tmp_path):
     """Guards PR #789 (CLI error-handling hardening)."""
     # P1: a typo'd ROOT exited 0 "No timeout run folders found." (silent success).
     res = runner.invoke(app, ["continue-batch", str(tmp_path / "nope-12345")])
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert "does not exist" in res.output
 
 
@@ -626,7 +637,7 @@ def test_continue_batch_rejects_file_root(tmp_path):
     f = tmp_path / "a-file.txt"
     f.write_text("x")
     res = runner.invoke(app, ["continue-batch", str(f)])
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert "not a directory" in res.output
 
 
@@ -650,6 +661,170 @@ def test_eval_view_empty_dir_fails_fast_without_writing(tmp_path):
     res = runner.invoke(app, ["eval", "view", str(tmp_path), "--port", "0"])
     assert res.exit_code == 1
     assert "No trajectories found" in res.output
+    assert not (tmp_path / "trajectory.html").exists()
+
+
+def test_eval_view_empty_jsonl_fails_fast_without_writing(tmp_path):
+    """Guards skill-first traj review: a raw session file must not drop sidecar HTML."""
+    session = tmp_path / "session.jsonl"
+    session.write_text("")
+    res = runner.invoke(app, ["eval", "view", str(session), "--port", "0"])
+    assert res.exit_code == 1
+    assert "No trajectories found" in res.output
+    assert not (tmp_path / "trajectory.html").exists()
+
+
+def test_render_jsonl_file_claude_and_codex_sessions(tmp_path):
+    """Guards skill-first traj review: viewer accepts Claude and Codex session JSONL."""
+    from benchflow.trajectories.viewer import render_jsonl_file
+
+    claude = tmp_path / "claude.jsonl"
+    claude.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "submit this prize session"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "opening the viewer"}],
+                },
+            }
+        )
+        + "\n"
+    )
+    claude_html = render_jsonl_file(claude)
+    assert "submit this prize session" in claude_html
+    assert "opening the viewer" in claude_html
+
+    codex = tmp_path / "codex.jsonl"
+    codex.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {"id": "sess-1", "cwd": "/tmp/demo"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "audit the pack"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"ls"}',
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "looking now"},
+            }
+        )
+        + "\n"
+    )
+    codex_html = render_jsonl_file(codex)
+    assert "audit the pack" in codex_html
+    assert "exec_command" in codex_html
+    assert "looking now" in codex_html
+
+
+def test_viewer_header_reads_real_session_metadata_and_hides_unknown_badges(
+    tmp_path,
+):
+    """Guards the viewer-header fix from the collector-side audit (follow-up
+    to PR #1021's approve flow): real ``~/.claude`` session JSONL carries no
+    ``type: system`` event, so the header rendered ``model: ?``,
+    ``session: ?...``, ``claude code: ?``, and ``total cost: $0.0000`` right
+    at the approve moment. The header must derive model from the first
+    assistant event's ``message.model``, session/version from the per-event
+    ``sessionId``/``version`` fields, and hide any badge — including the cost
+    badge — whose value the file does not contain."""
+    from benchflow.trajectories.viewer import render_jsonl_file
+
+    session = tmp_path / "real-session.jsonl"
+    session.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "f684cfbe-1051-4d94-92ad-f8b558dd98cd",
+                "version": "2.1.233",
+                "cwd": "/private/tmp/bio-dogfood",
+                "message": {"role": "user", "content": "run the analysis"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": "f684cfbe-1051-4d94-92ad-f8b558dd98cd",
+                "version": "2.1.233",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-5",
+                    "content": [{"type": "text", "text": "on it"}],
+                },
+            }
+        )
+        + "\n"
+    )
+    html_out = render_jsonl_file(session)
+    assert "model: claude-opus-5" in html_out
+    assert "session: f684cfbe-1051-4d..." in html_out
+    assert "claude code: 2.1.233" in html_out
+    assert ": ?" not in html_out  # no unknown badge ever renders a "?"
+    assert "total cost" not in html_out  # no cost data → no $0.0000 badge
+
+    # A session with no metadata at all: only the filename-stem session badge
+    # remains; nothing renders as "?" or as a fictional zero cost.
+    bare = tmp_path / "bare.jsonl"
+    bare.write_text(
+        json.dumps({"type": "user", "message": {"content": "review me"}}) + "\n"
+    )
+    bare_html = render_jsonl_file(bare)
+    assert "session: bare" in bare_html
+    assert "model:" not in bare_html
+    assert "claude code:" not in bare_html
+    assert "total cost" not in bare_html
+    assert ": ?" not in bare_html
+
+
+def test_serve_jsonl_does_not_write_sidecar(tmp_path, monkeypatch):
+    """Guards skill-first traj review: viewing ~/.claude sessions must not write HTML beside them."""
+    from benchflow.trajectories.viewer import serve
+
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"content": "do not write sidecar html"},
+            }
+        )
+        + "\n"
+    )
+
+    class _StopBeforeListen:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("stop before listen")
+
+    monkeypatch.setattr("http.server.HTTPServer", _StopBeforeListen)
+    with pytest.raises(RuntimeError, match="stop before listen"):
+        serve(str(session), port=0)
     assert not (tmp_path / "trajectory.html").exists()
 
 
@@ -729,7 +904,7 @@ def test_tasks_generate_output_is_file_clean_error(tmp_path):
     res = runner.invoke(
         app, ["tasks", "generate", "--from-file", str(trace), "--output", str(outfile)]
     )
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert not isinstance(res.exception, OSError), res.exception
     assert "is not a directory" in res.output
 
@@ -761,5 +936,5 @@ def test_eval_list_explicit_nonexistent_dir_exits_nonzero(tmp_path):
     """Guards PR #789 (CLI error-handling hardening)."""
     # P3: a typo'd explicit jobs-dir exited 0 (silent) while `eval metrics` exits 1.
     res = runner.invoke(app, ["eval", "list", str(tmp_path / "nope-xyz")])
-    assert res.exit_code == 1
+    assert res.exit_code == 2
     assert "No such jobs directory" in res.output

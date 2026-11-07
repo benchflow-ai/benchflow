@@ -1071,7 +1071,17 @@ def _telemetry_shape(evidence: Evidence) -> set[str]:
 _NET_NO_NETWORK = "no-network"
 _NET_ALLOWLIST = "allowlist"
 _NET_PUBLIC = "public"
-_VALID_NETWORK_MODES = frozenset({_NET_NO_NETWORK, _NET_ALLOWLIST, _NET_PUBLIC})
+_NET_DENYLIST = "denylist"
+_VALID_NETWORK_MODES = frozenset(
+    {_NET_NO_NETWORK, _NET_ALLOWLIST, _NET_PUBLIC, _NET_DENYLIST}
+)
+
+
+def _str_list(value: Any) -> list[str]:
+    """Non-empty stripped strings from a list-valued config field."""
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _norm_network_mode(value: Any) -> str | None:
@@ -1092,22 +1102,22 @@ def network_hardening(
 
     Policy (CONTRACT Q3): the default safe posture is ``no-network``. Network
     access is only acceptable as ``allowlist`` with a NON-EMPTY ``allowed_hosts``
-    set. A bare ``public`` mode is always flagged; on a PR that touches the
-    verifier or the sandbox/lockdown surface a ``public`` mode is a hard
-    ``fail`` (blocker) because that surface controls the isolation boundary.
+    set, or as ``denylist`` with a NON-EMPTY ``blocked_urls`` or
+    ``blocked_hosts`` set. A bare ``public`` mode is always flagged; on a PR
+    that touches the verifier or the sandbox/lockdown surface a ``public`` mode
+    is a hard ``fail`` (blocker) because that surface controls the isolation
+    boundary.
 
     Returns the ``V-NETWORK`` gate outcome. ``pass`` for a hardened config,
-    ``fail`` for an unsafe one (missing allowlist hosts, or ``public`` on a
-    verifier/sandbox PR), ``quarantine`` for a ``public`` config on an unrelated
-    PR (documented, needs human sign-off), ``na`` when no policy is declared.
+    ``fail`` for an unsafe one (missing allowlist hosts, missing denylist
+    entries, or ``public`` on a verifier/sandbox PR), ``quarantine`` for a
+    ``public`` config on an unrelated PR (documented, needs human sign-off),
+    ``na`` when no policy is declared.
     """
     mode = _norm_network_mode(task_config.get("network_mode"))
-    raw_hosts = task_config.get("allowed_hosts")
-    allowed_hosts = [
-        str(h).strip()
-        for h in (raw_hosts if isinstance(raw_hosts, list) else [])
-        if str(h).strip()
-    ]
+    allowed_hosts = _str_list(task_config.get("allowed_hosts"))
+    blocked_urls = _str_list(task_config.get("blocked_urls"))
+    blocked_hosts = _str_list(task_config.get("blocked_hosts"))
 
     if mode is None:
         # No declared policy => the runtime default (no-network) applies; an
@@ -1145,6 +1155,26 @@ def network_hardening(
             f"allowlist hardened: hosts={sorted(allowed_hosts)}",
         )
 
+    if mode == _NET_DENYLIST:
+        if allowed_hosts:
+            return (
+                "V-NETWORK",
+                "fail",
+                "allowed_hosts is only valid for network_mode='allowlist'",
+            )
+        if not (blocked_urls or blocked_hosts):
+            return (
+                "V-NETWORK",
+                "fail",
+                "denylist without blocked_urls/blocked_hosts",
+            )
+        return (
+            "V-NETWORK",
+            "pass",
+            f"denylist hardened: urls={sorted(blocked_urls)} "
+            f"hosts={sorted(blocked_hosts)}",
+        )
+
     # mode == public
     if verifier_or_sandbox_pr:
         return (
@@ -1157,86 +1187,6 @@ def network_hardening(
         "quarantine",
         "network_mode='public' (no allowlist) — requires human sign-off",
     )
-
-
-# ------------------------------------------------------------------
-# Pinned-baseline reward-BAND parity (P-SCHEMA / P-REWARD before/after).
-# ------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ParityBandResult:
-    """Outcome of one pinned-baseline reward-band parity comparison."""
-
-    status: GateStatus
-    detail: str
-    issues: list[str]
-
-
-def parity_baseline_band(
-    benchflow_root: Path,
-    baseline_root: Path,
-    tasks: list[str],
-    deltas: dict[str, float] | None = None,
-) -> ParityBandResult:
-    """P-SCHEMA/P-REWARD before/after band parity vs a pinned Harbor baseline.
-
-    Wraps :func:`check_skillsbench_harbor_parity.main` (the authoritative
-    pinned-baseline reward-BAND checker) by invoking it as a SUBPROCESS so this
-    stays import-light: the parity checker imports ``benchflow`` at module top,
-    which must not be paid by the flat-fixture unit tests. The "same behavior"
-    bar is schema + lifecycle + reward-band parity, NOT bit-identity.
-
-    ``deltas`` overrides the band tolerances (keys ``max_outcome_rate_delta``,
-    ``max_mean_reward_delta``, ``max_task_reward_delta``). Returns a
-    ``ParityBandResult``: ``pass`` when the bands hold, ``fail`` (with the
-    surfaced issue lines) otherwise.
-    """
-    deltas = deltas or {}
-    script = (
-        _HERE.parent / "check_skillsbench_harbor_parity.py"
-    )  # sibling integration tool
-    if not script.is_file():
-        return ParityBandResult(
-            "fail",
-            "check_skillsbench_harbor_parity.py not found",
-            ["parity checker missing"],
-        )
-
-    cmd = [
-        sys.executable,
-        str(script),
-        "--benchflow-root",
-        str(benchflow_root),
-        "--harbor-baseline-root",
-        str(baseline_root),
-        "--max-outcome-rate-delta",
-        str(deltas.get("max_outcome_rate_delta", 0.25)),
-        "--max-mean-reward-delta",
-        str(deltas.get("max_mean_reward_delta", 0.25)),
-        "--max-task-reward-delta",
-        str(deltas.get("max_task_reward_delta", 0.0)),
-    ]
-    for task in tasks:
-        cmd += ["--task", task]
-
-    import subprocess
-
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return ParityBandResult(
-            "fail", f"parity checker did not run: {exc}", [str(exc)]
-        )
-
-    output = (proc.stdout or "") + (proc.stderr or "")
-    issues = [line[2:].strip() for line in output.splitlines() if line.startswith("- ")]
-    if proc.returncode == 0:
-        return ParityBandResult("pass", "pinned-baseline reward-band parity holds", [])
-    detail = "pinned-baseline parity FAIL: " + (
-        "; ".join(issues) if issues else output.strip()[-300:]
-    )
-    return ParityBandResult("fail", detail, issues)
 
 
 # ------------------------------------------------------------------

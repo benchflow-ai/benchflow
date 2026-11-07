@@ -8,25 +8,32 @@ import pytest
 import yaml
 
 from benchflow._utils.learner_memory import expected_skills_for_task
+from benchflow.agents.registry import (
+    _CLAUDE_AGENT_ACP_PACKAGE,
+    _CLAUDE_CODE_PACKAGE,
+)
 from benchflow.rollout import RolloutConfig, Scene, _resolve_prompts
 from benchflow.sandbox.user import DocumentNudgeUser, ModelDocumentNudgeUser
 from benchflow.scenes import compile_scenes_to_steps, scene_step_prompt, scene_step_role
 from benchflow.task import Task, TaskConfig, TaskDocument, TaskDocumentParseError
+from benchflow.task._document_profiles import _TASK_AUTHORING_PROFILES
 from benchflow.task.config import (
     MultiStepRewardStrategy,
     NetworkMode,
     TaskOS,
-    VerifierEnvironmentMode,
+    VerifierSandboxMode,
 )
 from benchflow.task.document import (
+    dump_frontmatter_yaml,
     render_normalized_task_md,
     render_task_md,
     render_task_md_from_legacy,
 )
 from benchflow.task.paths import TaskPaths
+from tests._package_files import package_path
 
 FIRST_PARTY_MIXED_TASK_MD_FIXTURES = (
-    Path("src/benchflow/demo_task"),
+    package_path("demo_task"),
     Path("tests/examples/hello-world-task"),
     Path("tests/conformance/acp_smoke"),
 )
@@ -34,7 +41,7 @@ FIRST_PARTY_MIXED_TASK_MD_FIXTURES = (
 
 def test_task_document_preserves_demo_task_config_and_prompt() -> None:
     """Guards commit 67378ddd's 2026-06-04 task.md spike against demo drift."""
-    demo_task = Path("src/benchflow/demo_task")
+    demo_task = package_path("demo_task")
     legacy_config = TaskConfig.model_validate_toml(
         (demo_task / "task.toml").read_text()
     )
@@ -48,7 +55,11 @@ def test_task_document_preserves_demo_task_config_and_prompt() -> None:
 def test_render_task_md_from_legacy_emits_only_declared_frontmatter(
     tmp_path: Path,
 ) -> None:
-    """Migration must not materialize runtime defaults the author never wrote."""
+    """Migration must not materialize runtime defaults the author never wrote.
+
+    The legacy ``[environment]`` table is emitted under the native
+    ``sandbox`` key — migration follows the rename.
+    """
     (tmp_path / "task.toml").write_text(
         '[metadata]\ndifficulty = "easy"\n\n'
         "[agent]\ntimeout_sec = 120\n\n"
@@ -63,7 +74,7 @@ def test_render_task_md_from_legacy_emits_only_declared_frontmatter(
         "schema_version": "1.3",
         "metadata": {"difficulty": "easy"},
         "agent": {"timeout_sec": 120},
-        "environment": {"cpus": 2},
+        "sandbox": {"cpus": 2},
     }
 
 
@@ -117,8 +128,8 @@ Implement fail-closed runtime capability validation.
 
     assert document.config.task is not None
     assert document.config.task.name == "benchflow/runtime-capability-gate"
-    assert document.config.environment.docker_image == "ghcr.io/example/task:latest"
-    assert document.config.environment.network_mode == NetworkMode.NO_NETWORK
+    assert document.config.sandbox.docker_image == "ghcr.io/example/task:latest"
+    assert document.config.sandbox.network_mode == NetworkMode.NO_NETWORK
     assert document.config.verifier.timeout_sec == 1200
     assert document.benchflow["verifier"]["spec"] == "verifier/verifier.md"
     assert document.benchflow["oracle"]["path"] == "oracle/"
@@ -156,6 +167,97 @@ Implement it.
     assert set(document.roles) == {"architect", "implementer", "reviewer"}
 
 
+def test_frontmatter_short_scalar_list_renders_flow_style() -> None:
+    """Short scalar-only lists stay compact instead of exploding into bullets."""
+    rendered = render_task_md(
+        {"schema_version": "1.3", "metadata": {"tags": ["a", "b", "c"]}},
+        "Do it.",
+    )
+
+    assert "tags: [a, b, c]" in rendered
+    document = TaskDocument.from_text(rendered)
+    assert document.config.metadata["tags"] == ["a", "b", "c"]
+
+
+def test_frontmatter_long_list_stays_block_style() -> None:
+    """Lists whose flow rendering exceeds the width cap keep block bullets."""
+    tags = [f"item-{index:02d}" for index in range(20)]
+    rendered = dump_frontmatter_yaml({"metadata": {"tags": tags}})
+
+    assert "tags:\n" in rendered
+    assert "- item-00\n" in rendered
+    assert "[" not in rendered
+    assert yaml.safe_load(rendered) == {"metadata": {"tags": tags}}
+
+
+def test_frontmatter_single_long_item_stays_block_style() -> None:
+    """The width cap applies to rendered length, not item count."""
+    tags = ["x" * 100]
+    rendered = dump_frontmatter_yaml({"metadata": {"tags": tags}})
+
+    assert "[" not in rendered
+    assert yaml.safe_load(rendered) == {"metadata": {"tags": tags}}
+
+
+def test_frontmatter_nested_collection_list_stays_block_style() -> None:
+    """Lists holding mappings or lists never collapse to flow style."""
+    data = {"scenes": [{"name": "s1"}, {"name": "s2"}], "grid": [[1, 2], [3, 4]]}
+    rendered = dump_frontmatter_yaml(data)
+
+    assert "scenes:\n- name: s1\n- name: s2\n" in rendered
+    assert "grid:\n-" in rendered
+    assert yaml.safe_load(rendered) == data
+
+
+def test_frontmatter_multiline_string_item_stays_block_style() -> None:
+    data = {"metadata": {"notes": ["line1\nline2", "x"]}}
+    rendered = dump_frontmatter_yaml(data)
+
+    assert "notes:\n" in rendered
+    assert "[" not in rendered
+    assert yaml.safe_load(rendered) == data
+
+
+def test_frontmatter_special_character_items_round_trip_in_flow_style() -> None:
+    """PyYAML quoting keeps flow-style items with YAML metacharacters lossless."""
+    tags = ["a, b", "c: d", "[x]", " lead", "trail ", "unié中"]
+    data = {"metadata": {"tags": tags}}
+    dumped = dump_frontmatter_yaml(data)
+
+    assert "tags: [" in dumped
+    assert yaml.safe_load(dumped) == data
+    assert dump_frontmatter_yaml(yaml.safe_load(dumped)) == dumped
+
+
+def test_frontmatter_empty_list_renders_flow_style() -> None:
+    rendered = dump_frontmatter_yaml({"metadata": {"tags": []}})
+
+    assert "tags: []" in rendered
+    assert yaml.safe_load(rendered) == {"metadata": {"tags": []}}
+
+
+def test_normalize_preserves_hand_written_flow_arrays() -> None:
+    """Normalization keeps a compact hand-written array and stays a fixed point."""
+    source = """---
+schema_version: '1.3'
+metadata:
+  tags: [parsing, nlp]
+---
+## prompt
+
+Keep my tags compact.
+"""
+
+    normalized = render_normalized_task_md(source)
+
+    assert "tags: [parsing, nlp]" in normalized
+    assert render_normalized_task_md(normalized) == normalized
+    assert TaskDocument.from_text(normalized).config.metadata["tags"] == [
+        "parsing",
+        "nlp",
+    ]
+
+
 def test_task_document_unknown_profile_fails_closed() -> None:
     """Guards commit 00b32e2a's handoff goal against silent profile fallback."""
     with pytest.raises(TaskDocumentParseError, match=r"unknown task\.md profile"):
@@ -178,7 +280,7 @@ name: override-task
 image: ubuntu:24.04
 agent:
   timeout_sec: 42
-environment:
+sandbox:
   docker_image: ghcr.io/example/explicit:latest
   cpus: 9
 verifier:
@@ -189,8 +291,8 @@ Do it.
     )
 
     assert document.config.agent.timeout_sec == 42
-    assert document.config.environment.docker_image == "ghcr.io/example/explicit:latest"
-    assert document.config.environment.cpus == 9
+    assert document.config.sandbox.docker_image == "ghcr.io/example/explicit:latest"
+    assert document.config.sandbox.cpus == 9
     assert document.config.verifier.timeout_sec == 33
 
 
@@ -234,7 +336,7 @@ agent:
   timeout_sec: 300
 verifier:
   timeout_sec: 120
-environment:
+sandbox:
   cpus: 2
   memory_mb: 4096
 agents:
@@ -278,7 +380,7 @@ Push for clarification when the agent skips order details.
     )
 
     assert document.instruction == "Handle the refund request."
-    assert document.config.environment.memory_mb == 4096
+    assert document.config.sandbox.memory_mb == 4096
     assert document.roles["planner"].capabilities == ["tool-use"]
     assert document.user["stop_rule"] == "done-or-3-rounds"
     assert document.user_persona == (
@@ -294,19 +396,19 @@ Push for clarification when the agent skips order details.
     ]
 
 
-def test_task_document_frontmatter_matches_current_harbor_task_config_surface() -> None:
+def test_task_document_frontmatter_matches_task_toml_config_surface() -> None:
     """Guards commit 67378ddd's 2026-06-04 parity pass for task.md."""
     document = TaskDocument.from_text(
         """---
 schema_version: "1.3"
-source: harbor/parity
+source: benchflow/parity
 multi_step_reward_strategy: final
 artifacts:
   - source: /logs/artifacts
     destination: artifacts
 task:
-  name: benchflow/harbor-parity
-  description: Exercises Harbor-compatible task.toml fields
+  name: benchflow/task-toml-parity
+  description: Exercises task.toml fields
   authors:
     - name: BenchFlow
       email: benchflow@example.com
@@ -326,16 +428,16 @@ verifier:
     JUDGE_API_KEY: ${JUDGE_API_KEY:-test}
   user: root
   network_mode: public
-  environment_mode: separate
+  sandbox_mode: separate
   pytest_plugins: [pytest_playwright]
   hardening:
     cleanup_conftests: false
-  environment:
+  sandbox:
     docker_image: ghcr.io/example/grader:latest
     cpus: 2
     memory_mb: 1024
     network_mode: no-network
-environment:
+sandbox:
   network_mode: allowlist
   allowed_hosts: [datasets.example.com]
   build_timeout_sec: 600
@@ -394,19 +496,19 @@ Solve the parity task.
     assert "agents" not in cfg.model_dump()
     assert cfg.schema_version == "1.3"
     assert cfg.task is not None
-    assert cfg.task.name == "benchflow/harbor-parity"
+    assert cfg.task.name == "benchflow/task-toml-parity"
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
-    assert cfg.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
     assert cfg.verifier.hardening.cleanup_conftests is False
-    assert cfg.verifier.environment is not None
-    assert cfg.verifier.environment.allow_internet is False
-    assert cfg.environment.network_mode == NetworkMode.ALLOWLIST
-    assert cfg.environment.os == TaskOS.LINUX
-    assert cfg.environment.tpu is not None
-    assert cfg.environment.tpu.chip_count == 8
-    assert cfg.environment.healthcheck is not None
-    assert cfg.environment.healthcheck.retries == 5
+    assert cfg.verifier.sandbox is not None
+    assert cfg.verifier.sandbox.allow_internet is False
+    assert cfg.sandbox.network_mode == NetworkMode.ALLOWLIST
+    assert cfg.sandbox.os == TaskOS.LINUX
+    assert cfg.sandbox.tpu is not None
+    assert cfg.sandbox.tpu.chip_count == 8
+    assert cfg.sandbox.healthcheck is not None
+    assert cfg.sandbox.healthcheck.retries == 5
     assert cfg.solution.env == {"SOLUTION_MODE": "oracle"}
     assert cfg.multi_step_reward_strategy == MultiStepRewardStrategy.FINAL
     assert cfg.artifacts[0].source == "/logs/artifacts"
@@ -417,11 +519,11 @@ Solve the parity task.
 
 def test_task_document_rejects_unknown_task_config_fields() -> None:
     """Guards commit 67378ddd's 2026-06-04 parity pass against lossy parsing."""
-    with pytest.raises(ValueError, match="unknown_harbor_field"):
+    with pytest.raises(ValueError, match="unknown_vendor_field"):
         TaskDocument.from_text(
             """---
-environment:
-  unknown_harbor_field: true
+sandbox:
+  unknown_vendor_field: true
 ---
 ## prompt
 
@@ -438,7 +540,7 @@ schema_version: "1.3"
 benchflow:
   document_version: "0.3"
   compatibility:
-    harbor:
+    task-toml:
       export: degraded
 agents:
   roles:
@@ -568,7 +670,7 @@ metadata:
   category: demo
 agent:
   timeout_sec: 120
-environment:
+sandbox:
   cpus: 1
 ---
 ## prompt
@@ -1254,3 +1356,83 @@ def test_sidecar_prompt_files_take_precedence_over_legacy_headings(
 
     assert doc.instruction == "Base prompt."
     assert doc.role_prompts == {"reviewer": "File version wins."}
+
+
+def test_task_document_rejects_renamed_environment_frontmatter_key() -> None:
+    """task.md is the native format: only 'sandbox:' validates, and the
+    'environment:' failure names the rename instead of a bare extra-key error."""
+    with pytest.raises(
+        ValueError,
+        match=r"the 'environment' key was renamed to 'sandbox' — rename "
+        r"'environment:' to 'sandbox:'",
+    ):
+        TaskDocument.from_text(
+            """---
+version: "1.0"
+environment:
+  cpus: 2
+---
+Do it.
+"""
+        )
+
+
+def test_task_document_rejects_renamed_verifier_environment_frontmatter_key() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"the 'verifier\.environment' key was renamed to "
+        r"'verifier\.sandbox'",
+    ):
+        TaskDocument.from_text(
+            """---
+version: "1.0"
+verifier:
+  environment:
+    cpus: 2
+---
+Do it.
+"""
+        )
+
+
+def test_multi_agent_profile_reviewer_model_is_one_the_pinned_adapter_accepts() -> None:
+    """The `multi-agent` profile's reviewer must name a live Claude model id.
+
+    The profile paired `agent: claude-agent-acp` with `model:
+    claude-sonnet-4-6`. The adapter pinned in `benchflow.agents.registry`
+    refuses that id: a zero-token `initialize` + `session/new` +
+    `session/set_config_option` probe against the real adapter answered
+    `-32603 Internal error` for `claude-sonnet-4-6`, `claude-sonnet-4-5` and
+    `claude-opus-4-8`, and accepted the ids below. So every task generated
+    from this profile got a reviewer that failed on each run, after the full
+    retry budget, with an opaque `acp_error`. The model API itself still
+    serves the refused ids, which is why this only bites through the adapter.
+
+    The accepted set is a property of the two pins, so this asserts them too:
+    a pin bump has to re-probe (as `tests/test_acp_pinned_protocol_guard.py`
+    requires for the neighbouring config-option wiring) rather than silently
+    inherit a stale list.
+    """
+    assert _CLAUDE_AGENT_ACP_PACKAGE == "@agentclientprotocol/claude-agent-acp@0.81.2"
+    assert _CLAUDE_CODE_PACKAGE == "@anthropic-ai/claude-code@2.1.316"
+
+    # Re-probed on 2026-11-04 with Claude Code 2.1.316: it lists only current
+    # models (and their aliases), so claude-haiku-4-5(-20251001),
+    # claude-sonnet-5, claude-sonnet-4-6, claude-opus-5 and claude-opus-4-8
+    # answered -32603 too.
+    accepted_by_the_pinned_adapter = {
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1",
+        "default",
+        "haiku",
+        "sonnet",
+        "opus",
+        "fable",
+    }
+    roles = _TASK_AUTHORING_PROFILES["multi-agent"]["agents"]["roles"]
+    reviewer = roles["reviewer"]
+
+    assert reviewer["agent"] == "claude-agent-acp"
+    assert reviewer["model"] in accepted_by_the_pinned_adapter

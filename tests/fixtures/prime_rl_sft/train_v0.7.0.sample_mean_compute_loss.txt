@@ -1,0 +1,56 @@
+# compute_loss from train_v0.7.0.txt (prime-rl v0.7.0; Copyright the prime-rl
+# authors, Apache License 2.0, see LICENSE next to this file), as rewritten by
+# BenchFlow 0.9.0-rc (commit e118a8d3) for --loss-normalization sample_mean.
+# Modified by BenchFlow: from the cp_enabled refusal on, the loss block is
+# BenchFlow's rewrite. Golden output: the shim must keep producing exactly
+# these lines for prime-rl v0.5.0 to v0.7.0.
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        input_ids = micro_batch["input_ids"].to("cuda")
+        position_ids = micro_batch["position_ids"].to("cuda")
+        target_ids = micro_batch["target_ids"].to("cuda")
+        loss_mask = micro_batch["loss_mask"].to("cuda")
+
+        if cp_enabled:
+            input_ids, position_ids = setup_cp_params(
+                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            )
+            target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+            loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+        if cp_enabled:
+            raise RuntimeError(
+                "BenchFlow sample-mean loss requires model.cp=1; context parallel "
+                "sequence shards cannot preserve original row means."
+            )
+
+        if config.model.lora is not None:
+            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+
+        with maybe_activation_offloading(config.model.ac_offloading):
+            if config.loss_impl in ("liger_fused", "quack_fused"):
+                raise RuntimeError(
+                    "BenchFlow sample-mean loss supports loss_impl=torch or "
+                    "loss_impl=liger, not fused loss kernels."
+                )
+            out = forward(model, input_ids, position_ids)
+            logits = out["logits"]
+            B, L, V = logits.shape
+            token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+            per_sample_token_count = loss_mask.sum(dim=1)
+            valid_sample_mask = per_sample_token_count > 0
+            if not torch.any(valid_sample_mask):
+                raise RuntimeError(
+                    "BenchFlow sample-mean loss received a batch with no "
+                    "trainable samples."
+                )
+            per_sample_loss_sum = (token_loss * loss_mask.to(token_loss.dtype)).sum(dim=1)
+            loss_sum = (
+                per_sample_loss_sum[valid_sample_mask]
+                / per_sample_token_count[valid_sample_mask].to(token_loss.dtype)
+            ).sum()
+            sample_count = valid_sample_mask.sum(dtype=torch.int64)
+            del logits
+
+        del out
+        return loss_sum, sample_count

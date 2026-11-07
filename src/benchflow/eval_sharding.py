@@ -20,10 +20,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.config_redaction import _should_record_env_entry
 from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
-from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
+from benchflow.evaluation import (
+    EmptyTaskSelectionError,
+    Evaluation,
+    EvaluationConfig,
+    EvaluationResult,
+)
 from benchflow.loop_strategies import LoopStrategySpec
-from benchflow.rollout._results import _should_record_env_entry
+from benchflow.task.verifier_sandbox import effective_verifier_sandbox
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,20 @@ def _retry_payload(config: EvaluationConfig) -> dict[str, Any]:
     }
 
 
+def _shard_warm_pool(config: EvaluationConfig, shard: EvalShard) -> int:
+    """This shard's share of the job's warm pool: 1 for the first N shards.
+
+    N is the job's (``--warm-pool``, or its default for the job's whole
+    ``--concurrency``), so the job's live sandboxes stay at most
+    ``--concurrency`` + N however the trials are sharded.
+    """
+    from benchflow._warm_pool import warm_pool_size
+
+    job_size = warm_pool_size(config.concurrency, config.warm_pool)
+    # A shard without an index (a caller's own stand-in) counts as the first.
+    return 1 if getattr(shard, "index", 0) < job_size else 0
+
+
 def _config_payload(
     config: EvaluationConfig,
     *,
@@ -121,18 +141,58 @@ def _config_payload(
         "agent": config.agent,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
+        "harness": config.harness,
         "environment": config.environment,
         "concurrency": shard.concurrency,
+        # The job's warm pool is job-wide: its N prepared sandboxes are
+        # shared out one per shard, so all workers together prepare at most N
+        # (PERF-C review R2-M1).
+        "warm_pool": _shard_warm_pool(config, shard),
         "prompts": config.prompts,
         "agent_env": config.agent_env,
+        "reviewer": config.reviewer.to_dict(),
         "retry": _retry_payload(config),
         "skills_dir": config.skills_dir,
+        "codex_apps_policy": config.codex_apps_policy,
         "sandbox_user": config.sandbox_user,
         "sandbox_locked_paths": config.sandbox_locked_paths,
         "sandbox_setup_timeout": config.sandbox_setup_timeout,
+        "skip_agent_install": config.skip_agent_install,
         "agent_idle_timeout": config.agent_idle_timeout,
+        # Whether the run set its idle limit: a worker given 600 at effort
+        # max would otherwise take it for BenchFlow's default and raise it.
+        "agent_idle_timeout_given": config.agent_idle_timeout_given,
+        "timeout_multiplier": config.timeout_multiplier,
+        # Each trial's token and turn budget: a worker without it would run
+        # its trials unbounded.
+        "trial_budget": (
+            config.trial_budget.to_dict() if config.trial_budget is not None else None
+        ),
+        "extra_instruction": config.extra_instruction,
+        "checkpoints": config.checkpoints,
+        "checkpoint_keep": config.checkpoint_keep,
+        "freeze_workspace": config.freeze_workspace,
+        "keep_sandbox": config.keep_sandbox,
+        "fresh_install": config.fresh_install,
+        "allow_cloud_metadata": config.allow_cloud_metadata,
+        "integrity": config.integrity,
+        # The run card each worker writes: a strict reference's accepted
+        # reason, the --trials plan it counts, and whether the run named its
+        # model.
+        "accept_deviations": config.accept_deviations,
+        "planned_trials": config.planned_trials,
+        "trial_number": config.trial_number,
+        "model_given": config.model_given,
+        "verifier_sandbox": effective_verifier_sandbox(
+            config.verifier_sandbox, config.separate_verifier
+        ),
+        "retry_from_checkpoint": config.retry_from_checkpoint,
+        "retry_prompt": config.retry_prompt,
+        "retry_resume_session": config.retry_resume_session,
         "context_root": config.context_root,
         "base_image_override": config.base_image_override,
+        "separate_verifier": config.separate_verifier,
+        "separate_verifier_include": list(config.separate_verifier_include),
         "exclude_tasks": sorted(config.exclude_tasks),
         "include_tasks": sorted(shard.task_names),
         "skill_mode": config.skill_mode,
@@ -140,6 +200,9 @@ def _config_payload(
         "self_gen_no_internet": config.self_gen_no_internet,
         "job_mode": config.job_mode,
         "source_provenance": config.source_provenance,
+        "dataset_name": config.dataset_name,
+        "dataset_version": config.dataset_version,
+        "dataset_task_digests": dict(config.dataset_task_digests),
         # Serialize the already-resolved manifest OBJECT (the S axis), not a
         # path. The parent resolves --state / --environment-manifest /
         # name@version into config.environment_manifest before sharding; a
@@ -171,6 +234,13 @@ def _redacted_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
             if _should_record_env_entry(str(key), str(value))
         }
         artifact_payload["agent_env_keys"] = sorted(str(key) for key in agent_env)
+    reviewer = artifact_payload.get("reviewer")
+    if isinstance(reviewer, dict):
+        from benchflow.review.options import ReviewerConfig
+
+        artifact_payload["reviewer"] = ReviewerConfig.coerce(
+            reviewer
+        ).to_config_artifact()
     return artifact_payload
 
 
@@ -233,8 +303,19 @@ async def _stream_worker_log(
             log.flush()
 
 
+# How long a stopped worker gets to remove its sandboxes before SIGKILL.
+WORKER_STOP_TIMEOUT_SEC = 120.0
+
+
 async def _run_worker_once(payload_path: Path, log_path: Path) -> int:
+    from benchflow.task.env import ALLOW_TASK_ENV_VAR, allowed_task_env
+
     env = os.environ.copy()
+    # Names allowed through benchflow.task.env.allow_task_env live in this
+    # process's context; the worker gets them as its variable.
+    allowed = allowed_task_env()
+    if allowed:
+        env[ALLOW_TASK_ENV_VAR] = ",".join(sorted(allowed))
     python_path = str(Path(__file__).resolve().parents[1])
     env["PYTHONPATH"] = (
         python_path
@@ -250,8 +331,35 @@ async def _run_worker_once(payload_path: Path, log_path: Path) -> int:
         stderr=asyncio.subprocess.STDOUT,
         env=env,
     )
-    await _stream_worker_log(process, log_path)
-    return await process.wait()
+    try:
+        await _stream_worker_log(process, log_path)
+        return await process.wait()
+    except asyncio.CancelledError:
+        # The run is stopping (Ctrl-C, SIGTERM, SIGHUP): stop the worker the
+        # same way and wait for its cleanup, so its sandboxes go with it.
+        await _stop_worker(process, log_path)
+        raise
+
+
+async def _stop_worker(process: asyncio.subprocess.Process, log_path: Path) -> None:
+    """SIGTERM a running worker and wait for its teardown; SIGKILL at the cap.
+
+    Its output is still read meanwhile: a worker blocked on a full pipe
+    could not finish removing its sandboxes.
+    """
+    if process.returncode is not None:
+        return
+    with suppress(ProcessLookupError):
+        process.terminate()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(_stream_worker_log(process, log_path), process.wait()),
+            WORKER_STOP_TIMEOUT_SEC,
+        )
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
 
 
 async def _run_worker_with_retries(
@@ -295,14 +403,39 @@ def _aggregate_result(
     shard_results: list[dict[str, Any]],
     elapsed_sec: float,
 ) -> EvaluationResult:
+    # The workers' run checks are judged together, as one job's would be
+    # (benchflow.run_checks.pool): a worker alone sees only its shard. Each
+    # worker's lines and trials go by its shard's name (its folder under
+    # worker-shards/), not by its job's timestamped one.
+    from benchflow.run_checks import pool
+
+    aligned = len(shard_results) == len(plan.shards)
+    run_checks = pool(
+        (
+            str(
+                r.get("shard")
+                or (f"shard-{plan.shards[i].index:03d}" if aligned else None)
+                or r.get("job_name")
+                or f"shard-{i:03d}"
+            ),
+            r.get("run_checks"),
+        )
+        for i, r in enumerate(shard_results)
+    )
     result = EvaluationResult(
         job_name="worker-sharded",
         config=config,
+        run_checks=run_checks,
         total=sum(int(r.get("total", 0)) for r in shard_results),
         passed=sum(int(r.get("passed", 0)) for r in shard_results),
         failed=sum(int(r.get("failed", 0)) for r in shard_results),
         errored=sum(int(r.get("errored", 0)) for r in shard_results),
         verifier_errored=sum(int(r.get("verifier_errored", 0)) for r in shard_results),
+        guard_refused=sum(int(r.get("guard_refused", 0)) for r in shard_results),
+        unusable_rewards=sum(int(r.get("unusable_rewards", 0)) for r in shard_results),
+        # Planned trials a worker never finished: a run check, a budget or a
+        # usage limit kept them from running.
+        not_run=sum(int(r.get("not_run", 0)) for r in shard_results),
         elapsed_sec=elapsed_sec,
     )
     summary = {
@@ -318,19 +451,26 @@ def _aggregate_result(
         "score_excl_errors_ratio": pass_rate_excl_errors(
             passed=result.passed,
             failed=result.failed,
+            refused=result.guard_refused + result.unusable_rewards,
         ),
+        "planned": result.planned,
+        "not_run": result.not_run,
+        "score_of_plan": result.score_of_plan,
         "elapsed_sec": result.elapsed_sec,
         "concurrency": plan.total_concurrency,
         "worker_concurrency": plan.worker_concurrency,
         "worker_count": plan.worker_count,
         "shards": shard_results,
+        "run_checks": run_checks,
     }
     jobs_dir.mkdir(parents=True, exist_ok=True)
     summary_text = json.dumps(summary, indent=2)
-    (jobs_dir / "summary.json").write_text(summary_text)
+    from benchflow._utils.disk_space import write_text_atomic
+
+    write_text_atomic(jobs_dir / "summary.json", summary_text)
     aggregate_job_dir = jobs_dir / result.job_name
     aggregate_job_dir.mkdir(parents=True, exist_ok=True)
-    (aggregate_job_dir / "summary.json").write_text(summary_text)
+    write_text_atomic(aggregate_job_dir / "summary.json", summary_text)
     return result
 
 
@@ -344,6 +484,11 @@ async def run_sharded_evaluation(
     worker_start_stagger_sec: float,
 ) -> EvaluationResult:
     """Run a batch as isolated worker subprocesses and aggregate their summaries."""
+    if config.pre_agent_hooks:
+        raise ValueError(
+            "pre_agent_hooks are Python callables and cannot reach worker "
+            "processes; run without worker_concurrency (--worker-concurrency)"
+        )
     discovery = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config)
     task_dirs = discovery._get_task_dirs()
     task_names = [task_dir.name for task_dir in task_dirs]
@@ -353,12 +498,81 @@ async def run_sharded_evaluation(
         worker_concurrency=worker_concurrency,
     )
     if not plan.shards:
-        from benchflow.evaluation import EmptyTaskSelectionError
+        raise EmptyTaskSelectionError(discovery._empty_selection_message())
+    # The workers each get an exact shard list, so only this discovery sees
+    # the user's patterns.
+    discovery.warn_unmatched_selection()
+    # Refuse a task reading an unnamed variable once, here, rather than in
+    # every worker (which inherit BENCHFLOW_ALLOW_TASK_ENV from this process).
+    from benchflow.evaluation import _refuse_unnamed_task_env
 
-        raise EmptyTaskSelectionError(f"No tasks selected after filtering: {tasks_dir}")
+    _refuse_unnamed_task_env(
+        task_dirs, manifest=config.environment_manifest, sandbox=config.environment
+    )
+    # A strict run-reference.toml refuses a run that differs once, here,
+    # before any worker starts (benchflow.run_card); each worker's card checks
+    # its own shard too, with the same accepted reason.
+    from benchflow.run_card import build_run_card, check_card
+
+    check_card(build_run_card(discovery, task_dirs))
+
+    # Check the complete selection before launching any worker; each worker
+    # then validates its own credential context before starting a solver.
+    from benchflow.review.automatic import prepare_review
+
+    for task_dir in task_dirs:
+        prepare_review(task_dir, config.reviewer)
+    # A run that moves every verifier into the separate verifier sandbox is
+    # refused before any shard folder or plan exists when a task cannot use it.
+    from benchflow.integrity.trial import check_separate_plan
+
+    check_separate_plan(
+        task_dirs,
+        sandbox=config.environment,
+        run_setting=effective_verifier_sandbox(
+            config.verifier_sandbox, config.separate_verifier
+        ),
+        integrity=config.integrity,
+        config_override=config.config_override,
+        environment_manifest=config.environment_manifest,
+    )
 
     root = jobs_dir / "worker-shards"
     _write_or_validate_plan(root / "plan.json", plan)
+
+    # Read resume state in each worker's own job namespace. Completed tasks
+    # will not create networks; only unfinished tasks across all shards pin
+    # space. Surviving networks are still excluded by daemon inspection.
+    unfinished = []
+    if config.environment in ("docker", "remote-docker"):
+        from benchflow.eval_worker import _evaluation_config
+
+        for shard in plan.shards:
+            worker = Evaluation(
+                tasks_dir=tasks_dir,
+                jobs_dir=root / f"shard-{shard.index:03d}" / "jobs",
+                config=_evaluation_config(_config_payload(config, shard=shard)),
+                preflight=False,
+            )
+            completed = worker._get_completed_tasks()
+            unfinished.extend(
+                d
+                for d in task_dirs
+                if d.name in shard.task_names and d.name not in completed
+            )
+
+    # Every worker gets all unfinished tasks' pins, including other shards.
+    from benchflow.evaluation import _pin_evaluation_subnets
+    from benchflow.sandbox._docker_subnets import (
+        backend_daemon_key,
+        daemon_identity,
+    )
+
+    pinned = (
+        _pin_evaluation_subnets(unfinished, config)
+        if config.environment in ("docker", "remote-docker")
+        else []
+    )
 
     worker_tasks = []
     for shard in plan.shards:
@@ -371,6 +585,12 @@ async def run_sharded_evaluation(
             "jobs_dir": str(shard_dir / "jobs"),
             "result_path": str(result_path),
             "config": _config_payload(config, shard=shard),
+            "docker_pinned_subnets": [str(net) for net in pinned],
+            "docker_subnet_daemon": (
+                daemon_identity(backend_daemon_key(config.environment))
+                if pinned
+                else None
+            ),
         }
         payload_path.write_text(
             json.dumps(_worker_payload_artifact(payload), indent=2) + "\n"
@@ -379,15 +599,18 @@ async def run_sharded_evaluation(
         log_path = shard_dir / "worker.log"
         worker_tasks.append((shard, private_payload_path, log_path))
 
-    async def run_one(offset: int, payload_path: Path, log_path: Path):
+    async def run_one(
+        offset: int, shard: EvalShard, payload_path: Path, log_path: Path
+    ):
         if worker_start_stagger_sec > 0:
             await asyncio.sleep(offset * worker_start_stagger_sec)
         try:
-            return await _run_worker_with_retries(
+            result = await _run_worker_with_retries(
                 payload_path,
                 log_path,
                 max_retries=worker_retries,
             )
+            return {**result, "shard": f"shard-{shard.index:03d}"}
         finally:
             with suppress(FileNotFoundError):
                 payload_path.unlink()
@@ -395,8 +618,8 @@ async def run_sharded_evaluation(
     started = datetime.now(UTC)
     results_or_errors = await asyncio.gather(
         *[
-            run_one(offset, payload_path, log_path)
-            for offset, (_shard, payload_path, log_path) in enumerate(worker_tasks)
+            run_one(offset, shard, payload_path, log_path)
+            for offset, (shard, payload_path, log_path) in enumerate(worker_tasks)
         ],
         return_exceptions=True,
     )
@@ -412,10 +635,27 @@ async def run_sharded_evaluation(
 
     elapsed = (datetime.now(UTC) - started).total_seconds()
     shard_results = [result for result in results_or_errors if isinstance(result, dict)]
-    return _aggregate_result(
+    aggregate = _aggregate_result(
         jobs_dir=jobs_dir,
         config=config,
         plan=plan,
         shard_results=shard_results,
         elapsed_sec=elapsed,
     )
+    stopped = [r["usage_limit"] for r in shard_results if r.get("usage_limit")]
+    if stopped:
+        # Every shard runs on the same login: raise the first shard's limit,
+        # as an unsharded Evaluation does.
+        from benchflow.agents.errors import UsageLimitError
+
+        first = stopped[0]
+        resets = first.get("resets_at")
+        error = UsageLimitError(
+            str(first.get("detail") or "usage limit reached"),
+            login=first.get("login"),
+            window=first.get("window"),
+            resets_at=datetime.fromisoformat(resets) if resets else None,
+        )
+        error.result = aggregate
+        raise error
+    return aggregate

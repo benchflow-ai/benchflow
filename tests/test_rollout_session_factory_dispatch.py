@@ -62,7 +62,9 @@ class _FakeSession:
 
 def _rollout(tmp_path: Path) -> Rollout:
     return Rollout(
-        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+        RolloutConfig(
+            task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy --agent")]
+        )
     )
 
 
@@ -261,12 +263,8 @@ async def test_on_ask_user_session_factory_lifecycle(tmp_path: Path):
     Guards on_ask_user() line 908 (the setter's ``_reapply_ask_user_handler()``
     call) + the session-factory branch of ``_reapply_ask_user_handler``.
     """
-    rollout = Rollout.__new__(Rollout)  # only the on_ask_user surface is exercised
+    rollout = _rollout(tmp_path)
     rollout._is_session_factory = True
-    rollout._session_adapter = None
-    rollout._acp_client = None
-    rollout._ask_user_handler = None
-    rollout._ask_user_handler_set = False
 
     session1 = _FakeSession()
     rollout._session = session1

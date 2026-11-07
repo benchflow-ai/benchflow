@@ -1,0 +1,3 @@
+02:13:58 db-1 disk usage 99%
+02:14:03 db-1 ERROR write failed: no space left on device
+02:21:40 db-2 promoted to primary

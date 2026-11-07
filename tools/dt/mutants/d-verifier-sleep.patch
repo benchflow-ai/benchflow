@@ -1,0 +1,12 @@
+diff --git a/src/benchflow/rollout/_setup.py b/src/benchflow/rollout/_setup.py
+index cfe7b95..59ffaaf 100644
+--- a/src/benchflow/rollout/_setup.py
++++ b/src/benchflow/rollout/_setup.py
+@@ -696,6 +696,7 @@ async def _verify_rollout(
+     """
+     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+     t0 = datetime.now()
++    await asyncio.sleep(2)
+     verifier_error = None
+     verifier_timeout: VerifierTimeoutDiagnostic | None = None
+     timeout_budget = task.config.verifier.timeout_sec

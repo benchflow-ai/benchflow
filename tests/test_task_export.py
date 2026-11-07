@@ -6,6 +6,7 @@ import json
 import tomllib
 from pathlib import Path
 from textwrap import dedent
+from typing import Any
 
 import pytest
 import yaml
@@ -15,7 +16,7 @@ from benchflow.task import (
     TaskConfig,
     TaskDocument,
     build_compatibility_export_report,
-    build_harbor_roundtrip_conformance_report,
+    build_task_toml_roundtrip_conformance_report,
     export_task_to_split_layout,
     render_task_md_from_legacy,
 )
@@ -71,7 +72,7 @@ def _write_native_task(task_dir: Path) -> None:
               timeout_sec: 300
             verifier:
               timeout_sec: 120
-            environment:
+            sandbox:
               network_mode: no-network
             agents:
               roles:
@@ -138,7 +139,7 @@ def test_export_native_task_to_split_layout_with_loss_report(tmp_path: Path) -> 
     out_dir = tmp_path / "exported"
     _write_native_task(task_dir)
 
-    report = export_task_to_split_layout(task_dir, out_dir, target="harbor")
+    report = export_task_to_split_layout(task_dir, out_dir, target="task-toml")
 
     assert (out_dir / "task.toml").exists()
     assert (out_dir / "instruction.md").read_text() == "Build the exported artifact.\n"
@@ -208,7 +209,7 @@ def test_export_into_parent_of_source_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("task_name", REAL_SKILLSBENCH_TASK_MD_EXAMPLES)
-def test_export_real_skillsbench_native_examples_to_harbor_split(
+def test_export_real_skillsbench_native_examples_to_task_toml_split(
     tmp_path: Path,
     task_name: str,
 ) -> None:
@@ -216,7 +217,7 @@ def test_export_real_skillsbench_native_examples_to_harbor_split(
     task_dir = Path("docs/examples/task-md/real-skillsbench") / task_name
     out_dir = tmp_path / task_name
 
-    report = export_task_to_split_layout(task_dir, out_dir, target="harbor")
+    report = export_task_to_split_layout(task_dir, out_dir, target="task-toml")
 
     assert report.status == "degraded"
     assert (out_dir / "task.toml").is_file()
@@ -245,7 +246,7 @@ def test_export_user_runtime_example_reports_document_only_losses(
     report = export_task_to_split_layout(
         USER_RUNTIME_TASK_MD_EXAMPLE,
         out_dir,
-        target="harbor",
+        target="task-toml",
     )
 
     assert report.status == "degraded"
@@ -278,7 +279,7 @@ def test_exported_real_skillsbench_examples_migrate_back_to_native_task_md(
     task_dir = Path("docs/examples/task-md/real-skillsbench") / task_name
     out_dir = tmp_path / task_name
 
-    export_task_to_split_layout(task_dir, out_dir, target="harbor")
+    export_task_to_split_layout(task_dir, out_dir, target="task-toml")
     result = migrate_task_to_task_md(out_dir, remove_legacy=True)
 
     assert result.removed_legacy is True
@@ -314,7 +315,7 @@ def test_migrate_minimal_frontmatter_round_trips_equivalent_config(
 
     text = result.task_md.read_text()
     frontmatter = yaml.safe_load(text.split("---\n")[1])
-    assert sorted(frontmatter) == ["agent", "environment", "metadata", "schema_version"]
+    assert sorted(frontmatter) == ["agent", "metadata", "sandbox", "schema_version"]
     assert "judge" not in text
     document = TaskDocument.from_path(result.task_md)
     assert document.config.model_dump() == (
@@ -345,8 +346,8 @@ def test_export_rehydrates_preserved_foreign_extensions(tmp_path: Path) -> None:
     task_md = task_dir / "task.md"
     task_md_text = task_md.read_text()
     task_md_text = task_md_text.replace(
-        "environment:\n  network_mode: no-network\n",
-        """environment:
+        "sandbox:\n  network_mode: no-network\n",
+        """sandbox:
   network_mode: no-network
 steps:
   - name: phase-one
@@ -357,21 +358,21 @@ steps:
             "benchflow:\n  teams:\n",
             """benchflow:
   compat:
-    source: harbor
+    source: task-toml
     extra_paths:
-      - environment.modal.image
-      - harbor_ext
+      - aux_ext
+      - sandbox.modal.image
       - steps[0].runner
-      - verifier.reward_kit.metric
+      - verifier.criteria_runner.metric
     extra:
-      harbor_ext: kept
-      environment:
+      aux_ext: kept
+      sandbox:
         modal:
           image: registry.example.com/task:latest
       steps:
-        - runner: harbor-step-runner
+        - runner: custom-step-runner
       verifier:
-        reward_kit:
+        criteria_runner:
           metric: exact_match
   teams:
 """,
@@ -380,22 +381,76 @@ steps:
 
     report = export_task_to_split_layout(task_dir, out_dir)
 
+    # The task-toml target emits the task.toml spelling: the merged native 'sandbox'
+    # table (including restored extras) leaves as '[environment]'.
     exported = tomllib.loads((out_dir / "task.toml").read_text())
-    assert exported["harbor_ext"] == "kept"
+    assert exported["aux_ext"] == "kept"
+    assert "sandbox" not in exported
     assert exported["environment"]["modal"] == {
         "image": "registry.example.com/task:latest"
     }
     assert exported["steps"][0]["name"] == "phase-one"
-    assert exported["steps"][0]["runner"] == "harbor-step-runner"
-    assert exported["verifier"]["reward_kit"] == {"metric": "exact_match"}
+    assert exported["steps"][0]["runner"] == "custom-step-runner"
+    assert exported["verifier"]["criteria_runner"] == {"metric": "exact_match"}
     assert report.restored_extension_paths == [
-        "environment.modal.image",
-        "harbor_ext",
+        "aux_ext",
+        "sandbox.modal.image",
         "steps[0].runner",
-        "verifier.reward_kit.metric",
+        "verifier.criteria_runner.metric",
     ]
     loss_paths = {loss.path for loss in report.losses}
     assert "benchflow.compat" not in loss_paths
+
+
+def test_export_converts_pre_rename_compat_envelope_environment_extras(
+    tmp_path: Path,
+) -> None:
+    """A pre-rename compat envelope spelling extras 'environment.*' must not
+    export 'environment' NEXT TO 'sandbox' (a file that hard-errors on
+    re-import): the envelope is normalized to 'sandbox' before the merge, and
+    the task-toml target then emits a single '[environment]' table."""
+    task_dir = tmp_path / "native"
+    out_dir = tmp_path / "exported"
+    _write_native_task(task_dir)
+    task_md = task_dir / "task.md"
+    task_md.write_text(
+        task_md.read_text().replace(
+            "benchflow:\n  teams:\n",
+            """benchflow:
+  compat:
+    source: task-toml
+    extra_paths:
+      - environment.modal.image
+    extra:
+      environment:
+        modal:
+          image: registry.example.com/task:latest
+  teams:
+""",
+        )
+    )
+
+    export_task_to_split_layout(task_dir, out_dir)
+
+    exported_text = (out_dir / "task.toml").read_text()
+    exported = tomllib.loads(exported_text)
+    assert "sandbox" not in exported
+    assert exported["environment"]["network_mode"] == "no-network"
+    assert exported["environment"]["modal"] == {
+        "image": "registry.example.com/task:latest"
+    }
+    # The exported file re-imports cleanly (no both-spellings hard error);
+    # the foreign 'modal' extra goes back into a compat envelope, so the
+    # re-import path is the compat importer rather than the strict loader.
+    from benchflow.task import import_task_config_toml
+
+    reimported = import_task_config_toml(exported_text, source="task-toml")
+    assert reimported.config.sandbox.network_mode is not None
+    assert reimported.report.extra_paths == ("sandbox.modal.image",)
+    # The parsed source document is not corrupted by the export-side
+    # conversion (the converter must operate on a copy of the envelope).
+    document = TaskDocument.from_path(task_md)
+    assert "environment" in document.benchflow["compat"]["extra"]
 
 
 def test_build_report_detects_alias_collisions(tmp_path: Path) -> None:
@@ -430,7 +485,7 @@ def test_build_report_detects_task_md_instruction_prompt_drift(tmp_path: Path) -
 
 
 def test_legacy_split_export_is_lossless(tmp_path: Path) -> None:
-    """Existing Harbor split packages remain first-class compatibility input."""
+    """Existing task.toml split packages remain first-class compatibility input."""
     task_dir = tmp_path / "legacy"
     out_dir = tmp_path / "exported"
     _write_legacy_task(task_dir)
@@ -445,10 +500,10 @@ def test_legacy_split_export_is_lossless(tmp_path: Path) -> None:
     assert (out_dir / "tests" / "test.sh").exists()
 
 
-def test_harbor_roundtrip_migrate_export_preserves_supported_surface(
+def test_task_toml_roundtrip_migrate_export_preserves_supported_surface(
     tmp_path: Path,
 ) -> None:
-    """Split -> task.md -> split conformance preserves Harbor-compatible files."""
+    """Split -> task.md -> split conformance preserves task.toml files."""
     task_dir = tmp_path / "legacy"
     _write_legacy_task(task_dir)
     (task_dir / "solution" / "notes.txt").write_text("supporting oracle note\n")
@@ -456,7 +511,7 @@ def test_harbor_roundtrip_migrate_export_preserves_supported_surface(
     fixtures.mkdir()
     (fixtures / "case.json").write_text('{"ok": true}\n')
 
-    report = build_harbor_roundtrip_conformance_report(task_dir)
+    report = build_task_toml_roundtrip_conformance_report(task_dir)
 
     assert report.status == "lossless"
     assert report.config_equal is True
@@ -467,15 +522,15 @@ def test_harbor_roundtrip_migrate_export_preserves_supported_surface(
     assert report.mismatches == []
 
 
-def test_harbor_roundtrip_reports_restored_foreign_extensions(
+def test_task_toml_roundtrip_reports_restored_foreign_extensions(
     tmp_path: Path,
 ) -> None:
-    """Round-trip conformance tracks preserved Harbor fork config extras."""
+    """Round-trip conformance tracks preserved foreign config extras."""
     task_dir = tmp_path / "legacy"
     _write_legacy_task(task_dir)
     config_path = task_dir / "task.toml"
     config_path.write_text(
-        'harbor_ext = "kept"\n'
+        'aux_ext = "kept"\n'
         + config_path.read_text()
         + """
 [environment.modal]
@@ -483,12 +538,12 @@ image = "registry.example.com/task:latest"
 """
     )
 
-    report = build_harbor_roundtrip_conformance_report(task_dir)
+    report = build_task_toml_roundtrip_conformance_report(task_dir)
 
     assert report.status == "lossless"
     assert report.restored_extension_paths == [
-        "environment.modal.image",
-        "harbor_ext",
+        "aux_ext",
+        "sandbox.modal.image",
     ]
 
 
@@ -510,7 +565,7 @@ def test_migrate_legacy_instruction_with_reserved_headings_preserves_prompt(
     (task_dir / "instruction.md").write_text(instruction + "\n")
 
     document = TaskDocument.from_text(render_task_md_from_legacy(task_dir))
-    report = build_harbor_roundtrip_conformance_report(task_dir)
+    report = build_task_toml_roundtrip_conformance_report(task_dir)
 
     assert document.instruction == instruction
     assert document.role_prompts == {}
@@ -530,3 +585,90 @@ def test_export_refuses_existing_destination_without_overwrite(tmp_path: Path) -
 
     report = export_task_to_split_layout(task_dir, out_dir, overwrite=True)
     assert report.status == "lossless"
+
+
+def test_cli_export_writes_the_task_toml_target(tmp_path: Path) -> None:
+    """`--target task-toml` is the default and only export target."""
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+
+    task_dir = tmp_path / "legacy"
+    _write_legacy_task(task_dir)
+    runner = CliRunner()
+    for args in ([], ["--target", "task-toml"]):
+        out_dir = tmp_path / f"exported{len(args)}"
+        result = runner.invoke(
+            app, ["tasks", "export", str(task_dir), str(out_dir), *args]
+        )
+        assert result.exit_code == 0, result.output
+        report = json.loads(
+            (out_dir / "compatibility" / "export-report.json").read_text()
+        )
+        assert report["target"] == "task-toml"
+        assert "environment" in tomllib.loads((out_dir / "task.toml").read_text())
+
+
+def test_cli_export_refuses_any_other_target(tmp_path: Path) -> None:
+    """Any other value, a retired target name included, gets the plain
+    unknown-value error naming the targets; nothing is written."""
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+
+    task_dir = tmp_path / "legacy"
+    _write_legacy_task(task_dir)
+    out_dir = tmp_path / "exported"
+    result = CliRunner().invoke(
+        app,
+        ["tasks", "export", str(task_dir), str(out_dir), "--target", "split"],
+    )
+    assert result.exit_code == 2
+    assert "--target 'split' is an unknown value; choose one of: task-toml" in " ".join(
+        result.output.split()
+    )
+    assert not out_dir.exists()
+
+
+def test_the_task_toml_compatible_preset_marks_the_export() -> None:
+    from benchflow.task import normalize_task_document_frontmatter
+    from benchflow.task.document import TaskDocumentParseError
+
+    normalized = normalize_task_document_frontmatter(
+        {"profile": "task-toml-compatible"}
+    )
+    assert normalized["metadata"]["category"] == "task-toml-compatible"
+    assert normalized["benchflow"]["compatibility"] == {
+        "task-toml": {"export": "supported"}
+    }
+    with pytest.raises(TaskDocumentParseError) as caught:
+        normalize_task_document_frontmatter({"profile": "split-compatible"})
+    assert "unknown task.md profile 'split-compatible'" in str(caught.value)
+    assert "task-toml-compatible" in str(caught.value)
+
+
+@pytest.mark.parametrize("target", ["split", "", "TASK-TOML"])
+def test_python_export_api_refuses_any_other_target(
+    tmp_path: Path, target: Any
+) -> None:
+    """The Python API refuses a target the CLI refuses, a retired target name
+    included, with the same unknown-value error; nothing is written."""
+    from benchflow.task import TaskPackage
+
+    task_dir = tmp_path / "legacy"
+    _write_legacy_task(task_dir)
+    out_dir = tmp_path / "exported"
+    message = f"target {target!r} is an unknown value; choose one of: task-toml"
+    calls = (
+        lambda: export_task_to_split_layout(task_dir, out_dir, target=target),
+        lambda: build_compatibility_export_report(task_dir, target=target),
+        lambda: build_task_toml_roundtrip_conformance_report(task_dir, target=target),
+        lambda: TaskPackage.from_task_dir(task_dir).compatibility_export_report(
+            target=target
+        ),
+    )
+    for call in calls:
+        with pytest.raises(ValueError) as caught:
+            call()
+        assert str(caught.value) == message
+    assert not out_dir.exists()

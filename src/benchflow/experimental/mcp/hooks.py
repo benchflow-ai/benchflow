@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from benchflow.sandbox._exec_output import exec_raw
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,13 +34,15 @@ def mcp_reviewer_hook(
 
     async def _start_reviewer(env: Any) -> None:
         logger.info(f"Starting MCP reviewer server on port {port} (model={model})")
-        await env.exec(
+        await exec_raw(
+            env.exec,
             f"python -m benchflow.experimental.mcp.reviewer_server "
             f"--port {port} --model {model} --host {host} &",
             timeout_sec=10,
         )
         # Wait for server to respond
-        result = await env.exec(
+        result = await exec_raw(
+            env.exec,
             f"for i in $(seq 1 15); do "
             f"curl -sf http://localhost:{port}/mcp > /dev/null 2>&1 && echo ok && exit 0; "
             f"sleep 1; done; echo fail",

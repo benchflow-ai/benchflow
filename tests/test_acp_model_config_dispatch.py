@@ -11,6 +11,7 @@ cases live in ``tests/test_acp_setup_failure_propagation.py``.
 """
 
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,13 +45,11 @@ def _make_mocks(config_options=None, model_state=None):
 def _runtime_patches(mock_acp):
     with (
         patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
-        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            "benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()
+        ) as transport,
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
-        yield
+        yield transport
 
 
 async def _connect(
@@ -58,7 +57,7 @@ async def _connect(
 ):
     from benchflow.acp.runtime import connect_acp
 
-    with _runtime_patches(mock_acp):
+    with _runtime_patches(mock_acp) as transport:
         await connect_acp(
             env=AsyncMock(),
             agent=agent,
@@ -71,12 +70,13 @@ async def _connect(
             agent_cwd="/app",
             reasoning_effort=reasoning_effort,
         )
+    return transport
 
 
 @pytest.mark.asyncio
 async def test_codex_with_only_fastmode_option_uses_set_model(tmp_path):
-    """codex-acp@0.0.45 advertises only 'fast-mode' (no 'model'), so dispatch
-    must use session/set_model — capability-first must NOT regress it."""
+    """A codex-acp advertising only 'fast-mode' (no 'model') dispatches via
+    session/set_model — capability-first must NOT regress it."""
     mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
     await _connect(mock_acp, agent="codex-acp", model="gpt-5.5", tmp_path=tmp_path)
 
@@ -85,11 +85,11 @@ async def test_codex_with_only_fastmode_option_uses_set_model(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
+async def test_codex_litellm_config_mismatch_uses_bare_model_for_set_model(tmp_path):
     """Codex validates set_model against its own model catalog, not proxy aliases.
 
-    This guards against a false-green CI path where BenchFlow recorded the
-    requested model but codex-acp fell back to its own default at request time.
+    Guards PR #1076 against a false green where BenchFlow records the requested
+    model but codex-acp falls back to its own default at request time.
     """
     mock_acp = _make_mocks(
         config_options=[{"id": "fast-mode"}],
@@ -101,16 +101,18 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
             "currentModelId": "gpt-5.5[medium]",
         },
     )
+    agent_env = {
+        "BENCHFLOW_PROVIDER_MODEL": "runtime-openai-gpt-5.4-mini",
+        LITELLM_MODEL_ALIAS_ENV: "runtime-openai-gpt-5.4-mini",
+        LITELLM_MODEL_VIA_ENV: "1",
+        "CODEX_CONFIG": '{"model":"another-model"}',
+    }
     await _connect(
         mock_acp,
         agent="codex-acp",
         model="openai/gpt-5.4-mini",
         tmp_path=tmp_path,
-        agent_env={
-            "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
-            LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
-            LITELLM_MODEL_VIA_ENV: "1",
-        },
+        agent_env=agent_env,
     )
 
     mock_acp.set_model.assert_awaited_once_with("gpt-5.4-mini[medium]")
@@ -118,14 +120,70 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_with_model_option_uses_config_option(tmp_path):
-    """When a future codex-acp advertises a 'model' config option (as Claude
-    already does), capability-first routes through it — no registry change."""
+@pytest.mark.parametrize("reasoning_effort", [None, "high"])
+async def test_codex_litellm_config_owns_model_selection(tmp_path, reasoning_effort):
+    """Guards PR #1076: exact launch config owns Codex model and effort."""
+    alias = "runtime-openai-gpt-5.4"
+    mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
+    transport = await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="openai/gpt-5.4",
+        tmp_path=tmp_path,
+        reasoning_effort=reasoning_effort,
+        agent_env={
+            "BENCHFLOW_PROVIDER_MODEL": alias,
+            LITELLM_MODEL_ALIAS_ENV: alias,
+            LITELLM_MODEL_VIA_ENV: "1",
+            "CODEX_CONFIG": f'{{"model":"{alias}"}}',
+        },
+    )
+
+    launch_env = transport.call_args.kwargs["env"]
+    config = json.loads(launch_env["CODEX_CONFIG"])
+    assert config.get("model_reasoning_effort") == reasoning_effort
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_with_model_option_still_uses_set_model(tmp_path):
+    """codex-acp 1.6.0 and 1.13.1 advertise a 'model' config option whose values reject
+    the ``model[effort]`` ids its own session/set_model requires (-32602
+    Invalid params, verified live 2026-08-19), so codex is the documented
+    exception to capability-first and stays on session/set_model."""
     mock_acp = _make_mocks(config_options=[{"id": "model"}])
     await _connect(mock_acp, agent="codex-acp", model="gpt-5.5", tmp_path=tmp_path)
 
-    mock_acp.set_config_option.assert_awaited_once_with("model", "gpt-5.5")
-    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.5")
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_reasoning_effort_rides_the_model_id(tmp_path):
+    """codex-acp declares no ACP effort config option; a requested effort must
+    select the matching advertised ``model[effort]`` variant instead of
+    failing closed, and the effort step must treat it as satisfied."""
+    mock_acp = _make_mocks(
+        config_options=[{"id": "fast-mode"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.5[medium]"},
+                {"modelId": "gpt-5.5[xhigh]"},
+            ],
+            "currentModelId": "gpt-5.4-mini[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="gpt-5.5",
+        tmp_path=tmp_path,
+        reasoning_effort="xhigh",
+    )
+
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.5[xhigh]")
+    mock_acp.set_config_option.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -161,7 +219,9 @@ async def test_effort_without_effort_config_id_fails_closed(tmp_path):
     """reasoning_effort requested for an agent that declares no effort config
     option must fail closed rather than silently drop the effort."""
     mock_acp = _make_mocks(config_options=[])
-    with pytest.raises(RuntimeError, match="does not declare an ACP effort"):
+    with pytest.raises(
+        RuntimeError, match="does not declare or advertise an ACP effort"
+    ):
         await _connect(
             mock_acp,
             agent="test-agent",
@@ -174,40 +234,128 @@ async def test_effort_without_effort_config_id_fails_closed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_env_owned_model_skips_advertised_model_option(tmp_path):
-    """A manifest-shaped agent (supports_acp_set_model=False + a
-    BENCHFLOW_PROVIDER_MODEL env mapping) with the via-env flag set must get NO
-    ACP model configuration — several registry agents (qwen-code, kilo,
-    dimcode) advertise a ``model`` config option but validate values against
-    their own catalog and reject the gateway alias with -32603."""
-    from benchflow.agents.registry import AGENT_INSTALLERS, AGENT_LAUNCH, AGENTS
-    from benchflow.agents.registry import AgentConfig as _AC
+async def test_env_owned_model_skips_advertised_model_option(tmp_path, monkeypatch):
+    """Guards PR #1093: env-owned models bypass advertised ACP model options."""
+    from benchflow.agents.registry import AGENTS, AgentConfig
 
-    AGENTS["env-owned-probe"] = _AC(
-        name="env-owned-probe",
-        install_cmd="true",
-        launch_cmd="true",
-        supports_acp_set_model=False,
-        env_mapping={"BENCHFLOW_PROVIDER_MODEL": "OPENAI_MODEL"},
+    monkeypatch.setitem(
+        AGENTS,
+        "env-owned-probe",
+        AgentConfig(
+            name="env-owned-probe",
+            install_cmd="true",
+            launch_cmd="true",
+            supports_acp_set_model=False,
+            env_mapping={"BENCHFLOW_PROVIDER_MODEL": "OPENAI_MODEL"},
+        ),
     )
-    try:
-        opt = MagicMock()
-        opt.id = "model"
-        mock_acp = _make_mocks(config_options=[opt])
+    mock_acp = _make_mocks(config_options=[{"id": "model"}])
+    await _connect(
+        mock_acp,
+        agent="env-owned-probe",
+        model="deepseek/deepseek-v4-flash",
+        tmp_path=tmp_path,
+        agent_env={
+            LITELLM_MODEL_VIA_ENV: "1",
+            LITELLM_MODEL_ALIAS_ENV: "runtime-deepseek-deepseek-v4-flash",
+            "OPENAI_MODEL": "runtime-deepseek-deepseek-v4-flash",
+        },
+    )
+    mock_acp.set_config_option.assert_not_awaited()
+    mock_acp.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_model_the_session_does_not_offer_fails_once_with_its_list(
+    tmp_path,
+):
+    """A Codex model the adapter does not advertise is named, with the list.
+
+    Regression test: ``--agent codex-acp --model <name>`` for a
+    model absent from the session's ``availableModels`` sent the bare name to
+    ``session/set_model``, got an opaque ``ACP error -32603: Internal error``,
+    and was retried twice with new sandboxes before failing
+    with the same opaque message.
+    """
+    from benchflow.evaluation import RetryConfig
+
+    mock_acp = _make_mocks(
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.5[medium]"},
+                {"modelId": "gpt-5.4-mini[medium]"},
+            ],
+            "currentModelId": "gpt-5.5[medium]",
+        },
+    )
+    with pytest.raises(Exception, match=r"not-offered-model") as exc_info:
         await _connect(
-            mock_acp,
-            agent="env-owned-probe",
-            model="deepseek/deepseek-v4-flash",
-            tmp_path=tmp_path,
-            agent_env={
-                LITELLM_MODEL_VIA_ENV: "1",
-                LITELLM_MODEL_ALIAS_ENV: "benchflow-deepseek-deepseek-v4-flash",
-                "OPENAI_MODEL": "benchflow-deepseek-deepseek-v4-flash",
-            },
+            mock_acp, agent="codex-acp", model="not-offered-model", tmp_path=tmp_path
         )
-        mock_acp.set_config_option.assert_not_awaited()
+    message = str(exc_info.value)
+    assert "gpt-5.5" in message and "gpt-5.4-mini" in message
+    mock_acp.set_model.assert_not_awaited()
+    assert RetryConfig().should_retry(message) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", ["", "custom-effort"])
+async def test_effort_advertisement_and_registry_override(
+    tmp_path, monkeypatch, declared
+):
+    """Guards PR #1093 external effort discovery and registry precedence."""
+    from types import SimpleNamespace
+
+    from benchflow.acp import runtime
+
+    monkeypatch.setitem(
+        runtime.AGENTS,
+        "external-test",
+        SimpleNamespace(acp_effort_config_id=declared, acp_subagent_transcript=False),
+    )
+    mock_acp = _make_mocks(config_options=[{"id": "effort"}, {"id": "custom-effort"}])
+    await _connect(
+        mock_acp,
+        agent="external-test",
+        model=None,
+        tmp_path=tmp_path,
+        reasoning_effort="low",
+    )
+    mock_acp.set_config_option.assert_awaited_once_with(declared or "effort", "low")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supports", [True, False])
+async def test_own_route_label_is_sent_only_where_the_agent_takes_a_model(
+    tmp_path, monkeypatch, supports
+):
+    """The model label of an agent with model_route = "agent"
+    goes out with session/set_model when the agent supports it and never
+    otherwise; with no label nothing is sent and the agent uses its own."""
+    from benchflow.agents.registry import AGENTS, AgentConfig
+
+    monkeypatch.setitem(
+        AGENTS,
+        "en191-own-route",
+        AgentConfig(
+            name="en191-own-route",
+            install_cmd="true",
+            launch_cmd="en191-own-route --acp",
+            model_route="agent",
+            supports_acp_set_model=supports,
+        ),
+    )
+    mock_acp = _make_mocks()
+    await _connect(
+        mock_acp, agent="en191-own-route", model="deepseek-v4-flash", tmp_path=tmp_path
+    )
+    if supports:
+        mock_acp.set_model.assert_awaited_once_with("deepseek-v4-flash")
+    else:
         mock_acp.set_model.assert_not_awaited()
-    finally:
-        AGENTS.pop("env-owned-probe", None)
-        AGENT_INSTALLERS.pop("env-owned-probe", None)
-        AGENT_LAUNCH.pop("env-owned-probe", None)
+    mock_acp.set_config_option.assert_not_awaited()
+
+    mock_acp = _make_mocks()
+    await _connect(mock_acp, agent="en191-own-route", model=None, tmp_path=tmp_path)
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()

@@ -27,7 +27,7 @@ def _json_safe_float(value: float) -> float:
 
 def _event_to_dict(event: RewardEvent) -> dict[str, Any]:
     # space/granularity are the architecture's mandatory ``(space, granularity,
-    # value)`` reward-record tag (docs/architecture.md, "Every reward record is
+    # value)`` reward-record tag (docs/start/how-it-works.md, "Every reward record is
     # tagged"). Preserve them on the outbound ORS seam so memory/action/
     # reasoning process events stay distinguishable downstream.
     return {

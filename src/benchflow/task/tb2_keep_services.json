@@ -1,0 +1,57 @@
+{
+  "about": "BenchFlow's Terminal-Bench 2 list of services the agent leaves running (x-keep-services), the same list as the Rust bench's (benchflow-task services.rs). Terminal-Bench 2 at 69671fba: the tasks whose tests connect to a TCP port served by something the instruction tells the agent to set up and leave running, read from all 89 tasks' tests and instructions. A task gets these ports only when the content digest of its folder (the split layout's package digest: task.toml, instruction.md, README.md, trajectory.json and everything under environment/, tests/, solution/ and steps/, each file's path and SHA-256 hex) equals the digest here, so an edited task, or another task with the same name, gets none.",
+  "dataset": "terminal-bench-2",
+  "commit": "69671fba",
+  "tasks": [
+    {
+      "task": "hf-model-inference",
+      "digest": "sha256:c3bddc31278033ec47e718cb0174c9733236a57f468ccd542eb0f20409aededb",
+      "services": [{"port": 5000, "name": "sentiment API"}]
+    },
+    {
+      "task": "pypi-server",
+      "digest": "sha256:0644861427264cd213466f25e4f5be985e53124dff843f42a0ecc1261830f7a6",
+      "services": [{"port": 8080, "name": "package index"}]
+    },
+    {
+      "task": "kv-store-grpc",
+      "digest": "sha256:97b699f1e6c85c5644731cade9888f5fc5a164a7deb7799ab4bcfdb1d2914d49",
+      "services": [{"port": 5328, "name": "gRPC server"}]
+    },
+    {
+      "task": "nginx-request-logging",
+      "digest": "sha256:03151a6d3b73236d55736fc7c110feea03d716affd8ca344abf3355ff1ed7f61",
+      "services": [{"port": 8080, "name": "nginx"}]
+    },
+    {
+      "task": "git-multibranch",
+      "digest": "sha256:7af260b6f0f84d57d8160aecd020d7c7b655e1bb4786ab180f2bf99a5d90d1e3",
+      "services": [{"port": 22, "name": "ssh"}, {"port": 8443, "name": "https"}]
+    },
+    {
+      "task": "configure-git-webserver",
+      "digest": "sha256:367c8c1983aabd745ac1bfd54b72877dcc1d3136f0f81603c6a6e8713f2580ab",
+      "services": [{"port": 22, "name": "ssh"}, {"port": 8080, "name": "web server"}]
+    },
+    {
+      "task": "qemu-alpine-ssh",
+      "digest": "sha256:dd8c3eae85efa4d91e49947555f691b6ba0c19a3ce687efe6e8e57525ce9e431",
+      "services": [{"port": 2222, "name": "ssh into the VM"}]
+    },
+    {
+      "task": "qemu-startup",
+      "digest": "sha256:8ca9793ec30d3b26ac351f5b9ac0a2631003c365c60be9fcafc0451256a072a7",
+      "services": [{"port": 6665, "name": "VM console"}]
+    },
+    {
+      "task": "install-windows-3.11",
+      "digest": "sha256:8c94fd5fb4cc3c0a44ee7fea04ce2b295319a6c7ea9c071ec4fb08d456c19f7f",
+      "services": [{"port": 5901, "name": "VNC"}, {"port": 80, "name": "nginx"}]
+    },
+    {
+      "task": "mailman",
+      "digest": "sha256:217914a8f3ce49066e39dd2898e9f161e8136a198503f23bb4df7c5f388ec9de",
+      "services": [{"port": 25, "name": "smtp"}]
+    }
+  ]
+}

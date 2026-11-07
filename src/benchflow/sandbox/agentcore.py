@@ -1,0 +1,1350 @@
+"""Amazon Bedrock AgentCore Runtime sandbox backend.
+
+AgentCore runs each session in an isolated Firecracker-class microVM. Unlike
+Docker/Modal/Daytona it does not take an image per run: an image must first be
+pushed to ECR and registered as an *agent runtime* (a control-plane resource
+with its own ARN), after which sessions are invoked against that ARN.
+
+**A rollout is a session, not a runtime.** One registered runtime hosts many
+concurrent sessions, each an isolated microVM with its own filesystem, and the
+account quotas are lopsided in exactly that direction: 5000 concurrent
+sessions against 100 total runtimes, with ``CreateAgentRuntime`` limited to
+5/s. So each image is built once, and each compatible image-plus-runtime
+contract is registered once and shared by every matching trial and skill arm,
+while sessions are what scale out. That sharing is what makes this backend
+usable for a large parallel matrix; see
+``agentcore_provisioning`` for the single-flight machinery.
+
+Runtimes therefore outlive the rollout that first needed them, like a built
+Docker image, and are reclaimed by age via ``bench sandbox cleanup``.
+
+Two facts about the platform shape this module, both established by direct
+experiment against the live service rather than from the docs:
+
+1. **The container must answer the Runtime HTTP contract.** A microVM whose
+   image merely sleeps reaches ``READY`` but every
+   ``InvokeAgentRuntimeCommand`` against it fails with a 500 from the runtime.
+   Serving ``GET /ping`` on port 8080 fixes it. Task images know nothing about
+   AgentCore, so BenchFlow appends a tiny stdlib-only responder to the image
+   and makes it the entrypoint (see ``agentcore_image.PING_SHIM``).
+2. **Command execution and the interactive shell share one session.** A file
+   written by ``exec()`` is visible to the agent running under
+   ``open_shell()`` when both use the same ``runtimeSessionId``, which is what
+   lets the kernel stage files and the verifier read results around an agent
+   that lives on the WebSocket.
+
+Not supported, and gated rather than faked: container snapshots (no platform
+primitive — the ``BaseSandbox`` default raises), multi-service compose
+topologies (single container), and ``network_mode = "no-network"`` — the
+``networkConfiguration.networkMode`` enum offers only ``PUBLIC`` and ``VPC``,
+so isolation is declared unsupported in the provider registry instead of being
+silently ignored.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import binascii
+import functools
+import hashlib
+import io
+import json
+import os
+import re
+import secrets
+import shlex
+import tarfile
+import threading
+import time
+import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any
+
+from benchflow._paths import iter_safe_tree
+from benchflow._runtime_tree import KIT_BIN
+from benchflow.sandbox import _transport
+from benchflow.sandbox import agentcore_builder as builders
+from benchflow.sandbox import agentcore_provisioning as provisioning
+from benchflow.sandbox._base import (
+    SYSTEM_PATH,
+    SYSTEM_SHELL_UNSET_VARS,
+    BaseSandbox,
+    ExecResult,
+    ExecRoute,
+    _root_exec_command,
+    bash_argv_without_bash_env,
+    restore_bash_env,
+    restore_image_env,
+    system_shell_prefix,
+    system_shell_route,
+    with_system_path,
+)
+from benchflow.sandbox._compose import compose_definition_path
+from benchflow.sandbox._download import private_download
+from benchflow.sandbox._exec_output import exec_raw
+from benchflow.sandbox._transport import (
+    STAGE_ROOT,
+    fit,
+    open_staged,
+    reader_cat,
+    stage_proof,
+)
+from benchflow.sandbox.agentcore_image import AgentCoreImagePublisher
+from benchflow.sandbox.agentcore_sealed import SEAL_DIR, SealedChannel
+from benchflow.sandbox.protocol import SandboxStartupError
+from benchflow.task.config import SandboxConfig
+from benchflow.task.paths import RolloutPaths
+from benchflow.trust.state import TRUSTED_TRANSFER, admit
+
+if TYPE_CHECKING:
+    from benchflow.sandbox.process import LiveProcess
+
+_DEFAULT_REGION = "us-west-2"
+_DEFAULT_ECR_REPOSITORY = "benchflow-agentcore"
+_RUNTIME_READY_TIMEOUT_SEC = 600
+_RUNTIME_POLL_INTERVAL_SEC = 5
+# A cold image can take a while to pull into the microVM on the first command.
+_SESSION_WARMUP_ATTEMPTS = 8
+_SESSION_WARMUP_BACKOFF_SEC = 4.0
+_SESSION_WARMUP_MAX_BACKOFF_SEC = 30.0
+_LIFECYCLE_MIN_SEC = 60
+_LIFECYCLE_MAX_SEC = 28800
+# The service caps a single command payload at 64 KB. Base64 inflates by 4/3,
+# and the wrapper adds shell scaffolding, so keep a wide margin.
+_MAX_INLINE_UPLOAD_BYTES = 24 * 1024
+# The transport bound of one command here, counted as the service counts it
+# (the JSON-escaped string): below its 64 KB body cap, and above the sealed
+# channel's own upload commands (24 KiB pieces), which never stage.
+AGENTCORE_COMMAND_BOUND = 60_000
+
+
+def _json_size(command: str) -> int:
+    return len(json.dumps(command).encode())
+
+
+_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+_MAX_EXTRACT_BYTES = 64 * 1024 * 1024
+_MAX_EXTRACT_MEMBERS = 10_000
+_MAX_TAR_BYTES = _MAX_EXTRACT_BYTES + 16 * 1024 * 1024
+# ``PING_SHIM`` implements the plain HTTP contract (GET /ping,
+# POST /invocations), so register the runtime as HTTP rather than relying on
+# whatever the service currently defaults to.
+_PROTOCOL_CONFIGURATION = {"serverProtocol": "HTTP"}
+#: AgentCore offers PUBLIC or VPC only; see the registry's enforces_no_network.
+_NETWORK_MODES = ("PUBLIC", "VPC")
+#: ``VpcConfig`` caps both lists at 16 and pins the id shapes.
+_MAX_VPC_IDS = 16
+_SUBNET_ID = re.compile(r"^subnet-[0-9a-zA-Z]{8,17}$")
+_SECURITY_GROUP_ID = re.compile(r"^sg-[0-9a-zA-Z]{8,17}$")
+
+# Environment overrides.
+_ENV_REGION = "BENCHFLOW_AGENTCORE_REGION"
+_ENV_ROLE_ARN = "BENCHFLOW_AGENTCORE_ROLE_ARN"
+_ENV_ECR_REPOSITORY = "BENCHFLOW_AGENTCORE_ECR_REPOSITORY"
+_ENV_IDLE_TIMEOUT = "BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC"
+_ENV_MAX_LIFETIME = "BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC"
+_ENV_NETWORK_MODE = "BENCHFLOW_AGENTCORE_NETWORK_MODE"
+_ENV_SUBNETS = "BENCHFLOW_AGENTCORE_SUBNETS"
+_ENV_SECURITY_GROUPS = "BENCHFLOW_AGENTCORE_SECURITY_GROUPS"
+
+
+class AgentCoreSandbox(BaseSandbox):
+    """Sandbox backend for Bedrock AgentCore Runtime microVMs."""
+
+    # a root agent here runs under the provider's own metadata
+    # policy (the block's record says provider-managed).
+    cloud_metadata_provider_managed = True
+
+    agent_exec_shell = "/bin/bash"
+
+    def __init__(
+        self,
+        environment_dir: Path,
+        environment_name: str,
+        session_id: str,
+        rollout_paths: RolloutPaths | None,
+        task_env_config: SandboxConfig,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            environment_dir=environment_dir,
+            environment_name=environment_name,
+            session_id=session_id,
+            rollout_paths=rollout_paths,
+            task_env_config=task_env_config,
+            **kwargs,
+        )
+        self.region = os.environ.get(_ENV_REGION) or _DEFAULT_REGION
+        ecr_repository = os.environ.get(_ENV_ECR_REPOSITORY) or _DEFAULT_ECR_REPOSITORY
+        self._role_arn = os.environ.get(_ENV_ROLE_ARN)
+        self._agent_timeout_sec = 0
+        self.runtime_arn: str | None = None
+        self.runtime_session_id: str | None = None
+        self._runtime_id: str | None = None
+        self._clients: dict[str, Any] = {}
+        self._client_lock = threading.Lock()
+        self._sealed = SealedChannel(self._exec_raw, self.logger)
+        self._images = AgentCoreImagePublisher(
+            environment_dir=environment_dir,
+            environment_name=environment_name,
+            task_env_config=task_env_config,
+            region=self.region,
+            ecr_repository=ecr_repository,
+            client_factory=self._client,
+            logger=self.logger,
+        )
+
+    # ---------------------------------------------------------------- config
+
+    @property
+    def is_mounted(self) -> bool:
+        return False
+
+    @property
+    def sandbox_id(self) -> str | None:
+        return self.runtime_arn
+
+    @classmethod
+    def preflight(cls) -> None:
+        try:
+            import bedrock_agentcore  # noqa: F401
+            import boto3
+        except ImportError as exc:
+            raise SystemExit(
+                "AgentCore requires the 'sandbox-agentcore' extra. Install it "
+                "with `uv sync --extra sandbox-agentcore` or "
+                "`pip install 'benchflow[sandbox-agentcore]'`."
+            ) from exc
+
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        try:
+            boto3.Session().client(
+                "sts", region_name=os.environ.get(_ENV_REGION) or _DEFAULT_REGION
+            ).get_caller_identity()
+        except (BotoCoreError, ClientError) as exc:
+            raise SystemExit(
+                "AgentCore requires working AWS credentials. Configure them with "
+                "`aws configure`, an SSO profile, or AWS_* environment "
+                f"variables. Underlying error: {exc}"
+            ) from exc
+
+        # Docker is not required: without a local daemon, images are built on
+        # AWS CodeBuild instead. Only flag the case where neither route is
+        # usable, so the run fails now rather than at the first build.
+        if not builders.docker_available() and not os.environ.get(
+            builders.ENV_CODEBUILD_ROLE
+        ):
+            raise SystemExit(
+                "AgentCore needs a way to build task images. Either start a "
+                "local Docker daemon, or set "
+                f"{builders.ENV_CODEBUILD_ROLE} to a CodeBuild service role so "
+                "images can be built in AWS without Docker."
+            )
+
+    def _validate_definition(self) -> None:
+        dockerfile = self.environment_dir / "Dockerfile"
+        if not self.task_env_config.docker_image and (
+            not os.path.lexists(dockerfile)
+            or dockerfile.is_symlink()
+            or not dockerfile.is_file()
+        ):
+            raise ValueError(
+                f"{dockerfile} must be a regular, non-symlink Dockerfile "
+                "when no docker_image is specified."
+            )
+        for reserved in (
+            provisioning.GENERATED_DOCKERFILE,
+            provisioning.GENERATED_SHIM,
+        ):
+            if os.path.lexists(self.environment_dir / reserved):
+                # Staging owns these names and the canonical walk excludes
+                # them. Accepting a task file here would silently replace it
+                # with backend scaffolding and cache-hit as if it did not exist.
+                raise ValueError(
+                    f"{reserved} already exists in {self.environment_dir}. "
+                    "That path is reserved by the AgentCore backend. Rename "
+                    "the task file."
+                )
+        compose = compose_definition_path(self.environment_dir)
+        if compose is not None:
+            # AgentCore builds and runs exactly one container. Accepting a
+            # compose task would launch the agent's container without its side
+            # services, and the resulting failure would be scored against the
+            # agent rather than reported as an unsupported environment.
+            raise ValueError(
+                f"{compose.name} found in {self.environment_dir}: AgentCore is a "
+                "single-container backend and cannot start compose side "
+                "services. Run multi-service tasks on the docker or daytona "
+                "sandbox."
+            )
+
+    # ------------------------------------------------------------- lifecycle
+
+    def _client(self, service: str) -> Any:
+        """Return a cached boto3 client for *service*.
+
+        Building a client parses the service's JSON model and re-resolves
+        credentials, which is far too expensive to repeat per ``exec()`` — and
+        it floods the run log with botocore's credential-discovery line. The
+        cache is guarded because ``exec`` dispatches through
+        ``asyncio.to_thread``, so concurrent calls can arrive on different
+        threads. botocore clients are safe to share for API calls.
+        """
+        cached = self._clients.get(service)
+        if cached is not None:
+            return cached
+        with self._client_lock:
+            cached = self._clients.get(service)
+            if cached is None:
+                import boto3
+
+                cached = boto3.Session(region_name=self.region).client(service)
+                self._clients[service] = cached
+        return cached
+
+    async def start(self, force_build: bool) -> None:
+        from benchflow.trust import state as trust_state
+
+        trust_state.begin_fresh(self)
+        try:
+            image_uri = await self._images.publish(force_build=force_build)
+            self.runtime_arn = await self._ensure_runtime(image_uri)
+            # AgentCore requires a session id of at least 33 characters.
+            self.runtime_session_id = f"{uuid.uuid4()}-{uuid.uuid4().hex[:8]}"
+            # Each runtime session has an independent microVM/filesystem. A
+            # public key cached for the previous session has no matching
+            # private key here, so reset the channel before any warm-up exec
+            # can stage persistent environment values.
+            self._sealed = SealedChannel(self._exec_raw, self.logger)
+            # Provisioning is memoized, so only the first rollout of an image
+            # runs the creation path. Every rollout refreshes the lease (rate
+            # limited) or a long matrix outlives the lease it inherited.
+            await self._renew_lease()
+            await self._warm_session()
+            await self._deliver_bfx()
+            self.logger.info(
+                "AgentCore session ready (runtime=%s, session=%s)",
+                self.runtime_arn,
+                self.runtime_session_id,
+            )
+        except SandboxStartupError:
+            await self._safe_teardown()
+            raise
+        except Exception as exc:
+            await self._safe_teardown()
+            raise SandboxStartupError(
+                f"AgentCore sandbox failed to start: {exc}",
+                sandbox_id=self.runtime_arn,
+                build_timeout_sec=self.task_env_config.build_timeout_sec,
+            ) from exc
+
+    async def _deliver_bfx(self) -> None:
+        """bfx by upload (root's 0555 /.bfx) over the sealed channel, before
+        the agent's first byte (TRUSTED-RUNTIME.md §6)."""
+        from benchflow._bfx import delivery as bfx_delivery
+
+        async def run_root(command: str) -> tuple[int, str]:
+            result = await exec_raw(
+                self.exec, command, user="root", timeout_sec=60, system_shell=True
+            )
+            out = result.stdout or ""
+            if result.return_code != 0:
+                out += result.stderr or ""
+            return result.return_code, out
+
+        await bfx_delivery.deliver_upload(
+            self,
+            "agentcore",
+            functools.partial(
+                self.upload_file,
+                admission=admit(
+                    self, "main", TRUSTED_TRANSFER, reason="the pinned bfx helper"
+                ),
+            ),
+            run_root,
+        )
+
+    async def _ensure_runtime(self, image_uri: str) -> str:
+        """Resolve the shared runtime for an image and execution contract.
+
+        Equivalent rollouts share one runtime and open separate sessions. The
+        identity also binds lifecycle, role, network, and protocol: AgentCore
+        stores those on the runtime, so image-only naming made a later rollout
+        with a different timeout collide with an incompatible existing runtime.
+        """
+        # A recipe can resolve to different bytes after a forced rebuild.
+        # Bind the name itself to immutable bytes: another evaluator must
+        # never move the DEFAULT endpoint used by our cached runtime.
+        contract_digest = self._runtime_contract_digest(image_uri)
+        name = provisioning.runtime_name(self.environment_name, contract_digest)
+
+        async def _create() -> tuple[str, str]:
+            return await self._create_or_adopt_runtime(name, image_uri)
+
+        # Keyed on the image as well as the name: with only the name, a
+        # force-rebuild that pushes new bytes under the same context identity
+        # hits the memo and silently skips compare/update/verify.
+        arn, runtime_id = await provisioning.once(
+            f"runtime:{name}:{image_uri}", _create
+        )
+        self._runtime_id = runtime_id
+        return arn
+
+    def _runtime_contract_digest(self, image_digest: str) -> str:
+        """Hash every immutable field that determines a reusable runtime."""
+
+        contract = {
+            "imageDigest": image_digest,
+            "lifecycleConfiguration": self._lifecycle_configuration(),
+            "networkConfiguration": self._network_configuration(),
+            "protocolConfiguration": _PROTOCOL_CONFIGURATION,
+            "roleArn": self._require_role_arn(),
+        }
+        payload = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    async def _create_or_adopt_runtime(
+        self, name: str, image_uri: str
+    ) -> tuple[str, str]:
+        """Create the runtime, or adopt an equivalent one that already exists.
+
+        Attempting the create first and falling back on conflict keeps the
+        common path off ``ListAgentRuntimes``, whose 5/s quota would otherwise
+        throttle a large matrix run before it started.
+        """
+        from botocore.exceptions import ClientError
+
+        control = self._client("bedrock-agentcore-control")
+        try:
+            created = await asyncio.to_thread(
+                control.create_agent_runtime,
+                agentRuntimeName=name,
+                agentRuntimeArtifact={
+                    "containerConfiguration": {"containerUri": image_uri}
+                },
+                roleArn=self._require_role_arn(),
+                networkConfiguration=self._network_configuration(),
+                protocolConfiguration=_PROTOCOL_CONFIGURATION,
+                lifecycleConfiguration=self._lifecycle_configuration(),
+                description=f"BenchFlow sandbox for {self.environment_name}",
+                tags={
+                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
+                    "benchflow-task": self.environment_name[:120],
+                },
+            )
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code not in {"ConflictException", "ValidationException"}:
+                raise
+            existing = await asyncio.to_thread(
+                provisioning.find_runtime_by_name, control, name
+            )
+            if existing is None:
+                raise
+            arn, runtime_id, current_image = existing
+            await asyncio.to_thread(self._write_lease, control, arn)
+            provisioning.mark_lease_renewed(arn, time.monotonic())
+            if current_image != image_uri:
+                # Adopting a runtime bound to different bytes would silently run
+                # the wrong environment. The name encodes the build-context
+                # digest, but that is not the same as the pushed image: a
+                # repository change or a force rebuild can move what the name
+                # resolves to. Re-point the runtime and wait for it to settle.
+                self.logger.warning(
+                    "AgentCore runtime %s points at %s, not %s — updating",
+                    arn,
+                    current_image,
+                    image_uri,
+                )
+                await asyncio.to_thread(
+                    control.update_agent_runtime,
+                    agentRuntimeId=runtime_id,
+                    agentRuntimeArtifact={
+                        "containerConfiguration": {"containerUri": image_uri}
+                    },
+                    roleArn=self._require_role_arn(),
+                    networkConfiguration=self._network_configuration(),
+                    protocolConfiguration=_PROTOCOL_CONFIGURATION,
+                    # Omitting this resets idle/max-lifetime to the service
+                    # defaults, silently discarding the caller's configured
+                    # window and reclaiming long sessions early.
+                    lifecycleConfiguration=self._lifecycle_configuration(),
+                )
+            await asyncio.to_thread(self._wait_ready, control, runtime_id)
+            await asyncio.to_thread(
+                self._verify_adopted_runtime,
+                control,
+                runtime_id,
+                image_uri,
+                self._lifecycle_configuration(),
+                self._require_role_arn(),
+                self._network_configuration(),
+                _PROTOCOL_CONFIGURATION,
+            )
+            self.logger.info("Adopted existing AgentCore runtime %s", arn)
+            return arn, runtime_id
+
+        runtime_id = created["agentRuntimeId"]
+        await asyncio.to_thread(self._write_lease, control, created["agentRuntimeArn"])
+        provisioning.mark_lease_renewed(created["agentRuntimeArn"], time.monotonic())
+        await asyncio.to_thread(self._wait_ready, control, runtime_id)
+        self.logger.info(
+            "Registered AgentCore runtime %s for %s",
+            created["agentRuntimeArn"],
+            image_uri,
+        )
+        return created["agentRuntimeArn"], runtime_id
+
+    async def _renew_lease(self) -> None:
+        """Refresh this runtime's lease if it is due, before the session runs."""
+        if not self.runtime_arn:
+            return
+        lifecycle = self._lifecycle_configuration()
+        window = float(
+            max(lifecycle["maxLifetime"], lifecycle["idleRuntimeSessionTimeout"])
+        )
+        runtime_arn = self.runtime_arn
+
+        async def _write() -> None:
+            await asyncio.to_thread(
+                self._write_lease,
+                self._client("bedrock-agentcore-control"),
+                runtime_arn,
+            )
+
+        await provisioning.renew_lease(
+            runtime_arn,
+            window,
+            _write,
+            monotonic=time.monotonic,
+        )
+
+    def _write_lease(self, control: Any, runtime_arn: str) -> None:
+        """Mark the runtime as possibly-in-use until the session window closes.
+
+        There is no API that enumerates a runtime's active sessions
+        (``ListSessions`` is Memory-scoped), and session traffic does not move
+        the runtime's ``lastUpdatedAt`` — so control-plane age alone cannot
+        distinguish an idle runtime from one serving a matrix right now.
+
+        The lease is the explicit contract that closes that gap. It extends
+        beyond the longest session window by one renewal interval: a rollout
+        admitted just before the throttle boundary may still live for the full
+        configured window, so a lease of only ``window`` seconds would expire
+        while that session was still legal.
+        """
+        lifecycle = self._lifecycle_configuration()
+        window = max(lifecycle["maxLifetime"], lifecycle["idleRuntimeSessionTimeout"])
+        duration = window + provisioning.lease_renewal_interval(float(window))
+        until = datetime.now(UTC) + timedelta(seconds=duration)
+        try:
+            control.tag_resource(
+                resourceArn=runtime_arn,
+                tags={provisioning.LEASE_TAG: until.isoformat()},
+            )
+        except Exception as exc:
+            # Swallowing this would leave the runtime unleased while sessions
+            # run against it, which is precisely the state cleanup is allowed
+            # to delete. Fail the launch instead of starting work that another
+            # process may reap out from under us.
+            raise SandboxStartupError(
+                f"Could not write the AgentCore lease for {runtime_arn}: {exc}. "
+                "Refusing to start a session that cleanup could delete.",
+                sandbox_id=runtime_arn,
+            ) from exc
+
+    @staticmethod
+    def _verify_adopted_runtime(
+        control: Any,
+        runtime_id: str,
+        image_uri: str,
+        lifecycle: dict[str, int],
+        role_arn: str,
+        network: dict[str, Any],
+        protocol: dict[str, Any],
+    ) -> None:
+        """Fail closed unless the adopted runtime matches what this run needs.
+
+        Adoption is the one path where a runtime can predate this process, so
+        it is the one path where a mismatch could otherwise go unnoticed — an
+        agent run against the wrong image, or against a shorter session window
+        than the caller configured.
+        """
+        detail = control.get_agent_runtime(agentRuntimeId=runtime_id)
+        artifact = detail.get("agentRuntimeArtifact") or {}
+        bound = (artifact.get("containerConfiguration") or {}).get("containerUri")
+        if bound != image_uri:
+            raise SandboxStartupError(
+                f"AgentCore runtime {runtime_id} is bound to {bound!r} but this "
+                f"task needs {image_uri!r}. Refusing to run against the wrong "
+                "image.",
+                sandbox_id=runtime_id,
+            )
+        actual = detail.get("lifecycleConfiguration") or {}
+        drifted: dict[str, tuple[Any, Any]] = {
+            key: (actual.get(key), value)
+            for key, value in lifecycle.items()
+            if actual.get(key) != value
+        }
+        # Everything the create request pins must also hold on adoption. A
+        # runtime with the right image but the wrong execution role, network
+        # mode, or protocol is a different sandbox contract than this run asked
+        # for — wrong permissions, wrong egress, or a shell that never answers.
+        for label, expected, found in (
+            ("roleArn", role_arn, detail.get("roleArn")),
+            (
+                "protocolConfiguration",
+                dict(protocol),
+                dict(detail.get("protocolConfiguration") or {}),
+            ),
+        ):
+            if found != expected:
+                drifted[label] = (found, expected)
+
+        def _placement(config: dict[str, Any]) -> tuple[Any, ...]:
+            """Only the placement BenchFlow itself pins.
+
+            ``VpcConfig`` also carries service-managed members that cannot be
+            sent on create, and nothing promises the ids come back in the order
+            they were given — comparing the whole document would refuse every
+            adoption of a healthy VPC runtime.
+            """
+            vpc = config.get("networkModeConfig") or {}
+            return (
+                config.get("networkMode"),
+                tuple(sorted(vpc.get("subnets") or ())),
+                tuple(sorted(vpc.get("securityGroups") or ())),
+            )
+
+        found_network = dict(detail.get("networkConfiguration") or {})
+        if _placement(found_network) != _placement(dict(network)):
+            drifted["networkConfiguration"] = (found_network, dict(network))
+        if drifted:
+            raise SandboxStartupError(
+                f"AgentCore runtime {runtime_id} does not match this run's "
+                f"configuration (found, expected): {drifted}. Refusing to adopt "
+                "a runtime with a different contract.",
+                sandbox_id=runtime_id,
+            )
+
+    def _lifecycle_configuration(self) -> dict[str, int]:
+        """Session idle/lifetime caps.
+
+        The service defaults (900 s idle, 8 h lifetime) are short enough that a
+        long agent turn can have its microVM reclaimed mid-run, which surfaces
+        as a dead transport rather than as an infrastructure error. Default the
+        idle window to the task's own agent timeout when that is larger.
+        """
+
+        def _configured(name: str, default: int) -> int:
+            raw = os.environ.get(name)
+            if raw in {None, ""}:
+                value = default
+            else:
+                try:
+                    value = int(raw)
+                except ValueError as exc:
+                    raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+            if not _LIFECYCLE_MIN_SEC <= value <= _LIFECYCLE_MAX_SEC:
+                raise ValueError(
+                    f"{name} must be between {_LIFECYCLE_MIN_SEC} and "
+                    f"{_LIFECYCLE_MAX_SEC} seconds for AgentCore, got {value}."
+                )
+            return value
+
+        requested_idle = max(900, self._agent_timeout_sec)
+        idle = _configured(_ENV_IDLE_TIMEOUT, requested_idle)
+        lifetime = _configured(_ENV_MAX_LIFETIME, 28800)
+        return {
+            "idleRuntimeSessionTimeout": idle,
+            "maxLifetime": lifetime,
+        }
+
+    def _network_configuration(self) -> dict[str, Any]:
+        """Where the runtime's microVMs are placed on the network.
+
+        ``PUBLIC`` stays the default so existing deployments do not move, but
+        the ``VPC`` opt-in fails loudly rather than quietly: a half-configured
+        runtime that silently stays public is exactly the exposure the operator
+        set out to remove, and it is invisible once the runtime is READY.
+        """
+
+        def _ids(name: str, pattern: re.Pattern[str], shape: str) -> list[str]:
+            raw = os.environ.get(name) or ""
+            # Canonical order and no duplicates: this list feeds the runtime
+            # contract digest, so "a,b" and "b,a" must not register two
+            # runtimes for the same infrastructure.
+            values: list[str] = sorted(
+                {item.strip() for item in raw.split(",") if item.strip()}
+            )
+            for item in values:
+                if not pattern.match(item):
+                    raise ValueError(
+                        f"{name} must be a comma-separated list of {shape} ids, "
+                        f"got {item!r}."
+                    )
+            if len(values) > _MAX_VPC_IDS:
+                raise ValueError(
+                    f"{name} accepts at most {_MAX_VPC_IDS} ids, got {len(values)}."
+                )
+            return values
+
+        subnets = _ids(_ENV_SUBNETS, _SUBNET_ID, "subnet-*")
+        security_groups = _ids(_ENV_SECURITY_GROUPS, _SECURITY_GROUP_ID, "sg-*")
+        mode = (os.environ.get(_ENV_NETWORK_MODE) or "PUBLIC").strip().upper()
+        if mode not in _NETWORK_MODES:
+            raise ValueError(
+                f"{_ENV_NETWORK_MODE} must be one of {', '.join(_NETWORK_MODES)}, "
+                f"got {mode!r}."
+            )
+        if mode == "PUBLIC":
+            if subnets or security_groups:
+                raise ValueError(
+                    f"{_ENV_SUBNETS}/{_ENV_SECURITY_GROUPS} are set but "
+                    f"{_ENV_NETWORK_MODE} is not VPC, so the runtime would still "
+                    f"be created on the public internet. Set "
+                    f"{_ENV_NETWORK_MODE}=VPC to place it in the VPC."
+                )
+            return {"networkMode": "PUBLIC"}
+        missing = [
+            name
+            for name, values in (
+                (_ENV_SUBNETS, subnets),
+                (_ENV_SECURITY_GROUPS, security_groups),
+            )
+            if not values
+        ]
+        if missing:
+            raise ValueError(
+                f"{_ENV_NETWORK_MODE}=VPC requires {' and '.join(missing)}."
+            )
+        return {
+            "networkMode": "VPC",
+            "networkModeConfig": {
+                "subnets": subnets,
+                "securityGroups": security_groups,
+            },
+        }
+
+    def configure_agent_timeout(self, timeout_sec: int) -> None:
+        """Keep the remote session alive for the effective rollout budget."""
+        self._agent_timeout_sec = max(0, int(timeout_sec))
+
+    def _require_role_arn(self) -> str:
+        if self._role_arn:
+            return self._role_arn
+        raise RuntimeError(
+            "AgentCore needs an execution role for the runtime. Set "
+            f"{_ENV_ROLE_ARN} to a role that bedrock-agentcore.amazonaws.com "
+            "can assume and that can pull from ECR and write CloudWatch logs."
+        )
+
+    @staticmethod
+    def _wait_ready(control: Any, runtime_id: str) -> None:
+        deadline = time.monotonic() + _RUNTIME_READY_TIMEOUT_SEC
+        status = "CREATING"
+        while time.monotonic() < deadline:
+            status = control.get_agent_runtime(agentRuntimeId=runtime_id)["status"]
+            if status == "READY":
+                return
+            if status in {"CREATE_FAILED", "UPDATE_FAILED"}:
+                raise SandboxStartupError(
+                    f"AgentCore runtime entered {status}",
+                    sandbox_id=runtime_id,
+                    sandbox_state=status,
+                )
+            time.sleep(_RUNTIME_POLL_INTERVAL_SEC)
+        raise SandboxStartupError(
+            f"AgentCore runtime not READY within {_RUNTIME_READY_TIMEOUT_SEC}s "
+            f"(last status {status})",
+            sandbox_id=runtime_id,
+            sandbox_state=status,
+        )
+
+    async def _warm_session(self) -> None:
+        """Boot the microVM and block until the command plane answers.
+
+        ``READY`` describes the *runtime definition*, not a running session.
+        The first command on a new session is what actually pulls the image
+        and starts the container, and until the container is serving on 8080
+        the service answers with a 500 ``RuntimeClientError``. Observed
+        directly: a cold, never-pulled image 500s on the first command and
+        succeeds moments later, while an image already warm in the region
+        succeeds immediately.
+
+        Retrying here is what keeps that cold-start race from surfacing as a
+        task failure — the alternative is a rollout that scores 0 because the
+        sandbox was still booting.
+        """
+        delay = _SESSION_WARMUP_BACKOFF_SEC
+        last: Exception | None = None
+        for attempt in range(1, _SESSION_WARMUP_ATTEMPTS + 1):
+            try:
+                result = await exec_raw(self.exec, "true", timeout_sec=60)
+                if result.return_code == 0:
+                    if attempt > 1:
+                        self.logger.info(
+                            "AgentCore session warm after %d attempts", attempt
+                        )
+                    return
+                last = RuntimeError(
+                    (result.stderr or result.stdout or "no output").strip()[:500]
+                )
+            except SandboxStartupError:
+                # Throttling/quota — genuinely infrastructure, and retrying
+                # here would just burn the caller's time.
+                raise
+            except Exception as exc:
+                last = exc
+            if attempt < _SESSION_WARMUP_ATTEMPTS:
+                self.logger.debug(
+                    "AgentCore session not warm yet (attempt %d/%d): %s",
+                    attempt,
+                    _SESSION_WARMUP_ATTEMPTS,
+                    last,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _SESSION_WARMUP_MAX_BACKOFF_SEC)
+
+        raise SandboxStartupError(
+            f"AgentCore session did not accept commands after "
+            f"{_SESSION_WARMUP_ATTEMPTS} attempts: {last}",
+            sandbox_id=self.runtime_arn,
+        )
+
+    async def stop(self, delete: bool) -> None:
+        """End this rollout's session. The runtime is shared and outlives it.
+
+        A rollout owns a *session*, not a runtime: concurrent trials of the
+        same task run as separate sessions against one registered runtime, so
+        deleting the runtime here would tear down sandboxes still in use — and
+        would also burn the 5/s ``DeleteAgentRuntime``/``CreateAgentRuntime``
+        quotas re-registering it for the next rollout.
+
+        Runtimes are therefore left in place, like a built Docker image, and
+        reclaimed by age with ``bench sandbox cleanup --sandbox agentcore``.
+        """
+        await self._safe_teardown()
+
+    async def _safe_teardown(self) -> None:
+        if self.runtime_arn and self.runtime_session_id:
+            try:
+                await asyncio.to_thread(
+                    self._client("bedrock-agentcore").stop_runtime_session,
+                    runtimeSessionId=self.runtime_session_id,
+                    agentRuntimeArn=self.runtime_arn,
+                    qualifier="DEFAULT",
+                )
+            except Exception as exc:
+                self.logger.warning("Failed to stop AgentCore session: %s", exc)
+            self.runtime_session_id = None
+
+    # ------------------------------------------------------------------ exec
+
+    async def live_process(self, *, agent: str | None = None) -> LiveProcess:
+        from benchflow.sandbox.process import AgentCoreProcess
+
+        return AgentCoreProcess.from_sandbox_env(self)
+
+    def _reject_non_main(self, service: str) -> None:
+        if service != "main":
+            raise ValueError(
+                f"AgentCore is a single-container backend and cannot target "
+                f"service {service!r}. Multi-container (vulhub-style) tasks "
+                "require the Docker sandbox (#248)."
+            )
+
+    @property
+    def supports_system_shell(self) -> bool:
+        return True
+
+    @property
+    def supports_runtime_kit(self) -> bool:
+        return True
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+        service: str = "main",
+        system_shell: bool = False,
+    ) -> ExecResult:
+        """Run ``command`` in the session.
+
+        ``system_shell``: the payload's first shell unsets the loader and
+        start-up variables and pins the system PATH before it starts
+        anything; the runtime starts that first ``/bin/sh`` itself, with the
+        session's environment (as on native Daytona). A K1 agent command
+        (``AgentExecCommand``) is built on the same route and then started
+        inside K1's barrier.
+        """
+        from benchflow.sandbox.agent_exec import AgentExecCommand
+
+        agent_bootstrap = isinstance(command, AgentExecCommand)
+        self._reject_non_main(service)
+        if not self.runtime_arn or not self.runtime_session_id:
+            raise RuntimeError("AgentCore sandbox not started. Call start() first.")
+
+        resolved_user = self._resolve_user(user)
+        # C8: plumbing (route.pin) never gets the loader and start-up values
+        # back; every other command gets the image's (kept aside in the
+        # image's ENV, AgentCoreImagePublisher) after its staged env.
+        route = await self.exec_route(user, system_shell=system_shell)
+        merged_env = self._merge_env(
+            env,
+            user,
+            plumbing=route.pin is not None,
+            explicit_root=route.explicit_root,
+        )
+        if agent_bootstrap and merged_env:
+            from benchflow.sandbox.native_agent_env import uploaded_agent_env
+
+            root_route = await system_shell_route(self)
+
+            async def root_exec(body: str) -> ExecResult:
+                return await self._dispatch_command(
+                    body,
+                    timeout_sec=30,
+                    resolved_user="root",
+                    route=root_route,
+                    agent_bootstrap=True,
+                )
+
+            async with uploaded_agent_env(
+                command,
+                merged_env,
+                root_exec=root_exec,
+                upload=self._exec_env_upload(),
+            ) as (_restored, opening):
+                from benchflow.sandbox.native_agent_env import restore_command
+
+                def restored_for(agent_command: str) -> str:
+                    restored = restore_command(agent_command)
+                    if cwd:
+                        restored = f"cd {shlex.quote(cwd)} && {restored}"
+                    return restored
+
+                return await self._dispatch_command(
+                    command,
+                    timeout_sec=timeout_sec,
+                    resolved_user=resolved_user,
+                    route=route,
+                    agent_bootstrap=True,
+                    agent_env_open=opening,
+                    agent_wrap=restored_for,
+                )
+        wrapped = (
+            command
+            if route.pin is not None
+            else restore_image_env(
+                merged_env or (),
+                tools=route.tools if route.kit and route.root else None,
+            )
+            + command
+        )
+        if merged_env:
+            # NEVER use the shared env-file command wrapper here: it embeds
+            # the whole environment as reversible base64 in the command, and
+            # this platform records command bodies permanently in the
+            # runtime's CloudWatch log group. Stage the environment through
+            # the sealed (ciphertext-only) channel and source it instead, so
+            # the logged text holds only a file path.
+            env_path = await self._sealed.stage_env(
+                merged_env,
+                owner=str(resolved_user) if resolved_user is not None else None,
+            )
+            quoted_env = shlex.quote(env_path)
+            if cwd:
+                # Not ``&&``: the restore before the command is several
+                # statements, and a failed cd must stop all of them.
+                wrapped = f"cd {shlex.quote(cwd)} || exit 1; {wrapped}"
+            # Cleanup must not depend on anything that can be skipped:
+            # - the trap is installed FIRST, before any `cd` (a failed cd
+            #   previously prevented trap installation and leaked the file);
+            # - the file is ALSO removed inline right after sourcing, before
+            #   the user command runs, because a command that `exec`s
+            #   replaces the shell and EXIT traps never fire;
+            # - a failed `.` must abort (POSIX makes dot-failures fatal in
+            #   non-interactive shells; `|| exit 97` covers shells where it
+            #   is not) rather than silently running with an empty
+            #   environment — the trap still fires on that exit.
+            # Both removals start with no loader or start-up value (C8): the
+            # sourced file holds the task's on its route, and the trap runs
+            # after the command. Only builtins run between the source and
+            # the command.
+            unset_loader = f"unset {' '.join(SYSTEM_SHELL_UNSET_VARS)}"
+            rm = f"{KIT_BIN}/rm" if route.kit else "/bin/rm"
+            wrapped = (
+                f"trap '{unset_loader}; {rm} -f {quoted_env}' EXIT; "
+                f"set -a; . {quoted_env} || exit 97; set +a; "
+                f"({unset_loader}; {rm} -f {quoted_env}); {wrapped}"
+            )
+        elif cwd:
+            wrapped = f"cd {shlex.quote(cwd)} || exit 1; {wrapped}"
+
+        return await self._dispatch_command(
+            wrapped,
+            timeout_sec=timeout_sec,
+            resolved_user=resolved_user,
+            route=route,
+            agent_bootstrap=agent_bootstrap,
+        )
+
+    async def _dispatch_command(
+        self,
+        command: str,
+        *,
+        timeout_sec: int | None,
+        resolved_user: str | int | None,
+        route: ExecRoute,
+        agent_bootstrap: bool = False,
+        agent_env_open: str = "",
+        agent_wrap: Any = None,
+    ) -> ExecResult:
+        """Send one environment-free shell command to the active session.
+
+        *route* (C8, no default) is :meth:`exec_route`'s. A plumbing route
+        pins its PATH in the runtime's first ``/bin/sh``, builtins only,
+        before it starts the command's shell: ``/bin/sh`` for the system
+        shell, otherwise ``/bin/bash`` as every AgentCore command had
+        before (the sealed channel's ``set -o pipefail``; a Debian image's
+        ``/bin/sh`` is dash). ``agent_bootstrap``: the routed payload then
+        starts inside K1's barrier, its uploaded env opened there
+        (``agent_env_open``).
+        """
+        from benchflow.sandbox.agent_exec import native_agent_argv
+
+        def payload_for(command: str) -> str:
+            if agent_wrap is not None:
+                command = agent_wrap(command)
+            pin = route.pin
+            # On the protected kit (C8) every program named here is the kit's.
+            kit = route.kit
+            kit_bash = route.bash if kit and route.bash.endswith("/bash") else None
+            bash = kit_bash or "/bin/bash"
+            shell = (
+                route.shell if route.system_shell or (kit and not kit_bash) else bash
+            )
+            su = f"{KIT_BIN}/su" if kit else "/bin/su"
+            # The command's own shell gets the image's BASH_ENV back first, before
+            # it sources a staged env file (whose BASH_ENV then wins); neither
+            # wrapping bash runs the image's file (bash_argv_without_bash_env).
+            # Plumbing never gets it back.
+            if not pin:
+                command = restore_bash_env(route) + command
+            if resolved_user is not None:
+                from benchflow.sandbox._su import su_command
+
+                # K1's agent bootstrap starts POSIX sh with absolute tools (a
+                # minimal image may have no bash); the route's su either way.
+                command = su_command(
+                    command,
+                    resolved_user,
+                    shell="/bin/sh" if agent_bootstrap else shell,
+                    su=su,
+                    trusted_tools=agent_bootstrap,
+                )
+
+            # K1's agent bootstrap starts POSIX sh only, as on integ (PT-INTEG-B-5):
+            # the route's own sh (the kit's on the kit, else
+            # /bin/sh) where it pins, else the command straight inside the barrier.
+            if pin:
+                inner = with_system_path(command, pin)
+                if agent_bootstrap:
+                    started = f"{route.shell} -c {shlex.quote(inner)}"
+                elif shell != bash:
+                    started = f"{shell} -c {shlex.quote(inner)}"
+                else:
+                    started = shlex.join([bash, "--noprofile", "--norc", "-c", inner])
+                bootstrap = f"{system_shell_prefix(pin)}; {started}"
+                payload = f"{route.shell} -c {shlex.quote(bootstrap)}"
+            else:
+                command = _root_exec_command(
+                    command, route.explicit_root, route.root_path
+                )
+                payload = (
+                    command
+                    if agent_bootstrap
+                    else shlex.join(bash_argv_without_bash_env(command, bash))
+                )
+            if agent_bootstrap:
+                # K1's barrier around the routed payload.
+                payload = shlex.join(native_agent_argv(agent_env_open + payload))
+            return payload
+
+        # The transport contract (benchflow.sandbox._transport): a payload
+        # over this service's bound is staged by root over the sealed
+        # channel and becomes the command's stdin, and the reader runs it. A
+        # K1 agent command's own command is the data, its barrier rebuilt
+        # around the reader.
+        agent = command if hasattr(command, "agent_target") else None
+        fitted = fit(
+            payload_for,
+            command,
+            cat=reader_cat(route),
+            bound=AGENTCORE_COMMAND_BOUND,
+            agent=agent,
+            measure=_json_size,
+        )
+        payload = fitted.sent
+        # The service enforces 1..3600 for the command timeout.
+        timeout = max(1, min(int(timeout_sec or 300), 3600))
+        if fitted.payload is None:
+            _transport.sent(
+                "AgentCore", payload, AGENTCORE_COMMAND_BOUND, measure=_json_size
+            )
+            return await asyncio.to_thread(self._invoke_command, payload, timeout)
+        # Root's staging folder: the kit's RUN_DIR (root's, mode 700, made
+        # before the agent's first turn) once the sandbox has one; before
+        # that the sealed channel's own root-only folder (no agent has run).
+        root = STAGE_ROOT if getattr(self, "runtime_kit", None) else SEAL_DIR
+        folder = f"{root}/stage-{secrets.token_hex(16)}"
+        path = f"{folder}/payload"
+        await self._sealed.upload(fitted.payload, target=path, mode="600")
+        rm = f"{KIT_BIN}/rm" if getattr(self, "runtime_kit", None) else "/bin/rm"
+        # Opened by root's first shell before anything runs, and only once
+        # that shell has proved the folder and the file root's alone along
+        # their whole route (DX-1 review A M1); the folder goes before the
+        # command does (the open file stays readable).
+        root_route = await system_shell_route(self)
+        proof = stage_proof(
+            [path],
+            shell=root_route.shell,
+            path=root_route.pin or SYSTEM_PATH,
+            root=root,
+        )
+        payload = open_staged(
+            payload, {0: path}, proof, first=f"{rm} -rf -- {shlex.quote(folder)}\n"
+        )
+        _transport.sent(
+            "AgentCore", payload, AGENTCORE_COMMAND_BOUND, measure=_json_size
+        )
+        return await asyncio.to_thread(self._invoke_command, payload, timeout)
+
+    def _invoke_command(self, payload: str, timeout: int) -> ExecResult:
+        client = self._client("bedrock-agentcore")
+        response = client.invoke_agent_runtime_command(
+            agentRuntimeArn=self.runtime_arn,
+            runtimeSessionId=self.runtime_session_id,
+            qualifier="DEFAULT",
+            contentType="application/json",
+            accept="application/vnd.amazon.eventstream",
+            body={"command": payload, "timeout": timeout},
+        )
+
+        stdout: list[str] = []
+        stderr: list[str] = []
+        exit_code: int | None = None
+        status: str | None = None
+
+        for event in response.get("stream", []):
+            chunk = event.get("chunk")
+            if chunk is None:
+                self._raise_for_stream_error(event)
+                continue
+            delta = chunk.get("contentDelta")
+            if delta:
+                stdout.append(delta.get("stdout") or "")
+                stderr.append(delta.get("stderr") or "")
+            stop = chunk.get("contentStop")
+            if stop:
+                exit_code = stop.get("exitCode")
+                status = stop.get("status")
+
+        if status == "TIMED_OUT":
+            raise TimeoutError(
+                f"AgentCore command timed out after {timeout}s: {payload[:200]}"
+            )
+        return ExecResult(
+            stdout="".join(stdout),
+            stderr="".join(stderr),
+            # A stream that stops without contentStop has no exit code to
+            # report; surfacing 1 keeps callers' `return_code != 0` checks
+            # honest rather than inventing a success.
+            return_code=exit_code if exit_code is not None else 1,
+        )
+
+    @staticmethod
+    def _raise_for_stream_error(event: dict[str, Any]) -> None:
+        """Translate a typed stream error into the right BenchFlow failure.
+
+        Throttling and quota exhaustion are infrastructure, not agent
+        behaviour; raising ``SandboxStartupError`` keeps them attributable in
+        ``result.json`` instead of being recorded as a failed command.
+        """
+        infra = {
+            "throttlingException",
+            "serviceQuotaExceededException",
+            "internalServerException",
+        }
+        for key, value in event.items():
+            message = (
+                (value or {}).get("message", "") if isinstance(value, dict) else ""
+            )
+            if key in infra:
+                raise SandboxStartupError(
+                    f"AgentCore {key}: {message}", sandbox_state=key
+                )
+            if key.endswith("Exception") or key == "runtimeClientError":
+                raise RuntimeError(f"AgentCore {key}: {message}")
+
+    # -------------------------------------------------------- file transfer
+
+    async def _exec_raw(
+        self,
+        command: str,
+        *,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ) -> ExecResult:
+        """Run *command* with no environment injection at all.
+
+        The sealed transport and the env-staging path must use this: routing
+        them through :meth:`exec` would re-enter environment wrapping (and,
+        for env staging, recurse). Nothing secret may appear in *command* —
+        every caller passes ciphertext or plain paths.
+        """
+
+        return await self._dispatch_command(
+            command,
+            timeout_sec=timeout_sec,
+            resolved_user=self._resolve_user(user),
+            # The sealed channel's openssl, rm and chmod are root's
+            # plumbing, even for a task command's env file.
+            route=await self.exec_route(user, plumbing=True),
+        )
+
+    async def write_text_file(
+        self, remote_path: str, body: str, *, mode: str = "600"
+    ) -> bool:
+        """Write *body* to *remote_path* through the sealed channel.
+
+        Used by the ACP transport to stage the agent env file without typing
+        secrets into the PTY, where they would be echoed into the agent log.
+        """
+        try:
+            await self._sealed.upload(
+                body.encode(), target=remote_path, mode=mode, timeout_sec=120
+            )
+        except RuntimeError:
+            return False
+        return True
+
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None:
+        source = Path(source_path)
+        await self._sealed.upload(
+            source.read_bytes(), target=target_path, mode=mode, timeout_sec=300
+        )
+
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None:
+        self._reject_non_main(service)
+        source = Path(source_dir)
+        if not source.is_dir():
+            raise FileNotFoundError(f"Source directory {source} does not exist")
+        # Skip symlinks (#411): a task-controlled link must not exfiltrate host
+        # files into the remote microVM.
+        members = {
+            path: PurePosixPath(target_dir) / path.relative_to(source).as_posix()
+            for path in iter_safe_tree(source, context=f"agentcore upload_dir {source}")
+        }
+        await exec_raw(self.exec, f"mkdir -p {shlex.quote(target_dir)}", user="root")
+        if members:
+            await self._upload_via_tar(members)
+
+    async def _upload_via_tar(self, members: dict[Path, PurePosixPath]) -> None:
+        """Ship files as one sealed tar stream, chunked under the command cap.
+
+        One archive avoids a round trip per file, while the chunk loop keeps
+        every command well inside the service's 64 KB payload limit.
+        """
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            for local, remote in members.items():
+                tar.add(local, arcname=str(remote).lstrip("/"))
+        await self._sealed.upload(
+            buffer.getvalue(), target=None, extract_tar=True, timeout_sec=600
+        )
+
+    @private_download(directory=False)
+    async def download_file(self, source_path: str, target_path: Path | str) -> None:
+        # NOT sealed: the file body returns as base64 through command
+        # OUTPUT, which the platform records like command text. Downloads
+        # must therefore only carry non-secret run artifacts (verifier
+        # logs, review results) — never credentials.
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = await exec_raw(
+            self.exec, f"base64 {shlex.quote(source_path)}", timeout_sec=300
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"AgentCore download_file failed: {(result.stderr or '')[:500]}"
+            )
+        target.write_bytes(
+            self._decode_download_payload(result.stdout or "", kind="file")
+        )
+
+    @staticmethod
+    def _decode_download_payload(raw: str, *, kind: str) -> bytes:
+        """Decode one bounded, validated base64 command response."""
+        compact = "".join(raw.split())
+        max_encoded = 4 * ((_MAX_DOWNLOAD_BYTES + 2) // 3)
+        if len(compact) > max_encoded:
+            raise RuntimeError(
+                f"AgentCore download_{kind} encoded payload exceeds the "
+                f"{_MAX_DOWNLOAD_BYTES} byte cap; narrow the {kind}."
+            )
+        try:
+            blob = base64.b64decode(compact, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError(
+                f"AgentCore download_{kind} returned invalid base64"
+            ) from exc
+        if len(blob) > _MAX_DOWNLOAD_BYTES:
+            raise RuntimeError(
+                f"AgentCore download_{kind} payload {len(blob)} bytes exceeds "
+                f"the {_MAX_DOWNLOAD_BYTES} byte cap; narrow the {kind}."
+            )
+        return blob
+
+    @private_download(directory=True)
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        self._reject_non_main(service)
+        target = Path(target_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        result = await exec_raw(
+            self.exec,
+            f"tar -czf - -C {shlex.quote(source_dir)} . | base64 -w0",
+            timeout_sec=600,
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"AgentCore download_dir failed: {(result.stderr or '')[:500]}"
+            )
+        raw = (result.stdout or "").strip()
+        if not raw:
+            return
+        blob = self._decode_download_payload(raw, kind="directory")
+        from benchflow.sandbox._bounded_tar import extract_download
+
+        await asyncio.to_thread(
+            extract_download,
+            blob,
+            target,
+            tar_bytes=_MAX_TAR_BYTES,
+            content_bytes=_MAX_EXTRACT_BYTES,
+            members=_MAX_EXTRACT_MEMBERS,
+        )

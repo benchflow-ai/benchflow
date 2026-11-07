@@ -5,11 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
-SOURCE_REQUIRED = {
+GITHUB_SOURCE_REQUIRED = {
     "type",
     "repo",
     "requested_ref",
     "resolved_sha",
+    "path",
+    "dirty",
+    "file_hashes",
+}
+HF_DATASET_SOURCE_REQUIRED = {
+    "type",
+    "repo",
+    "repo_type",
+    "requested_revision",
+    "resolved_revision",
     "path",
     "dirty",
     "file_hashes",
@@ -46,17 +56,29 @@ def source_issues(
 
     source_dict = cast(dict[str, Any], source)
     issues: list[str] = []
-    missing = SOURCE_REQUIRED - set(source_dict.keys())
+    source_type = source_dict.get("type")
+    required = (
+        HF_DATASET_SOURCE_REQUIRED
+        if source_type == "huggingface_dataset"
+        else GITHUB_SOURCE_REQUIRED
+    )
+    missing = required - set(source_dict.keys())
     if missing:
         issues.append(f"{label}: source missing {missing}")
         return issues
-    if source_dict.get("type") != "github":
-        issues.append(f"{label}: source.type must be 'github'")
+    if source_type not in {"github", "huggingface_dataset"}:
+        issues.append(f"{label}: source.type must be 'github' or 'huggingface_dataset'")
     repo = source_dict.get("repo")
     if not isinstance(repo, str) or "/" not in repo:
         issues.append(f"{label}: source.repo must be org/repo")
-    if not is_git_hash(source_dict.get("resolved_sha")):
+    if source_type == "github" and not is_git_hash(source_dict.get("resolved_sha")):
         issues.append(f"{label}: source.resolved_sha must be a git hash")
+    if source_type == "huggingface_dataset":
+        if source_dict.get("repo_type") != "dataset":
+            issues.append(f"{label}: source.repo_type must be 'dataset'")
+        resolved_revision = source_dict.get("resolved_revision")
+        if not isinstance(resolved_revision, str) or not resolved_revision:
+            issues.append(f"{label}: source.resolved_revision must be a string")
     dirty = source_dict.get("dirty")
     if not isinstance(dirty, bool):
         issues.append(f"{label}: source.dirty must be a boolean")
@@ -93,7 +115,13 @@ def source_matches_parent(
     """Return True when a task source is covered by a parent source."""
     if not isinstance(result_source, dict):
         return False
-    for key in ("type", "repo", "requested_ref", "resolved_sha", "dirty"):
+    source_type = parent_source.get("type")
+    keys = (
+        ("type", "repo", "requested_revision", "resolved_revision", "dirty")
+        if source_type == "huggingface_dataset"
+        else ("type", "repo", "requested_ref", "resolved_sha", "dirty")
+    )
+    for key in keys:
         if result_source.get(key) != parent_source.get(key):
             return False
     parent_path = str(parent_source.get("path") or "").strip("/")

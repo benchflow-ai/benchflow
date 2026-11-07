@@ -25,11 +25,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow._types import Role
+from benchflow.checkpoints import after_prompt
 from benchflow.contracts import RoundResult
 from benchflow.loop_strategies import LoopStrategyUser
 from benchflow.rollout._results import (
@@ -47,9 +49,11 @@ from benchflow.scenes import (
 )
 from benchflow.skill_policy import SKILL_MODE_SELF_GEN
 from benchflow.trajectories.tree import Step
+from benchflow.trust.state import IngressKind, admit
 from benchflow.usage_tracking import is_token_usage_available
 
 if TYPE_CHECKING:
+    from benchflow._utils.reachable_write import ReachablePath
     from benchflow.rollout import Rollout
 
 logger = logging.getLogger(__name__)
@@ -64,10 +68,28 @@ def _round_tokens(rollout: Rollout) -> int | None:
     trusted-source check keeps uninstrumented paths reporting ``None`` rather
     than a spurious ``0`` — preserving the cost-curve's best-effort contract.
     """
-    metrics = getattr(rollout, "_native_usage_metrics", None)
-    if metrics and is_token_usage_available(metrics):
+    metrics = rollout._native_usage_metrics
+    if is_token_usage_available(metrics):
         return metrics.get("total_tokens")
     return None
+
+
+def _host_solution(task: Any) -> str | None:
+    """The task's own solve.sh as text, read on the host, or None."""
+    path = getattr(getattr(task, "paths", None), "solve_path", None)
+    try:
+        text = path.read_text(encoding="utf-8") if path is not None else ""
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text.strip() or None
+
+
+def skill_export_root(target: Path) -> ReachablePath:
+    """Hold the user-selected skill export folder's parent as a destination root."""
+    from benchflow._utils.reachable_write import pin_destination
+
+    absolute = Path(os.path.abspath(target))
+    return pin_destination(absolute.parent) / absolute.name
 
 
 async def _export_generated_skills(rollout: Rollout) -> None:
@@ -77,13 +99,20 @@ async def _export_generated_skills(rollout: Rollout) -> None:
     — the ``name -> body`` dict a continual-learning Job commits to its
     persistent LearnerStore (capability 5).
 
-    Retries transient download failures up to 3 times (guards ENG-147).
+    Retries transient download failures up to 3 times.
     """
     export_target = rollout._config.export_generated_skills_to
     if export_target is None:
         return
-    target = Path(export_target)
-    target.mkdir(parents=True, exist_ok=True)
+    # TASKMD-R14 B-M2: the export's own root is held before the agent ran
+    # (Rollout setup); a direct caller pins it here. Sandboxes still receive
+    # the plain path (their download contract); private_download selects the
+    # held root from it, and the read-back goes through the capability.
+    held = getattr(rollout, "_skill_export_root", None) or skill_export_root(
+        Path(export_target)
+    )
+    held.mkdir(parents=True, exist_ok=True)
+    target = Path(os.path.abspath(export_target))
 
     last_err: Exception | None = None
     for attempt in range(3):
@@ -108,7 +137,7 @@ async def _export_generated_skills(rollout: Rollout) -> None:
 
     from benchflow.learner_skills import capture_skills
 
-    rollout._evolved_skills = capture_skills(target)
+    rollout._evolved_skills = capture_skills(held)
     if (
         rollout._config.recorded_skill_mode == SKILL_MODE_SELF_GEN
         and not rollout._evolved_skills
@@ -131,6 +160,7 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
     role = scene_step_role(step)
     source = str(skills_dir)
     local_source = Path(source).expanduser()
+    expected_skill_names: tuple[str, ...] = ()
     # Upload whenever skills_dir resolves to a real directory on the
     # orchestrator host, regardless of whether it arrived as a str or a
     # PathLike. The SkillsBench entrypoint passes an absolute *str* host
@@ -142,9 +172,13 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
     # host is a sandbox path produced by an earlier scene and is linked
     # as-is.
     if local_source.is_dir():
+        expected_skill_names = tuple(
+            sorted(path.parent.name for path in local_source.glob("*/SKILL.md"))
+        )
         remote_source = f"/skills/{_safe_skill_name(scene_name)}"
+        admission = admit(rollout._env, "main", IngressKind.USER_CONTEXT)
         await _ensure_sandbox_dir(rollout._env, Path(remote_source).parent)
-        await rollout._env.upload_dir(local_source, remote_source)
+        await rollout._env.upload_dir(local_source, remote_source, admission=admission)
     elif source.startswith("/"):
         remote_source = source
     else:
@@ -165,6 +199,7 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
         home,
         rollout._agent_cwd,
         rollout._config.sandbox_user,
+        expected_skill_names=expected_skill_names,
     )
 
 
@@ -172,7 +207,7 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
     """Execute already-compiled rollout Steps in declaration order."""
     current_role_key: tuple[Any, ...] | None = None
     try:
-        for step in steps:
+        for number, step in enumerate(steps, start=1):
             role = scene_step_role(step)
             role_key = (
                 step.data.get("scene_index"),
@@ -197,6 +232,8 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
                 await rollout.connect_as(role)
                 current_role_key = role_key
             await rollout.execute(prompts=[scene_step_prompt(step)])
+            # Opt-in retained snapshot (RolloutConfig.checkpoints).
+            await after_prompt(rollout, number)
     finally:
         if current_role_key is not None:
             await rollout.disconnect()
@@ -212,6 +249,60 @@ _ITERATION_RECORD_KEYS = (
     "wall_sec",
     "tokens",
 )
+
+
+_ROUND_OUTPUT_MAX_BYTES = 1024 * 1024
+
+
+def _soft_check_stdout(rollout: Rollout) -> str | None:
+    """The last MB of test.sh's output from the soft check that just ran
+    (``verifier/test-stdout.txt``, which the next check overwrites).
+
+    Code the tests ran could have left a link or a FIFO there: only a regular
+    file is read, through the trial folder's capability, as the verifier's
+    own scan reads it (rollout/_setup.py)."""
+    import stat
+
+    from benchflow._utils.reachable_write import destination
+
+    path = getattr(getattr(rollout, "_rollout_paths", None), "test_stdout_path", None)
+    if path is None or rollout._rollout_dir is None:
+        return None
+    try:
+        # The trial folder is BenchFlow's own; below it nothing is followed.
+        with destination(path, root=rollout._rollout_dir).open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                return None
+            stream.seek(max(0, opened.st_size - _ROUND_OUTPUT_MAX_BYTES))
+            data = stream.read(_ROUND_OUTPUT_MAX_BYTES)
+    except (OSError, ValueError):
+        return None
+    return data.decode("utf-8", errors="replace") or None
+
+
+def _keep_round_output(
+    rollout: Rollout, round_num: int, output: str | None, error: str | None
+) -> str | None:
+    """Write a round's soft-check output beside the trial and return its path
+    relative to the trial folder: test.sh's output (or, without it, the
+    verifier's logs) and any error. The next check overwrites them, and the
+    round log keeps only the reward."""
+    if rollout._rollout_dir is None:
+        return None
+    stdout = _soft_check_stdout(rollout)
+    text = "\n".join(part.rstrip("\n") for part in (error, stdout or output) if part)
+    if not text:
+        return None
+    relative = Path("rounds") / f"round-{round_num}-check.txt"
+    try:
+        path = rollout._rollout_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n")
+    except OSError as exc:
+        logger.warning(f"Could not keep round {round_num}'s check output: {exc}")
+        return None
+    return relative.as_posix()
 
 
 def _persist_round_logs(
@@ -230,7 +321,11 @@ def _persist_round_logs(
     with log_path.open("w") as f:
         for entry in rounds_log:
             f.write(json.dumps(entry) + "\n")
-    logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
+    # A multi-step task's steps.json says the same per step (task/steps.py).
+    steps_user = getattr(rollout, "_active_steps_user", None)
+    (logger.debug if callable(steps_user) and steps_user() else logger.info)(
+        f"[User] {len(rounds_log)} rounds → {log_path}"
+    )
     if not loop_active:
         return
     loop_dir = rollout._rollout_dir / "loop"
@@ -316,27 +411,15 @@ async def _run_user_loop(rollout: Rollout) -> None:
             else ("Solve the task described in /app/instruction.md")
         )
 
-        # Oracle access: read /solution before the agent runs, then remove it
+        # Oracle access: the user reads the task's solve.sh on the host. The
+        # sandbox never holds the solution while an agent runs, under any
+        # name (/oracle_backup included): an agent run as root could read it
+        # (GAP-ORACLE-READABLE).
         solution: str | None = None
         if cfg.oracle_access:
-            cat = await rollout._env.exec(
-                "cat /oracle/solve.sh 2>/dev/null || cat /solution/solve.sh 2>/dev/null || true",
-                user="root",
-                timeout_sec=10,
-            )
-            solution = (cat.stdout or "").strip() or None
+            solution = _host_solution(rollout._task)
 
         await user.setup(instruction, solution)
-
-        # Hide oracle files from agent — move rather than delete so the
-        # final verify() can still access them if the verifier needs them.
-        if cfg.oracle_access:
-            await rollout._env.exec(
-                "mv /oracle /oracle_backup 2>/dev/null || true; "
-                "mv /solution /solution_oracle_backup 2>/dev/null || true",
-                user="root",
-                timeout_sec=10,
-            )
 
         round_result: RoundResult | None = None
         last_role = scene_step_role(steps[0])
@@ -351,11 +434,22 @@ async def _run_user_loop(rollout: Rollout) -> None:
             handoff_from: str | None = None,
         ) -> RoundResult:
             round_started = time.monotonic()
+            # A multi-step task's round is one of its steps: that step's
+            # tests score it, under its own agent timeout (task/steps.py).
+            task_for_round = getattr(user, "task_for_round", None)
+            step_view = task_for_round(round_num) if callable(task_for_round) else None
+            shown = f"{prompt[:80]!r}..." if len(prompt) > 80 else repr(prompt)
+            step_label = getattr(step_view, "step_label", None)
             logger.info(
-                f"[User] round {round_num}: prompt={prompt[:80]!r}..."
-                if len(prompt) > 80
-                else f"[User] round {round_num}: prompt={prompt!r}"
+                f"{step_label[0].upper()}{step_label[1:]}: prompt={shown}"
+                if step_label
+                else f"[User] round {round_num}: prompt={shown}"
             )
+            saved_timeout = rollout._timeout
+            if step_view is not None:
+                rollout._verify_task = step_view
+                if step_view.config.agent.timeout_sec:
+                    rollout._timeout = int(step_view.config.agent.timeout_sec)
 
             # Fresh ACP session each round — agent starts clean but sees
             # its previous workspace changes in the shared sandbox.
@@ -364,6 +458,7 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 await rollout.connect_as(role)
                 await rollout.execute(prompts=[prompt])
             finally:
+                rollout._timeout = saved_timeout
                 await rollout.disconnect()
 
             round_trajectory = rollout._trajectory[traj_before:]
@@ -374,25 +469,12 @@ async def _run_user_loop(rollout: Rollout) -> None:
             )
 
             # Soft verify: run tests after agent disconnected but before
-            # next round. Temporarily restore /solution so the verifier can
-            # access it, then re-hide before the next agent round.
-            if cfg.oracle_access:
-                await rollout._env.exec(
-                    "mv /oracle_backup /oracle 2>/dev/null || true; "
-                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
-                    user="root",
-                    timeout_sec=10,
-                )
-            try:
-                rewards, verifier_output, verifier_error = await rollout.soft_verify()
-            finally:
-                if cfg.oracle_access:
-                    await rollout._env.exec(
-                        "mv /oracle /oracle_backup 2>/dev/null || true; "
-                        "mv /solution /solution_oracle_backup 2>/dev/null || true",
-                        user="root",
-                        timeout_sec=10,
-                    )
+            # next round. Verifiers never read the solution, so nothing is
+            # restored for them while the agent's processes are alive.
+            rewards, verifier_output, verifier_error = await rollout.soft_verify()
+            check_output = _keep_round_output(
+                rollout, round_num, verifier_output, verifier_error
+            )
 
             handoff_from_role = (
                 handoff_from if handoff_from and handoff_from != role.name else None
@@ -412,6 +494,7 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 "prompt": prompt,
                 "rewards": rewards,
                 "verifier_error": verifier_error,
+                "check_output": check_output,
                 "n_tool_calls": round_tools,
                 "n_trajectory_events": len(round_trajectory),
                 "wall_sec": round(time.monotonic() - round_started, 1),
@@ -477,7 +560,8 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 handoff_to=handoff_to_role,
             )
 
-            logger.info(
+            # A step's line comes from StepsUser.record, with its reward.
+            (logger.debug if step_label else logger.info)(
                 f"[User] round {round_num} done: rewards={rewards}, tools={round_tools}"
             )
             return result
@@ -531,7 +615,11 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 break
 
             if prompt is None:
-                logger.info(f"[User] stopped at round {round_num}")
+                (
+                    logger.debug
+                    if getattr(user, "task_for_round", None)
+                    else logger.info
+                )(f"[User] stopped at round {round_num}")
                 break
 
             round_result = await run_round(

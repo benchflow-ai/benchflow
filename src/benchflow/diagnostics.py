@@ -24,7 +24,8 @@ exceptions without pulling Daytona/Modal SDKs.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+import math
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, ClassVar, Literal
 
 DIAGNOSTIC_REASON_IDLE_TIMEOUT = "idle_timeout"
@@ -38,6 +39,24 @@ DiagnosticReason = Literal[
     "sandbox_startup_failed",
     "transport_closed",
 ]
+
+# Trainer diagnostics projection adapted from PR #1038 by yangziao56
+# (issue #1037).
+ResultsJsonlFieldKind = Literal[
+    "bool",
+    "http_failure_status",
+    "integer",
+    "nonnegative_integer",
+    "nonnegative_number",
+]
+
+
+def _finite_results_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
 
 # Diagnostic value objects
 
@@ -91,10 +110,62 @@ class Diagnostic:
     # Human description for the summary warning ("hit idle timeout",
     # "lost transport (pipe closed / rc=255)" …).
     summary_description: ClassVar[str] = ""
+    # Explicit allowlist of numeric / boolean fields that are safe to copy to
+    # the canonical trainer-facing results.jsonl artifact. Full diagnostic
+    # serialization remains in result.json; arbitrary strings are excluded
+    # here because they may contain provider output, paths, or credentials.
+    results_jsonl_fields: ClassVar[
+        tuple[tuple[str, ResultsJsonlFieldKind], ...] | None
+    ] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for result.json — drops Nones is the caller's choice."""
         return asdict(self)
+
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        """Return the explicitly safe subset for trainer-facing artifacts.
+
+        New diagnostic classes fail closed to an empty details mapping until
+        they explicitly define ``results_jsonl_fields``. Each field declares
+        its value kind so invalid booleans, negative counters, and non-finite
+        values cannot enter the stable trainer schema. Subclasses must
+        normalize any enum or mapping they intentionally expose.
+        """
+        details: dict[str, Any] = {}
+        for name, kind in self.results_jsonl_fields or ():
+            value = getattr(self, name, None)
+            valid = (
+                (kind == "bool" and isinstance(value, bool))
+                or (
+                    kind == "integer"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and _finite_results_number(value)
+                )
+                or (
+                    kind == "nonnegative_integer"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and _finite_results_number(value)
+                    and value >= 0
+                )
+                or (
+                    kind == "nonnegative_number"
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and _finite_results_number(value)
+                    and value >= 0
+                )
+                or (
+                    kind == "http_failure_status"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and 400 <= value <= 599
+                )
+            )
+            if valid:
+                details[name] = value
+        return details
 
     def format_issue(self, task_name: str) -> str:
         """Render the per-task line check_results emits for this diagnostic."""
@@ -115,8 +186,6 @@ class Diagnostic:
     @classmethod
     def _init_fields(cls) -> set[str]:
         """Names of fields the dataclass actually takes — drops legacy/extra keys."""
-        from dataclasses import fields
-
         return {f.name for f in fields(cls)}
 
 
@@ -132,18 +201,55 @@ class IdleTimeoutDiagnostic(Diagnostic):
     n_message_chunks: int = 0
     n_thought_chunks: int = 0
     last_activity_at: str = ""
+    # Pending-grace truth (PR #1066): when the fire happened because a
+    # pending tool call exhausted the grace window, these say so instead of
+    # letting the fields above imply pure silence. Additive — older
+    # result.json dicts round-trip through format_issue_from_dict with the
+    # defaults below.
+    pending_tool_call_ids: list[str] = field(default_factory=list)
+    expired_pending_tool_call_ids: list[str] = field(default_factory=list)
+    pending_grace_sec: int | None = None
+    pending_set_last_changed_at: str | None = None
+    last_tool_update_at: str | None = None
+    n_tool_call_updates: int = 0
+    n_pending_tool_call_updates: int = 0
+    n_expired_pending_tool_call_updates: int = 0
+    # Pending calls that got no update after later tool calls started: their
+    # terminal update was probably lost rather than still coming (#1141).
+    lost_update_tool_call_ids: list[str] = field(default_factory=list)
+    model_requests_in_flight: int = 0
+    model_request_age_sec: float = 0.0
 
     field: ClassVar[str] = "idle_timeout_info"
     category: ClassVar[str | None] = "idle_timeout"
     summary_description: ClassVar[str] = "hit idle timeout"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("idle_timeout_sec", "nonnegative_integer"),
+        ("idle_duration_sec", "nonnegative_integer"),
+        ("wall_clock_elapsed_sec", "nonnegative_integer"),
+        ("n_tool_calls", "nonnegative_integer"),
+        ("n_message_chunks", "nonnegative_integer"),
+        ("n_thought_chunks", "nonnegative_integer"),
+    )
 
     def format_issue(self, task_name: str) -> str:
-        return (
+        line = (
             f"{task_name}: idle timeout after "
             f"{self.idle_duration_sec}s idle "
             f"({self.n_tool_calls} tool calls, "
             f"{self.wall_clock_elapsed_sec}s wall)"
         )
+        if self.pending_tool_call_ids:
+            line += (
+                f" — {len(self.pending_tool_call_ids)} pending tool call(s) "
+                f"exceeded the {self.pending_grace_sec}s pending grace"
+            )
+        if self.lost_update_tool_call_ids:
+            line += (
+                f" (lost update: {len(self.lost_update_tool_call_ids)} of them "
+                f"got no update after later tool calls started)"
+            )
+        return line
 
 
 @dataclass
@@ -160,6 +266,18 @@ class AgentPromptTimeoutDiagnostic(Diagnostic):
     field: ClassVar[str] = "agent_timeout_info"
     category: ClassVar[str | None] = "timeout"
     summary_description: ClassVar[str] = "hit agent wall-clock timeout"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("timeout_sec", "nonnegative_number"),
+        ("n_tool_calls", "nonnegative_integer"),
+        ("terminal_event_recorded", "bool"),
+        ("terminal_trajectory_complete", "bool"),
+    )
+
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        details = super().to_results_jsonl_details()
+        if isinstance(self.pending_tool_call_ids, list):
+            details["pending_tool_call_count"] = len(self.pending_tool_call_ids)
+        return details
 
     def format_issue(self, task_name: str) -> str:
         pending = len(self.pending_tool_call_ids)
@@ -185,6 +303,10 @@ class SandboxStartupDiagnostic(Diagnostic):
     field: ClassVar[str] = "sandbox_startup_info"
     category: ClassVar[str | None] = "sandbox_setup"
     summary_description: ClassVar[str] = "failed during sandbox startup"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("attempts", "nonnegative_integer"),
+        ("build_timeout_sec", "nonnegative_number"),
+    )
 
     def format_issue(self, task_name: str) -> str:
         return (
@@ -217,10 +339,20 @@ class TransportClosedDiagnostic(Diagnostic):
     sandbox_probe_error: str | None = None
     sandbox_probe_error_type: str | None = None
     sandbox_probe_traceback: str | None = None
+    # The kills the sandbox cgroup's OOM killer counted (memory.events
+    # oom_kill), read by the same probe; None when it could not say. An exit
+    # is named a memory kill only with this evidence.
+    oom_kills: int | None = None
 
     field: ClassVar[str] = "transport_error_info"
     category: ClassVar[str | None] = "pipe_closed"
     summary_description: ClassVar[str] = "lost transport (pipe closed / rc=255)"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("process_exit_code", "integer"),
+        ("sandbox_reachable", "bool"),
+        ("sandbox_probe_rc", "integer"),
+        ("oom_kills", "nonnegative_integer"),
+    )
 
     def format_issue(self, task_name: str) -> str:
         rc = self.process_exit_code if self.process_exit_code is not None else "?"
@@ -249,6 +381,7 @@ class TransportClosedDiagnostic(Diagnostic):
                 "sandbox_probe_error",
                 "sandbox_probe_error_type",
                 "sandbox_probe_traceback",
+                "oom_kills",
             }:
                 continue
             if k == "raw_message" and not v:
@@ -256,21 +389,70 @@ class TransportClosedDiagnostic(Diagnostic):
             out[k] = v
         return out
 
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        details = super().to_results_jsonl_details()
+        allowed_diagnoses = {
+            "unknown",
+            "process_exited",
+            "remote_session_killed",
+            "pty_startup_timeout",
+            "pty_error",
+            "pty_closed",
+            "acp_initialize_timeout",
+            "acp_session_new_timeout",
+        }
+        details["transport_diagnosis"] = (
+            self.transport_diagnosis
+            if isinstance(self.transport_diagnosis, str)
+            and self.transport_diagnosis in allowed_diagnoses
+            else "unknown"
+        )
+        return details
+
 
 @dataclass
 class VerifierTimeoutDiagnostic(Diagnostic):
-    """Verifier exceeded its timeout budget."""
+    """Verifier exceeded its timeout budget.
+
+    ``scored`` says how the trial counts it: True, a score of 0 (the test
+    command had been issued and had not recorded that its tests ended, so
+    the timeout is the submission's); False, unscored (``verifier_error``
+    names why: the command never started, or the sandbox did not answer
+    whether its tests had ended). Records from before ``scored`` read False.
+
+    A scored timeout kills the tests' process tree and keeps what they wrote
+    in ``verifier/``, with each reward file renamed ``timeout-<name>``:
+    ``processes_killed`` counts the processes killed (None when the sandbox
+    did not say), ``partial_output_files`` and ``partial_output_bytes`` the
+    regular files in ``verifier/`` afterwards, and ``partial_output_error``
+    says why keeping them failed. All four stay None on an unscored timeout.
+    """
 
     timeout_budget_sec: float = 0.0
     elapsed_sec: float = 0.0
     task_name: str = ""
+    scored: bool = False
+    processes_killed: int | None = None
+    partial_output_files: int | None = None
+    partial_output_bytes: int | None = None
+    partial_output_error: str | None = None
 
     field: ClassVar[str] = "verifier_timeout_info"
     category: ClassVar[str | None] = "verifier_timeout"
     channel: ClassVar[str] = "verifier_error"
     summary_description: ClassVar[str] = "had verifier timeouts"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("timeout_budget_sec", "nonnegative_number"),
+        ("elapsed_sec", "nonnegative_number"),
+    )
 
     def format_issue(self, task_name: str) -> str:
+        if self.scored:
+            return (
+                f"{task_name}: verifier timed out "
+                f"(budget={self.timeout_budget_sec}s, elapsed={self.elapsed_sec}s) — "
+                "the test command ran past its deadline; scored 0"
+            )
         return (
             f"{task_name}: verifier timed out "
             f"(budget={self.timeout_budget_sec}s, elapsed={self.elapsed_sec}s) — "
@@ -279,11 +461,59 @@ class VerifierTimeoutDiagnostic(Diagnostic):
 
 
 @dataclass
+class RewardOutOfRangeDiagnostic(Diagnostic):
+    """The verifier wrote a reward outside the task's range (#1178).
+
+    The trial is unscored and the number is kept as written: ``key`` is the
+    reward key (``reward``, a metric, or ``metrics.<name>``), ``value`` the
+    raw number, ``reward_range`` the range it was checked against
+    (``declared`` when the task's ``[verifier] reward_range`` set it), and
+    ``file`` the reward file in the trial folder. A regrade, or a task that
+    declares the wider range it means, can score it later.
+    """
+
+    key: str = "reward"
+    value: float = 0.0
+    reward_range: tuple[float, float] = (0.0, 1.0)
+    declared: bool = False
+    file: str | None = None
+
+    field: ClassVar[str] = "reward_out_of_range_info"
+    category: ClassVar[str | None] = "reward_out_of_range"
+    channel: ClassVar[str] = "verifier_error"
+    summary_description: ClassVar[str] = "had rewards out of range"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("declared", "bool"),
+    )
+
+    @classmethod
+    def from_error(cls, error: Any) -> RewardOutOfRangeDiagnostic:
+        """Build from a :class:`benchflow.rewards.validation.RewardOutOfRange`."""
+        lo, hi = error.reward_range
+        return cls(
+            key=str(error.key),
+            value=float(error.value),
+            reward_range=(float(lo), float(hi)),
+            declared=bool(error.declared),
+            file=getattr(error, "file", None),
+        )
+
+    def format_issue(self, task_name: str) -> str:
+        lo, hi = self.reward_range
+        return (
+            f"{task_name}: reward out of range ({self.key}={self.value!r}, "
+            f"outside [{lo}, {hi}]) — unscored, the raw value is kept"
+        )
+
+
+@dataclass
 class ProviderApiErrorDiagnostic(Diagnostic):
     """Every captured provider API request failed — no model response ever
     reached the agent (rate limit, auth rejection, quota, model-not-found,
-    5xx). Proxy-proven: built from the usage proxy's captured exchange status
-    codes only (#546/#564 — bodies/headers are never read)."""
+    5xx) — or the agent's turn ended on a call that failed with 429 or a 5xx
+    (its model never answered that call). Proxy-proven: built from the usage
+    proxy's captured exchange status codes only (#546/#564 — bodies/headers
+    are never read)."""
 
     subcategory: str = "provider_error"
     transient: bool = False
@@ -292,10 +522,56 @@ class ProviderApiErrorDiagnostic(Diagnostic):
     total_requests: int = 0
     failed_requests: int = 0
     fingerprint: str = ""
+    # What the verifier gave a trial whose agent's last call failed: the
+    # model never answered it, so that reward is not the model's score.
+    reward_withheld: dict[str, Any] | None = None
 
     field: ClassVar[str] = "api_error_info"
     category: ClassVar[str | None] = "api_error"
     summary_description: ClassVar[str] = "failed on provider API errors"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("transient", "bool"),
+        ("dominant_status", "http_failure_status"),
+        ("total_requests", "nonnegative_integer"),
+        ("failed_requests", "nonnegative_integer"),
+    )
+
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        details = super().to_results_jsonl_details()
+        allowed_subcategories = {
+            "auth",
+            "quota",
+            "model_not_found",
+            "rate_limit",
+            "provider_error",
+            "rejected_request",
+        }
+        details["subcategory"] = (
+            self.subcategory
+            if isinstance(self.subcategory, str)
+            and self.subcategory in allowed_subcategories
+            else "provider_error"
+        )
+        if isinstance(self.status_counts, dict):
+            status_counts: dict[str, int] = {}
+            for status, count in self.status_counts.items():
+                if not isinstance(status, (str, int)) or isinstance(status, bool):
+                    continue
+                try:
+                    status_code = int(status)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if (
+                    400 <= status_code <= 599
+                    and isinstance(count, int)
+                    and not isinstance(count, bool)
+                    and count >= 0
+                    and _finite_results_number(count)
+                ):
+                    status_counts[str(status_code)] = count
+            if status_counts:
+                details["status_counts"] = status_counts
+        return details
 
     def format_issue(self, task_name: str) -> str:
         kind = "transient" if self.transient else "permanent"
@@ -324,6 +600,12 @@ class SuspectedApiErrorDiagnostic(Diagnostic):
     summary_description: ClassVar[str] = (
         "ended with zero model/tool activity (suspected provider api error)"
     )
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("total_tokens", "nonnegative_integer"),
+        ("n_tool_calls", "nonnegative_integer"),
+        ("total_requests", "nonnegative_integer"),
+        ("failed_requests", "nonnegative_integer"),
+    )
 
     def format_issue(self, task_name: str) -> str:
         return (
@@ -334,13 +616,143 @@ class SuspectedApiErrorDiagnostic(Diagnostic):
         )
 
 
-# Public registry — every diagnostic kind goes here exactly once.
+AGENT_INTEGRATION = "agent_integration"
+
+
+class AgentModelNotOfferedError(RuntimeError):
+    """The agent's session does not offer the requested model.
+
+    codex-acp validates ``session/set_model`` against the models its session
+    advertises and answers any other id with an opaque ``-32603``, the same on
+    every retry. The trial is an unscored ``agent_model`` integration failure
+    that is not retried; the message names the offered models.
+    """
+
+    cause = "agent_model"
+    #: What says so: the session's own list of the models it offers.
+    evidence_source = "session/new availableModels"
+
+    def __init__(self, agent: str, model: str, offered: list[str]) -> None:
+        self.agent = agent
+        self.model = model
+        self.offered = tuple(offered)
+        super().__init__(
+            f"agent integration failure [agent_model]: {agent} does not offer "
+            f"model {model!r} for this login; it offers: {', '.join(offered)}"
+        )
+
+
+class AgentEffortNotOfferedError(AgentModelNotOfferedError):
+    """The agent's session offers the model, but not at the requested effort.
+
+    codex-acp lists one ``model[effort]`` id per effort a model takes, and its
+    ``session/set_model`` refuses any other effort. BenchFlow used to pick the
+    model's ``medium`` variant instead, so a run asked for ``xhigh`` ran at
+    ``medium``. Raised before the prompt: an unscored ``agent_effort``
+    integration failure, not retried; ``offered`` holds the efforts.
+    """
+
+    cause = "agent_effort"
+
+    def __init__(self, agent: str, model: str, effort: str, offered: list[str]) -> None:
+        RuntimeError.__init__(
+            self,
+            f"agent integration failure [agent_effort]: {agent} does not offer "
+            f"reasoning effort {effort!r} for model {model!r}; it offers: "
+            f"{', '.join(offered) or 'no effort'}",
+        )
+        self.agent = agent
+        self.model = model
+        self.effort = effort
+        self.offered = tuple(offered)
+
+
+@dataclass
+class IntegrationFailureDiagnostic(Diagnostic):
+    """The agent did nothing useful because its integration broke.
+
+    Set by :mod:`benchflow.integration_health`; the reward is withheld
+    (``reward_withheld`` keeps what the verifier gave the untouched
+    workspace) and the trial is unscored.
+    """
+
+    cause: str = "no_activity"
+    evidence: str = ""
+    evidence_source: str = ""
+    tool_calls: int = 0
+    agent_messages: int = 0
+    agent_thoughts: int = 0
+    output_tokens: int | None = None
+    agent_seconds: float | None = None
+    reward_withheld: dict[str, Any] | None = None
+
+    field: ClassVar[str] = "integration_failure_info"
+    category: ClassVar[str | None] = AGENT_INTEGRATION
+    summary_description: ClassVar[str] = (
+        "did nothing because the agent integration broke (unscored)"
+    )
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("tool_calls", "nonnegative_integer"),
+        ("agent_messages", "nonnegative_integer"),
+        ("agent_thoughts", "nonnegative_integer"),
+        ("output_tokens", "nonnegative_integer"),
+        ("agent_seconds", "nonnegative_number"),
+    )
+
+    def format_issue(self, task_name: str) -> str:
+        return (
+            f"{task_name}: agent integration failure [{self.cause}] — "
+            f"{self.evidence[:160]} ({self.evidence_source}) — unscored"
+        )
+
+
+@dataclass
+class UsageLimitDiagnostic(Diagnostic):
+    """The login ran out of subscription usage (a typed ``UsageLimitError``).
+
+    Set by the rollout when the agent reports that its login's usage limit is
+    spent. ``login`` is a label (``CLAUDE_CODE_OAUTH_TOKEN (environment)``),
+    never a credential; ``resets_at`` is ISO 8601 UTC or None.
+    """
+
+    login: str | None = None
+    window: str | None = None
+    resets_at: str | None = None
+    detail: str = ""
+
+    field: ClassVar[str] = "usage_limit_info"
+    category: ClassVar[str | None] = "usage_limit"
+    summary_description: ClassVar[str] = (
+        "stopped on the login's usage limit (unscored; not retried)"
+    )
+    # Only the category reaches trainer artifacts; the fields are free text.
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = ()
+
+    @classmethod
+    def from_error(cls, error: Any) -> UsageLimitDiagnostic:
+        """From a :class:`benchflow.agents.errors.UsageLimitError`."""
+        return cls(**error.to_dict())
+
+    def format_issue(self, task_name: str) -> str:
+        where = f" on login {self.login}" if self.login else ""
+        window = f" {self.window} window" if self.window else ""
+        resets = f", resets {self.resets_at}" if self.resets_at else ""
+        return f"{task_name}: usage limit reached{where}{window}{resets} — unscored"
+
+
+# Public registry — every diagnostic kind goes here exactly once. The order is
+# precedence: a channel's category is the first one set (category_for_channel).
+# A usage limit outranks everything; an integration failure replaces the error
+# it was judged from, such as a wall-clock timeout the agent did nothing before.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
+    UsageLimitDiagnostic,
+    IntegrationFailureDiagnostic,
     IdleTimeoutDiagnostic,
     AgentPromptTimeoutDiagnostic,
     SandboxStartupDiagnostic,
     TransportClosedDiagnostic,
     VerifierTimeoutDiagnostic,
+    RewardOutOfRangeDiagnostic,
     ProviderApiErrorDiagnostic,
     SuspectedApiErrorDiagnostic,
 )
@@ -402,10 +814,12 @@ class RolloutDiagnostics:
 
     def __init__(self) -> None:
         self._events: dict[str, Diagnostic] = {}
+        self._restored_fields: dict[str, set[str]] = {}
 
     def set(self, diagnostic: Diagnostic) -> None:
         """Record a diagnostic, keyed by its result.json field name."""
         self._events[diagnostic.field] = diagnostic
+        self._restored_fields.pop(diagnostic.field, None)
 
     def get(self, field_name: str) -> Diagnostic | None:
         return self._events.get(field_name)
@@ -456,6 +870,90 @@ class RolloutDiagnostics:
             for d in DIAGNOSTIC_REGISTRY
         }
 
+    def to_results_jsonl_block(
+        self,
+        *,
+        error_category: str | None,
+        verifier_error_category: str | None,
+    ) -> dict[str, Any] | None:
+        """Return a compact, safe diagnostics block for ``results.jsonl``.
+
+        Events are retained observations and may outlive a recovered error.
+        Top-level channel categories describe current status; consumers must
+        not infer an active failure solely from a historical event category.
+        """
+        from benchflow._utils.scoring import ERROR_CATEGORIES, VERIFIER_ERROR_CATEGORIES
+
+        error_category = (
+            error_category
+            if isinstance(error_category, str) and error_category in ERROR_CATEGORIES
+            else None
+        )
+        verifier_error_category = (
+            verifier_error_category
+            if isinstance(verifier_error_category, str)
+            and verifier_error_category in VERIFIER_ERROR_CATEGORIES
+            else None
+        )
+        events: dict[str, dict[str, Any]] = {}
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            diagnostic = self._events.get(diagnostic_cls.field)
+            if diagnostic is None or type(diagnostic) is not diagnostic_cls:
+                continue
+            event: dict[str, Any] = {"channel": diagnostic_cls.channel}
+            if diagnostic_cls.category is not None:
+                event["category"] = diagnostic_cls.category
+            details = diagnostic.to_results_jsonl_details()
+            present = self._restored_fields.get(diagnostic_cls.field)
+            if present is not None:
+                # Dataclass defaults must not manufacture measurements absent
+                # from an older saved result.
+                details = {
+                    key: value
+                    for key, value in details.items()
+                    if key in present
+                    or (
+                        key == "pending_tool_call_count"
+                        and "pending_tool_call_ids" in present
+                    )
+                }
+            if details:
+                event["details"] = details
+            events[diagnostic_cls.field] = event
+
+        if error_category is None and verifier_error_category is None and not events:
+            return None
+
+        block: dict[str, Any] = {"schema_version": 1}
+        if error_category is not None:
+            block["error_category"] = error_category
+        if verifier_error_category is not None:
+            block["verifier_error_category"] = verifier_error_category
+        if events:
+            block["events"] = events
+        return block
+
+    @classmethod
+    def from_result_fields(cls, source: dict[str, Any]) -> RolloutDiagnostics:
+        """Recover registered typed events; unknown fields never become exports."""
+        diagnostics = cls()
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            value = source.get(diagnostic_cls.field)
+            if isinstance(value, dict):
+                diagnostics.set(
+                    diagnostic_cls(
+                        **{
+                            k: v
+                            for k, v in value.items()
+                            if k in diagnostic_cls._init_fields()
+                        }
+                    )
+                )
+                diagnostics._restored_fields[diagnostic_cls.field] = {
+                    key for key in value if isinstance(key, str)
+                }
+        return diagnostics
+
     def category_for_channel(self, channel: str) -> str | None:
         """Return the structured error category for a result channel, if any."""
         for diagnostic_cls in DIAGNOSTIC_REGISTRY:
@@ -477,6 +975,33 @@ class RolloutDiagnostics:
         return d if isinstance(d, TransportClosedDiagnostic) else None
 
 
+TRANSIENT_SANDBOX_TRANSPORT_MARKER = "transient sandbox transport failure"
+
+
+class TransientSandboxTransportError(ConnectionError):
+    """A sandbox-provider API call failed at the transport layer.
+
+    Raised at the SDK boundary, where the vendor exception *type* is still
+    alive, and carrying one stable marker so downstream classification never
+    has to keep a census of vendor message prefixes.
+
+    This exists because the vendor prefix is the wrong thing to match on.
+    The Daytona SDK stamps a different prefix per method — "Failed to
+    execute session command: ", "Failed to upload files: ", "Failed to get
+    file info: " — while the *failure* is identical in every case: an httpx
+    timeout or disconnect against the toolbox API, with an empty message.
+    Enumerating those prefixes in the classifier means one entry per vendor
+    method, silently incomplete the moment the SDK adds or renames one, and
+    it also over-matches: a permanent 401/400/409 shares the prefix but is
+    not transient. Deciding at the raise site, where
+    ``_is_daytona_transient_retry_error`` can inspect the real class, keeps
+    both halves honest.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{TRANSIENT_SANDBOX_TRANSPORT_MARKER}: {detail}")
+
+
 # Summary / check_results helpers driven by the registry
 
 
@@ -485,7 +1010,8 @@ def summary_warning(diagnostic_cls: type[Diagnostic], count: int, total: int) ->
     pct = (count / total * 100) if total else 0.0
     return (
         f"{count} tasks ({pct:.0f}%) {diagnostic_cls.summary_description} — "
-        f"check {diagnostic_cls.field} in result.json for diagnostics"
+        f"error in result.json has the cause ({diagnostic_cls.field} has "
+        "details when set)"
     )
 
 
@@ -509,11 +1035,15 @@ __all__ = [
     "SandboxStartupDiagnostic",
     "TransportClosedDiagnostic",
     "VerifierTimeoutDiagnostic",
+    "IntegrationFailureDiagnostic",
+    "UsageLimitDiagnostic",
     "DIAGNOSTIC_REGISTRY",
     "DIAGNOSTIC_BY_FIELD",
     "IdleTimeoutError",
     "TransportClosedError",
     "RolloutDiagnostics",
+    "TRANSIENT_SANDBOX_TRANSPORT_MARKER",
+    "TransientSandboxTransportError",
     "summary_warning",
     "format_issue_for_field",
 ]

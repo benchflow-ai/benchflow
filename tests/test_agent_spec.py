@@ -7,10 +7,35 @@ from benchflow.agents.registry import (
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
     AGENTS,
+    is_explicit_raw_agent_command,
     parse_agent_spec,
     resolve_agent,
     resolve_agent_key,
 )
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("python agent.py", True),
+        ("agent --flag", True),
+        ("/opt/bin/agent", True),
+        ("./agent", True),
+        ("../agent", True),
+        ("~/bin/agent", True),
+        ("nova", False),
+        (" acp:nova ", False),
+        ("acp/nova", False),
+        ("acpx/nova", False),
+        (".hidden", False),
+        ("~user", False),
+        ("", False),
+        ("   ", False),
+    ],
+)
+def test_explicit_raw_agent_command_predicate(spec, expected):
+    """Guards PR #1090 raw-command boundary shared by launch paths."""
+    assert is_explicit_raw_agent_command(spec) is expected
 
 
 class TestParseAgentSpec:
@@ -36,6 +61,10 @@ class TestParseAgentSpec:
 
     def test_alias_gemini(self):
         assert parse_agent_spec("gemini") == ("acp", "gemini")
+
+    def test_alias_agy_resolves_to_antigravity(self):
+        """The Antigravity CLI binary is ``agy``."""
+        assert parse_agent_spec("agy") == ("acp", "antigravity")
 
     def test_unknown_name_passes_through(self):
         assert parse_agent_spec("my-custom-agent") == ("acp", "my-custom-agent")
@@ -107,6 +136,14 @@ class TestResolveAgent:
         assert (
             wrapped.disallow_web_tools_launch_suffix
             == underlying.disallow_web_tools_launch_suffix
+        )
+        assert (
+            wrapped.disallow_hosted_search_setup_cmd
+            == underlying.disallow_hosted_search_setup_cmd
+        )
+        assert (
+            wrapped.disallow_hosted_search_launch_suffix
+            == underlying.disallow_hosted_search_launch_suffix
         )
 
     def test_acpx_cached_config_keeps_api_protocol(self):
@@ -183,8 +220,28 @@ class TestResolveAgentKey:
         assert config.name == key
         assert "acpx" in config.launch_cmd
 
-    def test_unknown_agent_passes_through(self):
-        assert resolve_agent_key("totally-unknown-agent") == "totally-unknown-agent"
+    def test_unknown_bare_agent_fails_closed(self):
+        """Guards PR #1090 against treating misspelled IDs as commands."""
+        with pytest.raises(KeyError, match="Unknown agent"):
+            resolve_agent_key("totally-unknown-agent")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python agent.py",
+            "agent --flag",
+            "/opt/bin/agent",
+            "./agent",
+            "../agent",
+            "~/bin/agent",
+        ],
+    )
+    def test_explicit_raw_commands_pass_through(self, command):
+        """Guards PR #1090 explicit raw-command compatibility."""
+        assert resolve_agent_key(command) == command
+
+    def test_oracle_passes_through(self):
+        assert resolve_agent_key("oracle") == "oracle"
 
     def test_idempotent(self):
         first = resolve_agent_key("acpx/codex")

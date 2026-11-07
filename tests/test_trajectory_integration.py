@@ -31,7 +31,8 @@ class TestExecutePromptsTrajectory:
     """Integration: execute_prompts with a real mock ACP agent."""
 
     @pytest.mark.asyncio
-    async def test_single_prompt_has_user_message(self) -> None:
+    async def test_single_prompt_has_user_message(self, monkeypatch) -> None:
+        monkeypatch.setattr("benchflow.acp.session.time.time_ns", lambda: 123456)
         client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
         try:
             await client.connect()
@@ -44,7 +45,17 @@ class TestExecutePromptsTrajectory:
 
             types = [e["type"] for e in trajectory]
             assert "user_message" in types
-            assert trajectory[0] == {"type": "user_message", "text": "Solve the task"}
+            assert trajectory[0] == {
+                "type": "user_message",
+                "text": "Solve the task",
+                "receipt": {
+                    "source": "benchflow_host",
+                    "clock": "unix",
+                    "first_observed_ns": "123456",
+                    "last_observed_ns": "123456",
+                },
+                "ts": "1970-01-01T00:00:00.000123+00:00",
+            }
             assert n_tools == 1
         finally:
             await client.close()
@@ -165,8 +176,9 @@ class TestTrajectoryJsonlSerialization:
             await client.close()
 
     @pytest.mark.asyncio
-    async def test_user_message_in_jsonl(self) -> None:
-        """user_message events must serialize with type and text fields."""
+    async def test_user_message_in_jsonl(self, monkeypatch) -> None:
+        """User text and GH #1033 host timing survive actual ACP/JSONL capture."""
+        monkeypatch.setattr("benchflow.acp.session.time.time_ns", lambda: 123456)
         client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
         try:
             await client.connect()
@@ -179,7 +191,17 @@ class TestTrajectoryJsonlSerialization:
 
             jsonl_lines = [json.dumps(e, default=str) for e in trajectory]
             first_event = json.loads(jsonl_lines[0])
-            assert first_event == {"type": "user_message", "text": "Hello"}
+            assert first_event == {
+                "type": "user_message",
+                "text": "Hello",
+                "receipt": {
+                    "source": "benchflow_host",
+                    "clock": "unix",
+                    "first_observed_ns": "123456",
+                    "last_observed_ns": "123456",
+                },
+                "ts": "1970-01-01T00:00:00.000123+00:00",
+            }
         finally:
             await client.close()
 

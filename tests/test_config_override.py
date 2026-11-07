@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import ValidationError
 
@@ -21,7 +24,7 @@ def _cfg() -> TaskConfig:
             "version": "1.0",
             "agent": {"timeout_sec": 300},
             "verifier": {"timeout_sec": 120},
-            "environment": {"cpus": 1, "memory_mb": 2048},
+            "sandbox": {"cpus": 1, "memory_mb": 2048},
         }
     )
 
@@ -121,9 +124,23 @@ def test_apply_overrides_agent_and_preserves_siblings():
     assert out.sandbox.cpus == 1
 
 
+def test_apply_overrides_agent_prompt_prefix_and_strips_whitespace():
+    out = apply_config_override(
+        _cfg(),
+        {"agent": {"prompt_prefix": "  Follow benchmark integrity rules.  "}},
+    )
+    assert out.agent.prompt_prefix == "Follow benchmark integrity rules."
+
+
+def test_apply_rejects_blank_agent_prompt_prefix():
+    with pytest.raises(ValidationError, match="prompt_prefix"):
+        apply_config_override(_cfg(), {"agent": {"prompt_prefix": "   "}})
+
+
 def test_apply_overrides_sandbox_by_field_name():
-    # Regression: merging against by_alias=True made `sandbox` (alias
-    # `environment`) un-overridable via its field name. Must work now.
+    # Regression: merging against by_alias=True once made `sandbox` (then
+    # aliased to `environment`) un-overridable via its field name. `sandbox`
+    # is now the only spelling; overriding by field name must keep working.
     out = apply_config_override(_cfg(), {"sandbox": {"cpus": 8}})
     assert out.sandbox.cpus == 8
 
@@ -136,6 +153,47 @@ def test_apply_enforces_allowlist():
 def test_apply_revalidates_and_rejects_bad_value():
     with pytest.raises(ValidationError):
         apply_config_override(_cfg(), {"agent": {"timeout_sec": "nope"}})
+
+
+@pytest.mark.asyncio
+async def test_rollout_applies_configured_prompt_prefix(tmp_path):
+    """Guards PR #921 against recording a prompt policy without sending it."""
+    from benchflow.rollout import Rollout, RolloutConfig
+
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text('version = "1.0"\n')
+    (task / "instruction.md").write_text("Solve the visible task.")
+
+    planes = MagicMock()
+    planes.resolve_locked_paths.return_value = []
+    planes.resolve_agent_env.return_value = {}
+    planes.agent_launch.return_value = "oracle"
+    planes.create_environment.return_value = MagicMock()
+
+    rollout = Rollout(
+        RolloutConfig.from_legacy(
+            task_path=task,
+            agent="oracle",
+            jobs_dir=tmp_path / "jobs",
+            config_override={
+                "agent": {"prompt_prefix": "Do not inspect hidden evaluators."}
+            },
+            planes=planes,
+        )
+    )
+    await rollout.setup()
+
+    assert rollout._resolved_prompts == [
+        "Do not inspect hidden evaluators.\n\nSolve the visible task."
+    ]
+    assert (
+        rollout._task.config.agent.prompt_prefix == "Do not inspect hidden evaluators."
+    )
+    config = json.loads((rollout._rollout_dir / "config.json").read_text())
+    assert config["config_override"]["patch"]["agent"]["prompt_prefix"] == (
+        "Do not inspect hidden evaluators."
+    )
 
 
 # ---- CLI threading: --config-override on the run-config-file path ----------
@@ -190,3 +248,22 @@ def test_cli_config_override_applies_on_run_config_file_path(tmp_path):
 
     assert result.exit_code == 0, result.stdout
     assert captured["config_override"] == {"agent": {"timeout_sec": 30}}
+
+
+def test_an_override_adds_artifacts_to_the_tasks_own():
+    """A job can collect more files from every task without touching it.
+
+    ``EvaluationConfig`` had no way to add artifacts (the override refused
+    the section), so the hill-climb demo linked Claude Code's session log
+    into /logs/artifacts with a setup command. Added entries never replace
+    the task's own, which a separate verifier may read.
+    """
+    base = TaskConfig.model_validate(
+        {**_cfg().model_dump(by_alias=False), "artifacts": ["/app/report.xlsx"]}
+    )
+    session_logs = {"source": "/home/agent/.claude/projects", "destination": "claude"}
+    out = apply_config_override(base, {"artifacts": [session_logs, "/app/report.xlsx"]})
+    sources = [a if isinstance(a, str) else a.source for a in out.artifacts]
+    assert sources == ["/app/report.xlsx", "/home/agent/.claude/projects"]
+    with pytest.raises(ValueError, match="must be a list"):
+        apply_config_override(base, {"artifacts": "/app/x"})

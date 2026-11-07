@@ -1,11 +1,16 @@
 """Trajectory types — raw LLM API request/response pairs captured from providers."""
 
 import re
+import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 _USAGE_KEYS = {
     "input_tokens",
@@ -105,7 +110,7 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     # Cache reported as a SEPARATE additive component — Anthropic Messages
     # (`cache_read_input_tokens`) and Bedrock Converse (`cacheReadInputToken*`) —
     # is NOT included in that provider's `input_tokens`/`inputTokens` count.
-    additive_cache_read = _first_int(
+    reported_additive_cache_read = _first_int(
         usage.get("cache_read_input_tokens"),
         usage.get("cacheReadInputTokens"),
         usage.get("cacheReadInputTokenCount"),
@@ -122,8 +127,14 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
         input_details.get("cached_tokens"),
         usage_metadata.get("cachedContentTokenCount"),
     )
-    cache_read_tokens = additive_cache_read or inclusive_cache_read
+    cache_read_tokens = reported_additive_cache_read or inclusive_cache_read
     cache_creation_tokens = additive_cache_creation
+
+    # Some normalized provider responses expose the same cache read in both
+    # families (for example Gemini pass-through: ``prompt_tokens_details`` and
+    # ``cache_read_input_tokens``). The inclusive marker proves the raw prompt
+    # count already contains cache reads, so never add the duplicate field.
+    additive_cache_read = 0 if inclusive_cache_read else reported_additive_cache_read
 
     # Normalize `input_tokens` to mean the same thing across providers: the total
     # input the model processed, cache included. Anthropic/Bedrock report the
@@ -173,6 +184,18 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     )
 
 
+# Human-facing redaction categories. Every canonical pattern below is tagged
+# with the kind of secret its rule actually detects, so the upload preview can
+# tell contributors WHAT was masked ("2 API keys, 1 bearer token") instead of
+# only how many values. The taxonomy names the real rules — there is no
+# PII/email detection, so no such category exists.
+REDACTION_CATEGORY_API_KEY = "API key"
+REDACTION_CATEGORY_BEARER_TOKEN = "bearer token"
+REDACTION_CATEGORY_PRIVATE_KEY = "private key block"
+REDACTION_CATEGORY_PASSWORD = "password"
+REDACTION_CATEGORY_URL_CREDENTIAL = "URL credential"
+REDACTION_CATEGORY_CREDENTIAL_FIELD = "credential-bearing field value"
+
 # Quote atom for the header/key-value carriers below: a run of 0-8 optional
 # backslashes followed by an optional quote. This makes every carrier fire on raw
 # text (``"k": "v"``), Python dict-repr (``'k': 'v'``), AND json.dumps-escaped
@@ -196,7 +219,7 @@ _SECVAL = r"[^\"'\s,}\\*&]+"
 # ``{0,64}`` makes each match attempt O(1) → overall O(n) (#830 ReDoS fix).
 _NAME = r"[A-Za-z0-9_]{0,64}"
 
-_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     # PEM private-key blocks (GCP/Vertex service-account JSON, RSA keys). Redact
     # the whole armored block incl. the base64 body; the carriers below stop at
     # the first space and would leave the key material. Lazy + length-capped body
@@ -208,55 +231,90 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----"
         ),
         "***REDACTED***",
+        REDACTION_CATEGORY_PRIVATE_KEY,
     ),
     # --- Token families: redacted WHOLE (prefix included) so the v0.5 leak audit
     # greps (``AIzaSy``/``dtn_``…) see no live-key shape (#537/#585). ---
     # Anthropic: sk-ant-api03-...
-    (re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
-    # BenchFlow proxy master key (sk-benchflow-<token_urlsafe(24)>), OpenAI service
-    # account (sk-svcacct-), OpenRouter (sk-or-v1-): rare labels that won't appear
-    # in a normal kebab slug, so the hyphen-permitting entropy class is safe here.
+    (
+        re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
+    # BenchFlow proxy master key as older releases made it
+    # (sk-benchflow-<token_urlsafe(24)>), OpenAI service account (sk-svcacct-),
+    # OpenRouter (sk-or-v1-): rare labels that won't appear in a normal kebab
+    # slug, so the hyphen-permitting entropy class is safe here.
     (
         re.compile(r"sk-(?:benchflow|svcacct|or-v1)-[A-Za-z0-9_-]{12,}"),
         "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
-    # OpenAI org-scoped sk-proj-/sk-admin-: `proj`/`admin` ARE common identifier
-    # words, so a bare hyphen class would redact kebab slugs like
-    # `sk-proj-refactor-auth`. Real keys are high-entropy base64url and always
-    # carry an uppercase char; gate on a lookahead for one so lowercase slugs
-    # survive (#830). Before generic sk- so it wins.
+    # OpenAI org-scoped sk-proj-/sk-admin- and the BenchFlow proxy master key
+    # (sk-runtime-<token_urlsafe(24)>): `proj`/`admin`/`runtime` ARE common
+    # identifier words, so a bare hyphen class would redact kebab slugs like
+    # `sk-proj-refactor-auth` or `task-runtime-configuration`. Real keys are
+    # high-entropy base64url and always carry an uppercase char; gate on a
+    # lookahead for one so lowercase slugs survive (#830). Before generic sk- so
+    # it wins.
     (
         re.compile(
-            r"sk-(?:proj|admin)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
+            r"sk-(?:proj|admin|runtime)-(?=[A-Za-z0-9_-]{0,200}[A-Z])"
+            r"[A-Za-z0-9_-]{12,}"
         ),
         "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
     # OpenAI / generic sk- (alphanumeric only — widening to include `-` would
     # match common slugs like `task-sk-us-east-1-...`)
-    (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***"),
+    (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
     # Google AI / Gemini: AIzaSy... (≥20 char suffix avoids matching `AIzaSy`
     # alone). Prefix is redacted too so the audit grep for `AIzaSy` is clean.
-    (re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"), "***REDACTED***"),
+    (
+        re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # AWS access keys: AKIA/ASIA + exactly 16 chars; length anchor avoids
     # matching English words like "ASIAPACIFIC".
-    (re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"), "***REDACTED***"),
+    (
+        re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # Daytona SDK tokens: dtn_... — ≥16 char suffix avoids short ids (`dtn_v2`).
-    (re.compile(r"dtn_[A-Za-z0-9_]{16,}"), "***REDACTED***"),
+    (
+        re.compile(r"dtn_[A-Za-z0-9_]{16,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # GitHub tokens: PATs / OAuth / app / refresh (ghp_/gho_/ghu_/ghs_/ghr_) and
     # fine-grained PATs (github_pat_...). ≥20 char suffix avoids short slugs.
-    (re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "***REDACTED***"),
+    (
+        re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
+    (
+        re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # Slack tokens: bot/user/app/refresh/legacy (xoxb-/xoxp-/xoxa-/xoxr-/xoxs-).
-    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "***REDACTED***"),
+    (
+        re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # Other provider key families with distinctive prefixes — caught here for the
     # bare-token-in-prose form that no NAME=value carrier sees (a provider
-    # exception that echoes the key). Groq gsk_, xAI xai-, Replicate r8_,
-    # HuggingFace hf_, Fireworks fw_. ≥20-char anchors avoid short ids (#830).
-    (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"xai-[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"r8_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"hf_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"fw_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    # exception that echoes the key): gsk_ (Groq), xai-, r8_ (Replicate),
+    # hf_ (HuggingFace), fw_ (Fireworks). ≥20-char anchors avoid short ids (#830).
+    (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"xai-[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"r8_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"hf_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"fw_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
     # JSON Web Tokens (session/bearer creds): three base64url segments split by
     # dots. The ``eyJ`` prefix is base64url of ``{"`` — a JWT header. The 3rd
     # (signature) segment requires ≥20 chars (real HS256/RS256 sigs are 43+) so
@@ -269,6 +327,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"eyJ[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{6,512}\.[A-Za-z0-9_-]{20,512}"
         ),
         "***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
     # --- URL credentials ---
     # Credentials in a URL's userinfo (scheme://user:pass@host) for KNOWN
@@ -287,6 +346,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"[^\s/?#:@]{0,256}:[^\s/?#]{0,256}@"
         ),
         r"\1***REDACTED***@",
+        REDACTION_CATEGORY_URL_CREDENTIAL,
     ),
     # Secrets carried as URL query params. Curated EXACT param names (anchored to
     # `?`/`&` with `=` right after the name) so non-secret params (`?page=`,
@@ -297,6 +357,9 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # `?key=` is still caught by its token-family pattern above. Includes AWS
     # SigV4 / Azure SAS / access-key names. Placed BEFORE the carriers below so the
     # `*token*` carrier can't over-consume the rest of the query string past `&`.
+    # Like _SECVAL, the value class excludes `*` so an already-redacted
+    # `?access_token=***REDACTED***` isn't re-counted — a re-match here made the
+    # publish-layer stability loop diverge and the server rescan reject (#1008).
     (
         re.compile(
             r"([?&](?:"
@@ -304,18 +367,21 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"session_id|sessionid|client_secret|aws_secret_access_key|account_key|"
             r"secret|password_hash|password|passwd|"
             r"signature|x-amz-signature|x-amz-credential|x-amz-security-token|sas"
-            r")=)[^&\s\"']+",
+            r")=)[^&\s\"'*]+",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_URL_CREDENTIAL,
     ),
     # Azure SAS `?sig=<token>` — bare `sig` is excluded from the curated list above
     # (a `?sig=v2` scheme-version flag is a common non-secret), so gate on a
     # high-entropy value length: a real SAS signature is a 40+ char base64 HMAC,
-    # while a version flag is short (#830).
+    # while a version flag is short (#830). Excludes `*` like the curated params
+    # above so the 14-char `***REDACTED***` marker can never re-match (#1008).
     (
-        re.compile(r"([?&]sig=)[^&\s\"']{16,}", re.IGNORECASE),
+        re.compile(r"([?&]sig=)[^&\s\"'*]{16,}", re.IGNORECASE),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_URL_CREDENTIAL,
     ),
     # --- Header / key-value secret carriers ---
     # Match `name: value` / `name=value` in raw, JSON, Python dict-repr
@@ -330,15 +396,18 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
-    # Underscore form `api_key`. No leading boundary: namespaced env dumps like
+    # Underscore/camel-case forms `api_key` and `apiKey`. No leading boundary:
+    # inline harness JSON and namespaced env dumps like
     # `GEMINI_API_KEY=secret` / JSON keys such as `"openai_api_key"` must redact
     # too (#585). The `\1` capture preserves the matched name+separator.
     (
         re.compile(
-            rf"({_ESCQ}api_key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
+            rf"({_ESCQ}api[_-]?key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
     # `master_key`/`master-key` and `private_key`/`private-key` carriers — the
     # BenchFlow proxy master key and GCP/Vertex service-account private-key field
@@ -349,6 +418,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_CREDENTIAL_FIELD,
     ),
     # Bearer-token env vars whose NAME has BEARER_TOKEN in the MIDDLE, e.g.
     # `AWS_BEARER_TOKEN_BEDROCK=` — the secret-suffix rule below anchors its marker
@@ -361,6 +431,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
     # Generic secret-NAME-suffix carriers: names ending in TOKEN/SECRET/PASSWORD or
     # a specific *secret* key suffix (ACCESS_KEY/SECRET_KEY/ACCOUNT_KEY/…). The KEY
@@ -378,6 +449,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_CREDENTIAL_FIELD,
     ),
     # authorization header WITH a scheme (Bearer/Token/Basic/…): keep scheme.
     (
@@ -387,6 +459,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
     # authorization header with a bare value (no recognized scheme). The negative
     # lookahead skips scheme-prefixed values already handled above, so
@@ -399,6 +472,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
 ]
 
@@ -413,9 +487,98 @@ def redact_trajectory_text(text: str) -> str:
     forms; this includes generic ``*TOKEN*``/``*SECRET*`` carriers so a
     ``GITHUB_TOKEN=...`` env dump is scrubbed even without a known prefix.
     """
-    for pattern, replacement in _REDACTION_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
+    return redact_trajectory_text_with_count(text)[0]
+
+
+def redact_trajectory_text_with_count(text: str) -> tuple[str, int]:
+    """Apply the canonical patterns and report how many matches were replaced."""
+    text, categories = redact_trajectory_text_with_categories(text)
+    return text, sum(categories.values())
+
+
+def redact_trajectory_text_with_categories(text: str) -> tuple[str, dict[str, int]]:
+    """Apply the canonical patterns and report replacements per category.
+
+    Categories name the kind of secret each rule actually detects (API key,
+    bearer token, private key block, URL credential, credential-bearing field
+    value) so upload previews can itemize what was masked without inventing
+    detection that does not exist. The total replacement count is the sum of
+    the returned values.
+    """
+    memo = _redaction_memo.get()
+    cached = memo.get(text) if memo is not None else None
+    if cached is not None:
+        return cached[0], dict(cached[1])
+    original = text
+    categories: dict[str, int] = {}
+    for pattern, replacement, category in _REDACTION_PATTERNS:
+        text, count = pattern.subn(replacement, text)
+        if count:
+            categories[category] = categories.get(category, 0) + count
+    if memo is not None:
+        memo.remember(original, text, categories)
+    return text, categories
+
+
+# Repeated conversation strings dominate redaction time. Cache only within a
+# trial, including its child tasks / asyncio.to_thread calls. Outside a trial
+# there is no memo. Charge Python object bytes (including wide Unicode), with
+# a conservative allowance for each dict slot, rather than counting characters.
+_REDACTED_MAX_BYTES = 4 << 20
+
+
+class _RedactionMemo:
+    def __init__(self) -> None:
+        self.entries: dict[str, tuple[str, dict[str, int]]] = {}
+        self.size = 0
+        self.closed = False
+        self.lock = threading.Lock()
+
+    def get(self, text: str) -> tuple[str, dict[str, int]] | None:
+        with self.lock:
+            return self.entries.get(text)
+
+    def remember(self, text: str, redacted: str, categories: dict[str, int]) -> None:
+        value = (redacted, dict(categories))
+        size = (
+            sys.getsizeof(text)
+            + sys.getsizeof(redacted)
+            + sys.getsizeof(value)
+            + sys.getsizeof(value[1])
+            + sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in categories.items())
+            + 256  # dict allocation / slot overhead, including the empty dict
+        )
+        with self.lock:
+            if self.closed or text in self.entries or size > _REDACTED_MAX_BYTES:
+                return
+            if self.size + size > _REDACTED_MAX_BYTES:
+                self.entries.clear()
+                self.size = 0
+            self.entries[text] = value
+            self.size += size
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+            self.entries.clear()
+            self.size = 0
+
+
+_redaction_memo: ContextVar[_RedactionMemo | None] = ContextVar(
+    "redaction_memo", default=None
+)
+
+
+@contextmanager
+def trial_redaction_memo() -> Iterator[_RedactionMemo]:
+    """Discard cached texts on every trial exit, even in inherited contexts."""
+    memo = _RedactionMemo()
+    token = _redaction_memo.set(memo)
+    try:
+        yield memo
+    finally:
+        memo.close()
+        _redaction_memo.reset(token)
 
 
 def redact_trajectory_obj(obj: Any) -> Any:
@@ -472,6 +635,43 @@ def _redact_field(key: Any, value: Any) -> Any:
     return redact_trajectory_text(value)
 
 
+OBSERVATION_ID_KEY = "observation_id"
+
+
+def stamp_observation_ids(trajectory: list[dict[str, Any]] | None) -> None:
+    """Give every tool call an opaque, unique identity, in place, before any
+    redaction.
+
+    The identity is random (``obs-`` and 32 hex digits), so it carries nothing
+    from the call and redaction leaves it as it is. Every sighting of one call
+    (the events sharing its ``tool_call_id`` in this list) shares it; an event
+    that already has one keeps it, so a trajectory stamped once keeps the same
+    identities through every later write and every copy. Integrity keys what
+    it stores about each observation on this identity (never on a value
+    redaction can change, nor on an ID that can collide).
+    """
+    import uuid
+
+    if not trajectory:
+        return
+    by_call: dict[str, str] = {}
+    for event in trajectory:
+        if not isinstance(event, dict) or event.get("type") != "tool_call":
+            continue
+        call = event.get("tool_call_id")
+        existing = event.get(OBSERVATION_ID_KEY)
+        if isinstance(existing, str) and existing:
+            if isinstance(call, str) and call:
+                by_call.setdefault(call, existing)
+            continue
+        identity = by_call.get(call) if isinstance(call, str) and call else None
+        if identity is None:
+            identity = f"obs-{uuid.uuid4().hex}"
+            if isinstance(call, str) and call:
+                by_call[call] = identity
+        event[OBSERVATION_ID_KEY] = identity
+
+
 def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
     """Serialize an ACP trajectory list to redacted JSONL.
 
@@ -516,6 +716,7 @@ class LLMExchange(BaseModel):
     request: LLMRequest
     response: LLMResponse
     duration_ms: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Trajectory(BaseModel):
@@ -527,6 +728,10 @@ class Trajectory(BaseModel):
     finished_at: datetime | None = None
     exchanges: list[LLMExchange] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # The provider tool evidence a stopped proxy's import read from each
+    # exchange before it shed its request body (the full records are in
+    # llm_trajectory.jsonl); None while the exchanges are whole.
+    _tool_evidence: list[dict[str, Any]] | None = PrivateAttr(default=None)
 
     @property
     def has_provider_usage(self) -> bool:
@@ -544,24 +749,29 @@ class Trajectory(BaseModel):
 
     @property
     def total_input_tokens(self) -> int:
+        """Input tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).input_tokens for ex in self.exchanges)
 
     @property
     def total_output_tokens(self) -> int:
+        """Output tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).output_tokens for ex in self.exchanges)
 
     @property
     def total_cache_read_tokens(self) -> int:
+        """Prompt-cache read tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).cache_read_tokens for ex in self.exchanges)
 
     @property
     def total_cache_creation_tokens(self) -> int:
+        """Prompt-cache write tokens over the captured exchanges."""
         return sum(
             _exchange_token_usage(ex).cache_creation_tokens for ex in self.exchanges
         )
 
     @property
     def total_provider_tokens(self) -> int:
+        """All tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).total_tokens for ex in self.exchanges)
 
     @property

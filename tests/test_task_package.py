@@ -44,7 +44,7 @@ def _write_native_task(task_dir: Path) -> None:
             schema_version: "1.3"
             task:
               name: benchflow/package-boundary
-            environment:
+            sandbox:
               network_mode: no-network
               workdir: /repo
             benchflow:
@@ -119,7 +119,7 @@ def test_task_package_compiles_append_prompt_plan_and_redacts_user_facts(
             schema_version: "1.3"
             task:
               name: benchflow/prompt-plan
-            environment:
+            sandbox:
               network_mode: no-network
             agents:
               roles:
@@ -194,7 +194,7 @@ def test_task_package_marks_scripted_user_runtime_supported(tmp_path: Path) -> N
             schema_version: "1.3"
             task:
               name: benchflow/supported-user
-            environment:
+            sandbox:
               network_mode: no-network
             agents:
               roles:
@@ -246,7 +246,7 @@ def test_task_package_marks_model_user_runtime_supported(tmp_path: Path) -> None
             schema_version: "1.3"
             task:
               name: benchflow/model-user
-            environment:
+            sandbox:
               network_mode: no-network
             agents:
               roles:
@@ -304,7 +304,7 @@ def test_task_package_marks_sequential_team_handoff_supported(tmp_path: Path) ->
             schema_version: "1.3"
             task:
               name: benchflow/team-handoff-user
-            environment:
+            sandbox:
               network_mode: no-network
             agents:
               roles:
@@ -412,7 +412,7 @@ def test_task_package_compiles_explicit_replace_prompt_plan(tmp_path: Path) -> N
             schema_version: "1.3"
             task:
               name: benchflow/replace-plan
-            environment:
+            sandbox:
               network_mode: no-network
             agents:
               roles:

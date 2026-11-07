@@ -89,7 +89,7 @@ def _build_task_toml(
         [verifier.env]
         ANTHROPIC_API_KEY = "${{ANTHROPIC_API_KEY}}"
 
-        [environment]
+        [sandbox]
         build_timeout_sec = 600
         cpus = 1
         memory_mb = 4096

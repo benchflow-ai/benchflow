@@ -9,11 +9,11 @@ from typing import Any
 def final_metrics_from_agent_result(
     agent_result: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return Harbor-compatible final token/cost metrics.
+    """Return final token/cost metrics in the ATIF ``final_metrics`` shape.
 
-    Harbor's OpenHands runner exposes these four fields under
-    ``trajectory.json.final_metrics``. BenchFlow keeps richer provenance in
-    ``agent_result``; this helper adds the familiar Harbor shape without
+    These four fields are the ``trajectory.json.final_metrics`` block of an
+    ATIF trajectory. BenchFlow keeps richer provenance in
+    ``agent_result``; this helper adds that shape without
     dropping BenchFlow-specific telemetry such as cache-creation tokens and
     source labels.
     """
@@ -26,7 +26,7 @@ def final_metrics_from_agent_result(
 
 
 def final_metrics_from_rollout(result: Any) -> dict[str, Any]:
-    """Build Harbor-compatible final metrics from a RolloutResult-like object."""
+    """Build ATIF-shaped final metrics from a RolloutResult-like object."""
     return final_metrics_from_agent_result(
         {
             "n_input_tokens": getattr(result, "n_input_tokens", None),
@@ -43,7 +43,7 @@ def trajectory_summary_from_events(
     partial_trajectory: bool,
     trajectory_source: str | None,
 ) -> dict[str, Any]:
-    """Summarize ACP trajectory steps using the same counts Harbor reports."""
+    """Summarize ACP trajectory steps as event, tool-call and status counts."""
     event_type_counts: dict[str, int] = {}
     tool_call_status_counts: dict[str, int] = {}
 

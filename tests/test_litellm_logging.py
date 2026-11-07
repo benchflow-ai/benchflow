@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -56,6 +58,185 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
     )
 
 
+def test_pre_call_hook_opt_in_requests_token_logprobs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards PR #926: training rollouts must request sampled token logprobs."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "shell"}}],
+        "logprobs": False,
+    }
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not data
+    assert cleaned["logprobs"] is True
+    assert data["logprobs"] is False
+
+
+def test_pre_call_hook_does_not_add_chat_logprobs_to_responses_requests(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards PR #926: chat logprob capture must not alter Responses calls."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {"messages": [{"role": "user", "content": "hi"}]}
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "responses"))
+
+    assert cleaned is None
+    assert "logprobs" not in data
+
+
+def test_callback_record_preserves_logprob_request_fields():
+    """Guards PR #926: trajectory requests retain logprob capture settings."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "openai/qwen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "optional_params": {"logprobs": True, "top_logprobs": 1},
+        },
+        now,
+        now,
+    )
+
+    assert record["request"]["body"]["logprobs"] is True
+    assert record["request"]["body"]["top_logprobs"] == 1
+
+
+def test_callback_record_keeps_a_responses_requests_reasoning():
+    """Guards faa585c12: model-calls.jsonl reads a Responses
+    request's effort from ``reasoning``, which the proxy's record left out,
+    so every Codex call's effort read None."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "hi"}],
+            "call_type": "aresponses",
+            "optional_params": {"reasoning": {"effort": "xhigh", "summary": "auto"}},
+        },
+        now,
+        now,
+    )
+
+    assert record["request"]["body"]["reasoning"] == {
+        "effort": "xhigh",
+        "summary": "auto",
+    }
+
+
+def test_a_gemini_requests_own_thinking_level_reaches_the_record(tmp_path):
+    """Guards the run checks merged at 47a52fdf7: the gemini and antigravity
+    agents send Gemini's own generateContent, which LiteLLM passes through
+    unparsed (the logged messages are its placeholder), so the record kept
+    no generationConfig. Every main call then read as carrying no effort, and
+    a run at --reasoning-effort high warned that the provider's default
+    applied while each request asked for thinkingLevel HIGH."""
+    from benchflow.run_checks import settings_sent
+    from benchflow.trajectories.model_calls import model_calls
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": "task"}]}],
+        "generationConfig": {
+            "temperature": 1,
+            "topP": 0.95,
+            "maxOutputTokens": 65536,
+            "thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True},
+            "responseMimeType": "text/plain",
+        },
+    }
+    record = logger._base_record(
+        {
+            "model": "gemini-3.8-flash",
+            "messages": [
+                {"role": "user", "content": "no-message-pass-through-endpoint"}
+            ],
+            "optional_params": {},
+            "call_type": "pass_through_endpoint",
+            "passthrough_logging_payload": {"request_body": body},
+            "litellm_params": {"proxy_server_request": {"body": body}},
+        },
+        now,
+        now,
+    )
+    assert record["request"]["body"]["generationConfig"] == {
+        "thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True},
+        "temperature": 1,
+        "topP": 0.95,
+        "maxOutputTokens": 65536,
+    }
+    row = {
+        "metadata": {"call_purpose": "agent", "request_model": "gemini-3.8-flash"},
+        "request": record["request"],
+        "response": {"status_code": 200, "body": {"model": "gemini-3.8-flash"}},
+    }
+    trial = tmp_path / "trial"
+    (trial / "trajectory").mkdir(parents=True)
+    (trial / "trajectory" / "llm_trajectory.jsonl").write_text(json.dumps(row) + "\n")
+    [call] = model_calls(trial)
+    assert (call["effort"], call["thinking"]) == ("high", True)
+    assert (call["temperature"], call["top_p"], call["max_output_tokens"]) == (
+        1.0,
+        0.95,
+        65536,
+    )
+    sent = settings_sent([call], "gemini/gemini-3.8-flash")
+    assert (sent["effort"], sent["without"]["effort"]) == ({"high": 1}, 0)
+    budget = {"generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}
+    off = {**row, "request": {"body": budget}}
+    (trial / "trajectory" / "llm_trajectory.jsonl").write_text(json.dumps(off) + "\n")
+    [call] = model_calls(trial)
+    assert (call["effort"], call["thinking"]) == (None, False)
+
+
+def test_callback_record_keeps_the_sampling_each_request_carried():
+    """The report and the run card's Vendor line read what the agent sent."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "hosted_vllm/Qwen/Qwen3.8-27B",
+            "messages": [{"role": "user", "content": "hi"}],
+            "optional_params": {
+                "temperature": 1.0,
+                "max_tokens": 4096,
+                "extra_body": {
+                    "top_k": 20,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+            },
+            "top_p": 0.95,
+        },
+        now,
+        now,
+    )
+
+    body = record["request"]["body"]
+    assert body["temperature"] == 1.0
+    assert body["top_p"] == 0.95
+    assert body["top_k"] == 20
+    assert body["max_tokens"] == 4096
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "min_p" not in body and "presence_penalty" not in body
+
+
 def test_callback_module_source_exposes_proxy_handler_instance():
     source = callback_module_source()
 
@@ -65,7 +246,7 @@ def test_callback_module_source_exposes_proxy_handler_instance():
 
 @pytest.mark.asyncio
 async def test_callback_pre_call_hook_strips_chat_input_compat_field():
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(callback_module_source(), namespace)
     logger = namespace["proxy_handler_instance"]
 
@@ -86,13 +267,84 @@ async def test_callback_pre_call_hook_strips_chat_input_compat_field():
 
 @pytest.mark.asyncio
 async def test_callback_pre_call_hook_preserves_input_only_requests():
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(callback_module_source(), namespace)
     logger = namespace["proxy_handler_instance"]
 
     data = {"model": "responses-model", "input": "hello"}
 
     assert await logger.async_pre_call_hook(None, None, data, "responses") is None
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_missing_required_opencode_skill_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
+    monkeypatch.setenv(
+        "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
+    )
+    namespace: dict[str, Any] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    data = {
+        "model": "qwen35-9b-base",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "<available_skills><skill><name>customize-opencode</name>"
+                    "</skill></available_skills>"
+                ),
+            },
+            {"role": "user", "content": "calculate mass"},
+        ],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"experiment_fidelity/skill_catalog_missing.*mesh-analysis",
+    ):
+        await logger.async_pre_call_hook(None, None, data, "completion")
+
+
+@pytest.mark.asyncio
+async def test_callback_accepts_matching_opencode_catalog_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
+    monkeypatch.setenv(
+        "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
+    )
+    namespace: dict[str, Any] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    first = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "<available_skills>"
+                    "<skill><name>customize-opencode</name></skill>"
+                    "<skill><name>mesh-analysis</name></skill>"
+                    "</available_skills>"
+                ),
+            }
+        ]
+    }
+
+    assert await logger.async_pre_call_hook(None, None, first, "completion") is None
+    assert (
+        await logger.async_pre_call_hook(
+            None,
+            None,
+            {"messages": [{"role": "user", "content": "continue"}]},
+            "completion",
+        )
+        is None
+    )
 
 
 def test_litellm_callback_jsonl_imports_usage_and_cost():
@@ -147,6 +399,174 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     assert usage["cost_usd"] == 0.00042
 
 
+def test_normalized_gemini_cache_read_is_not_double_counted() -> None:
+    """Guards PR #942 remediation for duplicate inclusive cache fields."""
+
+    record = {
+        "event": "success",
+        "request_model": "gemini-2.5-flash",
+        "provider_model": "gemini-2.5-flash",
+        "request": {"method": "POST", "path": "/gemini/v1beta/models/x"},
+        "response": {
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cache_read_input_tokens": 40,
+                "prompt_tokens_details": {"cached_tokens": 40},
+            }
+        },
+        "start_time": "2026-08-03T00:00:00",
+        "end_time": "2026-08-03T00:00:01",
+    }
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="review",
+        agent_name="gemini",
+    )
+    usage = extract_usage_from_trajectory(trajectory)
+
+    assert usage["n_input_tokens"] == 100
+    assert usage["n_cache_read_tokens"] == 40
+    assert usage["n_output_tokens"] == 20
+    assert usage["total_tokens"] == 120
+
+
+def test_opencode_callback_import_preserves_call_metadata_and_purpose():
+    """Guards PR #925: TRL conversion can exclude OpenCode helper calls."""
+    primary = {
+        "event": "success",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "You are OpenCode."},
+                    {"role": "user", "content": "Inspect the repository."},
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        },
+        "response": {
+            "choices": [{"message": {"role": "assistant", "content": "Working."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        },
+        "start_time": "2026-07-12T10:00:00Z",
+        "end_time": "2026-07-12T10:00:01Z",
+    }
+    title = {
+        **primary,
+        "request": {
+            **primary["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a title generator. Output only a title.",
+                    },
+                    {"role": "user", "content": "Generate a title."},
+                ],
+            },
+        },
+    }
+    summary = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize what was done in this conversation. "
+                            "Write like a pull request description."
+                        ),
+                    },
+                    {"role": "user", "content": "Summarize this session."},
+                ],
+            },
+        },
+    }
+    compaction = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an anchored context summarization assistant "
+                            "for coding sessions."
+                        ),
+                    },
+                    {"role": "user", "content": "Compact this session."},
+                ],
+            },
+        },
+    }
+    helper = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "Small utility model."},
+                    {"role": "user", "content": "Classify this input."},
+                ],
+            },
+        },
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        "\n".join(
+            json.dumps(record)
+            for record in (primary, title, summary, compaction, helper)
+        ),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    assert trajectory.exchanges[0].metadata == {
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "call_purpose": "agent",
+    }
+    assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
+        "agent",
+        "title",
+        "summary",
+        "compaction",
+        "helper",
+    ]
+
+
 def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     record = {
         "event": "success",
@@ -176,6 +596,56 @@ def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     )
 
     assert trajectory.exchanges[0].request.body["reasoning_effort"] == "max"
+
+
+def test_callback_log_preserves_sampled_token_logprobs():
+    """Guards PR #926: provider token logprobs survive trajectory import."""
+
+    record = {
+        "event": "success",
+        "request_model": "benchflow-qwen",
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "benchflow-qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "logprobs": True,
+            },
+        },
+        "response": {
+            "model": "openai/qwen",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "hello"},
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "hello",
+                                "logprob": -0.25,
+                                "bytes": [104, 101, 108, 108, 111],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+        "start_time": "2026-07-12T10:00:00",
+        "end_time": "2026-07-12T10:00:01",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    exchange = trajectory.exchanges[0]
+    assert exchange.request.body["logprobs"] is True
+    token = exchange.response.body["choices"][0]["logprobs"]["content"][0]
+    assert token["token"] == "hello"
+    assert token["logprob"] == -0.25
 
 
 def test_litellm_failure_records_become_error_exchanges():
@@ -324,3 +794,63 @@ async def test_failure_event_records_exception_cause_when_response_none(
     assert record["error"]["type"] == "ValueError"
     assert "16384 tokens" in record["error"]["message"]
     assert record["error"]["message"] != "None"
+
+
+def test_pre_call_hook_lifts_deepseek_reasoning_effort_into_extra_body():
+    """LiteLLM's deepseek transform consumes a top-level reasoning_effort (the
+    raw field never reaches the wire, even with drop_params off); extra_body
+    merges verbatim. The hook lifts the param so the upstream receives exactly
+    what the agent sent — matching a native, gateway-less run."""
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "model": "runtime-deepseek-deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled"},
+    }
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+    assert cleaned is not None
+    assert "reasoning_effort" not in cleaned
+    assert cleaned["extra_body"]["reasoning_effort"] == "high"
+    assert cleaned["thinking"] == {"type": "enabled"}
+    # original request dict not mutated in place
+    assert data["reasoning_effort"] == "high"
+
+
+def test_pre_call_hook_leaves_non_deepseek_reasoning_effort_alone():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "model": "runtime-openai-gpt-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "high",
+    }
+    assert (
+        asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
+    )
+
+
+@pytest.mark.parametrize("call_type", ["responses", "aresponses"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_responses_record_retains_api_and_reasoning(call_type, nested):
+    """Guards PR #55 / issue #1159: retain the Responses request for replay."""
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    fields = {
+        "instructions": "Solve carefully",
+        "reasoning": {"effort": "xhigh"},
+        "previous_response_id": "resp_previous",
+        "max_output_tokens": 2048,
+    }
+    kwargs = {
+        "model": "gpt-6",
+        "input": [{"type": "reasoning", "id": "rs_1"}],
+        "litellm_params": {"call_type": call_type} if nested else {},
+        "optional_params": fields,
+    }
+    if not nested:
+        kwargs["call_type"] = call_type
+    record = logger._base_record(kwargs, now, now)
+    assert record["request"]["path"] == "/v1/responses"
+    assert record["request"]["body"]["input"] == kwargs["input"]
+    for key, value in fields.items():
+        assert record["request"]["body"][key] == value

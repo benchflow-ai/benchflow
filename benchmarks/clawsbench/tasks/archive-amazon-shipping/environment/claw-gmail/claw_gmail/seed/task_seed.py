@@ -47,16 +47,16 @@ from claw_gmail.seed.long_context import (
     _parameterize,
 )
 
-_HARBOR_DIR = Path(os.environ["TASKS_DIR"]) if "TASKS_DIR" in os.environ else Path(__file__).resolve().parents[5] / "tasks"
+_TASKS_DIR = Path(os.environ["TASKS_DIR"]) if "TASKS_DIR" in os.environ else Path(__file__).resolve().parents[5] / "tasks"
 
 
 def _load_needles_module(task_dir_name: str):
-    """Dynamically load data/needles.py for a harbor task."""
-    needles_path = _HARBOR_DIR / task_dir_name / "data" / "needles.py"
+    """Dynamically load data/needles.py for a task."""
+    needles_path = _TASKS_DIR / task_dir_name / "data" / "needles.py"
     if not needles_path.exists():
         raise FileNotFoundError(f"Task needles not found: {needles_path}")
 
-    module_name = f"harbor_needles_{task_dir_name.replace('-', '_')}"
+    module_name = f"task_needles_{task_dir_name.replace('-', '_')}"
     if module_name in sys.modules:
         return sys.modules[module_name]
 
@@ -154,7 +154,7 @@ def _write_manifest(task_dir_name: str, seed_val: int, needles: list[dict], db_p
 
 def get_task_data_summary(task_dir_name: str) -> dict:
     """Return a summary of a task's seed data config for the admin API."""
-    needles_path = _HARBOR_DIR / task_dir_name / "data" / "needles.py"
+    needles_path = _TASKS_DIR / task_dir_name / "data" / "needles.py"
     if not needles_path.exists():
         return {"has_per_task_data": False}
 

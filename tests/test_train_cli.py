@@ -146,6 +146,28 @@ def test_train_convert_and_validate_cli(tmp_path: Path) -> None:
     assert '"rows": 1' in result.output
 
 
+def test_train_convert_names_rollouts_left_out_for_an_error(tmp_path: Path) -> None:
+    """Round 2 (PR #36): a cold-start reader's group of 4
+    converted to 3 rows with no word on the console about the fourth, a
+    scored rollout that hit its time limit; only the manifest said why."""
+    jobs = tmp_path / "jobs"
+    _write_rollout(jobs / "run" / "task-a__abc123")
+    timed_out = jobs / "run" / "task-a__def456"
+    _write_rollout(timed_out)
+    result_path = timed_out / "result.json"
+    result_json = json.loads(result_path.read_text())
+    result_json["error"] = "Agent prompt exceeded wall-clock budget 600s"
+    result_path.write_text(json.dumps(result_json))
+
+    result = runner.invoke(
+        app, ["train", "convert", str(jobs), "--out", str(tmp_path / "train.jsonl")]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Converted 1 row(s)" in result.output
+    assert "left out 1 rollout(s) that did not end cleanly" in result.output
+
+
 def test_train_convert_accepts_results_jsonl_cli(tmp_path: Path) -> None:
     """Guards the public repro command that converts an existing results.jsonl."""
     source = tmp_path / "results.jsonl"

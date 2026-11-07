@@ -135,3 +135,60 @@ def test_without_dind_environment_patch_does_not_apply() -> None:
         f"subprocess failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert "OK" in result.stdout
+
+
+def test_mountinfo_fallback_maps_workspace_subtree() -> None:
+    """Guards the fix from PR #1049 for host-Docker bind-mounted shells."""
+    from benchflow.sandbox.setup import _mountinfo_path_mapping
+
+    mountinfo = (
+        "1001 991 259:5 /workspace/docker /workspace rw,noatime "
+        "- ext4 /dev/nvme1n1p3 rw\n"
+    )
+
+    assert _mountinfo_path_mapping("/workspace/repo", mountinfo) == (
+        "/workspace/docker",
+        "/workspace",
+    )
+
+
+def test_dind_patch_translates_context_and_output_paths() -> None:
+    """Guards the fix from PR #1049 for every host-side Compose path."""
+    result = _run_python(
+        """
+        from unittest.mock import patch
+
+        from benchflow.sandbox.docker import DockerSandboxEnvVars
+        from benchflow.sandbox import setup as sandbox_setup
+        from benchflow.rollout import _install_docker_compat
+
+        with patch.object(
+            sandbox_setup,
+            "_detect_dind_mount",
+            return_value=("/host/work", "/workspace"),
+        ):
+            _install_docker_compat()
+
+        env = DockerSandboxEnvVars(
+            main_image_name="main",
+            context_dir="/workspace/repo/environment",
+            host_verifier_logs_path="/workspace/jobs/verifier",
+            host_agent_logs_path="/workspace/jobs/agent",
+            host_artifacts_path="/workspace/jobs/artifacts",
+            env_verifier_logs_path="/logs/verifier",
+            env_agent_logs_path="/logs/agent",
+            env_artifacts_path="/artifacts",
+        ).to_env_dict(include_os_env=False)
+
+        assert env["CONTEXT_DIR"] == "/workspace/repo/environment"
+        assert env["HOST_VERIFIER_LOGS_PATH"] == "/host/work/jobs/verifier"
+        assert env["HOST_AGENT_LOGS_PATH"] == "/host/work/jobs/agent"
+        assert env["HOST_ARTIFACTS_PATH"] == "/host/work/jobs/artifacts"
+        assert env["ENV_VERIFIER_LOGS_PATH"] == "/logs/verifier"
+        print("OK")
+        """
+    )
+    assert result.returncode == 0, (
+        f"subprocess failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "OK" in result.stdout

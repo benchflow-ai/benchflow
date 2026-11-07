@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,7 +15,7 @@ from benchflow.task.runtime_capabilities import (
 )
 from benchflow.task.runtime_view import TaskRuntimeView
 
-CompatibilityTarget = Literal["harbor"]
+CompatibilityTarget = Literal["task-toml"]
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,11 @@ class TaskPackage:
         )
         runtime_issues: tuple[UnsupportedTaskFeature, ...] = ()
         if sandbox is not None:
-            runtime_subject: TaskDocument | TaskConfig = document or view.config
+            runtime_subject: TaskDocument | TaskConfig = (
+                replace(document, config=view.config)
+                if document is not None
+                else view.config
+            )
             runtime_issues = tuple(
                 validate_task_runtime_support(
                     runtime_subject,
@@ -101,7 +105,7 @@ class TaskPackage:
     def compatibility_export_report(
         self,
         *,
-        target: CompatibilityTarget = "harbor",
+        target: CompatibilityTarget = "task-toml",
         output_dir: str | Path | None = None,
     ) -> Any:
         """Build the target split-layout export report for this package."""

@@ -17,6 +17,16 @@ import json
 import re
 from datetime import datetime
 
+from benchflow.diagnostics import (
+    AgentPromptTimeoutDiagnostic,
+    IdleTimeoutDiagnostic,
+    ProviderApiErrorDiagnostic,
+    RolloutDiagnostics,
+    SandboxStartupDiagnostic,
+    SuspectedApiErrorDiagnostic,
+    TransportClosedDiagnostic,
+    VerifierTimeoutDiagnostic,
+)
 from benchflow.rollout import _build_rollout_result
 from benchflow.trajectories.export import (
     ROLLOUT_ARTIFACT_RELPATH,
@@ -28,6 +38,8 @@ from benchflow.trajectories.export import (
 from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
 from benchflow.trajectories.results import (
     JOB_RESULTS_ERRORS_FILENAME,
+    _training_success_exchange_indices,
+    build_rollout_results_record,
     write_job_results_jsonl,
 )
 
@@ -489,6 +501,7 @@ def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
     assert row["error"] is None
     assert row["is_completed"] is True
     assert row["stop_condition"] == "agent_completed"
+    assert "diagnostics" not in row["info"]
 
 
 def test_results_jsonl_fails_closed_on_agent_error_with_llm_steps(tmp_path):
@@ -525,6 +538,224 @@ def test_results_jsonl_fails_closed_on_agent_error_with_llm_steps(tmp_path):
     assert row["error"]["error"] == "agent_error"
     assert row["is_completed"] is False
     assert row["stop_condition"] == "agent_error"
+
+
+def test_results_jsonl_preserves_all_registered_typed_diagnostics(tmp_path):
+    """Guards PR #1038 (issue #1037): retain structured failure evidence."""
+    cases = [
+        IdleTimeoutDiagnostic(
+            idle_timeout_sec=120,
+            idle_duration_sec=121,
+            wall_clock_elapsed_sec=300,
+            n_tool_calls=2,
+        ),
+        AgentPromptTimeoutDiagnostic(timeout_sec=600, n_tool_calls=3),
+        SandboxStartupDiagnostic(
+            sandbox_id="sandbox-1",
+            sandbox_state="failed",
+            attempts=2,
+        ),
+        TransportClosedDiagnostic(
+            process_exit_code=255,
+            transport_diagnosis="process_exited",
+        ),
+        VerifierTimeoutDiagnostic(
+            timeout_budget_sec=60,
+            elapsed_sec=61,
+            task_name="diagnostic-task",
+        ),
+        ProviderApiErrorDiagnostic(
+            subcategory="rate_limit",
+            transient=True,
+            dominant_status=429,
+            total_requests=2,
+            failed_requests=2,
+        ),
+        SuspectedApiErrorDiagnostic(total_tokens=0, n_tool_calls=0),
+    ]
+
+    for diagnostic in cases:
+        rollout_dir = tmp_path / diagnostic.field
+        rollout_dir.mkdir()
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(diagnostic)
+        is_verifier = diagnostic.channel == "verifier_error"
+
+        _build_rollout_result(
+            rollout_dir,
+            task_name="diagnostic-task",
+            rollout_name=diagnostic.field,
+            agent="openhands",
+            agent_name="OpenHands",
+            model="m",
+            n_tool_calls=0,
+            prompts=["Diagnose the failure."],
+            error=None if is_verifier else "typed rollout failure",
+            verifier_error="typed verifier failure" if is_verifier else None,
+            trajectory=[],
+            partial_trajectory=True,
+            trajectory_source="partial_acp",
+            rewards=None,
+            started_at=datetime.now(),
+            timing={},
+            diagnostics=diagnostics,
+        )
+
+        row = json.loads((rollout_dir / "results.jsonl").read_text())
+        envelope = row["info"]["diagnostics"]
+        assert envelope["schema_version"] == 1
+        category_key = "verifier_error_category" if is_verifier else "error_category"
+        assert envelope[category_key] == diagnostic.category
+        event = envelope["events"][diagnostic.field]
+        assert event["channel"] == diagnostic.channel
+        assert event["category"] == diagnostic.category
+        assert event.get("details", {}) == diagnostic.to_results_jsonl_details()
+
+
+def test_results_jsonl_omits_untrusted_structured_diagnostic_values(tmp_path):
+    """Guards PR #1038 (issue #1037): omit raw secret-bearing fields."""
+    rollout_dir = tmp_path / "rollout-diagnostic-redaction"
+    rollout_dir.mkdir()
+    diagnostics = RolloutDiagnostics()
+    diagnostics.set(
+        SandboxStartupDiagnostic(
+            attempts=1,
+            raw_message=f"provider api_key={_FAKE_HEADER_SECRET}",
+        )
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="diagnostic-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=0,
+        prompts=["Diagnose the failure."],
+        error="sandbox startup failed",
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={},
+        diagnostics=diagnostics,
+    )
+
+    artifact = rollout_dir / "results.jsonl"
+    raw = artifact.read_text()
+    row = json.loads(raw)
+    diagnostic = row["info"]["diagnostics"]["events"]["sandbox_startup_info"]
+    assert _FAKE_HEADER_SECRET not in raw
+    assert diagnostic["details"] == {"attempts": 1}
+    assert "raw_message" not in diagnostic["details"]
+
+
+def test_results_jsonl_separates_agent_and_verifier_diagnostics(tmp_path):
+    """Guards PR #1038 (issue #1037): keep diagnostic channels independent."""
+    rollout_dir = tmp_path / "rollout-both-diagnostic-channels"
+    rollout_dir.mkdir()
+    diagnostics = RolloutDiagnostics()
+    diagnostics.set(IdleTimeoutDiagnostic(idle_duration_sec=121))
+    diagnostics.set(VerifierTimeoutDiagnostic(timeout_budget_sec=60, elapsed_sec=61))
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="diagnostic-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=0,
+        prompts=["Diagnose the failure."],
+        error="agent idle timeout",
+        verifier_error="verifier timeout",
+        trajectory=[],
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={},
+        diagnostics=diagnostics,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    envelope = row["info"]["diagnostics"]
+    assert envelope["error_category"] == "idle_timeout"
+    assert envelope["verifier_error_category"] == "verifier_timeout"
+    assert set(envelope["events"]) == {
+        "idle_timeout_info",
+        "verifier_timeout_info",
+    }
+    assert row["error"]["error"] == "agent_error"
+    assert row["stop_condition"] == "partial_trajectory"
+    assert row["info"]["training_ready"] is False
+
+
+def test_results_jsonl_preserves_category_without_typed_event(tmp_path):
+    """Guards PR #1038 (issue #1037): keep categories without event details."""
+    row = build_rollout_results_record(
+        tmp_path,
+        task_name="category-only-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=0,
+        prompts=["Diagnose the failure."],
+        trajectory=[],
+        partial_trajectory=True,
+        rewards=None,
+        error="unstructured agent failure",
+        verifier_error=None,
+        error_category="other",
+    )
+
+    assert row["info"]["diagnostics"] == {
+        "schema_version": 1,
+        "error_category": "other",
+    }
+
+
+def test_results_jsonl_uses_registry_precedence_for_same_channel(tmp_path):
+    """Guards PR #1038 (issue #1037): preserve registry category precedence."""
+    rollout_dir = tmp_path / "rollout-diagnostic-precedence"
+    rollout_dir.mkdir()
+    diagnostics = RolloutDiagnostics()
+    diagnostics.set(
+        TransportClosedDiagnostic(
+            process_exit_code=255,
+            transport_diagnosis="process_exited",
+        )
+    )
+    diagnostics.set(IdleTimeoutDiagnostic(idle_duration_sec=121))
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="diagnostic-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=0,
+        prompts=["Diagnose the failure."],
+        error="multiple typed failures",
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={},
+        diagnostics=diagnostics,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    envelope = row["info"]["diagnostics"]
+    assert envelope["error_category"] == "idle_timeout"
+    assert list(envelope["events"]) == ["idle_timeout_info", "transport_error_info"]
 
 
 def test_results_jsonl_fails_closed_on_partial_rollout_with_llm_steps(tmp_path):
@@ -600,11 +831,393 @@ def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
 
     artifact = rollout_dir / "results.jsonl"
     row = json.loads(artifact.read_text())
-    assert row["prompt"] == [{"role": "user", "content": "List files."}]
+    # The prompt comes from the canonical exchange: the second system prompt,
+    # remapped to "user" (system is allowed only first), then the instruction.
+    # The window keeps every user message just before the
+    # agent's turn, so a remapped notice never drops the task text.
+    assert row["prompt"] == [
+        {"role": "user", "content": "Second system prompt."},
+        {"role": "user", "content": "List files."},
+    ]
     assert row["trajectory"][0]["prompt"][0]["role"] == "system"
     assert row["trajectory"][0]["prompt"][1]["role"] == "user"
     assert row["info"]["training_ready"] is True
     assert validate_prime_sft_jsonl(artifact, expected_rows=1)["ok"] is True
+
+
+def test_results_jsonl_keeps_all_repaired_exchanges_and_disabled_truncation(
+    tmp_path,
+):
+    """Guards PR #921 MAX canary against silent exchange loss."""
+    rollout_dir = tmp_path / "rollout-max-multi-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    first = _llm_exchange()
+    first["response"]["body"]["truncation"] = "disabled"
+    second = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "README.md"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "pyproject.toml",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    second["response"]["body"]["truncation"] = "disabled"
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(first) + "\n" + json.dumps(second) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        total_tokens=26,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 2
+    assert all(step["is_truncated"] is False for step in row["trajectory"])
+    assert {tool["function"]["name"] for tool in row["tool_defs"]} == {"terminal"}
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["completion"][1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "README.md\npyproject.toml",
+    }
+    assert row["completion"][-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_results_jsonl_fails_closed_when_successful_exchange_is_omitted(tmp_path):
+    """Guards PR #921 MAX canary against green rows with dropped exchanges."""
+    rollout_dir = tmp_path / "rollout-invalid-later-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    invalid = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {"role": "tool", "tool_call_id": "orphan", "content": "README.md"},
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(_llm_exchange()) + "\n" + json.dumps(invalid) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "export_error"
+    assert "Successful LLM exchanges were omitted" in row["error"]["error_chain_str"]
+
+
+def test_results_jsonl_excludes_recovered_incomplete_provider_exchange(tmp_path):
+    """Guards PR #921 MAX canary content-filter recovery semantics."""
+    rollout_dir = tmp_path / "rollout-recovered-incomplete"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    incomplete = _llm_exchange()
+    incomplete["response"]["body"].update(
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"},
+            "truncation": "disabled",
+        }
+    )
+    completed = _llm_exchange(assistant={"role": "assistant", "content": "Recovered."})
+    completed["response"]["body"].update(
+        {
+            "status": "completed",
+            "incomplete_details": None,
+            "truncation": "disabled",
+        }
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(incomplete) + "\n" + json.dumps(completed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["trajectory"][0]["is_truncated"] is False
+
+
+def test_results_jsonl_keeps_latest_completed_duplicate_request(tmp_path):
+    """Guards PR #921 MAX canary against late retry race responses."""
+    rollout_dir = tmp_path / "rollout-duplicate-completed-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    abandoned = _llm_exchange(
+        assistant={"role": "assistant", "content": "Abandoned response."}
+    )
+    consumed = _llm_exchange(
+        assistant={"role": "assistant", "content": "Consumed retry."}
+    )
+    assert abandoned["request"]["body"] == consumed["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(abandoned) + "\n" + json.dumps(consumed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["completion"] == [{"role": "assistant", "content": "Consumed retry."}]
+
+
+def test_results_jsonl_prefers_duplicate_consumed_by_later_request(tmp_path):
+    """Guards PR #921 against keeping a late abandoned response."""
+    rollout_dir = tmp_path / "rollout-consumed-duplicate-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    abandoned = _llm_exchange()
+    abandoned["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_abandoned"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_consumed",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    assert consumed["request"]["body"] == abandoned["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in (consumed, abandoned, followup)) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert [step["extras"]["exchange_index"] for step in row["trajectory"]] == [
+        0,
+        2,
+    ]
+
+
+def test_results_drop_unique_late_unconsumed_nonterminal_retry():
+    """Guards PR #921 against the adaptive-cruise exchange-59 regression."""
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            consumed["response"]["body"]["choices"][0]["message"],
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Continuing."},
+    )
+    late = _llm_exchange()
+    late["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Late retry request."}
+    )
+    late["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_late"
+    )
+    terminal = _llm_exchange(
+        assistant={
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_finish",
+                    "type": "function",
+                    "function": {"name": "finish", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    terminal["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Final response."}
+    )
+
+    assert _training_success_exchange_indices([consumed, followup, late, terminal]) == {
+        0,
+        1,
+        3,
+    }
+
+
+def test_results_jsonl_preserves_llm_exchange_metadata(tmp_path):
+    """Guards PR #925: trainer conversion retains LLM call purpose metadata."""
+    rollout_dir = tmp_path / "rollout-call-purpose"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    exchange = _llm_exchange()
+    exchange["metadata"] = {
+        "call_purpose": "agent",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+    }
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(exchange) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="opencode",
+        agent_name="OpenCode",
+        model="glm/glm-5.1",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["trajectory"][0]["extras"] == {
+        "source": "llm_trajectory",
+        "tracking_source": "litellm_callback",
+        "exchange_index": 0,
+        "call_purpose": "agent",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+    }
 
 
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
@@ -713,7 +1326,8 @@ def test_build_rollout_result_results_jsonl_is_unhealthy_without_llm(tmp_path):
     assert row["prompt"] == [{"role": "user", "content": "Solve this."}]
     assert row["completion"] is None
     assert row["trajectory"] == []
-    assert row["reward"] == 0.0
+    # No verdict is unscored, never 0.
+    assert row["reward"] is None
     assert row["error"]["error"] == "agent_error"
     assert row["info"]["training_ready"] is False
     assert (
@@ -723,6 +1337,83 @@ def test_build_rollout_result_results_jsonl_is_unhealthy_without_llm(tmp_path):
     assert row["is_completed"] is False
     assert row["is_truncated"] is True
     assert row["stop_condition"] == "partial_trajectory"
+
+
+def test_native_subscription_without_llm_is_completed_but_not_training_ready(
+    tmp_path,
+):
+    """Guards this PR's native-subscription result semantics."""
+    rollout_dir = tmp_path / "native-subscription"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="subscription-task",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="Claude Agent",
+        model="claude-opus-5",
+        n_tool_calls=1,
+        prompts=["Solve this."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={"agent_execution": 1.0, "verifier": 1.0},
+        n_input_tokens=11,
+        n_output_tokens=6,
+        total_tokens=17,
+        usage_source="agent_native_acp",
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"] is None
+    assert row["trajectory"] == []
+    assert row["info"]["training_ready"] is False
+    assert (
+        row["info"]["training_ready_reason"]
+        == "missing_healthy_structured_llm_trajectory"
+    )
+    assert row["error"] is None
+    assert row["is_completed"] is True
+    assert row["is_truncated"] is False
+    assert row["stop_condition"] == "agent_completed"
+
+
+def test_native_subscription_without_llm_preserves_terminal_errors(tmp_path):
+    """Guards this PR against hiding native-subscription verifier failures."""
+    rollout_dir = tmp_path / "native-subscription-error"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="subscription-task",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="Claude Agent",
+        model="claude-opus-5",
+        n_tool_calls=1,
+        prompts=["Solve this."],
+        error=None,
+        verifier_error="verifier crashed",
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={"agent_execution": 1.0},
+        n_input_tokens=11,
+        n_output_tokens=6,
+        total_tokens=17,
+        usage_source="agent_native_acp",
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["error"]["error"] == "verifier_error"
+    assert row["is_completed"] is False
 
 
 def test_results_jsonl_token_usage_falls_back_to_provider_total(tmp_path):
@@ -806,6 +1497,41 @@ def test_write_job_results_jsonl_groups_example_ids_by_task(tmp_path):
     assert [row["info"]["task_id"] for row in rows] == ["task-a", "task-a", "task-b"]
     assert [row["example_id"] for row in rows] == [0, 0, 1]
     assert not (job_dir / JOB_RESULTS_ERRORS_FILENAME).exists()
+
+
+def test_write_job_results_jsonl_preserves_diagnostics_block(tmp_path):
+    """Guards PR #1038 (issue #1037): aggregation retains diagnostics."""
+    job_dir = tmp_path / "job"
+    rollout_dir = job_dir / "task-a__trial-1"
+    rollout_dir.mkdir(parents=True)
+    diagnostics = {
+        "schema_version": 1,
+        "error_category": "idle_timeout",
+        "events": {
+            "idle_timeout_info": {
+                "channel": "error",
+                "category": "idle_timeout",
+                "details": {"idle_duration_sec": 121},
+            }
+        },
+    }
+    (rollout_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": None,
+                "reward": 0.0,
+                "info": {"task_id": "task-a", "diagnostics": diagnostics},
+            }
+        )
+        + "\n"
+    )
+
+    out = write_job_results_jsonl(job_dir)
+
+    assert out is not None
+    row = json.loads(out.read_text())
+    assert row["info"]["diagnostics"] == diagnostics
 
 
 def test_write_job_results_jsonl_surfaces_skipped_malformed_rows(tmp_path):

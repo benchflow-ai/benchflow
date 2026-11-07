@@ -55,9 +55,12 @@ async def test_rollout_name_alone_does_not_warn(monkeypatch, tmp_path):
     seen: dict = {}
     _patch_create(monkeypatch, seen)
 
+    # Constructing the shim warns (the class is deprecated); only run() must not.
+    with pytest.warns(DeprecationWarning, match="SDK is deprecated"):
+        sdk = SDK()
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
-        await SDK().run(task_path=tmp_path, rollout_name="new-rollout")
+        await sdk.run(task_path=tmp_path, rollout_name="new-rollout")
 
     assert seen["config"].rollout_name == "new-rollout"
 

@@ -16,13 +16,30 @@ job; these primitives stay pure and independently testable.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from benchflow.environment.protocol import StateSnapshot
+from benchflow.sandbox.protocol import SandboxImage
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 
 _SNAPSHOT_KEY = "snapshot"
 _REWARD_KEY = "reward"
+
+
+# Composed primitives adapted from JeremyJC67, PR #1046.
+@dataclass(frozen=True)
+class StageSnapshot:
+    """A composed checkpoint — one ref per snapshot layer.
+
+    ``environment_ref`` and ``sandbox_ref`` each hold that layer's roll-back
+    handle iff the layer was requested at checkpoint time; ``None`` means the
+    layer was *not requested*, and :func:`restore_composed` rejects a live
+    object for it.
+    """
+
+    environment_ref: StateSnapshot | None
+    sandbox_ref: SandboxImage | None
 
 
 async def checkpoint(node: RolloutNode, environment: Any) -> StateSnapshot:
@@ -36,6 +53,33 @@ async def checkpoint(node: RolloutNode, environment: Any) -> StateSnapshot:
     return snap
 
 
+async def checkpoint_composed(
+    node: RolloutNode,
+    *,
+    environment: Any = None,
+    sandbox: Any = None,
+) -> StageSnapshot:
+    """Snapshot the requested layers at ``node`` — the composed checkpoint.
+
+    Layer order is fixed: ``environment.snapshot()`` first, then
+    ``sandbox.snapshot()``. A layer is included iff its live object is passed
+    (``None`` = layer not requested); quiescing the agent first is the
+    engine's job, not this op's. If either layer's snapshot raises, the error
+    propagates and *nothing* is recorded on ``node`` — a partial
+    :class:`StageSnapshot` is never a roll-back point.
+    """
+    if environment is None and sandbox is None:
+        raise ValueError(
+            "checkpoint_composed() needs at least one layer — pass "
+            "environment=, sandbox=, or both"
+        )
+    env_ref = await environment.snapshot() if environment is not None else None
+    sandbox_ref = await sandbox.snapshot() if sandbox is not None else None
+    snap = StageSnapshot(environment_ref=env_ref, sandbox_ref=sandbox_ref)
+    node.state[_SNAPSHOT_KEY] = snap
+    return snap
+
+
 def fork(tree: RolloutTree, node: RolloutNode, n: int) -> list[RolloutNode]:
     """Fork ``node`` into ``n`` child continuations, making it a branch point."""
     if n < 2:
@@ -44,13 +88,83 @@ def fork(tree: RolloutTree, node: RolloutNode, n: int) -> list[RolloutNode]:
 
 
 async def restore(node: RolloutNode, environment: Any) -> None:
-    """Roll the environment back to ``node``'s recorded checkpoint."""
+    """Roll the environment back to ``node``'s recorded checkpoint.
+
+    Legacy environment-only restore: it accepts the bare ``StateSnapshot``
+    recorded by :func:`checkpoint`. A :class:`StageSnapshot` recorded by
+    :func:`checkpoint_composed` is rejected *before* the environment is
+    touched — its layer refs are not an environment snapshot, and passing
+    one through would fail deep inside the environment implementation.
+    """
     snap = node.state.get(_SNAPSHOT_KEY)
     if snap is None:
         raise ValueError(
             f"node {node.id!r} has no checkpoint — call checkpoint() before restore()"
         )
+    if isinstance(snap, StageSnapshot):
+        raise ValueError(
+            f"node {node.id!r} was checkpointed with checkpoint_composed(); "
+            "use restore_composed() to roll back a composed StageSnapshot"
+        )
     await environment.restore(snap)
+
+
+async def restore_composed(
+    node: RolloutNode,
+    *,
+    environment: Any = None,
+    sandbox: Any = None,
+) -> None:
+    """Roll the requested layers back to ``node``'s composed checkpoint.
+
+    Restore order is the reverse of checkpoint:
+    ``sandbox.restore()`` first, then ``environment.restore()``. Accepts both
+    checkpoint shapes on ``node.state["snapshot"]`` — a legacy bare
+    :class:`StateSnapshot` recorded by :func:`checkpoint` (environment-only)
+    or a :class:`StageSnapshot`. Every layer present in the checkpoint must be
+    matched by its live object and vice versa; a mismatch is a caller bug and
+    raises ``ValueError`` before either layer is touched.
+    """
+    snap = node.state.get(_SNAPSHOT_KEY)
+    if snap is None:
+        raise ValueError(
+            f"node {node.id!r} has no checkpoint — call checkpoint_composed() "
+            "before restore_composed()"
+        )
+    if isinstance(snap, StateSnapshot):
+        # Legacy shape: checkpoint() recorded a bare env-state snapshot.
+        snap = StageSnapshot(environment_ref=snap, sandbox_ref=None)
+    elif not isinstance(snap, StageSnapshot):
+        raise ValueError(
+            f"node {node.id!r} holds an unrecognized checkpoint of type "
+            f"{type(snap).__name__!r} — expected StateSnapshot or StageSnapshot"
+        )
+    if snap.environment_ref is None and snap.sandbox_ref is None:
+        raise ValueError("composed checkpoint has no snapshot layers")
+    # Validate layer agreement before mutation; runtime restore failures propagate.
+    for layer, ref, live in (
+        ("sandbox", snap.sandbox_ref, sandbox),
+        ("environment", snap.environment_ref, environment),
+    ):
+        if ref is not None and live is None:
+            raise ValueError(
+                f"node {node.id!r}'s checkpoint has a {layer} layer but no "
+                f"live {layer} was passed to restore_composed()"
+            )
+        if ref is None and live is not None:
+            raise ValueError(
+                f"a live {layer} was passed to restore_composed() but node "
+                f"{node.id!r}'s checkpoint has no {layer} layer"
+            )
+    if snap.sandbox_ref is not None:
+        await sandbox.restore(snap.sandbox_ref)
+    if snap.environment_ref is not None:
+        restore_environment = environment.restore
+        if snap.sandbox_ref is not None:
+            restore_environment = getattr(
+                environment, "restore_after_sandbox_restore", restore_environment
+            )
+        await restore_environment(snap.environment_ref)
 
 
 async def branch(

@@ -1,0 +1,361 @@
+{
+  "overall_passed": false,
+  "overall_status": "incomplete",
+  "incomplete_scans": [
+    "semgrep",
+    "gitleaks"
+  ],
+  "total_validators": 11,
+  "total_skipped": 0,
+  "total_advisory_skipped": 0,
+  "total_errors": 5,
+  "total_warnings": 24,
+  "severity_counts": {
+    "critical": 0,
+    "high": 2,
+    "medium": 11,
+    "low": 12
+  },
+  "benchmark_policy": {
+    "tier2_required": true,
+    "tier3_required": true
+  },
+  "publication_status": "incomplete",
+  "publication": {
+    "status": "incomplete",
+    "eligible": false,
+    "reasons": [
+      "One or more validators reported incomplete scanner evidence."
+    ],
+    "tier3": {
+      "status": "not_run",
+      "evidence_complete": false,
+      "execution_status": "not_run",
+      "verdict": "not_run",
+      "reason": "Tier 3 lacks publication-complete execution evidence."
+    }
+  },
+  "skills": [
+    {
+      "name": "citation-management",
+      "passed": false,
+      "issue_count": 25
+    }
+  ],
+  "results": [
+    {
+      "validator": "Schema & Repository Governance",
+      "description": "Validate SKILL.md frontmatter and repository structure",
+      "passed": false,
+      "status": "failed",
+      "skipped": false,
+      "skip_reason": null,
+      "incomplete_scans": [],
+      "summary": {
+        "files_scanned": 0,
+        "checks_performed": 7,
+        "errors": 1,
+        "warnings": 4,
+        "critical_count": 0,
+        "high_count": 1,
+        "medium_count": 3,
+        "low_count": 0
+      },
+      "findings": [
+        {
+          "category": "SCHEMA",
+          "severity": "medium",
+          "check_name": "body_recommended_section",
+          "message": "Missing recommended section: '## Examples'",
+          "file_path": "SKILL.md",
+          "line_number": null,
+          "line_content": null,
+          "suggestion": "Consider adding a '## Examples' section. If examples are already inline under instructions, this can be skipped.",
+          "metadata": {
+            "missing_section": "## Examples"
+          }
+        },
+        {
+          "category": "SCHEMA",
+          "severity": "high",
+          "check_name": "author_missing",
+          "message": "Author not specified in metadata",
+          "file_path": "SKILL.md",
+          "line_number": null,
+          "line_content": null,
+          "suggestion": "Add 'metadata.author' field with format 'Name <email@example.com>'",
+          "metadata": {
+            "profile": "external"
+          }
+        }
+      ],
+      "success_details": [
+        {
+          "check": "manifest_exists",
+          "message": "Found skill manifest: SKILL.md",
+          "metadata": null
+        }
+      ],
+      "legacy": {
+        "errors": [
+          "[SCHEMA-HIGH] Author not specified in metadata in SKILL.md"
+        ],
+        "warnings": [
+          "[SCHEMA-MEDIUM] Missing recommended section: '## Examples' in SKILL.md",
+          "Workflow scope: llm skipped. LLM checks disabled by --no-llm."
+        ],
+        "messages": [
+          "[OK] manifest_exists: Found skill manifest: SKILL.md",
+          "[OK] frontmatter_valid: Valid frontmatter for skill 'citation-management'",
+          "[OK] folder_hierarchy: Valid general skill structure: ",
+          "[OK] naming_convention: Folder name 'citation-management' follows kebab-case convention"
+        ]
+      },
+      "gating": {
+        "tier": 1,
+        "blocking": true
+      },
+      "publication_target": {
+        "skill_name": "citation-management",
+        "skill_digest": "sha256:e7b53f745895dcae276582a02303ca281288276652d905a4dbdf07d4ce4f64b4",
+        "skill_digest_algorithm": "skill-evaluator-source-tree/2"
+      },
+      "publication_evidence": {
+        "schema_version": 1,
+        "producer": "skillevaluator.tier1",
+        "tier": 1,
+        "check_id": "schema"
+      },
+      "workflow": {
+        "tier": 1,
+        "stages": {
+          "validation": {
+            "status": "incomplete"
+          },
+          "llm": {
+            "status": "skipped",
+            "reason": "LLM checks disabled by --no-llm."
+          }
+        }
+      }
+    },
+    {
+      "validator": "Code Risk Analysis",
+      "description": "Static code analysis using Bandit and packaged Semgrep rules",
+      "passed": false,
+      "status": "incomplete",
+      "skipped": false,
+      "skip_reason": null,
+      "incomplete_scans": [
+        "semgrep"
+      ],
+      "summary": {
+        "files_scanned": 0,
+        "checks_performed": 0,
+        "errors": 3,
+        "warnings": 1,
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 3,
+        "low_count": 0
+      },
+      "findings": [
+        {
+          "category": "BANDIT",
+          "severity": "medium",
+          "check_name": "B314:blacklist",
+          "message": "Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called (CWE-20)",
+          "file_path": "scripts/extract_metadata.py",
+          "line_number": 164,
+          "line_content": null,
+          "suggestion": "Review blacklist (B314) (CWE-20)",
+          "metadata": {
+            "cwe": 20
+          }
+        }
+      ],
+      "success_details": [],
+      "legacy": {
+        "errors": [
+          "[BANDIT-MEDIUM] Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called (CWE-20) in scripts/extract_metadata.py:164"
+        ],
+        "warnings": [
+          "semgrep not installed. Install Semgrep separately with: brew install semgrep (macOS) or uv tool install semgrep"
+        ],
+        "messages": [
+          "Found 6 Python, 0 Shell, 0 JavaScript/TypeScript files",
+          "Bandit found: 0 HIGH, 3 MEDIUM, 0 LOW"
+        ]
+      },
+      "gating": {
+        "tier": 1,
+        "blocking": true
+      },
+      "publication_target": {
+        "skill_name": "citation-management",
+        "skill_digest": "sha256:e7b53f745895dcae276582a02303ca281288276652d905a4dbdf07d4ce4f64b4",
+        "skill_digest_algorithm": "skill-evaluator-source-tree/2"
+      },
+      "publication_evidence": {
+        "schema_version": 1,
+        "producer": "skillevaluator.tier1",
+        "tier": 1,
+        "check_id": "code-integrity"
+      },
+      "workflow": {
+        "tier": 1,
+        "stages": {
+          "validation": {
+            "status": "incomplete"
+          },
+          "llm": {
+            "status": "skipped",
+            "reason": "LLM checks disabled by --no-llm."
+          }
+        }
+      }
+    },
+    {
+      "validator": "Secrets Detection",
+      "description": "Detect hardcoded secrets, API keys, and credentials using Gitleaks",
+      "passed": false,
+      "status": "incomplete",
+      "skipped": false,
+      "skip_reason": null,
+      "incomplete_scans": [
+        "gitleaks"
+      ],
+      "summary": {
+        "files_scanned": 0,
+        "checks_performed": 0,
+        "errors": 0,
+        "warnings": 1,
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0
+      },
+      "findings": [],
+      "success_details": [],
+      "legacy": {
+        "errors": [],
+        "warnings": [
+          "gitleaks not installed - secrets scanning skipped. Install with: brew install gitleaks (macOS) or go install github.com/gitleaks/gitleaks/v8@latest"
+        ],
+        "messages": []
+      },
+      "gating": {
+        "tier": 1,
+        "blocking": true
+      },
+      "publication_target": {
+        "skill_name": "citation-management",
+        "skill_digest": "sha256:e7b53f745895dcae276582a02303ca281288276652d905a4dbdf07d4ce4f64b4",
+        "skill_digest_algorithm": "skill-evaluator-source-tree/2"
+      },
+      "publication_evidence": {
+        "schema_version": 1,
+        "producer": "skillevaluator.tier1",
+        "tier": 1,
+        "check_id": "code-integrity"
+      },
+      "workflow": {
+        "tier": 1,
+        "stages": {
+          "validation": {
+            "status": "incomplete"
+          },
+          "llm": {
+            "status": "skipped",
+            "reason": "LLM checks disabled by --no-llm."
+          }
+        }
+      }
+    },
+    {
+      "validator": "QUALITY",
+      "description": "Skill quality scoring across Correctness (35%), Discoverability (25%), Reliability (25%), and Efficiency (15%)",
+      "passed": false,
+      "status": "failed",
+      "skipped": false,
+      "skip_reason": null,
+      "incomplete_scans": [],
+      "summary": {
+        "files_scanned": 0,
+        "checks_performed": 1,
+        "errors": 1,
+        "warnings": 11,
+        "critical_count": 0,
+        "high_count": 1,
+        "medium_count": 5,
+        "low_count": 6
+      },
+      "findings": [
+        {
+          "category": "QUALITY",
+          "severity": "high",
+          "check_name": "quality_efficiency",
+          "message": "Large skill (8352 tokens, recommended max <5000). Per agentskills.io, SKILL.md should be concise (~500 lines) — large skill bodies increase token cost after invocation; long or unfocused top-level descriptions can degrade agent routing accuracy",
+          "file_path": "SKILL.md",
+          "line_number": null,
+          "line_content": null,
+          "suggestion": "Keep required sections concise; move detailed examples, reference material, and supporting docs to the references/ directory",
+          "metadata": {
+            "dimension": "efficiency",
+            "deduction": 15
+          }
+        }
+      ],
+      "success_details": [
+        {
+          "check": "quality_score",
+          "message": "Score: 78.5/100 (Grade: C)",
+          "metadata": null
+        }
+      ],
+      "legacy": {
+        "errors": [
+          "[QUALITY-HIGH] Large skill (8352 tokens, recommended max <5000). Per agentskills.io, SKILL.md should be concise (~500 lines) — large skill bodies increase token cost after invocation; long or unfocused top-level descriptions can degrade agent routing accuracy in SKILL.md"
+        ],
+        "warnings": [],
+        "messages": [
+          "[OK] quality_score: Score: 78.5/100 (Grade: C)"
+        ]
+      },
+      "gating": {
+        "tier": 1,
+        "blocking": true
+      },
+      "publication_target": {
+        "skill_name": "citation-management",
+        "skill_digest": "sha256:e7b53f745895dcae276582a02303ca281288276652d905a4dbdf07d4ce4f64b4",
+        "skill_digest_algorithm": "skill-evaluator-source-tree/2"
+      },
+      "publication_evidence": {
+        "schema_version": 1,
+        "producer": "skillevaluator.tier1",
+        "tier": 1,
+        "check_id": "quality"
+      },
+      "workflow": {
+        "tier": 1,
+        "stages": {
+          "validation": {
+            "status": "incomplete"
+          },
+          "llm": {
+            "status": "skipped",
+            "reason": "LLM checks disabled by --no-llm."
+          }
+        }
+      }
+    }
+  ],
+  "quality_summary": [
+    {
+      "overall_score": 78.5,
+      "grade": "C",
+      "skill_name": "citation-management"
+    }
+  ]
+}

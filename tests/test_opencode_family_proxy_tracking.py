@@ -6,22 +6,31 @@ Responses API for the built-in ``openai`` provider id, which the LiteLLM gateway
 (chat-completions only) cannot serve — so the gateway alias never routes through
 the usage proxy and no ``trajectory/llm_trajectory.jsonl`` is written (which
 ``benchflow-experiment-review`` requires). The fix installs a ``-proxy`` wrapper
-under ``/opt/benchflow/bin`` that, in proxy mode, registers the gateway alias
+under ``/opt/runtime/bin`` that, in proxy mode, registers the gateway alias
 under a dedicated ``@ai-sdk/openai-compatible`` provider id
 (``OPENCODE_PROXY_PROVIDER_ID``) before exec'ing the isolated binary.
 """
 
 import base64
+import json
+import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
 from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 
+# The variable the runtime sets and the -proxy wrapper reads for OpenCode's
+# Gemini pass-through (registry.OPENCODE_GOOGLE_BASE_URL_ENV), spelled out so
+# the file loads on a registry that lacks it and the tests fail on behavior.
+OPENCODE_GOOGLE_BASE_URL_ENV = "RUNTIME_OPENCODE_GOOGLE_BASE_URL"
+
 # (agent name, proxy wrapper binary, agent config filename). MiMo is an
 # OpenCode fork, but the current agents-manifest path launches it directly via
 # `mimo acp` and writes its proxy config from launch_cmd, not an installed
-# /opt/benchflow/bin/*-proxy wrapper.
+# /opt/runtime/bin/*-proxy wrapper.
 CASES = [
     ("opencode", "opencode-proxy", "opencode.json"),
 ]
@@ -42,7 +51,7 @@ def test_proxy_wrapper_registers_gateway_alias_under_dedicated_provider(
     agent, wrapper_bin, cfg
 ):
     w = _wrapper_script(agent, wrapper_bin)
-    assert "BENCHFLOW_LITELLM_MODEL_ALIAS" in w  # gated on proxy mode
+    assert "RUNTIME_LITELLM_MODEL_ALIAS" in w  # gated on proxy mode
     assert cfg in w  # writes the agent's config
     for token in ("provider", OPENCODE_PROXY_PROVIDER_ID, "models"):
         assert token in w, f"{agent} wrapper missing {token!r}"
@@ -66,7 +75,7 @@ def test_proxy_wrapper_forces_chat_completions_sdk(agent, wrapper_bin, cfg):
     ``apiKey``."""
     w = _wrapper_script(agent, wrapper_bin)
     assert "@ai-sdk/openai-compatible" in w  # chat completions, not Responses API
-    assert '"npm"' in w
+    assert "prov.npm" in w
     assert "OPENAI_API_KEY" in w and "apiKey" in w
 
 
@@ -76,7 +85,7 @@ def test_format_acp_model_routes_proxy_alias_to_dedicated_provider():
     agents — NOT ``openai/<alias>`` (which crashes OpenCode's Responses path)."""
     from benchflow.acp.runtime import _format_acp_model
 
-    alias = "benchflow-deepseek-deepseek-v4-flash"
+    alias = "runtime-deepseek-deepseek-v4-flash"
     for agent in ("opencode", "mimo"):
         assert (
             _format_acp_model(alias, agent) == f"{OPENCODE_PROXY_PROVIDER_ID}/{alias}"
@@ -100,16 +109,26 @@ def test_proxy_wrapper_fails_loud_on_registration_error(agent, wrapper_bin, cfg)
     w = _wrapper_script(agent, wrapper_bin)
     assert "|| true" not in w
     assert "exit 1" in w
-    assert "if ! python3" in w
+    assert "if ! /opt/runtime/node/bin/node" in w
+
+
+@pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
+def test_proxy_wrapper_does_not_require_task_image_python(agent, wrapper_bin, cfg):
+    """OpenCode's proxy must work in non-Python task images (for example the
+    Spring Boot SkillsBench environment). Use BenchFlow's isolated Node runtime
+    instead of assuming a task image provides an executable ``python3``."""
+    w = _wrapper_script(agent, wrapper_bin)
+    assert "python3" not in w
+    assert "/opt/runtime/node/bin/node" in w
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
 def test_proxy_wrapper_resolves_config_under_agent_home(agent, wrapper_bin, cfg):
-    """The config file is resolved against ``$BENCHFLOW_AGENT_HOME`` (the same
+    """The config file is resolved against ``$RUNTIME_AGENT_HOME`` (the same
     home ``disallow_web_tools_setup_cmd``/``credential_files`` use) so all
     writers target one file even when the sandbox home differs from ``$HOME``."""
     w = _wrapper_script(agent, wrapper_bin)
-    assert "BENCHFLOW_AGENT_HOME" in w
+    assert "RUNTIME_AGENT_HOME" in w
     # relative config path joined onto the resolved home, not a baked ~ expansion
     assert cfg in w
 
@@ -119,17 +138,17 @@ def test_proxy_wrapper_is_conditional_and_execs_isolated_binary(
     agent, wrapper_bin, cfg
 ):
     w = _wrapper_script(agent, wrapper_bin)
-    assert '[ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]' in w  # no-op without alias
+    assert '[ -n "$RUNTIME_LITELLM_MODEL_ALIAS" ]' in w  # no-op without alias
     base = wrapper_bin[: -len("-proxy")]
-    assert f"exec /opt/benchflow/bin/{base} " in w  # execs the isolated binary
+    assert f"exec /opt/runtime/bin/{base} " in w  # execs the isolated binary
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
 def test_launch_entrypoint_stays_under_isolated_bin(agent, wrapper_bin, cfg):
     lc = AGENTS[agent].launch_cmd
     # keeps the JS-ACP isolated-runtime invariant (launch entrypoint under
-    # /opt/benchflow/bin)
-    assert lc.split()[0] == f"/opt/benchflow/bin/{wrapper_bin}"
+    # /opt/runtime/bin)
+    assert lc.split()[0] == f"/opt/runtime/bin/{wrapper_bin}"
     assert "acp" in lc
 
 
@@ -139,4 +158,73 @@ def test_wrapper_runs_native_binary_directly_not_via_node():
     `node` crashes with a SyntaxError at startup)."""
     w = _wrapper_script("opencode", "opencode-proxy")
     assert "head -c2" in w  # detect shebang vs native
-    assert "/opt/benchflow/js-agents/bin/opencode" in w  # direct native-exec path
+    assert "/opt/runtime/js-agents/bin/opencode" in w  # direct native-exec path
+
+
+def test_format_acp_model_sends_gemini_route_to_opencodes_google_provider():
+    """``gemini/<model>`` is LiteLLM's Google AI Studio route; OpenCode knows that
+    provider as models.dev's ``google`` and has no ``gemini`` provider."""
+    from benchflow.acp.runtime import _format_acp_model
+
+    assert (
+        _format_acp_model("gemini/gemini-4-argon", "opencode")
+        == "google/gemini-4-argon"
+    )
+    assert (
+        _format_acp_model("google/gemini-4-argon", "opencode")
+        == "google/gemini-4-argon"
+    )
+
+
+def _register_js(w: str) -> str:
+    return w.split("<<'JSEOF'\n", 1)[1].split("\nJSEOF\n", 1)[0]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_proxy_wrapper_points_opencodes_google_provider_at_the_gemini_passthrough(
+    tmp_path,
+):
+    """With the Gemini pass-through set, the wrapper gives OpenCode's built-in
+    ``google`` provider the gateway URL and key, keeps the rest of the config,
+    and registers no chat-completions alias."""
+    w = _wrapper_script("opencode", "opencode-proxy")
+    assert f'[ -n "${OPENCODE_GOOGLE_BASE_URL_ENV}" ]' in w
+    cfg = tmp_path / ".config" / "opencode" / "opencode.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"tools": {"webfetch": False}}))
+    env = {
+        "PATH": os.environ["PATH"],
+        "RUNTIME_AGENT_HOME": str(tmp_path),
+        OPENCODE_GOOGLE_BASE_URL_ENV: "http://127.0.0.1:4000/gemini/v1beta",
+        "GOOGLE_GENERATIVE_AI_API_KEY": "sk-gateway",
+    }
+    subprocess.run(["node", "-"], input=_register_js(w), text=True, env=env, check=True)
+    d = json.loads(cfg.read_text())
+    assert d["provider"]["google"]["options"] == {
+        "baseURL": "http://127.0.0.1:4000/gemini/v1beta",
+        "apiKey": "sk-gateway",
+    }
+    assert OPENCODE_PROXY_PROVIDER_ID not in d["provider"]
+    assert "small_model" not in d
+    assert d["tools"] == {"webfetch": False}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_proxy_wrapper_still_registers_the_alias_for_other_models(tmp_path):
+    w = _wrapper_script("opencode", "opencode-proxy")
+    env = {
+        "PATH": os.environ["PATH"],
+        "RUNTIME_AGENT_HOME": str(tmp_path),
+        "RUNTIME_LITELLM_MODEL_ALIAS": "runtime-deepseek-v4-flash",
+        "OPENAI_BASE_URL": "http://127.0.0.1:4000/v1",
+        "OPENAI_API_KEY": "sk-gateway",
+    }
+    subprocess.run(["node", "-"], input=_register_js(w), text=True, env=env, check=True)
+    d = json.loads((tmp_path / ".config" / "opencode" / "opencode.json").read_text())
+    prov = d["provider"][OPENCODE_PROXY_PROVIDER_ID]
+    assert prov["options"] == {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "sk-gateway",
+    }
+    assert "runtime-deepseek-v4-flash" in prov["models"]
+    assert "google" not in d["provider"]

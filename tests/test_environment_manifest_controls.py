@@ -2,7 +2,7 @@
 
 A RolloutConfig that carries an EnvironmentManifest must take effect:
 
-1. ``image`` overrides ``task.config.environment.docker_image`` so the
+1. ``image`` overrides ``task.config.sandbox.docker_image`` so the
    manifest — not the task's local Dockerfile — drives runtime image
    selection.
 2. ``task_selection`` (mechanism=env_var, inject_into=entrypoint) binds
@@ -12,7 +12,7 @@ A RolloutConfig that carries an EnvironmentManifest must take effect:
    environment can read declared host secrets/config.
 
 Before this fix the manifest was accepted but ignored — the sandbox was
-created from ``task.config.environment`` only, the env var never made it
+created from ``task.config.sandbox`` only, the env var never made it
 into the container, and host-side ``forward_env`` was never resolved.
 """
 
@@ -155,7 +155,7 @@ def test_manifest_image_overrides_task_docker_image(tmp_path):
     """Control point 1: manifest ``image`` wins over task.toml docker_image."""
     task_dir = _write_task(tmp_path)
     task = Task(task_dir)
-    assert task.config.environment.docker_image == "task-toml-image:latest"
+    assert task.config.sandbox.docker_image == "task-toml-image:latest"
 
     captured: dict = {}
 
@@ -176,7 +176,7 @@ def test_manifest_image_overrides_task_docker_image(tmp_path):
     # The sandbox sees the manifest's image, not the task.toml's.
     assert captured["task_env_config"].docker_image == "manifest-image:latest"
     # And the task's config is not mutated — the override is per-rollout.
-    assert task.config.environment.docker_image == "task-toml-image:latest"
+    assert task.config.sandbox.docker_image == "task-toml-image:latest"
 
 
 def test_manifest_task_selection_lands_in_sandbox_persistent_env(tmp_path, monkeypatch):

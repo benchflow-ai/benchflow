@@ -1,0 +1,95 @@
+{
+  "schema_version": "benchflow.assessment.acceptance-fixtures.v1",
+  "scope": "Pre-implementation contract cases for one saved-output blind pair.",
+  "shared": {
+    "assessment_id": "018f3bcc-4f4a-7a00-8000-000000000001",
+    "assignment_id": "018f3bcc-4f4a-7a00-8000-000000000002",
+    "reviewer_subject": "collector-subject:held-out-reviewer-01",
+    "presentation": {"A": "baseline-output-sha256", "B": "candidate-output-sha256"},
+    "rubric": {"id": "design-quality", "version": "2026-10-26.1", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "judge_protocol": {"id": "blind-pair", "version": "1", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  },
+  "cases": [
+    {
+      "id": "restart_preserves_assignment_after_compute_release",
+      "steps": [
+        {"kind": "assessment.created", "state": "awaiting_release"},
+        {"kind": "compute.released", "release_proof": "all recorded runtime allocations absent"},
+        {"kind": "assignment.issued", "assignment_id": "018f3bcc-4f4a-7a00-8000-000000000002", "presentation": {"A": "baseline-output-sha256", "B": "candidate-output-sha256"}},
+        {"kind": "collector.restart"},
+        {"kind": "assignment.reloaded", "assignment_id": "018f3bcc-4f4a-7a00-8000-000000000002", "presentation": {"A": "baseline-output-sha256", "B": "candidate-output-sha256"}}
+      ],
+      "expect": {"state": "awaiting_human", "new_compute_allocations": 0, "reduction": null}
+    },
+    {
+      "id": "identical_duplicate_is_idempotent",
+      "steps": [
+        {"kind": "assessment.created"},
+        {"kind": "compute.released"},
+        {"kind": "assignment.issued"},
+        {"kind": "review.submitted", "idempotency_key": "answer-1", "choice": "left", "event_id": "018f3bcc-4f4a-7a00-8000-000000000010"},
+        {"kind": "review.replayed", "idempotency_key": "answer-1", "choice": "left", "returns_event_id": "018f3bcc-4f4a-7a00-8000-000000000010"}
+      ],
+      "expect": {"answer_events": 1, "label_status": "ready", "value": 1.0}
+    },
+    {
+      "id": "conflicting_duplicate_is_rejected_without_append",
+      "steps": [
+        {"kind": "assessment.created"},
+        {"kind": "compute.released"},
+        {"kind": "assignment.issued"},
+        {"kind": "review.submitted", "idempotency_key": "answer-1", "choice": "left"},
+        {"kind": "review.conflict", "idempotency_key": "answer-1", "choice": "right", "http_status": 409, "appended": false}
+      ],
+      "expect": {"answer_events": 1, "label_status": "ready", "value": 1.0}
+    },
+    {
+      "id": "tie_reduces_to_half_without_scalar_reward_change",
+      "steps": [
+        {"kind": "assessment.created"},
+        {"kind": "compute.released"},
+        {"kind": "assignment.issued"},
+        {"kind": "review.submitted", "idempotency_key": "tie-1", "choice": "tie"}
+      ],
+      "expect": {"label_status": "ready", "value": 0.5, "legacy_reward_write": false, "rollout_stream_write": false}
+    },
+    {
+      "id": "abstention_is_withheld_not_zero_or_pending",
+      "steps": [
+        {"kind": "assessment.created"},
+        {"kind": "compute.released"},
+        {"kind": "assignment.issued"},
+        {"kind": "review.submitted", "idempotency_key": "abstain-1", "choice": "abstain", "reason": "insufficient visible evidence"}
+      ],
+      "expect": {"label_status": "withheld", "withheld_reason": "human_abstention", "has_numeric_value": false, "legacy_reward_write": false}
+    },
+    {
+      "id": "correction_creates_new_revision_and_preserves_consumed_label",
+      "steps": [
+        {"kind": "assessment.created"},
+        {"kind": "compute.released"},
+        {"kind": "assignment.issued"},
+        {"kind": "review.submitted", "idempotency_key": "answer-1", "choice": "left", "event_id": "018f3bcc-4f4a-7a00-8000-000000000020"},
+        {"kind": "label.reduced", "revision": 1, "value": 1.0, "label_id": "018f3bcc-4f4a-7a00-8000-000000000021"},
+        {"kind": "label.consumed", "label_id": "018f3bcc-4f4a-7a00-8000-000000000021", "consumer_id": "trainer-ledger:example-01", "consumer_receipt": "immutable-ledger-row"},
+        {"kind": "review.corrected", "idempotency_key": "correction-1", "supersedes_event_id": "018f3bcc-4f4a-7a00-8000-000000000020", "choice": "right"},
+        {"kind": "label.reduced", "revision": 2, "value": 0.0, "supersedes_revision": 1}
+      ],
+      "expect": {"old_consumption_mutated": false, "current_label_revision": 2, "current_value": 0.0, "consumer_disposition_required": true}
+    },
+    {
+      "id": "retraction_withdraws_future_use_without_deleting_history",
+      "steps": [
+        {"kind": "assessment.created"},
+        {"kind": "compute.released"},
+        {"kind": "assignment.issued"},
+        {"kind": "review.submitted", "idempotency_key": "answer-1", "choice": "left", "event_id": "018f3bcc-4f4a-7a00-8000-000000000030"},
+        {"kind": "label.reduced", "revision": 1, "value": 1.0, "label_id": "018f3bcc-4f4a-7a00-8000-000000000031"},
+        {"kind": "label.consumed", "label_id": "018f3bcc-4f4a-7a00-8000-000000000031", "consumer_id": "trainer-ledger:example-02", "consumer_receipt": "immutable-ledger-row"},
+        {"kind": "review.retracted", "target_event_id": "018f3bcc-4f4a-7a00-8000-000000000030", "reason": "reviewer withdrew decision"},
+        {"kind": "label.withdrawn", "label_id": "018f3bcc-4f4a-7a00-8000-000000000031", "consumer_disposition": "queued_compensation"}
+      ],
+      "expect": {"state": "withdrawn_for_future_use", "new_consumers_refused": true, "old_consumption_mutated": false, "numeric_label_available": false}
+    }
+  ]
+}

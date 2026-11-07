@@ -1,0 +1,2190 @@
+{
+  "python": {
+    "ACPClient": [
+      "subagent_transcript",
+      "transport",
+      "typed_failures"
+    ],
+    "ACPSession": [
+      "session_id"
+    ],
+    "AGENTS": [],
+    "Agent": [
+      "env",
+      "model",
+      "name"
+    ],
+    "AgentInstallError": [
+      "agent",
+      "diagnostics",
+      "log_path",
+      "return_code",
+      "stdout"
+    ],
+    "AgentTimeoutError": [
+      "agent",
+      "timeout_sec"
+    ],
+    "BaseUser": [],
+    "BashToolResult": [
+      "command",
+      "elapsed_sec",
+      "return_code",
+      "stderr",
+      "stdout"
+    ],
+    "BenchmarkMetrics": [
+      "agent",
+      "benchmark",
+      "model",
+      "tasks"
+    ],
+    "BranchChildResult": [
+      "advantage",
+      "cost",
+      "fork_id",
+      "label",
+      "parent_label",
+      "path",
+      "reward",
+      "reward_source",
+      "status"
+    ],
+    "BranchPlanError": [],
+    "BranchResult": [
+      "children",
+      "cost",
+      "error",
+      "fork_status",
+      "forks",
+      "job_dir",
+      "kept_snapshot",
+      "parent",
+      "parent_restore",
+      "parent_reward",
+      "rollout_dir",
+      "task",
+      "timing_sec",
+      "value"
+    ],
+    "Budget": [
+      "max_cost_usd",
+      "max_rollouts",
+      "max_sandbox_seconds",
+      "max_tokens"
+    ],
+    "ChildSpec": [
+      "label",
+      "parent",
+      "prompt"
+    ],
+    "CodeExecRewardFunc": [
+      "func"
+    ],
+    "Comparison": [
+      "a",
+      "a_paired",
+      "b",
+      "b_paired",
+      "by",
+      "caveats",
+      "include_controls",
+      "job_a",
+      "job_b",
+      "labels",
+      "mismatches",
+      "notes",
+      "rows",
+      "solve_rates_a",
+      "solve_rates_b",
+      "summary",
+      "vary"
+    ],
+    "ComparisonRow": [
+      "checks",
+      "group",
+      "n_a",
+      "n_b",
+      "reward_a",
+      "reward_b",
+      "scored_a",
+      "scored_b",
+      "status",
+      "task"
+    ],
+    "ComparisonSummary": [
+      "b_higher",
+      "b_lower",
+      "both_scored",
+      "mean_delta",
+      "one_run_per_side",
+      "only_a",
+      "only_b",
+      "paired",
+      "same_reward",
+      "setting_mismatches",
+      "tasks"
+    ],
+    "Completed": [
+      "config",
+      "index",
+      "result"
+    ],
+    "Criterion": [
+      "description",
+      "files",
+      "max",
+      "min",
+      "name",
+      "points",
+      "space",
+      "type",
+      "weight"
+    ],
+    "Denominators": [
+      "assessment_errors",
+      "attempted",
+      "clean_passed",
+      "clean_scored",
+      "controls_excluded",
+      "execution_errors",
+      "integration_failures",
+      "mean_reward",
+      "mean_reward_caveat",
+      "mean_reward_scored_only",
+      "passed",
+      "scored",
+      "unscored"
+    ],
+    "DocumentNudgeUser": [
+      "branch_execution",
+      "branchable",
+      "confirmation_policy",
+      "handoff_kind",
+      "handoff_team",
+      "persona",
+      "private_facts"
+    ],
+    "Environment": [
+      "inner",
+      "sandbox",
+      "task_path"
+    ],
+    "EnvironmentManifest": [
+      "base_image",
+      "forward_env",
+      "image",
+      "isolation",
+      "keep_alive",
+      "name",
+      "owns_lifecycle",
+      "ports",
+      "readiness",
+      "services",
+      "state",
+      "task_selection"
+    ],
+    "Evaluation": [
+      "budget",
+      "config",
+      "job_name",
+      "jobs_dir",
+      "on_plan",
+      "on_result",
+      "on_task_start",
+      "preflight",
+      "tasks_dir"
+    ],
+    "EvaluationConfig": [
+      "agent",
+      "agent_defaulted",
+      "agent_env",
+      "agent_idle_timeout",
+      "allow_cloud_metadata",
+      "base_image_override",
+      "budget",
+      "build_concurrency",
+      "checkpoint_keep",
+      "checkpoints",
+      "codex_apps_policy",
+      "concurrency",
+      "config_override",
+      "context_root",
+      "dataset_name",
+      "dataset_task_digests",
+      "dataset_version",
+      "environment",
+      "environment_manifest",
+      "exclude_tasks",
+      "extra_instruction",
+      "freeze_workspace",
+      "fresh_install",
+      "harness",
+      "include_tasks",
+      "integrity",
+      "job_mode",
+      "loop_strategy",
+      "model",
+      "n_tasks",
+      "pre_agent_hooks",
+      "prompts",
+      "reasoning_effort",
+      "retry",
+      "retry_from_checkpoint",
+      "retry_prompt",
+      "retry_resume_session",
+      "reviewer",
+      "sample_seed",
+      "sandbox_locked_paths",
+      "sandbox_setup_timeout",
+      "sandbox_user",
+      "seeds",
+      "self_gen_no_internet",
+      "separate_verifier",
+      "separate_verifier_include",
+      "skill_creator_dir",
+      "skill_mode",
+      "skills_dir",
+      "skip_agent_install",
+      "source_provenance",
+      "timeout_multiplier",
+      "usage_tracking",
+      "verifier_sandbox",
+      "warm_pool"
+    ],
+    "EvaluationResult": [
+      "budget",
+      "config",
+      "elapsed_sec",
+      "errored",
+      "failed",
+      "guard_refused",
+      "interrupted",
+      "job_dir",
+      "job_name",
+      "mean_reward",
+      "mean_reward_caveat",
+      "mean_reward_n",
+      "mean_reward_scored_only",
+      "mean_reward_scored_only_n",
+      "memory_score",
+      "memory_scores",
+      "not_run",
+      "passed",
+      "ran",
+      "results",
+      "reused",
+      "stopped",
+      "task_failures",
+      "total",
+      "verifier_errored"
+    ],
+    "ExecResult": [
+      "return_code",
+      "stderr",
+      "stdout"
+    ],
+    "Fork": [
+      "children",
+      "cost",
+      "id",
+      "kind",
+      "parent_node",
+      "parent_restore",
+      "snapshot",
+      "status",
+      "timing_sec",
+      "value"
+    ],
+    "FunctionUser": [
+      "fn"
+    ],
+    "GroupDenominators": [
+      "denominators",
+      "key"
+    ],
+    "ImageBuilder": [
+      "args",
+      "kwargs"
+    ],
+    "ImageConfig": [
+      "build_args",
+      "cache_key",
+      "context_dir",
+      "dockerfile"
+    ],
+    "ImageRef": [
+      "digest",
+      "tag"
+    ],
+    "InspectAdapter": [
+      "rubric",
+      "scene"
+    ],
+    "Job": [
+      "evaluation",
+      "interrupted",
+      "path",
+      "summary",
+      "trials"
+    ],
+    "JudgeConfig": [
+      "files",
+      "mode",
+      "model",
+      "timeout"
+    ],
+    "LLMJudgeRewardFunc": [
+      "criteria",
+      "judge_env",
+      "judge_errors_are_infra",
+      "judge_model",
+      "mode",
+      "model",
+      "prompt",
+      "rubric_path"
+    ],
+    "ModelDocumentNudgeUser": [
+      "branch_execution",
+      "branchable",
+      "call_model",
+      "confirmation_policy",
+      "handoff_kind",
+      "handoff_team",
+      "model",
+      "persona",
+      "private_facts"
+    ],
+    "Monitor": [
+      "config"
+    ],
+    "MonitorConfig": [
+      "jobs_dir",
+      "metadata",
+      "rubric_path",
+      "run_name",
+      "source"
+    ],
+    "MonitorNotImplementedError": [],
+    "MonitorResult": [
+      "alert",
+      "artifact_dir",
+      "error",
+      "finished_at",
+      "metadata",
+      "rewards",
+      "run_name",
+      "source",
+      "started_at",
+      "trajectory",
+      "verifier_error"
+    ],
+    "ORSAdapter": [],
+    "PassthroughUser": [],
+    "PathReward": [
+      "func",
+      "source"
+    ],
+    "PublicationDecision": [
+      "values"
+    ],
+    "RegradeSummary": [
+      "path",
+      "reason",
+      "regrade_id",
+      "tasks_dir",
+      "trials"
+    ],
+    "Results": [
+      "iterable"
+    ],
+    "RetryConfig": [
+      "exclude_categories",
+      "max_retries",
+      "max_wait_sec",
+      "min_wait_sec",
+      "retry_on_acp",
+      "retry_on_api_error",
+      "retry_on_idle_timeout",
+      "retry_on_infra",
+      "retry_on_install",
+      "retry_on_pipe",
+      "retry_on_verifier_infra",
+      "wait_multiplier"
+    ],
+    "ReviewReport": [
+      "agent",
+      "criteria",
+      "environment",
+      "job_summary",
+      "model",
+      "network",
+      "path",
+      "rubric_path",
+      "trials"
+    ],
+    "ReviewRubric": [
+      "criteria"
+    ],
+    "ReviewRubricCriterion": [
+      "blocker",
+      "description",
+      "guidance",
+      "name",
+      "weight"
+    ],
+    "ReviewRubricError": [],
+    "ReviewScoring": [
+      "all_blockers_pass",
+      "decision",
+      "deterministic_pass",
+      "failed_blockers",
+      "gated_quality",
+      "max_weighted_points",
+      "raw_quality",
+      "weighted_points"
+    ],
+    "ReviewerConfig": [
+      "agent",
+      "agent_env",
+      "concurrency",
+      "environment",
+      "idle_timeout_sec",
+      "image",
+      "model",
+      "open_network",
+      "reasoning_effort",
+      "timeout_sec"
+    ],
+    "Reward": [
+      "args",
+      "kwargs"
+    ],
+    "RewardEvent": [
+      "granularity",
+      "reward",
+      "source",
+      "space",
+      "step",
+      "ts",
+      "type"
+    ],
+    "RewardFunc": [
+      "args",
+      "kwargs"
+    ],
+    "Role": [
+      "agent",
+      "capabilities",
+      "env",
+      "idle_timeout_sec",
+      "model",
+      "name",
+      "reasoning_effort",
+      "skills_dir",
+      "timeout_sec"
+    ],
+    "Rollout": [
+      "config"
+    ],
+    "RolloutConfig": [
+      "agent",
+      "agent_env",
+      "agent_idle_timeout",
+      "allow_cloud_metadata",
+      "allow_document_user",
+      "artifact_skill_mode",
+      "base_image_override",
+      "checkpoints",
+      "codex_apps_policy",
+      "concurrency",
+      "config_override",
+      "context_root",
+      "dataset",
+      "environment",
+      "environment_manifest",
+      "export_generated_skills_to",
+      "freeze_workspace",
+      "fresh_install",
+      "generated_skills_root",
+      "harness",
+      "integrity",
+      "job_name",
+      "jobs_dir",
+      "loop_strategy",
+      "max_user_rounds",
+      "model",
+      "oracle_access",
+      "parent_rollout",
+      "planes",
+      "pre_agent_hooks",
+      "prompt_suffix",
+      "prompts",
+      "purpose",
+      "reasoning_effort",
+      "reviewer",
+      "rollout_name",
+      "sandbox_locked_paths",
+      "sandbox_setup_timeout",
+      "sandbox_user",
+      "scenes",
+      "self_gen_no_internet",
+      "separate_verifier",
+      "separate_verifier_include",
+      "services",
+      "skill_creator_dir",
+      "skill_mode",
+      "skills_agent_derived",
+      "skills_dir",
+      "skip_agent_install",
+      "skip_verify",
+      "source_provenance",
+      "task_digest",
+      "task_path",
+      "timeout",
+      "uploads",
+      "usage_tracking",
+      "user",
+      "verifier_sandbox"
+    ],
+    "RolloutResult": [
+      "agent",
+      "agent_name",
+      "cost_usd",
+      "error",
+      "error_category",
+      "evolved_skills",
+      "export_error",
+      "finished_at",
+      "integrity",
+      "model",
+      "n_cache_creation_tokens",
+      "n_cache_read_tokens",
+      "n_input_tokens",
+      "n_output_tokens",
+      "n_prompts",
+      "n_skill_invocations",
+      "n_tool_calls",
+      "parent_rollout",
+      "partial_trajectory",
+      "price_source",
+      "purpose",
+      "retry",
+      "reward_events",
+      "rewards",
+      "rollout_dir",
+      "rollout_name",
+      "scoring",
+      "source_provenance",
+      "started_at",
+      "task_name",
+      "total_tokens",
+      "trajectory",
+      "trajectory_source",
+      "usage_details",
+      "usage_source",
+      "verifier_error",
+      "verifier_error_category"
+    ],
+    "RoundResult": [
+      "handoff_from",
+      "handoff_to",
+      "n_tool_calls",
+      "rewards",
+      "role",
+      "round",
+      "scene",
+      "trajectory",
+      "verifier_error",
+      "verifier_output"
+    ],
+    "Rubric": [
+      "reward_funcs",
+      "weights"
+    ],
+    "RubricConfig": [
+      "criteria",
+      "judge",
+      "scoring"
+    ],
+    "Runtime": [
+      "agent",
+      "config",
+      "env"
+    ],
+    "RuntimeConfig": [
+      "allow_cloud_metadata",
+      "base_image_override",
+      "codex_apps_policy",
+      "context_root",
+      "jobs_dir",
+      "max_rounds",
+      "pre_agent_hooks",
+      "reviewer",
+      "reward_stream",
+      "rollout_name",
+      "sandbox_locked_paths",
+      "sandbox_setup_timeout",
+      "sandbox_user",
+      "separate_verifier",
+      "separate_verifier_include",
+      "skill_mode",
+      "skills_dir",
+      "snapshot_policy",
+      "timeout",
+      "usage_tracking"
+    ],
+    "SDK": [],
+    "SERVICES": [],
+    "Sandbox": [
+      "args",
+      "kwargs"
+    ],
+    "SandboxExecResult": [
+      "return_code",
+      "stderr",
+      "stdout"
+    ],
+    "SandboxImage": [
+      "meta",
+      "provider",
+      "ref"
+    ],
+    "SandboxSnapshotNotSupported": [],
+    "Scene": [
+      "name",
+      "roles",
+      "skills_dir",
+      "turns"
+    ],
+    "ScoringConfig": [
+      "aggregation",
+      "threshold"
+    ],
+    "SettingCheck": [
+      "a",
+      "b",
+      "match",
+      "setting"
+    ],
+    "SettingMismatch": [
+      "a",
+      "b",
+      "setting",
+      "task"
+    ],
+    "SkillInfo": [
+      "compatibility",
+      "description",
+      "metadata",
+      "name",
+      "path",
+      "version"
+    ],
+    "StreamedRollout": [
+      "advantage",
+      "agent",
+      "calls",
+      "error",
+      "finished_at",
+      "group",
+      "group_complete",
+      "group_id",
+      "job",
+      "model",
+      "outcome",
+      "replaces",
+      "retried",
+      "reward",
+      "rollout",
+      "rollout_dir",
+      "rollout_path",
+      "sequences",
+      "task",
+      "token_capture"
+    ],
+    "StringMatchRewardFunc": [
+      "expected",
+      "fuzzy"
+    ],
+    "TASK_DOCUMENT_FILENAME": [],
+    "Task": [
+      "task_dir"
+    ],
+    "TaskConfig": [
+      "agent",
+      "artifacts",
+      "metadata",
+      "multi_step_reward_strategy",
+      "reward",
+      "sandbox",
+      "schema_version",
+      "solution",
+      "source",
+      "steps",
+      "task",
+      "verifier"
+    ],
+    "TaskDocument": [
+      "benchflow",
+      "body",
+      "config",
+      "frontmatter",
+      "instruction",
+      "path",
+      "role_prompts",
+      "roles",
+      "scene_prompts",
+      "scenes",
+      "user",
+      "user_persona"
+    ],
+    "TaskDocumentParseError": [],
+    "TaskRuntime": [
+      "config"
+    ],
+    "TaskRuntimeConfig": [
+      "base_image_override",
+      "codex_apps_policy",
+      "config_override",
+      "context_root",
+      "environment",
+      "environment_manifest",
+      "integrity",
+      "job_name",
+      "jobs_dir",
+      "planes",
+      "pre_agent_hooks",
+      "reviewer",
+      "rollout_name",
+      "runtime_label",
+      "sandbox_locked_paths",
+      "sandbox_setup_timeout",
+      "sandbox_user",
+      "separate_verifier",
+      "separate_verifier_include",
+      "skill_mode",
+      "skills_dir",
+      "task_path",
+      "verifier_sandbox"
+    ],
+    "TaskRuntimeResult": [
+      "error",
+      "integrity",
+      "result",
+      "reward",
+      "rewards",
+      "rollout_dir",
+      "rollout_name",
+      "task_name",
+      "verifier_error"
+    ],
+    "TestRewardFunc": [],
+    "Trajectory": [
+      "agent_name",
+      "exchanges",
+      "finished_at",
+      "metadata",
+      "session_id",
+      "started_at"
+    ],
+    "Trial": [
+      "checkpoints",
+      "config",
+      "forks",
+      "path",
+      "raw",
+      "result",
+      "row",
+      "source",
+      "timing",
+      "verifier"
+    ],
+    "Turn": [
+      "prompt",
+      "role"
+    ],
+    "UsageLimitError": [
+      "detail",
+      "login",
+      "resets_at",
+      "window"
+    ],
+    "Verifier": [
+      "_logger",
+      "execution_receipt",
+      "rollout_paths",
+      "sandbox",
+      "task"
+    ],
+    "VerifierOutput": [
+      "ctrf",
+      "reward_json",
+      "reward_text",
+      "stderr",
+      "stdout"
+    ],
+    "VerifierResult": [
+      "rewards"
+    ],
+    "VerifyResult": [
+      "error",
+      "events",
+      "granularity",
+      "items",
+      "reward",
+      "space"
+    ],
+    "__version__": [],
+    "abranch": [
+      "agent",
+      "agent_env",
+      "checkpoint",
+      "checkpoint_after",
+      "checkpoints",
+      "child_retries",
+      "children",
+      "concurrency",
+      "continue_after_child_failure",
+      "fork",
+      "from_checkpoint",
+      "harness",
+      "isolate_children",
+      "job_name",
+      "jobs_dir",
+      "model",
+      "on_event",
+      "parent",
+      "prompts",
+      "reasoning_effort",
+      "resume_session",
+      "retain_snapshots",
+      "sandbox",
+      "snapshot_layers",
+      "task_path"
+    ],
+    "aregrade": [
+      "concurrency",
+      "path",
+      "reason",
+      "runner",
+      "sandbox",
+      "tasks_dir"
+    ],
+    "arun": [
+      "config",
+      "env",
+      "model",
+      "subject",
+      "task_path"
+    ],
+    "arun_batch": [
+      "concurrency",
+      "configs",
+      "on_result"
+    ],
+    "as_completed": [
+      "concurrency",
+      "configs"
+    ],
+    "astream_rollouts": [
+      "follow",
+      "group_by",
+      "group_size",
+      "job_dir",
+      "on_warning",
+      "poll_interval",
+      "timeout"
+    ],
+    "branch": [
+      "agent",
+      "agent_env",
+      "checkpoint",
+      "checkpoint_after",
+      "checkpoints",
+      "child_retries",
+      "children",
+      "concurrency",
+      "continue_after_child_failure",
+      "fork",
+      "from_checkpoint",
+      "harness",
+      "isolate_children",
+      "job_name",
+      "jobs_dir",
+      "model",
+      "on_event",
+      "parent",
+      "prompts",
+      "reasoning_effort",
+      "resume_session",
+      "retain_snapshots",
+      "sandbox",
+      "snapshot_layers",
+      "task_path"
+    ],
+    "build_service_hooks": [
+      "services"
+    ],
+    "collect_metrics": [
+      "agent",
+      "benchmark",
+      "model",
+      "results_dir"
+    ],
+    "compare": [
+      "by",
+      "include_controls",
+      "job_a",
+      "job_b",
+      "ks",
+      "labels",
+      "on_mismatch",
+      "solve_threshold",
+      "vary"
+    ],
+    "compile_scenes_to_steps": [
+      "default_prompt",
+      "scenes"
+    ],
+    "detect_services_from_dockerfile": [
+      "task_path"
+    ],
+    "discover_skills": [
+      "search_dirs"
+    ],
+    "get_agent": [
+      "name"
+    ],
+    "infer_env_key_for_model": [
+      "model"
+    ],
+    "install_skill": [
+      "spec",
+      "target_dir"
+    ],
+    "is_vertex_model": [
+      "model"
+    ],
+    "list_agents": [],
+    "list_workspace_snapshots": [
+      "env"
+    ],
+    "load_job": [
+      "attempts",
+      "path"
+    ],
+    "load_manifest": [
+      "path"
+    ],
+    "load_results_jsonl": [
+      "path"
+    ],
+    "load_review_rubric": [
+      "path"
+    ],
+    "load_rubric": [
+      "path"
+    ],
+    "load_rubric_json": [
+      "path"
+    ],
+    "load_rubric_toml": [
+      "path"
+    ],
+    "load_trial": [
+      "path"
+    ],
+    "ors_tool_outputs_to_reward_events": [
+      "outputs",
+      "source"
+    ],
+    "parse_skill": [
+      "skill_md"
+    ],
+    "register_agent": [
+      "acp_effort_config_id",
+      "acp_model_config_id",
+      "acp_model_format",
+      "api_protocol",
+      "cacheable_version",
+      "credential_files",
+      "default_model",
+      "description",
+      "disallow_hosted_search_launch_suffix",
+      "disallow_hosted_search_setup_cmd",
+      "disallow_web_tools_launch_suffix",
+      "disallow_web_tools_owned_paths",
+      "disallow_web_tools_setup_cmd",
+      "env_mapping",
+      "home_dirs",
+      "install_cmd",
+      "install_timeout",
+      "launch_cmd",
+      "launcher_credential_files",
+      "name",
+      "protocol",
+      "requires_env",
+      "session_factory",
+      "skill_paths",
+      "subscription_auth",
+      "supports_acp_set_model"
+    ],
+    "register_service": [
+      "cli_name",
+      "db_path",
+      "kwargs",
+      "name",
+      "port"
+    ],
+    "regrade": [
+      "concurrency",
+      "path",
+      "reason",
+      "runner",
+      "sandbox",
+      "tasks_dir"
+    ],
+    "render_task_md_from_legacy": [
+      "task_dir"
+    ],
+    "resolve_source": [
+      "path",
+      "ref",
+      "repo"
+    ],
+    "rollout_config_from_yaml": [
+      "path",
+      "task_path"
+    ],
+    "run": [
+      "config",
+      "env",
+      "model",
+      "subject",
+      "task_path"
+    ],
+    "run_batch": [
+      "concurrency",
+      "configs",
+      "on_result"
+    ],
+    "run_reviews": [
+      "agent",
+      "agent_env",
+      "concurrency",
+      "environment",
+      "filter_passing",
+      "image",
+      "model",
+      "open_network",
+      "out_dir",
+      "path",
+      "prompt_path",
+      "rubric_path",
+      "tasks_root",
+      "timeout_sec"
+    ],
+    "run_sync": [
+      "config",
+      "env",
+      "model",
+      "subject",
+      "task_path"
+    ],
+    "score_weighted_review": [
+      "checks",
+      "deterministic_pass",
+      "rubric"
+    ],
+    "stage_dockerfile_deps": [
+      "context_root",
+      "task_path"
+    ],
+    "stream_rollouts": [
+      "follow",
+      "group_by",
+      "group_size",
+      "job_dir",
+      "on_warning",
+      "poll_interval",
+      "timeout"
+    ],
+    "to_inspect_task": [
+      "rubric",
+      "scene"
+    ],
+    "to_ors_reward": [
+      "result"
+    ],
+    "workspace_restore": [
+      "env",
+      "ref",
+      "workspace"
+    ],
+    "workspace_snapshot": [
+      "env",
+      "name",
+      "workspace"
+    ],
+    "write_ors_tool_outputs_jsonl": [
+      "outputs",
+      "path",
+      "source"
+    ]
+  },
+  "methods": {
+    "ACPClient": [
+      "authenticate",
+      "cancel",
+      "close",
+      "connect",
+      "expect_silence",
+      "from_config",
+      "initialize",
+      "on_ask_user",
+      "prompt",
+      "session",
+      "session_load",
+      "session_new",
+      "set_config_option",
+      "set_model"
+    ],
+    "ACPSession": [
+      "distinct_tool_titles",
+      "full_message",
+      "full_thought",
+      "handle_update",
+      "latest_usage_totals",
+      "mark_prompt_end",
+      "pending_tool_call_ids",
+      "pending_tool_call_state",
+      "progress_snapshot",
+      "record_agent_timeout",
+      "record_prompt_usage",
+      "record_user_prompt"
+    ],
+    "Agent": [
+      "config",
+      "launch_cmd"
+    ],
+    "AgentInstallError": [],
+    "AgentTimeoutError": [],
+    "BaseUser": [
+      "run",
+      "setup"
+    ],
+    "BashToolResult": [],
+    "BenchmarkMetrics": [
+      "avg_cost_per_trial_usd",
+      "avg_duration",
+      "avg_skill_invocations",
+      "avg_tool_calls",
+      "error_breakdown",
+      "errored",
+      "failed",
+      "integration_failures",
+      "mean_reward",
+      "mean_reward_scored_only",
+      "mean_reward_scored_only_n",
+      "memory_score",
+      "memory_scores",
+      "memory_summary",
+      "passed",
+      "score",
+      "score_excl_errors",
+      "score_verifier_errored",
+      "summary",
+      "telemetry_completed_tasks",
+      "telemetry_coverage",
+      "telemetry_tasks",
+      "total",
+      "total_cache_creation_tokens",
+      "total_cache_read_tokens",
+      "total_cost_usd",
+      "total_input_tokens",
+      "total_output_tokens",
+      "total_tokens",
+      "verifier_error_breakdown",
+      "verifier_errored"
+    ],
+    "BranchChildResult": [
+      "to_record"
+    ],
+    "BranchPlanError": [],
+    "BranchResult": [
+      "child",
+      "ok",
+      "to_csv",
+      "to_jsonl",
+      "to_records"
+    ],
+    "Budget": [
+      "coerce",
+      "exceeded",
+      "to_dict"
+    ],
+    "ChildSpec": [],
+    "CodeExecRewardFunc": [
+      "score"
+    ],
+    "Comparison": [
+      "to_json",
+      "to_json_dict",
+      "to_markdown",
+      "to_records"
+    ],
+    "ComparisonRow": [
+      "delta"
+    ],
+    "ComparisonSummary": [],
+    "Completed": [],
+    "Criterion": [
+      "id",
+      "normalize"
+    ],
+    "Denominators": [
+      "of",
+      "pass_rate_attempted",
+      "pass_rate_clean",
+      "pass_rate_scored"
+    ],
+    "DocumentNudgeUser": [
+      "run",
+      "setup"
+    ],
+    "Environment": [
+      "download_dir",
+      "download_file",
+      "exec",
+      "exec_in_service",
+      "from_task",
+      "inner",
+      "prepare_kept_services",
+      "start",
+      "stop",
+      "task",
+      "upload_dir",
+      "upload_file"
+    ],
+    "EnvironmentManifest": [
+      "all_ports",
+      "effective_http",
+      "model_validate_path",
+      "model_validate_toml",
+      "model_validate_yaml"
+    ],
+    "Evaluation": [
+      "from_dict",
+      "from_yaml",
+      "job_dir",
+      "resume",
+      "run",
+      "run_sync",
+      "stream",
+      "to_dict",
+      "to_yaml",
+      "warn_unmatched_selection"
+    ],
+    "EvaluationConfig": [
+      "checkpoint_policy",
+      "retry_policy"
+    ],
+    "EvaluationResult": [
+      "planned",
+      "score",
+      "score_excl_errors",
+      "score_of_plan",
+      "to_csv",
+      "to_jsonl",
+      "to_records"
+    ],
+    "ExecResult": [],
+    "Fork": [],
+    "FunctionUser": [
+      "run",
+      "setup"
+    ],
+    "GroupDenominators": [],
+    "ImageBuilder": [
+      "build",
+      "cached"
+    ],
+    "ImageConfig": [],
+    "ImageRef": [],
+    "InspectAdapter": [
+      "to_inspect_task"
+    ],
+    "Job": [
+      "agents",
+      "branch_views",
+      "by_task",
+      "controls",
+      "cost_usd",
+      "denominators",
+      "denominators_by",
+      "integrity",
+      "kind",
+      "planned_tasks",
+      "pooled_differences",
+      "running",
+      "solve_rates",
+      "to_csv",
+      "to_json",
+      "to_json_dict",
+      "to_jsonl",
+      "to_markdown",
+      "to_records",
+      "unfinished"
+    ],
+    "JudgeConfig": [],
+    "LLMJudgeRewardFunc": [
+      "events",
+      "score"
+    ],
+    "ModelDocumentNudgeUser": [
+      "run",
+      "setup"
+    ],
+    "Monitor": [
+      "replay",
+      "run",
+      "watch"
+    ],
+    "MonitorConfig": [],
+    "MonitorNotImplementedError": [],
+    "MonitorResult": [],
+    "ORSAdapter": [
+      "reward_event_to_ors",
+      "tool_outputs_to_reward_events",
+      "verify_result_to_ors",
+      "write_tool_outputs_jsonl"
+    ],
+    "PassthroughUser": [
+      "run",
+      "setup"
+    ],
+    "PathReward": [
+      "score"
+    ],
+    "PublicationDecision": [],
+    "RegradeSummary": [
+      "changed",
+      "counts",
+      "failed",
+      "not_regradable",
+      "regraded",
+      "to_dict"
+    ],
+    "Results": [
+      "denominators",
+      "mean_reward",
+      "mean_reward_caveat",
+      "mean_reward_scored_only",
+      "n_errored",
+      "n_passed",
+      "n_scored",
+      "to_csv",
+      "to_jsonl",
+      "to_records"
+    ],
+    "RetryConfig": [
+      "backoff_delay",
+      "from_mapping",
+      "reruns_on_resume",
+      "reruns_unjudged_solver",
+      "reruns_verifier_error_on_resume",
+      "should_retry",
+      "should_retry_verifier_error"
+    ],
+    "ReviewReport": [
+      "to_dict"
+    ],
+    "ReviewRubric": [
+      "contract",
+      "is_weighted",
+      "metadata"
+    ],
+    "ReviewRubricCriterion": [
+      "is_blocker",
+      "is_legacy",
+      "metadata"
+    ],
+    "ReviewRubricError": [],
+    "ReviewScoring": [
+      "to_dict"
+    ],
+    "ReviewerConfig": [
+      "coerce",
+      "normalize_agent",
+      "normalize_effort",
+      "to_config_artifact",
+      "to_dict",
+      "validate_environment",
+      "validate_image"
+    ],
+    "Reward": [
+      "score"
+    ],
+    "RewardEvent": [],
+    "RewardFunc": [
+      "score"
+    ],
+    "Role": [],
+    "Rollout": [
+      "acp_client",
+      "activity_snapshot",
+      "adopted",
+      "begin_prestart",
+      "branch",
+      "cleanup",
+      "connect",
+      "connect_as",
+      "create",
+      "discard_prestart",
+      "disconnect",
+      "env",
+      "execute",
+      "finalize",
+      "install_agent",
+      "on_ask_user",
+      "on_sandbox_ready",
+      "prestarted",
+      "record_external_tool_call",
+      "result",
+      "run",
+      "setup",
+      "soft_verify",
+      "start",
+      "timing",
+      "trajectory",
+      "tree",
+      "use_prebuilt_env",
+      "verify"
+    ],
+    "RolloutConfig": [
+      "effective_scenes",
+      "from_dict",
+      "from_legacy",
+      "from_yaml",
+      "loop_strategy_spec",
+      "primary_agent",
+      "primary_model",
+      "primary_reasoning_effort",
+      "recorded_skill_mode",
+      "to_dict",
+      "to_yaml"
+    ],
+    "RolloutResult": [
+      "from_dict",
+      "load",
+      "messages",
+      "passed",
+      "reward",
+      "score_outcome",
+      "snapshots",
+      "success",
+      "to_record",
+      "verified"
+    ],
+    "RoundResult": [],
+    "Rubric": [
+      "score"
+    ],
+    "RubricConfig": [],
+    "Runtime": [
+      "execute"
+    ],
+    "RuntimeConfig": [],
+    "SDK": [
+      "run"
+    ],
+    "Sandbox": [
+      "download_dir",
+      "download_file",
+      "exec",
+      "expose_ports",
+      "host",
+      "restore",
+      "snapshot",
+      "start",
+      "stop",
+      "supports_snapshot",
+      "upload_dir",
+      "upload_file"
+    ],
+    "SandboxExecResult": [],
+    "SandboxImage": [
+      "from_record",
+      "to_record"
+    ],
+    "SandboxSnapshotNotSupported": [],
+    "Scene": [
+      "single"
+    ],
+    "ScoringConfig": [],
+    "SettingCheck": [],
+    "SettingMismatch": [],
+    "SkillInfo": [],
+    "StreamedRollout": [
+      "scored",
+      "to_json",
+      "to_json_dict",
+      "training_grade"
+    ],
+    "StringMatchRewardFunc": [
+      "score"
+    ],
+    "Task": [
+      "task_dir"
+    ],
+    "TaskConfig": [
+      "allows_cloud_metadata",
+      "cloud_metadata_opt_out",
+      "expected_skills",
+      "handle_version_rename",
+      "ignored_keys",
+      "model_dump_toml",
+      "model_post_init",
+      "model_validate_toml",
+      "validate_cloud_metadata_opt_out",
+      "validate_keep_services",
+      "validate_schema_version"
+    ],
+    "TaskDocument": [
+      "from_path",
+      "from_text"
+    ],
+    "TaskDocumentParseError": [],
+    "TaskRuntime": [
+      "bash",
+      "close",
+      "create",
+      "env",
+      "rollout",
+      "rollout_dir",
+      "start",
+      "verify",
+      "workspace"
+    ],
+    "TaskRuntimeConfig": [
+      "to_rollout_config"
+    ],
+    "TaskRuntimeResult": [],
+    "TestRewardFunc": [
+      "score"
+    ],
+    "Trajectory": [
+      "has_provider_usage",
+      "messages",
+      "to_jsonl",
+      "total_cache_creation_tokens",
+      "total_cache_read_tokens",
+      "total_cost_usd",
+      "total_input_tokens",
+      "total_output_tokens",
+      "total_provider_tokens"
+    ],
+    "Trial": [
+      "agent",
+      "assessment",
+      "attempts",
+      "control",
+      "cost_usd",
+      "duration_sec",
+      "execution",
+      "model",
+      "passed",
+      "reward",
+      "scoring",
+      "settings",
+      "solve_sample",
+      "task_name",
+      "to_json",
+      "to_json_dict",
+      "to_record",
+      "total_tokens"
+    ],
+    "Turn": [],
+    "UsageLimitError": [
+      "describe",
+      "from_headers",
+      "from_rate_limit_info",
+      "from_result",
+      "from_text",
+      "to_dict",
+      "with_login"
+    ],
+    "Verifier": [
+      "finish_test_command",
+      "test_command_finishable",
+      "verify"
+    ],
+    "VerifierOutput": [
+      "read"
+    ],
+    "VerifierResult": [],
+    "VerifyResult": []
+  },
+  "task_md": {
+    "": [
+      "agent",
+      "agents",
+      "artifacts",
+      "benchflow",
+      "metadata",
+      "multi_step_reward_strategy",
+      "oracle",
+      "reward",
+      "sandbox",
+      "scenes",
+      "schema_version",
+      "source",
+      "steps",
+      "task",
+      "user",
+      "verifier"
+    ],
+    "agent": [
+      "allowed_hosts",
+      "network_mode",
+      "prompt_prefix",
+      "timeout_sec",
+      "user"
+    ],
+    "agents.roles.*": [
+      "agent",
+      "capabilities",
+      "env",
+      "idle_timeout_sec",
+      "model",
+      "name",
+      "reasoning_effort",
+      "skills_dir",
+      "timeout_sec"
+    ],
+    "artifacts[]": [
+      "destination",
+      "exclude",
+      "source"
+    ],
+    "benchflow": [
+      "compat",
+      "environment",
+      "evidence",
+      "nudges",
+      "prompt",
+      "teams",
+      "verifier"
+    ],
+    "oracle": [
+      "env",
+      "timeout_sec"
+    ],
+    "sandbox": [
+      "allow_cloud_metadata",
+      "allow_internet",
+      "allowed_hosts",
+      "blocked_hosts",
+      "blocked_urls",
+      "bugswarm_image_tag",
+      "build_timeout_sec",
+      "cpus",
+      "docker_image",
+      "env",
+      "gpu_types",
+      "gpus",
+      "healthcheck",
+      "mcp_servers",
+      "memory",
+      "memory_mb",
+      "network_mode",
+      "os",
+      "require_cloud_metadata_block",
+      "setup_commands",
+      "skills_dir",
+      "storage",
+      "storage_mb",
+      "tpu",
+      "workdir"
+    ],
+    "sandbox.healthcheck": [
+      "command",
+      "interval_sec",
+      "retries",
+      "start_interval_sec",
+      "start_period_sec",
+      "timeout_sec"
+    ],
+    "sandbox.mcp_servers[]": [
+      "args",
+      "command",
+      "cwd",
+      "env",
+      "exclude_tags",
+      "headers",
+      "include_tags",
+      "name",
+      "tools",
+      "transport",
+      "url"
+    ],
+    "sandbox.setup_commands[]": [
+      "capture_dir",
+      "capture_dir_b64_env",
+      "capture_dir_b64_env_file_var",
+      "command",
+      "cwd",
+      "env",
+      "host_lock",
+      "service",
+      "timeout_sec",
+      "user"
+    ],
+    "sandbox.tpu": [
+      "topology",
+      "type"
+    ],
+    "scenes[]": [
+      "name",
+      "roles",
+      "skills_dir",
+      "turns"
+    ],
+    "scenes[].turns[]": [
+      "prompt",
+      "role"
+    ],
+    "steps[]": [
+      "agent",
+      "artifacts",
+      "healthcheck",
+      "min_reward",
+      "name",
+      "verifier"
+    ],
+    "task": [
+      "authors",
+      "description",
+      "keywords",
+      "name",
+      "version"
+    ],
+    "task.authors[]": [
+      "email",
+      "name"
+    ],
+    "user": [
+      "model",
+      "private_facts",
+      "stop_rule"
+    ],
+    "verifier": [
+      "allowed_hosts",
+      "env",
+      "hardening",
+      "judge",
+      "memory",
+      "network_mode",
+      "optional_tools",
+      "pytest_plugin_releases",
+      "pytest_plugins",
+      "required_tools",
+      "reward_range",
+      "sandbox",
+      "sandbox_mode",
+      "service",
+      "submission_files",
+      "timeout_sec",
+      "type",
+      "user",
+      "workspace_recovery"
+    ],
+    "verifier.hardening": [
+      "cleanup_conftests"
+    ],
+    "verifier.judge": [
+      "context",
+      "input_dir",
+      "input_type",
+      "model",
+      "rubric_path"
+    ],
+    "verifier.memory": [
+      "expected_skills"
+    ]
+  },
+  "run_config": [
+    "agent",
+    "agent_env",
+    "agent_env_keys",
+    "agent_idle_timeout",
+    "agent_idle_timeout_sec",
+    "allow_cloud_metadata",
+    "base_image_override",
+    "budget",
+    "build_concurrency",
+    "checkpoint_keep",
+    "checkpoints",
+    "codex_apps_policy",
+    "concurrency",
+    "config_override",
+    "context_root",
+    "dataset_name",
+    "dataset_task_digests",
+    "dataset_version",
+    "environment",
+    "environment_manifest",
+    "exclude",
+    "extra_instruction",
+    "freeze_workspace",
+    "fresh_install",
+    "harness",
+    "include",
+    "integrity",
+    "job_mode",
+    "jobs_dir",
+    "loop_strategy",
+    "max_retries",
+    "model",
+    "n_tasks",
+    "prompts",
+    "reasoning_effort",
+    "retry",
+    "retry_from_checkpoint",
+    "retry_prompt",
+    "retry_resume_session",
+    "reviewer",
+    "sample_seed",
+    "sandbox_locked_paths",
+    "sandbox_setup_timeout",
+    "sandbox_user",
+    "seeds",
+    "self_gen_no_internet",
+    "separate_verifier",
+    "separate_verifier_include",
+    "skill_creator_dir",
+    "skill_mode",
+    "skills_dir",
+    "skip_install",
+    "source",
+    "source_provenance",
+    "tasks_dir",
+    "timeout_multiplier",
+    "usage_proxy",
+    "usage_proxy_advertised_base_url",
+    "usage_proxy_bind_host",
+    "usage_proxy_port",
+    "usage_proxy_url",
+    "usage_tracking",
+    "verifier_sandbox",
+    "warm_pool"
+  ],
+  "job_config": [
+    "agent_idle_timeout",
+    "agent_idle_timeout_sec",
+    "agent_setup_timeout_multiplier",
+    "agent_timeout_multiplier",
+    "agents",
+    "allow_cloud_metadata",
+    "artifacts",
+    "base_image_override",
+    "codex_apps_policy",
+    "context_root",
+    "datasets",
+    "debug",
+    "environment",
+    "environment_build_timeout_multiplier",
+    "exclude",
+    "exclude_tasks",
+    "excludes",
+    "extra_instruction_paths",
+    "extra_instructions",
+    "fresh_install",
+    "harness",
+    "include",
+    "include_tasks",
+    "includes",
+    "install_only",
+    "integrity",
+    "job_name",
+    "jobs_dir",
+    "metrics",
+    "n_attempts",
+    "n_concurrent_trials",
+    "orchestrator",
+    "quiet",
+    "reasoning_effort",
+    "retry",
+    "reviewer",
+    "sandbox_locked_paths",
+    "sandbox_setup_timeout",
+    "sandbox_user",
+    "self_gen_no_internet",
+    "separate_verifier",
+    "separate_verifier_include",
+    "skill_creator_dir",
+    "skill_mode",
+    "skills_dir",
+    "source_jobs",
+    "tasks",
+    "timeout_multiplier",
+    "usage_proxy",
+    "usage_proxy_advertised_base_url",
+    "usage_proxy_bind_host",
+    "usage_proxy_port",
+    "usage_proxy_url",
+    "usage_tracking",
+    "user_agent",
+    "verifier",
+    "verifier_sandbox",
+    "verifier_timeout_multiplier"
+  ],
+  "job_agent": [
+    "concurrency_group",
+    "env",
+    "harness",
+    "model_name",
+    "n_concurrent",
+    "name",
+    "reasoning_effort",
+    "skip_install"
+  ],
+  "job_dataset": [
+    "exclude_task_names",
+    "n_tasks",
+    "path",
+    "task_names"
+  ],
+  "schemas": {
+    "benchflow-branch-child-row.v2.schema.json": [
+      "advantage",
+      "agent",
+      "child",
+      "continuation",
+      "depth",
+      "fork_id",
+      "fork_kind",
+      "fork_status",
+      "kind",
+      "messages",
+      "model",
+      "parent_child",
+      "parent_node",
+      "prefix",
+      "prefix_complete",
+      "prefix_source",
+      "schema_version",
+      "session",
+      "siblings",
+      "task",
+      "tool_names",
+      "tools",
+      "trial",
+      "value",
+      "value_stderr"
+    ],
+    "benchflow-branch-pair-row.v2.schema.json": [
+      "agent",
+      "chosen",
+      "chosen_label",
+      "chosen_reward",
+      "depth",
+      "fork_id",
+      "kind",
+      "margin",
+      "model",
+      "parent_node",
+      "prefix_complete",
+      "prompt",
+      "rejected",
+      "rejected_label",
+      "rejected_reward",
+      "same_request",
+      "schema_version",
+      "session",
+      "task",
+      "tools",
+      "trial"
+    ],
+    "benchflow-comparison.v1.schema.json": [
+      "a",
+      "a_paired",
+      "b",
+      "b_paired",
+      "by",
+      "caveats",
+      "include_controls",
+      "kind",
+      "mismatches",
+      "rows",
+      "schema_minor",
+      "schema_version",
+      "summary",
+      "vary"
+    ],
+    "benchflow-comparison.v2.schema.json": [
+      "a",
+      "a_paired",
+      "b",
+      "b_paired",
+      "by",
+      "caveats",
+      "include_controls",
+      "kind",
+      "mismatches",
+      "rows",
+      "schema_minor",
+      "schema_version",
+      "summary",
+      "vary"
+    ],
+    "benchflow-job.v1.schema.json": [
+      "cost_usd",
+      "denominators",
+      "denominators_with_controls",
+      "error_categories",
+      "groups",
+      "interrupted",
+      "job_kind",
+      "kind",
+      "path",
+      "schema_minor",
+      "schema_version",
+      "solve_rates",
+      "summary",
+      "timing_totals",
+      "trials"
+    ],
+    "benchflow-job.v2.schema.json": [
+      "cost_usd",
+      "denominators",
+      "denominators_with_controls",
+      "error_categories",
+      "groups",
+      "interrupted",
+      "job_kind",
+      "kind",
+      "path",
+      "schema_minor",
+      "schema_version",
+      "solve_rates",
+      "summary",
+      "timing_totals",
+      "trials"
+    ],
+    "benchflow-rollout-stream.v1.schema.json": [
+      "advantage",
+      "agent",
+      "calls",
+      "error",
+      "finished_at",
+      "group",
+      "group_complete",
+      "group_id",
+      "job",
+      "model",
+      "outcome",
+      "replaces",
+      "retried",
+      "reward",
+      "rollout",
+      "rollout_path",
+      "schema_version",
+      "scored",
+      "sequences",
+      "task",
+      "token_capture"
+    ],
+    "benchflow-run-summary.v1.schema.json": [
+      "budget",
+      "errored",
+      "exit_code",
+      "failed",
+      "gate",
+      "job_dir",
+      "job_name",
+      "kind",
+      "mean_reward",
+      "pass_rate",
+      "passed",
+      "ran",
+      "reused",
+      "schema_version",
+      "timed_out",
+      "total",
+      "verifier_errored"
+    ],
+    "benchflow-run-summary.v2.schema.json": [
+      "budget",
+      "errored",
+      "exit_code",
+      "failed",
+      "gate",
+      "interrupted",
+      "job_dir",
+      "job_name",
+      "kind",
+      "mean_reward",
+      "mean_reward_scored_only",
+      "not_run",
+      "pass_rate",
+      "passed",
+      "ran",
+      "reused",
+      "schema_version",
+      "stopped",
+      "timed_out",
+      "total",
+      "verifier_errored"
+    ],
+    "benchflow-training-signal.v1.schema.json": [
+      "advantage",
+      "advantage_vector",
+      "group",
+      "reward_vector"
+    ],
+    "benchflow-trial.v1.schema.json": [
+      "agent",
+      "agent_name",
+      "assessment",
+      "attempts",
+      "checkpoints",
+      "control",
+      "duration_sec",
+      "error",
+      "error_category",
+      "execution",
+      "finished_at",
+      "forks",
+      "integration_failure",
+      "kind",
+      "model",
+      "n_prompts",
+      "n_tool_calls",
+      "passed",
+      "path",
+      "review",
+      "reward",
+      "rewards",
+      "rollout_name",
+      "row",
+      "rubric_reviews",
+      "sandbox",
+      "schema_minor",
+      "schema_version",
+      "score_outcome",
+      "scoring",
+      "settings",
+      "source",
+      "started_at",
+      "task_name",
+      "timing",
+      "trajectory",
+      "usage",
+      "verifier",
+      "verifier_error",
+      "verifier_error_category"
+    ]
+  }
+}

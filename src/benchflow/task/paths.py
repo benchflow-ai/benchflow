@@ -1,4 +1,4 @@
-"""Path models for tasks and rollouts — internalized from Harbor.
+"""Path models for tasks and rollouts.
 
 Terminology:
     - TaskPaths: filesystem layout of a task specification ($T$)
@@ -11,7 +11,15 @@ from __future__ import annotations
 import shlex
 import tomllib
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path, PurePosixPath
+
+from benchflow._utils.reachable_write import (
+    REACHABLE_ROLLOUT_DIRS,
+    ReachablePath,
+    declare_harness_mount,
+    pin_destination,
+)
 
 _SCRIPT_ARTIFACT_SUFFIXES = {
     ".js",
@@ -158,8 +166,8 @@ class TaskPaths:
                 strategy.context_file,
                 verifier_dir=self.tests_dir,
             )
-        if strategy.type == "reward-kit":
-            return _reward_kit_strategy_files_exist(
+        if strategy.type == "criteria-runner":
+            return _criteria_runner_strategy_files_exist(
                 root=strategy.root_path,
                 entrypoint=strategy.entrypoint,
                 criteria=strategy.criteria_path,
@@ -167,6 +175,12 @@ class TaskPaths:
             )
         if strategy.type == "ors-episode":
             return bool(strategy.inputs)
+        if strategy.type == "taskmd":
+            # A task.md draft 2 package (benchflow.taskmd): test.sh when it has
+            # one, and otherwise only model judges grade its rubric.
+            if strategy.command is None:
+                return strategy.config.get("grading") == "rubric"
+            return (self.tests_dir / strategy.command).is_file()
         return strategy.type == "agent-judge"
 
     def _has_legacy_llm_judge_entrypoint(self) -> bool:
@@ -262,7 +276,7 @@ def _looks_like_local_script_artifact(token: str) -> bool:
     return "/" in token or Path(token).suffix in _SCRIPT_ARTIFACT_SUFFIXES
 
 
-def _reward_kit_strategy_files_exist(
+def _criteria_runner_strategy_files_exist(
     *,
     root: str | None,
     entrypoint: str | None,
@@ -323,50 +337,68 @@ class RolloutPaths:
 
     rollout_dir: Path
 
+    def __post_init__(self) -> None:
+        # These folders are mounted into (or filled from) the sandbox: never
+        # staging. One made later is declared when its capability opens it.
+        for name in REACHABLE_ROLLOUT_DIRS:
+            declare_harness_mount(self.rollout_dir / name)
+
     def mkdir(self) -> None:
+        # Pin the caller-selected output filesystem before any agent can run.
+        _ = self._output_root
         self.agent_dir.mkdir(parents=True, exist_ok=True)
         self.verifier_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    @cached_property
+    def _output_root(self) -> ReachablePath:
+        return pin_destination(self.rollout_dir)
+
+    def forget_held(self, name: str) -> None:
+        """Reopen a rollout directory after the controller replaces it."""
+        if name not in REACHABLE_ROLLOUT_DIRS:
+            raise ValueError("not a sandbox-reachable rollout directory")
+        self.__dict__.pop(f"{name}_dir", None)
 
     @property
     def config_path(self) -> Path:
         return self.rollout_dir / "config.json"
 
-    @property
-    def agent_dir(self) -> Path:
-        return self.rollout_dir / "agent"
+    @cached_property
+    def agent_dir(self) -> ReachablePath:
+        return ReachablePath.rollout(self.rollout_dir, "agent")
+
+    @cached_property
+    def artifacts_dir(self) -> ReachablePath:
+        return ReachablePath.rollout(self.rollout_dir, "artifacts")
+
+    @cached_property
+    def verifier_dir(self) -> ReachablePath:
+        return ReachablePath.rollout(self.rollout_dir, "verifier")
 
     @property
-    def artifacts_dir(self) -> Path:
-        return self.rollout_dir / "artifacts"
-
-    @property
-    def verifier_dir(self) -> Path:
-        return self.rollout_dir / "verifier"
-
-    @property
-    def test_stdout_path(self) -> Path:
+    def test_stdout_path(self) -> ReachablePath:
         return self.verifier_dir / "test-stdout.txt"
 
     @property
-    def test_stderr_path(self) -> Path:
+    def test_stderr_path(self) -> ReachablePath:
         return self.verifier_dir / "test-stderr.txt"
 
     @property
-    def reward_text_path(self) -> Path:
+    def reward_text_path(self) -> ReachablePath:
         return self.verifier_dir / "reward.txt"
 
     @property
-    def reward_json_path(self) -> Path:
+    def reward_json_path(self) -> ReachablePath:
         return self.verifier_dir / "reward.json"
 
     @property
-    def reward_details_json_path(self) -> Path:
+    def reward_details_json_path(self) -> ReachablePath:
         return self.verifier_dir / "reward-details.json"
 
     @property
-    def reward_kit_manifest_path(self) -> Path:
-        return self.verifier_dir / "reward-kit-manifest.json"
+    def criteria_runner_manifest_path(self) -> ReachablePath:
+        return self.verifier_dir / "criteria-runner-manifest.json"
 
 
 @dataclass(frozen=True)
@@ -387,4 +419,6 @@ class SandboxPaths:
     reward_text_path: PurePosixPath = verifier_dir / "reward.txt"
     reward_json_path: PurePosixPath = verifier_dir / "reward.json"
     reward_details_json_path: PurePosixPath = verifier_dir / "reward-details.json"
-    reward_kit_manifest_path: PurePosixPath = verifier_dir / "reward-kit-manifest.json"
+    criteria_runner_manifest_path: PurePosixPath = (
+        verifier_dir / "criteria-runner-manifest.json"
+    )

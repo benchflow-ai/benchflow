@@ -1,0 +1,10 @@
+{
+    "job_name": "hb-git",
+    "tasks": [
+        {
+            "path": "tasks/hello-craft",
+            "git_url": "https://github.com/benchflow-ai/skillsbench.git",
+            "git_commit_id": "4f1c2d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e"
+        }
+    ]
+}

@@ -121,7 +121,7 @@ timeout_sec = {agent_timeout}
 [verifier]
 timeout_sec = {verifier_timeout}
 
-[environment]
+[sandbox]
 cpus = 2
 memory_mb = 4096
 storage_mb = 20480

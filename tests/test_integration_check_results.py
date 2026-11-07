@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -19,12 +21,26 @@ EXAMPLE_TASK_ROOT = (
 )
 
 
+# Snapshots this module built under the shared dataset cache, removed when
+# the module's tests finish (_remove_built_snapshots).
+_BUILT_SNAPSHOTS: list[Path] = []
+
+
 def _build_source_repo() -> tuple[Path, str]:
+    """A committed task repo, moved to its snapshot path in the dataset cache.
+
+    The snapshot path is keyed by the commit sha, and the cache is shared by
+    every pytest process on the checkout. Two builds with the same files in
+    the same second (two xdist workers importing this module) used to make
+    the same commit, so one process's build replaced the tree the other was
+    reading. A random file in each commit gives every build its own sha.
+    """
     base = Path(tempfile.mkdtemp(prefix="benchflow-check-results-source-"))
     repo_root = base / "work"
     tasks_root = repo_root / "tasks"
     for task_name in ("task-a", "task-b", "weighted-gdp-calc"):
         shutil.copytree(EXAMPLE_TASK_ROOT, tasks_root / task_name)
+    (repo_root / "build-id.txt").write_text(f"{uuid.uuid4().hex}\n")
     subprocess.run(
         ["git", "init", "-b", "main"], cwd=repo_root, check=True, capture_output=True
     )
@@ -60,27 +76,43 @@ def _build_source_repo() -> tuple[Path, str]:
     sha = completed.stdout.strip()
     result_checker.REMOTE_REACHABILITY[("acme/benchmarks", sha, "main")] = True
     snapshot_root = task_download._cache_dir() / "acme" / "benchmarks__snapshots" / sha
-    if snapshot_root.exists():
-        shutil.rmtree(snapshot_root)
     snapshot_root.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(repo_root), snapshot_root)
+    shutil.rmtree(base, ignore_errors=True)
+    _BUILT_SNAPSHOTS.append(snapshot_root)
     return snapshot_root, sha
 
 
-SOURCE_REPO_ROOT, SOURCE_REPO_SHA = _build_source_repo()
-TASK_SOURCE_ROOT = SOURCE_REPO_ROOT / "tasks" / "task-a"
+@cache
+def _shared_source_repo() -> tuple[Path, str]:
+    """The repo most tests read, built once per process on first use.
+
+    Built lazily, not at import: every xdist worker imports this module at
+    collection, and a build there would leave a snapshot behind in workers
+    that never run these tests.
+    """
+    return _build_source_repo()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _remove_built_snapshots():
+    yield
+    while _BUILT_SNAPSHOTS:
+        shutil.rmtree(_BUILT_SNAPSHOTS.pop(), ignore_errors=True)
+    _shared_source_repo.cache_clear()
 
 
 def _source(task_name: str = "task-a") -> dict:
+    repo_root, sha = _shared_source_repo()
     return {
         "type": "github",
         "repo": "acme/benchmarks",
         "requested_ref": "main",
-        "resolved_sha": SOURCE_REPO_SHA,
+        "resolved_sha": sha,
         "path": f"tasks/{task_name}",
-        "local_path": str(SOURCE_REPO_ROOT / "tasks" / task_name),
+        "local_path": str(repo_root / "tasks" / task_name),
         "dirty": False,
-        "file_hashes": task_file_hashes(SOURCE_REPO_ROOT / "tasks" / task_name),
+        "file_hashes": task_file_hashes(repo_root / "tasks" / task_name),
     }
 
 
@@ -966,6 +998,28 @@ def test_check_results_accepts_symlinked_current_repo_inferred_source(
     assert findings["ok"] is True, findings["issues"]
 
 
+def test_two_source_repo_builds_in_one_second_keep_their_own_trees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two pytest-xdist workers build this repo at the same moment.
+
+    With the same files and commit time both made the same sha, so the
+    second build removed the snapshot the first was reading (the -n 16 run's
+    FileNotFoundError at collection). A fixed commit date stands in for
+    the same second.
+    """
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+00:00")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+00:00")
+    first_root, first_sha = _build_source_repo()
+    first_files = task_file_hashes(first_root / "tasks" / "task-a")
+    second_root, second_sha = _build_source_repo()
+
+    assert first_sha != second_sha
+    assert first_root != second_root
+    assert task_file_hashes(first_root / "tasks" / "task-a") == first_files
+    assert (second_root / "tasks" / "task-a" / "task.toml").is_file()
+
+
 def test_check_results_rejects_unreachable_remote_sha(tmp_path: Path) -> None:
     """Guards v0.5-integration@cb8759e against unreachable source SHAs."""
     repo_root, sha = _build_source_repo()
@@ -1090,7 +1144,7 @@ def test_check_results_rejects_result_local_path_outside_summary_source(
 
 
 def test_check_results_treats_partial_reward_as_failure(tmp_path: Path) -> None:
-    """Guards ENG-91 P1 integration checker partial-reward regression."""
+    """Integration checker partial-reward regression."""
     agent_dir = _write_result_tree(
         tmp_path,
         reward=0.5,
@@ -1112,7 +1166,7 @@ def test_check_results_treats_partial_reward_as_failure(tmp_path: Path) -> None:
 
 
 def test_check_results_reconciles_summary_counts(tmp_path: Path) -> None:
-    """Guards ENG-91 P1 integration checker summary reconciliation."""
+    """Integration checker summary reconciliation."""
     agent_dir = _write_result_tree(
         tmp_path,
         reward=0.5,
@@ -1949,7 +2003,7 @@ def test_check_results_cli_artifact_root_counts_all_rollouts(
                 "source": {
                     **_source(),
                     "path": "tasks",
-                    "local_path": str(TASK_SOURCE_ROOT.parent),
+                    "local_path": str(_shared_source_repo()[0] / "tasks"),
                     "file_hashes": {},
                 },
             }
@@ -2032,7 +2086,7 @@ def test_check_results_rejects_malformed_duplicate_task_result(
 def test_check_results_flags_sandbox_startup_error_with_diagnostics(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-147: check_results surfaces structured sandbox_startup_info
+    """check_results surfaces structured sandbox_startup_info
     for sandbox_setup errors and flags them as INVALIDATED."""
     agent_dir = tmp_path / "agentA"
     run_dir = agent_dir / "2026-05-23__00-00-00" / "task-a"
@@ -2073,7 +2127,7 @@ def test_check_results_flags_sandbox_startup_error_with_diagnostics(
 def test_check_results_sandbox_startup_without_info(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-147: check_results handles sandbox_setup errors without
+    """check_results handles sandbox_setup errors without
     structured info (bare error string fallback)."""
     agent_dir = tmp_path / "agentA"
     run_dir = agent_dir / "2026-05-23__00-00-00" / "task-a"
@@ -2102,7 +2156,7 @@ def test_check_results_sandbox_startup_without_info(
 def test_check_results_flags_transport_error_with_diagnostics(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-148: check_results surfaces structured transport_error_info
+    """check_results surfaces structured transport_error_info
     for pipe_closed errors and flags them as INVALIDATED."""
     agent_dir = tmp_path / "agentA"
     run_dir = agent_dir / "2026-05-18__00-00-00" / "task-a"
@@ -2217,7 +2271,7 @@ def test_check_results_uses_persisted_transport_error_category(
 def test_check_results_transport_error_without_info_still_flagged(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-148: pipe_closed results without transport_error_info
+    """pipe_closed results without transport_error_info
     still get flagged as infra errors."""
     agent_dir = tmp_path / "agentA"
     run_dir = agent_dir / "2026-05-18__00-00-00" / "task-a"
@@ -2320,7 +2374,7 @@ def test_check_results_invalidates_latest_retry_once_per_task(tmp_path: Path) ->
 def test_check_results_flags_verifier_dep_install_failure(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-151: check_results detects verifier dependency install
+    """check_results detects verifier dependency install
     failures and flags them as INVALIDATED."""
     agent_dir = tmp_path / "agentA"
     run_dir = agent_dir / "2026-05-24__00-00-00" / "simpo-code-reproduction"
@@ -2372,7 +2426,7 @@ def test_check_results_flags_verifier_dep_install_failure(
 
 
 def test_check_results_flags_verifier_timeout(tmp_path: Path) -> None:
-    """Guards ENG-152: check_results detects verifier timeout failures
+    """check_results detects verifier timeout failures
     and flags them as INVALIDATED with budget/elapsed details."""
     agent_dir = tmp_path / "agentA"
     task_dir = agent_dir / "quantum-numerical-simulation" / "quantum__abc123"

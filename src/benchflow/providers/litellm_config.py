@@ -9,18 +9,35 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from benchflow.agents.providers import (
+    REGISTRY_BASE_PROVIDERS,
+    ZAI_CODING_REGISTRY_BASE_ENV,
     ProviderConfig,
     find_provider,
+    find_provider_for_bare_model,
     resolve_base_url,
     strip_provider_prefix,
 )
+from benchflow.providers.pricing_snapshot import model_prices
 
 AZURE_API_VERSION_ENV = "AZURE_API_VERSION"
 AZURE_DEFAULT_API_VERSION = "preview"
 BEDROCK_THINKING_EFFORT_ENV = "BENCHFLOW_BEDROCK_THINKING_EFFORT"
+PROVIDER_REASONING_EFFORT_ENV = "BENCHFLOW_REASONING_EFFORT"
 LITELLM_MODEL_ALIAS_ENV = "BENCHFLOW_LITELLM_MODEL_ALIAS"
 LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
+_PROVIDER_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+
+#: Completions providers routed through LiteLLM's NATIVE provider integration
+#: (``<provider>/<model>``) instead of the generic ``openai/`` passthrough, so
+#: provider-specific params the agent sends (DeepSeek ``thinking`` /
+#: ``reasoning_effort``) survive ``drop_params``. Extend only after checking
+#: ``get_supported_openai_params(..., custom_llm_provider=<name>)`` on the
+#: pinned LiteLLM: a provider listed here whose integration DOESN'T support a
+#: param drops it exactly like the openai/ route would.
+_NATIVE_LITELLM_COMPLETIONS_PROVIDERS = frozenset({"deepseek"})
 
 # Per-token USD prices for models LiteLLM's built-in ``model_cost`` does not
 # already know (custom OpenAI-compatible endpoints such as private vLLM servers
@@ -28,8 +45,8 @@ LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
 # price is injected into the LiteLLM deployment as ``input_cost_per_token`` /
 # ``output_cost_per_token`` so LiteLLM computes ``response_cost`` itself —
 # BenchFlow keeps no cost-calculation logic, only this price *data*. Mainstream
-# models (OpenAI, Anthropic, Gemini, Bedrock, Azure, …) are already priced by
-# LiteLLM and must NOT be listed here.
+# models are priced by LiteLLM or by ``pricing_snapshot`` and must NOT be listed
+# here.
 #
 # Keys are matched as a lowercase substring of the bare model id. Values are USD
 # *per token* (i.e. price-per-million-tokens / 1e6). Add entries for the custom
@@ -37,22 +54,10 @@ LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
 #
 # Example:
 #   "minimax-m3": (0.30e-6, 1.20e-6),   # $0.30 / $1.20 per 1M in/out — VERIFY
-MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {
-    # deepseek-v4 is not in LiteLLM's built-in price table (it tops out at
-    # deepseek-v3.2), so a deepseek-v4 run otherwise records $0/null cost.
-    # v4 list price is not yet published — these are v3-class PLACEHOLDERS;
-    # VERIFY against api-docs.deepseek.com/quick_start/pricing before relying on
-    # absolute cost figures. (Single flat input rate uses the cache-miss price,
-    # so cache-hit-heavy runs are slightly over-counted.)
-    "deepseek-v4-pro": (
-        0.28e-6,
-        0.42e-6,
-    ),  # $0.28 / $0.42 per 1M in/out — PLACEHOLDER, VERIFY
-    "deepseek-v4-flash": (
-        0.28e-6,
-        0.42e-6,
-    ),  # $0.28 / $0.42 per 1M in/out — PLACEHOLDER, VERIFY
-}
+# The DeepSeek V4 placeholders that stood here ($0.28 / $0.42 for both models,
+# never verified) overrode LiteLLM's table; ``pricing_snapshot`` now carries
+# DeepSeek's published rates (2026-11-04).
+MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {}
 
 
 def custom_cost_per_token(model: str) -> tuple[float, float] | None:
@@ -64,8 +69,11 @@ def custom_cost_per_token(model: str) -> tuple[float, float] | None:
     return None
 
 
+# Claude 4.8+ and every 5-family model. Kept in sync with
+# ``litellm_bedrock_patch.BEDROCK_ADAPTIVE_THINKING_RE``.
 _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
-    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)|fable-5(?!\d))",
+    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)"
+    r"|(?:opus|sonnet|haiku|fable)-(?:[5-9]|[1-9]\d))(?!\d)",
     re.IGNORECASE,
 )
 _BEDROCK_LITELLM_EFFORT_LIMIT_RE = re.compile(
@@ -101,7 +109,7 @@ class LiteLLMRoute:
     model_alias: str
     upstream_model: str
     provider_name: str
-    litellm_params: dict[str, str | int | float | bool]
+    litellm_params: dict[str, str | int | float | bool | list[str]]
     required_env: tuple[str, ...] = ()
 
     @property
@@ -128,7 +136,7 @@ def safe_model_alias(model: str) -> str:
     if len(cleaned) > 96:
         digest = hashlib.sha1(model.encode()).hexdigest()[:10]
         cleaned = f"{cleaned[:80].rstrip('-')}-{digest}"
-    return f"benchflow-{cleaned}"
+    return f"runtime-{cleaned}"
 
 
 def _env_ref(name: str) -> str:
@@ -164,6 +172,20 @@ def _registered_api_key_ref(cfg: ProviderConfig) -> str | None:
     return None
 
 
+def _provider_reasoning_effort(env: dict[str, str]) -> str | None:
+    """Return an explicitly requested gateway-side reasoning effort."""
+    raw = (
+        env.get(PROVIDER_REASONING_EFFORT_ENV) or env.get("LLM_REASONING_EFFORT") or ""
+    )
+    effort = raw.strip().lower()
+    if not effort:
+        return None
+    if effort not in _PROVIDER_REASONING_EFFORTS:
+        allowed = ", ".join(sorted(_PROVIDER_REASONING_EFFORTS))
+        raise ValueError(f"{PROVIDER_REASONING_EFFORT_ENV} must be one of: {allowed}")
+    return effort
+
+
 def _bedrock_thinking_effort(model: str, env: dict[str, str]) -> str | None:
     if not _BEDROCK_ADAPTIVE_THINKING_RE.search(model):
         return None
@@ -183,7 +205,7 @@ def _route_registered_provider(
     env: dict[str, str],
 ) -> LiteLLMRoute:
     bare = strip_provider_prefix(model)
-    params: dict[str, str | int | float | bool]
+    params: dict[str, str | int | float | bool | list[str]]
     required_env: list[str] = []
 
     if provider_name == "aws-bedrock":
@@ -212,7 +234,11 @@ def _route_registered_provider(
             "api_key": _env_ref("AZURE_API_KEY"),
             "api_base": api_base,
             "api_version": env.get(AZURE_API_VERSION_ENV, AZURE_DEFAULT_API_VERSION),
+            "allowed_openai_params": ["reasoning_effort"],
         }
+        effort = _provider_reasoning_effort(env)
+        if effort:
+            params["reasoning_effort"] = effort
         return LiteLLMRoute(
             requested_model=model,
             model_alias=safe_model_alias(model),
@@ -245,7 +271,11 @@ def _route_registered_provider(
         )
 
     if provider_cfg.auth_type == "adc":
-        params = {"model": f"vertex_ai/{bare}"}
+        params = {
+            "model": f"vertex_ai/{bare}",
+            "vertex_project": env.get("GOOGLE_CLOUD_PROJECT", ""),
+            "vertex_location": env.get("GOOGLE_CLOUD_LOCATION", ""),
+        }
         return LiteLLMRoute(
             requested_model=model,
             model_alias=safe_model_alias(model),
@@ -261,7 +291,12 @@ def _route_registered_provider(
     )
     explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
     explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-    if explicit_api_base and explicit_api_key:
+    registry_base = (
+        provider_name in REGISTRY_BASE_PROVIDERS
+        and env.get(ZAI_CODING_REGISTRY_BASE_ENV) == "1"
+    )
+    explicit_route = explicit_api_base and explicit_api_key and not registry_base
+    if explicit_api_base and not registry_base:
         api_base = explicit_api_base
     else:
         try:
@@ -284,14 +319,35 @@ def _route_registered_provider(
 
     if protocol == "anthropic-messages":
         upstream = f"anthropic/{bare}"
+    elif provider_name in _NATIVE_LITELLM_COMPLETIONS_PROVIDERS:
+        # Parity: the generic openai/ passthrough + global `drop_params: True`
+        # silently strips params outside the vanilla-OpenAI set — verified live
+        # 2026-08-08 with a capture proxy between the gateway and
+        # api.deepseek.com: the agent sent `thinking: {type: enabled}` +
+        # `reasoning_effort: high` and the upstream received NEITHER, so
+        # gateway-routed runs used the provider's DEFAULT thinking config while
+        # native runs used the agent's. LiteLLM's native provider integrations
+        # declare those params supported (deepseek does for both), so routing
+        # through the provider's own prefix forwards them while drop_params
+        # keeps protecting genuinely unsupported fields. OpenAI-compatible
+        # routes separately allow agent-supplied reasoning_effort below.
+        upstream = f"{provider_name}/{bare}"
     else:
         upstream = f"openai/{bare}"
-    params = {"model": upstream}
+    params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
+    if upstream.startswith("openai/"):
+        # The provider validates requested effort, including models newer than
+        # the pinned LiteLLM catalog. Never silently discard this setting.
+        params["allowed_openai_params"] = ["reasoning_effort"]
     if api_base:
         params["api_base"] = api_base
+    native_key = (env.get(provider_cfg.auth_env or "") or "").strip()
+    explicit_generic_key = bool(
+        registry_base and explicit_api_key and explicit_api_key != native_key
+    )
     api_key_ref = (
         _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-        if explicit_api_base and explicit_api_key
+        if explicit_route or explicit_generic_key
         else _registered_api_key_ref(provider_cfg)
     )
     if api_key_ref:
@@ -300,7 +356,6 @@ def _route_registered_provider(
             required_env.append("BENCHFLOW_PROVIDER_API_KEY")
         elif provider_cfg.auth_env:
             required_env.append(provider_cfg.auth_env)
-
     return LiteLLMRoute(
         requested_model=model,
         model_alias=safe_model_alias(model),
@@ -313,7 +368,7 @@ def _route_registered_provider(
 
 def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     """Resolve a BenchFlow model ID to one LiteLLM proxy route."""
-    provider = find_provider(model)
+    provider = find_provider(model) or find_provider_for_bare_model(model)
     if provider is not None:
         provider_name, provider_cfg = provider
         return _route_registered_provider(
@@ -331,6 +386,9 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     elif lower.startswith("gemini/"):
         upstream = model
         required = ("GEMINI_API_KEY",)
+    elif lower.startswith(("google/gemini-", "google/gemma-")):
+        upstream = f"gemini/{model.split('/', 1)[1]}"
+        required = ("GEMINI_API_KEY",)
     elif "gemini" in lower:
         upstream = f"gemini/{bare}"
         required = ("GEMINI_API_KEY",)
@@ -344,15 +402,22 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
         upstream = f"openai/{bare}"
         required = ("OPENAI_API_KEY",)
 
-    params: dict[str, str | int | float | bool] = {"model": upstream}
-    if upstream.lower().startswith("gemini/"):
-        explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
-        explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-        if explicit_api_base:
-            params["api_base"] = explicit_api_base
-            if explicit_api_key:
-                params["api_key"] = _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-                required = ("BENCHFLOW_PROVIDER_API_KEY",)
+    params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
+    if upstream.startswith("openai/"):
+        # The provider validates requested effort, including models newer than
+        # the pinned LiteLLM catalog. Never silently discard this setting.
+        params["allowed_openai_params"] = ["reasoning_effort"]
+    # The proxy serves the key and endpoint resolve_agent_env selected, in
+    # every family: a generic key is mapped to the agent's own slot
+    # (ANTHROPIC_AUTH_TOKEN for Claude), never to the family key named above,
+    # and an unrelated family key from the host must not replace it.
+    explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
+    if explicit_api_base:
+        params["api_base"] = explicit_api_base
+    if explicit_api_key:
+        params["api_key"] = _env_ref("BENCHFLOW_PROVIDER_API_KEY")
+        required = ("BENCHFLOW_PROVIDER_API_KEY",)
 
     key = required[0] if required else None
     if key and "api_key" not in params:
@@ -375,6 +440,9 @@ def litellm_proxy_config(
 ) -> dict[str, object]:
     """Build the LiteLLM ``config.yaml`` payload for one route."""
     params = dict(route.litellm_params)
+    prices = model_prices(route.provider_name, route.upstream_model)
+    for key, value in prices.items():
+        params.setdefault(key, value)
     cost = custom_cost_per_token(route.upstream_model)
     if cost is not None:
         params.setdefault("input_cost_per_token", cost[0])
@@ -416,6 +484,12 @@ def litellm_proxy_config(
                 model_list.append(
                     {"model_name": bridge_name, "litellm_params": dict(bridge_params)}
                 )
+    if prices:
+        # LiteLLM's router keeps only its own list of price keys from
+        # litellm_params and drops a tier such as Haiku 5.5's prompts over
+        # 100K tokens (priced 5x); the deployment's model_info keeps them all.
+        for entry in model_list:
+            entry["model_info"] = dict(prices)
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},

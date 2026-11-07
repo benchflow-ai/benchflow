@@ -14,6 +14,7 @@ import yaml
 from benchflow._utils.benchmark_repos import ResolvedSource
 from benchflow.adapters.source import adapt_resolved_source_if_needed
 from benchflow.task import Task
+from tests._package_files import package_path
 
 
 def _resolved(
@@ -69,7 +70,7 @@ def test_mcp_atlas_source_adapter_materializes_native_tasks(
     assert adapted.path != source
     assert task.config.task is not None
     assert task.config.task.name == "mcp-atlas/atlas-task-1"
-    assert task.config.environment.mcp_servers[0].tools == [
+    assert task.config.sandbox.mcp_servers[0].tools == [
         "search_query",
         "fetch_read",
     ]
@@ -144,14 +145,14 @@ params:
     task = Task(generated)
     assert task.config.task is not None
     assert task.config.task.name == "toolathlon/arrange-workspace"
-    assert task.config.environment.workdir == "/workspace/agent_workspace"
-    assert task.config.environment.setup_commands
-    assert task.config.environment.mcp_servers[0].exclude_tags == [
+    assert task.config.sandbox.workdir == "/workspace/agent_workspace"
+    assert task.config.sandbox.setup_commands
+    assert task.config.sandbox.mcp_servers[0].exclude_tags == [
         "__benchflow_exclude_no_tools__"
     ]
     # The real server is wrapped in the container launcher so ${token.X} in
     # argv/env resolves at spawn time against the per-task token file.
-    word = task.config.environment.mcp_servers[1]
+    word = task.config.sandbox.mcp_servers[1]
     assert word.command == "/usr/bin/python3"
     assert word.args == [
         "/workspace/.toolathlon/toolathlon_container.py",
@@ -168,10 +169,10 @@ params:
     )
     # First setup command stages the container helper and writes the global
     # token_key_session.py; the preprocess command runs last.
-    token_setup = task.config.environment.setup_commands[0].command
+    token_setup = task.config.sandbox.setup_commands[0].command
     assert "toolathlon_container.py write-config" in token_setup
     assert "TOOLATHLON_CONTAINER_MODULE_B64" in token_setup
-    setup_command = task.config.environment.setup_commands[-1].command
+    setup_command = task.config.sandbox.setup_commands[-1].command
     dockerfile = (generated / "environment" / "Dockerfile").read_text()
     task_toml = (generated / "task.toml").read_text()
     test_sh = (generated / "tests" / "test.sh").read_text()
@@ -185,7 +186,7 @@ params:
     assert "rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/" in dockerfile
     assert "global_configs_example.py" in dockerfile
     assert "global_configs.py" in dockerfile
-    assert 'cp "$(command -v uv)" /usr/local/bin/uv' in dockerfile
+    assert "cp /opt/runtime/uv/0.13.4/uv /usr/local/bin/uv" in dockerfile
     assert "chmod -R a+rwX /workspace/utils/local_servers" in dockerfile
     assert "chmod -R a+rwX /workspace/agent_workspace" in task_toml
     assert 'chmod -R go-rwx "$private"' in setup_command
@@ -194,7 +195,7 @@ params:
     # A non-zero evaluator exit is a task fail (reward 0), matching upstream's
     # exit-code scoring; only a broken evaluator ENVIRONMENT escalates.
     assert "evaluator environment failure" in test_sh
-    assert "ModuleNotFoundError|ImportError|PermissionError" in test_sh
+    assert "^(ModuleNotFoundError|ImportError|PermissionError): " in test_sh
     assert "Traceback (most recent call last):" not in test_sh
     assert "ast.walk" in setup_command
     assert "ast.walk" in test_sh
@@ -413,8 +414,8 @@ def test_toolathlon_email_task_gets_poste_sidecar(tmp_path: Path, monkeypatch) -
 
     task = Task(email)
     # Extra headroom for the DinD compose + sidecar image.
-    assert task.config.environment.memory_mb == 12288
-    commands = [c.command for c in task.config.environment.setup_commands]
+    assert task.config.sandbox.memory_mb == 12288
+    commands = [c.command for c in task.config.sandbox.setup_commands]
     rewrite_idx = next(
         i for i, c in enumerate(commands) if "poste" in c and "imap_server" in c
     )
@@ -424,6 +425,35 @@ def test_toolathlon_email_task_gets_poste_sidecar(tmp_path: Path, monkeypatch) -
     # Non-email task: single container, no compose.
     other = adapted.path / "find-alita-paper"
     assert not (other / "environment" / "docker-compose.yaml").exists()
+
+
+def test_toolathlon_notion_task_gets_extended_preprocess_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Notion page duplication can exceed the generic 30m setup budget."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "Toolathlon"
+    finalpool = _write_toolathlon_repo_skeleton(repo)
+    (repo / "configs" / "mcp_servers" / "notion.yaml").write_text(
+        "type: stdio\nname: notion\nparams:\n  command: npx\n"
+        '  args: ["@notionhq/notion-mcp-server", "--page-id", "${token.notion_allowed_page_ids}"]\n'
+    )
+    _write_toolathlon_task(finalpool, "notion-hr", ["notion"])
+
+    adapted = adapt_resolved_source_if_needed(
+        _resolved(
+            repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="e" * 40
+        )
+    )
+
+    task = Task(adapted.path / "notion-hr")
+    commands = task.config.sandbox.setup_commands
+    assert any("TOOLATHLON_NOTION_MCP_AUTH_B64" in c.command for c in commands)
+    assert commands[-1].timeout_sec == 3600.0
+    assert commands[-1].host_lock == "toolathlon-notion-official-mcp"
+    assert commands[-1].capture_dir == "/workspace/configs/.mcp-auth"
+    assert commands[-1].capture_dir_b64_env == "TOOLATHLON_NOTION_MCP_AUTH_B64"
+    assert commands[-1].capture_dir_b64_env_file_var == "BENCHFLOW_DOTENV_PATH"
 
 
 def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
@@ -468,30 +498,30 @@ def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
             "plain",
         )
         msg["From"] = "Customer Support Team"
-        msg["To"] = "tyler_perez28@mcp.com"
+        msg["To"] = "recipient@example.com"
         msg["Subject"] = "Survey"
 
         smtp = smtplib.SMTP("127.0.0.1", 12587, timeout=10)
-        smtp.send_message(msg, from_addr="jason_cruz@mcp.com")
+        smtp.send_message(msg, from_addr="sender@example.com")
         smtp.quit()
 
         imap = imaplib.IMAP4("127.0.0.1", 11143, timeout=10)
-        imap.login("jason_cruz@mcp.com", "anything")
+        imap.login("sender@example.com", "anything")
         assert imap.select("Sent")[0] == "OK"
         status, nums = imap.search(None, "ALL")
         assert status == "OK"
         assert nums and nums[0] == b"1"
         status, data = imap.fetch(b"1", "(RFC822)")
         assert status == "OK"
-        assert b"tyler_perez28@mcp.com" in data[0][1]
+        assert b"recipient@example.com" in data[0][1]
         assert b"docs.google.com/forms" in data[0][1]
         status, _ = imap.append(
             "Sent",
             None,
             None,
             (
-                b"From: jason_cruz@mcp.com\r\n"
-                b"To: followup@mcp.com\r\n"
+                b"From: sender@example.com\r\n"
+                b"To: followup@example.com\r\n"
                 b"Subject: Follow-up\r\n\r\n"
                 b"Thanks"
             ),
@@ -502,7 +532,7 @@ def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
         assert nums and nums[0] == b"1 2"
         status, data = imap.fetch(b"2", "(RFC822)")
         assert status == "OK"
-        assert b"followup@mcp.com" in data[0][1]
+        assert b"followup@example.com" in data[0][1]
         imap.logout()
     finally:
         proc.terminate()
@@ -515,13 +545,8 @@ def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
 
 def test_compose_build_tags_main_image_for_sidecar_reuse() -> None:
     """Compose sidecars can reference ${MAIN_IMAGE_NAME} without registry pulls."""
-    compose_path = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "benchflow"
-        / "sandbox"
-        / "_compose_files"
-        / "docker-compose-build.yaml"
+    compose_path = package_path(
+        "sandbox", "_compose_files", "docker-compose-build.yaml"
     )
     compose = yaml.safe_load(compose_path.read_text())
     assert compose["services"]["main"]["image"] == "${MAIN_IMAGE_NAME}"
@@ -574,10 +599,10 @@ def test_toolathlon_k8s_task_gets_host_network_runtime(
     assert "helm-v3.15.4-linux" in dockerfile
 
     task = Task(generated)
-    assert task.config.environment.cpus == 6
-    assert task.config.environment.memory_mb == 16384
-    assert task.config.environment.storage_mb == 49152
-    commands = [c.command for c in task.config.environment.setup_commands]
+    assert task.config.sandbox.cpus == 6
+    assert task.config.sandbox.memory_mb == 16384
+    assert task.config.sandbox.storage_mb == 49152
+    commands = [c.command for c in task.config.sandbox.setup_commands]
     assert any("docker info" in c and "helm version" in c for c in commands)
     preprocess_idx = next(i for i, c in enumerate(commands) if "preprocess.main" in c)
     kubeconfig_idx = next(i for i, c in enumerate(commands) if "k8s_configs" in c)
@@ -631,10 +656,8 @@ def test_toolathlon_woocommerce_task_gets_first_boot_sidecar(
     assert "$site_uploads/wc-logs" in entry
     assert "$site_uploads/woocommerce_uploads" in entry
     task = Task(generated)
-    assert task.config.environment.build_timeout_sec == 2400
-    assert any(
-        "woo-rewrite" in c.command for c in task.config.environment.setup_commands
-    )
+    assert task.config.sandbox.build_timeout_sec == 2400
+    assert any("woo-rewrite" in c.command for c in task.config.sandbox.setup_commands)
 
 
 def test_toolathlon_canvas_task_reseeds_tokens_on_first_boot(
@@ -678,7 +701,13 @@ def test_toolathlon_canvas_task_reseeds_tokens_on_first_boot(
     assert "Role.get_built_in_role('AccountAdmin')" in seed
     assert "account_user.workflow_state = 'active'" in seed
     task = Task(adapted.path / "canvas-list-test")
-    assert task.config.environment.build_timeout_sec == 2400
+    assert task.config.sandbox.build_timeout_sec == 2400
+    rewrite = next(
+        c.command
+        for c in task.config.sandbox.setup_commands
+        if "canvas-rewrite" in c.command
+    )
+    assert "/workspace/utils/app_specific/canvas" in rewrite
 
 
 def test_toolathlon_gym_adapter_normalizes_postgres_env(
@@ -729,7 +758,7 @@ params:
 
     generated = adapted.path / "salary-report"
     task = Task(generated)
-    env = task.config.environment.mcp_servers[0].env
+    env = task.config.sandbox.mcp_servers[0].env
     assert env["PG_HOST"] == "postgres"
     assert env["PG_USER"] == "eigent"
     assert env["PG_PASSWORD"] == "camel"
@@ -742,7 +771,7 @@ params:
         "chmod -R a+rwX /workspace/agent_workspace"
         in (generated / "task.toml").read_text()
     )
-    setup_command = task.config.environment.setup_commands[-1].command
+    setup_command = task.config.sandbox.setup_commands[-1].command
     assert 'chmod -R go-rwx "$private"' in setup_command
     assert (
         "postgres:" in (generated / "environment" / "docker-compose.yaml").read_text()
@@ -871,12 +900,12 @@ params:
     ]
     assert not (adapted.path / ".benchflow-source-adapter-skipped.json").exists()
     # setup_commands: [token-setup, credential-inject, preprocess].
-    assert len(task.config.environment.setup_commands) == 3
+    assert len(task.config.sandbox.setup_commands) == 3
     assert (
         "toolathlon_container.py write-config"
-        in task.config.environment.setup_commands[0].command
+        in task.config.sandbox.setup_commands[0].command
     )
-    credential_setup = task.config.environment.setup_commands[1]
+    credential_setup = task.config.sandbox.setup_commands[1]
     assert credential_setup.env == {
         "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON:-}",
         "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64:-}",
@@ -894,7 +923,7 @@ params:
     assert sheet.config.metadata["required_credential_files"] == [
         "configs/google_credentials.json"
     ]
-    sheet_server = sheet.config.environment.mcp_servers[0]
+    sheet_server = sheet.config.sandbox.mcp_servers[0]
     assert sheet_server.command == "/usr/bin/python3"
     assert sheet_server.args[:3] == [
         "/workspace/.toolathlon/toolathlon_container.py",
@@ -914,7 +943,7 @@ params:
         "configs/gcp-oauth.keys.json",
         "configs/google_credentials.json",
     ]
-    calendar_server = calendar.config.environment.mcp_servers[0]
+    calendar_server = calendar.config.sandbox.mcp_servers[0]
     assert "HOME" not in calendar_server.env
     assert (
         calendar_server.env["CALENDAR_OAUTH_PATH"]
@@ -937,7 +966,7 @@ params:
     (workspace / "configs" / "gcp-oauth.keys.json").write_text(
         json.dumps(oauth_payload)
     )
-    calendar_command = calendar.config.environment.setup_commands[1].command.replace(
+    calendar_command = calendar.config.sandbox.setup_commands[1].command.replace(
         "/usr/local/bin/uv run python", sys.executable
     )
     result = subprocess.run(
@@ -980,13 +1009,7 @@ params:
 def _run_container_helper(
     workspace: Path, argv: list[str], env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
-    module = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "benchflow"
-        / "adapters"
-        / "_toolathlon_container.py"
-    )
+    module = package_path("adapters", "_toolathlon_container.py")
     full_env = {"PATH": os.environ["PATH"], "TOOLATHLON_WORKSPACE": str(workspace)}
     full_env.update(env or {})
     return subprocess.run(
@@ -1308,7 +1331,7 @@ params:
         _resolved(repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool")
     )
     task = Task(adapted.path / "find-alita-paper")
-    arxiv = task.config.environment.mcp_servers[0]
+    arxiv = task.config.sandbox.mcp_servers[0]
     assert (
         arxiv.env["TOOLATHLON_ENSURE_DIRS"]
         == "/workspace/agent_workspace/arxiv_local_storage"

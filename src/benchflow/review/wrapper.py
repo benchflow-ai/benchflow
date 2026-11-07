@@ -1,0 +1,452 @@
+"""Assemble the throwaway wrapper task that carries one rubric review.
+
+Each review of a finished rollout runs as an ordinary single rollout of a
+synthetic task built here on the host:
+
+- the wrapper uses a digest-pinned base image and no task-authored Dockerfile;
+  backends may still derive their own runtime image;
+- the rollout evidence and, when available, the original task definition are
+  uploaded after start (``RolloutConfig.uploads``) to ``/evidence`` — outside
+  the agent workdir, so the sandbox-user chown never touches them and they
+  stay root-owned and unwritable by the reviewer (the wrapper declares
+  ``allow_internet: false``, which engages the sandbox-local model proxy,
+  the agent-UID egress firewall, and the no-web agent policy end to end);
+- the instruction body is the rendered review prompt plus the structured
+  output contract;
+- ``tests/`` holds a stdlib-only validator plus the rubric contract
+  metadata, so the wrapper's own reward means exactly "the reviewer produced a
+  structurally valid result file" — never "the reviewed run was good".
+
+The rubric file itself never enters the sandbox.  Only its derivatives do:
+guidance lines inside the instruction, criterion names inside the output
+schema, and non-prompt contract metadata inside ``tests/criteria.json``. Task
+definitions are sanitized: skills and any shipped ``rubric.json`` are excluded.
+Generic run/task copies drop symlinks. Automatic workspace bundles preserve
+manifest-validated internal links through an archive and verify every file after
+upload, before the reviewer starts. Available provider traces cross the canonical
+redaction boundary before inclusion.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import shutil
+import stat
+from pathlib import Path
+
+from benchflow.review.config import (
+    REVIEW_RESULT_FILENAME,
+    Rubric,
+    build_review_response_model,
+)
+from benchflow.review.options import (
+    REVIEWER_AGENT_TIMEOUT_SEC,
+    REVIEWER_IMAGE,
+    REVIEWER_MEMORY_MB,
+    REVIEWER_STORAGE_MB,
+)
+from benchflow.review.prompts import (
+    TASK_MOUNT,
+    TRIAL_MOUNT,
+    WORKSPACE_MOUNT,
+    render_review_instruction,
+)
+
+REVIEWER_VERIFIER_TIMEOUT_SEC = 120
+REVIEWER_ARTIFACT_PACKAGES = ("numpy==2.2.6", "pypdf==5.9.0")
+
+#: Rollout-side entries never copied into the evidence snapshot.  Excluding
+#: prior review output means a re-review can never read an earlier verdict.
+_EVIDENCE_EXCLUDES = (
+    ".git",
+    "llm_trajectory.jsonl",
+    "review",
+    "reviews",
+    "scoring",
+    REVIEW_RESULT_FILENAME,
+    "review_report.json",
+)
+
+#: Task-side material the reviewer must not see: skills would break no-skill
+#: resource isolation, and the task's own rubric must never enter a sandbox.
+_TASK_EVIDENCE_EXCLUDES = (
+    "skills",
+    "rubric.json",
+)
+
+_TEST_SCRIPT = """#!/bin/bash
+set -u
+DIR="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p /logs/verifier
+cp /app/{result_filename} /logs/verifier/{result_filename} 2>/dev/null || true
+if python3 "$DIR/validate.py" /app/{result_filename} "$DIR/criteria.json" "$DIR/trial_name.txt"; then
+  echo 1 > /logs/verifier/reward.txt
+else
+  echo 0 > /logs/verifier/reward.txt
+fi
+"""
+
+_VALIDATOR = '''"""Structural check of the reviewer's result file.
+
+Runs inside the wrapper's verifier with only the standard library. Verifies
+shape, not judgment quality: reward 1 means "a well-formed review exists".
+Prints one reason per line on failure; exit code 0 means valid.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+LEGACY_OUTCOMES = {"pass", "fail", "not_applicable"}
+BLOCKER_OUTCOMES = {"pass", "fail"}
+
+
+def main() -> int:
+    result_path = Path(sys.argv[1])
+    rubric = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    criteria = rubric["criteria"]
+    specs = {criterion["name"]: criterion for criterion in criteria}
+    names = set(specs)
+    weighted = rubric.get("contract") == "v0.2"
+
+    if not result_path.is_file():
+        print(f"result file not found: {result_path}")
+        return 1
+    try:
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"result file is not valid JSON: {exc}")
+        return 1
+    if not isinstance(data, dict):
+        print("result must be a JSON object")
+        return 1
+
+    problems = []
+    expected_top_level = {"trial_name", "summary", "checks"}
+    for name in sorted(expected_top_level - data.keys()):
+        problems.append(f"result is missing key: {name}")
+    if weighted:
+        # A reviewer that copies the schema it was given can copy its
+        # definitions too ($defs, $schema); they carry no verdict.
+        schema_keys = {"$defs", "$schema"}
+        for name in sorted(data.keys() - expected_top_level - schema_keys):
+            problems.append(f"result has unexpected key: {name}")
+    expected_trial = Path(sys.argv[3]).read_text(encoding="utf-8")
+    if data.get("trial_name") != expected_trial:
+        problems.append(
+            f"trial_name must be {expected_trial!r}, got {data.get('trial_name')!r}"
+        )
+    if not isinstance(data.get("summary"), str) or not data["summary"].strip():
+        problems.append("summary must be a non-empty string")
+
+    checks = data.get("checks")
+    if not isinstance(checks, dict):
+        problems.append("checks must be an object keyed by criterion name")
+        checks = {}
+    for name in sorted(names - checks.keys()):
+        problems.append(f"checks is missing criterion: {name}")
+    for name in sorted(checks.keys() - names):
+        problems.append(f"checks has unexpected key: {name}")
+    for name in sorted(names & checks.keys()):
+        check = checks[name]
+        if not isinstance(check, dict):
+            problems.append(f"{name}: value must be an object")
+            continue
+        blocker = specs[name].get("blocker")
+        if blocker is None:
+            expected_keys = {"outcome", "explanation"}
+            outcome = check.get("outcome")
+            if not isinstance(outcome, str) or outcome not in LEGACY_OUTCOMES:
+                problems.append(
+                    f"{name}: outcome must be one of {sorted(LEGACY_OUTCOMES)}"
+                )
+        elif blocker == 1:
+            expected_keys = {"outcome", "explanation"}
+            outcome = check.get("outcome")
+            if not isinstance(outcome, str) or outcome not in BLOCKER_OUTCOMES:
+                problems.append(
+                    f"{name}: blocker outcome must be one of "
+                    f"{sorted(BLOCKER_OUTCOMES)}"
+                )
+        else:
+            expected_keys = {"score", "explanation"}
+            score = check.get("score")
+            if isinstance(score, bool) or not isinstance(score, int) or score not in {0, 1, 2}:
+                problems.append(f"{name}: score must be the integer 0, 1, or 2")
+        if weighted:
+            for key in sorted(expected_keys - check.keys()):
+                problems.append(f"{name}: check is missing key: {key}")
+            for key in sorted(check.keys() - expected_keys):
+                problems.append(f"{name}: check has unexpected key: {key}")
+        explanation = check.get("explanation")
+        if not isinstance(explanation, str) or not explanation.strip():
+            problems.append(f"{name}: explanation must be a non-empty string")
+
+    for problem in problems:
+        print(problem)
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+_TASK_FRONTMATTER = """---
+schema_version: '1.3'
+metadata:
+  category: rubric-review
+verifier:
+  type: test-script
+  timeout_sec: {verifier_timeout}
+agent:
+  timeout_sec: {agent_timeout}
+sandbox:
+  docker_image: {image}
+  workdir: /app{network_line}
+  cpus: 1
+  memory_mb: {memory_mb}
+  storage_mb: {storage_mb}{setup_commands}
+---
+
+"""
+
+#: The reviewer sandbox's disk beyond its evidence: the image, the reviewer
+#: agent, the model proxy and the artifact packages.
+REVIEWER_DISK_MARGIN_MB = 2048
+
+
+def reviewer_storage_mb(evidence_bytes: int, environment: str) -> int:
+    """The reviewer sandbox's disk for *evidence_bytes* of evidence: that plus
+    :data:`REVIEWER_DISK_MARGIN_MB`, never below :data:`REVIEWER_STORAGE_MB`,
+    at most what the backend gives one sandbox (Daytona's ceiling)."""
+    wanted = max(
+        REVIEWER_STORAGE_MB,
+        math.ceil(evidence_bytes / 1024**2) + REVIEWER_DISK_MARGIN_MB,
+    )
+    if environment == "daytona":
+        from benchflow.sandbox.setup import _DAYTONA_MAX_STORAGE_MB
+
+        return min(wanted, _DAYTONA_MAX_STORAGE_MB)
+    return wanted
+
+
+#: Default network posture: the wrapper declares no-internet, which engages
+#: the no-web pipeline (web tools disabled, sandbox-local model proxy,
+#: agent-UID egress firewall) and makes backends that cannot enforce network
+#: isolation fail closed at launch. ``open_network=True`` is an explicit
+#: operator override for those backends; the report records it.
+_NETWORK_LINE_ISOLATED = "\n  allow_internet: false"
+_NETWORK_LINE_OPEN = ""
+
+
+def _evidence_ignore(extra_excludes: tuple[str, ...]):
+    """Build a copytree ignore callback: name excludes plus symlink rejection.
+
+    ``shutil.copytree(symlinks=False)`` would *dereference* links, so a
+    source-controlled symlink could materialize an arbitrary host file into
+    the uploaded evidence. Links are dropped entirely instead.
+    """
+
+    patterns = shutil.ignore_patterns(*(_EVIDENCE_EXCLUDES + extra_excludes))
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored = set(patterns(directory, names))
+        for name in names:
+            if (Path(directory) / name).is_symlink():
+                ignored.add(name)
+        return ignored
+
+    return ignore
+
+
+def copy_evidence(
+    source: Path,
+    destination: Path,
+    *,
+    extra_excludes: tuple[str, ...] = (),
+) -> None:
+    """Copy one evidence tree; drops VCS data, prior reviews, and symlinks."""
+
+    shutil.copytree(
+        source,
+        destination,
+        ignore=_evidence_ignore(extra_excludes),
+        symlinks=True,  # never dereference; links are filtered by ignore()
+    )
+    _strip_write_bits(destination)
+
+
+def _copy_provider_trace(source: Path, destination: Path) -> None:
+    """Include canonical provider capture only after its established redactor."""
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    relative = Path("trajectory") / "llm_trajectory.jsonl"
+    original = source / relative
+    if original.is_symlink() or original.parent.is_symlink():
+        raise ValueError("provider trajectory must be a regular captured file")
+    if not original.exists():
+        return
+    target = destination / relative
+    target.parent.chmod(target.parent.stat().st_mode | stat.S_IWUSR)
+    try:
+        with (
+            original.open(encoding="utf-8") as reader,
+            target.open("w", encoding="utf-8") as writer,
+        ):
+            for line in reader:
+                if line.strip():
+                    writer.write(
+                        json.dumps(redact_trajectory_obj(json.loads(line))) + "\n"
+                    )
+    finally:
+        _strip_write_bits(target.parent)
+
+
+def remove_review_task(root: Path) -> None:
+    """Remove read-only upload copies without following evidence symlinks."""
+    if not root.exists():
+        return
+    for path in [root, *root.rglob("*")]:
+        if not path.is_symlink():
+            path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+    shutil.rmtree(root)
+
+
+def _strip_write_bits(root: Path) -> None:
+    """Clear every write bit under *root*.
+
+    ``copytree`` preserves source permissions, so a rollout file recorded
+    as 0666 (or a 0777 directory) would stay writable — and the upload
+    backends preserve modes — letting the reviewer mutate the evidence it
+    is supposed to be grading. Root ownership alone does not prevent that,
+    so the modes are normalized here, before upload.
+    """
+
+    write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        current = path.stat().st_mode
+        path.chmod(stat.S_IMODE(current) & ~write_bits)
+
+
+def assemble_review_task(
+    rollout_dir: Path,
+    task_dir: Path | None,
+    rubric: Rubric,
+    dest: Path,
+    *,
+    template: str | None = None,
+    image: str = REVIEWER_IMAGE,
+    agent_timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
+    open_network: bool = False,
+    workspace_bundle: Path | None = None,
+    memory_mb: int = REVIEWER_MEMORY_MB,
+    storage_mb: int | None = None,
+    environment: str = "docker",
+) -> tuple[Path, dict[str, str]]:
+    """Assemble one wrapper task under ``dest``.
+
+    Returns the wrapper path plus the upload map (host evidence directory →
+    absolute sandbox path) to pass through ``RolloutConfig.uploads``. Without
+    *storage_mb* the reviewer sandbox's disk is sized for the evidence it
+    holds (:func:`reviewer_storage_mb` on *environment*): the uploads, and
+    each workspace unpacked beside its archive.
+    """
+
+    if dest.exists():
+        remove_review_task(dest)
+    dest.mkdir(parents=True)
+
+    evidence = dest / "evidence"
+    copy_evidence(rollout_dir, evidence / "trial", extra_excludes=("evidence",))
+    uploads = {str(evidence / "trial"): TRIAL_MOUNT}
+    if workspace_bundle is not None:
+        from benchflow.review.evidence import EvidenceManifest, prepare_workspace_upload
+
+        manifest = EvidenceManifest.model_validate_json(
+            (workspace_bundle / "manifest.json").read_text()
+        )
+        bundles = [(workspace_bundle, "workspace")]
+        bundles.extend(
+            (workspace_bundle / artifact.bundle_path, artifact.bundle_path)
+            for artifact in manifest.artifacts
+            if artifact.status == "captured" and artifact.bundle_path is not None
+        )
+        for bundle, relative in bundles:
+            archive = evidence / f"{relative}.tar"
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            prepare_workspace_upload(bundle, archive)
+            manifest_copy = evidence / f"{relative}-manifest.json"
+            shutil.copyfile(bundle / "manifest.json", manifest_copy)
+            uploads[str(archive)] = f"/evidence/{relative}.tar"
+            uploads[str(manifest_copy)] = f"/evidence/{relative}-manifest.json"
+        _copy_provider_trace(rollout_dir, evidence / "trial")
+    task_mount: str | None = None
+    if task_dir is not None and task_dir.is_dir():
+        copy_evidence(
+            task_dir,
+            evidence / "task",
+            extra_excludes=_TASK_EVIDENCE_EXCLUDES,
+        )
+        uploads[str(evidence / "task")] = TASK_MOUNT
+        task_mount = TASK_MOUNT
+    if storage_mb is None:
+        held = sum(
+            path.stat().st_size for path in evidence.rglob("*") if path.is_file()
+        )
+        if workspace_bundle is not None:
+            from benchflow.review.evidence import evidence_bytes
+
+            held += evidence_bytes(workspace_bundle)
+        storage_mb = reviewer_storage_mb(held, environment)
+
+    response_model = build_review_response_model(rubric)
+    instruction = render_review_instruction(
+        rubric,
+        template=template,
+        trial_path=TRIAL_MOUNT,
+        task_path=task_mount,
+        result_path=f"/app/{REVIEW_RESULT_FILENAME}",
+        trial_name=rollout_dir.name,
+        output_schema=response_model.model_json_schema(),
+        workspace_path=WORKSPACE_MOUNT if workspace_bundle is not None else None,
+    )
+    frontmatter = _TASK_FRONTMATTER.format(
+        verifier_timeout=float(REVIEWER_VERIFIER_TIMEOUT_SEC),
+        agent_timeout=float(agent_timeout_sec),
+        image=image,
+        network_line=_NETWORK_LINE_OPEN if open_network else _NETWORK_LINE_ISOLATED,
+        memory_mb=memory_mb,
+        storage_mb=storage_mb,
+        setup_commands=(
+            "\n  setup_commands:"
+            "\n    - command: python3 -m pip install --disable-pip-version-check --no-cache-dir "
+            + " ".join(REVIEWER_ARTIFACT_PACKAGES)
+            + "\n      user: root\n      timeout_sec: 600\n      cwd: /tmp"
+            if image == REVIEWER_IMAGE
+            else ""
+        ),
+    )
+    (dest / "task.md").write_text(frontmatter + instruction, encoding="utf-8")
+
+    # No task compose file: it would flip Daytona and other backends into
+    # compose strategies. The agent-UID egress firewall's NET_ADMIN comes from
+    # the backend's no-web rule (``compose_needs_net_admin`` on Docker).
+
+    tests_dir = dest / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test.sh").write_text(
+        _TEST_SCRIPT.format(result_filename=REVIEW_RESULT_FILENAME),
+        encoding="utf-8",
+    )
+    (tests_dir / "validate.py").write_text(_VALIDATOR, encoding="utf-8")
+    (tests_dir / "criteria.json").write_text(
+        json.dumps(rubric.metadata(), indent=2),
+        encoding="utf-8",
+    )
+    # Bind the verdict to the rollout under review: a reviewer that reports
+    # some other run's name produces an unattributable review.
+    (tests_dir / "trial_name.txt").write_text(rollout_dir.name, encoding="utf-8")
+    return dest, uploads

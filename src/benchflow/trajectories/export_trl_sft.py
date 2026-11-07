@@ -1,0 +1,797 @@
+"""Convert BenchFlow LLM trajectories into native TRL SFT JSONL."""
+
+from __future__ import annotations
+
+import json
+import math
+import statistics
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal, cast
+
+from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
+from benchflow.trajectories import trl_sft_tokenization as tokenization
+from benchflow.trajectories.call_purpose import infer_call_purpose
+from benchflow.trajectories.export_prime_sft import (
+    _benchflow_row_training_skip_reason,
+    _iter_rollout_dirs,
+    _iter_selected_rollout_dirs,
+    _result_training_skip_reason,
+    _reward_from_result,
+    _row_reward,
+    _training_signals,
+    exchange_source,
+    is_control_run,
+    load_rollout_exchanges,
+    load_rollout_result,
+    normalize_prime_sft_exchange,
+    refuse_training_signal_for_jsonl,
+    validate_prime_sft_row,
+)
+from benchflow.trajectories.sft_subagents import (
+    SubagentConversionCounts,
+    reject_results_row_subagent_steps,
+    split_rollout_exchanges,
+    subagent_row_tags,
+)
+from benchflow.trajectories.training_signal import GroupAdvantage
+from benchflow.trajectories.types import redact_trajectory_obj
+
+TrlSftRowMode = Literal["rollout", "exchange"]
+TrlSftContextPolicy = Literal["full", "message-window"]
+
+
+@dataclass
+class TrlSftExportStats:
+    rollouts_seen: int = 0
+    exchanges_seen: int = 0
+    rows_written: int = 0
+    rows_with_tool_calls: int = 0
+    skipped_no_result: int = 0
+    skipped_no_trajectory: int = 0
+    skipped_reward: int = 0
+    skipped_provider_error: int = 0
+    skipped_no_assistant: int = 0
+    skipped_missing_tools: int = 0
+    skipped_terminal_error: int = 0
+    # Control runs (oracle, empty/nop): no model calls to train on.
+    skipped_control: int = 0
+    skipped_helper_calls: int = 0
+    skipped_invalid: int = 0
+    # A completion calling a tool with input that is not a JSON object.
+    skipped_unparsed_tool_calls: int = 0
+    rows_compacted: int = 0
+    messages_dropped: int = 0
+    max_original_tokens: int = 0
+    max_final_tokens: int = 0
+    subagents: SubagentConversionCounts = field(
+        default_factory=SubagentConversionCounts
+    )
+    sources: list[str] = field(default_factory=list)
+    # --reward-vector / --group-advantage: options and one entry per group.
+    training_signal: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "format": "trl-sft",
+            **(
+                {"training_signal": self.training_signal}
+                if self.training_signal is not None
+                else {}
+            ),
+            "rollouts_seen": self.rollouts_seen,
+            "exchanges_seen": self.exchanges_seen,
+            "rows_written": self.rows_written,
+            "rows_with_tool_calls": self.rows_with_tool_calls,
+            "skipped_no_result": self.skipped_no_result,
+            "skipped_no_trajectory": self.skipped_no_trajectory,
+            "skipped_reward": self.skipped_reward,
+            "skipped_provider_error": self.skipped_provider_error,
+            "skipped_no_assistant": self.skipped_no_assistant,
+            "skipped_missing_tools": self.skipped_missing_tools,
+            "skipped_terminal_error": self.skipped_terminal_error,
+            "skipped_control": self.skipped_control,
+            "skipped_helper_calls": self.skipped_helper_calls,
+            "skipped_invalid": self.skipped_invalid,
+            "skipped_unparsed_tool_calls": self.skipped_unparsed_tool_calls,
+            "rows_compacted": self.rows_compacted,
+            "messages_dropped": self.messages_dropped,
+            "max_original_tokens": self.max_original_tokens,
+            "max_final_tokens": self.max_final_tokens,
+            **self.subagents.as_dict(),
+            "sources": self.sources,
+        }
+
+
+def _json_line(record: dict[str, Any], *, redact: bool) -> str:
+    clean = scrub_non_finite(record)
+    if redact:
+        clean = redact_trajectory_obj(clean)
+    return dumps_finite(clean, default=str)
+
+
+def _call_purpose(exchange: dict[str, Any], *, agent: str | None) -> str:
+    metadata = exchange.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("call_purpose"), str):
+        return cast(str, metadata["call_purpose"])
+    request = exchange.get("request")
+    body = request.get("body") if isinstance(request, dict) else {}
+    if not isinstance(body, dict):
+        return "helper"
+    return infer_call_purpose(agent_name=agent or "", request_body=body)
+
+
+def _arguments_as_object(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {"_malformed_json_arguments": arguments}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"_non_object_json_arguments": parsed}
+    if arguments is None:
+        return {}
+    return {"_non_object_arguments": arguments}
+
+
+def _trl_message(message: dict[str, Any]) -> dict[str, Any]:
+    out = dict(message)
+    tool_calls = out.get("tool_calls")
+    if isinstance(tool_calls, list):
+        normalized = []
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            call = dict(tool_call)
+            function = call.get("function")
+            if isinstance(function, dict):
+                function = dict(function)
+                function["arguments"] = _arguments_as_object(function.get("arguments"))
+                call["function"] = function
+            normalized.append(call)
+        out["tool_calls"] = normalized
+    return out
+
+
+def _has_tool_calls(messages: list[dict[str, Any]]) -> bool:
+    return any(bool(message.get("tool_calls")) for message in messages)
+
+
+# What a tool call's arguments become when its input is not a JSON object:
+# ours (_arguments_as_object) and the wrapper a provider's adapter puts in the
+# response itself (MiMo's Anthropic endpoint through the proxy, input cut or
+# sent as text). TRL trains on the completion, so such a call would teach the
+# model to emit the wrapper.
+_UNPARSED_ARGUMENTS = frozenset(
+    {
+        "_malformed_json_arguments",
+        "_non_object_json_arguments",
+        "_non_object_arguments",
+        "__unparsedToolInput",
+    }
+)
+
+
+def _calls_tool_with_unparsed_input(messages: list[dict[str, Any]]) -> bool:
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") if isinstance(call, dict) else None
+            arguments = (
+                function.get("arguments") if isinstance(function, dict) else None
+            )
+            if (
+                isinstance(arguments, dict)
+                and len(arguments) == 1
+                and next(iter(arguments)) in _UNPARSED_ARGUMENTS
+            ):
+                return True
+    return False
+
+
+def _apply_context_policy(
+    rows: list[dict[str, Any]],
+    stats: TrlSftExportStats,
+    *,
+    context_policy: TrlSftContextPolicy,
+    tokenizer_id: str | None,
+    tokenizer_revision: str | None,
+    max_length: int | None,
+) -> list[dict[str, Any]]:
+    if context_policy == "full":
+        if (
+            tokenizer_id is not None
+            or tokenizer_revision is not None
+            or max_length is not None
+        ):
+            raise ValueError(
+                "--tokenizer/--tokenizer-revision/--max-length require "
+                "--context-policy message-window during conversion"
+            )
+        return rows
+    if tokenizer_id is None or max_length is None:
+        raise ValueError(
+            "--context-policy message-window requires --tokenizer and --max-length"
+        )
+    if max_length < 1:
+        raise ValueError("max_length must be positive")
+    tokenizer = tokenization.load_tokenizer(tokenizer_id, tokenizer_revision)
+    chat_template = tokenization.training_chat_template(tokenizer)
+    windowed: list[dict[str, Any]] = []
+    for row in rows:
+        (
+            final,
+            compacted,
+            dropped,
+            original_tokens,
+            final_tokens,
+        ) = tokenization.window_trl_sft_row(
+            row,
+            tokenizer=tokenizer,
+            chat_template=chat_template,
+            tokenizer_id=tokenizer_id,
+            tokenizer_revision=tokenizer_revision,
+            max_length=max_length,
+        )
+        validate_trl_sft_row(final, 1)
+        windowed.append(final)
+        stats.rows_compacted += compacted
+        stats.messages_dropped += dropped
+        stats.max_original_tokens = max(stats.max_original_tokens, original_tokens)
+        stats.max_final_tokens = max(stats.max_final_tokens, final_tokens)
+    return windowed
+
+
+def _step_call_purpose(
+    step: dict[str, Any],
+    *,
+    agent: str | None,
+    tools: list[dict[str, Any]],
+) -> str:
+    extras = step.get("extras")
+    if isinstance(extras, dict) and isinstance(extras.get("call_purpose"), str):
+        return cast(str, extras["call_purpose"])
+    return _call_purpose(
+        {
+            "request": {
+                "body": {
+                    "messages": step.get("prompt"),
+                    "tools": tools,
+                }
+            }
+        },
+        agent=agent,
+    )
+
+
+def validate_trl_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
+    prompt = row.get("prompt")
+    completion = row.get("completion")
+    tools = row.get("tools")
+    if not isinstance(prompt, list) or not prompt:
+        raise ValueError(f"row {row_num}: prompt must be a non-empty message list")
+    if (
+        not isinstance(completion, list)
+        or len(completion) != 1
+        or not isinstance(completion[0], dict)
+        or completion[0].get("role") != "assistant"
+    ):
+        raise ValueError(
+            f"row {row_num}: completion must contain exactly one assistant message"
+        )
+    if "tool_defs" in row:
+        raise ValueError(f"row {row_num}: TRL rows must use tools, not tool_defs")
+    validate_prime_sft_row(
+        {"prompt": prompt, "completion": completion, "tools": tools},
+        row_num,
+    )
+    for message_idx, message in enumerate(prompt + completion):
+        if not isinstance(message, dict):
+            continue
+        for call_idx, tool_call in enumerate(message.get("tool_calls") or []):
+            function = (
+                tool_call.get("function") if isinstance(tool_call, dict) else None
+            )
+            arguments = (
+                function.get("arguments") if isinstance(function, dict) else None
+            )
+            if not isinstance(arguments, dict):
+                raise ValueError(
+                    f"row {row_num}: messages[{message_idx}].tool_calls"
+                    f"[{call_idx}].function.arguments must be an object"
+                )
+
+
+def _row_from_exchange(
+    *,
+    exchange: dict[str, Any],
+    rollout_dir: Path,
+    result: dict[str, Any],
+    reward: float | None,
+    exchange_idx: int,
+    redact: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    normalized, skip_reason = normalize_prime_sft_exchange(
+        exchange,
+        redact=redact,
+    )
+    if skip_reason and skip_reason.startswith("unsupported_tool_protocol:"):
+        raise ValueError(
+            f"{rollout_dir / 'trajectory' / 'llm_trajectory.jsonl'}: "
+            f"exchange {exchange_idx}: {skip_reason}"
+        )
+    if skip_reason:
+        return None, skip_reason
+    if normalized is None:
+        return None, "invalid_trl_sft_row"
+    prompt = [_trl_message(message) for message in normalized.messages[:-1]]
+    completion = [_trl_message(normalized.messages[-1])]
+    if _calls_tool_with_unparsed_input(completion):
+        return None, "unparsed_tool_call"
+    row = {
+        "prompt": prompt,
+        "completion": completion,
+        "tools": normalized.tool_defs,
+        "reward": reward,
+        "scoring": result.get("scoring"),
+        "task_id": result.get("task_name") or rollout_dir.name,
+        "agent": result.get("agent"),
+        "model": ((exchange.get("request") or {}).get("body") or {}).get("model"),
+        "exchange_index": exchange_idx,
+        "call_purpose": "agent",
+        "source": exchange_source(rollout_dir, exchange)[0],
+        "source_path": exchange_source(rollout_dir, exchange)[1],
+        "source_rollout_dir": str(rollout_dir),
+    }
+    agent_result = result.get("agent_result")
+    if isinstance(agent_result, dict):
+        row["token_usage"] = agent_result
+    return {key: value for key, value in row.items() if value is not None}, None
+
+
+def convert_benchflow_rollouts_to_trl_sft_rows(
+    jobs_dir: str | Path,
+    *,
+    min_reward: float | None = None,
+    row_mode: TrlSftRowMode = "exchange",
+    canonical_selection: str | Path | None = None,
+    redact: bool = True,
+    subagent_rows: bool = False,
+    reward_vector: bool = False,
+    group_advantage: GroupAdvantage | None = None,
+    group_by: str | Sequence[str] | None = None,
+) -> tuple[list[dict[str, Any]], TrlSftExportStats]:
+    """Build TRL SFT rows from each rollout's ``llm_trajectory.jsonl``.
+
+    Subagent handling matches the Prime-SFT converter: parent-agent calls
+    only by default, subagent calls as separate linked rows on request.
+    ``reward_vector``/``group_advantage``/``group_by`` as for Prime-SFT.
+    """
+    if row_mode not in {"rollout", "exchange"}:
+        raise ValueError("row_mode must be rollout or exchange")
+    stats = TrlSftExportStats()
+    rows: list[dict[str, Any]] = []
+    from benchflow.trajectories.results import _training_success_exchange_indices
+
+    rollout_dirs = (
+        _iter_selected_rollout_dirs(canonical_selection)
+        if canonical_selection is not None
+        else _iter_rollout_dirs(jobs_dir)
+    )
+    signals = _training_signals(
+        rollout_dirs,
+        reward_vector=reward_vector,
+        group_advantage=group_advantage,
+        group_by=group_by,
+    )
+    if signals.enabled:
+        stats.training_signal = signals.manifest()
+    for rollout_dir in rollout_dirs:
+        stats.rollouts_seen += 1
+        result = load_rollout_result(rollout_dir)
+        if result is None:
+            stats.skipped_no_result += 1
+            continue
+        if is_control_run(rollout_dir):
+            stats.skipped_control += 1
+            continue
+        if _result_training_skip_reason(result) is not None:
+            stats.skipped_terminal_error += 1
+            continue
+        reward = _reward_from_result(result)
+        if min_reward is not None and (reward is None or reward < min_reward):
+            stats.skipped_reward += 1
+            continue
+        exchanges = load_rollout_exchanges(rollout_dir)
+        if not exchanges:
+            stats.skipped_no_trajectory += 1
+            continue
+        stats.exchanges_seen += len(exchanges)
+        training_indices = _training_success_exchange_indices(exchanges)
+        successful = [
+            (idx, exchange)
+            for idx, exchange in enumerate(exchanges)
+            if ((exchange.get("response") or {}).get("status_code") == 200)
+        ]
+        if not successful:
+            stats.skipped_provider_error += 1
+            continue
+        agent = result.get("agent")
+        primary = []
+        for idx, exchange in successful:
+            if _call_purpose(exchange, agent=agent) != "agent":
+                stats.skipped_helper_calls += 1
+                continue
+            primary.append((idx, exchange))
+        split = split_rollout_exchanges(
+            rollout_dir,
+            exchanges,
+            primary,
+            counts=stats.subagents,
+            subagent_rows=subagent_rows,
+        )
+        stats.skipped_helper_calls += split.helper_calls
+        parent_tags = {"agent_role": "parent"} if subagent_rows else {}
+        groups = [(parent_tags, split.parent)] + [
+            (subagent_row_tags(spawn), group) for spawn, group in split.subagents
+        ]
+        subagent_written = 0
+        for tags, group in groups:
+            group = [
+                (idx, exchange) for idx, exchange in group if idx in training_indices
+            ]
+            candidates = group if row_mode == "exchange" else group[-1:]
+            for exchange_idx, exchange in candidates:
+                row, skip_reason = _row_from_exchange(
+                    exchange=exchange,
+                    rollout_dir=rollout_dir,
+                    result=result,
+                    reward=reward,
+                    exchange_idx=exchange_idx,
+                    redact=redact,
+                )
+                if skip_reason == "no_assistant":
+                    stats.skipped_no_assistant += 1
+                    continue
+                if skip_reason == "missing_tool_defs":
+                    stats.skipped_missing_tools += 1
+                    continue
+                if skip_reason == "unparsed_tool_call":
+                    stats.skipped_unparsed_tool_calls += 1
+                    continue
+                if row is None:
+                    stats.skipped_invalid += 1
+                    continue
+                try:
+                    validate_trl_sft_row(row, len(rows) + 1)
+                except ValueError:
+                    stats.skipped_invalid += 1
+                    continue
+                row.update(tags)
+                row.update(signals.for_rollout(rollout_dir))
+                rows.append(row)
+                stats.rows_written += 1
+                if tags.get("agent_role") == "subagent":
+                    subagent_written += 1
+                if _has_tool_calls(row["prompt"] + row["completion"]):
+                    stats.rows_with_tool_calls += 1
+                stats.sources.append(row["source_path"])
+        stats.subagents.subagent_rows_written += subagent_written
+        stats.subagents.subagent_exchanges_excluded += (
+            split.subagent_exchanges - subagent_written
+        )
+    return rows, stats
+
+
+def _convert_results_jsonl_to_trl_sft_rows(
+    path: Path,
+    *,
+    min_reward: float | None,
+    row_mode: TrlSftRowMode,
+) -> tuple[list[dict[str, Any]], TrlSftExportStats]:
+    stats = TrlSftExportStats(sources=[str(path)])
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for source_index, line in enumerate(handle):
+            if not line.strip():
+                continue
+            try:
+                source_row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{path}: line {source_index + 1}: invalid JSON: {exc}"
+                ) from exc
+            if not isinstance(source_row, dict):
+                raise ValueError(
+                    f"{path}: line {source_index + 1}: row must be an object"
+                )
+            stats.rollouts_seen += 1
+            if all(key in source_row for key in ("prompt", "completion", "tools")):
+                reward = _row_reward(source_row)
+                if min_reward is not None and (reward is None or reward < min_reward):
+                    stats.skipped_reward += 1
+                    continue
+                native_row = dict(source_row)
+                native_row["prompt"] = [
+                    _trl_message(cast(dict[str, Any], message))
+                    for message in source_row["prompt"]
+                    if isinstance(message, dict)
+                ]
+                native_row["completion"] = [
+                    _trl_message(cast(dict[str, Any], message))
+                    for message in source_row["completion"]
+                    if isinstance(message, dict)
+                ]
+                native_row["source_path"] = str(path)
+                native_row["source_format"] = "trl-sft"
+                native_row["source_index"] = source_index
+                validate_trl_sft_row(native_row, len(rows) + 1)
+                rows.append(native_row)
+                stats.rows_written += 1
+                if _has_tool_calls(native_row["prompt"] + native_row["completion"]):
+                    stats.rows_with_tool_calls += 1
+                continue
+            if _benchflow_row_training_skip_reason(source_row) is not None:
+                stats.skipped_terminal_error += 1
+                continue
+            reward = _row_reward(source_row)
+            if min_reward is not None and (reward is None or reward < min_reward):
+                stats.skipped_reward += 1
+                continue
+            trajectory = source_row.get("trajectory")
+            if not isinstance(trajectory, list) or not trajectory:
+                stats.skipped_no_trajectory += 1
+                continue
+            reject_results_row_subagent_steps(
+                trajectory, where=f"{path}: line {source_index + 1}"
+            )
+            raw_tools = source_row.get("tools", source_row.get("tool_defs"))
+            tools = (
+                [
+                    cast(dict[str, Any], tool)
+                    for tool in raw_tools
+                    if isinstance(tool, dict)
+                ]
+                if isinstance(raw_tools, list)
+                else []
+            )
+            info = source_row.get("info")
+            info = cast(dict[str, Any], info) if isinstance(info, dict) else {}
+            agent = source_row.get("agent") or info.get("agent")
+            model = source_row.get("model") or info.get("model")
+            task_id = (
+                source_row.get("task_id")
+                or source_row.get("task_name")
+                or info.get("task_id")
+                or info.get("task_name")
+            )
+            source_rollout_dir = info.get("rollout_dir")
+            successful: list[tuple[int, dict[str, Any]]] = []
+            for fallback_index, raw_step in enumerate(trajectory):
+                if not isinstance(raw_step, dict):
+                    stats.skipped_invalid += 1
+                    continue
+                step = cast(dict[str, Any], raw_step)
+                stats.exchanges_seen += 1
+                if _step_call_purpose(step, agent=agent, tools=tools) != "agent":
+                    stats.skipped_helper_calls += 1
+                    continue
+                successful.append((fallback_index, step))
+            candidates = successful if row_mode == "exchange" else successful[-1:]
+            for fallback_index, step in candidates:
+                prompt = step.get("prompt")
+                completion = step.get("completion")
+                if not isinstance(prompt, list) or not isinstance(completion, list):
+                    stats.skipped_invalid += 1
+                    continue
+                extras = step.get("extras")
+                extras = (
+                    cast(dict[str, Any], extras) if isinstance(extras, dict) else {}
+                )
+                row = {
+                    "prompt": [
+                        _trl_message(cast(dict[str, Any], message))
+                        for message in prompt
+                        if isinstance(message, dict)
+                    ],
+                    "completion": [
+                        _trl_message(cast(dict[str, Any], message))
+                        for message in completion
+                        if isinstance(message, dict)
+                    ],
+                    "tools": tools,
+                    "reward": reward,
+                    "task_id": task_id,
+                    "agent": agent,
+                    "model": model,
+                    "exchange_index": extras.get("exchange_index", fallback_index),
+                    "call_purpose": "agent",
+                    "source": "benchflow-results-jsonl",
+                    "source_path": str(path),
+                    "source_rollout_dir": source_rollout_dir,
+                    "source_format": "benchflow-results-jsonl",
+                    "source_index": source_index,
+                }
+                row = {key: value for key, value in row.items() if value is not None}
+                if _calls_tool_with_unparsed_input(
+                    cast(list[dict[str, Any]], row["completion"])
+                ):
+                    stats.skipped_unparsed_tool_calls += 1
+                    continue
+                try:
+                    validate_trl_sft_row(row, len(rows) + 1)
+                except ValueError:
+                    stats.skipped_invalid += 1
+                    continue
+                rows.append(row)
+                stats.rows_written += 1
+                row_prompt = cast(list[dict[str, Any]], row["prompt"])
+                row_completion = cast(list[dict[str, Any]], row["completion"])
+                if _has_tool_calls(row_prompt + row_completion):
+                    stats.rows_with_tool_calls += 1
+    return rows, stats
+
+
+def export_trl_sft_jsonl(
+    jobs_dir: str | Path,
+    out: str | Path,
+    *,
+    min_reward: float | None = None,
+    row_mode: TrlSftRowMode = "exchange",
+    expected_rows: int | None = None,
+    manifest: str | Path | None = None,
+    canonical_selection: str | Path | None = None,
+    redact: bool = True,
+    context_policy: TrlSftContextPolicy = "full",
+    tokenizer_id: str | None = None,
+    tokenizer_revision: str | None = None,
+    max_length: int | None = None,
+    subagent_rows: bool = False,
+    reward_vector: bool = False,
+    group_advantage: GroupAdvantage | None = None,
+    group_by: str | Sequence[str] | None = None,
+) -> TrlSftExportStats:
+    """Export BenchFlow rollouts (or a results.jsonl) to TRL SFT JSONL.
+
+    ``reward_vector``, ``group_advantage`` and ``group_by`` add per-criterion
+    rewards and group-relative advantages (see
+    :mod:`benchflow.trajectories.training_signal`) and need a rollout or jobs
+    directory.
+    """
+    source_path = Path(jobs_dir)
+    if source_path.is_file() and source_path.suffix == ".jsonl":
+        if source_path.resolve() == Path(out).resolve():
+            raise ValueError("--out must differ from the source JSONL path")
+        if canonical_selection is not None:
+            raise ValueError("--canonical-selection requires a jobs directory")
+        if subagent_rows:
+            raise ValueError("--subagent-rows requires a rollout or jobs directory")
+        refuse_training_signal_for_jsonl(
+            reward_vector=reward_vector, group_advantage=group_advantage
+        )
+        rows, stats = _convert_results_jsonl_to_trl_sft_rows(
+            source_path,
+            min_reward=min_reward,
+            row_mode=row_mode,
+        )
+    else:
+        rows, stats = convert_benchflow_rollouts_to_trl_sft_rows(
+            jobs_dir,
+            min_reward=min_reward,
+            row_mode=row_mode,
+            canonical_selection=canonical_selection,
+            redact=redact,
+            subagent_rows=subagent_rows,
+            reward_vector=reward_vector,
+            group_advantage=group_advantage,
+            group_by=group_by,
+        )
+    rows = _apply_context_policy(
+        rows,
+        stats,
+        context_policy=context_policy,
+        tokenizer_id=tokenizer_id,
+        tokenizer_revision=tokenizer_revision,
+        max_length=max_length,
+    )
+    if expected_rows is not None and len(rows) != expected_rows:
+        raise ValueError(f"row count {len(rows)} != expected {expected_rows}")
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(_json_line(row, redact=redact) + "\n")
+    if manifest is not None:
+        manifest_path = Path(manifest)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(stats.as_dict(), indent=2, sort_keys=True) + "\n"
+        )
+    return stats
+
+
+def validate_trl_sft_jsonl(
+    jsonl: str | Path,
+    *,
+    expected_rows: int | None = None,
+    tokenizer_id: str | None = None,
+    tokenizer_revision: str | None = None,
+    max_length: int | None = None,
+) -> dict[str, Any]:
+    if max_length is not None and max_length < 1:
+        raise ValueError("max_length must be positive")
+    if max_length is not None and tokenizer_id is None:
+        raise ValueError("max_length requires --tokenizer")
+    path = Path(jsonl)
+    rows = 0
+    rows_with_tool_calls = 0
+    tokenizer = (
+        tokenization.load_tokenizer(tokenizer_id, tokenizer_revision)
+        if tokenizer_id
+        else None
+    )
+    chat_template = (
+        tokenization.training_chat_template(tokenizer)
+        if tokenizer is not None
+        else None
+    )
+    token_lengths: list[int] = []
+    trainable_counts: list[int] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for row_num, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            rows += 1
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"row {row_num}: invalid JSON: {exc}") from exc
+            if not isinstance(row, dict):
+                raise ValueError(f"row {row_num}: top-level row must be object")
+            validate_trl_sft_row(row, row_num)
+            messages = [
+                message
+                for message in row["prompt"] + row["completion"]
+                if isinstance(message, dict)
+            ]
+            if _has_tool_calls(messages):
+                rows_with_tool_calls += 1
+            if tokenizer is not None:
+                token_length, trainable = tokenization.validate_tokenized_row(
+                    row,
+                    row_num=row_num,
+                    tokenizer=tokenizer,
+                    chat_template=chat_template,
+                    max_length=max_length,
+                )
+                token_lengths.append(token_length)
+                trainable_counts.append(trainable)
+    if expected_rows is not None and rows != expected_rows:
+        raise ValueError(f"row count {rows} != expected {expected_rows}")
+    result: dict[str, Any] = {
+        "ok": True,
+        "format": "trl-sft",
+        "rows": rows,
+        "rows_with_tool_calls": rows_with_tool_calls,
+    }
+    if tokenizer_id is not None and token_lengths:
+        ordered = sorted(token_lengths)
+        p95_index = max(0, math.ceil(0.95 * len(ordered)) - 1)
+        median = statistics.median(ordered)
+        median_value: int | float = (
+            int(median) if isinstance(median, float) and median.is_integer() else median
+        )
+        result["tokenization"] = {
+            "tokenizer": tokenizer_id,
+            "tokenizer_revision": tokenizer_revision,
+            "max_length": max_length,
+            "min_tokens": ordered[0],
+            "median_tokens": median_value,
+            "p95_tokens": ordered[p95_index],
+            "max_tokens": ordered[-1],
+            "min_trainable_assistant_tokens": min(trainable_counts),
+        }
+    return result

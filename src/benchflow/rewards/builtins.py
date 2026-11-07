@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Literal
 
+from benchflow._utils.reachable_write import snapshot_file
 from benchflow.rewards.events import RewardEvent
 from benchflow.rewards.rubric_config import (
     Criterion,
@@ -36,10 +37,12 @@ class TestRewardFunc:
     """
 
     async def score(self, rollout_dir: Path) -> float:
+        """The reward the verifier wrote to ``reward.txt`` (0.0 when absent or empty)."""
         reward_path = rollout_dir / "reward.txt"
         if not reward_path.exists():
             return 0.0
-        text = reward_path.read_text().strip()
+        with snapshot_file(reward_path) as snapshot:
+            text = snapshot.read_text().strip()
         if not text:
             return 0.0
         try:
@@ -160,7 +163,7 @@ class LLMJudgeRewardFunc:
     def __init__(
         self,
         prompt: str = "",
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-sonnet-5-5",
         *,
         rubric_path: Path | None = None,
         criteria: list[dict] | None = None,
@@ -261,7 +264,8 @@ class LLMJudgeRewardFunc:
         score_path = rollout_dir / "llm_judge_score.txt"
         if not score_path.exists():
             return 0.0
-        text = score_path.read_text().strip()
+        with snapshot_file(score_path) as snapshot:
+            text = snapshot.read_text().strip()
         try:
             return float(text.splitlines()[0].strip())
         except (ValueError, IndexError):
@@ -276,13 +280,15 @@ class LLMJudgeRewardFunc:
         )
 
         model = self._resolve_model(rubric.judge.model)
-        deliverables = find_deliverables(rollout_dir)
+        deliverables = find_deliverables(rollout_dir, evidence_root=rollout_dir)
 
         # Also check common subdirectories
         for subdir_name in ("output", "workspace/output"):
             subdir = rollout_dir / subdir_name
             if subdir.is_dir():
-                deliverables.update(find_deliverables(subdir))
+                deliverables.update(
+                    find_deliverables(subdir, evidence_root=rollout_dir)
+                )
 
         if not deliverables:
             logger.warning("No deliverable files found in %s", rollout_dir)
@@ -429,14 +435,20 @@ class LLMJudgeRewardFunc:
     def _extract_score(criterion: Criterion, verdict: dict) -> float:
         """Normalize the raw LLM verdict into [0, 1]."""
         if criterion.type == "binary":
-            v = str(verdict.get("verdict", "fail")).strip().lower()
-            return 1.0 if v in {"pass", "passed", "yes", "true", "1"} else 0.0
+            value = verdict.get("verdict")
+            if not isinstance(value, str):
+                raise ValueError("Judge verdict must be a pass/fail string")
+            v = value.strip().lower()
+            if v in {"pass", "passed", "yes", "true", "1"}:
+                return 1.0
+            if v in {"fail", "failed", "no", "false", "0"}:
+                return 0.0
+            raise ValueError("Judge verdict must be a known pass/fail value")
 
-        raw = verdict.get("score", 0)
-        try:
-            raw_score = float(raw)
-        except (TypeError, ValueError):
-            return 0.0
+        raw = verdict.get("score")
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError("Judge score must be a number")
+        raw_score = float(raw)
         if not math.isfinite(raw_score):
             raise ValueError("Judge score must be finite")
         score = criterion.normalize(raw_score)
@@ -504,10 +516,12 @@ class StringMatchRewardFunc:
         self.fuzzy = fuzzy
 
     async def score(self, rollout_dir: Path) -> float:
+        """1.0 when ``answer.txt`` matches ``expected`` (substring when fuzzy), else 0.0."""
         answer_path = rollout_dir / "answer.txt"
         if not answer_path.exists():
             return 0.0
-        actual = answer_path.read_text().strip()
+        with snapshot_file(answer_path) as snapshot:
+            actual = snapshot.read_text().strip()
         if self.fuzzy:
             return 1.0 if self.expected.lower() in actual.lower() else 0.0
         return 1.0 if actual == self.expected else 0.0
@@ -523,5 +537,6 @@ class CodeExecRewardFunc:
         self.func = func
 
     async def score(self, rollout_dir: Path) -> float:
+        """The wrapped function's value for ``rollout_dir``, as a float."""
         result = self.func(rollout_dir)
         return float(result)

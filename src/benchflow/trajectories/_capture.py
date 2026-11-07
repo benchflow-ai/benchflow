@@ -1,14 +1,18 @@
 """Trajectory capture and parsing utilities."""
 
+import asyncio
 import json
 import logging
 import os
+import threading
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from benchflow.acp.session import ACPSession
-from benchflow.trajectories.types import redact_acp_trajectory_jsonl
+from benchflow.acp.session import ACPSession, merge_text_runs
+from benchflow.sandbox._exec_output import exec_raw
+from benchflow.trajectories._snapshot import RedactedJSONLSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -30,58 +34,138 @@ def make_trajectory_sink(
     """
     prior_snapshot = list(prior_trajectory)
 
-    def sink(session: ACPSession) -> None:
-        writer.write_events(prior_snapshot + _snapshot_session_trajectory(session))
+    return _TrajectorySink(writer, prior_snapshot)
 
-    return sink
+
+class _TrajectorySink:
+    def __init__(self, writer: "TrajectoryWriter", prior: list[dict]) -> None:
+        self.writer = writer
+        self.prior = prior
+
+    def __call__(self, session: ACPSession) -> None:
+        # Steps-only adapters and legacy shims publish complete records and
+        # have no ACP prompt-end signal. Keep their synchronous flush contract.
+        if not getattr(session, "_events_active", False):
+            self.flush(session)
+            return
+        self.writer.schedule(lambda: self.snapshot(session))
+
+    def snapshot(self, session: ACPSession) -> tuple[list[dict], list[object] | None]:
+        if not getattr(session, "_events_active", False):
+            return self.prior + _snapshot_session_trajectory(session), None
+        records = list(self.prior)
+        keys: list[object] = [("prior", id(record)) for record in records]
+        for event in session.events:
+            converted = _events_to_trajectory(
+                [event], live_output_limit=_LIVE_OUTPUT_LIMIT
+            )
+            records.extend(converted)
+            if event["type"] == "tool_call":
+                record = event["record"]
+                key = ("tool", id(record), record.trajectory_revision)
+            else:
+                key = ("event", id(event))
+            keys.extend([key] * len(converted))
+        pending = _events_to_trajectory(_merge_pending_text(session._pending_text))
+        return records + pending, keys + [None] * len(pending)
+
+    def flush(self, session: ACPSession) -> None:
+        self.writer.cancel_pending()
+        records, keys = self.snapshot(session)
+        self.writer.write_events(records, cache_keys=keys)
+
+    def cancel_pending(self) -> None:
+        self.writer.cancel_pending()
 
 
 def _merge_pending_text(pending: list[dict]) -> list[dict]:
     """Merge consecutive same-type pending text events without mutating `pending`.
 
-    Mirrors the merging done by ``ACPSession._flush_agent_text`` but is
-    side-effect-free so a live snapshot can include in-flight chunks while
-    leaving the session free to keep streaming.
+    The merge ``ACPSession._flush_agent_text`` does, but side-effect-free so
+    a live snapshot can include in-flight chunks while leaving the session
+    free to keep streaming. It runs on every live snapshot, so it must stay
+    linear in the streamed text (``merge_text_runs``).
     """
-    if not pending:
-        return []
-    merged: list[dict] = []
-    current = dict(pending[0])
-    for event in pending[1:]:
-        if event["type"] == current["type"]:
-            current["text"] += event["text"]
-        else:
-            merged.append(current)
-            current = dict(event)
-    merged.append(current)
-    return merged
+    return merge_text_runs(pending)
 
 
-def _events_to_trajectory(events: list[dict]) -> list[dict]:
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _iso_from_receipt_ns(observed_ns: str) -> str:
+    """Render a host receipt as ISO-8601 UTC, like ``llm_trajectory``'s ``logged_at``."""
+    return (_UNIX_EPOCH + timedelta(microseconds=int(observed_ns) // 1000)).isoformat()
+
+
+# The longest tool output string the live acp_trajectory.jsonl holds; a
+# longer one gives way to a note there (ToolCallRecord.live_raw_output),
+# never in the final trajectory.
+_LIVE_OUTPUT_LIMIT = 1 << 20
+
+
+def _events_to_trajectory(
+    events: list[dict], *, live_output_limit: int | None = None
+) -> list[dict]:
     """Convert ``ACPSession.events`` records into the JSONL event format.
 
     Single canonical conversion used by both the destructive
     end-of-run :func:`_capture_session_trajectory` and the non-destructive
     live :func:`_snapshot_session_trajectory`, so streaming-format =
     final-format is a structural invariant rather than a copy/paste
-    discipline (PR #566 review finding #3).
+    discipline.
+
+    Events with a host receipt also get the GH #1033 timing fields the
+    viewer reads: ``ts`` (first observation) on text, notice and timeout events;
+    ``started_at`` (first observation) and, once terminal, ``finished_at``
+    (observation of the terminal status) on tool calls.
+
+    ``live_output_limit`` is for the live file: a tool output string longer
+    than that many characters gives way to a note.
     """
     out: list[dict] = []
     for event in events:
+        count = len(out)
         if event["type"] == "tool_call":
             tc = event["record"]
-            out.append(
-                {
-                    "type": "tool_call",
-                    "tool_call_id": tc.tool_call_id,
-                    "kind": tc.kind,
-                    "title": tc.title,
-                    "status": tc.status.value,
-                    "content": tc.content,
-                }
+            record = {
+                "type": "tool_call",
+                "tool_call_id": tc.tool_call_id,
+                "kind": tc.kind,
+                "title": tc.title,
+                "status": tc.status.value,
+                "content": list(tc.content),
+            }
+            # Only present when the agent sent them, so trajectories of agents
+            # without raw I/O keep their exact shape.
+            if getattr(tc, "raw_input", None) is not None:
+                record["raw_input"] = tc.raw_input
+            live_raw_output = getattr(tc, "live_raw_output", None)
+            raw_output = (
+                live_raw_output(live_output_limit)
+                if live_output_limit is not None and callable(live_raw_output)
+                else getattr(tc, "raw_output", None)
             )
+            if raw_output is not None:
+                record["raw_output"] = raw_output
+            if getattr(tc, "parent_tool_call_id", None) is not None:
+                record["parent_tool_call_id"] = tc.parent_tool_call_id
+            if getattr(tc, "tool_name", None):
+                record["tool_name"] = tc.tool_name
+            out.append(record)
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
-            out.append({"type": event["type"], "text": event["text"]})
+            record = {"type": event["type"], "text": event["text"]}
+            if "parent_tool_call_id" in event:
+                record["parent_tool_call_id"] = event["parent_tool_call_id"]
+            out.append(record)
+        elif event["type"] == "notice":
+            record = {
+                "type": "notice",
+                "severity": event["severity"],
+                "title": event["title"],
+            }
+            if "description" in event:
+                record["description"] = event["description"]
+            out.append(record)
         elif event["type"] == "agent_timeout":
             out.append(
                 {
@@ -94,6 +178,17 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                     ],
                 }
             )
+        if len(out) > count and "receipt" in event:
+            receipt = event["receipt"]
+            out[-1]["receipt"] = dict(receipt)
+            first_observed = _iso_from_receipt_ns(receipt["first_observed_ns"])
+            if event["type"] == "tool_call":
+                out[-1]["started_at"] = first_observed
+                finished = getattr(event["record"], "finished_observed_ns", None)
+                if finished is not None:
+                    out[-1]["finished_at"] = _iso_from_receipt_ns(finished)
+            else:
+                out[-1]["ts"] = first_observed
     return out
 
 
@@ -103,8 +198,10 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
     Equivalent to ``_capture_session_trajectory`` except it does not call
     ``session._flush_agent_text()``: pending streamed chunks are merged
     into the returned snapshot but remain in ``session._pending_text``
-    until the prompt completes. Use this from the live ``on_change``
-    sink; use ``_capture_session_trajectory`` for the end-of-run capture.
+    until the prompt completes, and a tool output longer than
+    ``_LIVE_OUTPUT_LIMIT`` characters gives way to a note. Use this from the
+    live ``on_change`` sink; use ``_capture_session_trajectory`` for the
+    end-of-run capture.
     """
     if session is None:
         return []
@@ -119,16 +216,18 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.
         return _capture_session_trajectory(session)
-    return _events_to_trajectory(session.events) + _merge_pending_text(
-        session._pending_text
-    )
+    return _events_to_trajectory(
+        session.events, live_output_limit=_LIVE_OUTPUT_LIMIT
+    ) + _events_to_trajectory(_merge_pending_text(session._pending_text))
 
 
 class TrajectoryWriter:
     """Streams ACP trajectory snapshots to ``acp_trajectory.jsonl`` on demand.
 
-    Wire as ``session.on_change`` so each ACP update flushes the current
-    trajectory to disk. Each flush rewrites the file atomically (tmp +
+    Wire as ``session.on_change`` to coalesce live updates on a 250 ms
+    cadence, with serialization and disk I/O in a worker thread. Completed
+    records reuse their serialized bytes; prompt end forces a final flush.
+    Each flush publishes the file atomically (tmp +
     ``os.replace``) so a concurrent reader (a ``cat``, a follower script)
     never sees a partial line. The on-disk format matches what
     ``_capture_session_trajectory`` produces at end-of-run, so the viewer
@@ -143,9 +242,58 @@ class TrajectoryWriter:
         # so a follow-up reader can't pick up an orphaned partial file.
         self._tmp.unlink(missing_ok=True)
         self._last_payload: str | None = None
+        self._snapshot = RedactedJSONLSnapshot()
+        self._lock = threading.RLock()
+        self._epoch = 0
+        self._pending: Callable | None = None
+        self._task: asyncio.Task | None = None
 
     def __call__(self, session: ACPSession) -> None:
-        self.flush(session)
+        _TrajectorySink(self, [])(session)
+
+    def schedule(self, snapshot: Callable) -> None:
+        """O(1) receive-path work; at most one background snapshot per cadence."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            records, keys = snapshot()
+            self.write_events(records, cache_keys=keys)
+            return
+        self._pending = snapshot
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        try:
+            while self._pending is not None:
+                await asyncio.sleep(0.25)
+                snapshot, self._pending = self._pending, None
+                records, keys = snapshot()
+                await asyncio.to_thread(
+                    self._write_scheduled, records, keys, self._epoch
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Live ACP trajectory write failed")
+
+    def _write_scheduled(
+        self, records: list[dict], keys: list[object] | None, epoch: int
+    ) -> None:
+        with self._lock:
+            if epoch == self._epoch:
+                self.write_events(records, cache_keys=keys)
+
+    def cancel_pending(self) -> None:
+        self._epoch += 1
+        self._pending = None
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        # A cancelled to_thread job can still be running. Finish its old write
+        # before a separate final writer publishes to this same pathname.
+        with self._lock:
+            pass
 
     def flush(self, session: ACPSession) -> None:
         """Re-snapshot ``session`` and rewrite the file if anything changed.
@@ -153,21 +301,25 @@ class TrajectoryWriter:
         Single-session use — ignores any prior scenes' events. For
         cumulative multi-scene streaming, use ``make_trajectory_sink``.
         """
-        self.write_events(_snapshot_session_trajectory(session))
+        _TrajectorySink(self, []).flush(session)
 
-    def write_events(self, events: list[dict]) -> None:
+    def write_events(
+        self, events: list[dict], *, cache_keys: list[object] | None = None
+    ) -> None:
         """Atomically write a fully-formed event list, deduped.
 
         Skips the disk write if the serialized payload is byte-identical
         to the previous one — keeps a no-op chunk (an unchanged
-        tool_call status poll) from churning the filesystem.
+        tool_call status poll, which does not advance its receipt) from
+        churning the filesystem.
         """
-        payload = redact_acp_trajectory_jsonl(events)
-        if payload == self._last_payload:
-            return
-        self._tmp.write_text(payload)
-        os.replace(self._tmp, self.path)
-        self._last_payload = payload
+        with self._lock:
+            payload = self._snapshot.serialize(events, cache_keys=cache_keys)
+            if payload == self._last_payload:
+                return
+            self._tmp.write_text(payload)
+            os.replace(self._tmp, self.path)
+            self._last_payload = payload
 
     def write_final(self, trajectory: list[dict]) -> None:
         """Overwrite the file with a fully-formed trajectory list, no dedup.
@@ -177,10 +329,12 @@ class TrajectoryWriter:
         lands on disk even if the live streaming writer had already
         written the same content.
         """
-        payload = redact_acp_trajectory_jsonl(trajectory)
-        self._tmp.write_text(payload)
-        os.replace(self._tmp, self.path)
-        self._last_payload = payload
+        self.cancel_pending()
+        with self._lock:
+            payload = self._snapshot.serialize(trajectory)
+            self._tmp.write_text(payload)
+            os.replace(self._tmp, self.path)
+            self._last_payload = payload
 
 
 def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
@@ -195,6 +349,9 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
     if session is None:
         return []
 
+    cancel = getattr(getattr(session, "on_change", None), "cancel_pending", None)
+    if callable(cancel):
+        cancel()
     if session._events_active:
         # Flush any trailing agent text that hasn't been recorded yet.
         session._flush_agent_text()
@@ -230,10 +387,18 @@ async def _scrape_agent_trajectory(
 
     # Gemini CLI: writes ~/.gemini/sessions/*/gemini-cli.trajectory.json
     if "gemini" in agent:
-        result = await env.exec(
-            f"cat $(find {home}/.gemini -name 'gemini-cli.trajectory.json' 2>/dev/null | head -1) 2>/dev/null",
-            timeout_sec=10,
-        )
+        # A non-zero return code and unparseable JSON both degrade to "no
+        # scraped trajectory" below, so a slow container must not be the one
+        # case that propagates and aborts verification instead (#948).
+        try:
+            result = await exec_raw(
+                env.exec,
+                f"cat $(find {home}/.gemini -name 'gemini-cli.trajectory.json' 2>/dev/null | head -1) 2>/dev/null",
+                timeout_sec=10,
+            )
+        except Exception as e:
+            logger.warning(f"Could not scrape gemini trajectory: {e}")
+            return []
         if result.return_code == 0 and result.stdout and result.stdout.strip():
             try:
                 return _parse_gemini_trajectory(json.loads(result.stdout))
@@ -269,3 +434,199 @@ def _parse_gemini_trajectory(data: dict) -> list[dict]:
             if thought:
                 events.append({"type": "agent_thought", "text": thought})
     return events
+
+
+def _reconcile_tool_evidence(
+    trajectory: list[dict], provider_evidence: list[dict]
+) -> tuple[list[dict], int]:
+    """Repair lossy ACP tool events from exact-ID provider evidence.
+
+    ACP remains the canonical ordering/status source. A non-empty provider
+    result fills only an empty ACP observation, and a provider command title
+    replaces only a generic ACP title equal to the tool name. The normal
+    trajectory writer applies credential redaction before merged events reach
+    disk.
+
+    Returns the merged trajectory and the number of repaired observations.
+    """
+
+    evidence_by_id = {
+        event.get("tool_call_id"): event
+        for event in provider_evidence
+        if event.get("type") == "tool_call" and event.get("tool_call_id")
+    }
+    if not evidence_by_id:
+        return trajectory, 0
+
+    merged: list[dict] = []
+    repaired = 0
+    for event in trajectory:
+        tool_call_id = event.get("tool_call_id")
+        evidence = evidence_by_id.get(tool_call_id)
+        if event.get("type") == "tool_call" and evidence:
+            updated = dict(event)
+            if not event.get("content") and evidence.get("content"):
+                updated["content"] = evidence["content"]
+            provider_title = evidence.get("title")
+            provider_tool = evidence.get("provider_tool")
+            if (
+                isinstance(provider_title, str)
+                and provider_title
+                and event.get("title") in {None, "", provider_tool}
+            ):
+                updated["title"] = provider_title
+            if updated != event:
+                event = updated
+                repaired += 1
+        merged.append(event)
+    return merged, repaired
+
+
+def _provider_tool_title(name: str, arguments: Any) -> str | None:
+    """Render the most useful bounded title from captured tool arguments."""
+
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return arguments[:4096] or None
+    if not isinstance(arguments, dict):
+        return None
+    command = arguments.get("command")
+    if isinstance(command, str) and command:
+        return command[:4096]
+    rendered = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+    return f"{name} {rendered}"[:4096] if rendered != "{}" else None
+
+
+def _parse_provider_tool_evidence(exchanges: list[Any]) -> list[dict]:
+    """Extract exact-ID tool commands/results from trusted provider requests.
+
+    OpenAI-style messages carry ordinary ``tool_calls`` and ``tool`` results.
+    Gemini CLI additionally embeds its native ``contents`` conversation as
+    JSON inside one of those messages. Later requests repeat the growing
+    conversation, so evidence is deduplicated by exact tool-call ID. This
+    source is captured by BenchFlow's host/sandbox-local proxy, unlike the
+    agent-writable native trajectory fallback.
+    """
+    evidence = ProviderToolEvidence()
+    for exchange in exchanges:
+        evidence.add(exchange)
+    return evidence.items()
+
+
+class ProviderToolEvidence:
+    """:func:`_parse_provider_tool_evidence`, one exchange at a time.
+
+    A stopped proxy's import feeds each exchange as it reads it, so the
+    evidence is there after the exchanges have shed their request bodies.
+    """
+
+    def __init__(self) -> None:
+        self._evidence: dict[str, dict] = {}
+
+    def items(self) -> list[dict]:
+        """The evidence, in the order each tool-call ID first appeared."""
+        return list(self._evidence.values())
+
+    def merge(self, items: list[dict]) -> None:
+        """Add another capture's :meth:`items`, as if its exchanges came next."""
+        for item in items:
+            tool_call_id = item["tool_call_id"]
+            known = self._evidence.get(tool_call_id)
+            if known is None:
+                self._evidence[tool_call_id] = dict(item)
+            else:
+                known.update(item)
+
+    def _entry(self, tool_call_id: str) -> dict:
+        entry = self._evidence.get(tool_call_id)
+        if entry is None:
+            entry = self._evidence[tool_call_id] = {
+                "type": "tool_call",
+                "tool_call_id": tool_call_id,
+            }
+        return entry
+
+    def _record_call(self, tool_call_id: Any, name: Any, arguments: Any) -> None:
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            return
+        entry = self._entry(tool_call_id)
+        if isinstance(name, str) and name:
+            entry["provider_tool"] = name
+            title = _provider_tool_title(name, arguments)
+            if title:
+                entry["title"] = title
+
+    def _record_result(self, tool_call_id: Any, output: Any) -> None:
+        if not isinstance(tool_call_id, str) or not tool_call_id or output is None:
+            return
+        entry = self._entry(tool_call_id)
+        text = output if isinstance(output, str) else json.dumps(output)
+        entry["content"] = [
+            {
+                "type": "content",
+                "content": {"type": "text", "text": text},
+            }
+        ]
+
+    def add(self, exchange: Any) -> None:
+        """Read one exchange's request."""
+        request = getattr(exchange, "request", None)
+        body = getattr(request, "body", None)
+        if not isinstance(body, dict):
+            return
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function")
+                    function = function if isinstance(function, dict) else {}
+                    self._record_call(
+                        tool_call.get("id") or tool_call.get("tool_call_id"),
+                        function.get("name") or tool_call.get("name"),
+                        function.get("arguments", tool_call.get("arguments")),
+                    )
+            if message.get("role") == "tool":
+                self._record_result(
+                    message.get("tool_call_id") or message.get("id"),
+                    message.get("content"),
+                )
+            raw_content = message.get("content")
+            if not isinstance(raw_content, str):
+                continue
+            try:
+                nested = json.loads(raw_content.lstrip())
+            except json.JSONDecodeError:
+                continue
+            contents = nested.get("contents") if isinstance(nested, dict) else None
+            if not isinstance(contents, list):
+                continue
+            for content in contents:
+                if not isinstance(content, dict):
+                    continue
+                parts = content.get("parts")
+                if not isinstance(parts, list):
+                    continue
+                for part in parts:
+                    call = part.get("functionCall") if isinstance(part, dict) else None
+                    if isinstance(call, dict):
+                        self._record_call(
+                            call.get("id"), call.get("name"), call.get("args")
+                        )
+                    response = (
+                        part.get("functionResponse") if isinstance(part, dict) else None
+                    )
+                    if not isinstance(response, dict):
+                        continue
+                    payload = response.get("response")
+                    if not isinstance(payload, dict):
+                        continue
+                    self._record_result(response.get("id"), payload.get("output"))

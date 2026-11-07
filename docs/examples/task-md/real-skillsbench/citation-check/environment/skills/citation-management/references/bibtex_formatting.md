@@ -197,10 +197,10 @@ This guide covers all common entry types and formatting rules.
   title     = {Exploring the New World of the Genome with {DNA} Microarrays},
   booktitle = {DNA Microarrays: A Molecular Cloning Manual},
   editor    = {Eisen, Michael B. and Brown, Patrick O.},
-  publisher = {Cold Spring Harbor Laboratory Press},
+  publisher = {CSHL Press},
   year      = {2020},
   pages     = {1--45},
-  address   = {Cold Spring Harbor, NY}
+  address   = {CSH, NY}
 }
 ```
 
@@ -852,7 +852,7 @@ doi = {10.1038/nature12345}
   title     = {Exploring the New World of the Genome with {DNA} Microarrays},
   booktitle = {DNA Microarrays: A Molecular Cloning Manual},
   editor    = {Eisen, Michael B. and Brown, Patrick O.},
-  publisher = {Cold Spring Harbor Laboratory Press},
+  publisher = {CSHL Press},
   year      = {2020},
   pages     = {1--45}
 }

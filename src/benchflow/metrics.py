@@ -4,10 +4,9 @@ Computes pass rates, tool usage stats, timing, and error breakdowns
 from trial results.
 """
 
-import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +15,17 @@ from benchflow._utils.scoring import (
     classify_error,
     classify_score_outcome,
     classify_verifier_error,
+    extract_reward,
+    finite_reward,
+    is_guard_refusal,
+    is_unusable_reward,
+    mean_reward_caveat,
+    mean_reward_every_trial,
+    mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.models import rollout_time
 from benchflow.trajectories.metrics import result_skill_invocations
 from benchflow.usage_tracking import UsageSource, is_trusted_usage_source
 
@@ -46,6 +53,9 @@ class TaskMetrics:
     cost_usd: float | None = None
     usage_source: UsageSource = "unavailable"
     memory_score: float | None = None
+    scoring: dict[str, Any] | None = None
+    # Why the agent did nothing, when its integration broke (unscored).
+    integration_cause: str | None = None
 
     @property
     def outcome(self) -> str:
@@ -66,6 +76,7 @@ class TaskMetrics:
             "rewards": {"reward": self.reward} if self.reward is not None else None,
             "error": self.error,
             "verifier_error": self.verifier_error,
+            "scoring": self.scoring,
         }
 
     @property
@@ -112,18 +123,22 @@ class BenchmarkMetrics:
 
     @property
     def total(self) -> int:
+        """Trials counted (one per trial; see collect_metrics)."""
         return len(self.tasks)
 
     @property
     def passed(self) -> int:
+        """Trials whose score outcome is a pass."""
         return sum(1 for t in self.tasks if t.passed)
 
     @property
     def failed(self) -> int:
+        """Trials scored below a pass."""
         return sum(1 for t in self.tasks if t.failed)
 
     @property
     def errored(self) -> int:
+        """Trials that ended with an agent error and no score."""
         return sum(1 for t in self.tasks if t.errored)
 
     @property
@@ -144,7 +159,36 @@ class BenchmarkMetrics:
     @property
     def score_excl_errors(self) -> float:
         """Pass rate excluding errored tasks."""
-        return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
+        return pass_rate_excl_errors(
+            passed=self.passed,
+            failed=self.failed,
+            # Guard refusals and unusable reward files stay failures here
+            # .
+            refused=sum(
+                1
+                for t in self.tasks
+                if t.score_verifier_errored
+                and (
+                    is_guard_refusal(t.verifier_error)
+                    or is_unusable_reward(t.verifier_error)
+                )
+            ),
+        )
+
+    @property
+    def mean_reward(self) -> float | None:
+        """Mean reward over every trial, an unscored one counting as 0."""
+        return mean_reward_every_trial(t._result_shape for t in self.tasks)
+
+    @property
+    def mean_reward_scored_only(self) -> float | None:
+        """Mean reward over scored trials only (BenchFlow 0.7's mean_reward); None when none."""
+        return mean_scored_reward(t._result_shape for t in self.tasks)
+
+    @property
+    def mean_reward_scored_only_n(self) -> int:
+        """The n of :attr:`mean_reward_scored_only`: trials with a reward."""
+        return sum(1 for t in self.tasks if finite_reward(t.reward) is not None)
 
     @property
     def avg_tool_calls(self) -> float:
@@ -204,36 +248,48 @@ class BenchmarkMetrics:
 
     @property
     def total_input_tokens(self) -> int:
+        """Input tokens over completed trials with trusted usage."""
         return sum(t.input_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_output_tokens(self) -> int:
+        """Output tokens over completed trials with trusted usage."""
         return sum(t.output_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_cache_read_tokens(self) -> int:
+        """Prompt-cache read tokens over completed trials with trusted usage."""
         return sum(t.cache_read_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_cache_creation_tokens(self) -> int:
+        """Prompt-cache write tokens over completed trials with trusted usage."""
         return sum(t.cache_creation_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_tokens(self) -> int:
+        """All tokens over completed trials with trusted usage."""
         return sum(t.total_tokens or 0 for t in self.telemetry_tasks)
 
     @property
-    def total_cost_usd(self) -> float:
-        return round(sum(t.cost_usd or 0.0 for t in self.telemetry_tasks), 10)
+    def total_cost_usd(self) -> float | None:
+        """USD over trials that reported a cost; None when none did (a
+        subscription login reports none; unknown is not $0)."""
+        costs = [t.cost_usd for t in self.telemetry_tasks if t.cost_usd is not None]
+        return round(sum(costs), 10) if costs else None
 
     @property
     def avg_cost_per_trial_usd(self) -> float | None:
-        if not self.telemetry_tasks:
+        """Mean USD over the trials that reported a cost; None when none did."""
+        priced = [t for t in self.telemetry_tasks if t.cost_usd is not None]
+        total = self.total_cost_usd
+        if total is None or not priced:
             return None
-        return round(self.total_cost_usd / len(self.telemetry_tasks), 10)
+        return round(total / len(priced), 10)
 
     @property
     def telemetry_coverage(self) -> float:
+        """Fraction of completed trials with trusted token usage."""
         completed = self.telemetry_completed_tasks
         if not completed:
             return 0.0
@@ -241,6 +297,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_scores(self) -> dict[str, float]:
+        """Memory score per task, for trials that have one."""
         return {
             t.task_name: t.memory_score
             for t in self.tasks
@@ -249,6 +306,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_score(self) -> float | None:
+        """Mean memory score over the tasks that have one; None when none do."""
         scores = list(self.memory_scores.values())
         if not scores:
             return None
@@ -256,6 +314,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_summary(self) -> dict[str, Any]:
+        """Memory scores in summary form: count, mean and formatted mean."""
         avg = self.memory_score
         return {
             "scored": len(self.memory_scores),
@@ -275,6 +334,14 @@ class BenchmarkMetrics:
                 breakdown[category] = breakdown.get(category, 0) + 1
         return breakdown
 
+    @property
+    def integration_failures(self) -> dict[str, Any]:
+        """Count the unscored trials whose agent integration broke, by cause."""
+        causes = Counter(
+            t.integration_cause for t in self.tasks if t.integration_cause is not None
+        )
+        return {"total": sum(causes.values()), "by_cause": dict(sorted(causes.items()))}
+
     def summary(self) -> dict[str, Any]:
         """Export as summary dict."""
         return {
@@ -290,6 +357,15 @@ class BenchmarkMetrics:
             "score_ratio": self.score,
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
             "score_excl_errors_ratio": self.score_excl_errors,
+            # Every trial counted (n = total, an unscored trial as 0) and
+            # BenchFlow 0.7's mean over scored trials only, with its n.
+            "mean_reward": self.mean_reward,
+            "mean_reward_n": self.total,
+            "mean_reward_scored_only": self.mean_reward_scored_only,
+            "mean_reward_scored_only_n": self.mean_reward_scored_only_n,
+            "mean_reward_caveat": mean_reward_caveat(
+                t._result_shape for t in self.tasks
+            ),
             "avg_tool_calls": round(self.avg_tool_calls, 1),
             "avg_skill_invocations": round(self.avg_skill_invocations, 1),
             "avg_duration_sec": round(self.avg_duration, 1),
@@ -309,23 +385,58 @@ class BenchmarkMetrics:
             "memory_scores": self.memory_scores,
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
-            "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
-            "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
-            "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
+            "integration_failures": self.integration_failures,
+            # Task names, once each: a task with several trials (a batch, or
+            # --matrix --trials) is listed under every outcome it had.
+            "passed_tasks": sorted({t.task_name for t in self.tasks if t.passed}),
+            "failed_tasks": sorted({t.task_name for t in self.tasks if t.failed}),
+            "errored_tasks": sorted({t.task_name for t in self.tasks if t.errored}),
             "verifier_errored_tasks": sorted(
-                t.task_name for t in self.tasks if t.score_verifier_errored
+                {t.task_name for t in self.tasks if t.score_verifier_errored}
             ),
         }
 
 
-def _safe_reward(rewards: dict) -> float:
-    """Extract reward value from a rewards dict, defaulting to 0 if None/missing.
+def _integration_cause(result: dict[str, Any]) -> str | None:
+    info = result.get("integration_failure_info")
+    if isinstance(info, dict):
+        cause = info.get("cause")
+        return cause if isinstance(cause, str) else "unknown"
+    return None
 
-    Prevents TypeError when comparing reward values where one is None
-    (e.g. rewards={"reward": None, "rubric": [...]}).
+
+def _with_integration_failure(
+    result: dict[str, Any], trial_dir: Path
+) -> dict[str, Any]:
+    """Apply read-time integration-failure detection to an older result.
+
+    A result written before ``integration_failure_info`` existed, whose agent
+    did nothing because its integration broke, is read as the run would
+    record it today: reward withheld, error ``agent integration failure``.
     """
-    val = rewards.get("reward")
-    return val if isinstance(val, (int, float)) else 0.0
+    from benchflow.integration_health import diagnose_trial_dir
+
+    if (
+        "integration_failure_info" in result
+        or result.get("n_tool_calls")
+        or extract_reward(result) is None
+        or str(result.get("agent") or "").lower() in ("oracle", "nop", "")
+    ):
+        return result
+    finding = diagnose_trial_dir(trial_dir, result)
+    if finding is None:
+        return result
+    return {
+        **result,
+        "rewards": None,
+        "error": finding.error_text(),
+        "error_category": "agent_integration",
+        "integration_failure_info": {
+            **finding.to_dict(),
+            "reward_withheld": result.get("rewards"),
+            "detected": "on read",
+        },
+    }
 
 
 def collect_metrics(
@@ -336,45 +447,44 @@ def collect_metrics(
 ) -> BenchmarkMetrics:
     """Collect metrics from a results directory.
 
-    Reads all result.json files, picks the best result per task
-    (rewards > no rewards, higher reward preferred).
+    Reads every result.json under it, one row per trial, selected the way
+    ``bf.load_job`` selects them: the attempts of one task, agent and model
+    in an Evaluation job folder (retries, and re-runs on resume) are one
+    trial, its scored attempt first, then its newest; rollouts in any other
+    folder (``bf.run_batch``) and in separate job folders (``--matrix
+    --trials``) are separate trials. ``total``, ``passed`` and ``score``
+    therefore agree with ``bf.load_job(results_dir).solve_rates()``.
     """
-    results_dir = Path(results_dir)
-    best: dict[str, dict] = {}
+    from benchflow.jobs import load_job
 
-    for rfile in sorted(results_dir.rglob("result.json")):
-        try:
-            r = json.loads(rfile.read_text())
-            task = r["task_name"]
-            if (
-                task not in best
-                or (r.get("rewards") is not None and best[task].get("rewards") is None)
-                or (
-                    r.get("rewards")
-                    and best[task].get("rewards")
-                    and _safe_reward(r["rewards"]) > _safe_reward(best[task]["rewards"])
-                )
-            ):
-                best[task] = r
-        except Exception as e:
-            logger.debug(f"Skipping corrupt result file {rfile}: {e}")
+    # Retry identity and admission belong to the job reader. In particular,
+    # ACP's display name can change after a failed setup; it is not the
+    # configured agent that identifies an attempt chain.
+    try:
+        trials = load_job(results_dir).trials
+    except FileNotFoundError:
+        trials = []
 
     tasks = []
-    for task_name, r in sorted(best.items()):
-        reward = r.get("rewards", {}).get("reward") if r.get("rewards") else None
+    for trial in trials:
+        r = _with_integration_failure(trial.raw, trial.path)
+        task_name = trial.task_name
+        reward = extract_reward(r)
         # Calculate duration
         duration = 0.0
         try:
-            started = datetime.fromisoformat(r["started_at"])
-            finished = datetime.fromisoformat(r["finished_at"])
+            started, finished = (
+                rollout_time(r[key]) for key in ("started_at", "finished_at")
+            )
             duration = (finished - started).total_seconds()
-        except (KeyError, ValueError):
+        except (KeyError, TypeError, ValueError):
             logger.debug("Could not compute duration for task %s", task_name)
 
         tasks.append(
             TaskMetrics(
                 task_name=task_name,
                 reward=reward,
+                scoring=r.get("scoring"),
                 n_tool_calls=r.get("n_tool_calls", 0),
                 n_skill_invocations=result_skill_invocations(r),
                 n_prompts=r.get("n_prompts", 0),
@@ -404,6 +514,7 @@ def collect_metrics(
                     "usage_source", r.get("usage_source", "unavailable")
                 ),
                 memory_score=memory_score_from_result(r),
+                integration_cause=_integration_cause(r),
             )
         )
 

@@ -8,31 +8,102 @@ normalization to :mod:`benchflow.task._document_normalize`.
 
 from __future__ import annotations
 
+import datetime
 import re
 import tomllib
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from benchflow._types import Role, Scene, Turn
+from benchflow._utils.config_keys import key_lines, validation_error_text
 from benchflow.task._document_normalize import (
     TaskDocumentParseError,
     _mapping,
     normalize_task_document_frontmatter,
 )
-from benchflow.task.config import TaskConfig
+from benchflow.task.config import TaskConfig, convert_legacy_environment_keys
 from benchflow.task.imports import import_task_config_toml
 
 TASK_DOCUMENT_FILENAME = "task.md"
 
 _DOCUMENT_ONLY_FRONTMATTER_KEYS = {"agents", "benchflow", "scenes", "user"}
+_FLOW_SEQUENCE_MAX_WIDTH = 80
+# Flow lists render after a key prefix and indentation the representer cannot
+# see (PyYAML exposes no emit-time column), so charge a fixed allowance to
+# keep typical in-context lines within the width cap instead of measuring
+# the list standalone and overflowing by the prefix length.
+_FLOW_SEQUENCE_CONTEXT_ALLOWANCE = 8
+_FLOW_SEQUENCE_SCALAR_TYPES = (str, int, float, bool, datetime.date)
 _SECTION_RE = re.compile(
     r"^##\s+(prompt|role:[A-Za-z0-9_.-]+|scene:[A-Za-z0-9_.-]+|user-persona)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+class _CompactDumper(yaml.SafeDumper):
+    """SafeDumper that keeps short scalar-only lists in flow style.
+
+    Hand-written frontmatter like ``tags: [parsing, nlp]`` stays compact
+    across migrate/normalize round-trips instead of exploding into block
+    bullets. Long lists, lists with nested collections, and lists with
+    multiline strings keep PyYAML's block layout.
+    """
+
+
+def _sequence_flow_style(data: list[Any]) -> bool:
+    """Decide whether ``data`` renders as a single-line flow sequence.
+
+    Flow style requires every item to be a short scalar (``str``/``int``/
+    ``float``/``bool``/``date``/``None``, no embedded newlines) and the
+    standalone flow rendering — with PyYAML's own quoting applied — to fit
+    within :data:`_FLOW_SEQUENCE_MAX_WIDTH` minus
+    :data:`_FLOW_SEQUENCE_CONTEXT_ALLOWANCE` characters (the allowance stands
+    in for the key prefix and indentation the representer cannot see). The
+    check is a pure function of ``data``, so output stays deterministic.
+    """
+
+    for item in data:
+        if item is not None and not isinstance(item, _FLOW_SEQUENCE_SCALAR_TYPES):
+            return False
+        if isinstance(item, str) and "\n" in item:
+            return False
+    rendered = yaml.dump(
+        data,
+        Dumper=yaml.SafeDumper,
+        default_flow_style=True,
+        width=float("inf"),
+    ).strip()
+    return len(rendered) <= _FLOW_SEQUENCE_MAX_WIDTH - _FLOW_SEQUENCE_CONTEXT_ALLOWANCE
+
+
+def _represent_compact_sequence(
+    dumper: yaml.SafeDumper, data: Sequence[Any]
+) -> yaml.SequenceNode:
+    items = list(data)
+    return dumper.represent_sequence(
+        "tag:yaml.org,2002:seq", items, flow_style=_sequence_flow_style(items)
+    )
+
+
+_CompactDumper.add_representer(list, _represent_compact_sequence)
+_CompactDumper.add_representer(tuple, _represent_compact_sequence)
+
+
+def dump_frontmatter_yaml(data: dict[str, Any]) -> str:
+    """Serialize ``task.md`` frontmatter with compact flow-style arrays.
+
+    Canonical emitter for every frontmatter dump site: identical to
+    ``yaml.safe_dump(data, sort_keys=False)`` except that short scalar-only
+    lists render in flow style (see :class:`_CompactDumper`).
+    """
+
+    return yaml.dump(data, Dumper=_CompactDumper, sort_keys=False)
 
 
 @dataclass(frozen=True)
@@ -60,13 +131,15 @@ class TaskDocument:
 
     @classmethod
     def from_path(cls, path: str | Path) -> TaskDocument:
+        """Read a ``task.md`` file."""
         doc_path = Path(path)
         return cls.from_text(doc_path.read_text(), path=doc_path)
 
     @classmethod
     def from_text(cls, text: str, *, path: str | Path | None = None) -> TaskDocument:
-        frontmatter, body = _split_frontmatter(text)
+        """Parse ``task.md`` text (``path`` resolves relative references)."""
         doc_path = Path(path) if path is not None else None
+        frontmatter, body = _split_frontmatter(text, path=doc_path)
         frontmatter = normalize_task_document_frontmatter(
             frontmatter,
             task_dir=doc_path.parent if doc_path is not None else None,
@@ -84,7 +157,20 @@ class TaskDocument:
             scene_prompts.update(sidecars.scene_prompts)
             if sidecars.user_persona is not None:
                 user_persona = sidecars.user_persona
-        config = _config_from_frontmatter(frontmatter)
+        try:
+            config = _config_from_frontmatter(frontmatter)
+        except ValidationError as exc:
+            # One line per problem, naming the file, the line and the key, with
+            # a did-you-mean for an unknown one (``_utils.config_keys``), not
+            # pydantic's dump.
+            raise TaskDocumentParseError(
+                validation_error_text(
+                    exc,
+                    model=TaskConfig,
+                    file=doc_path or "task.md",
+                    lines=_frontmatter_key_lines(text),
+                )
+            ) from None
         roles = _parse_roles(frontmatter)
         scenes = _parse_scenes(
             frontmatter,
@@ -124,9 +210,11 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
 
     ``frontmatter`` may be a parsed config mapping or raw ``task.toml`` text.
     A legacy ``solution`` block is emitted as the native ``oracle`` block when no
-    ``oracle`` block is present; declaring both is rejected. Reserved section
-    headings embedded in ``instruction`` are escaped so they round-trip as prompt
-    text instead of fracturing the document into extra sections.
+    ``oracle`` block is present, and a legacy ``environment`` table is emitted
+    as the native ``sandbox`` key; declaring both spellings of either pair is
+    rejected. Reserved section headings embedded in ``instruction`` are escaped
+    so they round-trip as prompt text instead of fracturing the document into
+    extra sections.
     """
 
     data = (
@@ -134,6 +222,10 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
         if isinstance(frontmatter, str)
         else deepcopy(frontmatter)
     )
+    # Emitters follow the sandbox rename: legacy toml input (or a legacy
+    # mapping) is translated so rendered task.md frontmatter only ever
+    # carries the native 'sandbox' spelling.
+    data = convert_legacy_environment_keys(data)
     if "solution" in data:
         if "oracle" in data:
             raise ValueError(
@@ -143,7 +235,7 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
             ("oracle" if key == "solution" else key): value
             for key, value in data.items()
         }
-    rendered_frontmatter = yaml.safe_dump(data, sort_keys=False)
+    rendered_frontmatter = dump_frontmatter_yaml(data)
     body = _escape_reserved_section_headings(instruction.strip())
     return f"---\n{rendered_frontmatter}---\n\n## prompt\n\n{body}\n"
 
@@ -190,13 +282,25 @@ def render_normalized_task_md(text: str, *, path: str | Path | None = None) -> s
     )
     _config_from_frontmatter(normalized)
     _parse_roles(normalized)
-    rendered_frontmatter = yaml.safe_dump(normalized, sort_keys=False)
+    rendered_frontmatter = dump_frontmatter_yaml(normalized)
     rendered_body = body.strip()
     suffix = f"\n\n{rendered_body}\n" if rendered_body else "\n"
     return f"---\n{rendered_frontmatter}---{suffix}"
 
 
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+def _frontmatter_key_lines(text: str) -> dict[tuple[str, ...], int]:
+    """Each frontmatter key's line in the file (the opening ``---`` is line 1)."""
+    lines = text.replace("\r\n", "\n").splitlines(keepends=True)
+    end = next(
+        (i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        len(lines),
+    )
+    return key_lines("".join(lines[1:end]), first_line=2)
+
+
+def _split_frontmatter(
+    text: str, *, path: Path | None = None
+) -> tuple[dict[str, Any], str]:
     normalized = text.replace("\r\n", "\n")
     lines = normalized.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
@@ -215,9 +319,18 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     try:
         loaded = yaml.safe_load(frontmatter_text) if frontmatter_text.strip() else {}
     except yaml.YAMLError as exc:
+        # The line as the file numbers it: the frontmatter starts on line 2.
+        mark = getattr(exc, "problem_mark", None)
+        where = (
+            f"{path or 'task.md'}:{mark.line + 2}" if mark else str(path or "task.md")
+        )
+        problem = getattr(exc, "problem", None) or str(exc)
+        # The offending line itself, as YAML quotes it.
+        snippet = mark.get_snippet() if mark is not None else None
         raise TaskDocumentParseError(
-            f"task.md frontmatter is not valid YAML: {exc}"
-        ) from exc
+            f"{where}: the frontmatter is not valid YAML: {problem}"
+            + (f"\n{snippet}" if snippet else "")
+        ) from None
     if loaded is None:
         loaded = {}
     if not isinstance(loaded, dict):
@@ -343,10 +456,10 @@ def _parse_roles(frontmatter: dict[str, Any]) -> dict[str, Role]:
     for name, raw_role in raw_roles.items():
         if not isinstance(name, str):
             raise TaskDocumentParseError("agents.roles keys must be role names")
-        role_data = _mapping(raw_role, f"agents.roles.{name}", default={})
+        role_data = _mapping(raw_role, f"agents.roles[{name!r}]", default={})
         agent = role_data.get("agent")
         if not isinstance(agent, str) or not agent:
-            raise TaskDocumentParseError(f"agents.roles.{name}.agent is required")
+            raise TaskDocumentParseError(f"agents.roles[{name!r}].agent is required")
         roles[name] = Role(
             name=name,
             agent=agent,

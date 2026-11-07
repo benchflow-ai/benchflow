@@ -1,18 +1,19 @@
 """Tests for task.toml parsing into TaskConfig."""
 
 import pytest
+from pydantic import ValidationError
 
 from benchflow.task.config import (
     MultiStepRewardStrategy,
     NetworkMode,
     TaskConfig,
     TaskOS,
-    VerifierEnvironmentMode,
+    VerifierSandboxMode,
 )
 
 
 def test_task_config_reads_expected_skills_from_verifier_memory():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     cfg = TaskConfig.model_validate_toml(
         'version = "1.0"\n[verifier.memory]\nexpected_skills = ["git-bisect", "rg"]\n'
     )
@@ -34,7 +35,7 @@ def test_task_config_public_toml_dump_omits_expected_skills_fixture():
 
 
 def test_task_config_preserves_empty_expected_skills_fixture():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     cfg = TaskConfig.model_validate_toml(
         'version = "1.0"\n[verifier.memory]\nexpected_skills = []\n'
     )
@@ -42,13 +43,13 @@ def test_task_config_preserves_empty_expected_skills_fixture():
 
 
 def test_task_config_absent_expected_skills_fixture_is_none():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     cfg = TaskConfig.model_validate_toml('version = "1.0"\n')
     assert cfg.expected_skills is None
 
 
 def test_task_config_rejects_malformed_expected_skills():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Follow-up on v0.5-integration@ffef85d."""
     with pytest.raises(ValueError, match="expected_skills"):
         TaskConfig.model_validate_toml(
             'version = "1.0"\n[verifier.memory]\nexpected_skills = "git-bisect"\n'
@@ -78,18 +79,25 @@ def test_verifier_timeout_sec_rejects_unusable_budgets(value):
         )
 
 
-def test_task_config_accepts_current_harbor_task_toml_surface():
-    """Guards commit 67378ddd's 2026-06-04 parity pass against schema shrinkage."""
+def test_task_config_accepts_current_task_toml_surface():
+    """Guards commit 67378ddd's 2026-06-04 parity pass against schema shrinkage.
+
+    A task.toml spells the sandbox spec ``[environment]`` (and
+    ``[verifier.environment]``); the toml import path converts both to the
+    native ``sandbox`` key, so the assertions below read ``cfg.sandbox`` /
+    ``cfg.verifier.sandbox``.
+    """
     cfg = TaskConfig.model_validate_toml(
         """
 schema_version = "1.3"
-source = "harbor/parity"
+source = "benchflow/parity"
 multi_step_reward_strategy = "final"
 artifacts = [{ source = "/logs/artifacts", destination = "artifacts" }]
 
 [task]
-name = "benchflow/harbor-parity"
-description = "Exercises Harbor-compatible task.toml fields"
+name = "benchflow/task-toml-parity"
+version = "1.0.0"
+description = "Exercises task.toml fields"
 authors = [{ name = "BenchFlow", email = "benchflow@example.com" }]
 keywords = ["parity", "task-md"]
 
@@ -166,20 +174,23 @@ env = { STEP = "scaffold" }
 
     assert cfg.schema_version == "1.3"
     assert cfg.task is not None
-    assert cfg.task.name == "benchflow/harbor-parity"
+    assert cfg.task.name == "benchflow/task-toml-parity"
+    # task.toml 1.3 [task] version — informational, recorded verbatim. Its absence
+    # used to make such tasks unloadable.
+    assert cfg.task.version == "1.0.0"
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
     assert cfg.agent.allowed_hosts == ["api.example.com"]
-    assert cfg.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
     assert cfg.verifier.hardening.cleanup_conftests is False
-    assert cfg.verifier.environment is not None
-    assert cfg.verifier.environment.allow_internet is False
-    assert cfg.environment.network_mode == NetworkMode.ALLOWLIST
-    assert cfg.environment.os == TaskOS.LINUX
-    assert cfg.environment.tpu is not None
-    assert cfg.environment.tpu.chip_count == 8
-    assert cfg.environment.healthcheck is not None
-    assert cfg.environment.healthcheck.retries == 5
+    assert cfg.verifier.sandbox is not None
+    assert cfg.verifier.sandbox.allow_internet is False
+    assert cfg.sandbox.network_mode == NetworkMode.ALLOWLIST
+    assert cfg.sandbox.os == TaskOS.LINUX
+    assert cfg.sandbox.tpu is not None
+    assert cfg.sandbox.tpu.chip_count == 8
+    assert cfg.sandbox.healthcheck is not None
+    assert cfg.sandbox.healthcheck.retries == 5
     assert cfg.multi_step_reward_strategy == MultiStepRewardStrategy.FINAL
     assert cfg.artifacts[0].source == "/logs/artifacts"
     assert cfg.steps is not None
@@ -187,11 +198,11 @@ env = { STEP = "scaffold" }
     assert cfg.steps[0].artifacts[0].source == "/app/scaffold.txt"
 
 
-def test_task_config_rejects_unknown_harbor_fields():
+def test_task_config_rejects_unknown_vendor_fields():
     """Guards commit 67378ddd's 2026-06-04 parity pass against lossy parsing."""
-    with pytest.raises(ValueError, match="unknown_harbor_field"):
+    with pytest.raises(ValueError, match="unknown_vendor_field"):
         TaskConfig.model_validate_toml(
-            'schema_version = "1.3"\n[environment]\nunknown_harbor_field = true\n'
+            'schema_version = "1.3"\n[environment]\nunknown_vendor_field = true\n'
         )
 
 
@@ -206,7 +217,11 @@ def test_task_config_accepts_native_oracle_alias():
 
 
 def test_task_config_accepts_current_skillsbench_task_toml_surface():
-    """Guards SkillsBench main a8eefb4 against parser-only run failures."""
+    """Guards SkillsBench main a8eefb4 against parser-only run failures.
+
+    The legacy ``[environment]`` table converts to ``cfg.sandbox`` on the
+    toml import path.
+    """
     cfg = TaskConfig.model_validate_toml(
         """
 version = "1.0"
@@ -239,10 +254,10 @@ REPO_ID = "google/auto"
 
     assert cfg.schema_version == "1.0"
     assert cfg.reward["reward"].startswith("(P0_passed")
-    assert cfg.environment.docker_image == "python:3.12-slim"
-    assert cfg.environment.bugswarm_image_tag == "google-auto-101506036"
-    assert cfg.environment.memory_mb == 4096
-    assert cfg.environment.storage_mb == 8192
+    assert cfg.sandbox.docker_image == "python:3.12-slim"
+    assert cfg.sandbox.bugswarm_image_tag == "google-auto-101506036"
+    assert cfg.sandbox.memory_mb == 4096
+    assert cfg.sandbox.storage_mb == 8192
     assert cfg.solution.timeout_sec == 1800.0
 
 
@@ -263,7 +278,7 @@ exclude_tags = ["admin"]
 """
     )
 
-    (server,) = cfg.environment.mcp_servers
+    (server,) = cfg.sandbox.mcp_servers
     assert server.name == "atlas"
     assert server.transport == "streamable-http"
     assert server.headers == {"x_run": "smoke"}
@@ -287,7 +302,7 @@ cwd = "/workspace/agent_workspace"
 """
     )
 
-    (server,) = cfg.environment.mcp_servers
+    (server,) = cfg.sandbox.mcp_servers
     assert server.cwd == "/workspace/agent_workspace"
 
 
@@ -310,7 +325,7 @@ FOO = "${FOO:-bar}"
 """
     )
 
-    (command,) = cfg.environment.setup_commands
+    (command,) = cfg.sandbox.setup_commands
     assert command.command == "python preprocess.py"
     assert command.cwd == "/workspace"
     assert command.timeout_sec == 120
@@ -362,4 +377,134 @@ MODAL_TOKEN_ID = "inline"
 [solution.env]
 MODAL_TOKEN_ID = "nested"
 """
+        )
+
+
+def test_task_config_rejects_renamed_environment_key_with_actionable_message():
+    """The native surface accepts only 'sandbox'; 'environment' is a rename,
+    not an alias, and the error says exactly how to fix the file."""
+    with pytest.raises(
+        ValueError,
+        match=r"the 'environment' key was renamed to 'sandbox' — rename "
+        r"'environment:' to 'sandbox:'",
+    ):
+        TaskConfig.model_validate({"environment": {"cpus": 2}})
+
+
+def test_task_config_rejects_renamed_verifier_environment_key():
+    with pytest.raises(
+        ValueError,
+        match=r"the 'verifier\.environment' key was renamed to "
+        r"'verifier\.sandbox'",
+    ):
+        TaskConfig.model_validate({"verifier": {"environment": {"cpus": 2}}})
+
+
+def test_task_config_toml_converts_legacy_environment_table():
+    """task.toml is the legacy surface: '[environment]' converts."""
+    cfg = TaskConfig.model_validate_toml('version = "1.0"\n[environment]\ncpus = 2\n')
+    assert cfg.sandbox.cpus == 2
+
+
+def test_task_config_toml_rejects_both_environment_and_sandbox():
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'environment' and 'sandbox'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[environment]\ncpus = 2\n[sandbox]\ncpus = 3\n'
+        )
+
+
+def test_task_config_toml_rejects_both_verifier_environment_and_sandbox():
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'verifier\.environment' and 'verifier\.sandbox'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[verifier.environment]\ncpus = 2\n'
+            "[verifier.sandbox]\ncpus = 3\n"
+        )
+
+
+def test_task_config_dump_emits_sandbox_key():
+    """Emitters follow the rename: dumps carry 'sandbox', never 'environment'."""
+    cfg = TaskConfig.model_validate({"sandbox": {"cpus": 2}})
+    dumped = cfg.model_dump_toml()
+    assert "[sandbox]" in dumped
+    assert "[environment]" not in dumped
+
+
+def test_task_config_rejects_renamed_verifier_environment_mode_key():
+    with pytest.raises(
+        ValueError,
+        match=r"the 'verifier\.environment_mode' key was renamed to "
+        r"'verifier\.sandbox_mode'",
+    ):
+        TaskConfig.model_validate({"verifier": {"environment_mode": "separate"}})
+
+
+def test_task_config_toml_converts_legacy_verifier_environment_mode():
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n[verifier]\nenvironment_mode = "separate"\n'
+    )
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
+
+
+def test_task_config_toml_rejects_both_environment_mode_and_sandbox_mode():
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'verifier\.environment_mode' and "
+        r"'verifier\.sandbox_mode'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[verifier]\nenvironment_mode = "separate"\n'
+            'sandbox_mode = "separate"\n'
+        )
+
+
+def test_task_config_toml_converts_step_verifier_environment_with_indexed_error():
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n[[steps]]\nname = "one"\n'
+        "[steps.verifier.environment]\ncpus = 2\n"
+    )
+    assert cfg.steps is not None
+    assert cfg.steps[0].verifier.sandbox is not None
+    assert cfg.steps[0].verifier.sandbox.cpus == 2
+
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'steps\[0\]\.verifier\.environment' and "
+        r"'steps\[0\]\.verifier\.sandbox'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[[steps]]\nname = "one"\n'
+            "[steps.verifier.environment]\ncpus = 2\n"
+            "[steps.verifier.sandbox]\ncpus = 3\n"
+        )
+
+
+def test_a_terminal_bench_schema_2_task_reads_as_1x():
+    """Terminal-Bench 4.1 labels some tasks schema_version "2.0" with the 1.x
+    keys (embedding-drift-monitor's shape); they were refused as an unknown
+    major. A 2.x task reads as 1.x; an unknown key is still refused, and a
+    major no runner writes still is."""
+    from benchflow.task.config import TaskConfig
+
+    cfg = TaskConfig.model_validate_toml(
+        'schema_version = "2.0"\nartifacts = ["/app/drift_monitor", "/app/data"]\n'
+        '[verifier]\ntimeout_sec = 300.0\nenvironment_mode = "separate"\n'
+        "[agent]\ntimeout_sec = 28800.0\n"
+        "[environment]\ncpus = 2\nmemory_mb = 4096\nstorage_mb = 10240\ngpus = 0\n"
+    )
+    assert cfg.schema_version == "2.0"
+    assert [getattr(a, "source", a) for a in cfg.artifacts] == [
+        "/app/drift_monitor",
+        "/app/data",
+    ]
+    with pytest.raises(Exception, match="Unsupported schema_version major 3"):
+        TaskConfig.model_validate_toml('schema_version = "3.0"\n')
+    with pytest.raises(ValidationError, match="unknown_vendor_field"):
+        TaskConfig.model_validate_toml(
+            'schema_version = "2.0"\n[environment]\nunknown_vendor_field = true\n'
         )

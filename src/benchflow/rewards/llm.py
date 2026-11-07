@@ -11,6 +11,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: The key an OpenAI-compatible judge call sends to an endpoint the task
+#: chose when the task gave no key of its own (never the operator's).
+NO_JUDGE_KEY = "benchflow-no-key"
+
+
+class JudgeCallError(RuntimeError):
+    """A provider call failed; SDK messages and credential frames are private."""
+
 
 class JudgeEnvironmentError(RuntimeError):
     """No LLM provider SDK is installed for the judge.
@@ -51,21 +59,17 @@ def parse_verdict(text: str) -> dict[str, Any]:
         except ValueError:
             pass
 
-    # Balanced braces
+    # The JSON decoder handles quoted braces, escapes and nesting. Trying each
+    # opening also permits prose or a malformed candidate before the verdict.
+    decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
     for i, ch in enumerate(text):
         if ch == "{":
-            depth = 0
-            for j in range(i, len(text)):
-                if text[j] == "{":
-                    depth += 1
-                elif text[j] == "}":
-                    depth -= 1
-                if depth == 0:
-                    try:
-                        return _loads_verdict_json(text[i : j + 1])
-                    except ValueError:
-                        break
-            break
+            try:
+                parsed, _ = decoder.raw_decode(text, i)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
 
     raise ValueError(f"Could not parse verdict from: {text[:300]}")
 
@@ -125,8 +129,8 @@ async def call_judge(
     When the model name carries a *known* provider prefix (``claude-``,
     ``gpt-``, ``gemini``, ...), only that provider can serve it: a real
     API failure (bad key, model not found, retries exhausted) is raised
-    as-is rather than being masked by a different provider rejecting the
-    same model name.
+    as a sanitized ``JudgeCallError`` rather than being masked by a different
+    provider rejecting the same model name.
 
     When the prefix is *unknown* (``mistral-large``, ``deepseek-chat``, a
     custom name), the provider cannot be determined up front, so every
@@ -159,7 +163,7 @@ async def call_judge(
         providers = ["anthropic", "openai", "google"]
         matched_provider = False
 
-    last_error: Exception | None = None
+    call_failed = False
 
     for index, provider in enumerate(providers):
         for attempt in range(retries):
@@ -178,6 +182,7 @@ async def call_judge(
                     # only swaps in a misleading "Missing OPENAI_API_KEY" (or a
                     # bare missing-SDK) error. Surface a clear, actionable
                     # message that names the provider and the fix instead.
+                    del env, creds, prompt
                     raise JudgeEnvironmentError(
                         f"The {provider} judge SDK is required to run model "
                         f"{model!r} but is not installed. Install the judge "
@@ -185,33 +190,30 @@ async def call_judge(
                         f"(or `uv sync --extra judge`)."
                     ) from None
                 break  # SDK missing — fall through to the next provider
-            except Exception as e:
+            except Exception:
                 if attempt < retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
-                last_error = e
+                call_failed = True
                 logger.warning(
-                    "%s call failed after %d attempts: %s",
+                    "%s judge call failed after %d attempts",
                     provider,
                     retries,
-                    e,
                 )
-                if matched_provider:
-                    # A real API failure for this provider's own model.
-                    # Other providers cannot serve this model name, so
-                    # do not advance — raise the original error directly.
-                    raise
                 # Unknown-prefix model: this provider could not serve it,
                 # but another one might — fall through to the next.
                 break
+        if matched_provider and call_failed:
+            break
 
     # Either every provider's SDK was missing (each ImportError ``break``s to
     # the next), or — for an unknown-prefix model — every provider was tried
-    # and each failed at the API. If we have a recorded API failure, surface
-    # it so the caller sees a genuine error rather than a misleading
-    # missing-SDK message.
-    if last_error is not None:
-        raise last_error
+    # and each failed at the API. Raise outside the SDK exception handler:
+    # neither its message nor its traceback/locals belong in user diagnostics.
+    # Clear credentials here too: traceback renderers can display our locals.
+    del env, creds, prompt
+    if call_failed:
+        raise JudgeCallError("Configured LLM judge call failed after retries") from None
 
     # No API was ever reached: every provider's SDK was missing. This is an
     # environment failure, not a verdict — ``JudgeEnvironmentError`` lets
@@ -226,10 +228,24 @@ async def call_judge(
 # Provider implementations
 
 
+# Claude models that think unless a request turns it off: the 5 family
+# (Anthropic's thinking table, read 2026-11-04). Their thinking counts toward
+# max_tokens, so a judge's 2,048-token budget could run out before the verdict.
+_THINKS_BY_DEFAULT_RE = re.compile(
+    r"claude-(?:opus|sonnet|haiku|fable|mythos)-(?:[5-9]|[1-9]\d)(?!\d)"
+)
+# Room for the thinking and the verdict; still under the SDK's limit for a
+# request that is not streamed.
+THINKING_JUDGE_MAX_TOKENS = 16_000
+
+
 async def _call_anthropic(
     model: str, prompt: str, max_tokens: int, env: Mapping[str, str] | None = None
 ) -> str:
     import anthropic  # ty: ignore[unresolved-import]
+
+    if _THINKS_BY_DEFAULT_RE.search(model):
+        max_tokens = max(max_tokens, THINKING_JUDGE_MAX_TOKENS)
 
     creds = env or {}
     # Pass the resolved key explicitly so concurrent judge runs cannot race
@@ -253,12 +269,27 @@ async def _call_anthropic(
         text = getattr(block, "text", None)
         if isinstance(text, str):
             return text
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            f"The {model} judge used its {max_tokens}-token budget before it "
+            "answered (stop_reason max_tokens)"
+        )
     return ""
+
+
+#: The OpenAI SDK's own endpoint: a task that pins it keeps the operator's key.
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+
+def _endpoint(url: str | None) -> str:
+    return (url or "").strip().rstrip("/").lower()
 
 
 async def _call_openai(
     model: str, prompt: str, max_tokens: int, env: Mapping[str, str] | None = None
 ) -> str:
+    import os
+
     import openai
 
     creds = env or {}
@@ -271,6 +302,14 @@ async def _call_openai(
         kwargs["api_key"] = api_key
     if base_url:
         kwargs["base_url"] = base_url
+        operators = (os.environ.get("OPENAI_BASE_URL"), OPENAI_DEFAULT_BASE_URL)
+        if not api_key and _endpoint(base_url) not in map(_endpoint, operators):
+            # The endpoint is the task's ([verifier] env), not the
+            # operator's own or OpenAI's: without a key of its own the call
+            # carries a placeholder, never the operator's OPENAI_API_KEY (or
+            # OPENAI_ADMIN_KEY) the SDK would read from os.environ. The SDK
+            # refuses an empty key, so the placeholder is a fixed word.
+            kwargs["api_key"] = NO_JUDGE_KEY
     client = openai.AsyncOpenAI(**kwargs)
     response = await client.chat.completions.create(
         model=model,

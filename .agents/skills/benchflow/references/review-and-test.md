@@ -4,7 +4,7 @@ This reference describes the workflow for code review, bug fixing, and validatio
 of the benchflow codebase. Use when asked to review benchflow, fix bugs, or run
 quality checks.
 
-## 1. Council Review
+## 1. Review
 
 Launch 4 independent subagents in parallel to review different subsystems:
 
@@ -25,7 +25,7 @@ Launch 4 independent subagents in parallel to review different subsystems:
 - `src/benchflow/agents/registry.py` — agent configs
 - `src/benchflow/viewer.py` — trajectory viewer
 - `src/benchflow/cli/main.py` — CLI
-- Focus: resource leaks, Harbor private attrs, CLI issues
+- Focus: resource leaks, private attribute access, CLI issues
 
 ### Agent 4: Test Coverage
 - All files in `tests/`
@@ -78,6 +78,6 @@ After all fixes and smoke tests:
 ## 6. Post Progress
 
 If Discord thread is active, post:
-- Council review summary (issue count by severity)
+- Review summary (issue count by severity)
 - Fix batch summary (what was fixed, tests passing)
 - Smoke test results (pass/fail per agent)

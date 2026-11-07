@@ -16,12 +16,12 @@ from typer.testing import CliRunner
 
 import benchflow.cli._shared as shared
 import benchflow.hosted_env as hosted
-import benchflow.hub.harbor_registry as harbor
+import benchflow.hub.registry as hub_registry
 from benchflow.cli.main import app
 
 runner = CliRunner()
 
-_FAKE_HARBOR = [
+_FAKE_REGISTRY = [
     {
         "name": "aider-polyglot",
         "version": "1.0",
@@ -58,8 +58,12 @@ def test_hub_flattens_verbs_and_hides_env_alias() -> None:
 
 def test_hub_env_alias_still_lists(monkeypatch) -> None:
     """The flattened verbs still resolve under the hidden `bench hub env`."""
-    monkeypatch.setattr(harbor, "load_harbor_registry", lambda src: _FAKE_HARBOR)
-    res = runner.invoke(app, ["hub", "env", "list", "--provider", "harbor", "--json"])
+    monkeypatch.setattr(
+        hub_registry, "load_hub_registry", lambda src=None: _FAKE_REGISTRY
+    )
+    res = runner.invoke(
+        app, ["hub", "env", "list", "--provider", "benchflow", "--json"]
+    )
     assert res.exit_code == 0
     assert [d["name"] for d in json.loads(res.output)] == [
         "aider-polyglot",
@@ -70,7 +74,7 @@ def test_hub_env_alias_still_lists(monkeypatch) -> None:
 def test_hub_env_list_is_canonical_and_silent(monkeypatch) -> None:
     monkeypatch.setattr(hosted, "prime_env_list", lambda **kw: '{"environments": []}')
     shared._DEPRECATION_WARNED.clear()
-    res = runner.invoke(app, ["hub", "list", "--json"])  # defaults provider
+    res = runner.invoke(app, ["hub", "list", "--provider", "primeintellect", "--json"])
     assert res.exit_code == 0
     assert res.output.strip() == '{"environments": []}'
     assert "deprecation" not in res.stderr  # canonical surface never warns
@@ -123,21 +127,25 @@ def test_environment_group_is_hidden_but_still_resolves() -> None:
     assert runner.invoke(app, ["environment", "create", "--help"]).exit_code == 0
 
 
-# ── multi-hub: `bench hub list` browses harbor too, not just primeintellect ─
+# ── multi-hub: `bench hub list` browses BenchFlow's registry too ──────────
 
 
-def test_hub_env_list_harbor_renders_registry(monkeypatch) -> None:
-    """`hub env list --provider harbor` lists the Harbor benchmark registry."""
-    monkeypatch.setattr(harbor, "load_harbor_registry", lambda src: _FAKE_HARBOR)
-    res = runner.invoke(app, ["hub", "list", "--provider", "harbor"])
+def test_hub_list_benchflow_renders_its_registry(monkeypatch) -> None:
+    """`hub list --provider benchflow` lists BenchFlow's dataset registry."""
+    monkeypatch.setattr(
+        hub_registry, "load_hub_registry", lambda src=None: _FAKE_REGISTRY
+    )
+    res = runner.invoke(app, ["hub", "list", "--provider", "benchflow"])
     assert res.exit_code == 0, res.output
     assert res.exception is None
-    assert "Harbor" in res.output  # title/footer name the hub
+    assert "BenchFlow Registry" in res.output  # the title names the hub
 
 
-def test_hub_env_list_harbor_json_is_the_registry(monkeypatch) -> None:
-    monkeypatch.setattr(harbor, "load_harbor_registry", lambda src: _FAKE_HARBOR)
-    res = runner.invoke(app, ["hub", "list", "--provider", "harbor", "--json"])
+def test_hub_list_benchflow_json_is_the_registry(monkeypatch) -> None:
+    monkeypatch.setattr(
+        hub_registry, "load_hub_registry", lambda src=None: _FAKE_REGISTRY
+    )
+    res = runner.invoke(app, ["hub", "list", "--provider", "benchflow", "--json"])
     assert res.exit_code == 0
     assert [d["name"] for d in json.loads(res.output)] == [
         "aider-polyglot",
@@ -145,33 +153,44 @@ def test_hub_env_list_harbor_json_is_the_registry(monkeypatch) -> None:
     ]
 
 
-def test_hub_env_list_harbor_search_filters(monkeypatch) -> None:
-    monkeypatch.setattr(harbor, "load_harbor_registry", lambda src: _FAKE_HARBOR)
+def test_hub_list_benchflow_search_filters(monkeypatch) -> None:
+    monkeypatch.setattr(
+        hub_registry, "load_hub_registry", lambda src=None: _FAKE_REGISTRY
+    )
     res = runner.invoke(
         app,
-        ["hub", "list", "--provider", "harbor", "--search", "coding", "--json"],
+        ["hub", "list", "--provider", "benchflow", "--search", "coding", "--json"],
     )
     assert res.exit_code == 0
     assert [d["name"] for d in json.loads(res.output)] == ["aider-polyglot"]
 
 
-def test_hub_env_list_harbor_limit(monkeypatch) -> None:
-    monkeypatch.setattr(harbor, "load_harbor_registry", lambda src: _FAKE_HARBOR)
+def test_hub_list_benchflow_limit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        hub_registry, "load_hub_registry", lambda src=None: _FAKE_REGISTRY
+    )
     res = runner.invoke(
-        app, ["hub", "list", "--provider", "harbor", "--limit", "1", "--json"]
+        app, ["hub", "list", "--provider", "benchflow", "--limit", "1", "--json"]
     )
     assert res.exit_code == 0
     assert len(json.loads(res.output)) == 1
 
 
 def test_hub_env_list_unknown_provider_errors() -> None:
+    """Any other value, a retired provider name included, gets the plain
+    unknown-value error listing the providers."""
     res = runner.invoke(app, ["hub", "list", "--provider", "bogus"])
-    assert res.exit_code == 1
-    assert "Unknown --provider" in res.output
+    assert res.exit_code == 2
+    assert (
+        "--provider 'bogus' is an unknown value; choose one of: "
+        "primeintellect, benchflow"
+    ) in " ".join(res.output.split())
 
 
-def test_hub_env_list_harbor_rejects_owner(monkeypatch) -> None:
-    monkeypatch.setattr(harbor, "load_harbor_registry", lambda src: _FAKE_HARBOR)
-    res = runner.invoke(app, ["hub", "list", "--provider", "harbor", "--owner", "x"])
-    assert res.exit_code == 1
+def test_hub_list_benchflow_rejects_owner(monkeypatch) -> None:
+    monkeypatch.setattr(
+        hub_registry, "load_hub_registry", lambda src=None: _FAKE_REGISTRY
+    )
+    res = runner.invoke(app, ["hub", "list", "--provider", "benchflow", "--owner", "x"])
+    assert res.exit_code == 2
     assert "owner" in res.output.lower()

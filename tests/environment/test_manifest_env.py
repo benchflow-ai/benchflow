@@ -137,6 +137,20 @@ async def test_provision_skips_absent_service_binary():
     assert "claw-gmail" in starts[0]
 
 
+async def test_provision_fails_loud_when_no_declared_service_is_startable():
+    """A manifest/image mismatch must error, not pass vacuously.
+
+    Per-task images legitimately carry a subset of declared services, but ZERO
+    startable services means the manifest's commands no longer match the image
+    (the drifted env0@prod pin, 2026-08-09: every CLI name stale, readiness
+    passed vacuously, every rollout died at the verifier connection-refused).
+    """
+    sandbox = FakeSandbox(absent_binaries={"claw-gmail", "claw-gcal"})
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    with pytest.raises(RuntimeError, match="NONE are startable"):
+        await env.provision(ctx=None)
+
+
 async def test_provision_detects_services_by_running_the_entry_point():
     """Detection probes `<binary> --help`, never bare `command -v`.
 
@@ -286,7 +300,7 @@ async def test_reset_restarts_framework_started_services_for_stateless_env():
     assert len(restarts) == 2, "reset must restart every framework-started service"
     # No restore — there is no [environment.state] table, so no snapshot
     # directory should be copied back over the live state files.
-    assert not any("/tmp/benchflow-snapshots/" in c for c in sandbox.exec_calls)
+    assert not any("/tmp/runtime-snapshots/" in c for c in sandbox.exec_calls)
 
 
 async def test_reset_restores_baseline_state_for_stateful_env():
@@ -302,7 +316,7 @@ async def test_reset_restores_baseline_state_for_stateful_env():
     assert provision_backups, "provision must capture a baseline for stateful manifests"
     sandbox.exec_calls.clear()
     await env.reset()
-    restore_cmds = [c for c in sandbox.exec_calls if "/tmp/benchflow-snapshots/" in c]
+    restore_cmds = [c for c in sandbox.exec_calls if "/tmp/runtime-snapshots/" in c]
     assert restore_cmds, "reset must copy the baseline state files back"
     assert "/data/gmail.db" in restore_cmds[0]
     # And restart the service we previously started.
@@ -436,7 +450,7 @@ def test_service_start_command_fully_detaches():
 
 
 def test_service_log_path_is_per_service_and_retrievable():
-    assert service_log_path("gmail") == "/tmp/benchflow-env-gmail.log"
+    assert service_log_path("gmail") == "/tmp/runtime-env-gmail.log"
     assert service_log_path("gmail") != service_log_path("gcal")
 
 

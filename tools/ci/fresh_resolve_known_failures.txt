@@ -1,0 +1,7 @@
+# Tests that fail when tools/ci/fresh_resolve.sh runs the suite against the
+# installed wheel, one test id per line, each with the reason after a "#".
+# Only failures that are not the wheel's or the resolve's belong here; the
+# list only shrinks. Checked on a build VM, 2026-10-16 (PY8 U7).
+tests/test_integration_check_results.py::test_check_results_accepts_symlinked_current_repo_inferred_source  # the copy has no .git, so provenance inference finds no repository (also in M0's known failures for git archive gates)
+tests/test_job_budget.py::test_resume_counts_every_recorded_attempt  # test bug: it resumes an agent "x" job with agent "oracle" and 0.8's resume guard refuses first (M0's known failures; P2 fixes it)
+tests/trajectories/test_viewer_rubric.py::test_rubric_tab_renders_in_the_browser  # the dev extra installs playwright but no Chromium, and the test skips only when playwright is missing (M0's known failures)

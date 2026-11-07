@@ -9,7 +9,7 @@ agent:
   timeout_sec: 1200
 verifier:
   timeout_sec: 240
-environment:
+sandbox:
   cpus: 2
   memory_mb: 4096
 agents:

@@ -1,6 +1,6 @@
 """End-to-end ``Verifier.verify()`` coverage for native verifier.md strategies.
 
-``verifier/verifier.md`` can select reward-kit, agent-judge, or ors-episode
+``verifier/verifier.md`` can select criteria-runner, agent-judge, or ors-episode
 strategies; ``verify()`` dispatches on the selected strategy type. These tests
 drive the full ``verify()`` path over a fake sandbox and a real rollout
 directory — no network, no containers, no provider SDKs.
@@ -55,17 +55,17 @@ def _write_verifier_package(
 
 
 # ---------------------------------------------------------------------------
-# reward-kit strategy
+# criteria-runner strategy
 # ---------------------------------------------------------------------------
 
-_REWARD_KIT_VERIFIER_MD = """\
+_CRITERIA_RUNNER_VERIFIER_MD = """\
 ---
 verifier:
-  default_strategy: rewardkit
+  default_strategy: scorer
   strategies:
-    rewardkit:
-      type: reward-kit
-      root: reward_kit
+    scorer:
+      type: criteria-runner
+      root: criteria_runner
       criteria: rubrics/criteria.toml
 ---
 """
@@ -95,7 +95,7 @@ def _criteria_toml(
     return "\n".join(lines)
 
 
-def _reward_kit_verifier(
+def _criteria_runner_verifier(
     tmp_path: Path,
     *,
     criteria_toml: str,
@@ -105,9 +105,9 @@ def _reward_kit_verifier(
     """Verifier over a mounted sandbox whose runner exec writes reward.json."""
     verifier_dir = _write_verifier_package(
         tmp_path,
-        _REWARD_KIT_VERIFIER_MD,
+        _CRITERIA_RUNNER_VERIFIER_MD,
         files={
-            "reward_kit/reward.py": "raise SystemExit(0)\n",
+            "criteria_runner/reward.py": "raise SystemExit(0)\n",
             "rubrics/criteria.toml": criteria_toml,
         },
     )
@@ -128,7 +128,7 @@ def _reward_kit_verifier(
     return Verifier(_make_task(verifier_dir), rollout_paths, sandbox), rollout_paths
 
 
-class TestRewardKitStrategy:
+class TestRubricPackageStrategy:
     @pytest.mark.parametrize(
         ("aggregation", "weights", "metrics", "expected_reward"),
         [
@@ -152,7 +152,7 @@ class TestRewardKitStrategy:
         expected_reward: float,
     ) -> None:
         """Each declared criteria aggregation produces its exact reward."""
-        verifier, rollout_paths = _reward_kit_verifier(
+        verifier, rollout_paths = _criteria_runner_verifier(
             tmp_path,
             criteria_toml=_criteria_toml(aggregation, weights),
             reward_payload={"metrics": metrics},
@@ -165,35 +165,61 @@ class TestRewardKitStrategy:
         persisted = json.loads(rollout_paths.reward_json_path.read_text())
         assert persisted["reward"] == expected_reward
 
+    @pytest.mark.parametrize("failed_upload_after", [None, False, True])
     @pytest.mark.asyncio
-    async def test_runner_invocation_contract(self, tmp_path: Path) -> None:
-        """The sandbox runner command, env, and manifest carry the package paths."""
+    async def test_runner_invocation_contract(
+        self, tmp_path: Path, failed_upload_after: bool | None
+    ) -> None:
+        """Guards FIX-49 r6 at 0294404ae: runner uploads keep backend provenance."""
         calls: dict = {}
-        verifier, rollout_paths = _reward_kit_verifier(
+        verifier, rollout_paths = _criteria_runner_verifier(
             tmp_path,
             criteria_toml=_criteria_toml("weighted_mean", {"c1": 3.0, "c2": 1.0}),
             reward_payload={"metrics": {"c1": 1.0, "c2": 0.5}},
             calls=calls,
         )
 
+        if failed_upload_after is not None:
+            from tests.test_verifier_own_failures import _assess
+
+            sandbox = verifier._sandbox
+            sandbox._benchflow_test_command_issued = failed_upload_after
+            sandbox.upload_dir.side_effect = RuntimeError(
+                "fixture runner upload API lost"
+            )
+            rewards, error, warnings = await _assess(sandbox, verifier)
+            sandbox.upload_dir.assert_awaited_once()
+            assert (
+                rewards is None and "runner upload API lost" in error and not warnings
+            )
+            return
+
         result = await verifier.verify()
 
         assert result.rewards["reward"] == 0.875
         assert calls["command"] == (
-            "cd /verifier && python reward_kit/reward.py "
+            "umask 022 && export PIP_CONFIG_FILE=/dev/null; export BASH_ENV=''; "
+            "export ENV=''; unset COVERAGE_PROCESS_START COVERAGE_PROCESS_CONFIG; "
+            "cd /verifier && python criteria_runner/reward.py "
             "> /logs/verifier/test-stdout.txt 2>&1"
         )
         env = calls["env"]
         assert env["BENCHFLOW_VERIFIER_DIR"] == "/verifier"
-        assert env["BENCHFLOW_REWARD_KIT_ROOT"] == "/verifier/reward_kit"
-        assert env["BENCHFLOW_REWARD_KIT_CRITERIA"] == "/verifier/rubrics/criteria.toml"
+        assert env["BENCHFLOW_CRITERIA_RUNNER_ROOT"] == "/verifier/criteria_runner"
+        assert (
+            env["BENCHFLOW_CRITERIA_RUNNER_CRITERIA"]
+            == "/verifier/rubrics/criteria.toml"
+        )
         assert env["BENCHFLOW_REWARD_JSON"] == "/logs/verifier/reward.json"
         assert (
-            env["BENCHFLOW_REWARD_KIT_MANIFEST"]
-            == "/logs/verifier/reward-kit-manifest.json"
+            env["BENCHFLOW_CRITERIA_RUNNER_MANIFEST"]
+            == "/logs/verifier/criteria-runner-manifest.json"
         )
-        manifest = json.loads(rollout_paths.reward_kit_manifest_path.read_text())
-        assert manifest["strategy"]["root"] == "reward_kit"
+        manifest = json.loads(rollout_paths.criteria_runner_manifest_path.read_text())
+        assert manifest["version"] == "benchflow.criteria-runner.v1"
+        assert manifest["strategy"]["type"] == "criteria-runner"
+        assert manifest["strategy"]["root"] == "criteria_runner"
+        assert manifest["paths"]["criteria_runner_root"] == "/verifier/criteria_runner"
         assert manifest["strategy"]["entrypoint"] == "reward.py"
         assert manifest["criteria_policy"]["method"] == "weighted_mean"
         assert manifest["criteria_policy"]["criteria"] == ["c1", "c2"]
@@ -202,7 +228,7 @@ class TestRewardKitStrategy:
     @pytest.mark.asyncio
     async def test_metrics_must_match_declared_criteria(self, tmp_path: Path) -> None:
         """A runner that drops a declared criterion is a verifier output error."""
-        verifier, _ = _reward_kit_verifier(
+        verifier, _ = _criteria_runner_verifier(
             tmp_path,
             criteria_toml=_criteria_toml("weighted_mean", {"c1": 1.0, "c2": 1.0}),
             reward_payload={"metrics": {"c1": 1.0}},
@@ -320,12 +346,14 @@ class TestAgentJudgeStrategy:
     async def test_malformed_verdict_fails_closed(
         self, mock_judge: AsyncMock, tmp_path: Path, judge_response: str
     ) -> None:
-        """An unusable verdict raises instead of scoring, and emits no reward."""
+        """Guards FIX-49 r6 at 0294404ae: invalid provider verdicts remain unscored."""
+        from benchflow.rewards.builtins import JudgeScoringError
+
         mock_judge.return_value = judge_response
         verifier, rollout_paths = _agent_judge_verifier(tmp_path)
         rollout_paths.reward_json_path.write_text('{"reward": 1.0}')
 
-        with pytest.raises(VerifierOutputParseError, match="invalid verdict"):
+        with pytest.raises(JudgeScoringError, match="invalid verdict"):
             await verifier.verify()
 
         assert not rollout_paths.reward_json_path.exists()

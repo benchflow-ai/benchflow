@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from benchflow._utils.reachable_write import ReachablePath, snapshot_file
 from benchflow.rewards.events import Granularity, RewardEvent, Space
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.rewards.validation import is_valid_reward_number
@@ -22,7 +23,7 @@ from benchflow.task.verifier_errors import (
 
 
 def _load_ors_episode_records(
-    path: Path,
+    path: Path | ReachablePath,
     *,
     strategy: VerifierStrategy,
     declared_path: str,
@@ -31,7 +32,13 @@ def _load_ors_episode_records(
         raise ORSEpisodeInputError(
             f"ors-episode input {declared_path!r} must resolve to a regular file"
         )
-    text = path.read_text(errors="replace")
+    try:
+        with snapshot_file(path) as snapshot:
+            text = snapshot.read_text(errors="replace")
+    except (OSError, ValueError) as exc:
+        raise ORSEpisodeInputError(
+            f"ors-episode input {declared_path!r} must resolve to a regular file"
+        ) from exc
     try:
         if path.suffix == ".jsonl":
             records: list[dict[str, Any]] = []
@@ -71,7 +78,7 @@ def _load_ors_episode_records(
 
 
 def _count_ors_episode_records(
-    path: Path,
+    path: Path | ReachablePath,
     *,
     strategy: VerifierStrategy,
     declared_path: str,

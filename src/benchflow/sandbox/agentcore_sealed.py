@@ -1,0 +1,284 @@
+"""Sealed (ciphertext-only) transfer channel for AgentCore.
+
+Every command body sent to an AgentCore runtime is recorded permanently by
+the platform's shell channel in the runtime's CloudWatch log group, and
+base64 is reversible — so nothing secret may ever appear in a command,
+encoded or not. This module owns the one safe way to move bytes and
+environments into the sandbox:
+
+- The sandbox generates an RSA keypair once; only the **public** key ever
+  appears in command output.
+- Payloads travel as one blob of ``IV ‖ AES-256-CTR ciphertext`` with an
+  HMAC-SHA256 tag over the whole blob (encrypt-then-MAC; ``openssl enc``
+  rejects AEAD ciphers, so GCM is not an option). The receiver derives
+  the decryption IV **from the same authenticated bytes the tag
+  verified** — never from a second copy in the command — so no IV
+  occurrence exists that could diverge from what was authenticated. The
+  tag is checked *before* decryption; decryption never runs on
+  unauthenticated bytes, and decrypted output is created under
+  ``umask 077`` so plaintext is never world-readable, even briefly.
+- One RSA-OAEP envelope wraps 64 bytes: AES key ‖ MAC key. The decrypted
+  key material is only ever read from a file inside the sandbox; the
+  logged command text carries ciphertext, public material, and literal
+  ``$(od ...)`` expansions — never key bytes.
+- Environments are staged as mode-0600 sourceable files through the same
+  channel (:meth:`SealedChannel.stage_env`), so ``exec(env=...)`` commands
+  reference them by path only.
+
+The channel deliberately depends on a *raw* exec callable that performs no
+environment injection: routing through the sandbox's public ``exec`` would
+re-enter env staging and recurse.
+"""
+
+from __future__ import annotations
+
+import base64
+import shlex
+import uuid
+from dataclasses import dataclass
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Any, Protocol
+
+from benchflow.sandbox._base import _SHELL_IDENTIFIER_RE, validate_upload_mode
+
+if TYPE_CHECKING:
+    from benchflow.sandbox._base import ExecResult
+
+#: The service caps a single command payload at 64 KB; base64 inflates by
+#: 4/3 and the decrypt scaffolding adds overhead, so chunk well inside it.
+MAX_INLINE_BYTES = 24 * 1024
+
+SEAL_DIR = "/tmp/.bf_sealed"
+
+
+class RawExec(Protocol):
+    """Env-injection-free command runner provided by the sandbox."""
+
+    async def __call__(
+        self,
+        command: str,
+        *,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ) -> ExecResult: ...
+
+
+@dataclass(frozen=True)
+class SealedPayload:
+    """Host-side encryption of one payload, ready for command transport."""
+
+    wrapped_key_b64: str  # RSA-OAEP(AES key ‖ MAC key)
+    blob_b64: str  # base64(IV ‖ ciphertext) — the only transported copy of IV
+    tag_hex: str  # HMAC-SHA256 over the raw blob (IV ‖ ciphertext)
+
+
+def seal(public_pem: str, data: bytes) -> SealedPayload:
+    """Encrypt *data* for the sandbox holding the matching private key."""
+
+    import os as _os
+
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives import hmac as _hmac
+    from cryptography.hazmat.primitives.asymmetric import padding as _pad
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    secret = _os.urandom(64)
+    key, mac_key = secret[:32], secret[32:]
+    iv = _os.urandom(16)
+    public = serialization.load_pem_public_key(public_pem.encode())
+    if not isinstance(public, rsa.RSAPublicKey):
+        raise RuntimeError(
+            "AgentCore sealed upload expected an RSA public key from the "
+            f"sandbox, got {type(public).__name__}"
+        )
+    wrapped = public.encrypt(
+        secret,
+        _pad.OAEP(
+            mgf=_pad.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
+    blob = iv + encryptor.update(data) + encryptor.finalize()
+    tag = _hmac.HMAC(mac_key, hashes.SHA256())
+    tag.update(blob)
+    return SealedPayload(
+        wrapped_key_b64=base64.b64encode(wrapped).decode(),
+        blob_b64=base64.b64encode(blob).decode(),
+        tag_hex=tag.finalize().hex(),
+    )
+
+
+class SealedChannel:
+    """Confidential upload/env-staging over a permanently logged transport."""
+
+    def __init__(self, exec_raw: RawExec, logger: Any) -> None:
+        self._exec_raw = exec_raw
+        self._logger = logger
+        self._public_key: str | None = None
+
+    async def public_key(self) -> str:
+        """Generate (once) and return the sandbox's sealing public key."""
+
+        if self._public_key:
+            return self._public_key
+        d = SEAL_DIR
+        result = await self._exec_raw(
+            f"mkdir -p {d} && chmod 700 {d} && "
+            f"([ -f {d}/key.pem ] || openssl genpkey -algorithm RSA "
+            f"-pkeyopt rsa_keygen_bits:2048 -out {d}/key.pem 2>/dev/null) && "
+            f"chmod 600 {d}/key.pem && openssl pkey -in {d}/key.pem -pubout",
+            timeout_sec=60,
+            user="root",
+        )
+        stdout = result.stdout or ""
+        begin = stdout.find("-----BEGIN PUBLIC KEY-----")
+        end = stdout.find("-----END PUBLIC KEY-----")
+        if result.return_code != 0 or begin == -1 or end == -1:
+            raise RuntimeError(
+                "AgentCore sealed upload requires `openssl` inside the "
+                "runtime image (the generated wrapper installs it when a "
+                "package manager exists). Refusing to fall back to plaintext "
+                "command uploads: "
+                f"{(result.stderr or result.stdout or '')[:300]}"
+            )
+        self._public_key = stdout[begin : end + len("-----END PUBLIC KEY-----")]
+        return self._public_key
+
+    async def upload(
+        self,
+        data: bytes,
+        *,
+        target: str | None,
+        mode: str | None = None,
+        owner: str | None = None,
+        extract_tar: bool = False,
+        timeout_sec: int = 600,
+    ) -> None:
+        """Deliver *data* through ciphertext-only commands.
+
+        With ``extract_tar`` the plaintext is a gzip tar extracted at ``/``;
+        otherwise it is written to ``target`` (with optional chmod ``mode``).
+        """
+
+        mode = validate_upload_mode(mode)
+        payload = seal(await self.public_key(), data)
+
+        token = uuid.uuid4().hex[:16]
+        staging = f"{SEAL_DIR}/s_{token}.b64"
+        keyfile = f"{SEAL_DIR}/k_{token}.bin"
+        aesfile = f"{SEAL_DIR}/a_{token}.bin"
+        blobfile = f"{SEAL_DIR}/c_{token}.bin"
+        chunk = MAX_INLINE_BYTES
+        blob_b64 = payload.blob_b64
+        # range() yields nothing for an empty payload, which would leave the
+        # staging file absent and fail the decrypt; emit one empty write.
+        offsets = list(range(0, len(blob_b64), chunk)) or [0]
+        for index in offsets:
+            piece = blob_b64[index : index + chunk]
+            redirect = ">" if index == offsets[0] else ">>"
+            result = await self._exec_raw(
+                f"printf %s {shlex.quote(piece)} {redirect} {staging}",
+                timeout_sec=120,
+                user="root",
+            )
+            if result.return_code != 0:
+                await self._exec_raw(f"rm -f {staging}", timeout_sec=30, user="root")
+                raise RuntimeError(
+                    f"AgentCore sealed staging failed: {(result.stderr or '')[:500]}"
+                )
+
+        # Unwrap 64 bytes (AES key ‖ MAC key), verify the tag over the WHOLE
+        # blob, and only then split IV ‖ ciphertext out of those same
+        # authenticated bytes and decrypt. A mismatched tag aborts before
+        # any plaintext is produced.
+        decrypt = (
+            f"openssl pkeyutl -decrypt -inkey {SEAL_DIR}/key.pem "
+            f"-in {keyfile} -out {aesfile} "
+            f"-pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 && "
+            f"base64 -d {staging} > {blobfile} && "
+            f"ENCK=$(od -An -v -tx1 -N32 {aesfile} | tr -d ' \n') && "
+            f"MACK=$(od -An -v -tx1 -j32 -N32 {aesfile} | tr -d ' \n') && "
+            f"ACTUAL=$(openssl dgst -sha256 -mac HMAC -macopt hexkey:$MACK "
+            f"-hex < {blobfile} | sed 's/^.*[= ]//') && "
+            f'[ "$ACTUAL" = "{payload.tag_hex}" ] && '
+            f"IVHEX=$(od -An -v -tx1 -N16 {blobfile} | tr -d ' \n') && "
+            f'tail -c +17 {blobfile} | openssl enc -d -aes-256-ctr -K "$ENCK" '
+            f'-iv "$IVHEX"'
+        )
+        if extract_tar:
+            sink = " | tar -xzf - -C /"
+            prep = ""
+            finalize = ""
+            cleanup_paths: list[str] = []
+        else:
+            assert target is not None
+            quoted = shlex.quote(target)
+            # Parent computed host-side and quoted: `$(dirname ...)` would
+            # word-split paths containing spaces.
+            parent = str(PurePosixPath(target).parent)
+            temporary = str(PurePosixPath(parent) / f".bf_upload_{token}.tmp")
+            quoted_temporary = shlex.quote(temporary)
+            cleanup_paths = [temporary]
+            prep = (
+                f"mkdir -p {shlex.quote(parent)} && "
+                if parent not in ("", ".", "/")
+                else ""
+            )
+            # Decrypt to a private file in the target directory, then replace
+            # the destination atomically. Opening the final path directly
+            # would preserve an existing permissive mode and follow an
+            # attacker-planted symlink as root.
+            sink = f" -out {quoted_temporary}"
+            finalize = f" && chmod {mode or '644'} {quoted_temporary}"
+            if owner is not None:
+                finalize += f" && chown {shlex.quote(str(owner))} {quoted_temporary}"
+            finalize += f" && mv -f -- {quoted_temporary} {quoted}"
+        cleanup_command = "rm -f " + " ".join(
+            shlex.quote(path)
+            for path in (staging, keyfile, aesfile, blobfile, *cleanup_paths)
+        )
+        result = await self._exec_raw(
+            f"set -o pipefail; umask 077; "
+            f"trap {shlex.quote(cleanup_command)} EXIT; "
+            f"{prep}"
+            f"printf %s {shlex.quote(payload.wrapped_key_b64)} "
+            f"| base64 -d > {keyfile} && "
+            f"{decrypt}{sink}{finalize}",
+            timeout_sec=timeout_sec,
+            user="root",
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"AgentCore sealed upload failed: {(result.stderr or '')[:500]}"
+            )
+
+    async def stage_env(self, env: dict[str, str], *, owner: str | None = None) -> str:
+        """Write *env* into a mode-0600 sandbox file over the sealed channel.
+
+        Returns the in-sandbox path of a shell-sourceable file. The file
+        lives **outside** the root-only seal directory and is chowned to
+        *owner* when given, so a command that runs as a non-root user can
+        actually source it — root-owned env files inside a 0700 directory
+        would fail with permission denied for everyone else. Only POSIX
+        identifier keys are exported, matching the shared env-file helper.
+        """
+
+        lines = []
+        for key, value in env.items():
+            # str.isidentifier() admits Unicode (e.g. "é") that sh cannot
+            # assign; require an ASCII shell identifier.
+            if not _SHELL_IDENTIFIER_RE.fullmatch(key):
+                self._logger.warning(
+                    "Skipping non-identifier env key %r for AgentCore exec", key
+                )
+                continue
+            lines.append(f"{key}={shlex.quote(value)}")
+        body = "\n".join(lines) + "\n"
+        path = f"/tmp/.bf_env_{uuid.uuid4().hex[:16]}.sh"
+        await self.upload(
+            body.encode(), target=path, mode="600", owner=owner, timeout_sec=120
+        )
+        return path

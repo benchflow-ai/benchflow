@@ -1,0 +1,347 @@
+# The documented behaviour, independent of both engines: the third judge.
+# For every cross-engine difference on a cell that has a row here, the
+# comparer says which side matches the documentation (spec_mismatch names
+# the side that does not), and every ledger row's `spec_side` must agree.
+#
+# outcome: passed / failed / errored / unscored / refused (refused before any
+# sandbox starts, recorded or at load). `code` is the Rust R-code the
+# documentation names ("" for none); a Python record matches it through its
+# failure family (categories.toml). `reward` is checked when given.
+#
+# Sources: integ/p1:examples/README.md:35-86 (the outcomes that need no
+# model), and Python's 9 deterministic goldens
+# (tests/integration/deterministic/golden/*.json, run by DT3's golden tier
+# with claude-agent-acp, codex-acp for in-sandbox-proxy-usage, against the
+# scripted fake provider).
+
+# --- integ/p1:examples/README.md, "Task formats" -----------------------------
+
+[[row]]
+id = "E20-hello"
+task = "hello"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:35 (E20: all three formats run as they are, 3/3 passed)"
+
+[[row]]
+id = "E20-hello-split"
+task = "hello-split"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:35 (E20)"
+
+[[row]]
+id = "E20-hello-08"
+task = "hello-08"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:35 (E20)"
+
+# --- "Agents without a model" (script agents: DT2 adds them to Python) --------
+
+[[row]]
+id = "E21-write-hello"
+task = "hello"
+agent = "script:agents/write-hello.sh"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:41 (E21: your own script as the agent, reward 1)"
+
+[[row]]
+id = "E21-wrong-answer"
+task = "hello"
+agent = "script:agents/wrong-answer.sh"
+outcome = "failed"
+reward = 0.0
+code = ""
+source = "integ/p1:examples/README.md:41 (E21: agents/wrong-answer.sh, reward 0)"
+
+# --- "Reward files" ---------------------------------------------------------
+
+[[row]]
+id = "E22-reward-fraction"
+task = "reward-fraction"
+agent = "oracle"
+outcome = "failed"
+reward = 0.75
+code = ""
+source = "integ/p1:examples/README.md:51 (scored, 0.75)"
+
+[[row]]
+id = "E22-reward-json"
+task = "reward-json"
+agent = "oracle"
+outcome = "failed"
+reward = 0.5
+code = ""
+source = "integ/p1:examples/README.md:52 (scored, 0.5)"
+
+[[row]]
+id = "E22-reward-json-bad-metric"
+task = "reward-json-bad-metric"
+agent = "oracle"
+outcome = "unscored"
+code = "R302"
+source = "integ/p1:examples/README.md:53 (unscored, R302)"
+
+[[row]]
+id = "E22-reward-json-metrics"
+task = "reward-json-metrics"
+agent = "oracle"
+outcome = "unscored"
+code = "R302"
+source = "integ/p1:examples/README.md:54 (unscored, R302)"
+
+[[row]]
+id = "E22-reward-out-of-range"
+task = "reward-out-of-range"
+agent = "oracle"
+outcome = "unscored"
+code = "R302"
+source = "integ/p1:examples/README.md:55 (unscored, R302: rewards are in [0, 1])"
+
+[[row]]
+id = "E22-reward-negative"
+task = "reward-negative"
+agent = "oracle"
+outcome = "unscored"
+code = "R302"
+source = "integ/p1:examples/README.md:56 (unscored, R302)"
+
+[[row]]
+id = "E22-reward-nan"
+task = "reward-nan"
+agent = "oracle"
+outcome = "unscored"
+code = "R302"
+source = "integ/p1:examples/README.md:57 (unscored, R302: not a finite number)"
+
+[[row]]
+id = "E22-reward-empty"
+task = "reward-empty"
+agent = "oracle"
+outcome = "unscored"
+code = "R302"
+source = "integ/p1:examples/README.md:58 (unscored, R302)"
+
+[[row]]
+id = "E22-reward-word"
+task = "reward-word"
+agent = "oracle"
+outcome = "unscored"
+code = "R302"
+source = "integ/p1:examples/README.md:59 (unscored, R302: not a number)"
+
+# --- "Timeouts and failures" -------------------------------------------------
+
+[[row]]
+id = "E23-agent-timeout"
+task = "agent-timeout"
+agent = "oracle"
+outcome = "failed"
+reward = 0.0
+code = ""
+source = "integ/p1:examples/README.md:67 (E23: the agent outlives its 10 s, scored, reward 0)"
+
+[[row]]
+id = "E23-verifier-timeout"
+task = "verifier-timeout"
+agent = "oracle"
+outcome = "unscored"
+code = "R303"
+source = "integ/p1:examples/README.md:68 (E23: unscored, R303, the task's)"
+
+[[row]]
+id = "E23b-build-timeout"
+task = "build-timeout"
+agent = "oracle"
+outcome = "errored"
+code = "R102"
+source = "integ/p1:examples/README.md:69 (E23b: errored, R102, the sandbox's and transient)"
+
+[[row]]
+id = "E23-broken-image"
+task = "broken-image"
+agent = "oracle"
+outcome = "errored"
+code = "R101"
+source = "integ/p1:examples/README.md:70 (E23: errored, R101, the task's)"
+
+[[row]]
+id = "E65-ready-never"
+task = "ready-never"
+agent = "oracle"
+outcome = "errored"
+code = "R105"
+source = "integ/p1:examples/README.md:71 (E65: errored, R105, before any agent starts)"
+
+# --- "Task structure" (Docker) -----------------------------------------------
+
+[[row]]
+id = "E26-mount-outputs"
+task = "mount-outputs"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:81 (E26: reward 1; the output is saved in the trial folder)"
+
+[[row]]
+id = "E27-separate-verifier"
+task = "separate-verifier"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:82 (E27: reward 1)"
+
+[[row]]
+id = "E54-net-allowlist"
+task = "net-allowlist"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:83 (E54: reward 1 each)"
+
+[[row]]
+id = "E54-net-blocklist"
+task = "net-blocklist"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:83 (E54: reward 1 each)"
+
+[[row]]
+id = "E68-net-ip-allowlist"
+task = "net-ip-allowlist"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:85 (E68: reward 1 each)"
+
+[[row]]
+id = "E68-net-ip-blocklist"
+task = "net-ip-blocklist"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:85 (E68: reward 1 each)"
+
+[[row]]
+id = "E68-net-ip-none"
+task = "net-ip-none"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:85 (E68: reward 1 each)"
+
+[[row]]
+id = "E55-sidecar"
+task = "sidecar"
+agent = "oracle"
+outcome = "passed"
+reward = 1.0
+code = ""
+source = "integ/p1:examples/README.md:86 (E55: reward 1 on Docker)"
+
+# --- Python's deterministic goldens (DT3's golden tier) ----------------------
+
+[[row]]
+id = "golden-eval-hello-pass"
+task = "eval-hello-pass"
+agent = "claude-agent-acp"
+outcome = "passed"
+reward = 1.0
+code = ""
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/eval-hello-pass.json (outcome scored, completed, reward 1.0)"
+
+[[row]]
+id = "golden-eval-wrong-answer"
+task = "eval-wrong-answer"
+agent = "claude-agent-acp"
+outcome = "failed"
+reward = 0.0
+code = ""
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/eval-wrong-answer.json (outcome scored, completed, reward 0.0)"
+
+[[row]]
+id = "golden-eval-timeout-pass"
+task = "eval-timeout-pass"
+agent = "claude-agent-acp"
+outcome = "passed"
+reward = 1.0
+code = ""
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/eval-timeout-pass.json (outcome scored, timed_out, reward 1.0: the reward wins over the timeout)"
+
+[[row]]
+id = "golden-eval-verifier-error"
+task = "eval-verifier-error"
+agent = "claude-agent-acp"
+outcome = "unscored"
+code = "R304"
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/eval-verifier-error.json (outcome error, reward null, verifier_error_category verifier_failure)"
+
+[[row]]
+id = "golden-eval-agent-crash"
+task = "eval-agent-crash"
+agent = "claude-agent-acp"
+outcome = "errored"
+code = "R205"
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/eval-agent-crash.json (outcome unscored, errored, error_category acp_error)"
+
+[[row]]
+id = "golden-branch-in-place"
+task = "branch-in-place"
+agent = "claude-agent-acp"
+outcome = "passed"
+reward = 1.0
+code = ""
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/branch-in-place.json (parent scored, reward 1.0; fork children pass 1.0 and wrong 0.0, value 0.5)"
+
+[[row]]
+id = "golden-branch-parallel"
+task = "branch-parallel"
+agent = "claude-agent-acp"
+outcome = "passed"
+reward = 1.0
+code = ""
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/branch-parallel.json (parent scored, reward 1.0; isolated children pass 1.0 and wrong 0.0, value 0.5)"
+
+[[row]]
+id = "golden-checkpoint-retry"
+task = "checkpoint-retry"
+agent = "claude-agent-acp"
+outcome = "failed"
+reward = 0.0
+code = ""
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/checkpoint-retry.json (trial scored, reward 0.0; the retry from prompt:1 completes with reward 1.0)"
+
+[[row]]
+id = "golden-in-sandbox-proxy-usage"
+task = "in-sandbox-proxy-usage"
+agent = "codex-acp"
+outcome = "passed"
+reward = 1.0
+code = ""
+tiers = ["golden"]
+source = "tests/integration/deterministic/golden/in-sandbox-proxy-usage.json (the first in-sandbox proxy call's usage record of codex-acp on the allowlisted hello-pass task, reward 1.0: test_codex_acp_attempts_are_blocked_under_the_allowlist)"

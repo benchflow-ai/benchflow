@@ -77,6 +77,15 @@ class TestGeminiAgentEnv:
             "GEMINI_API_KEY (what the CLI reads); GOOGLE_API_KEY is an alias"
         )
 
+    def test_gemini_headless_launch_trusts_the_sandbox_workspace(self):
+        """Guards PR #1030's E2E fix for Gemini CLI 0.42 folder trust.
+
+        BenchFlow runs Gemini non-interactively with privileged tool approval.
+        Without ``--skip-trust``, the pinned CLI rejects every tool call before
+        the normalized model route can complete a task.
+        """
+        assert "--skip-trust" in AGENTS["gemini"].launch_cmd.split()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-xvs"])

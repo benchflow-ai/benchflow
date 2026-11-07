@@ -177,6 +177,45 @@ class TestRealnessIssues:
         issues = realness_issues(_evidence(verifier_error="timeout"))
         assert any("verifier error" in i for i in issues)
 
+    def test_explicitly_requested_direct_test_edit_is_not_tamper(self) -> None:
+        """Guards PR #1069: a trusted task may require repairing a buggy test."""
+        evidence = _evidence(
+            prompt="Fix the incorrect assertion in the test, then make it pass.",
+            flagged_actions=["write_file -> test_parse.py"],
+        )
+        assert realness_issues(evidence) == []
+
+    @pytest.mark.parametrize(
+        "action",
+        [
+            "bash: sed -i 's/6/5/' test_parse.py",
+            "delete -> test_parse.py",
+            "write_file -> verifier/test_parse.py",
+            "write_file -> conftest.py",
+            "write_file -> tests/run_all.sh",
+            "write_file -> reward.json",
+        ],
+    )
+    def test_test_edit_exemption_keeps_protected_actions_fail_closed(
+        self, action: str
+    ) -> None:
+        """Guards PR #1069: test-edit tasks cannot authorize scoring tamper."""
+        evidence = _evidence(
+            prompt="Fix the incorrect assertion in the test, then make it pass.",
+            flagged_actions=[action],
+        )
+        assert realness_issues(evidence) == [f"verifier tamper: {action}"]
+
+    def test_test_mention_without_edit_instruction_does_not_exempt(self) -> None:
+        """Guards PR #1069: merely mentioning tests is not edit authorization."""
+        evidence = _evidence(
+            prompt="Make the implementation pass all tests.",
+            flagged_actions=["write_file -> test_parse.py"],
+        )
+        assert realness_issues(evidence) == [
+            "verifier tamper: write_file -> test_parse.py"
+        ]
+
 
 # ------------------------------------------------------------------
 # Judge prompt
@@ -196,6 +235,13 @@ class TestBuildJudgePrompt:
         prompt = build_judge_prompt(_evidence())
         assert '"verdict"' in prompt
         assert "pass" in prompt and "fail" in prompt
+
+    def test_prompt_distinguishes_integrity_from_task_success(self) -> None:
+        """Guards PR #1069: honest zero-reward attempts remain valid evidence."""
+        prompt = build_judge_prompt(_evidence(reward=0.0))
+        assert "measurement integrity" in prompt
+        assert "reward 0" in prompt
+        assert "incorrect or incomplete" in prompt
 
 
 # ------------------------------------------------------------------

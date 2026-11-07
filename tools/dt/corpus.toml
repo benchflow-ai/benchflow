@@ -1,0 +1,236 @@
+# The task trees the harness runs, each pinned as <source>/<path>@<git tree
+# hash>. run.py fetches a tree with `git archive <source commit> <path>` and
+# checks the hash of what it unpacked against the pin before any cell runs;
+# no tree is copied into this repository.
+#
+# `weight` marks the slow tasks (timeouts, retries, big images), which run.py
+# starts first in each round.
+#
+# `name` is the cell's name (and the folder the task copy runs from), unique
+# across the corpus; cells pair on name plus tree hash, never on task_digest.
+# The smoke tier is what the oracle and nop can run with no model and no key:
+# Rust 0.8.2's examples (integ/p1:examples/README.md:35-86), the engine
+# bench's control tasks (../engine-bench-1015/raw/trials/setup.txt), and the
+# refusals both engines document. Left out: hello-tb1 (needs `bench import`),
+# check-errors (invalid on purpose), desktop-hello (a desktop image),
+# rubric-judged (a model judge), net-open and net-none (by hand only,
+# README E54m) and the converter's copy of nanofirm-task (the same tree as
+# nanofirm-task). terminal-bench-smoke-task, the engine bench's sixth task,
+# is in neither source commit: it comes from 0.6.0-rc.6 (DT3-MJ2).
+
+[source.p1]
+ref = "integ/p1"
+commit = "518009b0e645528001574ac8faa385abeedeae90"
+
+[[task]]
+name = "hello"
+id = "p1/examples/tasks/hello@45441236b12696f54d4465bd4fe9201bea1dca42"
+tiers = ["smoke"]
+
+[[task]]
+name = "hello-split"
+id = "p1/examples/tasks/hello-split@1ee05b8623b8ac09b3deacce812d35d51a070578"
+tiers = ["smoke"]
+
+[[task]]
+name = "hello-08"
+id = "p1/examples/tasks/hello-08@8c3f6d95b7f89d028908930a6a182500ee8685bc"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-fraction"
+id = "p1/examples/tasks/reward-fraction@1d985812999352c76a6d7ad83d5ab5086721ee35"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-json"
+id = "p1/examples/tasks/reward-json@9f4ef411dbef13bbcb7fae31df745ab758056ac0"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-json-bad-metric"
+id = "p1/examples/tasks/reward-json-bad-metric@3aeecff4d15874f2bca1ad3bd9953e37b6dbfab5"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-json-metrics"
+id = "p1/examples/tasks/reward-json-metrics@99ea55f86315e13da61899798e67a5811e138ea1"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-out-of-range"
+id = "p1/examples/tasks/reward-out-of-range@5789863baa3baeb5c167ecc73eb12eff719b6968"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-negative"
+id = "p1/examples/tasks/reward-negative@c2b2c61ddf8bd91c5dc228c7c11eeb3826ae4625"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-nan"
+id = "p1/examples/tasks/reward-nan@617bd610c217246c2ef12570bff861c2ed0bb580"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-empty"
+id = "p1/examples/tasks/reward-empty@f16a7ca35982f3c987dc65e5b5f4315c097c744b"
+tiers = ["smoke"]
+
+[[task]]
+name = "reward-word"
+id = "p1/examples/tasks/reward-word@0e8abfa84cf99c21116ed7288f3fc0dfa729c811"
+tiers = ["smoke"]
+
+[[task]]
+name = "agent-timeout"
+id = "p1/examples/tasks/agent-timeout@c4d655a153d3d6f22baed40bb1756f8195a1de2f"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "verifier-timeout"
+id = "p1/examples/tasks/verifier-timeout@d82c85d63fd7495f01ca0c041c15777b4b101cd5"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "build-timeout"
+id = "p1/examples/tasks/build-timeout@240a6adf7bab86de1df6d5633091bdd27a01d282"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "broken-image"
+id = "p1/examples/tasks/broken-image@3d9a55967f79d94fe764963f41e85abd1d1d0028"
+tiers = ["smoke"]
+
+[[task]]
+name = "ready-never"
+id = "p1/examples/tasks/ready-never@9908fb0140a2fde2adce14dfc82e25666b0ced9d"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "mount-outputs"
+id = "p1/examples/tasks/mount-outputs@a9fdde11174efc7f56f2af3f6faa8c27a6cf9347"
+tiers = ["smoke"]
+
+[[task]]
+name = "separate-verifier"
+id = "p1/examples/tasks/separate-verifier@fb37e32b336803569f37a37052909e2d77e5b238"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "net-allowlist"
+id = "p1/examples/tasks/net-allowlist@7c7aa5f13f5b18686982b2ef6c723e0e4264d152"
+tiers = ["smoke"]
+
+[[task]]
+name = "net-blocklist"
+id = "p1/examples/tasks/net-blocklist@339667a24e0a51e297bb5544cdd893f6201d0d63"
+tiers = ["smoke"]
+
+[[task]]
+name = "net-ip-allowlist"
+id = "p1/examples/tasks/net-ip-allowlist@e0de29657bcc43d46958af7f2079fd0b1e5e057f"
+tiers = ["smoke"]
+
+[[task]]
+name = "net-ip-blocklist"
+id = "p1/examples/tasks/net-ip-blocklist@66335a8737b8db60bfeef737e70eff7ca616b29b"
+tiers = ["smoke"]
+
+[[task]]
+name = "net-ip-none"
+id = "p1/examples/tasks/net-ip-none@edbfb6fdb6feebd1bde3d37f3ed79521ea791587"
+tiers = ["smoke"]
+
+[[task]]
+name = "sidecar"
+id = "p1/examples/tasks/sidecar@33d677bd0913dd79c4c4d3f2b5e88b0ff2f11686"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "stages"
+id = "p1/examples/tasks/stages@7e28f4ca3e57dc04db317fc0f9c967af6ea5fc07"
+tiers = ["smoke"]
+
+[[task]]
+name = "always-passes"
+id = "p1/examples/tasks/always-passes@7b39b154c00cfafefffc50cbaece743a94f34c11"
+tiers = ["smoke"]
+
+[[task]]
+name = "skills"
+id = "p1/examples/tasks/skills@ad9ff308f14df5cadecea2d69ef3023f93f3e96f"
+tiers = ["smoke"]
+
+[[task]]
+name = "clock-start"
+id = "p1/examples/tasks/clock-start@c6f1bb6e7cb11dd86e597f2f9414edd3d5cd40ed"
+tiers = ["smoke"]
+
+[[task]]
+name = "timezone"
+id = "p1/examples/tasks/timezone@2a151f764d1a5ea848c8bcd3149b428e28c42510"
+tiers = ["smoke"]
+
+[[task]]
+name = "world-sim"
+id = "p1/examples/tasks/world-sim@fd25fce7d70f88b631498c26fd463579ed85aea1"
+tiers = ["smoke"]
+
+[[task]]
+name = "acp_smoke"
+id = "p1/tests/conformance/acp_smoke@281aaa5d8522a1faf39ba152227078ebc656f8dc"
+tiers = ["smoke"]
+
+[[task]]
+name = "hello-split-run"
+id = "p1/crates/benchflow-run/tests/fixtures/tasks/hello-split@d30178d2daaf5b441c7875c645bf82d584137030"
+tiers = ["smoke"]
+
+[[task]]
+name = "sidecar-run"
+id = "p1/crates/benchflow-run/tests/fixtures/tasks/sidecar@58b80e60a70c1a9947a619badf8d0db1a4d8f6e1"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "snapshot-hook"
+id = "p1/crates/benchflow-run/tests/fixtures/tasks/snapshot-hook@1b2055df8a452ab0f836610a345c46e529a59f4c"
+tiers = ["smoke"]
+
+[[task]]
+name = "hello-world-task"
+id = "p1/tests/examples/hello-world-task@fe27c00aac152340f3e44aab1508260b8eeb50ce"
+tiers = ["smoke"]
+
+[[task]]
+name = "nanofirm-task"
+id = "p1/docs/examples/nanofirm-task@2c01556d9269a01039a3213ad4ce85a1aa4d24b9"
+tiers = ["smoke"]
+
+[[task]]
+name = "lake-warming-attribution"
+id = "p1/tests/fixtures/skillsbench_slice/lake-warming-attribution@192a562ba04886b1f0f29bab97252ed661a4e823"
+weight = 3
+tiers = ["smoke"]
+
+[[task]]
+name = "r2r-mpc-control"
+id = "p1/tests/fixtures/skillsbench_slice/r2r-mpc-control@da0c14f8149ee6802df974ded4076f0a542e7872"
+weight = 3
+tiers = ["smoke"]
+
+[source.rc6]
+ref = "0.6.0-rc.6"
+commit = "4effb2b850d6c234a3088f9d6e7aeb65b9a8a54d"
+
+[[task]]
+name = "terminal-bench-smoke-task"
+id = "rc6/tests/examples/terminal-bench-smoke-task@062189a6dd45b1709878de30a2ebaa9827ab144f"
+tiers = ["smoke"]

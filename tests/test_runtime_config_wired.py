@@ -34,6 +34,10 @@ class _FakeInner:
     def __init__(self) -> None:
         self.started = 0
         self.stopped = 0
+        self.configured_timeout: int | None = None
+
+    def configure_agent_timeout(self, timeout_sec: int) -> None:
+        self.configured_timeout = timeout_sec
 
     async def start(self, *a: Any, **kw: Any) -> None:
         self.started += 1
@@ -191,3 +195,16 @@ async def test_rollout_config_timeout_none_keeps_task_default(
 
     expected = int(Task(TASK_PATH).config.agent.timeout_sec or 0)
     assert rollout._timeout == expected
+
+
+@pytest.mark.asyncio
+async def test_effective_timeout_reaches_session_lifecycle() -> None:
+    """Guards PR #937: remote lifetime must follow RuntimeConfig.timeout."""
+    inner = _FakeInner()
+    cfg = RolloutConfig(task_path=TASK_PATH, environment="agentcore", timeout=1234)
+    rollout = Rollout(cfg)
+    rollout.use_prebuilt_env(inner)
+
+    await rollout.setup()
+
+    assert inner.configured_timeout == 1234

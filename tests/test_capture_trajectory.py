@@ -4,9 +4,172 @@ Writer / streaming / multi-scene / partial-capture-fix tests live in
 ``tests/test_trajectory_streaming.py``.
 """
 
+import json
+
+import pytest
+
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import ToolCallStatus
-from benchflow.trajectories._capture import _capture_session_trajectory
+from benchflow.trajectories._capture import (
+    _capture_session_trajectory,
+    _parse_provider_tool_evidence,
+    _reconcile_tool_evidence,
+    _scrape_agent_trajectory,
+)
+from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
+
+
+def test_pr_942_backfills_empty_gemini_acp_observation_by_exact_id():
+    """Guards PR #942: rubric evidence retains Gemini-native tool results."""
+
+    acp = [
+        {
+            "type": "tool_call",
+            "tool_call_id": "read-1",
+            "title": "cat input.txt",
+            "status": "completed",
+            "content": [],
+        },
+        {
+            "type": "tool_call",
+            "tool_call_id": "keep-2",
+            "title": "printf existing",
+            "status": "completed",
+            "content": [{"type": "content", "content": {"text": "existing"}}],
+        },
+        {
+            "type": "tool_call",
+            "tool_call_id": "unmatched-3",
+            "title": "true",
+            "status": "completed",
+            "content": [],
+        },
+    ]
+    native = [
+        {
+            "type": "tool_call",
+            "tool_call_id": "read-1",
+            "content": [{"type": "text", "text": "authoritative output"}],
+        },
+        {
+            "type": "tool_call",
+            "tool_call_id": "keep-2",
+            "content": [{"type": "text", "text": "must not replace ACP"}],
+        },
+        {
+            "type": "tool_call",
+            "tool_call_id": "different-id",
+            "content": [{"type": "text", "text": "must not cross-match"}],
+        },
+    ]
+
+    merged, repaired = _reconcile_tool_evidence(acp, native)
+
+    assert repaired == 1
+    assert merged[0]["content"] == [{"type": "text", "text": "authoritative output"}]
+    assert merged[1]["content"] == acp[1]["content"]
+    assert merged[2]["content"] == []
+
+
+def test_pr_942_extracts_deduplicated_results_from_provider_capture():
+    """Guards PR #942: repair uses trusted capture, not agent-writable files."""
+
+    nested = json.dumps(
+        {
+            "contents": [
+                {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "id": "call-1",
+                                "name": "run_shell_command",
+                                "args": {"command": "cat input.txt"},
+                            }
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "id": "call-1",
+                                "name": "run_shell_command",
+                                "response": {"output": "returned input"},
+                            }
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+    exchange = LLMExchange(
+        request=LLMRequest(body={"messages": [{"role": "user", "content": nested}]}),
+        response=LLMResponse(body={}),
+    )
+
+    parsed = _parse_provider_tool_evidence([exchange, exchange])
+
+    assert parsed == [
+        {
+            "type": "tool_call",
+            "tool_call_id": "call-1",
+            "provider_tool": "run_shell_command",
+            "title": "cat input.txt",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {"type": "text", "text": "returned input"},
+                }
+            ],
+        }
+    ]
+
+
+def test_pr_942_recovers_generic_opencode_command_title():
+    """Guards PR #942: reviewers see write paths hidden by a `bash` title."""
+
+    exchange = LLMExchange(
+        request=LLMRequest(
+            body={
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call-write",
+                                "function": {
+                                    "name": "bash",
+                                    "arguments": json.dumps(
+                                        {"command": "cat > /root/run_check.py"}
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        response=LLMResponse(body={}),
+    )
+    provider = _parse_provider_tool_evidence([exchange])
+    acp = [
+        {
+            "type": "tool_call",
+            "tool_call_id": "call-write",
+            "kind": "execute",
+            "title": "bash",
+            "status": "completed",
+            "content": [{"type": "content", "content": {"text": "ok"}}],
+        }
+    ]
+
+    merged, repaired = _reconcile_tool_evidence(acp, provider)
+
+    assert repaired == 1
+    assert merged[0]["title"] == "cat > /root/run_check.py"
+    assert merged[0]["content"] == acp[0]["content"]
 
 
 class TestCaptureSessionTrajectory:
@@ -438,8 +601,8 @@ class TestChronologicalEventOrder:
         assert result[0]["text"] == "Solve it"
         assert result[2]["status"] == ToolCallStatus.PENDING.value
 
-    def test_openclaw_text_update_and_agent_thought(self) -> None:
-        """openclaw shim uses text_update and agent_thought (not chunks)."""
+    def test_full_text_update_and_agent_thought(self) -> None:
+        """Full text_update and agent_thought events are captured."""
         session = ACPSession("s1")
         session.record_user_prompt("Go")
         session.handle_update(
@@ -697,7 +860,12 @@ class TestFlushArrivalOrder:
 
         result = _capture_session_trajectory(session)
         assert len(result) == 1
-        assert result[0] == {"type": "user_message", "text": "Solve it"}
+        timing = ("receipt", "ts")
+        assert {k: v for k, v in result[0].items() if k not in timing} == {
+            "type": "user_message",
+            "text": "Solve it",
+        }
+        assert result[0]["receipt"]["source"] == "benchflow_host"
 
     def test_pending_cleared_between_flushes(self) -> None:
         """Chunks after a flush go into a fresh pending list."""
@@ -737,3 +905,20 @@ class TestFlushArrivalOrder:
         ]
         assert result[1]["text"] == "before tool"
         assert result[3]["text"] == "after tool"
+
+
+@pytest.mark.asyncio
+async def test_scrape_agent_trajectory_survives_exec_timeout():
+    """Guards issue #948 at the sibling call site that runs first.
+
+    ``verify()`` awaits the scrape before publishing, so a container too slow
+    for the 10 second budget aborted the rollout here before the publish-side
+    guard could apply. Every other failure in this fallback already degrades to
+    "no scraped trajectory"; a timeout must do the same.
+    """
+
+    class TimingOutEnv:
+        async def exec(self, command, user=None, timeout_sec=None):
+            raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+
+    assert await _scrape_agent_trajectory(TimingOutEnv(), "gemini", None) == []

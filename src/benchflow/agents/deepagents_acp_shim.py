@@ -35,8 +35,15 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping
+from typing import TypedDict
 
-_DIAG_TRUNCATE = 2000  # max chars for diagnostic/text output in ACP updates
+
+class _Session(TypedDict):
+    cwd: str
+    model: str
+    state: dict
+
+
 _TOOL_RESULT_TRUNCATE = 1000  # max chars for tool result text
 _TOOL_INPUT_TRUNCATE = 500  # max chars for tool input echoed in ACP updates
 _DEFAULT_MODEL = "deepseek-v4-pro"
@@ -158,6 +165,9 @@ def build_chat_model(model_id: str, env: Mapping[str, str] | None = None):
     max_tokens = _int_env(env, "BENCHFLOW_MODEL_MAX_TOKENS")
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    seed = _int_env(env, "BENCHFLOW_MODEL_SEED")
+    if seed is not None:
+        kwargs["seed"] = seed
 
     return ChatOpenAI(**kwargs)
 
@@ -185,7 +195,9 @@ def _int_env(env: Mapping[str, str], key: str):
 # ── deep agent construction + run ─────────────────────────────────────────────
 
 
-def build_deep_agent(model_id: str, cwd: str, env: Mapping[str, str] | None = None):
+def build_deep_agent(
+    model_id: str, cwd: str, env: Mapping[str, str] | None = None, *, checkpointer=None
+):
     """Construct a deep agent rooted at ``cwd`` with shell + filesystem tools.
 
     Uses ``LocalShellBackend`` (a ``FilesystemBackend`` that also exposes the
@@ -202,6 +214,7 @@ def build_deep_agent(model_id: str, cwd: str, env: Mapping[str, str] | None = No
     return create_deep_agent(
         model=chat_model,
         backend=backend,
+        checkpointer=checkpointer,
         system_prompt=(
             "You are an autonomous software engineering agent operating inside a "
             "sandboxed workspace. Use your filesystem and shell tools to complete "
@@ -265,6 +278,7 @@ def run_deep_agent(
     cwd: str,
     session_id: str,
     env: Mapping[str, str] | None = None,
+    session_state: dict | None = None,
 ) -> dict:
     """Build and invoke a deep agent, emitting ACP updates for its trajectory.
 
@@ -274,7 +288,22 @@ def run_deep_agent(
     and its idle watchdog stays fed during long model turns.
     """
     start = time.time()
-    agent = build_deep_agent(model_id, cwd, env)
+    if session_state is None:
+        agent = build_deep_agent(model_id, cwd, env)
+    else:
+        # Preserve the graph's full state, including messages, tools and todos.
+        # A model change builds a new graph over the same session checkpoint.
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        if "checkpointer" not in session_state:
+            session_state["checkpointer"] = InMemorySaver()
+        key = (model_id, cwd)
+        if session_state.get("graph_key") != key:
+            session_state["agent"] = build_deep_agent(
+                model_id, cwd, env, checkpointer=session_state["checkpointer"]
+            )
+            session_state["graph_key"] = key
+        agent = session_state["agent"]
 
     # Stream the LangGraph trajectory so ACP updates emit incrementally per step,
     # NOT one blocking invoke() that stays silent until it returns. BenchFlow's
@@ -292,7 +321,10 @@ def run_deep_agent(
 
     for chunk in agent.stream(
         {"messages": [{"role": "user", "content": instruction}]},
-        config={"recursion_limit": _RECURSION_LIMIT},
+        config={
+            "recursion_limit": _RECURSION_LIMIT,
+            "configurable": {"thread_id": session_id},
+        },
         stream_mode="updates",
     ):
         for node_update in (chunk or {}).values():
@@ -334,20 +366,42 @@ def run_deep_agent(
 
 
 def _emit_text(session_id: str, text: str):
-    """Emit agent text as an ACP agent_message_chunk."""
-    send(
-        {
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": text[:_DIAG_TRUNCATE]},
-                },
+    """Emit contiguous text chunks bounded by their complete serialized size."""
+    # This file is installed standalone, without benchflow. Keep the parsing
+    # semantics aligned with sandbox.process._acp_lines.line_limit; the host
+    # transport supplies its effective value in the process environment.
+    raw = os.environ.get("BENCHFLOW_ACP_LINE_LIMIT", "").strip().lower()
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = 0 if raw in ("off", "none", "false") else 1024 * 1024
+    # Even with filtering off, bounded messages avoid transport buffer limits.
+    limit = min(limit, 64 * 1024) if limit > 0 else 64 * 1024
+    message = {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": ""},
             },
-        }
-    )
+        },
+    }
+    budget = limit - len(json.dumps(message)) - 1  # Include the newline.
+    if budget < 0 or (text and budget < 1):
+        raise ValueError("ACP line limit cannot carry the text envelope")
+    # json.dumps defaults to ASCII: a supplementary code point needs at most
+    # twelve bytes (two escaped surrogates); controls, quotes and slashes fit.
+    width = max(1, budget // 12)
+    content = message["params"]["update"]["content"]
+    for offset in range(0, max(1, len(text)), width):
+        content["text"] = text[offset : offset + width]
+        if len(json.dumps(message)) + 1 > limit:
+            raise ValueError("ACP line limit cannot carry a text character")
+        # A fresh content object lets asynchronous or recording senders retain
+        # each chunk without a later iteration modifying it.
+        send(json.loads(json.dumps(message)))
 
 
 def _emit_tool_call(session_id: str, tool_call_id: str, name: str, args):
@@ -428,6 +482,9 @@ def main():
     session_id = "deepagents-shim"
     cwd = "/app"
     model = ""
+    sessions: dict[str, _Session] = {
+        session_id: {"cwd": cwd, "model": model, "state": {}}
+    }
 
     while True:
         try:
@@ -438,6 +495,21 @@ def main():
         method = msg.get("method", "")
         req_id = msg.get("id")
         params = msg.get("params", {})
+
+        if method in ("session/prompt", "session/set_model"):
+            requested = params.get("sessionId", session_id)
+            if requested not in sessions:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": "Unknown session"},
+                    }
+                )
+                continue
+            session_id = requested
+            cwd = sessions[session_id]["cwd"]
+            model = sessions[session_id]["model"]
 
         if method == "initialize":
             send(
@@ -458,6 +530,7 @@ def main():
         elif method == "session/new":
             cwd = params.get("cwd", "/app")
             session_id = f"deepagents-{uuid.uuid4().hex[:8]}"
+            sessions[session_id] = {"cwd": cwd, "model": "", "state": {}}
             send(
                 {
                     "jsonrpc": "2.0",
@@ -468,6 +541,7 @@ def main():
 
         elif method == "session/set_model":
             model = params.get("modelId", "")
+            sessions[session_id]["model"] = model
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
         elif method == "session/prompt":
@@ -485,16 +559,28 @@ def main():
                     instruction=text,
                     cwd=cwd,
                     session_id=session_id,
+                    session_state=sessions[session_id]["state"],
                 )
-                _emit_text(
-                    session_id,
+                print(
                     f"[deepagents completed: {metrics['message_count']} messages, "
                     f"{metrics['tool_call_count']} tool calls, "
                     f"{metrics['wall_clock_seconds']}s]",
+                    file=sys.stderr,
                 )
-            except Exception as e:  # surface any failure to the client as text
-                _emit_text(session_id, f"[deepagents error: {type(e).__name__}: {e}]")
-                stop_reason = "end_turn"
+            except Exception as e:
+                # A failed provider request remains a failure after tool activity.
+                # The ACP client classifies this error (including usage limits).
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32603,
+                            "message": f"{type(e).__name__}: {e}",
+                        },
+                    }
+                )
+                continue
 
             send(
                 {

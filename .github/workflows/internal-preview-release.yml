@@ -7,12 +7,13 @@ on:
 
 # PyPI Trusted Publishing uses OIDC, so no PyPI token is stored in GitHub.
 permissions:
+  actions: read
   contents: read
   id-token: write
 
 jobs:
-  publish:
-    name: Publish internal preview to PyPI
+  provenance:
+    name: Find tested release provenance
     if: >-
       ${{
         github.event.workflow_run.conclusion == 'success' &&
@@ -20,18 +21,89 @@ jobs:
         github.event.workflow_run.head_branch == 'main'
       }}
     runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.artifact.outputs.available }}
+
+    steps:
+      - name: Find tested release provenance
+        id: artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INTEGRATION_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          artifact_count="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$INTEGRATION_RUN_ID/artifacts" \
+              --jq '[.artifacts[] | select(.name == "internal-preview-provenance" and .expired == false)] | length'
+          )"
+          if [ "$artifact_count" -eq 0 ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::integration run has no release provenance; preview publication is not applicable"
+            exit 0
+          fi
+          if [ "$artifact_count" -ne 1 ]; then
+            echo "::error::expected exactly one internal-preview-provenance artifact, found $artifact_count"
+            exit 1
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish internal preview to PyPI
+    needs: provenance
+    if: needs.provenance.outputs.available == 'true'
+    runs-on: ubuntu-latest
     environment: pypi-internal-preview
 
     steps:
+      - name: Download tested release provenance
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: internal-preview-provenance
+          path: ${{ runner.temp }}/internal-preview-provenance
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate tested release provenance
+        id: provenance
+        env:
+          PROVENANCE_DIR: ${{ runner.temp }}/internal-preview-provenance
+        run: |
+          set -euo pipefail
+          tested_sha=$(tr -d '\r\n' < "$PROVENANCE_DIR/tested-sha")
+          source_run_number=$(tr -d '\r\n' < "$PROVENANCE_DIR/source-run-number")
+          if ! [[ "$tested_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::invalid tested SHA in integration provenance"
+            exit 1
+          fi
+          if ! [[ "$source_run_number" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::invalid source run number in integration provenance"
+            exit 1
+          fi
+          echo "tested_sha=$tested_sha" >> "$GITHUB_OUTPUT"
+          echo "source_run_number=$source_run_number" >> "$GITHUB_OUTPUT"
+
       - name: Check out tested commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ steps.provenance.outputs.tested_sha }}
+
+      - name: Verify tested commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
-          enable-cache: true
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          # A publishing build never restores a cache another run saved
+          # (cache poisoning; setup-uv turns it off for these events itself).
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.12
@@ -41,11 +113,24 @@ jobs:
         run: >-
           uv run --with packaging --no-project python tools/release_version.py
           internal-preview
-          --run-number "${{ github.event.workflow_run.run_number }}"
+          --run-number "${{ steps.provenance.outputs.source_run_number }}"
 
       - name: Apply internal preview version
         if: steps.version.outputs.publish == 'true'
         run: uv version "${{ steps.version.outputs.version }}" --frozen
+
+      - name: Install the bfx toolchain
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+
+      # Both static binaries, byte for byte the pinned ones
+      # (src/benchflow/_bfx/pins.py), or the release stops here.
+      - name: Build bfx (pinned)
+        if: steps.version.outputs.publish == 'true'
+        run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
 
       - name: Build distributions
         if: steps.version.outputs.publish == 'true'
@@ -54,6 +139,10 @@ jobs:
       - name: Check distributions
         if: steps.version.outputs.publish == 'true'
         run: uv run --with twine --no-project twine check dist/*
+
+      - name: Check bfx in distributions
+        if: steps.version.outputs.publish == 'true'
+        run: uv run --no-project python tools/check_dist_bfx.py dist
 
       - name: Publish internal preview
         if: steps.version.outputs.publish == 'true'
@@ -67,7 +156,7 @@ jobs:
 
           Published \`benchflow==${{ steps.version.outputs.version }}\` from tested commit:
 
-          \`${{ github.event.workflow_run.head_sha }}\`
+          \`${{ steps.provenance.outputs.tested_sha }}\`
 
           Internal users can install it with:
 

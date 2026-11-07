@@ -46,7 +46,7 @@ def _invoke(tmp_path: Path, *extra: str):
 def test_concurrency_zero_rejected_not_deadlocked(tmp_path: Path):
     # Semaphore(0) would deadlock; the CLI must reject it up front instead.
     result = _invoke(tmp_path, "--sandbox", "docker", "--concurrency", "0")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--concurrency must be >= 1" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -61,13 +61,71 @@ def test_build_concurrency_zero_rejected(tmp_path: Path):
         "--build-concurrency",
         "0",
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--build-concurrency must be >= 1" in result.stderr
+
+
+@pytest.mark.parametrize("pool", ["-1", "5"])
+def test_warm_pool_outside_zero_to_concurrency_rejected(tmp_path: Path, pool: str):
+    """--warm-pool N takes 0 to --concurrency."""
+    result = _invoke(
+        tmp_path, "--sandbox", "docker", "--concurrency", "4", "--warm-pool", pool
+    )
+    assert result.exit_code == 2
+    assert "--warm-pool must be from 0 to --concurrency (4)" in result.stderr
+
+
+def test_warm_pool_is_handed_to_the_job(tmp_path: Path):
+    seen = {}
+
+    async def run(self):
+        seen["warm_pool"] = self._config.warm_pool
+        return await _fake_run_pass(self)
+
+    task = _task_dir(tmp_path)
+    with patch.object(Evaluation, "run", new=run):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--sandbox",
+                "docker",
+                "--concurrency",
+                "4",
+                "--warm-pool",
+                "2",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert seen == {"warm_pool": 2}
+
+
+def test_trials_without_matrix_rejected(tmp_path: Path):
+    """Guards PR #1064: a run must never silently ignore --trials. A task
+    folder or dataset repeats (--trials alone is a one-entry matrix, so it is
+    not ignored); a --config file repeats nothing, so it is refused."""
+    config = tmp_path / "run.yaml"
+    config.write_text("tasks_dir: tasks\n")
+    result = CliRunner().invoke(
+        app, ["eval", "run", "--config", str(config), "--trials", "3"]
+    )
+    assert result.exit_code == 2
+    assert (
+        "--trials > 1 needs a task folder, a task named by repository or --dataset"
+        in result.stderr
+    )
+    # The refusal names how a config file repeats tasks instead.
+    assert "n_attempts" in result.stderr
 
 
 def test_skill_mode_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--skill-mode", "bogus")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Invalid --skill-mode" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -76,14 +134,14 @@ def test_sandbox_bogus_clean_error(tmp_path: Path):
     # Unknown sandbox values must be rejected at planning, not surface a raw
     # per-task traceback once the rollout starts.
     result = _invoke(tmp_path, "--sandbox", "nope")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Invalid --sandbox" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
 
 def test_reasoning_effort_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--reasoning-effort", "banana")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "reasoning_effort must be one of" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -103,7 +161,7 @@ def test_tasks_dir_missing_clean_error(tmp_path: Path):
                 "docker",
             ],
         )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--tasks-dir not found" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -187,7 +245,7 @@ def test_eval_run_context_root_missing_clean_error(tmp_path: Path):
                 str(tmp_path / "does-not-exist"),
             ],
         )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--context-root not found" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -208,7 +266,7 @@ def test_eval_run_base_image_override_rejects_whitespace(tmp_path: Path):
                 "not an image",
             ],
         )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--base-image-override must be a non-empty image reference" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -216,7 +274,7 @@ def test_eval_run_base_image_override_rejects_whitespace(tmp_path: Path):
 def test_agent_without_default_model_clean_error(tmp_path: Path):
     # codex has no default model; omitting --model must report cleanly, not crash.
     result = _invoke(tmp_path, "--agent", "codex", "--sandbox", "docker")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "no default model" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -234,7 +292,7 @@ def test_sandbox_modal_without_extra_fails_fast(tmp_path: Path):
 
 def test_loop_strategy_bad_spec_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--loop-strategy", "bogus")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Invalid --loop-strategy" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
@@ -243,7 +301,7 @@ def test_loop_strategy_k_out_of_range_rejected(tmp_path: Path):
     result = _invoke(
         tmp_path, "--sandbox", "docker", "--loop-strategy", "verify-retry:k=99"
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "k must be between 1 and 10" in result.stderr
 
 
@@ -257,7 +315,7 @@ def test_loop_strategy_conflicts_with_self_gen(tmp_path: Path):
         "--loop-strategy",
         "verify-retry",
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "not supported with --skill-mode self-gen" in result.stderr
 
 
@@ -273,7 +331,7 @@ def test_loop_strategy_conflicts_with_multiple_prompts(tmp_path: Path):
         "--loop-strategy",
         "verify-retry",
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "conflicts with multiple" in result.stderr
 
 
@@ -393,6 +451,29 @@ def test_agent_timeout_sec_accepts_positive_or_none(ok):
 # --- v0.6 CLI-dogfood guards: clean fail-fast instead of raw tracebacks -------
 
 
+def test_hf_prefix_accepted_with_publish_bucket(tmp_path: Path):
+    # Guards against --hf-prefix rejecting --publish-bucket: the bucket
+    # postprocess path reads req.hf_prefix, so it must be a valid pairing.
+    plan = build_eval_plan(
+        EvalCreateRequest(
+            tasks_dir=_task_dir(tmp_path),
+            agent="oracle",
+            publish_bucket="org/bucket",
+            hf_prefix="runs/x",
+        )
+    )
+    assert plan.request.hf_prefix == "runs/x"
+
+
+def test_hf_prefix_without_publish_hf_or_bucket_rejected(tmp_path: Path):
+    with pytest.raises(EvalPlanError, match="--publish-hf or --publish-bucket"):
+        build_eval_plan(
+            EvalCreateRequest(
+                tasks_dir=_task_dir(tmp_path), agent="oracle", hf_prefix="runs/x"
+            )
+        )
+
+
 def test_config_missing_path_rejected_cleanly(tmp_path: Path):
     # Was: a raw FileNotFoundError traceback from Evaluation.from_yaml's open().
     with pytest.raises(EvalPlanError, match="--config not found"):
@@ -430,3 +511,183 @@ def test_empty_sandbox_rejected_not_silently_defaulted(tmp_path: Path):
         build_eval_plan(
             EvalCreateRequest(tasks_dir=task, environment="", agent="gemini")
         )
+
+
+def _hide_daytona_sdk(monkeypatch):
+    import importlib.util as importlib_util
+
+    real_find_spec = importlib_util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "daytona" or name.startswith("daytona."):
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib_util, "find_spec", fake_find_spec)
+
+
+def test_sandbox_daytona_missing_extra_fails_before_the_job(tmp_path, monkeypatch):
+    """Without the extra, --sandbox daytona used to create a job, print two
+    chained tracebacks and record 0/1 with errors=1, with a `pip install` hint
+    that does not work for a `uv tool` install."""
+    _hide_daytona_sdk(monkeypatch)
+    task = _task_dir(tmp_path)
+    with pytest.raises(EvalPlanError) as excinfo:
+        build_eval_plan(
+            EvalCreateRequest(tasks_dir=task, environment="daytona", agent="oracle")
+        )
+    message = str(excinfo.value)
+    assert "uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'" in (
+        message
+    )
+    assert "uv sync --extra sandbox-daytona --extra dev --locked" in message
+
+    jobs = tmp_path / "jobs"
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(task),
+            "--agent",
+            "oracle",
+            "--sandbox",
+            "daytona",
+            "--jobs-dir",
+            str(jobs),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "sandbox-daytona" in result.stderr
+    assert "Traceback" not in result.output
+    assert not jobs.exists()
+
+
+def test_optional_sandbox_hints_agree():
+    from benchflow.doctor import DoctorProbes, check_daytona
+    from benchflow.sandbox.providers import extra_install_hint
+    from benchflow.sandbox.setup import _raise_missing_optional_sandbox_dependency
+
+    hint = extra_install_hint("sandbox-daytona")
+    with pytest.raises(RuntimeError, match=r"uv tool install") as excinfo:
+        _raise_missing_optional_sandbox_dependency("daytona", ModuleNotFoundError())
+    assert hint in str(excinfo.value)
+    probes = DoctorProbes(
+        environ={"DAYTONA_API_KEY": "x"},
+        origins={},
+        home=Path("/nonexistent"),
+        dist_version=lambda _: None,
+    )
+    assert check_daytona(probes, required=True, offline=True).fix == hint
+
+
+# --- an agent that routes its own model calls (model_route = "agent") ---
+
+_OWN_ROUTE = "en191-own-route"
+
+
+@pytest.fixture
+def own_route_agent(monkeypatch):
+    from benchflow.agents.registry import (
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+    )
+    from benchflow.agents.registry import AgentConfig as RegistryAgentConfig
+
+    monkeypatch.setitem(
+        AGENTS,
+        _OWN_ROUTE,
+        RegistryAgentConfig(
+            name=_OWN_ROUTE,
+            install_cmd="true",
+            launch_cmd=f"{_OWN_ROUTE} --acp",
+            model_route="agent",
+        ),
+    )
+    monkeypatch.setitem(AGENT_INSTALLERS, _OWN_ROUTE, "true")
+    monkeypatch.setitem(AGENT_LAUNCH, _OWN_ROUTE, f"{_OWN_ROUTE} --acp")
+    monkeypatch.delenv("BENCHFLOW_USAGE_TRACKING", raising=False)
+    return _OWN_ROUTE
+
+
+def test_effective_model_of_an_own_route_agent_is_its_label_or_none(
+    own_route_agent, monkeypatch
+):
+    """An agent that routes its own model calls needs no model.
+    Without one it gets None (its own default), never the global default; a
+    --model or default_model is kept as its label."""
+    from dataclasses import replace
+
+    from benchflow.agents.registry import AGENTS
+    from benchflow.evaluation import effective_model
+
+    assert effective_model(own_route_agent, None) is None
+    assert effective_model(own_route_agent, "deepseek-v4-flash") == "deepseek-v4-flash"
+    monkeypatch.setitem(
+        AGENTS,
+        own_route_agent,
+        replace(AGENTS[own_route_agent], default_model="own-default"),
+    )
+    assert effective_model(own_route_agent, None) == "own-default"
+    # An ordinary agent with no default model is still refused.
+    with pytest.raises(ValueError, match="no default model"):
+        effective_model("codex-acp", None)
+
+
+@pytest.mark.parametrize("label", [None, "deepseek-v4-flash"])
+def test_eval_run_accepts_an_own_route_agent_with_or_without_a_label(
+    tmp_path: Path, own_route_agent, label
+):
+    """The CLI no longer refuses a registered agent with no
+    default_model when it routes its own model calls; the run gets the label
+    or None, never another provider's default model."""
+    seen = {}
+
+    async def run(self):
+        seen["model"] = self._config.model
+        return await _fake_run_pass(self)
+
+    task = _task_dir(tmp_path)
+    model_args = ["--model", label] if label else []
+    with patch.object(Evaluation, "run", new=run):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                own_route_agent,
+                "--sandbox",
+                "docker",
+                *model_args,
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert seen == {"model": label}
+
+
+@pytest.mark.parametrize("env_default", [False, True])
+def test_eval_plan_refuses_required_usage_for_an_own_route_agent(
+    tmp_path: Path, own_route_agent, monkeypatch, env_default
+):
+    """--usage-tracking required (or its environment default)
+    is refused before a job exists for an agent that routes its own calls."""
+    task = _task_dir(tmp_path)
+    if env_default:
+        monkeypatch.setenv("BENCHFLOW_USAGE_TRACKING", "required")
+    request = EvalCreateRequest(
+        tasks_dir=task,
+        agent=own_route_agent,
+        environment="docker",
+        usage_tracking=None if env_default else "required",
+    )
+    with pytest.raises(EvalPlanError, match="BenchFlow cannot meter an agent"):
+        build_eval_plan(request)
+    monkeypatch.delenv("BENCHFLOW_USAGE_TRACKING", raising=False)
+    assert build_eval_plan(
+        EvalCreateRequest(tasks_dir=task, agent=own_route_agent, environment="docker")
+    )

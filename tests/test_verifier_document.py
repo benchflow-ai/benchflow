@@ -27,11 +27,11 @@ def test_load_verifier_document_returns_none_without_verifier_md(
     assert load_verifier_document(verifier_dir) is None
 
 
-def test_task_paths_accepts_selected_reward_kit_without_test_sh(
+def test_task_paths_accepts_selected_criteria_runner_without_test_sh(
     tmp_path: Path,
 ) -> None:
     """Native verifier packages do not need a legacy test.sh entrypoint."""
-    task_dir = tmp_path / "rewardkit-native"
+    task_dir = tmp_path / "kit-native"
     (task_dir / "environment").mkdir(parents=True)
     (task_dir / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
     (task_dir / "task.md").write_text(
@@ -39,7 +39,7 @@ def test_task_paths_accepts_selected_reward_kit_without_test_sh(
             """\
             ---
             schema_version: "1.3"
-            environment:
+            sandbox:
               network_mode: no-network
             ---
 
@@ -50,20 +50,20 @@ def test_task_paths_accepts_selected_reward_kit_without_test_sh(
         )
     )
     verifier = task_dir / "verifier"
-    (verifier / "reward_kit").mkdir(parents=True)
+    (verifier / "criteria_runner").mkdir(parents=True)
     (verifier / "rubrics").mkdir()
-    (verifier / "reward_kit" / "reward.py").write_text("print('score')\n")
+    (verifier / "criteria_runner" / "reward.py").write_text("print('score')\n")
     (verifier / "rubrics" / "verifier.toml").write_text("[scoring]\nmethod='mean'\n")
     (verifier / "verifier.md").write_text(
         dedent(
             """\
             ---
             verifier:
-              default_strategy: rewardkit
+              default_strategy: scorer
               strategies:
-                rewardkit:
-                  type: reward-kit
-                  root: reward_kit
+                scorer:
+                  type: criteria-runner
+                  root: criteria_runner
                   criteria: rubrics/verifier.toml
             ---
             """
@@ -78,11 +78,11 @@ def test_task_paths_accepts_selected_reward_kit_without_test_sh(
     assert check_task(task_dir) == []
 
 
-def test_task_paths_rejects_selected_reward_kit_without_runner(
+def test_task_paths_rejects_selected_criteria_runner_without_runner(
     tmp_path: Path,
 ) -> None:
-    """A selected Reward Kit strategy must still have its package runner."""
-    task_dir = tmp_path / "missing-rewardkit-runner"
+    """A selected criteria-runner strategy must still have its package runner."""
+    task_dir = tmp_path / "missing-kit-runner"
     (task_dir / "environment").mkdir(parents=True)
     (task_dir / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
     (task_dir / "task.md").write_text(
@@ -95,11 +95,11 @@ def test_task_paths_rejects_selected_reward_kit_without_runner(
             """\
             ---
             verifier:
-              default_strategy: rewardkit
+              default_strategy: scorer
               strategies:
-                rewardkit:
-                  type: reward-kit
-                  root: reward_kit
+                scorer:
+                  type: criteria-runner
+                  root: criteria_runner
             ---
             """
         )
@@ -275,16 +275,16 @@ def test_agent_judge_requires_verifier_only_isolation() -> None:
         VerifierDocument.from_text(text)
 
 
-def test_reward_kit_requires_safe_relative_paths() -> None:
-    """Reward Kit package paths must not escape verifier scope."""
+def test_criteria_runner_requires_safe_relative_paths() -> None:
+    """Criteria-runner package paths must not escape verifier scope."""
     text = dedent(
         """\
         ---
         verifier:
           strategies:
-            rewardkit:
-              type: reward-kit
-              root: ../reward_kit
+            scorer:
+              type: criteria-runner
+              root: ../criteria_runner
         ---
         """
     )
@@ -322,7 +322,7 @@ def test_check_task_reports_malformed_verifier_document(tmp_path: Path) -> None:
             """\
             ---
             schema_version: "1.3"
-            environment:
+            sandbox:
               network_mode: no-network
             ---
 

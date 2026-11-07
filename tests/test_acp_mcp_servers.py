@@ -23,8 +23,8 @@ from benchflow.rollout import (
     Role,
     Rollout,
     RolloutConfig,
+    _fastmcp_task_mcp_config,
     _install_native_task_mcp_config,
-    _openhands_mcp_config,
     _task_mcp_specs,
     _task_mcp_specs_for_agent,
 )
@@ -91,7 +91,7 @@ def test_http_spec_carries_url_and_type() -> None:
 
 def _task_with_mcp(*configs: MCPServerConfig) -> SimpleNamespace:
     return SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(mcp_servers=list(configs)))
+        config=SimpleNamespace(sandbox=SimpleNamespace(mcp_servers=list(configs)))
     )
 
 
@@ -175,7 +175,7 @@ def test_openhands_mcp_config_uses_fastmcp_shape() -> None:
         ),
     )
 
-    assert _openhands_mcp_config(task) == {
+    assert _fastmcp_task_mcp_config(task) == {
         "mcpServers": {
             "atlas": {
                 "url": "http://localhost:18765/mcp",
@@ -239,7 +239,7 @@ async def test_native_task_mcp_config_installer_uses_registry_path() -> None:
         task_mcp_config_path=".custom/mcp.json",
     )
     env = MagicMock()
-    env.exec = AsyncMock()
+    env.exec = AsyncMock(return_value=SimpleNamespace(return_code=0))
     env.upload_file = AsyncMock()
 
     await _install_native_task_mcp_config(
@@ -247,7 +247,20 @@ async def test_native_task_mcp_config_installer_uses_registry_path() -> None:
     )
 
     uploaded_path = env.upload_file.await_args.args[1]
-    assert uploaded_path == "/home/agent/.custom/mcp.json"
+    assert uploaded_path.startswith("/.runtime-credential-")
+    assert env.upload_file.await_args.kwargs["mode"] == "600"
+    (install_call,) = [
+        call
+        for call in env.exec.await_args_list
+        if "/home/agent/.custom/mcp.json" in call.args[0]
+    ]
+    assert install_call.kwargs["user"] == "agent"
+    # C33: the owner creates a private inode exclusively, never follows a link.
+    assert "umask 077" in install_call.args[0]
+    assert (
+        f"(set -C; cat {uploaded_path} > /home/agent/.custom/mcp.json)"
+        in install_call.args[0]
+    )
 
 
 def test_task_mcp_specs_handles_absent_config() -> None:
@@ -255,7 +268,7 @@ def test_task_mcp_specs_handles_absent_config() -> None:
     assert _task_mcp_specs(None) == []
     assert (
         _task_mcp_specs(
-            SimpleNamespace(config=SimpleNamespace(environment=SimpleNamespace()))
+            SimpleNamespace(config=SimpleNamespace(sandbox=SimpleNamespace()))
         )
         == []
     )
@@ -340,23 +353,28 @@ def _fake_planes() -> MagicMock:
     planes.connect_acp = AsyncMock(
         return_value=(MagicMock(), MagicMock(), MagicMock(), "agent")
     )
+    # connect() stages the connection's credential files (C23/C24).
+    planes.write_credential_files = AsyncMock(return_value=[])
+    planes.upload_subscription_auth = AsyncMock(return_value=[])
+    planes.apply_web_tool_policy = AsyncMock()
+    planes.quiesce_agent = AsyncMock()
     return planes
 
 
 @pytest.mark.asyncio
 async def test_connect_threads_task_mcp_servers_into_connect_acp(tmp_path) -> None:
-    """``Rollout.connect()`` passes the task's mapped MCP specs to connect_acp."""
+    """``Rollout.connect()`` passes the task's mapped MCP specs to connect_acp.
+
+    With an agent that takes task MCP servers: Claude Code refuses them under
+    its managed connector policy (#79, tests/test_claude_connector_policy.py).
+    """
     cfg = RolloutConfig(
-        task_path=tmp_path / "task", agent="claude-agent-acp", model="test-model"
+        task_path=tmp_path / "task", agent="opencode", model="test-model"
     )
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
-    trial._agent_env = {}
-    trial._agent_launch = "claude-agent-acp"
+    trial._agent_launch = "opencode"
     trial._phase = "installed"
     trial._task = _task_with_mcp(
         MCPServerConfig(
@@ -385,16 +403,15 @@ async def test_connect_threads_task_mcp_servers_into_connect_acp(tmp_path) -> No
 async def test_connect_as_omits_openhands_mcp_servers_from_acp(tmp_path) -> None:
     """Guards the role execution path used by single-shot OpenHands scenes."""
     cfg = RolloutConfig(task_path=tmp_path / "task", agent="openhands", model="qwen")
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
-    trial._env = {}
+    trial = Rollout(cfg)
+    # C32/C33 prepare the launcher's ledgered destination before connection.
+    trial._env = SimpleNamespace(
+        exec=AsyncMock(return_value=SimpleNamespace(return_code=0))
+    )
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._agent_cfg = AGENTS["openhands"]
     trial._agent_launch = "openhands"
     trial._phase = "installed"
-    trial._disallow_web_tools = False
     trial._task = _task_with_mcp(
         MCPServerConfig(name="atlas", transport="streamable-http", url="http://x/mcp")
     )

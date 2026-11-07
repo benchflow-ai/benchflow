@@ -1,0 +1,10 @@
+# Stacked when the task keeps services (x-keep-services): root in ``main``
+# holds the kept processes in a frozen cgroup v2 leaf of its own between the
+# kill and the release (lockdown.py, _KEPT_FREEZER). That takes a private
+# cgroup namespace whose hierarchy root may write; every cgroup file stays
+# root's, so the agent user gets no write there.
+services:
+  main:
+    cgroup: private
+    security_opt:
+      - writable-cgroups=true

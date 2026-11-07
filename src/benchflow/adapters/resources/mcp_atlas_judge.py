@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import sys
 import urllib.error
@@ -49,7 +50,7 @@ def write_reward(reward, details):
 def judge(payload, answer):
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        return 0.0, {"error": "OPENROUTER_API_KEY is not set"}
+        raise RuntimeError("Atlas judge unavailable: OPENROUTER_API_KEY is not set")
     model = os.environ.get("MCP_ATLAS_JUDGE_MODEL", "qwen/qwen-plus")
     claims = payload.get("claims") or []
     prompt = (
@@ -79,17 +80,23 @@ def judge(payload, answer):
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        return 0.0, {
-            "error": f"judge HTTP {e.code}: {e.read().decode(errors='replace')[:500]}"
-        }
+        raise RuntimeError(f"Atlas judge unavailable: HTTP {e.code}") from e
     except Exception as e:
-        return 0.0, {"error": f"judge failed: {e}"}
-    content = data["choices"][0]["message"]["content"]
+        raise RuntimeError("Atlas judge request failed") from e
     try:
+        content = data["choices"][0]["message"]["content"]
         parsed = json.loads(content)
-    except json.JSONDecodeError:
-        parsed = {"reward": 0, "justification": content[:1000]}
-    reward = 1.0 if float(parsed.get("reward", 0)) >= 0.5 else 0.0
+        value = parsed["reward"]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= 1
+        ):
+            raise ValueError("invalid reward")
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        raise RuntimeError("Atlas judge returned no valid verdict") from e
+    reward = 1.0 if value >= 0.5 else 0.0
     return reward, {"judge": parsed, "model": model}
 
 

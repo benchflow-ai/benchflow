@@ -295,6 +295,7 @@ async def test_sequential_shared_learner_skills_use_with_skill_policy(tmp_path):
     async def fake_create(cls_cfg):
         captured["skills_dir"] = cls_cfg.skills_dir
         captured["skill_mode"] = cls_cfg.skill_mode
+        captured["skills_agent_derived"] = cls_cfg.skills_agent_derived
 
         async def fake_run():
             return RolloutResult(
@@ -322,6 +323,8 @@ async def test_sequential_shared_learner_skills_use_with_skill_policy(tmp_path):
 
     assert captured["skills_dir"] == learner_skills
     assert captured["skill_mode"] == SKILL_MODE_WITH_SKILL
+    # Earlier agents wrote them: admitted as agent-derived bytes (review M3).
+    assert captured["skills_agent_derived"] is True
 
 
 @pytest.mark.asyncio
@@ -361,7 +364,7 @@ async def test_sequential_shared_records_memory_delta_on_a_node(tmp_path):
 
 @pytest.mark.asyncio
 async def test_sequential_shared_threads_task_expected_skills_to_memory_delta(tmp_path):
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d.
+    """Follow-up on v0.5-integration@ffef85d.
 
     The Memory-space scorer must grade against a task-authored fixture, not
     derive an answer key from the agent's own diff.

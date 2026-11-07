@@ -1,0 +1,116 @@
+# Publishing a release
+
+This page is for maintainers. To install a stable or preview release, see [Install](../start/install.md).
+
+BenchFlow publishes two kinds of release to PyPI, both under the name `benchflow`:
+
+| Channel | Published | Version | Workflow |
+| --- | --- | --- | --- |
+| Stable | when a maintainer pushes a `vX.Y.Z` tag | `X.Y.Z` | `public-release.yml` |
+| Pre-release | when a maintainer pushes a `vX.Y.ZrcN` (or `aN`, `bN`) tag | `X.Y.ZrcN` | `public-release.yml` |
+| Preview | after every push to `main` whose tests and integration check pass | `X.Y.Z.devN` | `internal-preview-release.yml` |
+
+## Version model
+
+`main` always carries the next stable version with `.dev0`, for example `0.9.0.dev0`. After a stable release, bump it to the next one:
+
+```toml
+version = "<next-stable-version>.dev0"
+```
+
+The preview build replaces `.dev0` with `.devN`, where N is the run number of the `test` workflow that passed. This happens only in CI; git keeps `.dev0`.
+
+```text
+<next-stable-version>.dev0 in git -> <next-stable-version>.dev<run-number> on PyPI
+```
+
+Previews sort before the stable release they lead to, so `pip install benchflow` still gets the latest stable.
+
+If `main` carries a final or a/b/rc version during a release, the preview workflow skips publishing. The tag-driven stable workflow handles that commit.
+
+A pre-release such as `0.10.0rc2` goes through the same stable steps below, with its own acceptance record. pip installs it only when asked for it (`pip install --pre benchflow` or `benchflow==0.10.0rc2`), and its GitHub release is marked as a pre-release. `.dev` and local versions never publish through `public-release.yml`.
+
+## Preview releases
+
+1. Merge a PR to `main`.
+2. `test.yml` runs.
+3. When it passes, `integration-light.yml` runs a real rollout on that commit. It saves the commit SHA and the `test` run number as provenance.
+4. `internal-preview-release.yml` validates that provenance, checks that the commit is on `main`, builds it and publishes it.
+
+### The integration check's model provider
+
+The integration check probes model providers in order and uses the first that answers a small request. It uses that provider for the smoke rollout and the agent judge.
+
+| Provider | Credentials in the job |
+| --- | --- |
+| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` |
+| GLM | `GLM_API_KEY`, `GLM_BASE_URL`, `GLM_MODEL` |
+| GitHub Models | `GITHUB_MODELS_TOKEN`, or the workflow token when that secret is unset |
+
+The keys come from the `pypi-internal-preview` environment (`.github/scripts/select_integration_provider.py` holds the order). Keep at least one working. The job also receives `GEMINI_API_KEY`, but the selector does not probe Gemini. The job gets no Daytona or reviewer keys.
+
+The Deployments page for `pypi-internal-preview` also lists integration runs, because they use the same environment for secrets. A failed row there is not a failed publish unless it comes from `internal-preview-release.yml`. Only that workflow runs `uv publish`.
+
+## Stable releases
+
+1. Change `pyproject.toml` from `X.Y.Z.dev0` to `X.Y.Z`, and merge the PR.
+2. Check that the `fresh-resolve` workflow is green on that commit ([below](#the-constraints-file)).
+3. Freeze the source commit, build both distributions with the pinned bfx binaries, and complete the release gate and installed-artifact checks. Retain the exact wheel and source archive, their SHA-256 hashes, and an acceptance receipt that identifies the tested source, tools, checks and reviews.
+4. Commit a reviewed `.github/release-acceptance/X.Y.Z.json` record using the format below. Between its `source_commit` and the release tag, only this acceptance record may change. A product, test, dependency or documentation change requires a new frozen source and applicable acceptance checks. The record is outside both distribution file allowlists, so adding it does not change their contents.
+5. Push the tag `vX.Y.Z` on the reviewed acceptance-record commit. `public-release.yml` checks that the tag matches the version and is on `main`, builds both distributions, and requires their exact hashes to match the record before publishing. A missing, pending or stale record stops publication. If the build is not reproducible, retain the failure and resolve it; do not replace accepted hashes with untested ones.
+6. Bump `main` to the next `.dev0`.
+
+The acceptance record has this shape; placeholders are deliberately invalid and must be replaced with actual accepted evidence:
+
+```json
+{
+  "schema_version": 1,
+  "version": "X.Y.Z",
+  "status": "accepted",
+  "source_commit": "<full tested source commit>",
+  "acceptance_receipt_sha256": "<SHA-256 of the reviewed acceptance receipt>",
+  "artifacts": {
+    "benchflow-X.Y.Z-py3-none-any.whl": "<accepted wheel SHA-256>",
+    "benchflow-X.Y.Z.tar.gz": "<accepted source archive SHA-256>"
+  }
+}
+```
+
+Keep the receipt and artifact location in the release review. `tools/check_release_acceptance.py` verifies the committed source/artifact binding; it does not execute the gate, validate the receipt's conclusions or grant approval. Run it against the final build before tagging. Both `dist` and the record must contain exactly one wheel and one source archive for this version. The checker also permits the exact regular `.gitignore` marker generated by pinned uv in `dist`; other extra files remain refused. The existing helper-content and distribution checks remain required.
+
+## The constraints file
+
+`constraints.txt` at the repository root pins the lock's closure as `name==version` (every extra but `dev`). Users install from it to get exactly what CI tested; each release tag carries it, so no release asset is needed.
+
+After any change to `uv.lock`, regenerate it. `tests/test_constraints_file.py` fails until you do.
+
+```bash
+uv run python tools/export_constraints.py
+```
+
+The `fresh-resolve` workflow checks the opposite case. It builds the wheel, installs it in a fresh environment with no lock and no constraints, and runs the unit suite against it on Python 3.12 and 3.13.
+
+It runs daily, on every push to `main`, and on pull requests that touch `pyproject.toml`, `uv.lock`, `constraints.txt` or `tools/ci/`. A new upstream release can turn it red with no change here. To run the same check by hand, use `tools/ci/fresh_resolve.sh`.
+
+## One-time PyPI setup
+
+Configure PyPI Trusted Publishing for the `benchflow` project. No PyPI token is stored in GitHub.
+
+Create these PyPI trusted publishers:
+
+| Channel | Repository | Workflow filename | Environment |
+| --- | --- | --- | --- |
+| Preview | `benchflow-ai/benchflow` | `internal-preview-release.yml` | `pypi-internal-preview` |
+| Stable | `benchflow-ai/benchflow` | `public-release.yml` | `pypi-public` |
+
+Create matching GitHub environments:
+
+- `pypi-internal-preview`: automatic preview publishing from `main`.
+- `pypi-public`: tag-driven stable releases.
+
+The workflows build with `uv build --no-sources`, check distributions with `twine check`, and publish with `uv publish`.
+
+## Next steps
+
+- [Install](../start/install.md): the stable and preview install commands.
+- [What's new in 0.9](../versions/upgrade-from-0.7.md): the changes in this release line.

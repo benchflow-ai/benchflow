@@ -1,0 +1,28 @@
+# Mutant (c): the .strip() on instruction.md is removed
+# (src/benchflow/rollout/_setup.py:86). The recorded prompt (prompts.json is
+# the rollout's _resolved_prompts, rollout/__init__.py:1185-1186, :3571;
+# _setup.py:300-308) keeps instruction.md's trailing newline: the raw hash
+# changes, the stripped hash does not.
+#
+# GOALS names the hello-split oracle cell. Line 86 is read by every split
+# layout with no task.md, and every one of them in the corpus ends its
+# instruction.md with "\n"; prompts.json is written for the nop too, and for
+# snapshot-hook before its refusal. Task.md packages (draft 2 is
+# materialized to a native task.md, src/benchflow/taskmd/materialize.py:
+# 510-542) and folders with both files read line 82 and do not change.
+
+[[change]]
+id = "c-raw-prompt"
+target = "DT1"
+item = "mutant:c"
+cells = [
+    "hello-split/oracle", "hello-split/nop",
+    "hello-split-run/oracle", "hello-split-run/nop",
+    "sidecar-run/oracle", "sidecar-run/nop",
+    "snapshot-hook/oracle", "snapshot-hook/nop",
+    "nanofirm-task/oracle", "nanofirm-task/nop",
+    "lake-warming-attribution/oracle", "lake-warming-attribution/nop",
+    "r2r-mpc-control/oracle", "r2r-mpc-control/nop",
+]
+class = "field_change"
+fields = ["prompt.raw_sha256"]

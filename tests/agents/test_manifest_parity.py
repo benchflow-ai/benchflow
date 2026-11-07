@@ -9,14 +9,9 @@ silently change behaviour. This test is that gate.
 
 Why a child interpreter for "pure core"
 ---------------------------------------
-``registry.py`` calls ``register_env_manifest_agents()`` at import time, so when
-``$BENCHFLOW_AGENTS_DIR`` is set (as the dedicated CI job sets it) the in-process
-``AGENTS`` is *already* merged with those manifests. Comparing a manifest against
-that merged ``AGENTS`` would compare it against *itself* — a silent false pass
-that no drift could ever fail. So we recover the un-merged, hand-authored core
-configs by re-importing ``registry`` in a child interpreter with
-``$BENCHFLOW_AGENTS_DIR`` *unset* (the proven parity recipe), and compare the
-live manifests against that.
+The parity gate isolates core configs from process-local plugin and catalog
+state. It re-imports ``registry`` with ``$BENCHFLOW_AGENTS_DIR`` unset, then
+compares live manifests against that clean snapshot.
 
 What "byte-identical" means here
 --------------------------------
@@ -25,7 +20,7 @@ A data-only manifest cannot carry the ``_SHIM_ONLY`` AgentConfig fields
 ``disallow_web_tools_*``, ...); ``_merge_core_shim_only`` takes exactly those
 from the core entry and everything else from the manifest. The merged result
 must then equal the core entry on *every* dataclass field — i.e. the manifest's
-14 data fields reproduce core exactly.
+15 data fields (contract 1.1) reproduce core exactly.
 
 Lanes
 -----
@@ -55,23 +50,40 @@ import pytest
 
 import benchflow
 from benchflow.agents.manifest import (
-    MANIFEST_DIR_ENV,
     LoadedManifest,
     _merge_core_shim_only,
     load_agents_from_dir,
 )
 from benchflow.agents.registry import AgentConfig
 
-# The documented exception: the only core agent that ships without a manifest.
-# It is a session-factory agent wired through the #825 omnigent seam (a
-# "module:callable" entrypoint), not data expressible as an acp-only manifest.
-_CORE_ONLY_EXCEPTION = "omnigent-pi"
+# The documented exceptions: core agents that ship without a manifest.
+# * omnigent-pi is a session-factory agent wired through the #825 omnigent seam
+#   (a "module:callable" entrypoint), not data expressible as an acp-only manifest.
+# * antigravity depends on _SHIM_ONLY fields (the web-tool and hosted-search
+#   policy, the MCP config path, the ACP effort option) that a data-only manifest
+#   cannot carry. Released 0.7.x versions have no core entry for it and would
+#   auto-load a manifest from benchflow-ai/agents@main without that policy, so a
+#   "no web" run would keep agy's server-side web search.
+# * muse-code depends on _SHIM_ONLY fields (the web-tool and hosted-search launch
+#   flags, the ACP effort option) for the same reason; no released version has a
+#   core entry for it either.
+_CORE_ONLY_EXCEPTIONS = frozenset({"omnigent-pi", "antigravity", "muse-code"})
+
+# Core agents that must NOT get a manifest in benchflow-ai/agents, by name or by
+# alias. A manifest mirroring core would pass the parity checks above, but
+# released 0.7.x versions would auto-load it from agents@main without core's
+# _SHIM_ONLY web-tool and MCP policy (see antigravity above). Lift an entry only
+# once that policy can travel with the manifest.
+_MANIFEST_FORBIDDEN = frozenset({"antigravity", "muse-code"})
+_MANIFEST_FORBIDDEN_ALIASES = frozenset({"antigravity", "agy", "muse-code", "muse"})
 
 # Import roots so the child interpreter finds benchflow whether it is installed
 # (CI) or only on PYTHONPATH from a worktree (dev VM) — mirrors the approach in
 # test_manifest_wiring.py.
 _SRC = Path(benchflow.__file__).resolve().parents[1]
 _ROOT = _SRC.parent
+MANIFEST_DIR_ENV = "BENCHFLOW_AGENTS_DIR"
+MANIFEST_SOURCE_ENV = "BENCHFLOW_AGENTS_SOURCE"
 
 _DUMP_PURE_CORE = (
     "import json, dataclasses;"
@@ -90,8 +102,8 @@ def _pure_core_agents() -> dict[str, AgentConfig]:
     """``registry.AGENTS`` as authored in core, with the manifest plane gated off.
 
     Re-imports ``registry`` in a child interpreter with ``$BENCHFLOW_AGENTS_DIR``
-    unset so the import-time manifest merge is a no-op, then ships the configs
-    back as JSON (``dataclasses.asdict``) and rebuilds them. The ``_SHIM_ONLY``
+    unset, then ships configs back as JSON (``dataclasses.asdict``) and rebuilds
+    them. The ``_SHIM_ONLY``
     fields (credential_files / subscription_auth) round-trip as plain dicts, but
     they are taken from this same core entry during the merge, so they compare
     equal by construction — only the data fields are meaningfully compared.
@@ -119,12 +131,41 @@ def _live_manifests() -> dict[str, LoadedManifest]:
     return load_agents_from_dir(root)
 
 
+def _paired_catalog_root() -> str:
+    """Return configured local catalog, preferring the directory override."""
+    raw_dir = os.environ.get(MANIFEST_DIR_ENV, "")
+    raw_source = os.environ.get(MANIFEST_SOURCE_ENV, "")
+    source = raw_dir.strip() or raw_source.strip()
+    if not source:
+        pytest.skip("paired agents catalog is not configured")
+    expanded = os.path.expanduser(source)
+    if not os.path.isdir(expanded):
+        pytest.skip("paired agents catalog source is not a local directory")
+    return expanded
+
+
+def test_paired_catalog_has_generic_manifest_shape() -> None:
+    """Guards PR #1090's local paired-catalog ingestion contract."""
+    loaded = load_agents_from_dir(_paired_catalog_root())
+    assert loaded
+
+    for name, manifest in loaded.items():
+        assert name == manifest.config.name
+        assert name.strip()
+        assert manifest.config.install_cmd.strip()
+        assert manifest.config.launch_cmd.strip()
+        assert isinstance(manifest.aliases, tuple)
+        assert len(manifest.aliases) == len(set(manifest.aliases))
+        for alias in manifest.aliases:
+            assert alias.strip()
+
+
 def _parity_param_names() -> list[str]:
     """Core agents that also have a manifest — the set to check for parity.
 
     Evaluated at collection time. Empty when ``$BENCHFLOW_AGENTS_DIR`` is unset
     (no child interpreter is spawned in that case)."""
-    if not os.environ.get(MANIFEST_DIR_ENV):
+    if not os.environ.get(MANIFEST_DIR_ENV, "").strip():
         return []
     core = _pure_core_agents()
     loaded = _live_manifests()
@@ -143,7 +184,7 @@ def _parametrization() -> list:
 def test_manifest_byte_identical_to_core(agent_name: str | None) -> None:
     """Every core agent's manifest merges back to a byte-identical AgentConfig.
 
-    The manifest owns the 14 data fields; ``_merge_core_shim_only`` restores the
+    The manifest owns the 15 data fields; ``_merge_core_shim_only`` restores the
     host-side ``_SHIM_ONLY`` bits from core; the merged result must equal core on
     every dataclass field. Any drift fails loudly with a per-field diff so the
     flip is never made on a manifest that changed behaviour.
@@ -167,9 +208,11 @@ def test_manifest_byte_identical_to_core(agent_name: str | None) -> None:
     )
 
 
-@pytest.mark.skipif(not os.environ.get(MANIFEST_DIR_ENV), reason=_SKIP_REASON)
-def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
-    """omnigent-pi is the ONLY core agent without a manifest.
+@pytest.mark.skipif(
+    not os.environ.get(MANIFEST_DIR_ENV, "").strip(), reason=_SKIP_REASON
+)
+def test_only_documented_core_agents_lack_a_manifest() -> None:
+    """omnigent-pi and antigravity are the ONLY core agents without a manifest.
 
     Computed dynamically (core names minus manifest names) rather than hardcoded,
     so adding a new core agent without shipping its manifest fails this gate
@@ -178,17 +221,43 @@ def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
     core = _pure_core_agents()
     loaded = _live_manifests()
     unmanifested = set(core) - set(loaded)
-    # SUBSET, not equality: omnigent-pi is the only *tolerated* unmanifested core
-    # agent, but its presence in AGENTS is import-side-effect dependent (the omnigent
-    # session-factory package may be unregistered in a lean env such as CI), so its
-    # absence is fine; a *new* unmanifested core agent still fails this gate.
-    assert unmanifested <= {_CORE_ONLY_EXCEPTION}, (
+    # SUBSET, not equality: the exceptions are the only *tolerated* unmanifested
+    # core agents, but omnigent-pi's presence in AGENTS is import-side-effect
+    # dependent (the omnigent session-factory package may be unregistered in a lean
+    # env such as CI), so its absence is fine; a *new* unmanifested core agent
+    # still fails this gate.
+    assert unmanifested <= _CORE_ONLY_EXCEPTIONS, (
         "unmanifested core agents mismatch: tolerated only "
-        f"{{{_CORE_ONLY_EXCEPTION!r}}}, got {sorted(unmanifested)}. "
-        f"{_CORE_ONLY_EXCEPTION!r} is the documented exception — a session-factory "
-        "agent registered via the #825 omnigent seam, not a manifest.toml. Every "
+        f"{sorted(_CORE_ONLY_EXCEPTIONS)}, got {sorted(unmanifested)}. "
+        "These are the documented exceptions (see _CORE_ONLY_EXCEPTIONS). Every "
         "other core agent must ship a manifest in benchflow-ai/agents; a new "
-        "unmanifested core agent must add one (or extend this exception on purpose)."
+        "unmanifested core agent must add one (or extend the exceptions on purpose)."
+    )
+
+
+@pytest.mark.skipif(
+    not os.environ.get(MANIFEST_DIR_ENV, "").strip(), reason=_SKIP_REASON
+)
+def test_core_only_agents_have_no_manifest() -> None:
+    """No manifest may claim a forbidden core-only agent's name or alias.
+
+    The subset check above can only shrink when a manifest is added, so it would
+    stay green if someone mirrored antigravity into benchflow-ai/agents. This
+    check fails instead (see _MANIFEST_FORBIDDEN for why).
+    """
+    loaded = _live_manifests()
+    by_name = sorted(set(loaded) & _MANIFEST_FORBIDDEN)
+    by_alias = sorted(
+        (name, alias)
+        for name, m in loaded.items()
+        for alias in m.aliases
+        if alias in _MANIFEST_FORBIDDEN_ALIASES
+    )
+    assert not by_name and not by_alias, (
+        f"forbidden manifests in benchflow-ai/agents: names {by_name}, "
+        f"aliases {by_alias}. These agents stay core-only until their _SHIM_ONLY "
+        "web-tool and MCP policy can travel with a manifest; released 0.7.x would "
+        "auto-load the manifest without it (see _MANIFEST_FORBIDDEN)."
     )
 
 

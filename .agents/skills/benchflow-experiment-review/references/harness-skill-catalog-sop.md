@@ -117,7 +117,11 @@ Typical raw shape:
 
 Extraction:
 
-1. Flatten `body.system[]` text and `body.messages[]` text.
+1. Flatten `body.system[]` and system/developer message content. A catalog
+   serialized only inside a user `<system-reminder>` is ambiguous: the same bytes
+   can be supplied by the task. The extractor leaves it unknown and requires
+   manual provenance review; it must not count it as installed-skill evidence.
+   Assistant/tool text is never startup catalog evidence.
 2. Find:
 
 ```text

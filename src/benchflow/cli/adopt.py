@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.markup import escape
 
 from benchflow.agent_router import (
     ADOPT_VERBS,
@@ -38,7 +37,7 @@ from benchflow.agent_router import (
     run_scaffold_action,
     run_verify_action,
 )
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, print_error
 
 
 def register_eval_adopt(eval_app: typer.Typer) -> None:
@@ -130,14 +129,16 @@ def register_eval_adopt(eval_app: typer.Typer) -> None:
         the package; `--verify` runs the parity gate for the named benchmark.
         """
         if verify and scaffold_only:
-            console.print(
-                "[red]--verify and --scaffold-only are mutually exclusive[/red]"
+            print_error(
+                "--verify and --scaffold-only are mutually exclusive",
+                next_step="pass one of them",
             )
             raise typer.Exit(2)
         if target is None:
-            console.print(
-                "[red]missing target: pass a SOURCE (convert) or a benchmark "
-                "SLUG (--verify / --scaffold-only)[/red]"
+            print_error(
+                "missing target",
+                next_step="pass a SOURCE (convert) or a benchmark SLUG "
+                "(--verify / --scaffold-only)",
             )
             raise typer.Exit(2)
 
@@ -166,7 +167,7 @@ def register_eval_adopt(eval_app: typer.Typer) -> None:
         try:
             slug = name or derive_name_from_source(target)
         except InvalidBenchmarkName as exc:
-            console.print(f"[red]{escape(str(exc))}[/red]")
+            print_error(str(exc), next_step="name the benchmark with --name <slug>")
             raise typer.Exit(1) from exc
         root = benchmarks_dir or default_benchmarks_dir()
         if not dry_run and not (root / slug).exists():

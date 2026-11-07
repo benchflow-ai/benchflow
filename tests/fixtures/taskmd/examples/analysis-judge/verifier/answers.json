@@ -1,0 +1,17 @@
+{
+  "alpha": 2.5,
+  "xmin": 10.0,
+  "n_tail_at_xmin": 1500,
+  "alpha_tolerance": 0.15,
+  "max_alpha_err": 0.2,
+  "sample": {
+    "mle_alpha_at_xmin_10": 2.4808,
+    "mle_alpha_err_at_xmin_10": 0.0382,
+    "ks_xmin": 15.1332,
+    "ks_alpha": 2.5957,
+    "ks_n_tail": 860,
+    "least_squares_log_histogram_all_data": -1.61,
+    "least_squares_log_histogram_above_10": -2.27
+  },
+  "note": "Generating values from verifier/make_data.py. A sound maximum-likelihood fit lands between about 2.45 and 2.65 depending on x_min; least squares on a log-log histogram does not."
+}

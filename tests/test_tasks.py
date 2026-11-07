@@ -64,7 +64,10 @@ class TestCheckTask:
         task = self._make_valid_task(tmp_path)
         (task / "environment" / "Dockerfile").unlink()
         issues = check_task(task)
-        assert "Missing environment/Dockerfile" in issues
+        assert (
+            "Missing environment/Dockerfile (or name a prebuilt image in "
+            "sandbox.docker_image)"
+        ) in issues
 
     def test_missing_tests_dir(self, tmp_path):
         """A missing legacy tests/ verifier dir is still reported.
@@ -145,6 +148,19 @@ class TestInitTask:
         (tmp_path / "dupe").mkdir()
         with pytest.raises(FileExistsError):
             init_task("dupe", parent_dir=tmp_path)
+
+    def test_oracle_comment_gives_the_documented_run_command(
+        self, tmp_path, monkeypatch
+    ):
+        """The scaffolded solve.sh told authors to run
+        `bench eval run --agent oracle --tasks-dir tasks/<name>`, while the
+        docs use `bench run <task> -a oracle`; a first-run reader noted the
+        mismatch. The comment names the folder the task was written to."""
+        monkeypatch.chdir(tmp_path)
+        task = init_task("my-task")
+        solve = (task / "oracle" / "solve.sh").read_text()
+        assert "# Check it: bench run tasks/my-task -a oracle" in solve
+        assert "eval run" not in solve and "--tasks-dir" not in solve
 
     @pytest.mark.parametrize(
         "bad",
@@ -352,7 +368,7 @@ class TestLegacyScaffoldCompatibility:
 
 
 class TestCtrfPathLint:
-    """_check_ctrf_path detects non-standard CTRF output paths (ENG-153).
+    """_check_ctrf_path detects non-standard CTRF output paths.
 
     Guards PR #356 — ensures `bench tasks check` catches inconsistent
     CTRF paths before they reach production evals.

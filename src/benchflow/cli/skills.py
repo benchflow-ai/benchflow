@@ -20,7 +20,7 @@ from benchflow.cli._options import (
     JobsDirOption,
     SandboxOption,
 )
-from benchflow.cli._shared import console, print_error
+from benchflow.cli._shared import command_arg, console, exit_if_missing, print_error
 from benchflow.sandbox.providers import is_known_provider, providers_phrase
 
 
@@ -39,6 +39,12 @@ def register_skills(app: typer.Typer) -> None:
         """List discovered skills."""
         from benchflow.skills import DEFAULT_SKILLS_DIR, discover_skills
 
+        if directory is not None and not directory.is_dir():
+            print_error(
+                f"Not a directory: {directory}",
+                next_step="pass an existing skills directory to --dir",
+            )
+            raise typer.Exit(2)
         search_dirs = (
             [directory]
             if directory
@@ -102,31 +108,35 @@ def register_skills(app: typer.Typer) -> None:
         with and without the skill installed, and reports the lift.
 
         Examples:
-            benchflow skills eval ./my-skill/ --agent claude-agent-acp
-            benchflow skills eval ./my-skill/ --agent claude-agent-acp --agent codex-acp --sandbox daytona --concurrency 4
-            benchflow skills eval ./my-skill/ --agent claude-agent-acp --no-baseline --export-gepa
+            bench skills eval ./my-skill/ --agent claude-agent-acp
+            bench skills eval ./my-skill/ --agent claude-agent-acp --agent codex-acp --sandbox daytona --concurrency 4
+            bench skills eval ./my-skill/ --agent claude-agent-acp --no-baseline --export-gepa
         """
         from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
+        exit_if_missing(skill_dir, next_step="pass a skill folder (it holds SKILL.md)")
         if not is_known_provider(environment):
             print_error(
-                f"Invalid --sandbox {environment!r}: choose {providers_phrase()}"
+                f"Invalid --sandbox {environment!r}",
+                next_step=f"pass --sandbox {providers_phrase()}",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         if agent is None:
             agent = ["claude-agent-acp"]
         if model is not None and len(model) not in {1, len(agent)}:
             print_error(
-                "--model may be provided once for all agents or once per --agent; "
-                f"got {len(model)} models for {len(agent)} agents"
+                f"got {len(model)} models for {len(agent)} agents",
+                next_step="--model may be provided once for all agents or once per "
+                "--agent",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         if not (skill_dir / "evals" / "evals.json").is_file():
             # is_file (not exists): a directory named evals.json otherwise passes
             # this guard, then read_text() raises a raw IsADirectoryError.
             print_error(
-                f"No evals/evals.json found in {skill_dir}\n"
-                "Create one with test cases. See: benchflow skills eval --help"
+                f"No evals/evals.json found in {skill_dir}",
+                next_step="create one with test cases; `bench skills eval --help` "
+                "shows its form",
             )
             raise typer.Exit(1)
 
@@ -138,7 +148,11 @@ def register_skills(app: typer.Typer) -> None:
             FileNotFoundError,
             NotADirectoryError,
         ) as e:
-            print_error(f"{e}")
+            print_error(
+                f"{e}",
+                next_step=f"fix {command_arg(skill_dir / 'evals' / 'evals.json', '<evals file>')}; "
+                "`bench skills eval --help` shows its form",
+            )
             raise typer.Exit(1) from None
         console.print(
             f"[bold]Skill eval:[/bold] {escape(str(evaluator.dataset.skill_name))} "
@@ -166,7 +180,9 @@ def register_skills(app: typer.Typer) -> None:
             FileNotFoundError,
             NotADirectoryError,
         ) as e:
-            print_error(f"{e}")
+            print_error(
+                f"{e}", next_step="`bench doctor` checks this machine and its logins"
+            )
             raise typer.Exit(1) from None
 
         # Display results
@@ -201,6 +217,291 @@ def register_skills(app: typer.Typer) -> None:
         if errored:
             print_error(
                 f"{errored}/{len(result.case_results)} eval case(s) errored — "
-                "the eval did not complete cleanly."
+                "the eval did not complete cleanly.",
+                next_step=f"the cases' trials are under "
+                f"{command_arg(Path(jobs_dir) / 'skill-eval' / result.skill_name, '<job dir>')}; "
+                "`bench doctor` checks the logins they need",
             )
+            raise typer.Exit(1)
+
+    @skills_app.command("validate")
+    def skills_validate(
+        paths: Annotated[
+            list[Path],
+            typer.Argument(
+                help=(
+                    "Skill directories, or directories searched recursively for "
+                    "SKILL.md (e.g. a SkillsBench tasks/ folder)"
+                ),
+            ),
+        ],
+        no_security: Annotated[
+            bool,
+            typer.Option(
+                "--no-security", help="Skip the NVIDIA SkillSpector security scan"
+            ),
+        ] = False,
+        fail_on: Annotated[
+            str,
+            typer.Option(
+                "--fail-on",
+                help=(
+                    "Exit 1 when a schema, security or dependency finding is at or "
+                    "above this severity: critical, high, medium, low, or never"
+                ),
+            ),
+        ] = "high",
+        checks: Annotated[
+            str | None,
+            typer.Option(
+                "--checks",
+                help=(
+                    "Comma-separated SkillEvaluator Tier 1 checks (default: "
+                    "schema,version,pii,license,code-integrity,dependency,unicode,"
+                    "quality,lint)"
+                ),
+            ),
+        ] = None,
+        min_score: Annotated[
+            int | None,
+            typer.Option(
+                "--min-score",
+                min=0,
+                max=100,
+                help=(
+                    "Quality score SkillEvaluator's quality check needs (default "
+                    "70); advisory: changes SkillEvaluator's Tier 1 status, not "
+                    "the exit code"
+                ),
+            ),
+        ] = None,
+        output_dir: Annotated[
+            Path | None,
+            typer.Option(
+                "--output-dir",
+                "-o",
+                help="Keep each skill's raw JSON reports under DIR/<skill>/",
+            ),
+        ] = None,
+        workers: Annotated[
+            int,
+            typer.Option("--workers", "-j", min=1, help="Skills checked in parallel"),
+        ] = 4,
+        max_findings: Annotated[
+            int,
+            typer.Option(
+                "--max-findings",
+                min=0,
+                help="Blocking findings listed per skill (all are in --json)",
+            ),
+        ] = 5,
+        json_out: Annotated[
+            bool,
+            typer.Option("--json", help="Print machine-readable JSON"),
+        ] = False,
+    ) -> None:
+        """Run static checks on skills: NVIDIA SkillEvaluator Tier 1 and SkillSpector.
+
+        SkillEvaluator Tier 1 checks schema, version, PII, license, code
+        integrity, dependencies, Unicode smuggling, quality score and script
+        lint. SkillSpector scans for security issues. Both run without LLM
+        calls; install them separately (see docs/judging/skill-evals.md). Exit 1 when a
+        schema, security or dependency finding reaches --fail-on, or a checker
+        fails to run.
+
+        Examples:
+            bench skills validate ./my-skill
+            bench skills validate tasks/ --json > skill-checks.json
+            bench skills validate tasks/citation-check --fail-on critical -o reports
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from benchflow.cli._shared import err_console
+        from benchflow.integrations.skillevaluator import (
+            DEFAULT_TIER1_CHECKS,
+            FAIL_ON_CHOICES,
+            SKILLEVALUATOR,
+            SKILLSPECTOR,
+            check_skill,
+            install_hint,
+            install_step,
+            iter_skill_dirs,
+            locate_tool,
+        )
+
+        fail_on = fail_on.lower()
+        if fail_on not in FAIL_ON_CHOICES:
+            print_error(
+                f"Invalid --fail-on {fail_on!r}",
+                next_step=f"pass --fail-on {' or '.join(FAIL_ON_CHOICES)}",
+            )
+            raise typer.Exit(2)
+        # Every path must hold a skill: a typo in a CI list must not pass
+        # because another path matched.
+        bad_paths = [
+            f"{p} does not exist" if not p.exists() else f"No SKILL.md found under {p}"
+            for p in paths
+            if not p.exists() or next(iter_skill_dirs([p]), None) is None
+        ]
+        if bad_paths:
+            for message in bad_paths:
+                print_error(
+                    message,
+                    next_step="pass a skill folder (it holds SKILL.md) or a folder "
+                    "of skills",
+                )
+            raise typer.Exit(1)
+        skill_dirs = list(iter_skill_dirs(paths))
+
+        evaluator = locate_tool(SKILLEVALUATOR)
+        spector = None if no_security else locate_tool(SKILLSPECTOR)
+        if evaluator is None and spector is None:
+            print_error(
+                f"{SKILLEVALUATOR} is not installed",
+                next_step=install_step(SKILLEVALUATOR),
+            )
+            if not no_security:
+                print_error(
+                    f"{SKILLSPECTOR} is not installed",
+                    next_step=install_step(SKILLSPECTOR),
+                )
+            raise typer.Exit(1)
+        if evaluator is None:
+            err_console.print(
+                f"[yellow]{escape(install_hint(SKILLEVALUATOR))} "
+                "Schema and quality checks skipped.[/yellow]"
+            )
+        if spector is None and not no_security:
+            err_console.print(
+                f"[yellow]{escape(install_hint(SKILLSPECTOR))} "
+                "Security scan skipped.[/yellow]"
+            )
+        for tool in (evaluator, spector):
+            warning = tool.warning() if tool else None
+            if warning:
+                err_console.print(f"[yellow]warning: {escape(warning)}[/yellow]")
+
+        check_list = (
+            tuple(c.strip() for c in checks.split(",") if c.strip())
+            if checks
+            else DEFAULT_TIER1_CHECKS
+        )
+        labels = [d.resolve().name for d in skill_dirs]
+        if len(set(labels)) < len(labels):
+            labels = [str(d) for d in skill_dirs]
+
+        def _check(index: int):
+            return check_skill(
+                skill_dirs[index],
+                skillevaluator=evaluator,
+                skillspector=spector,
+                checks=check_list,
+                min_score=min_score,
+                output_dir=(
+                    output_dir / labels[index].replace("/", "__")
+                    if output_dir
+                    else None
+                ),
+            )
+
+        with (
+            err_console.status(f"Checking {len(skill_dirs)} skill(s)..."),
+            ThreadPoolExecutor(max_workers=min(workers, len(skill_dirs))) as pool,
+        ):
+            results = list(pool.map(_check, range(len(skill_dirs))))
+
+        blocked = [r for r in results if r.is_blocking(fail_on)]
+        if json_out:
+            tools = {
+                t.name: {"path": t.path, "version": t.version}
+                for t in (evaluator, spector)
+                if t is not None
+            }
+            typer.echo(
+                json.dumps(
+                    {
+                        "tools": tools,
+                        "fail_on": fail_on,
+                        "skills": [r.to_dict(fail_on) for r in results],
+                        "blocking": len(blocked),
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            title = " + ".join(
+                f"{'SkillEvaluator' if t.name == SKILLEVALUATOR else 'SkillSpector'} "
+                f"{t.version or '?'}"
+                for t in (evaluator, spector)
+                if t is not None
+            )
+            table = Table(title=f"Skill checks ({title})")
+            table.add_column("Skill", style="cyan")
+            if evaluator:
+                table.add_column("Tier 1")
+                table.add_column("Quality")
+            if spector:
+                table.add_column("Security")
+            table.add_column("Blocking", justify="right")
+            for label, r in zip(labels, results, strict=True):
+                row = [escape(label)]
+                if evaluator:
+                    t1 = r.tier1
+                    row.append(t1.status if t1 else "[red]error[/red]")
+                    row.append(
+                        f"{t1.quality_grade or '?'} {t1.quality_score:g}"
+                        if t1 and t1.quality_score is not None
+                        else "-"
+                    )
+                if spector:
+                    sec = r.security
+                    if sec is None:
+                        row.append("[red]error[/red]")
+                    else:
+                        score = "?" if sec.risk_score is None else sec.risk_score
+                        cell = f"{sec.risk_severity or '?'} {score} {sec.recommendation or ''}"
+                        if sec.analysis_status not in (None, "complete"):
+                            cell += f" ({sec.analysis_status})"
+                        row.append(escape(cell.strip()))
+                n_blocking = len(r.blocking_findings(fail_on))
+                if r.errors:
+                    row.append("[red]error[/red]")
+                elif n_blocking:
+                    row.append(f"[red]{n_blocking}[/red]")
+                else:
+                    row.append("[green]0[/green]")
+                table.add_row(*row)
+            console.print(table)
+
+            for label, r in zip(labels, results, strict=True):
+                shown = r.blocking_findings(fail_on)[:max_findings]
+                if not (r.errors or shown):
+                    continue
+                console.print(f"[bold]{escape(label)}[/bold]")
+                for err in r.errors:
+                    console.print(f"  [red]error[/red] {escape(err)}")
+                for f in shown:
+                    where = f" ({f.location})" if f.location else ""
+                    console.print(
+                        f"  [red]{f.severity.upper():8}[/red] {f.source} "
+                        f"{escape(f.category)} {escape(f.check)}: "
+                        f"{escape(f.message[:160])}{escape(where)}"
+                    )
+                hidden = len(r.blocking_findings(fail_on)) - len(shown)
+                if hidden > 0:
+                    console.print(f"  [dim]... {hidden} more; see --json[/dim]")
+            incomplete = sorted(
+                {s for r in results if r.tier1 for s in r.tier1.incomplete_scans}
+            )
+            if incomplete:
+                console.print(
+                    "[dim]Incomplete SkillEvaluator scans (scanner missing or "
+                    f"partial): {escape(', '.join(incomplete))}[/dim]"
+                )
+            console.print(
+                f"{len(results)} skill(s) checked, {len(blocked)} blocking "
+                f"(--fail-on {fail_on})"
+            )
+
+        if blocked:
             raise typer.Exit(1)

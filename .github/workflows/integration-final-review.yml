@@ -1,4 +1,4 @@
-# integration-final-review — L3: the manual, golden-truth FINAL review.
+# integration-final-review — L3: the manual FINAL review.
 #
 # SECURITY MODEL (read before editing):
 #   * TRUSTED-MAIN INFRA: the planner (integration_matrix.py), the grader
@@ -12,8 +12,7 @@
 #     resolve step additionally refuses any non-internal head repo, and only
 #     write-access users can apply labels. The jobs run under the existing
 #     'pypi-internal-preview' environment (provider + DAYTONA secrets). No separate
-#     protected env — the L3 golden truth is the HuggingFace leaderboard `main`
-#     runs (deepseek-v4-flash baseline) vs the PR and the latest benchflow main.
+#     protected env: L3 compares the PR's own Docker and Daytona runs.
 #   * FAIL-CLOSED CODEX: at L3 codex_review.py is REQUIRED. A missing codex
 #     binary / codex auth (the repo OPENAI_API_KEY), or unparseable codex output, yields
 #     'not mergeable (codex unavailable)' and a red check. The published
@@ -151,8 +150,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Plan final-review scope (trusted)
@@ -276,6 +279,8 @@ jobs:
       GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
       CELL_JSON: ${{ toJson(matrix.cell) }}
+      AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+      AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -295,8 +300,12 @@ jobs:
         run: python .github/scripts/select_integration_provider.py
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python
@@ -378,18 +387,27 @@ jobs:
               echo "::notice::skill catalog extraction flagged $traj (quarantine downstream)"
           done < <(find "jobs/integration-final/$CID" -path '*/trajectory/llm_trajectory.jsonl' -print0)
 
+      - name: Archive cell jobs
+        if: always()
+        # The trusted base may predate this helper; never use PR-head infra.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin 1a32bcbee558377912ae01c6d15767ef88d981f5
+          git show 1a32bcbee558377912ae01c6d15767ef88d981f5:.github/scripts/job_artifacts.py > "$RUNNER_TEMP/job_artifacts.py"
+          python -I "$RUNNER_TEMP/job_artifacts.py" pack jobs/integration-final "$RUNNER_TEMP/job-archives/jobs-${{ strategy.job-index }}.tar.gz"
+
       - name: Upload cell jobs
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
         with:
           name: integration-final-${{ strategy.job-index }}
-          path: jobs/integration-final
+          path: ${{ runner.temp }}/job-archives/jobs-${{ strategy.job-index }}.tar.gz
           if-no-files-found: ignore
           retention-days: 30
 
   # ----------------------------------------------------------------------------
   # review-pack — TRUSTED grader + REQUIRED codex. always() so it grades whatever
-  # ran. Builds the deterministic review pack (pinned baseline; rerun-base only
+  # ran. Builds the deterministic review pack (within-PR comparison; rerun-base only
   # for scope=expanded), then runs codex_review.py as the REQUIRED fail-closed
   # gate. Sets the 'integration-final-review' check-run conclusion =
   # worst(deterministic, codex) and upserts the sticky verdict comment.
@@ -432,14 +450,26 @@ jobs:
         with:
           pattern: integration-final-*
           merge-multiple: true
-          path: jobs/integration-final
+          path: job-archives
+
+      - name: Restore regular job files
+        # Restore uses the same pinned release as every packing job.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin 1a32bcbee558377912ae01c6d15767ef88d981f5
+          git show 1a32bcbee558377912ae01c6d15767ef88d981f5:.github/scripts/job_artifacts.py > "$RUNNER_TEMP/job_artifacts.py"
+          python -I "$RUNNER_TEMP/job_artifacts.py" unpack job-archives jobs/integration-final
 
       - name: Select judge provider
         run: python .github/scripts/select_integration_provider.py
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python
@@ -448,41 +478,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra judge --locked
 
-      - name: Fetch leaderboard golden-truth baseline
-        # Pinned-baseline reward-band parity (Q2b). Downloads the matching-config
-        # SkillsBench leaderboard submissions (native BenchFlow result.json) from
-        # the HF dataset + revision recorded in scope_defaults.yml -> baseline.
-        # The band model covers every integration task; cheap deepseek runs band-
-        # compare advisory-only. Best-effort: a fetch miss leaves band parity NA
-        # rather than failing the gate (the deterministic floor + codex still run).
-        id: baseline
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          vals=$(uv run python -c "import yaml;d=yaml.safe_load(open('.github/integration/scope_defaults.yml'))['baseline'];print(d['hf_repo'],d['hf_revision'],d['submission_root'],d['config_no_skill'],d['band_model'])")
-          read -r HF_REPO HF_REV SUB_ROOT CONFIG BAND_MODEL <<< "$vals"
-          DIR="$SUB_ROOT/${CONFIG}__${BAND_MODEL}"
-          uvx --from huggingface_hub hf download "$HF_REPO" --repo-type dataset \
-            --revision "$HF_REV" --include "$DIR/**/result.json" \
-            --local-dir baseline-root
-          echo "baseline_dir=baseline-root/$DIR" >> "$GITHUB_OUTPUT"
-
       - name: Build the deterministic review pack
         id: pack
-        env:
-          SCOPE_INPUT: ${{ github.event.inputs.scope || 'auto' }}
-          BASELINE_DIR: ${{ steps.baseline.outputs.baseline_dir }}
         run: |
           set -euo pipefail
           ARGS=( --matrix matrix.json --artifacts jobs/integration-final --out review-pack )
-          # Pinned leaderboard baseline (golden truth) is the default vehicle: the
-          # fetch step exported BASELINE_DIR. scope=expanded additionally allows a
-          # same-SHA base re-run via harbor-baseline.
-          if [ -n "${BASELINE_DIR:-}" ] && [ -d "${BASELINE_DIR}" ]; then
-            ARGS+=( --baseline-root "${BASELINE_DIR}" )
-          elif [ "$SCOPE_INPUT" = "expanded" ] && [ -d harbor-baseline ]; then
-            ARGS+=( --baseline-root harbor-baseline )
-          fi
           set +e
           uv run python .github/scripts/build_integration_review_pack.py "${ARGS[@]}"
           rc=$?

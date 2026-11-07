@@ -4,7 +4,7 @@ import asyncio
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -13,6 +13,7 @@ from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.session import ACPSession
 from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason, ToolCallStatus
+from tests.reachable_fixture import reachable
 
 MOCK_AGENT = str(Path(__file__).parent / "fixtures" / "mock_acp_agent.py")
 MOCK_AGENT_INTERLEAVED = str(
@@ -471,7 +472,7 @@ class TestTransportProtocolFiltering:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -498,7 +499,7 @@ class TestTransportProtocolFiltering:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -511,6 +512,72 @@ class TestTransportProtocolFiltering:
 
         assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
         assert not agent_log.exists()
+
+    @pytest.mark.asyncio
+    async def test_container_transport_keeps_live_subprocess_stderr(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #980 against losing stderr after a valid empty ACP result."""
+        from benchflow.sandbox.process import SubprocessLiveProcess
+
+        class _LocalProcess(SubprocessLiveProcess):
+            async def start(self, command, env=None, cwd=None) -> None:
+                self._set_process(
+                    await asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-c",
+                        "import sys, time; "
+                        "sys.stderr.write('api_key=AIzaSy12345678901234567890\\n'); "
+                        "sys.stderr.flush(); "
+                        'print(\'{\\"jsonrpc\\": \\"2.0\\", \\"id\\": 2, \\"result\\": {}}\', flush=True); '
+                        "time.sleep(60)",
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                )
+
+        agent_log = tmp_path / "agent.log"
+        transport = ContainerTransport(
+            _LocalProcess(), "agent acp", agent_log_path=reachable(agent_log)
+        )
+        await transport.start()
+        assert await transport.receive() == {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {},
+        }
+        await transport.close()
+        assert "***REDACTED***" in agent_log.read_text()
+        assert "AIzaSy12345678901234567890" not in agent_log.read_text()
+
+    @pytest.mark.asyncio
+    async def test_container_transport_stderr_tail_is_bounded(self, tmp_path) -> None:
+        """Guards PR #980 against unbounded live ACP stderr retention."""
+        from benchflow.sandbox.process import SubprocessLiveProcess
+
+        class _LocalProcess(SubprocessLiveProcess):
+            async def start(self, command, env=None, cwd=None) -> None:
+                self._set_process(
+                    await asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-c",
+                        "import sys, time; sys.stderr.write('x' * 70000); "
+                        'sys.stderr.flush(); print(\'{\\"jsonrpc\\": \\"2.0\\", \\"id\\": 2, \\"result\\": {}}\', flush=True); time.sleep(60)',
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                )
+
+        process = _LocalProcess()
+        transport = ContainerTransport(
+            process, "agent acp", agent_log_path=reachable(tmp_path / "agent.log")
+        )
+        await transport.start()
+        await transport.receive()
+        await transport.close()
+        assert len(process.stderr_tail.encode()) == 64 * 1024
 
     @pytest.mark.asyncio
     async def test_container_transport_clears_stale_log_on_retry(
@@ -536,7 +603,7 @@ class TestTransportProtocolFiltering:
         first = ContainerTransport(
             container_process=first_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
         await first.start()
         await asyncio.wait_for(first.receive(), timeout=5)
@@ -552,7 +619,7 @@ class TestTransportProtocolFiltering:
         second = ContainerTransport(
             container_process=second_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
         await second.start()
         assert not agent_log.exists()
@@ -598,7 +665,7 @@ class TestTransportProtocolFiltering:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -611,6 +678,132 @@ class TestTransportProtocolFiltering:
         assert '{"id": 2, "level": "info", "message": "startup"}' in (
             agent_log.read_text()
         )
+
+
+class TestContainerTransportPtyNoise:
+    """PTY-glued shell noise must not hide a protocol message on the same line.
+
+    Daytona's PTY transport gives the agent a real terminal; on BugSwarm-style
+    images the shell prompt (bracketed-paste CSI + OSC window title) lands on
+    the SAME pty line as the agent's initialize response. Whole-line json.loads
+    fails, the response is filed as non-protocol noise, and the handshake
+    "times out" at ANY window with the completed JSON sitting in the agent log
+    (observed 6/6 on fix-build-agentops at both 60s and 300s).
+    """
+
+    # Exact shape captured from the failing run's agent/prime_agent.txt:
+    # bracketed-paste on, OSC 0 window title, prompt, bracketed-paste off,
+    # then the agent's initialize response glued on the same line.
+    PROMPT_GLUED_INIT = (
+        b"\x1b[?2004h"
+        b"\x1b]0;root@9ec4903f-9479-4754-9039-d1b5a544cb28: /home/user/build\x07"
+        b"root@9ec4903f-9479-4754-9039-d1b5a544cb28:/home/user/build# "
+        b"\x1b[?2004l"
+        b'{"jsonrpc": "2.0", "id": 100001, "result": {"protocolVersion": 1}}\n'
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_glued_initialize_response_decodes(self, tmp_path) -> None:
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(return_value=self.PROMPT_GLUED_INIT)
+        agent_log = tmp_path / "agent" / "prime_agent.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=reachable(agent_log),
+        )
+
+        await transport.start()
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert msg == {
+            "jsonrpc": "2.0",
+            "id": 100001,
+            "result": {"protocolVersion": 1},
+        }
+        # Decoded as protocol — nothing should be filed as noise.
+        assert not agent_log.exists()
+
+    def test_json_trailed_by_ansi_escapes_decodes(self) -> None:
+        """The CSI/OSC strip path recovers JSON with trailing escape noise."""
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        line = '\x1b[?2004l{"jsonrpc": "2.0", "id": 7, "result": {}}\x1b[K'
+        assert _decode_pty_json_rpc_message(line) == {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {},
+        }
+
+    def test_log_line_with_invalid_envelope_still_rejected(self) -> None:
+        """A log line that merely contains JSON must stay non-protocol noise."""
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        # Valid JSON after the first "{", but not a valid JSON-RPC envelope
+        # (no method, no result/error) — the envelope check must still reject.
+        assert (
+            _decode_pty_json_rpc_message('INFO {"jsonrpc": "2.0", "note": "boot"}')
+            is None
+        )
+        assert _decode_pty_json_rpc_message("plain log line, no json") is None
+
+    def test_plain_json_fast_path_unchanged(self) -> None:
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        assert _decode_pty_json_rpc_message(
+            '{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}'
+        ) == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+
+    def test_valid_envelope_after_log_prefix_decodes_pre_latch(self) -> None:
+        """Deliberate edge, documented: pre-latch, a log line that embeds a
+        COMPLETE valid JSON-RPC envelope decodes as protocol. That is the
+        exact shape of the prompt-glued handshake bug; before the first
+        protocol message it cannot be told apart from the real thing.
+        """
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        assert _decode_pty_json_rpc_message(
+            'INFO sent {"jsonrpc": "2.0", "id": 3, "result": {}}'
+        ) == {"jsonrpc": "2.0", "id": 3, "result": {}}
+
+    @pytest.mark.asyncio
+    async def test_lenient_decode_latches_off_after_first_protocol_message(
+        self, tmp_path
+    ) -> None:
+        """After the first decoded protocol message the strict whole-line
+        decode rules: the same prefix-glued valid envelope that decodes
+        pre-latch is filed as noise post-latch, so a mid-session agent
+        echoing protocol envelopes into its logs cannot impersonate traffic.
+        """
+        glued_log = b'INFO sent {"jsonrpc": "2.0", "id": 3, "result": {}}\n'
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                self.PROMPT_GLUED_INIT,  # lenient path decodes; latch sets
+                glued_log,  # post-latch: strict decode files it as noise
+                b'{"jsonrpc": "2.0", "id": 4, "result": {"ok": true}}\n',
+            ]
+        )
+        agent_log = tmp_path / "agent" / "prime_agent.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=reachable(agent_log),
+        )
+
+        await transport.start()
+        try:
+            first = await asyncio.wait_for(transport.receive(), timeout=5)
+            second = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert first["id"] == 100001
+        assert second == {"jsonrpc": "2.0", "id": 4, "result": {"ok": True}}
+        assert "INFO sent" in agent_log.read_text()
 
 
 class TestACPInterleaving:
@@ -638,80 +831,238 @@ class TestACPInterleaving:
             await client.close()
 
 
-class TestACPIdleWatchdog:
+class TestPendingToolCallGrace:
     @pytest.mark.asyncio
-    async def test_idle_watchdog_returns_even_when_prompt_cancel_drain_stalls(
-        self,
-    ) -> None:
-        """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain.
+    async def test_lost_tool_call_completion_trips_idle_after_grace(self):
+        """Guards PR #1066's #1061 fix: a completion lost in transit.
 
-        When the idle watchdog fires it cancels the prompt task and drains it.
-        A non-cooperative agent — here one that swallows the cancellation and
-        blocks on an event that never arrives — must not be able to wedge the
-        watchdog: it bounds the drain and raises ``IdleTimeoutError`` anyway.
+        A terminal update that never arrives must stop deferring the watchdog
+        once the pending grace
+        (3x idle_timeout) elapses with no other session activity, instead of
+        disarming it for the rest of the wall-clock budget.
 
-        Determinism: this asserts the *behaviour* (idle error raised; the stuck
-        prompt task abandoned while still pending) rather than a wall-clock upper
-        bound, so it cannot be squeezed into a spurious failure when the full
-        suite loads the event loop. The outer ``wait_for`` is only a hang guard;
-        its timeout is deliberately loose (far above the real ~1.25s runtime), so
-        load can never trip it, while a regression to an unbounded drain hangs
-        past it and fails.
+        Runtime: ~3s plus polling; the outer wait_for is a loose hang guard,
+        not a timing assertion.
+        """
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+        from benchflow.acp.session import ToolCallRecord
+
+        class HangingPromptClient:
+            async def prompt(self, _prompt: str):
+                await asyncio.Future()
+
+        session = ACPSession("pending-grace-session")
+        # A tool call stuck in PENDING with no terminal update, ever.
+        session.tool_calls.append(ToolCallRecord("t1", "sleep 180", "execute"))
+
+        with pytest.raises(IdleTimeoutError, match="Agent idle for 1s"):
+            await asyncio.wait_for(
+                execute_prompts(
+                    HangingPromptClient(),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=60,
+                    idle_timeout=1,
+                ),
+                timeout=20.0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_streaming_tool_call_updates_defer_past_grace(self):
+        """Guards PR #1066: relevant streaming updates restart the grace.
+
+        A single long tool call that streams in-progress tool_call_update
+        notifications past the grace boundary is demonstrably alive and must
+        NOT be idle-killed: updates mutate the ToolCallRecord in place, so
+        they are invisible to both the pending-set snapshot and
+        _activity_count — each observed update must reset the grace clock.
+        The wall-clock backstop (AgentPromptTimeoutError) still bounds it.
+
+        Runtime: ~7s (wall timeout 7 > grace 3 + idle 1, so an unpatched
+        grace clock false-fires the idle path first). The outer wait_for is
+        a loose hang guard, not a timing assertion.
+        """
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        class StreamingToolClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_stream",
+                        "title": "long training run",
+                        "kind": "bash",
+                    }
+                )
+                while True:  # stream progress until cancelled
+                    await asyncio.sleep(0.4)
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tc_stream",
+                            "status": "in_progress",
+                        }
+                    )
+
+        session = ACPSession("streaming-grace-session")
+        with pytest.raises(AgentPromptTimeoutError):
+            await asyncio.wait_for(
+                execute_prompts(
+                    StreamingToolClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=7,
+                    idle_timeout=1,
+                ),
+                timeout=30.0,
+            )
+        # The call outlived the watchdog: still pending, never idle-killed.
+        assert session.pending_tool_call_ids() == ["tc_stream"]
+
+    @pytest.mark.asyncio
+    async def test_unrelated_updates_do_not_extend_pending_grace(self):
+        """Guards PR #1066: other calls cannot hide a lost completion."""
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class TerminalNoiseClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "lost_completion",
+                        "title": "silent long call",
+                        "kind": "bash",
+                    }
+                )
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "already_done",
+                        "title": "finished call",
+                        "kind": "bash",
+                    }
+                )
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "still_streaming",
+                        "title": "healthy streaming call",
+                        "kind": "bash",
+                    }
+                )
+                while True:
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "already_done",
+                            "status": "completed",
+                        }
+                    )
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "still_streaming",
+                            "status": "in_progress",
+                        }
+                    )
+                    await asyncio.sleep(0.4)
+
+        session = ACPSession("unrelated-terminal-noise")
+        with pytest.raises(IdleTimeoutError, match="lost_completion"):
+            await asyncio.wait_for(
+                execute_prompts(
+                    TerminalNoiseClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=7,
+                    idle_timeout=1,
+                ),
+                timeout=20.0,
+            )
+        assert session.pending_tool_call_ids() == [
+            "lost_completion",
+            "still_streaming",
+        ]
+        assert session.tool_call_update_count > 2
+
+    @pytest.mark.asyncio
+    async def test_grace_expiry_reports_pending_truth(self):
+        """Guards PR #1066: pending-grace expiry reports the real cause.
+
+        When the grace genuinely expires (call pending, updates stopped),
+        the raised message and IdleTimeoutDiagnostic must say so — not claim
+        'no new tool call, message, or thought' as if the session were
+        silent all along.
+
+        Runtime: ~3s plus polling after the last relevant update.
         """
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
-        # release is never set while the watchdog runs, so the prompt task stays
-        # wedged in its cancellation handler — exactly the stuck-drain scenario.
-        class StubbornPromptClient:
-            def __init__(self) -> None:
-                self.release = asyncio.Event()
-                self.task: asyncio.Task | None = None
+        class StallAfterUpdatesClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
 
             async def prompt(self, _prompt: str):
-                self.task = asyncio.current_task()
-                try:
-                    await asyncio.Future()
-                except asyncio.CancelledError:
-                    await self.release.wait()
-                    raise
-
-        client = StubbornPromptClient()
-        session = ACPSession("idle-session")
-
-        # Loose hang guard: ~4x the real runtime (1s idle detect + 0.25s bounded
-        # drain). Not a tight assertion — it only catches a true hang/regression.
-        hang_guard_sec = 5.0
-
-        try:
-            with pytest.raises(IdleTimeoutError, match="Agent idle for 1s"):
-                await asyncio.wait_for(
-                    execute_prompts(
-                        client,  # type: ignore[arg-type]
-                        session,
-                        ["solve"],
-                        timeout=30,
-                        idle_timeout=1,
-                    ),
-                    timeout=hang_guard_sec,
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_stall",
+                        "title": "flaky build",
+                        "kind": "bash",
+                    }
                 )
-            # The watchdog returned while the stuck prompt task is still wedged on
-            # release.wait(): proves it bounded the drain instead of waiting for a
-            # cancellation that never completes. Load-independent — no clock math.
-            assert client.task is not None
-            assert not client.task.done()
-        finally:
-            client.release.set()
-            if client.task is not None:
-                with pytest.raises(asyncio.CancelledError):
-                    await client.task
+                for _ in range(2):
+                    await asyncio.sleep(0.2)
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tc_stall",
+                            "status": "in_progress",
+                        }
+                    )
+                await asyncio.Future()  # completion update lost forever
+
+        session = ACPSession("grace-expiry-session")
+        with pytest.raises(IdleTimeoutError) as exc_info:
+            await asyncio.wait_for(
+                execute_prompts(
+                    StallAfterUpdatesClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=60,
+                    idle_timeout=1,
+                ),
+                timeout=30.0,
+            )
+        msg = str(exc_info.value)
+        assert "pending grace" in msg
+        assert "tc_stall" in msg
+        info = exc_info.value.diagnostic.to_dict()
+        assert info["pending_tool_call_ids"] == ["tc_stall"]
+        assert info["expired_pending_tool_call_ids"] == ["tc_stall"]
+        assert info["pending_grace_sec"] == 3  # 3x idle_timeout
+        assert info["n_tool_call_updates"] == 2
+        assert info["n_pending_tool_call_updates"] == 2
+        assert info["n_expired_pending_tool_call_updates"] == 2
+        assert info["pending_set_last_changed_at"] is not None
+        assert info["last_tool_update_at"] is not None
+        # Existing fields keep their meaning.
+        assert info["reason"] == "idle_timeout"
+        assert info["idle_duration_sec"] >= 1
 
 
 class TestIdleTimeoutDiagnostics:
-    """Guards ENG-149: idle timeouts must carry structured diagnostics."""
+    """Idle timeouts must carry structured diagnostics."""
 
     @pytest.mark.asyncio
     async def test_idle_timeout_raises_with_structured_info(self) -> None:
-        """Guards ENG-149: IdleTimeoutError carries idle_timeout diagnostic."""
+        """IdleTimeoutError carries idle_timeout diagnostic."""
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
         class HangingClient:
@@ -739,7 +1090,7 @@ class TestIdleTimeoutDiagnostics:
 
     @pytest.mark.asyncio
     async def test_idle_timeout_info_reflects_activity_counts(self) -> None:
-        """Guards ENG-149: diagnostics include the session's activity counts."""
+        """Diagnostics include the session's activity counts."""
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
         class OneToolThenHang:
@@ -914,6 +1265,55 @@ class TestIdleTimeoutDiagnostics:
         assert exc_info.value.trajectory[1]["status"] == ToolCallStatus.PENDING.value
 
 
+class TestAcpHandshakeTimeout:
+    """The pre-prompt handshake timeout is env-configurable at use time.
+
+    A fixed 60s is wrong for heavyweight task images — agent startup scales
+    with the image (workspace scanning, kernel prep), and on such images the
+    ``initialize`` response deterministically lands after the window. The
+    override is read per call (not cached at import) so long-lived processes
+    and these tests see env changes.
+    """
+
+    def test_default_is_60s_without_env(self, monkeypatch) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.delenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", raising=False)
+        assert _acp_handshake_timeout_sec() == 60.0
+
+    def test_env_override_is_honored(self, monkeypatch) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "300")
+        assert _acp_handshake_timeout_sec() == 300.0
+        # Float values are accepted too.
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "90.5")
+        assert _acp_handshake_timeout_sec() == 90.5
+
+    @pytest.mark.parametrize("garbage", ["banana", "", "  ", "-5", "0", "nan"])
+    def test_garbage_or_non_positive_falls_back_to_default(
+        self, monkeypatch, garbage
+    ) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", garbage)
+        assert _acp_handshake_timeout_sec() == 60.0
+
+    @pytest.mark.asyncio
+    async def test_timeout_error_carries_effective_value(self, monkeypatch) -> None:
+        """The TransportClosedError message interpolates the EFFECTIVE timeout."""
+        from benchflow.acp.runtime import _wait_for_acp_handshake
+        from benchflow.diagnostics import TransportClosedError
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "0.05")
+
+        with pytest.raises(TransportClosedError) as exc_info:
+            await _wait_for_acp_handshake(asyncio.Future(), phase="initialize")
+
+        assert "timed out after 0.05s before the first prompt" in str(exc_info.value)
+        assert exc_info.value.diagnostic.transport_diagnosis == "acp_initialize_timeout"
+
+
 class TestConnectAcpModelSelection:
     """Verify connect_acp passes the right model string to set_model."""
 
@@ -935,38 +1335,58 @@ class TestConnectAcpModelSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "model_in, expected_model",
+        "agent, model_in, expected_model",
         [
             # Registered vllm/ prefix stripped; HF org/model intact — this is
             # what pi-acp and other ACP agents need for downstream routing.
-            ("vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
-            ("zai/glm-5", "glm-5"),
+            ("test-agent", "vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
+            ("test-agent", "zai/glm-5", "glm-5"),
             # Bare HF ID (no registered prefix) passes through unchanged.
-            ("Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
+            ("test-agent", "Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
             # Vertex ADC provider — prefix stripped like any other registered one.
-            ("anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("test-agent", "anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
             # No prefix at all — unchanged.
-            ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("test-agent", "claude-sonnet-4-6", "claude-sonnet-4-6"),
+            # Gemini CLI expects bare Google Gemini and Gemma model IDs.
+            (
+                "gemini",
+                "google/gemini-3.1-flash-lite-preview",
+                "gemini-3.1-flash-lite-preview",
+            ),
+            ("gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
+            ("acpx:gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
+            ("gemini", "google/text-bison", "google/text-bison"),
+            # The Antigravity CLI takes the same bare Google ids as Gemini CLI.
+            ("antigravity", "google/gemini-3.8-flash", "gemini-3.8-flash"),
+            ("antigravity", "gemini-3.8-flash", "gemini-3.8-flash"),
         ],
-        ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix"],
+        ids=[
+            "vllm-hf",
+            "zai",
+            "bare-hf",
+            "vertex",
+            "no-prefix",
+            "gemini-google",
+            "gemma-google",
+            "acpx-gemma-google",
+            "unrelated-google",
+            "antigravity-google",
+            "antigravity-bare",
+        ],
     )
-    async def test_model_id_selection(self, model_in, expected_model, tmp_path):
+    async def test_model_id_selection(self, agent, model_in, expected_model, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
 
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
             await connect_acp(
                 env=mock_env,
-                agent="test-agent",
+                agent=agent,
                 agent_launch="test-agent",
                 agent_env={},
                 sandbox_user=None,
@@ -986,10 +1406,6 @@ class TestConnectAcpModelSelection:
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1015,10 +1431,6 @@ class TestConnectAcpModelSelection:
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1043,10 +1455,6 @@ class TestConnectAcpModelSelection:
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1065,6 +1473,46 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_openhands_direct_execution_patches_before_privilege_drop(
+        self, tmp_path
+    ):
+        """Guards the PR #921 follow-up for OpenHands tasks rooted outside /root."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        mock_env.exec.return_value = MagicMock(return_code=0, stdout="", stderr="")
+
+        with (
+            patch(
+                "benchflow.acp.runtime.ContainerTransport",
+                return_value=MagicMock(),
+            ) as mock_transport,
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp --always-approve --override-with-envs",
+                agent_env={"BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS": "1"},
+                sandbox_user="agent",
+                model=None,
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        patch_call = mock_env.exec.await_args_list[0]
+        assert "openhands_cli.utils" in patch_call.args[0]
+        assert patch_call.kwargs == {"user": "root", "timeout_sec": 30}
+        transport_env = mock_transport.call_args.kwargs["env"]
+        # The agent's process sees the neutral name (the host keeps its own).
+        assert transport_env["RUNTIME_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
+        assert "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS" not in transport_env
+        transport_command = mock_transport.call_args.kwargs["command"]
+        assert "--reuid=agent" in transport_command
+
+    @pytest.mark.asyncio
     async def test_codex_uses_session_advertised_model_id(self, tmp_path):
         """Guards commit 81ff286 against codex-acp rejecting bare set_model IDs."""
         from benchflow.acp.runtime import connect_acp
@@ -1080,10 +1528,6 @@ class TestConnectAcpModelSelection:
         }
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1113,10 +1557,6 @@ class TestConnectAcpModelSelection:
         ]
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1140,6 +1580,48 @@ class TestConnectAcpModelSelection:
         ]
 
     @pytest.mark.asyncio
+    async def test_opencode_sets_the_effort_its_model_choice_reveals(self, tmp_path):
+        """OpenCode offers "effort" only after a reasoning model is selected, so
+        the effort goes in after the model, against the refreshed options."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        session = mock_acp.session_new.return_value
+        session.config_options = [{"id": "model"}, {"id": "mode"}]
+
+        async def set_option(config_id, value):
+            if config_id == "model":
+                session.config_options = [
+                    {"id": "model"},
+                    {"id": "effort"},
+                    {"id": "mode"},
+                ]
+            return {}
+
+        mock_acp.set_config_option.side_effect = set_option
+        with (
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=AsyncMock(),
+                agent="opencode",
+                agent_launch="opencode acp",
+                agent_env={},
+                sandbox_user=None,
+                model="gemini/gemini-4-argon",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                reasoning_effort="high",
+            )
+
+        assert mock_acp.set_config_option.await_args_list == [
+            call("model", "google/gemini-4-argon"),
+            call("effort", "high"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_claude_litellm_env_owns_model_selection(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
@@ -1147,10 +1629,6 @@ class TestConnectAcpModelSelection:
         mock_acp.session_new.return_value.config_options = [{"id": "model"}]
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1175,89 +1653,48 @@ class TestConnectAcpModelSelection:
         mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_daytona_dind_uses_pty_transport(self, tmp_path):
-        """Daytona compose tasks use PTY transport to avoid SSH pipe-closed failures."""
+    async def test_connect_acp_delegates_transport_to_the_sandbox(self, tmp_path):
+        """connect_acp asks the sandbox for its transport and wires it through.
+
+        Per-backend transport selection moved onto the sandbox objects; the
+        cases that used to be asserted here (Apple Container vs Daytona,
+        PTY vs SSH, the gemini and BENCHFLOW_DAYTONA_ACP_TRANSPORT overrides)
+        now live in ``tests/test_sandbox_live_process.py``. What this layer
+        still owns is the delegation itself.
+        """
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
+        live_process = MagicMock()
         mock_env = MagicMock()
         mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-        mock_env._strategy = MagicMock()
-        mock_env._strategy._compose_cmd = MagicMock(return_value="docker compose -p t")
+        mock_env.live_process = AsyncMock(return_value=live_process)
 
         with (
-            patch(
-                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_pty,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_ssh,
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ContainerTransport") as transport,
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
             await connect_acp(
                 env=mock_env,
-                agent="test-agent",
-                agent_launch="test-agent",
+                agent="codex-acp",
+                agent_launch="codex-acp",
                 agent_env={},
                 sandbox_user=None,
                 model=None,
                 rollout_dir=tmp_path,
-                environment="daytona",
-                agent_cwd="/app",
+                environment="apple-container",
+                agent_cwd="/root",
             )
 
-        mock_pty.assert_awaited_once_with(mock_env)
-        mock_ssh.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_daytona_direct_uses_pty_transport(self, tmp_path):
-        """Direct Daytona tasks also use PTY transport, not SSH pipes."""
-        from benchflow.acp.runtime import connect_acp
-
-        mock_acp = self._make_mocks()
-        mock_env = MagicMock()
-        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-
-        with (
-            patch(
-                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_pty,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_ssh,
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
-        ):
-            await connect_acp(
-                env=mock_env,
-                agent="test-agent",
-                agent_launch="test-agent",
-                agent_env={},
-                sandbox_user=None,
-                model=None,
-                rollout_dir=tmp_path,
-                environment="daytona",
-                agent_cwd="/app",
-            )
-
-        mock_pty.assert_awaited_once_with(mock_env)
-        mock_ssh.assert_not_awaited()
+        mock_env.live_process.assert_awaited_once_with(agent="codex-acp", admission=ANY)
+        assert transport.call_args.kwargs["container_process"] is live_process
 
 
 class TestSandboxStartupDiagnostics:
-    """Guards ENG-147: sandbox startup failures must carry structured diagnostics."""
+    """Sandbox startup failures must carry structured diagnostics."""
 
     def test_sandbox_startup_error_has_info_dict(self) -> None:
-        """Guards ENG-147: SandboxStartupError carries a SandboxStartupDiagnostic
+        """SandboxStartupError carries a SandboxStartupDiagnostic
         with all required fields for result.json."""
         from benchflow.sandbox.daytona import SandboxStartupError
 
@@ -1277,7 +1714,7 @@ class TestSandboxStartupDiagnostics:
         assert "timeout of 1200000ms" in info["raw_message"]
 
     def test_sandbox_startup_error_is_runtime_error(self) -> None:
-        """Guards ENG-147: SandboxStartupError is a RuntimeError subclass
+        """SandboxStartupError is a RuntimeError subclass
         so existing except-RuntimeError paths still catch it."""
         from benchflow.sandbox.daytona import SandboxStartupError
 
@@ -1285,7 +1722,7 @@ class TestSandboxStartupDiagnostics:
         assert isinstance(err, RuntimeError)
 
     def test_classify_error_sandbox_startup(self) -> None:
-        """Guards ENG-147: classify_error recognises sandbox startup failures."""
+        """classify_error recognises sandbox startup failures."""
         from benchflow._utils.scoring import SANDBOX_SETUP, classify_error
 
         assert classify_error("Sandbox startup failed: timeout") == SANDBOX_SETUP
@@ -1293,7 +1730,7 @@ class TestSandboxStartupDiagnostics:
         assert classify_error("normal error") != SANDBOX_SETUP
 
     def test_sandbox_startup_info_in_result_json(self, tmp_path: Path) -> None:
-        """Guards ENG-147: _build_rollout_result writes sandbox_startup_info to result.json."""
+        """_build_rollout_result writes sandbox_startup_info to result.json."""
         from benchflow.diagnostics import RolloutDiagnostics, SandboxStartupDiagnostic
         from benchflow.rollout import _build_rollout_result
 
@@ -1332,7 +1769,7 @@ class TestSandboxStartupDiagnostics:
     def test_sandbox_startup_info_null_when_no_startup_error(
         self, tmp_path: Path
     ) -> None:
-        """Guards ENG-147: sandbox_startup_info is null for non-startup errors."""
+        """sandbox_startup_info is null for non-startup errors."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -1357,22 +1794,34 @@ class TestSandboxStartupDiagnostics:
         assert result.rewards == {"reward": 1.0}
 
     def test_create_sandbox_retry_count_is_three(self) -> None:
-        """Guards ENG-147: _create_sandbox retries 3 times, not 2.
+        """A create that timed out is tried 3 times, not 2.
 
         The retry contract is declared with the standard ``@retry(...)``
         decorator from tenacity. tenacity attaches the live ``stop`` /
         ``wait`` config to the wrapped function as ``fn.retry``; assert via
         that introspection hook rather than re-implementing scaffolding.
+        Other kinds have their own budgets (DAYTONA-START,
+        tests/test_daytona_start_path.py).
         """
         pytest.importorskip("tenacity")  # ``sandbox-daytona`` extra
+        from types import SimpleNamespace
+
         from benchflow.sandbox.daytona import DaytonaSandbox
 
         stop = DaytonaSandbox._create_sandbox.retry.stop  # type: ignore[attr-defined]
-        assert stop.max_attempt_number == 3
+
+        def state(attempt: int) -> SimpleNamespace:
+            outcome = SimpleNamespace(exception=lambda: TimeoutError("create"))
+            return SimpleNamespace(
+                outcome=outcome, attempt_number=attempt, seconds_since_start=1.0
+            )
+
+        assert not stop(state(2))
+        assert stop(state(3))
 
 
 class TestTransportErrorDiagnostics:
-    """Guards ENG-148 / #504: ACP transport must carry structured diagnostics.
+    """Guards #504: ACP transport must carry structured diagnostics.
 
     The diagnostic is now raised at the *source* (``sandbox/process.py``) as
     a :class:`~benchflow.diagnostics.TransportClosedError` carrying a typed
@@ -1385,7 +1834,7 @@ class TestTransportErrorDiagnostics:
         """``LiveProcess.readline`` raises ``TransportClosedError`` with the
         structured ``process_exit_code`` filled in (issue #504)."""
         from benchflow.diagnostics import TransportClosedError
-        from benchflow.sandbox.process import LiveProcess
+        from benchflow.sandbox.process import SubprocessLiveProcess
 
         class _StubProcess:
             def __init__(self) -> None:
@@ -1398,9 +1847,9 @@ class TestTransportErrorDiagnostics:
                 return b""
 
             async def read(self, _n: int) -> bytes:
-                return b"Connection to sandbox lost"
+                return b"api_key=AIzaSy12345678901234567890"
 
-        class _LP(LiveProcess):
+        class _LP(SubprocessLiveProcess):
             async def start(
                 self, command, env=None, cwd=None
             ) -> None:  # pragma: no cover - unused
@@ -1414,7 +1863,8 @@ class TestTransportErrorDiagnostics:
         assert diag.process_exit_code == 255
         assert diag.transport_diagnosis == "process_exited"
         assert diag.stderr_snippet is not None
-        assert "Connection to sandbox lost" in diag.stderr_snippet
+        assert "***REDACTED***" in diag.stderr_snippet
+        assert "AIzaSy12345678901234567890" not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_live_process_raises_typed_transport_error_when_remote_killed(
@@ -1423,7 +1873,7 @@ class TestTransportErrorDiagnostics:
         """rc=None ⇒ remote session was killed; the diagnostic must carry
         the pid and the ``remote_session_killed`` diagnosis (issue #504)."""
         from benchflow.diagnostics import TransportClosedError
-        from benchflow.sandbox.process import LiveProcess
+        from benchflow.sandbox.process import SubprocessLiveProcess
 
         class _StubProcess:
             def __init__(self) -> None:
@@ -1435,7 +1885,7 @@ class TestTransportErrorDiagnostics:
             async def readline(self) -> bytes:
                 return b""
 
-        class _LP(LiveProcess):
+        class _LP(SubprocessLiveProcess):
             async def start(
                 self, command, env=None, cwd=None
             ) -> None:  # pragma: no cover - unused
@@ -1503,7 +1953,7 @@ class TestTransportErrorDiagnostics:
         assert rebuilt.process_exit_code == 255
 
     def test_transport_error_info_in_result_json(self, tmp_path) -> None:
-        """Guards ENG-148: transport_error_info is written to result.json."""
+        """transport_error_info is written to result.json."""
         from benchflow.diagnostics import RolloutDiagnostics, TransportClosedDiagnostic
         from benchflow.rollout import _build_rollout_result
 
@@ -1577,7 +2027,7 @@ class TestTransportErrorDiagnostics:
         assert result.error_category == "pipe_closed"
 
     def test_transport_error_info_none_when_no_transport_error(self, tmp_path) -> None:
-        """Guards ENG-148: transport_error_info is null for non-transport errors."""
+        """transport_error_info is null for non-transport errors."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -1680,6 +2130,92 @@ class TestDiagnosticRegistry:
         empty = RolloutDiagnostics().to_result_fields()
         for diag_cls in DIAGNOSTIC_REGISTRY:
             assert empty[diag_cls.field] is None
+
+    def test_results_jsonl_export_policy_omits_untrusted_fields(self) -> None:
+        """Guards PR #1038 (issue #1037): use a strict safe export policy."""
+        from benchflow.diagnostics import (
+            AgentPromptTimeoutDiagnostic,
+            IdleTimeoutDiagnostic,
+            ProviderApiErrorDiagnostic,
+            RolloutDiagnostics,
+            SandboxStartupDiagnostic,
+            TransportClosedDiagnostic,
+        )
+
+        pending = AgentPromptTimeoutDiagnostic(
+            pending_tool_call_ids=["call-secret-1", "call-secret-2"]
+        ).to_results_jsonl_details()
+        assert pending["pending_tool_call_count"] == 2
+        assert "pending_tool_call_ids" not in pending
+
+        sandbox = SandboxStartupDiagnostic(
+            sandbox_id="private-sandbox-id",
+            sandbox_state="provider-specific-state",
+            raw_message="api_key=secret",
+            attempts=2,
+        ).to_results_jsonl_details()
+        assert sandbox == {"attempts": 2}
+
+        transport = TransportClosedDiagnostic(
+            raw_message="api_key=secret",
+            process_pid=1234,
+            transport_diagnosis="provider-secret-state",
+            stderr_snippet="password=secret",
+            sandbox_probe_stdout="token=secret",
+        ).to_results_jsonl_details()
+        assert transport == {"transport_diagnosis": "unknown"}
+
+        provider = ProviderApiErrorDiagnostic(
+            subcategory="provider-secret-state",
+            status_counts={"429": 2, "bad": 1, "700": 3, "503": -1},
+            fingerprint="secret-fingerprint",
+        ).to_results_jsonl_details()
+        assert provider["subcategory"] == "provider_error"
+        assert provider["status_counts"] == {"429": 2}
+        assert "fingerprint" not in provider
+
+        invalid_numbers = IdleTimeoutDiagnostic(
+            idle_timeout_sec=True,
+            idle_duration_sec=-1,
+            wall_clock_elapsed_sec=float("nan"),
+            n_tool_calls=-2,
+        ).to_results_jsonl_details()
+        assert "idle_timeout_sec" not in invalid_numbers
+        assert "idle_duration_sec" not in invalid_numbers
+        assert "wall_clock_elapsed_sec" not in invalid_numbers
+        assert "n_tool_calls" not in invalid_numbers
+
+        class CollidingIdleDiagnostic(IdleTimeoutDiagnostic):
+            def to_results_jsonl_details(self) -> dict:
+                return {"raw_pii": "private@example.com"}
+
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(CollidingIdleDiagnostic())
+        assert (
+            diagnostics.to_results_jsonl_block(
+                error_category=None,
+                verifier_error_category=None,
+            )
+            is None
+        )
+
+    def test_results_jsonl_export_policy_covers_the_registry(self) -> None:
+        """Guards PR #1038 (issue #1037): registry export stays fail-closed."""
+        from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, RolloutDiagnostics
+
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            assert diagnostic_cls.results_jsonl_fields is not None
+            diagnostics = RolloutDiagnostics()
+            diagnostics.set(diagnostic_cls())
+            block = diagnostics.to_results_jsonl_block(
+                error_category=None,
+                verifier_error_category=None,
+            )
+            assert block is not None
+            event = block["events"][diagnostic_cls.field]
+            assert event["channel"] == diagnostic_cls.channel
+            if diagnostic_cls.category is not None:
+                assert event["category"] == diagnostic_cls.category
 
     def test_diagnostic_reason_constants_share_scoring_source(self) -> None:
         """Guards the fix from PR #858 against diagnostic reasons drifting off the shared scoring source."""
@@ -1791,10 +2327,10 @@ class TestDiagnosticRegistry:
 
 
 class TestVerifierDepInstallDiagnostics:
-    """Guards ENG-151: verifier dep install failures must be classified distinctly."""
+    """Verifier dep install failures must be classified distinctly."""
 
     def test_classify_verifier_dep_install_error(self) -> None:
-        """Guards ENG-151: classify_verifier_error detects dependency install
+        """classify_verifier_error detects dependency install
         patterns and returns VERIFIER_DEP_INSTALL."""
         from benchflow._utils.scoring import (
             VERIFIER_DEP_INSTALL,
@@ -1822,7 +2358,7 @@ class TestVerifierDepInstallDiagnostics:
         )
 
     def test_classify_verifier_dep_install_not_false_positive(self) -> None:
-        """Guards ENG-151: normal verifier crashes are NOT classified as
+        """Normal verifier crashes are NOT classified as
         dep install failures."""
         from benchflow._utils.scoring import (
             VERIFIER_DEP_INSTALL,
@@ -1840,7 +2376,7 @@ class TestVerifierDepInstallDiagnostics:
         assert classify_verifier_error(None) is None
 
     def test_verifier_error_category_in_result_json(self, tmp_path: Path) -> None:
-        """Guards ENG-151: result.json includes verifier_error_category field."""
+        """result.json includes verifier_error_category field."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -1869,7 +2405,7 @@ class TestVerifierDepInstallDiagnostics:
     def test_verifier_error_category_null_when_no_verifier_error(
         self, tmp_path: Path
     ) -> None:
-        """Guards ENG-151: verifier_error_category is null for successful runs."""
+        """verifier_error_category is null for successful runs."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -1895,10 +2431,10 @@ class TestVerifierDepInstallDiagnostics:
 
 
 class TestVerifierTimeoutDiagnostics:
-    """Guards ENG-152: verifier timeouts must produce structured diagnostics."""
+    """Verifier timeouts must produce structured diagnostics."""
 
     def test_classify_verifier_timeout(self) -> None:
-        """Guards ENG-152: classify_verifier_error returns VERIFIER_TIMEOUT
+        """classify_verifier_error returns VERIFIER_TIMEOUT
         for timeout messages."""
         from benchflow._utils.scoring import (
             VERIFIER_TIMEOUT,
@@ -1914,7 +2450,7 @@ class TestVerifierTimeoutDiagnostics:
         )
 
     def test_classify_verifier_timeout_not_false_positive(self) -> None:
-        """Guards ENG-152: non-timeout verifier errors are NOT classified as
+        """Non-timeout verifier errors are NOT classified as
         timeout."""
         from benchflow._utils.scoring import (
             VERIFIER_TIMEOUT,
@@ -1931,7 +2467,7 @@ class TestVerifierTimeoutDiagnostics:
         )
 
     def test_verifier_timeout_info_in_result_json(self, tmp_path: Path) -> None:
-        """Guards ENG-152: result.json includes verifier_timeout_info when
+        """result.json includes verifier_timeout_info when
         verifier times out."""
         from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
         from benchflow.rollout import _build_rollout_result
@@ -1971,7 +2507,7 @@ class TestVerifierTimeoutDiagnostics:
         assert vti["task_name"] == "quantum-numerical-simulation"
 
     def test_verifier_timeout_info_null_when_no_timeout(self, tmp_path: Path) -> None:
-        """Guards ENG-152: verifier_timeout_info is null for non-timeout runs."""
+        """verifier_timeout_info is null for non-timeout runs."""
         from benchflow.rollout import _build_rollout_result
 
         _build_rollout_result(
@@ -1995,7 +2531,7 @@ class TestVerifierTimeoutDiagnostics:
         assert rj["verifier_timeout_info"] is None
 
     def test_verifier_timeout_info_null_for_crash(self, tmp_path: Path) -> None:
-        """Guards ENG-152: verifier_timeout_info is null when verifier crashes
+        """verifier_timeout_info is null when verifier crashes
         (not a timeout)."""
         from benchflow.rollout import _build_rollout_result
 

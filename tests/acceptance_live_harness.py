@@ -47,7 +47,7 @@ def write_live_task(task_dir: Path, *, workdir: str | None = "/app") -> Path:
         "verifier": {"timeout_sec": 30},
     }
     if workdir is not None:
-        frontmatter["environment"] = {"workdir": workdir}
+        frontmatter["sandbox"] = {"workdir": workdir}
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "task.md").write_text(
         "---\n"
@@ -150,7 +150,7 @@ class StubEnv:
         rc = self._harness.pick(self._harness.exec_rcs, name, run_index, 0)
         return SimpleNamespace(return_code=rc)
 
-    async def upload_dir(self, source: Path, target: str) -> None:
+    async def upload_dir(self, source: Path, target: str, **_kwargs) -> None:
         root = Path(source)
         self._harness.uploads.append(
             {
@@ -228,6 +228,7 @@ def install_live_harness(
         rollout_paths: Any,
         preserve_agent_network: bool,
         environment_manifest: Any,
+        block_cloud_metadata: bool = False,
     ) -> StubEnv:
         return StubEnv(h, rollout_name)
 

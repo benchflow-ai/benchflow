@@ -1,0 +1,8 @@
+# Stacked when the agent runs as root under the cloud metadata block whose
+# rules BenchFlow's helper adds from outside main (main gets no
+# NET_ADMIN then). Without NET_RAW no process in main opens a packet socket,
+# whose frames never pass the OUTPUT chain the rules sit in.
+services:
+  main:
+    cap_drop:
+      - NET_RAW

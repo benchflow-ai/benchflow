@@ -1,0 +1,70 @@
+{
+  "synthetic": true,
+  "cases": [
+    {
+      "id": "evaluation-export",
+      "request": "Review whether this result supports an evaluation pass and whether it can be used as training data. This is a read-only evidence review.",
+      "evidence": {
+        "tested_source_and_wheel": "independently hash-bound to the declared version",
+        "native_grade": {"reward": 1, "verifier_completed": true, "task_and_workspace_identity_match": true},
+        "trace_audit": "complete provider request/response, ACP and usage records; authentic attempt; no verifier leakage found in the scoped review",
+        "export": {"training_ready": false, "training_ready_reason": "unsupported_custom_tool", "completed": true},
+        "strict_export_validator": {"exit": 1, "reason": "non-training-ready export"},
+        "cleanup": "all recorded owned IDs independently absent"
+      }
+    },
+    {
+      "id": "phase-populations",
+      "request": "Assess the claim that framework A adds 30 seconds per task over B, and explain what the phase measurements establish.",
+      "evidence": {
+        "planned_tasks": ["t1", "t2", "t3", "t4"],
+        "one_attempt_per_task_per_arm": true,
+        "rows": [
+          {"task": "t1", "arm": "A", "overhead_s": 100, "teardown_s": 5},
+          {"task": "t1", "arm": "B", "overhead_s": 80, "teardown_s": 2},
+          {"task": "t2", "arm": "A", "overhead_s": 50, "teardown_s": null},
+          {"task": "t2", "arm": "B", "overhead_s": 60, "teardown_s": null},
+          {"task": "t3", "arm": "A", "overhead_s": 200, "teardown_s": 7},
+          {"task": "t3", "arm": "B", "overhead_s": null, "teardown_s": 3, "reason": "missing model/tool telemetry"},
+          {"task": "t4", "arm": "A", "overhead_s": null, "teardown_s": 4, "reason": "missing terminal metadata"},
+          {"task": "t4", "arm": "B", "overhead_s": 70, "teardown_s": 2}
+        ],
+        "phase_analysis_population": "restrict to complete overhead pairs before examining each phase",
+        "model_and_task_routes": "equal and independently bound"
+      }
+    },
+    {
+      "id": "otel-accounting",
+      "request": "Report whether this run has complete usage and cost, and whether its recorded USD figure is the actual bill.",
+      "evidence": {
+        "expected_requests": ["r1", "r2"],
+        "events": [
+          {"run": "current", "request": "r1", "event_id": "e1", "native_cost_usd": 0.20, "cost_basis": "unknown", "input_tokens": 100, "output_tokens": 10},
+          {"run": "current", "request": "r1", "event_id": "e1", "native_cost_usd": 0.20, "cost_basis": "unknown", "input_tokens": 100, "output_tokens": 10},
+          {"run": "current", "request": "r2", "event_id": "e2", "native_cost_usd": null, "model": "unpriced-helper", "input_tokens": 20, "output_tokens": 5},
+          {"run": "older", "request": "r1", "event_id": "old-e1", "native_cost_usd": 4.0, "input_tokens": 700, "output_tokens": 80}
+        ],
+        "duplicate_proof": "the two e1 records are identical retransmissions of one captured event",
+        "dated_rate_estimates_usd": {"r1": 0.02, "r2": null},
+        "collector_final_flush": "unknown",
+        "provider_billing_evidence": null,
+        "consumer_report": {"cost_usd": null}
+      }
+    },
+    {
+      "id": "clock-and-concurrency",
+      "request": "Check a report calling these durations monotonic and claiming all 60 jobs ran at once. Does this prove the new build is faster than a previous 80-job run?",
+      "evidence": {
+        "scheduled_jobs": 60,
+        "worker_limit": 40,
+        "raw_process_interval_peak": 39,
+        "observed_live_sandbox_peak": 37,
+        "clock_source": "start_ns=time.time_ns(); end_ns=time.time_ns()",
+        "monotonic_pair_recorded": false,
+        "new_build_same_wave_comparator": "not supplied",
+        "previous_run": {"jobs": 80, "orchestrators": 2},
+        "current_run": {"orchestrators": 1}
+      }
+    }
+  ]
+}

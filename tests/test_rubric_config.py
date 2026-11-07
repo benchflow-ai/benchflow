@@ -1,4 +1,4 @@
-"""Tests for rubric.toml / rubric.json parsing (ENG-55, #270)."""
+"""Tests for rubric.toml / rubric.json parsing (#270)."""
 
 from __future__ import annotations
 
@@ -143,14 +143,14 @@ description = "Does it work?"
         cfg = load_rubric_toml(rubric_file)
 
         # Defaults
-        assert cfg.judge.model == "claude-sonnet-4-6"
+        assert cfg.judge.model == "claude-sonnet-5-5"
         assert cfg.judge.mode == "individual"
         assert cfg.scoring.aggregation == "weighted_mean"
         assert len(cfg.criteria) == 1
         assert cfg.criteria[0].type == "binary"
 
     def test_plural_criteria_and_method_aliases(self, tmp_path: Path) -> None:
-        """Harbor-ish Reward Kit rubrics can use [[criteria]] and method."""
+        """Criteria-runner rubrics can use [[criteria]] and method."""
         toml_content = """\
 [scoring]
 method = "mean"
@@ -179,10 +179,10 @@ weight = 0.4
         cfg = load_rubric_toml(rubric_file)
         assert len(cfg.criteria) == 0
 
-    def test_reward_kit_criteria_policy_from_harborish_toml(
+    def test_criteria_runner_criteria_policy_from_plural_criteria_toml(
         self, tmp_path: Path
     ) -> None:
-        """Selected Reward Kit criteria become authoritative aggregate policy."""
+        """Selected criteria-runner criteria become authoritative aggregate policy."""
         rubric_file = tmp_path / "rubric.toml"
         rubric_file.write_text(
             """\
@@ -247,7 +247,7 @@ match_criteria = "A."
             ),
         ],
     )
-    def test_reward_kit_criteria_policy_rejects_invalid_rubrics(
+    def test_criteria_runner_criteria_policy_rejects_invalid_rubrics(
         self, tmp_path: Path, content: str, match: str
     ) -> None:
         rubric_file = tmp_path / "rubric.toml"
@@ -263,7 +263,7 @@ match_criteria = "A."
 class TestDefaults:
     def test_judge_config_defaults(self) -> None:
         j = JudgeConfig()
-        assert j.model == "claude-sonnet-4-6"
+        assert j.model == "claude-sonnet-5-5"
         assert j.mode == "individual"
         assert j.files == []
         assert j.timeout == 120
@@ -276,7 +276,7 @@ class TestDefaults:
     def test_rubric_config_defaults(self) -> None:
         r = RubricConfig()
         assert r.criteria == []
-        assert r.judge.model == "claude-sonnet-4-6"
+        assert r.judge.model == "claude-sonnet-5-5"
 
 
 # Harvey LAB style rubric.json parsing (#270)
@@ -314,7 +314,7 @@ class TestLoadRubricJson:
         assert cfg.criteria[0].description == "The memo states the $X price."
         assert cfg.criteria[0].type == "binary"
         # judge/scoring defaults apply when absent
-        assert cfg.judge.model == "claude-sonnet-4-6"
+        assert cfg.judge.model == "claude-sonnet-5-5"
         assert cfg.scoring.aggregation == "weighted_mean"
 
     def test_rubric_json_with_judge_and_scoring(self, tmp_path: Path) -> None:

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed BenchFlow run-artifact health validator.
+"""Fail-closed validator for the structured BenchFlow training-artifact contract.
 
 This script is intentionally self-contained so it can travel with the
 benchflow-experiment-review skill. It checks completed rollout folders for the
-minimum artifact contract required before a trial can be treated as a healthy
-BenchFlow model result:
+structured artifact contract described below. This is not a general verdict on
+all evaluation purposes or historical layouts; see SKILL.md for claim-specific
+review. Its strict checks and exit behavior are intentionally unchanged:
 
 - result.json parses.
 - trajectory/acp_trajectory.jsonl exists, is non-empty, parses as JSONL, and
@@ -14,6 +15,10 @@ BenchFlow model result:
 - results.jsonl exists, is non-empty, parses as JSONL, and contains a
   Prime-RL/Verifiers-shaped training-readiness row backed by the LLM trajectory.
 - token usage, timing, and tool usage metadata are present.
+
+The explicit ``--allow-native-subscription-without-llm`` mode accepts only a
+healthy ``agent_native_acp`` evidence row that is completed but not
+training-ready. It does not relax the default model-training artifact gate.
 
 Any violation makes that rollout unhealthy. The script exits 1 if any checked
 rollout is unhealthy.
@@ -250,6 +255,7 @@ def validate_llm(
     issues: list[str] = []
     request_count = 0
     response_count = 0
+    completed_candidates: list[tuple[int, str, bool]] = []
     error_count = 0
     usage_count = 0
     for index, row in enumerate(rows, start=1):
@@ -266,6 +272,27 @@ def validate_llm(
             body = response.get("body")
             if isinstance(body, dict):
                 response_count += 1
+                response_status = body.get("status")
+                completed = (
+                    response.get("status_code") == 200
+                    and response_status in {None, "completed"}
+                    and not body.get("incomplete_details")
+                )
+                if completed:
+                    signature = json.dumps(
+                        (
+                            request.get("body")
+                            if isinstance(request, dict)
+                            and isinstance(request.get("body"), dict)
+                            else {}
+                        ),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    completed_candidates.append(
+                        (index - 1, signature, has_token_usage(body))
+                    )
                 if has_token_usage(body):
                     usage_count += 1
             else:
@@ -282,12 +309,151 @@ def validate_llm(
         )
     if usage_count == 0:
         issues.append(f"{path}: no provider token usage in response bodies")
+    candidates_by_request: dict[str, list[tuple[int, bool]]] = {}
+    for index, signature, has_usage in completed_candidates:
+        candidates_by_request.setdefault(signature, []).append((index, has_usage))
+    request_bodies = [
+        json.dumps(
+            (
+                request.get("body")
+                if isinstance(request := row.get("request"), dict)
+                and isinstance(request.get("body"), dict)
+                else {}
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        for row in rows
+    ]
+    selected: list[tuple[int, bool]] = []
+    for candidates in candidates_by_request.values():
+        consumed = [
+            candidate
+            for candidate in candidates
+            if response_consumed_by_later_request(rows, request_bodies, candidate[0])
+        ]
+        if consumed:
+            selected.append(max(consumed))
+            continue
+        safe_unconsumed = [
+            candidate
+            for candidate in candidates
+            if response_safe_without_later_consumption(rows, candidate[0])
+        ]
+        if safe_unconsumed:
+            selected.append(max(safe_unconsumed))
+    selected.sort()
+    successful_exchange_indices = [index for index, _ in selected]
+    successful_response_count = len(selected)
+    successful_usage_count = sum(1 for _, has_usage in selected if has_usage)
+    if successful_response_count and successful_usage_count < successful_response_count:
+        issues.append(
+            f"{path}: completed responses with usage {successful_usage_count} < "
+            f"completed responses {successful_response_count}"
+        )
     return issues, {
         "requests": request_count,
         "responses": response_count,
+        "successful_responses": successful_response_count,
+        "successful_exchange_indices": successful_exchange_indices,
+        "successful_responses_with_usage": successful_usage_count,
+        "deduplicated_completed_responses": (
+            len(completed_candidates) - successful_response_count
+        ),
         "errors": error_count,
         "responses_with_usage": usage_count,
     }
+
+
+def response_consumed_by_later_request(
+    rows: list[dict[str, Any]],
+    request_bodies: list[str],
+    exchange_idx: int,
+) -> bool:
+    response = rows[exchange_idx].get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    call_ids = response_call_ids(body if isinstance(body, dict) else {})
+    return bool(
+        call_ids
+        and any(
+            any(call_id in request_body for call_id in call_ids)
+            for request_body in request_bodies[exchange_idx + 1 :]
+        )
+    )
+
+
+def response_call_ids(body: dict[str, Any]) -> set[str]:
+    return {call_id for call_id, _ in response_tool_calls(body)}
+
+
+def response_safe_without_later_consumption(
+    rows: list[dict[str, Any]], exchange_idx: int
+) -> bool:
+    row = rows[exchange_idx]
+    response = row.get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    calls = response_tool_calls(body if isinstance(body, dict) else {})
+    if not calls or all(name == "finish" for _, name in calls):
+        return True
+    return not any(
+        isinstance(request := later.get("request"), dict)
+        and isinstance(request.get("body"), dict)
+        for later in rows[exchange_idx + 1 :]
+    )
+
+
+def response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+    calls = [
+        (
+            str(item.get("call_id") or item.get("id")),
+            str(item.get("name")) if item.get("name") else None,
+        )
+        for item in body.get("output") or []
+        if isinstance(item, dict)
+        and item.get("type") in {"function_call", "tool_call"}
+        and (item.get("call_id") or item.get("id"))
+    ]
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, dict) else None
+            if not isinstance(message, dict):
+                continue
+            calls.extend(
+                (
+                    str(call.get("id") or call.get("tool_call_id")),
+                    (
+                        str(function.get("name"))
+                        if isinstance(function := call.get("function"), dict)
+                        and function.get("name")
+                        else str(call.get("name"))
+                        if call.get("name")
+                        else None
+                    ),
+                )
+                for call in message.get("tool_calls") or []
+                if isinstance(call, dict)
+                and (call.get("id") or call.get("tool_call_id"))
+            )
+    message = body.get("message")
+    if isinstance(message, dict):
+        calls.extend(
+            (
+                str(call.get("id") or call.get("tool_call_id")),
+                (
+                    str(function.get("name"))
+                    if isinstance(function := call.get("function"), dict)
+                    and function.get("name")
+                    else str(call.get("name"))
+                    if call.get("name")
+                    else None
+                ),
+            )
+            for call in message.get("tool_calls") or []
+            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
+        )
+    return calls
 
 
 def result_has_terminal_error(result: dict[str, Any]) -> bool:
@@ -380,6 +546,8 @@ def validate_results_row(
     row_path: str,
     result: dict[str, Any],
     llm_summary: dict[str, Any] | None,
+    native_subscription_without_llm: bool = False,
+    oracle_without_llm: bool = False,
 ) -> list[str]:
     issues: list[str] = []
     leaked = sorted(BANNED_TRAINING_ROW_KEYS.intersection(row))
@@ -404,7 +572,11 @@ def validate_results_row(
         issues.append(
             f"{row_path}: terminal errored/partial rollout marked training_ready=true"
         )
-    if not result_has_terminal_error(result) and training_ready is False:
+    if (
+        not result_has_terminal_error(result)
+        and training_ready is False
+        and not (native_subscription_without_llm or oracle_without_llm)
+    ):
         issues.append(f"{row_path}: healthy rollout marked training_ready=false")
 
     row_error = row.get("error")
@@ -428,14 +600,64 @@ def validate_results_row(
             issues.append(
                 f"{row_path}: non-training-ready row lacks training_ready_reason"
             )
-        if row_error is None:
+        if row_error is None and not (
+            native_subscription_without_llm or oracle_without_llm
+        ):
             issues.append(f"{row_path}: non-training-ready row lacks error payload")
 
-    messages = normalize_training_messages(row, row_path, issues)
+    if native_subscription_without_llm:
+        expected_reason = "missing_healthy_structured_llm_trajectory"
+        if training_ready is not False:
+            issues.append(f"{row_path}: native subscription row must not be training-ready")
+        if info.get("training_ready_reason") != expected_reason:
+            issues.append(
+                f"{row_path}: native subscription row has unexpected training_ready_reason"
+            )
+        if row_error is not None:
+            issues.append(f"{row_path}: native subscription row carries non-null error")
+        if row.get("is_completed") is not True:
+            issues.append(f"{row_path}: native subscription row is not completed")
+        if row.get("is_truncated") is not False:
+            issues.append(f"{row_path}: native subscription row is truncated")
+        if row.get("stop_condition") != "agent_completed":
+            issues.append(
+                f"{row_path}: native subscription row has unexpected stop_condition"
+            )
+        if row.get("completion") is not None or row.get("trajectory") != []:
+            issues.append(
+                f"{row_path}: native subscription row must not synthesize training data"
+            )
+        token_usage = row.get("token_usage")
+        if not isinstance(token_usage, dict):
+            issues.append(f"{row_path}: missing object token_usage")
+        elif not (
+            (
+                positive_number(token_usage.get("final_input_tokens"))
+                or positive_number(token_usage.get("input_tokens"))
+            )
+            and (
+                positive_number(token_usage.get("final_output_tokens"))
+                or positive_number(token_usage.get("output_tokens"))
+            )
+        ):
+            issues.append(
+                f"{row_path}: native subscription row lacks positive token components"
+            )
+        if row.get("reward") is None and row.get("score") is None:
+            issues.append(f"{row_path}: missing reward/score")
+
+    messages = (
+        []
+        if native_subscription_without_llm or oracle_without_llm
+        else normalize_training_messages(row, row_path, issues)
+    )
     tools, tool_error = normalize_tool_defs(row, row_path)
     if tool_error:
         issues.append(tool_error)
-    issues.extend(validate_training_messages(messages, tools=tools, row_path=row_path))
+    if not (native_subscription_without_llm or oracle_without_llm):
+        issues.extend(
+            validate_training_messages(messages, tools=tools, row_path=row_path)
+        )
 
     if training_ready:
         for field in ("prompt", "completion", "trajectory"):
@@ -446,10 +668,20 @@ def validate_results_row(
                 )
         trajectory = row.get("trajectory")
         if isinstance(trajectory, list):
-            if llm_summary and llm_summary.get("responses", 0) and len(trajectory) == 0:
+            successful_responses = (
+                int(llm_summary.get("successful_responses", 0)) if llm_summary else 0
+            )
+            if successful_responses and len(trajectory) != successful_responses:
                 issues.append(
-                    f"{row_path}: no results trajectory steps from LLM exchanges"
+                    f"{row_path}: results trajectory steps {len(trajectory)} != "
+                    f"successful LLM responses {successful_responses}"
                 )
+            expected_indices = (
+                set(llm_summary.get("successful_exchange_indices", []))
+                if llm_summary
+                else set()
+            )
+            observed_indices: set[int] = set()
             for idx, step in enumerate(trajectory):
                 if not isinstance(step, dict):
                     issues.append(f"{row_path}: trajectory[{idx}] must be an object")
@@ -468,6 +700,34 @@ def validate_results_row(
                     issues.append(
                         f"{row_path}: trajectory[{idx}] source is not llm_trajectory"
                     )
+                if isinstance(extras, dict) and isinstance(
+                    extras.get("exchange_index"), int
+                ):
+                    observed_indices.add(extras["exchange_index"])
+                if step.get("is_truncated") is True:
+                    issues.append(
+                        f"{row_path}: trajectory[{idx}] is incorrectly truncated"
+                    )
+                step_messages = []
+                for field in ("prompt", "completion"):
+                    value = step.get(field)
+                    if isinstance(value, list):
+                        step_messages.extend(
+                            message for message in value if isinstance(message, dict)
+                        )
+                issues.extend(
+                    validate_training_messages(
+                        step_messages,
+                        tools=tools,
+                        row_path=f"{row_path}: trajectory[{idx}]",
+                    )
+                )
+            if expected_indices and observed_indices != expected_indices:
+                issues.append(
+                    f"{row_path}: results exchange indices "
+                    f"{sorted(observed_indices)} != successful LLM exchange indices "
+                    f"{sorted(expected_indices)}"
+                )
         token_usage = row.get("token_usage")
         if not isinstance(token_usage, dict):
             issues.append(f"{row_path}: missing object token_usage")
@@ -501,6 +761,8 @@ def validate_results_jsonl(
     *,
     result: dict[str, Any],
     llm_summary: dict[str, Any] | None,
+    native_subscription_without_llm: bool = False,
+    oracle_without_llm: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     path = root / "results.jsonl"
     if not path.is_file():
@@ -518,6 +780,8 @@ def validate_results_jsonl(
                 row_path=f"{path}:{idx}",
                 result=result,
                 llm_summary=llm_summary,
+                native_subscription_without_llm=native_subscription_without_llm,
+                oracle_without_llm=oracle_without_llm,
             )
         )
     summary = {
@@ -552,7 +816,10 @@ def load_run_config(root: Path) -> dict[str, Any] | None:
 
 
 def validate_rollout(
-    root: Path, *, allow_oracle_without_llm: bool = False
+    root: Path,
+    *,
+    allow_oracle_without_llm: bool = False,
+    allow_native_subscription_without_llm: bool = False,
 ) -> dict[str, Any]:
     result_path = root / "result.json"
     result, result_error = read_json(result_path)
@@ -564,11 +831,19 @@ def validate_rollout(
 
     run_config = load_run_config(root)
     oracle = is_oracle_result(result, run_config)
+    oracle_without_llm = bool(oracle and allow_oracle_without_llm)
 
     acp_path = root / "trajectory" / "acp_trajectory.jsonl"
     llm_path = root / "trajectory" / "llm_trajectory.jsonl"
     artifact_summary: dict[str, Any] = {}
     llm_summary: dict[str, Any] | None = None
+    agent_result = result.get("agent_result")
+    native_subscription_without_llm = bool(
+        allow_native_subscription_without_llm
+        and isinstance(agent_result, dict)
+        and agent_result.get("usage_source") == "agent_native_acp"
+        and not llm_path.is_file()
+    )
 
     if not acp_path.is_file():
         issues.append(f"missing required artifact: {acp_path}")
@@ -578,8 +853,12 @@ def validate_rollout(
         issues.extend(validate_acp(acp_rows, acp_path))
         artifact_summary["acp_events"] = len(acp_rows)
 
-    if oracle and allow_oracle_without_llm:
+    if oracle_without_llm:
         warnings.append("oracle rollout: llm_trajectory requirement bypassed by flag")
+    elif native_subscription_without_llm:
+        warnings.append(
+            "native subscription rollout: llm_trajectory requirement bypassed by flag"
+        )
     elif not llm_path.is_file():
         issues.append(f"missing required artifact: {llm_path}")
     else:
@@ -594,18 +873,20 @@ def validate_rollout(
         root,
         result=result,
         llm_summary=llm_summary,
+        native_subscription_without_llm=native_subscription_without_llm,
+        oracle_without_llm=oracle_without_llm,
     )
     issues.extend(results_issues)
     if results_summary:
         artifact_summary["results"] = results_summary
 
     tokens = numeric_token_total(result)
-    if not tokens or tokens <= 0:
+    if not oracle_without_llm and (not tokens or tokens <= 0):
         issues.append("missing or zero token usage in result metadata")
     if not timing_present(result):
         issues.append("missing timing metadata")
     tools = tool_usage_count(result)
-    if tools is None or tools <= 0:
+    if not oracle_without_llm and (tools is None or tools <= 0):
         issues.append("missing or zero tool usage metadata")
     if not reward_present(result):
         issues.append("missing verifier reward/score")
@@ -663,6 +944,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Treat oracle reward-only runs as out of scope for LLM trajectory capture.",
     )
     parser.add_argument(
+        "--allow-native-subscription-without-llm",
+        action="store_true",
+        help=(
+            "Accept a healthy agent_native_acp rollout without provider LLM capture "
+            "as completed but not training-ready."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON instead of a concise text report.",
@@ -678,6 +967,9 @@ def main(argv: list[str] | None = None) -> int:
         validate_rollout(
             rollout,
             allow_oracle_without_llm=args.allow_oracle_without_llm,
+            allow_native_subscription_without_llm=(
+                args.allow_native_subscription_without_llm
+            ),
         )
         for rollout in deduped
     ]

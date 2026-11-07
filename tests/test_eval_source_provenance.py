@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
+from benchflow._utils.hf_datasets import SOURCE_SIDECAR
 from benchflow.cli.main import app
 from benchflow.evaluation import Evaluation, EvaluationConfig
 from benchflow.models import RolloutResult
@@ -125,6 +126,7 @@ async def test_evaluation_summary_marks_resumed_source_mismatch(tmp_path):
         json.dumps(
             {
                 "task_name": "task-a",
+                "rollout_name": result_dir.name,
                 "agent": "gemini",
                 "rewards": {"reward": 1.0},
                 "error": None,
@@ -222,6 +224,71 @@ def test_evaluation_discovers_single_task_directory(tmp_path):
     evaluation = Evaluation(tasks_dir=task_dir, jobs_dir=tmp_path / "jobs")
 
     assert evaluation._get_task_dirs() == [task_dir]
+
+
+@pytest.mark.asyncio
+async def test_evaluation_uses_hf_snapshot_tasks_subdir_and_sidecar_provenance(
+    monkeypatch, tmp_path
+):
+    """Guards PR slice 1 so HF split-layout snapshots run from their root."""
+    snapshot_root = tmp_path / "hf-snapshot"
+    tasks_root = snapshot_root / "tasks"
+    task_dir = tasks_root / "task-a"
+    (task_dir / "tests").mkdir(parents=True)
+    _write_minimal_task_toml(task_dir)
+    (task_dir / "instruction.md").write_text("Solve it.\n")
+    (task_dir / "tests" / "test.sh").write_text("exit 0\n")
+    (snapshot_root / SOURCE_SIDECAR).write_text(
+        json.dumps(
+            {
+                "type": "huggingface_dataset",
+                "repo": "benchflow/sample-tasks",
+                "repo_type": "dataset",
+                "requested_revision": "main",
+                "resolved_revision": "a" * 40,
+                "path": "",
+                "local_path": str(snapshot_root),
+                "dirty": False,
+                "file_hashes": {},
+            }
+        )
+    )
+    captured = {}
+
+    async def fake_create(config):
+        captured["source_provenance"] = config.source_provenance
+
+        class FakeRollout:
+            async def run(self):
+                return RolloutResult(task_name="task-a", rewards={"reward": 1.0})
+
+        return FakeRollout()
+
+    monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+
+    evaluation = Evaluation(
+        tasks_dir=snapshot_root,
+        jobs_dir=tmp_path / "jobs",
+        config=EvaluationConfig(
+            agent="gemini",
+            model="gemini-3.1-flash-lite-preview",
+        ),
+    )
+
+    assert evaluation._tasks_dir == tasks_root
+    assert evaluation._get_task_dirs() == [task_dir]
+    await evaluation._run_single_task(task_dir, evaluation._config)
+
+    source = captured["source_provenance"]
+    assert source["type"] == "huggingface_dataset"
+    assert source["repo"] == "benchflow/sample-tasks"
+    assert source["resolved_revision"] == "a" * 40
+    assert source["path"] == "tasks/task-a"
+    assert set(source["file_hashes"]) == {
+        "instruction.md",
+        "task.toml",
+        "tests/test.sh",
+    }
 
 
 def test_eval_create_config_applies_concurrency_override(monkeypatch, tmp_path):
@@ -428,6 +495,8 @@ def test_eval_create_config_prompt_overrides_yaml(monkeypatch, tmp_path):
 
 def test_eval_create_config_applies_identity_overrides(monkeypatch, tmp_path):
     """Guards v0.5 config runs from silently ignoring expensive-run identity flags."""
+    # These run with --sandbox daytona; stay independent of the optional SDK.
+    monkeypatch.setattr("benchflow.eval_plan.sandbox_sdk_missing", lambda name: False)
     tasks_root = tmp_path / "tasks"
     tasks_root.mkdir()
     config = tmp_path / "eval.yaml"
@@ -534,6 +603,8 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
     monkeypatch, tmp_path
 ):
     """Guards v0.5-integration@c30e130 against false per-rollout concurrency evidence."""
+    # These run with --sandbox daytona; stay independent of the optional SDK.
+    monkeypatch.setattr("benchflow.eval_plan.sandbox_sdk_missing", lambda name: False)
     tasks_root = tmp_path / "tasks"
     task_dir = tasks_root / "task-a"
     _write_minimal_task_toml(task_dir)
@@ -578,7 +649,9 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
         def resolve_agent_env(self, _agent, _model, agent_env):
             return agent_env or {}
 
-        def agent_launch(self, agent, *, disallow_web_tools):
+        def agent_launch(
+            self, agent, *, disallow_web_tools, disallow_hosted_search=False
+        ):
             return agent
 
         def stage_dockerfile_deps(self, *_args, **_kwargs):

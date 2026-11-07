@@ -40,11 +40,9 @@ class TestConnectAsEnvMerge:
         cfg = _make_config(
             agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
         )
-        trial = Rollout.__new__(Rollout)
-        trial._config = cfg
+        trial = Rollout(cfg)
         trial._env = {}
         trial._rollout_dir = tmp_path
-        trial._timing = {}
         trial._agent_cwd = None
         trial._agent_cfg = MagicMock(credential_files=[])
         trial._phase = "idle"
@@ -58,6 +56,7 @@ class TestConnectAsEnvMerge:
         planes.write_credential_files = AsyncMock()
         planes.upload_subscription_auth = AsyncMock()
         planes.apply_web_tool_policy = AsyncMock()
+        planes.quiesce_agent = AsyncMock()
         planes.connect_acp = AsyncMock(
             return_value=(AsyncMock(), AsyncMock(), AsyncMock(), "agent")
         )
@@ -141,8 +140,36 @@ class TestConnectAsEnvMerge:
         assert captured["env"] == {}
 
     @pytest.mark.asyncio
+    async def test_native_usage_accumulates_across_fresh_sessions(self, _mock_trial):
+        """Guards PR #1080 / issue #933 across restarted ACP usage counters."""
+        from benchflow.acp.session import ACPSession
+
+        first_session = ACPSession("first")
+        first_session.record_prompt_usage(
+            {"inputTokens": 10, "outputTokens": 4, "totalTokens": 14}
+        )
+        second_session = ACPSession("second")
+        second_session.record_prompt_usage(
+            {"inputTokens": 5, "outputTokens": 2, "totalTokens": 7}
+        )
+        _mock_trial._planes.connect_acp.side_effect = [
+            (AsyncMock(), first_session, AsyncMock(), "agent"),
+            (AsyncMock(), second_session, AsyncMock(), "agent"),
+        ]
+        _mock_trial._native_usage_metrics = {"total_tokens": 0}
+        _mock_trial._native_usage_checkpoint = None
+        role = _mock_trial._config.scenes[0].roles[0]
+
+        await _mock_trial.connect_as(role)
+        _mock_trial._collect_native_acp_usage()
+        await _mock_trial.connect_as(role)
+        _mock_trial._collect_native_acp_usage()
+
+        assert _mock_trial._native_usage_metrics["total_tokens"] == 21
+
+    @pytest.mark.asyncio
     async def test_same_agent_different_model_refreshes_credentials(self, _mock_trial):
-        """Guards ENG-91 P0 same-agent role credential refresh regression."""
+        """Same-agent role credential refresh regression."""
         from benchflow.rollout import Role
 
         primary = Role(name="primary", agent="claude-agent-acp", model="test-model")

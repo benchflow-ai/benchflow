@@ -9,7 +9,7 @@ Demonstrates:
   - Standard bf.run(RolloutConfig) API — same path for single or multi-agent
 
 Requirements:
-  - uv tool install --upgrade benchflow, or run from a checkout with uv run
+  - uv tool install --python 3.12 --upgrade benchflow, or run from a checkout with uv run
   - GEMINI_API_KEY or DAYTONA_API_KEY set
   - A BenchFlow task directory (e.g. benchflow-ai/skillsbench/tasks/edit-pdf)
 
@@ -60,9 +60,9 @@ def coder_reviewer_config(
     task_path: Path,
     env: str,
     coder_agent: str = "gemini",
-    coder_model: str = "gemini-3.1-flash-lite-preview",
+    coder_model: str = "gemini-3.5-flash-lite",
     reviewer_agent: str = "gemini",
-    reviewer_model: str = "gemini-3.1-flash-lite-preview",
+    reviewer_model: str = "gemini-3.5-flash-lite",
 ) -> RolloutConfig:
     """Pattern 3: Coder + Reviewer — explicit multi-role prompts.
 
@@ -156,7 +156,7 @@ def main() -> None:
     )
     parser.add_argument("--sandbox", default="daytona", choices=["daytona", "docker"])
     parser.add_argument("--agent", default="gemini")
-    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
+    parser.add_argument("--model", default="gemini-3.5-flash-lite")
     parser.add_argument(
         "--compare",
         action="store_true",

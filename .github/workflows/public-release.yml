@@ -28,9 +28,15 @@ jobs:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
-          enable-cache: true
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          # A publishing build never restores a cache another run saved
+          # (cache poisoning; setup-uv turns it off for these events itself).
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.12
@@ -50,11 +56,52 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: uv run --with packaging --no-project python tools/release_version.py public-release
 
+      - name: Install the bfx toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+
+      # Both static binaries, byte for byte the pinned ones
+      # (src/benchflow/_bfx/pins.py), or the release stops here.
+      - name: Build bfx (pinned)
+        run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
+
       - name: Build distributions
         run: uv build --no-sources
 
       - name: Check distributions
         run: uv run --with twine --no-project twine check dist/*
+
+      - name: Check bfx in distributions
+        run: uv run --no-project python tools/check_dist_bfx.py dist
+
+      # Nothing private ships: tools/release_leak_gate.py reads every file of
+      # the wheel, the sdist and the docs, with gitleaks and trufflehog pinned
+      # by tools/install_leak_scanners.sh. Its patterns and allowlist name what
+      # must not ship, so they are this environment's secrets, never files in
+      # the repository; without them the gate stops the release. Its log names
+      # rules, files and hashes, never the matched text.
+      - name: Install the leak scanners (pinned)
+        run: tools/install_leak_scanners.sh "$RUNNER_TEMP/leak-scanners"
+
+      - name: Leak gate on the wheel, the sdist and the docs
+        env:
+          RELEASE_LEAK_PATTERNS: ${{ secrets.RELEASE_LEAK_PATTERNS }}
+          RELEASE_LEAK_ALLOWLIST: ${{ secrets.RELEASE_LEAK_ALLOWLIST }}
+        run: |
+          umask 077
+          cfg="$RUNNER_TEMP/leak-gate"
+          mkdir -p "$cfg"
+          printf '%s' "$RELEASE_LEAK_PATTERNS" > "$cfg/patterns.json"
+          printf '%s' "$RELEASE_LEAK_ALLOWLIST" > "$cfg/allowlist.json"
+          uv run --no-project python tools/release_leak_gate.py \
+            --patterns "$cfg/patterns.json" --allowlist "$cfg/allowlist.json" \
+            --scanners "$RUNNER_TEMP/leak-scanners" --report-dir "$cfg/report" \
+            dist/*.whl dist/*.tar.gz docs=docs
+
+      - name: Require accepted source and exact distributions
+        run: uv run --no-project python tools/check_release_acceptance.py dist
 
       - name: Publish public release
         run: uv publish
@@ -67,10 +114,14 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber
           else
+            pre=()
+            if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+              pre=(--prerelease --latest=false)
+            fi
             gh release create "$tag" dist/* \
               --title "benchflow ${{ steps.version.outputs.version }}" \
               --generate-notes \
-              --verify-tag
+              --verify-tag "${pre[@]}"
           fi
 
       - name: Summarize release

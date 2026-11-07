@@ -3,6 +3,13 @@
 Generate BenchFlow task directories from
 [ProgramBench](https://programbench.com) instances.
 
+The generated reference oracle is not a validated solution for every instance.
+For `abishekvashok__cmatrix.5c082c6`, it attempts a network clone in the offline
+agent sandbox, and the upstream repository has no `compile.sh`. Select an agent
+explicitly for reconstruction runs. A structural task check does not prove that
+the generated oracle can build or pass the verifier; a working reference needs
+task-specific preparation that preserves the sandbox's network policy.
+
 ProgramBench evaluates whether AI agents can reverse-engineer black-box
 software: given only a compiled binary and its documentation, agents must
 architect and implement a complete codebase that reproduces the original

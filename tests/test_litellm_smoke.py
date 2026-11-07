@@ -14,6 +14,8 @@ import os
 
 import pytest
 
+from tests._package_files import package_path
+
 
 def _smoke_dotenv() -> dict[str, str]:
     from benchflow._dotenv import load_dotenv_env
@@ -91,7 +93,7 @@ async def test_real_acp_rollout_records_provider_usage(tmp_path):
 
     agent = _smoke_agent()
     result = await SDK().run(
-        task_path="src/benchflow/demo_task",
+        task_path=str(package_path("demo_task")),
         agent=agent,
         model=_smoke_model(agent),
         jobs_dir=tmp_path,
@@ -118,7 +120,7 @@ async def test_real_daytona_acp_rollout_records_provider_usage(tmp_path):
 
     agent = _smoke_agent()
     result = await SDK().run(
-        task_path="src/benchflow/demo_task",
+        task_path=str(package_path("demo_task")),
         agent=agent,
         model=_smoke_model(agent),
         jobs_dir=tmp_path,

@@ -193,7 +193,7 @@ timeout_sec = 3600.0
 [verifier]
 timeout_sec = 300.0
 
-[environment]
+[sandbox]
 build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096

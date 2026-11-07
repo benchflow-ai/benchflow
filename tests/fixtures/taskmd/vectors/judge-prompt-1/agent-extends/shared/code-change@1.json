@@ -1,0 +1,45 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "criteria": [
+    {
+      "id": "tests-pass",
+      "gate": true,
+      "judge": "test",
+      "check": "tests/",
+      "text": "The task's tests pass.",
+      "implicit": "A change that breaks the tests is not done."
+    },
+    {
+      "id": "minimal-diff",
+      "points": 1,
+      "judge": "agent",
+      "evidence": [
+        "diff:src/"
+      ],
+      "text": "The change touches only what the fix needs.",
+      "implicit": "Reviewers reject unrelated edits."
+    },
+    {
+      "id": "no-new-dependency",
+      "points": -2,
+      "judge": "agent",
+      "outcome": "bad",
+      "evidence": [
+        "diff:pyproject.toml"
+      ],
+      "text": "Adds a new third-party dependency.",
+      "implicit": "New dependencies need a reviewer's approval."
+    },
+    {
+      "id": "docs-updated",
+      "points": 1,
+      "judge": "llm",
+      "evidence": [
+        "README.md"
+      ],
+      "text": "The README describes the changed behavior.",
+      "implicit": "Users read the README."
+    }
+  ]
+}

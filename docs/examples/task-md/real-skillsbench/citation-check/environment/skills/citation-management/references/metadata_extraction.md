@@ -452,7 +452,7 @@ GET https://api.datacite.org/dois/10.5281/zenodo.1234567
   title     = {Exploring the New World of the Genome with {DNA} Microarrays},
   booktitle = {DNA Microarrays: A Molecular Cloning Manual},
   editor    = {Eisen, Michael B. and Brown, Patrick O.},
-  publisher = {Cold Spring Harbor Laboratory Press},
+  publisher = {CSHL Press},
   year      = {2020},
   pages     = {1--45}
 }

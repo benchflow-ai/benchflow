@@ -1,0 +1,918 @@
+"""Guards the review evidence isolation boundary introduced by PR #942.
+
+Exercise the real capture/admission scripts with a local subprocess transport;
+these tests do not need credentials or pretend to test provider provisioning.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import os
+import shlex
+import shutil
+import socket
+import sys
+import tarfile
+from pathlib import Path
+
+import pytest
+
+from benchflow.agents.credentials import credential_evidence_overrides
+from benchflow.review.evidence import (
+    EvidenceError,
+    EvidenceExclusion,
+    EvidenceManifest,
+    _extract_archive,
+    _kept_tar_link,
+    _link_target,
+    capture_task_evidence,
+    capture_workspace,
+    install_review_evidence,
+    install_uploaded_workspace,
+    prepare_workspace_upload,
+    validate_uploaded_workspace,
+    validate_workspace,
+)
+from benchflow.sandbox.protocol import ExecResult
+from benchflow.task.config import ArtifactConfig
+
+
+class LocalTransport:
+    """Run the same stdlib scripts used by remote sandbox transports."""
+
+    def __init__(self, *, corrupt_download: bool = False):
+        self.corrupt_download = corrupt_download
+        self.downloaded: list[str] = []
+
+    async def exec(
+        self, cmd: str, *, user: str = "root", timeout_sec: int = 30
+    ) -> ExecResult:
+        argv = shlex.split(cmd)
+        if argv[0] == "python3":
+            argv[0] = sys.executable
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_sec)
+        assert process.returncode is not None
+        return ExecResult(process.returncode, stdout.decode(), stderr.decode())
+
+    async def download_file(self, src: str, dst: Path) -> None:
+        self.downloaded.append(src)
+        shutil.copyfile(src, dst)
+        if self.corrupt_download:
+            with dst.open("ab") as output:
+                output.write(b"corrupted transport")
+
+
+@pytest.mark.asyncio
+async def test_complete_workspace_roundtrip_and_admission(tmp_path):
+    source = tmp_path / "actual-working-directory"
+    source.mkdir()
+    (source / "nested").mkdir()
+    (source / "nested" / "empty").mkdir()
+    payload = source / "nested" / "résult data.bin"
+    payload.write_bytes(bytes(range(256)))
+    (source / "executable").write_text("#!/bin/sh\nexit 0\n")
+    (source / "executable").chmod(0o755)
+    (source / "relative-link").symlink_to("nested/résult data.bin")
+    (source / "absolute-link").symlink_to(payload)
+    (source / "directory-link").symlink_to("nested", target_is_directory=True)
+    os.link(payload, source / "hardlink")
+    destination = tmp_path / "evidence"
+    transport = LocalTransport()
+
+    manifest = await capture_workspace(transport, str(source), destination)
+
+    assert manifest.workspace == str(source.resolve())
+    assert manifest.capture_status == "complete"
+    assert (destination / "workspace" / "absolute-link").read_bytes() == bytes(
+        range(256)
+    )
+    assert not os.readlink(destination / "workspace" / "absolute-link").startswith("/")
+    assert (destination / "workspace" / "executable").stat().st_mode & 0o111
+    assert (destination / "workspace" / "hardlink").read_bytes() == bytes(range(256))
+    assert (destination / "workspace" / "nested" / "empty").is_dir()
+    assert len(manifest.entries) == 8
+    assert (
+        EvidenceManifest.model_validate_json(
+            (destination / "manifest.json").read_text()
+        )
+        == manifest
+    )
+    assert all(not Path(path).exists() for path in transport.downloaded)
+    validate_workspace(destination / "workspace", manifest)
+    await validate_uploaded_workspace(
+        transport,
+        str(destination / "workspace"),
+        str(destination / "manifest.json"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_archive_hash_rejects_corrupt_download_atomically(tmp_path):
+    """Guards PR #942's evidence boundary against corrupted transfers."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer.txt").write_text("answer")
+    destination = tmp_path / "evidence"
+    transport = LocalTransport(corrupt_download=True)
+
+    with pytest.raises(EvidenceError, match="digest changed"):
+        await capture_workspace(transport, str(source), destination)
+
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".evidence-*"))
+    assert all(not Path(path).exists() for path in transport.downloaded)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [{"max_bytes": 1}, {"max_entries": 1}])
+async def test_limits_fail_instead_of_publishing_partial_evidence(tmp_path, limit):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a").write_text("a full result")
+    (source / "b").write_text("another result")
+
+    with pytest.raises(EvidenceError, match="capture limits"):
+        await capture_workspace(
+            LocalTransport(), str(source), tmp_path / "evidence", **limit
+        )
+
+    assert not (tmp_path / "evidence").exists()
+
+
+@pytest.mark.asyncio
+async def test_external_symlink_never_imports_outside_files(tmp_path):
+    """Guards PR #942's rule that evidence must not dereference host secrets.
+
+    Since the escaping-link fix on top of PR #1128 the link is an explicit
+    exclusion rather than a capture failure; the outside file still never
+    enters the bundle.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    secret = tmp_path / "credential"
+    secret.write_text("do not export")
+    (source / "credential-link").symlink_to(secret)
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert manifest.entries == ()
+    assert [
+        (exclusion.original_path, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ] == [(str(source / "credential-link"), "symlink_escape", str(secret))]
+    assert not any(bundle.rglob("credential*"))
+    assert b"do not export" not in b"".join(
+        path.read_bytes() for path in bundle.rglob("*") if path.is_file()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["fifo", "socket"])
+async def test_special_files_are_recorded_not_silently_omitted(
+    tmp_path, monkeypatch, kind
+):
+    """Guards the evidence-capture fix for automatic review from PR #1126.
+
+    A socket or FIFO holds no bytes to preserve. Aborting on one discarded the
+    solver's whole review; it is now an explicit manifest exclusion and the
+    rest of the workspace is still captured.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer.txt").write_text("solver output")
+    special = source / "results-pipe"
+    if kind == "fifo":
+        os.mkfifo(special)
+    else:
+        # AF_UNIX addresses are length-limited; bind relative to the workspace.
+        monkeypatch.chdir(source)
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(special.name)
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert (bundle / "workspace" / "answer.txt").read_text() == "solver output"
+    assert not (bundle / "workspace" / special.name).exists()
+    assert [(entry.original_path, entry.reason) for entry in manifest.exclusions] == [
+        (str(special), "special_file")
+    ]
+    validate_workspace(bundle / "workspace", manifest)
+
+
+@pytest.mark.asyncio
+async def test_daytona_session_state_never_blocks_or_enters_evidence(tmp_path):
+    """Guards automatic review on Daytona /root workspaces after PR #1126.
+
+    Daytona's daemon keeps ~/.daytona/sessions in /root: the entrypoint's
+    stdin/stdout/stderr FIFOs plus each session command's script, log and exit
+    code (layout observed in a live sandbox). Capture aborted on
+    input.pipe, so every such rollout lost its review and final reward.
+    """
+    source = tmp_path / "root"
+    entrypoint = source / ".daytona/sessions/entrypoint/entrypoint_command"
+    entrypoint.mkdir(parents=True)
+    for pipe in ("input.pipe", "stdout.pipe", "stderr.pipe"):
+        os.mkfifo(entrypoint / pipe)
+    (entrypoint / "cmd.sh").write_text("sleep infinity\n")
+    (entrypoint / "output.log").write_text("")
+    command = source / ".daytona/sessions/benchflow-exec/0b5e4c1d"
+    command.mkdir(parents=True)
+    (command / "cmd.sh").write_text("python3 -c capture\n")
+    (command / "exit_code").write_text("0")
+    (command / "output.log").write_text("harness output")
+    (source / "paper.pdf").write_bytes(b"%PDF-1.7 solver paper")
+    (source / "chains").mkdir()
+    (source / "chains" / "lcdm.csv").write_text("Om,rdh\n0.30,101.0\n")
+    (source / ".daytonarc").write_text("solver file that only resembles provider state")
+    (source / "daytona").mkdir()
+    (source / "daytona" / "notes.md").write_text("solver notes")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert [(entry.original_path, entry.reason) for entry in manifest.exclusions] == [
+        (str(source / ".daytona"), "sandbox_runtime")
+    ]
+    assert not (bundle / "workspace" / ".daytona").exists()
+    assert {entry.path for entry in manifest.entries} == {
+        ".daytonarc",
+        "chains",
+        "chains/lcdm.csv",
+        "daytona",
+        "daytona/notes.md",
+        "paper.pdf",
+    }
+    validate_workspace(bundle / "workspace", manifest)
+
+
+@pytest.mark.asyncio
+async def test_absolute_in_workspace_link_with_dotdot_is_kept(tmp_path):
+    """Guards the fix from PR #1207 for #1157: an absolute link whose '..'
+    parts stay inside the workspace is kept for the reviewer, not dropped."""
+    source = tmp_path / "source"
+    (source / "analysis" / "scripts").mkdir(parents=True)
+    (source / "analysis" / "figures").mkdir()
+    (source / "analysis" / "figures" / "fit.svg").write_text("<svg/>")
+    (source / "figs").symlink_to(
+        f"{source}/analysis/scripts/../figures", target_is_directory=True
+    )
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(transport, str(source), bundle)
+
+    assert manifest.exclusions == ()
+    assert os.readlink(bundle / "workspace" / "figs") == "analysis/figures"
+    assert (bundle / "workspace" / "figs" / "fit.svg").read_text() == "<svg/>"
+    archive = tmp_path / "upload.tar"
+    prepare_workspace_upload(bundle, archive)
+    receiving = tmp_path / "reviewer" / "workspace"
+    await install_uploaded_workspace(
+        transport, str(archive), str(receiving), str(bundle / "manifest.json")
+    )
+    validate_workspace(receiving, manifest)
+    assert (receiving / "figs" / "fit.svg").read_text() == "<svg/>"
+
+
+@pytest.mark.parametrize(
+    ("name", "linkname", "expected"),
+    [
+        ("figs", "/root/analysis/scripts/../figures", "analysis/figures"),
+        ("a/b/link", "/root/a/./c/../d", "../d"),
+        ("link", "/root/x/..", "."),
+        ("link", "/root/answer.txt", "answer.txt"),
+        ("link", "/root/../root/answer.txt", None),
+        ("link", "/root/a/../../etc/passwd", None),
+        ("link", "/root/..", None),
+    ],
+)
+def test_absolute_link_target_is_normalised_before_the_safety_check(
+    name, linkname, expected
+):
+    """Guards the fix from PR #1207 for #1157 at the unit level: '..' inside
+    the workspace is kept, '..' that climbs out still escapes."""
+    member = tarfile.TarInfo(name)
+    member.type = tarfile.SYMTYPE
+    member.linkname = linkname
+    if expected is None:
+        with pytest.raises(
+            EvidenceError, match=r"symlink escapes|Unsafe evidence path"
+        ):
+            _link_target(member, "/root")
+    else:
+        assert _link_target(member, "/root") == expected
+
+
+@pytest.mark.parametrize(
+    ("linkname", "kept"),
+    [
+        ("/root/analysis/scripts/../figures", True),
+        ("/root/../root/analysis/figures", False),
+        ("/root/analysis/../../etc", False),
+        ("/etc/passwd", False),
+    ],
+)
+def test_tar_listing_normalises_an_absolute_link_like_the_capture(linkname, kept):
+    """Guards the fix from PR #1207 for #1157 on the tar-listing path: the
+    host applies the capture script's rule to an archive, so it must keep the
+    same in-workspace absolute links."""
+    links = {"figs": linkname}
+    assert _kept_tar_link("figs", linkname, links, "/root") is kept
+
+
+def test_tar_listing_keeps_a_normalised_link_only_where_it_leads_alike():
+    """Guards the port of PR #1207 against rewriting a link's meaning: '..'
+    after a linked folder goes to that folder's parent, so /root/a/../b with
+    a -> x/y reaches x/b, not the b its normalised text names."""
+    assert _kept_tar_link("answer", "/root/a/../b", {"answer": "/root/a/../b"}, "/root")
+    links = {"a": "x/y", "answer": "/root/a/../b"}
+    assert _kept_tar_link("answer", "/root/a/../b", links, "/root") is False
+
+
+@pytest.mark.asyncio
+async def test_absolute_link_through_a_linked_folder_is_not_rewritten(tmp_path):
+    """Guards the port of PR #1207: a link kept as its normalised text must
+    lead where the agent's link leads. Here the sandbox reads x/b ('SUB')
+    through a -> x/y, while the text names b ('ROOT'), so the link stays a
+    symlink_escape exclusion instead of showing the reviewer another file."""
+    source = tmp_path / "source"
+    (source / "x" / "y").mkdir(parents=True)
+    (source / "x" / "b").write_text("SUB")
+    (source / "b").write_text("ROOT")
+    (source / "a").symlink_to("x/y", target_is_directory=True)
+    target = f"{source}/a/../b"
+    (source / "answer").symlink_to(target)
+    assert (source / "answer").read_text() == "SUB"
+
+    manifest = await capture_workspace(
+        LocalTransport(), str(source), tmp_path / "evidence"
+    )
+
+    assert [
+        (Path(exclusion.original_path).name, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ] == [("answer", "symlink_escape", target)]
+    assert "a" in {entry.path for entry in manifest.entries}
+
+
+@pytest.mark.asyncio
+async def test_absolute_link_whose_normalised_text_leaves_is_excluded(tmp_path):
+    """Guards the port of PR #1207: '..' that climbs out of the workspace in
+    the link's text still escapes, even where the link itself resolves inside
+    (l -> d1/d2, so l/../../other is the workspace's own other). The outside
+    file of that name never enters the bundle."""
+    source = tmp_path / "source"
+    (source / "d1" / "d2").mkdir(parents=True)
+    (source / "other").write_text("inside")
+    (tmp_path / "other").write_text("do not export")
+    (source / "l").symlink_to("d1/d2", target_is_directory=True)
+    target = f"{source}/l/../../other"
+    (source / "escape").symlink_to(target)
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert [
+        (Path(exclusion.original_path).name, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ] == [("escape", "symlink_escape", target)]
+    assert b"do not export" not in b"".join(
+        path.read_bytes() for path in bundle.rglob("*") if path.is_file()
+    )
+
+
+@pytest.mark.asyncio
+async def test_escaping_links_and_fifos_are_exclusions_through_reviewer_admission(
+    tmp_path,
+):
+    """Guards automatic review from PR #1126 against agent helper links.
+
+    On a benchmark's PR, GPT-6 Astra on codex-acp left /app/apply_patch
+    linked to codex's helper outside /app; capture aborted with "workspace
+    symlink escapes evidence" and the trial ended with rewards null although
+    the agent and verifier had finished. Every link the bundle cannot keep is
+    now a symlink_escape exclusion with its target text (one leaving the root,
+    one through another escaping link, and a loop), and the rest of the
+    workspace still passes the host check, packaging and reviewer admission.
+    An absolute link whose text detours through '..' but stays inside used to
+    pass capture and then fail extraction (#1157); since PR #1207 it is kept.
+    """
+    helper = tmp_path / "codex" / "apply_patch"
+    helper.parent.mkdir()
+    helper.write_text("#!/bin/sh\n")
+    source = tmp_path / "app"
+    (source / "sub").mkdir(parents=True)
+    (source / "answer.txt").write_text("solver output")
+    os.mkfifo(source / "progress.pipe")
+    escaping = {
+        "apply_patch": str(helper),
+        "parent-escape": "../codex/apply_patch",
+        "dangling-outside": "/nonexistent/benchflow-evidence-target",
+        "through-escape": "apply_patch",
+        "loop": "loop",
+    }
+    for name, target in escaping.items():
+        (source / name).symlink_to(target)
+    (source / "kept-link").symlink_to("answer.txt")
+    (source / "kept-dangling").symlink_to("sub/not-written")
+    # Its text detours through '..' but stays inside: kept since PR #1207.
+    (source / "text-detour").symlink_to(source / "sub" / ".." / "answer.txt")
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(transport, str(source), bundle)
+
+    assert sorted(
+        (Path(exclusion.original_path).name, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ) == sorted(
+        [(name, "symlink_escape", target) for name, target in escaping.items()]
+        + [("progress.pipe", "special_file", None)]
+    )
+    assert {entry.path for entry in manifest.entries} == {
+        "answer.txt",
+        "kept-dangling",
+        "kept-link",
+        "sub",
+        "text-detour",
+    }
+    validate_workspace(bundle / "workspace", manifest)
+    archive = tmp_path / "upload.tar"
+    prepare_workspace_upload(bundle, archive)
+    receiving = tmp_path / "reviewer" / "workspace"
+    await install_uploaded_workspace(
+        transport, str(archive), str(receiving), str(bundle / "manifest.json")
+    )
+    assert sorted(path.name for path in receiving.iterdir()) == [
+        "answer.txt",
+        "kept-dangling",
+        "kept-link",
+        "sub",
+        "text-detour",
+    ]
+    assert (receiving / "kept-link").read_text() == "solver output"
+    assert os.readlink(receiving / "text-detour") == "answer.txt"
+
+
+@pytest.mark.asyncio
+async def test_host_and_reviewer_admission_reject_inconsistent_exclusions(tmp_path):
+    """Guards the exclusion rules that come with symlink_escape (on top of #1128).
+
+    A manifest never both captures and excludes one path, and only an escaping
+    link exclusion carries a link target, on the host and in the reviewer's
+    stdlib admission check alike.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer").write_text("correct")
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+    manifest = await capture_workspace(transport, str(source), bundle)
+    tree, manifest_path = bundle / "workspace", bundle / "manifest.json"
+    overlapping = manifest.model_copy(
+        update={
+            "exclusions": (
+                EvidenceExclusion(
+                    original_path=manifest.entries[0].original_path,
+                    reason="task_exclude",
+                ),
+            )
+        }
+    )
+    manifest_path.write_text(overlapping.model_dump_json())
+
+    with pytest.raises(EvidenceError, match="both captures and excludes"):
+        validate_workspace(tree, overlapping)
+    with pytest.raises(EvidenceError, match="Uploaded workspace validation failed"):
+        await validate_uploaded_workspace(transport, str(tree), str(manifest_path))
+
+    with pytest.raises(ValueError, match="link target"):
+        EvidenceExclusion(original_path="/app/apply_patch", reason="symlink_escape")
+    untargeted = json.loads(manifest.model_dump_json())
+    untargeted["exclusions"] = [
+        {"original_path": "/app/apply_patch", "reason": "symlink_escape"}
+    ]
+    manifest_path.write_text(json.dumps(untargeted))
+    with pytest.raises(EvidenceError, match="Uploaded workspace validation failed"):
+        await validate_uploaded_workspace(transport, str(tree), str(manifest_path))
+
+
+@pytest.mark.asyncio
+async def test_package_manager_caches_stay_out_of_evidence(tmp_path):
+    """Guards the capture size of /root workspaces (verifier-followups PR).
+
+    On a 2026-10-16 ion-trap-design run the harness's npm and uv caches under
+    /root were 97% of the 745 MB the separate verifier received. Caches are
+    recorded as exclusions; look-alikes that could be solver output stay.
+    """
+    source = tmp_path / "root"
+    for cache in (
+        ".cache/uv/archive-v0/abc/pkg.py",
+        ".cache/pip/http-v2/0/1",
+        ".npm/_cacache/content-v2/sha512/aa",
+        ".npm/_logs/debug-0.log",
+        ".npm/_npx/f1/package.json",
+        "project/.cache/uv/wheel",
+    ):
+        (source / cache).parent.mkdir(parents=True, exist_ok=True)
+        (source / cache).write_text("cache")
+    kept = (
+        ".cache/matplotlib/fontlist.json",
+        ".npmrc",
+        ".local/bin/tool",
+        "results/cache/uv/table.csv",
+        "uv.lock",
+    )
+    for path in kept:
+        (source / path).parent.mkdir(parents=True, exist_ok=True)
+        (source / path).write_text("solver")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert sorted((e.original_path, e.reason) for e in manifest.exclusions) == sorted(
+        (str(source / path), "package_cache")
+        for path in (
+            ".cache/pip",
+            ".cache/uv",
+            ".npm/_cacache",
+            ".npm/_logs",
+            ".npm/_npx",
+            "project/.cache/uv",
+        )
+    )
+    files = {e.path for e in manifest.entries if e.kind == "file"}
+    assert files == set(kept)
+    validate_workspace(bundle / "workspace", manifest)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["bytes", "addition", "deletion", "symlink"])
+async def test_host_and_reviewer_admission_reject_changed_evidence(tmp_path, mutation):
+    """Guards PR #942's evidence boundary against post-capture substitution."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer").write_text("correct")
+    transport = LocalTransport()
+    destination = tmp_path / "evidence"
+    manifest = await capture_workspace(transport, str(source), destination)
+    tree = destination / "workspace"
+    if mutation == "bytes":
+        (tree / "answer").write_text("changed")
+    elif mutation == "addition":
+        (tree / "unmanifested").write_text("added")
+    elif mutation == "deletion":
+        (tree / "answer").unlink()
+    else:
+        (tree / "answer").unlink()
+        (tree / "answer").symlink_to(source / "answer")
+
+    with pytest.raises(EvidenceError):
+        validate_workspace(tree, manifest)
+    with pytest.raises(EvidenceError, match="Uploaded workspace validation failed"):
+        await validate_uploaded_workspace(
+            transport, str(tree), str(destination / "manifest.json")
+        )
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [("../escape", "file", "")],
+        [("/absolute", "file", "")],
+        [("duplicate", "file", ""), ("duplicate", "file", "")],
+        [("link", "symlink", "../../outside")],
+        [("link", "symlink", "/etc/passwd")],
+        [("link", "symlink", "inside"), ("link/child", "file", "")],
+        [("hardlink", "hardlink", "missing")],
+    ],
+)
+def test_untrusted_archives_cannot_escape_or_alias_destination(tmp_path, members):
+    """Guards PR #942's evidence isolation against tar path/link attacks."""
+    archive_path = tmp_path / "attack.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        for name, kind, target in members:
+            member = tarfile.TarInfo(name)
+            if kind == "file":
+                member.size = 4
+                archive.addfile(member, io.BytesIO(b"data"))
+            else:
+                member.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
+                member.linkname = target
+                archive.addfile(member)
+    destination = tmp_path / "workspace"
+    destination.mkdir()
+
+    with pytest.raises(EvidenceError):
+        _extract_archive(
+            archive_path, destination, "/app", max_bytes=1024, max_entries=100
+        )
+
+    assert not (tmp_path / "escape").exists()
+
+
+@pytest.mark.asyncio
+async def test_existing_bundle_is_never_overwritten(tmp_path):
+    destination = tmp_path / "evidence"
+    destination.mkdir()
+    (destination / "sentinel").write_text("previous evidence")
+
+    with pytest.raises(EvidenceError, match="already exists"):
+        await capture_workspace(LocalTransport(), "/unused", destination)
+
+    assert (destination / "sentinel").read_text() == "previous evidence"
+
+
+@pytest.mark.asyncio
+async def test_packaged_upload_preserves_links_empty_directories_and_bytes(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "empty").mkdir()
+    (source / "answer.txt").write_text("solver output")
+    (source / "root-link").symlink_to(".", target_is_directory=True)
+    (source / "answer-link").symlink_to(source / "answer.txt")
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+    manifest = await capture_workspace(transport, str(source), bundle)
+    archive = tmp_path / "upload.tar"
+    prepare_workspace_upload(bundle, archive)
+    receiving = tmp_path / "reviewer" / "workspace"
+
+    await install_uploaded_workspace(
+        transport, str(archive), str(receiving), str(bundle / "manifest.json")
+    )
+
+    validate_workspace(receiving, manifest)
+    assert (receiving / "root-link").is_symlink()
+    assert (receiving / "answer-link").read_text() == "solver output"
+    assert (receiving / "empty").is_dir()
+    with pytest.raises(EvidenceError, match="already exists"):
+        await install_uploaded_workspace(
+            transport, str(archive), str(receiving), str(bundle / "manifest.json")
+        )
+
+
+@pytest.mark.asyncio
+async def test_receiver_rejects_unmanifested_archive_before_extracting(tmp_path):
+    """Guards PR #942's transfer boundary against archive substitution."""
+    source = tmp_path / "source"
+    source.mkdir()
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+    await capture_workspace(transport, str(source), bundle)
+    archive_path = tmp_path / "upload.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        member = tarfile.TarInfo("../escape")
+        member.size = 4
+        archive.addfile(member, io.BytesIO(b"data"))
+    receiving = tmp_path / "reviewer" / "workspace"
+
+    with pytest.raises(EvidenceError, match="unsafe or unmanifested"):
+        await install_uploaded_workspace(
+            transport, str(archive_path), str(receiving), str(bundle / "manifest.json")
+        )
+
+    assert not receiving.exists()
+    assert not (tmp_path / "escape").exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_connection_failure_preserves_committed_evidence(
+    tmp_path, caplog
+):
+    class CleanupFailureTransport(LocalTransport):
+        async def exec(self, cmd: str, **kwargs) -> ExecResult:
+            result = await super().exec(cmd, **kwargs)
+            if shlex.split(cmd)[0] == "rm":
+                raise OSError("cleanup connection disconnected")
+            return result
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer").write_text("complete evidence")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(CleanupFailureTransport(), str(source), bundle)
+
+    validate_workspace(bundle / "workspace", manifest)
+    assert "Could not remove temporary evidence archive" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_credential_exclusions_are_explicit_without_losing_agent_outputs(
+    tmp_path,
+):
+    source = tmp_path / "agent-home"
+    (source / ".codex").mkdir(parents=True)
+    (source / ".codex" / "auth.json").write_text("credential sentinel")
+    (source / ".codex" / "session.jsonl").write_text("agent trajectory")
+    (source / ".ssh").mkdir()
+    (source / ".ssh" / "id_ed25519").write_text("private key sentinel")
+    (source / "injected-auth.json").write_text("custom provider auth")
+    (source / "answer.txt").write_text("solver output")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(
+        LocalTransport(),
+        str(source),
+        bundle,
+        excluded_paths=[str(source / "injected-auth.json")],
+    )
+
+    assert (bundle / "workspace" / "answer.txt").read_text() == "solver output"
+    assert (
+        bundle / "workspace" / ".codex" / "session.jsonl"
+    ).read_text() == "agent trajectory"
+    assert not (bundle / "workspace" / ".codex" / "auth.json").exists()
+    assert not (bundle / "workspace" / ".ssh").exists()
+    assert {entry.original_path for entry in manifest.exclusions} == {
+        str(source / ".codex" / "auth.json"),
+        str(source / ".ssh"),
+        str(source / "injected-auth.json"),
+    }
+    assert all(entry.reason == "credential" for entry in manifest.exclusions)
+    validate_workspace(bundle / "workspace", manifest)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["/", "/etc", "/proc"])
+async def test_system_root_capture_is_refused(tmp_path, source):
+    with pytest.raises(EvidenceError, match="system directory"):
+        await capture_workspace(LocalTransport(), source, tmp_path / "evidence")
+
+
+@pytest.mark.asyncio
+async def test_declared_artifacts_capture_and_review_installation(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer.txt").write_text("workspace output")
+    external_file = tmp_path / "separate-result.json"
+    external_file.write_text('{"result": 42}')
+    external_directory = tmp_path / "figures"
+    external_directory.mkdir()
+    (external_directory / "plot.svg").write_text("<svg/>")
+    (external_directory / "scratch.tmp").write_text("not an artifact")
+    (external_directory / "latest.svg").symlink_to("plot.svg")
+    transport = LocalTransport()
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_task_evidence(
+        transport,
+        str(source),
+        bundle,
+        artifacts=[
+            "answer.txt",
+            str(tmp_path / "missing-output"),
+            ArtifactConfig(
+                source=str(external_file), destination="../../untrusted-destination"
+            ),
+            ArtifactConfig(source=str(external_directory), exclude=["*.tmp"]),
+        ],
+    )
+
+    assert [artifact.status for artifact in manifest.artifacts] == [
+        "in_workspace",
+        "missing",
+        "captured",
+        "captured",
+    ]
+    assert [artifact.bundle_path for artifact in manifest.artifacts] == [
+        None,
+        None,
+        "artifacts/0002",
+        "artifacts/0003",
+    ]
+    assert (
+        bundle / "artifacts/0002/workspace/separate-result.json"
+    ).read_text() == '{"result": 42}'
+    assert not (bundle / "artifacts/0003/workspace/scratch.tmp").exists()
+    artifact_manifest = EvidenceManifest.model_validate_json(
+        (bundle / "artifacts/0003/manifest.json").read_text()
+    )
+    assert artifact_manifest.exclusions[0].reason == "task_exclude"
+    receiving = tmp_path / "reviewer"
+    receiving.mkdir()
+    prepare_workspace_upload(bundle, receiving / "workspace.tar")
+    shutil.copyfile(bundle / "manifest.json", receiving / "workspace-manifest.json")
+    for artifact in manifest.artifacts:
+        if artifact.bundle_path is not None:
+            upload = receiving / artifact.bundle_path
+            prepare_workspace_upload(
+                bundle / artifact.bundle_path, upload.with_suffix(".tar")
+            )
+            shutil.copyfile(
+                bundle / artifact.bundle_path / "manifest.json",
+                upload.with_name(upload.name + "-manifest.json"),
+            )
+
+    await install_review_evidence(transport, manifest, evidence_root=str(receiving))
+
+    assert (receiving / "workspace/answer.txt").read_text() == "workspace output"
+    assert (
+        receiving / "artifacts/0002/separate-result.json"
+    ).read_text() == '{"result": 42}'
+    assert (receiving / "artifacts/0003/latest.svg").read_text() == "<svg/>"
+
+
+@pytest.mark.asyncio
+async def test_external_artifact_failure_does_not_publish_partial_task_evidence(
+    tmp_path,
+):
+    """An artifact that overflows the remaining capture budget publishes nothing.
+
+    The failing artifact used to hold an escaping symlink; since the
+    escaping-link fix on top of PR #1128 that is an exclusion, so the budget is
+    what fails here.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer").write_text("fine")
+    oversized = tmp_path / "oversized-artifact"
+    oversized.mkdir()
+    (oversized / "table.csv").write_text("x" * 64)
+    bundle = tmp_path / "evidence"
+
+    with pytest.raises(EvidenceError, match="capture limits"):
+        await capture_task_evidence(
+            LocalTransport(),
+            str(source),
+            bundle,
+            artifacts=[str(oversized)],
+            max_bytes=16,
+        )
+
+    assert not bundle.exists()
+    assert not list(tmp_path.glob(".task-evidence-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "carrier",
+    [
+        ".openhands/agent_settings.json",
+        ".pi/agent/models.json",
+        ".pi/agent/auth.json",
+        ".openclaw/openclaw.json",
+        ".openclaw/agents/main/agent/auth-profiles.json",
+        ".config/opencode/opencode.json",
+        ".config/mimocode/mimocode.json",
+        "mimocode.json",
+    ],
+)
+@pytest.mark.parametrize("nested_home", [False, True])
+async def test_launcher_credential_carriers_never_enter_evidence(
+    tmp_path, carrier, nested_home
+):
+    """Guards PR #942's evidence boundary for each launcher-written credential."""
+    source = tmp_path / "workspace"
+    home = source / "home/agent" if nested_home else source
+    credential = home / carrier
+    credential.parent.mkdir(parents=True)
+    credential.write_text('{"api_key": "NEVER_EXPORT_CREDENTIAL"}')
+    (home / "answer.txt").write_text("keep agent output")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    relative = credential.relative_to(source)
+    assert not (bundle / "workspace" / relative).exists()
+    assert (
+        bundle / "workspace" / (home / "answer.txt").relative_to(source)
+    ).read_text() == "keep agent output"
+    assert [(entry.original_path, entry.reason) for entry in manifest.exclusions] == [
+        (str(credential), "credential")
+    ]
+    validate_workspace(bundle / "workspace", manifest)
+
+
+def test_custom_credential_file_overrides_are_paths_not_inline_json():
+    """Guards PR #942's evidence boundary for supported custom config paths."""
+    exclusions = credential_evidence_overrides(
+        {
+            "MIMOCODE_CONFIG": "./private/../mimo-secrets.json",
+            "OPENCODE_CONFIG": "~/opencode-secrets.json",
+            "OPENCLAW_CONFIG_PATH": "/app/openclaw-secrets.json",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/app/gcp.json",
+            "AWS_SHARED_CREDENTIALS_FILE": "/app/aws-credentials",
+            "CODEX_CONFIG": '{"model_providers":{"azure":{"env_key":"OPENAI_API_KEY"}}}',
+        },
+        workspace="/app",
+        cred_home="/home/agent",
+    )
+
+    assert exclusions == (
+        "/app/aws-credentials",
+        "/app/gcp.json",
+        "/app/mimo-secrets.json",
+        "/app/openclaw-secrets.json",
+        "/home/agent/opencode-secrets.json",
+    )

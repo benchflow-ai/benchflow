@@ -30,18 +30,14 @@ class TestAgentSubscriptionAuth:
         assert ".codex/auth.json" in sa.detect_file
         assert len(sa.files) == 1
 
-    def test_gemini_subscription_auth(self):
+    def test_gemini_has_no_subscription_auth(self):
+        """Stale-audit change: Google stopped serving AI Pro,
+        Ultra and free users on Gemini CLI on 2026-06-18, and a Gemini run goes
+        through the LiteLLM proxy, which needs an API key."""
         cfg = AGENTS["gemini"]
-        sa = cfg.subscription_auth
-        assert sa is not None
-        assert sa.replaces_env == "GEMINI_API_KEY"
-        assert ".gemini/oauth_creds.json" in sa.detect_file
-        # Gemini needs multiple files (oauth, settings, accounts)
-        assert len(sa.files) == 3
-        paths = [f.host_path for f in sa.files]
-        assert any("oauth_creds.json" in p for p in paths)
-        assert any("settings.json" in p for p in paths)
-        assert any("google_accounts.json" in p for p in paths)
+        assert cfg.subscription_auth is None
+        assert cfg.requires_env == ["GEMINI_API_KEY"]
+        assert "legacy" in cfg.description and "antigravity" in cfg.description
 
 
 # Negative invariants ("agent X should NOT have subscription_auth") collapsed
@@ -159,7 +155,7 @@ class TestResolveAgentEnvSubscription:
             monkeypatch.delenv(k, raising=False)
         _patch_expanduser(monkeypatch, tmp_path)
 
-        with pytest.raises(ValueError, match=r"required for model .* but not set"):
+        with pytest.raises(ValueError, match=r"No Claude login found for model"):
             self._resolve(
                 model="claude-haiku-4-5-20251001",
                 agent_env={},
@@ -449,8 +445,11 @@ class TestResolveAgentEnvSubscription:
                 agent_env={base_url_key: "http://localhost:8765/v1"},
             )
 
-    def test_gemini_subscription_auth(self, monkeypatch, tmp_path):
-        """Gemini subscription auth works with host ~/.gemini/oauth_creds.json."""
+    def test_a_google_sign_in_alone_does_not_run_gemini(self, monkeypatch, tmp_path):
+        """Stale-audit change: with only a Google sign-in, the
+        run stops at env resolution naming GEMINI_API_KEY, instead of copying
+        the sign-in's OAuth files into the sandbox for a run that cannot use
+        them."""
         for k in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
             monkeypatch.delenv(k, raising=False)
         gemini_dir = tmp_path / ".gemini"
@@ -458,12 +457,12 @@ class TestResolveAgentEnvSubscription:
         (gemini_dir / "oauth_creds.json").write_text('{"access_token": "at-test"}')
         _patch_expanduser(monkeypatch, tmp_path)
 
-        result = self._resolve(
-            agent="gemini",
-            model="gemini-2.5-flash",
-            agent_env={},
-        )
-        assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+        with pytest.raises(Exception, match="GEMINI_API_KEY"):
+            self._resolve(
+                agent="gemini",
+                model="gemini-3.5-flash-lite",
+                agent_env={},
+            )
 
 
 class _FakeEnv:
@@ -471,11 +470,12 @@ class _FakeEnv:
         self.exec_calls = []
         self.uploads = []
 
-    async def exec(self, cmd: str, timeout_sec: int | None = None):
-        self.exec_calls.append((cmd, timeout_sec))
+    async def exec(self, cmd: str, timeout_sec: int | None = None, *, user=None):
+        self.exec_calls.append((cmd, timeout_sec, user))
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-    async def upload_file(self, source: str, dest: str):
+    async def upload_file(self, source: str, dest: str, *, mode=None, **_kwargs):
+        assert mode == "600"
         self.uploads.append((source, dest, Path(source).read_text()))
 
 
@@ -496,10 +496,14 @@ class TestUploadSubscriptionAuth:
         )
 
         assert len(env.uploads) == 1
-        assert env.uploads[0][1:] == (
-            "/home/agent/.codex/auth.json",
-            '{"tokens": {"access_token": "test"}}',
-        )
+        assert env.uploads[0][1].startswith("/.runtime-credential-")
+        assert env.uploads[0][2] == '{"tokens": {"access_token": "test"}}'
+        (install,) = [
+            call for call in env.exec_calls if "/home/agent/.codex/auth.json" in call[0]
+        ]
+        assert install[2] == "agent"
+        assert f"cat {env.uploads[0][1]} > /home/agent/.codex/auth.json" in install[0]
+        assert "set -C" in install[0]
 
     @pytest.mark.asyncio
     async def test_openai_key_wins_over_codex_auth_json_file_write(self):
@@ -551,12 +555,13 @@ class TestUploadSubscriptionAuth:
         await upload_subscription_auth(env, "codex-acp", "/home/agent")
 
         assert len(env.uploads) == 1
-        assert env.uploads[0][1:] == (
-            "/home/agent/.codex/auth.json",
-            '{"token": "test"}',
-        )
-        assert (
-            "chown -R agent:agent /home/agent/.codex "
-            "&& chmod 600 /home/agent/.codex/auth.json",
-            10,
-        ) in env.exec_calls
+        assert env.uploads[0][1].startswith("/.runtime-credential-")
+        assert env.uploads[0][2] == '{"token": "test"}'
+        (install,) = [
+            call for call in env.exec_calls if "/home/agent/.codex/auth.json" in call[0]
+        ]
+        assert install[1:] == (10, "agent")
+        assert "mkdir -- /home/agent/.codex" in install[0]
+        assert "[ ! -L /home/agent/.codex ]" in install[0]
+        assert "umask 077" in install[0] and "set -C" in install[0]
+        assert all("chown -R" not in call[0] for call in env.exec_calls)

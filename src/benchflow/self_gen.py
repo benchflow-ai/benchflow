@@ -27,6 +27,7 @@ from benchflow.rollout._setup import (
     _resolve_prompts,
     _validate_agent_workdir,
 )
+from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.skill_policy import validate_container_mount_path
 from benchflow.task import Task
 
@@ -92,13 +93,18 @@ def _generated_skills_root(config: RolloutConfig) -> str:
     return configured
 
 
+def _creator_role(agent: str, model: str | None) -> Role:
+    """The final self-gen primary role; requested effort is not inherited."""
+    return Role("skill_creator", agent, model)
+
+
 def _creator_scene(
     config: RolloutConfig, creator_skills_root: Path, skill_creator_name: str
 ) -> Scene:
     task_prompts = _resolve_prompts(config.task_path, config.prompts)
     return Scene(
         name="self-gen-creator",
-        roles=[Role("skill_creator", config.agent, config.model)],
+        roles=[_creator_role(config.agent, config.model)],
         turns=[
             Turn(
                 "skill_creator",
@@ -138,11 +144,11 @@ def _ensure_generated_skills_hook(config: RolloutConfig):
 
     async def ensure_generated_skills(env):
         for command in setup_commands:
-            result = await env.exec(command, timeout_sec=10)
+            result = await exec_raw(env.exec, command, timeout_sec=10)
             if result.return_code != 0:
                 raise RuntimeError(
                     "Failed to prepare self-gen generated skills paths: "
-                    f"{result.stderr or result.stdout}"
+                    f"{diagnostic_result(result).stderr.render() or diagnostic_result(result).stdout.render()}"
                 )
 
     return ensure_generated_skills

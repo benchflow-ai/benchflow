@@ -2,10 +2,13 @@
 
 Inspects an on-disk task directory and reports issues without mutating it:
 verifier placeholders, CTRF output paths, compatibility alias drift, task.md /
-runtime-capability parsing, and the static publication-grade gate.
+runtime-capability parsing, the static publication-grade gate, and verifier
+scripts that install pytest plugins where the plugin guard refuses them.
 """
 
 import re
+import shlex
+import tomllib
 from pathlib import Path
 from typing import Literal
 
@@ -74,6 +77,371 @@ def _check_ctrf_path(test_sh: Path) -> list[str]:
             f"(expected '{_CTRF_STANDARD_PATH}')"
         ]
     return []
+
+
+# Workspace plugin installs. The verifier's pytest plugin guard
+# (sandbox/_pytest_plugin_guard.py) refuses plugin code from any place the
+# agent could write: its workspace, its home, /tmp, /var/tmp, /logs and
+# /testbed (lockdown._blocked_verifier_path_prefixes). A verifier script that
+# builds its own Python environment in one of them and installs a pytest
+# plugin into it therefore has that plugin refused every time, and because
+# test.sh installed it after the agent stopped, every trial ends unscored
+# (Terminal-Bench 2's mailman: ``uv venv .tb`` then ``uv pip install
+# pytest-json-ctrf``; SkillsBench's powerlifting-coef-calc: ``uv init`` and
+# ``uv add pytest-json-ctrf`` in its WORKDIR /root, the workspace; the same
+# holds for an explicit /root/.venv or ~/.venv there).
+_SCRIPT_COMMENT_RE = re.compile(r"^\s*#(?!!).*$|\s#.*$", re.MULTILINE)
+_SCRIPT_COMMAND_SPLIT_RE = re.compile(r"\n|;|&&|\|\||\|")
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_PYTEST_PLUGIN_RE = re.compile(r"^pytest[-_][A-Za-z0-9][A-Za-z0-9_.-]*")
+# Absolute places the guard refuses in the agent's sandbox whatever the image:
+# BenchFlow's runtime directories and the sandbox user's home (/home/agent).
+_GUARD_REFUSED_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed", "/home")
+# The verifier runs as root, so its $HOME and ~ are /root.
+_VERIFIER_HOME = "/root"
+# Options of the environment-making commands that take a value.
+_VENV_VALUE_OPTIONS = frozenset(
+    {"-p", "--python", "--prompt", "--index-url", "--seed", "--relocatable"}
+)
+_TARGET_OPTIONS = ("--target", "-t", "--prefix")
+
+
+def _resolve_script_path(path: str) -> str | None:
+    """``path`` as the verifier sees it: ``$HOME``/``~`` expanded, or None when unknown."""
+    for home in ("${HOME}", "$HOME", "~"):
+        if path == home or path.startswith(home + "/"):
+            return _VERIFIER_HOME + path[len(home) :]
+    if path.startswith("$"):
+        return None  # another variable: unknown
+    return path
+
+
+def _guard_refuses_path(path: str, workspace: str | None = None) -> bool:
+    """A path the plugin guard refuses code from.
+
+    Relative paths are the working directory (the image WORKDIR, normally the
+    workspace); absolute ones are refused under the workspace (when known),
+    the agent's home, /tmp, /var/tmp, /logs or /testbed.
+    """
+    resolved = _resolve_script_path(path) if path else None
+    if not resolved:
+        return False
+    if not resolved.startswith("/"):
+        return True
+    prefixes = (*_GUARD_REFUSED_PREFIXES, *((workspace,) if workspace else ()))
+    return any(
+        resolved == prefix or resolved.startswith(prefix.rstrip("/") + "/")
+        for prefix in prefixes
+    )
+
+
+def _environment_of(python_or_bin: str) -> str:
+    """The environment a ``.../bin/python`` or ``.../bin/pip`` belongs to."""
+    head, sep, _tail = python_or_bin.rpartition("/bin/")
+    return head if sep else python_or_bin
+
+
+_WORKDIR_RE = re.compile(r"^\s*WORKDIR\s+(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+_FROM_RE = re.compile(r"^\s*FROM\s+(\S+)", re.IGNORECASE | re.MULTILINE)
+# Images whose WORKDIR is /, where BenchFlow makes /root the workspace.
+_PLAIN_BASE_RE = re.compile(
+    r"^(?:docker\.io/)?(?:library/)?(?:ubuntu|debian|python|alpine|node|golang|rust|"
+    r"fedora|centos|rockylinux|almalinux|amazonlinux|buildpack-deps)(?:[:@]|$)"
+)
+
+
+def task_workspace(task_dir: Path) -> str | None:
+    """The agent's workspace for a task, or None when it cannot be told statically.
+
+    ``sandbox.workdir`` when the task declares one; else the Dockerfile's
+    last WORKDIR (BenchFlow makes /root the workspace when it is /, as it is
+    for plain distribution images). A prebuilt image's WORKDIR is unknown.
+    """
+    try:
+        from benchflow.task.runtime_view import TaskRuntimeView
+
+        workdir = getattr(
+            getattr(TaskRuntimeView.from_task_dir(task_dir).config, "sandbox", None),
+            "workdir",
+            None,
+        )
+    except Exception:
+        workdir = None
+    if isinstance(workdir, str) and workdir.strip().startswith("/"):
+        return workdir.strip().rstrip("/") or None
+    dockerfile = task_dir / "environment" / "Dockerfile"
+    try:
+        text = dockerfile.read_text(errors="replace")
+    except OSError:
+        return None
+    stages = _FROM_RE.split(text)
+    if len(stages) < 3:
+        return None
+    base, last = stages[-2], stages[-1]
+    current: str | None = None
+    for match in _WORKDIR_RE.finditer(last):
+        value = match.group(1).strip().strip("'\"")
+        if value.startswith("$"):
+            return None
+        current = (
+            value if value.startswith("/") else f"{current or ''}/{value}"
+        ).rstrip("/") or "/"
+    if current is None:
+        return _VERIFIER_HOME if _PLAIN_BASE_RE.match(base) else None
+    return _VERIFIER_HOME if current == "/" else current
+
+
+def _command_words(command: str) -> list[str]:
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    while words and (_ASSIGNMENT_RE.match(words[0]) or words[0] in {"env", "exec"}):
+        words = words[1:]
+    return words
+
+
+def _first_argument(words: list[str]) -> str | None:
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+        elif word.startswith("-"):
+            skip = "=" not in word and word in _VENV_VALUE_OPTIONS
+        else:
+            return word
+    return None
+
+
+def _option_value(words: list[str], options: tuple[str, ...]) -> tuple[str, str] | None:
+    """The first ``--opt VALUE`` or ``--opt=VALUE`` among ``options``: (option, value)."""
+    for i, word in enumerate(words):
+        for option in options:
+            if word == option and i + 1 < len(words):
+                return option, words[i + 1]
+            if option.startswith("--") and word.startswith(option + "="):
+                return option, word.split("=", 1)[1]
+    return None
+
+
+def _install_target(
+    words: list[str], workspace: str | None = None, made: set[str] | None = None
+) -> str | None:
+    found = _option_value(words, _TARGET_OPTIONS)
+    if found is not None:
+        option, target = found
+        if _guard_refuses_path(target, workspace):
+            return f"--target {target}" if option == "-t" else f"{option} {target}"
+    found = _option_value(words, ("--python", "-p"))
+    if found is not None:
+        env = _environment_of(found[1])
+        if _guard_refuses_path(env, workspace) and env.rstrip("/") not in (made or ()):
+            return f"{found[0]} {found[1]}"
+    return None
+
+
+def workspace_plugin_installs(
+    text: str, *, workspace: str | None = None
+) -> tuple[list[str], list[str]]:
+    """What in a verifier script puts pytest plugins where the plugin guard refuses them.
+
+    Returns the commands that make, activate or fill a Python environment in
+    a place the agent could write (the working directory, ``workspace`` when
+    known, the agent's home, /tmp, /var/tmp, /logs, /testbed; ``$HOME`` and
+    ``~`` are the verifier's, /root), and the pytest plugins the script
+    installs with anything but ``uvx`` (uv's cache, which BenchFlow moves to
+    a directory only the verifier writes). A script needs both to be flagged.
+    """
+    text = _SCRIPT_COMMENT_RE.sub("", text.replace("\\\n", " "))
+    places: list[str] = []
+    plugins: list[str] = []
+    made: set[str] = set()  # environments a recorded command made
+
+    def refused(path: str) -> bool:
+        return _guard_refuses_path(path, workspace)
+
+    def made_here(path: str) -> None:
+        made.add(path.rstrip("/"))
+
+    def new_place(env: str) -> bool:
+        """An environment the script uses but no recorded command made."""
+        return refused(env) and env.rstrip("/") not in made
+
+    for command in _SCRIPT_COMMAND_SPLIT_RE.split(text):
+        words = _command_words(command.strip())
+        if not words:
+            continue
+        program = words[0].rsplit("/", 1)[-1]
+        if program in {"source", "."} and len(words) > 1:
+            if words[1].endswith("/bin/activate") and new_place(
+                _environment_of(words[1])
+            ):
+                places.append(f"{program} {words[1]}")
+        elif program == "uv" and len(words) > 1:
+            subcommand, rest = words[1], words[2:]
+            if subcommand == "venv":
+                target = _first_argument(rest) or ".venv"
+                if refused(target):
+                    places.append(f"uv venv {target}")
+                    made_here(target)
+            elif subcommand in {"init", "add", "sync"}:
+                project = _option_value(rest, ("--project", "--directory"))
+                if project is None or refused(project[1]):
+                    places.append(f"uv {subcommand}")
+                if subcommand == "add":
+                    plugins += [w for w in rest if _PYTEST_PLUGIN_RE.match(w)]
+            elif subcommand == "pip" and rest[:1] == ["install"]:
+                plugins += [w for w in rest[1:] if _PYTEST_PLUGIN_RE.match(w)]
+                if target := _install_target(rest, workspace, made):
+                    places.append(f"uv pip install {target}")
+        elif program.startswith("pip") or (
+            program.startswith("python") and words[1:3] == ["-m", "pip"]
+        ):
+            rest = words[1:] if program.startswith("pip") else words[3:]
+            if rest[:1] == ["install"]:
+                plugins += [w for w in rest[1:] if _PYTEST_PLUGIN_RE.match(w)]
+                if target := _install_target(rest, workspace, made):
+                    places.append(f"pip install {target}")
+                if "/" in words[0] and refused(_environment_of(words[0])):
+                    places.append(words[0])
+        elif program.startswith("python") and words[1:3] == ["-m", "venv"]:
+            target = _first_argument(words[3:])
+            if target and refused(target):
+                places.append(f"python -m venv {target}")
+                made_here(target)
+        elif program == "virtualenv":
+            target = _first_argument(words[1:])
+            if target and refused(target):
+                places.append(f"virtualenv {target}")
+                made_here(target)
+    return list(dict.fromkeys(places)), list(dict.fromkeys(plugins))
+
+
+# ``unset PYTEST_ADDOPTS`` or a fresh ``PYTEST_ADDOPTS=...``: drops the guard.
+_CLEARS_PYTEST_ADDOPTS_RE = re.compile(
+    r"\bunset\s+(?:-v\s+)?PYTEST_ADDOPTS\b"
+    r"|(?<![\w$])PYTEST_ADDOPTS=(?![^\n;&|]*\$\{?PYTEST_ADDOPTS\b)"
+)
+
+
+def _check_workspace_plugin_installs(
+    verifier_dir: Path, *, label: str, workspace: str | None = None
+) -> list[str]:
+    """Warn when a verifier script installs pytest plugins where the agent could write."""
+    warnings = []
+    for script in sorted(verifier_dir.glob("*.sh")):
+        try:
+            text = script.read_text(errors="replace")
+        except OSError:
+            continue
+        places, plugins = workspace_plugin_installs(text, workspace=workspace)
+        if not (places and plugins):
+            continue
+        if _CLEARS_PYTEST_ADDOPTS_RE.search(_SCRIPT_COMMENT_RE.sub("", text)):
+            # The guard never runs, so nothing is refused: the plugin loads
+            # unchecked from an environment the agent's workspace can seed.
+            effect = (
+                ", and clears PYTEST_ADDOPTS, so BenchFlow's pytest plugin "
+                "guard never checks that code, which comes from a directory "
+                "the agent could have prepared"
+            )
+        else:
+            effect = (
+                ": the verifier's pytest plugin guard refuses plugin code "
+                "there, so every trial ends unscored"
+            )
+        where = f"; the workspace is {workspace}" if workspace else ""
+        # uvx is no way out: its inputs can be the agent's files too, so an
+        # unpinned uvx install is refused the same way (V2-R1-B-2).
+        pin = plugins[0] if "==" in plugins[0] else f"{plugins[0]}==<version>"
+        warnings.append(
+            f"{label}/{script.name} installs pytest plugins "
+            f"({', '.join(plugins)}) into a Python environment the agent could "
+            f"write ({', '.join(places)}{where}){effect}. Pin their releases "
+            f'in [verifier] pytest_plugin_releases (for example ["{pin}"]), '
+            "which BenchFlow serves from its protected verifier runtime, or install "
+            "them into the image"
+        )
+    return warnings
+
+
+# Programs that fetch from the network when test.sh runs, by first word (and
+# subcommand). A failed fetch fails the tests, and the trial scores 0 like a
+# wrong answer.
+_FETCHERS = {
+    "pip": ("install",),
+    "pip3": ("install",),
+    "uv": ("add", "sync", "pip"),
+    "uvx": (),
+    "pipx": ("install", "run"),
+    "conda": ("install", "create"),
+    "mamba": ("install", "create"),
+    "apt-get": ("update", "install"),
+    "apt": ("update", "install"),
+    "apk": ("add",),
+    "yum": ("install",),
+    "dnf": ("install",),
+    "npm": ("install", "i", "ci"),
+    "npx": (),
+    "yarn": ("add", "install"),
+    "pnpm": ("add", "install"),
+    "cargo": ("install",),
+    "go": ("install", "get"),
+    "git": ("clone",),
+    "curl": (),
+    "wget": (),
+}
+_OFFLINE_OPTIONS = frozenset({"--no-index", "--offline"})
+_LOCAL_URL_RE = re.compile(r"^(?:\w+://)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b")
+
+
+def grade_time_downloads(text: str) -> list[str]:
+    """The commands in a verifier script that fetch from the network."""
+    found: list[str] = []
+    for command in _SCRIPT_COMMAND_SPLIT_RE.split(_SCRIPT_COMMENT_RE.sub("", text)):
+        words = _command_words(command.strip())
+        if words[:1] in (["sudo"], ["command"]):
+            words = words[1:]
+        if not words:
+            continue
+        program = words[0].rsplit("/", 1)[-1]
+        rest = words[1:]
+        if program.startswith("python") and rest[:2] == ["-m", "pip"]:
+            program, rest = "pip", rest[2:]
+        if program not in _FETCHERS or _OFFLINE_OPTIONS & set(rest):
+            continue
+        subcommands = _FETCHERS[program]
+        if subcommands and (not rest or rest[0] not in subcommands):
+            continue
+        if program == "uv" and rest[0] == "pip" and rest[1:2] != ["install"]:
+            continue
+        if program in ("curl", "wget"):
+            urls = [w for w in rest if not w.startswith("-")]
+            if not urls or all(_LOCAL_URL_RE.match(u) for u in urls):
+                continue
+        shown = 2 if program == "uv" and rest[0] == "pip" else 1
+        found.append(" ".join([program, *rest[:shown]]) if subcommands else program)
+    return list(dict.fromkeys(found))
+
+
+def _check_grade_time_downloads(verifier_dir: Path, *, label: str) -> list[str]:
+    """Warn when a verifier script downloads while it grades."""
+    warnings = []
+    for script in sorted(verifier_dir.glob("*.sh")):
+        try:
+            text = script.read_text(errors="replace")
+        except OSError:
+            continue
+        found = grade_time_downloads(text)
+        if found:
+            warnings.append(
+                f"{label}/{script.name} downloads while it grades "
+                f"({', '.join(found)}): when the download fails, the tests fail "
+                "and the trial scores 0 like a wrong answer. Install what it "
+                "needs into the image (environment/Dockerfile), or for a pytest "
+                "plugin pin its release in [verifier] pytest_plugin_releases"
+            )
+    return warnings
 
 
 def _logical_dir_label(paths: TaskPaths, *, kind: Literal["verifier", "oracle"]) -> str:
@@ -158,6 +526,21 @@ def task_document_parse_error(task_md: Path) -> str | None:
     return None
 
 
+def task_config_parse_error(task_toml: Path) -> str | None:
+    """Return a human-readable parse error if ``task_toml`` fails to parse, else None.
+
+    The legacy-format counterpart of :func:`task_document_parse_error`, shared
+    the same way by ``check_task`` and eval task-discovery. Only TOML syntax
+    is checked, as ``bench tasks check`` always has (#379).
+    """
+    try:
+        with open(task_toml, "rb") as f:
+            tomllib.load(f)
+    except Exception as e:
+        return f"task.toml parse error: {e}"
+    return None
+
+
 def _check_task_document(task_md: Path) -> list[str]:
     issues: list[str] = []
     parse_error = task_document_parse_error(task_md)
@@ -170,8 +553,8 @@ def _check_task_document(task_md: Path) -> list[str]:
         issues.append("task.md prompt is empty")
     if _PLACEHOLDER_MARKER in text:
         issues.append(
-            "task.md contains unreplaced placeholder - replace "
-            "task prompts, role prompts, and simulated-user notes"
+            "task.md contains unreplaced placeholder — replace "
+            "the task's prompts, role prompts and simulated-user notes"
         )
     return issues
 
@@ -208,7 +591,7 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
     if paths.config_path.exists() or paths.instruction_path.exists():
         issues.append(
             "publication-grade tasks must not keep task.toml/instruction.md "
-            "beside task.md; export split layouts through bench tasks export"
+            "beside task.md; export split layouts through bench export"
         )
 
     if not paths.oracle_dir.is_dir():
@@ -224,10 +607,10 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
     verifier_dir = paths.verifier_source_dir
     if not verifier_dir.is_dir():
         issues.append(
-            "publication-grade validation requires native verifier/ — `bench tasks "
-            "migrate` produces the native layout but not the verifier package; "
+            "publication-grade validation requires native verifier/ — `bench import` "
+            "produces the native layout but not the verifier package; "
             "author verifier/ (verifier.md + rubrics/) per "
-            "docs/task-authoring-task-md.md, then re-run check"
+            "docs/tasks/verifiers.md, then re-run check"
         )
         return issues
     if paths.legacy_tests_dir.exists():
@@ -240,8 +623,8 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
     if not verifier_md.exists():
         issues.append(
             "publication-grade validation requires verifier/verifier.md — author "
-            "the verifier strategy document (see docs/task-authoring-task-md.md); "
-            "`bench tasks migrate` does not generate it"
+            "the verifier strategy document (see docs/tasks/verifiers.md); "
+            "`bench import` does not generate it"
         )
         return issues
 
@@ -315,13 +698,15 @@ def _check_selected_verifier_strategy_files(
                 f"{prefix} references missing context_file: {strategy.context_file}"
             )
         return issues
-    elif strategy.type == "reward-kit":
-        return _check_reward_kit_strategy_files(strategy, verifier_dir=verifier_dir)
+    elif strategy.type == "criteria-runner":
+        return _check_criteria_runner_strategy_files(
+            strategy, verifier_dir=verifier_dir
+        )
 
     return []
 
 
-def _check_reward_kit_strategy_files(
+def _check_criteria_runner_strategy_files(
     strategy: VerifierStrategy,
     *,
     verifier_dir: Path,

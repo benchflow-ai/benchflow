@@ -1,0 +1,13 @@
+# Mutant (d): a 2 s sleep at the start of the verifier phase
+# (src/benchflow/rollout/_setup.py, _verify_rollout). Predicted: timing_shift
+# on verify (about +2 s) on every cell that reaches its verifier at BASE_T0,
+# and on no other phase. The cells are the A/A run's base cells with a
+# verifier time in every round, derived before the mutant ran.
+
+[[change]]
+id = "d-verify"
+target = "DT1"
+item = "mutant:d"
+cells = ["acp_smoke/nop", "acp_smoke/oracle", "agent-timeout/nop", "always-passes/nop", "always-passes/oracle", "build-timeout/nop", "build-timeout/oracle", "hello-08/nop", "hello-08/oracle", "hello-split-run/nop", "hello-split-run/oracle", "hello-split/nop", "hello-split/oracle", "hello-world-task/nop", "hello-world-task/oracle", "hello/nop", "hello/oracle", "lake-warming-attribution/nop", "lake-warming-attribution/oracle", "nanofirm-task/nop", "nanofirm-task/oracle", "net-allowlist/nop", "net-allowlist/oracle", "net-ip-allowlist/nop", "net-ip-allowlist/oracle", "net-ip-none/nop", "net-ip-none/oracle", "r2r-mpc-control/nop", "r2r-mpc-control/oracle", "reward-empty/nop", "reward-empty/oracle", "reward-fraction/nop", "reward-fraction/oracle", "reward-json-bad-metric/nop", "reward-json-bad-metric/oracle", "reward-json-metrics/nop", "reward-json-metrics/oracle", "reward-json/nop", "reward-json/oracle", "reward-nan/nop", "reward-nan/oracle", "reward-negative/nop", "reward-negative/oracle", "reward-out-of-range/nop", "reward-out-of-range/oracle", "reward-word/nop", "reward-word/oracle", "separate-verifier/nop", "separate-verifier/oracle", "sidecar-run/nop", "sidecar-run/oracle", "sidecar/nop", "sidecar/oracle", "skills/nop", "skills/oracle", "verifier-timeout/nop", "verifier-timeout/oracle"]
+class = "timing_shift"
+fields = ["verify "]

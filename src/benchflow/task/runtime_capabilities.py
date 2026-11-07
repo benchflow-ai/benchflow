@@ -1,6 +1,6 @@
 """Runtime capability checks for parsed task packages.
 
-The authoring parser intentionally accepts the Harbor-compatible task surface,
+The authoring parser intentionally accepts the task.toml task surface,
 plus BenchFlow-native document fields. This module is the first runtime-facing
 gate: it reports parsed semantics that the selected backend cannot currently
 honor, so callers can fail closed before sandbox launch.
@@ -14,15 +14,28 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from benchflow._utils.modal_gpu import ModalGPURequestError, modal_gpu_request
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
-from benchflow.sandbox.providers import SANDBOX_PROVIDER_SET, providers_phrase
+from benchflow.sandbox._compose import compose_definition_path
+from benchflow.sandbox.providers import (
+    ALLOWLIST_SERVICE_CHECK_PROVIDERS,
+    ALLOWLIST_UNSUPPORTED_PROVIDERS,
+    DENYLIST_UNSUPPORTED_PROVIDERS,
+    NO_NETWORK_UNSUPPORTED_PROVIDERS,
+    SANDBOX_PROVIDER_SET,
+    SANDBOX_PROVIDERS,
+    SINGLE_CONTAINER_PROVIDERS,
+    VERIFIER_SERVICE_PROVIDERS,
+    providers_phrase,
+)
+from benchflow.task.artifacts import ARTIFACT_SANDBOXES, artifact_spec_issue
 from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
     TaskOS,
-    VerifierEnvironmentMode,
 )
 from benchflow.task.document import TaskDocument
+from benchflow.task.imports import unhonoured_foreign_key
 from benchflow.task.paths import TaskPaths, local_script_strategy_files
 from benchflow.task.prompts import (
     CompiledUserRuntime,
@@ -30,6 +43,37 @@ from benchflow.task.prompts import (
     compile_task_prompt_plan,
 )
 from benchflow.task.verifier_document import load_verifier_document
+from benchflow.task.verifier_sandbox import (
+    separate_verifier_issues,
+    separate_verifier_requested,
+    verifier_image_issue,
+    verifier_owned_overlap,
+    verifier_services_issue,
+)
+
+#: Where the separate-mode transfer refusals are filed. Strict integrity keeps
+#: every issue under ``verifier.sandbox`` (integrity.trial.strict_launch_issues).
+VERIFIER_TRANSFER_ISSUE_PATH = "verifier.sandbox.transfer"
+#: Where the refusal of a separate verifier for a task that keeps services is
+#: filed (DF-4).
+KEPT_SERVICES_ISSUE_PATH = "metadata.x-keep-services"
+#: Where the refusal of an identity-switch task on a backend without the
+#: container's no_new_privs is filed (K1-R15-2).
+IDENTITY_SWITCH_ISSUE_PATH = "metadata.x-agent-identity-switch"
+#: The one backend that runs a task asking for GPUs (sandbox.gpus or
+#: sandbox.gpu_types); every other backend refuses it below.
+GPU_SANDBOX = "modal"
+
+
+def sandbox_for_task(config: object) -> str:
+    """The backend a check assumes when it is given none: docker, or
+    :data:`GPU_SANDBOX` for a task that asks for GPUs (docker refuses one,
+    so checking it there could only fail)."""
+    sandbox = getattr(config, "sandbox", None)
+    if getattr(sandbox, "gpus", 0) or getattr(sandbox, "gpu_types", None):
+        return GPU_SANDBOX
+    return "docker"
+
 
 # Back-compat name kept for this module's existing membership check; the
 # canonical set lives in benchflow.sandbox.providers.
@@ -43,6 +87,9 @@ class UnsupportedTaskFeature:
     path: str
     reason: str
     sandbox: str
+    # The refusal's code, shared with the Rust engine (R401: the task asks
+    # for what this runner cannot do yet; `bench explain R401`).
+    code: str = "R401"
 
     def format(self) -> str:
         return f"{self.path}: {self.reason} (sandbox={self.sandbox})"
@@ -85,11 +132,173 @@ def validate_task_runtime_support(
         return unsupported
 
     _append_config_issues(unsupported, config=config, sandbox=sandbox)
+    _append_kept_services_issue(
+        unsupported,
+        config=config,
+        task_dir=Path(task_dir) if task_dir is not None else None,
+        sandbox=sandbox,
+    )
+    _append_identity_switch_issue(
+        unsupported,
+        config=config,
+        task_dir=Path(task_dir) if task_dir is not None else None,
+        sandbox=sandbox,
+    )
+    _append_allowlist_services_issue(
+        unsupported,
+        config=config,
+        task_dir=Path(task_dir) if task_dir is not None else None,
+        sandbox=sandbox,
+    )
     if document is not None:
         _append_document_issues(unsupported, document=document, sandbox=sandbox)
     if task_dir is not None:
         _append_layout_issues(unsupported, task_dir=Path(task_dir), sandbox=sandbox)
+        _append_verifier_image_issue(
+            unsupported, config=config, task_dir=Path(task_dir), sandbox=sandbox
+        )
     return unsupported
+
+
+def _append_kept_services_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    task_dir: Path | None,
+    sandbox: str,
+) -> None:
+    """A separate verifier sandbox has none of the services the task keeps.
+
+    Its tests would reach no listener and score a plain 0, like an agent
+    failure (DF-4), so the task is refused before anything runs: by the
+    run's plan gate, at launch for a task that declares the separate verifier
+    itself, and by ``bench check`` with the same words.
+    """
+    if not separate_verifier_requested(config):
+        return
+    from types import SimpleNamespace
+
+    from benchflow.task import keep_services
+
+    kept = keep_services.for_task(SimpleNamespace(config=config, task_dir=task_dir))
+    if kept is None:
+        return
+    ports = ", ".join(service.label() for service in kept.services)
+    _issue(
+        unsupported,
+        path=KEPT_SERVICES_ISSUE_PATH,
+        reason=(
+            f"the tests talk to the services the agent leaves running on port "
+            f"{ports} (from {kept.describe_source()}), and a separate verifier "
+            "sandbox has none of them, so every trial would score 0; run the "
+            "verifier in the agent's sandbox (no --verifier-sandbox separate, "
+            "--separate-verifier or --integrity strict, and no separate "
+            f"verifier sandbox_mode in the task), or remove {keep_services.KEY}"
+        ),
+        sandbox=sandbox,
+    )
+
+
+def _append_identity_switch_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    task_dir: Path | None,
+    sandbox: str,
+) -> None:
+    """An identity-switch task runs only where the agent's container has
+    no_new_privs from creation (K1-R15-2): refused before any sandbox starts
+    by the run's plan gate, at launch, and by ``bench check``. Without the
+    task's folder a compose file cannot be seen, so Daytona is refused."""
+    from benchflow.task import identity_switch
+
+    if not identity_switch.declared(config):
+        return
+    compose = (
+        task_dir is not None
+        and compose_definition_path(task_dir / "environment") is not None
+    )
+    why = identity_switch.backend_refusal(sandbox, compose=compose)
+    if why is not None:
+        _issue(
+            unsupported,
+            path=IDENTITY_SWITCH_ISSUE_PATH,
+            reason=why,
+            sandbox=sandbox,
+        )
+
+
+def _append_allowlist_services_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    task_dir: Path | None,
+    sandbox: str,
+) -> None:
+    """Refuse an allowlist task with compose services where they go unchecked.
+
+    Only backends that read the running project keep an allowlist's services
+    from fetching what it refuses (``egress_denylist.task_service_policy``).
+    Elsewhere such a task is refused before any sandbox starts: the launch
+    gate always passes the task's folder. A check of the config alone, with
+    no folder, cannot see a compose file and leaves the call to that gate.
+    Single-container backends refuse any compose file on their own.
+    """
+    if (
+        sandbox in ALLOWLIST_SERVICE_CHECK_PROVIDERS
+        or sandbox in SINGLE_CONTAINER_PROVIDERS
+        or NetworkMode.ALLOWLIST
+        not in (config.sandbox.network_mode, config.agent.network_mode)
+    ):
+        return
+    if task_dir is None or compose_definition_path(task_dir / "environment") is None:
+        return
+    checked = " and ".join(sorted(ALLOWLIST_SERVICE_CHECK_PROVIDERS))
+    _issue(
+        unsupported,
+        path="sandbox.network_mode",
+        reason=(
+            "network_mode='allowlist' with compose services needs a sandbox that "
+            f"checks they have no route out ({checked}); {sandbox} does not"
+        ),
+        sandbox=sandbox,
+    )
+
+
+def _append_verifier_image_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    task_dir: Path,
+    sandbox: str,
+) -> None:
+    """A separate verifier needs an image to start from (see plan_verifier_image)."""
+    # Not when the mode itself is refused here: the image would not help.
+    if not separate_verifier_requested(config) or any(
+        issue.path == "verifier.sandbox_mode" for issue in unsupported
+    ):
+        return
+    problem = verifier_image_issue(config, task_dir)
+    if problem is not None:
+        _issue(
+            unsupported,
+            path=(
+                "verifier.sandbox"
+                if config.verifier.sandbox is not None
+                else "verifier.sandbox_mode"
+            ),
+            reason=problem,
+            sandbox=sandbox,
+        )
+        return
+    services = verifier_services_issue(config, task_dir)
+    if services is not None:
+        _issue(
+            unsupported,
+            path="verifier.sandbox.services",
+            reason=services,
+            sandbox=sandbox,
+        )
 
 
 def raise_for_task_runtime_support(
@@ -128,12 +337,24 @@ def _append_config_issues(
     sandbox: str,
 ) -> None:
     if config.steps:
-        _issue(
-            unsupported,
-            path="steps",
-            reason="Harbor multi-step execution is parsed but not runtime-gated",
-            sandbox=sandbox,
-        )
+        # Multi-step tasks run their steps as rounds of one sandbox
+        # (task/steps.py); each step's soft verify needs the tests in it.
+        if separate_verifier_requested(config):
+            _issue(
+                unsupported,
+                path="steps",
+                reason="a multi-step task's steps are verified in the agent's "
+                "sandbox, so it cannot use a separate verifier sandbox",
+                sandbox=sandbox,
+            )
+        names = [step.name for step in config.steps]
+        if len(set(names)) != len(names):
+            _issue(
+                unsupported,
+                path="steps",
+                reason="step names must be unique (each is a folder under steps/)",
+                sandbox=sandbox,
+            )
         for i, step in enumerate(config.steps):
             if step.artifacts:
                 _issue(
@@ -149,14 +370,33 @@ def _append_config_issues(
                     reason="step healthchecks are parsed but not implemented",
                     sandbox=sandbox,
                 )
+            if step.verifier.collect:
+                _issue(
+                    unsupported,
+                    path=f"steps[{i}].verifier.collect",
+                    reason="a step's collect hooks are parsed but not executed "
+                    "(only the task's [[verifier.collect]] hooks run)",
+                    sandbox=sandbox,
+                )
 
-    if config.artifacts:
+    refused: set[str] = set()
+    for path in config.ignored_keys:
+        found = unhonoured_foreign_key(path)
+        if found is not None and found[0] not in refused:
+            refused.add(found[0])
+            _issue(unsupported, path=found[0], reason=found[1], sandbox=sandbox)
+
+    if config.artifacts and sandbox not in ARTIFACT_SANDBOXES:
         _issue(
             unsupported,
             path="artifacts",
-            reason="root artifact collection is parsed but not runtime-gated",
+            reason="root artifact collection is implemented for docker and daytona",
             sandbox=sandbox,
         )
+    for i, item in enumerate(config.artifacts):
+        problem = artifact_spec_issue(item)
+        if problem is not None:
+            _issue(unsupported, path=f"artifacts[{i}]", reason=problem, sandbox=sandbox)
 
     _append_network_issue(
         unsupported,
@@ -164,68 +404,95 @@ def _append_config_issues(
         mode=config.agent.network_mode,
         sandbox=sandbox,
     )
+    if config.agent.network_mode == NetworkMode.ALLOWLIST and (
+        config.sandbox.network_mode in (NetworkMode.NO_NETWORK, NetworkMode.DENYLIST)
+    ):
+        _issue(
+            unsupported,
+            path="agent.network_mode",
+            reason=(
+                "agent.network_mode='allowlist' cannot combine with "
+                f"sandbox.network_mode={config.sandbox.network_mode.value!r}"
+            ),
+            sandbox=sandbox,
+        )
     _append_network_issue(
         unsupported,
-        path="environment.network_mode",
-        mode=config.environment.network_mode,
+        path="sandbox.network_mode",
+        mode=config.sandbox.network_mode,
         sandbox=sandbox,
     )
-    _append_network_issue(
-        unsupported,
-        path="verifier.network_mode",
-        mode=config.verifier.network_mode,
-        sandbox=sandbox,
-    )
+    if config.verifier.network_mode == NetworkMode.ALLOWLIST:
+        # The allowlist binds the sandbox user's uid; the verifier runs as
+        # root outside that firewall, so a verifier allowlist is not enforced.
+        _issue(
+            unsupported,
+            path="verifier.network_mode",
+            reason="verifier network allowlists are not enforced (the verifier runs outside the agent uid firewall)",
+            sandbox=sandbox,
+        )
+    else:
+        _append_network_issue(
+            unsupported,
+            path="verifier.network_mode",
+            mode=config.verifier.network_mode,
+            sandbox=sandbox,
+        )
 
-    if config.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE:
-        _issue(
-            unsupported,
-            path="verifier.environment_mode",
-            reason="separate verifier environments are parsed but not executed",
-            sandbox=sandbox,
-        )
-    if config.verifier.environment is not None:
-        _issue(
-            unsupported,
-            path="verifier.environment",
-            reason="verifier-specific environment materialization is not implemented",
-            sandbox=sandbox,
-        )
-    if config.verifier.service != "main" and sandbox != "docker":
+    if separate_verifier_requested(config):
+        for reason in separate_verifier_issues(config, sandbox=sandbox):
+            _issue(
+                unsupported,
+                path=(
+                    "verifier.sandbox.network_mode"
+                    if reason.startswith("verifier.sandbox.network_mode")
+                    else "verifier.sandbox_mode"
+                ),
+                reason=reason,
+                sandbox=sandbox,
+            )
+        _append_verifier_transfer_issues(unsupported, config=config, sandbox=sandbox)
+    if config.verifier.service != "main" and sandbox not in VERIFIER_SERVICE_PROVIDERS:
         _issue(
             unsupported,
             path="verifier.service",
-            reason="non-main verifier services require Docker compose support",
+            reason=(
+                "a verifier in a compose service other than main needs a backend "
+                "that runs it in that service: "
+                + ", ".join(
+                    name
+                    for name in SANDBOX_PROVIDERS
+                    if name in VERIFIER_SERVICE_PROVIDERS
+                )
+            ),
             sandbox=sandbox,
         )
 
-    env = config.environment
+    env = config.sandbox
     if env.os == TaskOS.WINDOWS:
         _issue(
             unsupported,
-            path="environment.os",
+            path="sandbox.os",
             reason="Windows task environments are parsed but not executable",
             sandbox=sandbox,
         )
     if env.tpu is not None:
         _issue(
             unsupported,
-            path="environment.tpu",
+            path="sandbox.tpu",
             reason="TPU scheduling is parsed but not implemented",
             sandbox=sandbox,
         )
-    if env.gpus or env.gpu_types:
+    if sandbox == GPU_SANDBOX:
+        try:
+            modal_gpu_request(env.gpus, env.gpu_types)
+        except ModalGPURequestError as exc:
+            _issue(unsupported, path=exc.path, reason=str(exc), sandbox=sandbox)
+    elif env.gpus or env.gpu_types:
         _issue(
             unsupported,
-            path="environment.gpus",
-            reason="GPU scheduling is parsed but not capability-gated",
-            sandbox=sandbox,
-        )
-    if env.healthcheck is not None:
-        _issue(
-            unsupported,
-            path="environment.healthcheck",
-            reason="environment healthchecks are parsed but not runtime-gated",
+            path="sandbox.gpus",
+            reason="GPU task environments require the Modal sandbox backend",
             sandbox=sandbox,
         )
     _append_workdir_issue(
@@ -233,6 +500,53 @@ def _append_config_issues(
         workdir=env.workdir,
         sandbox=sandbox,
     )
+
+
+def _append_verifier_transfer_issues(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    sandbox: str,
+) -> None:
+    """Refuse declared transfer roots that overlap a verifier-owned path.
+
+    A separate verifier gets the workspace and the declared artifacts at their
+    sandbox paths. One at, under or above ``/tests``, ``/logs/verifier`` or
+    another verifier-owned path would put the agent's files where the
+    verifier's own files go (``tests/`` is uploaded over ``/tests`` without
+    clearing it). The image's WORKDIR and overlay artifacts are checked again
+    at transfer time, where they are known.
+    """
+    workdir = config.sandbox.workdir
+    if not isinstance(workdir, str) or not workdir.strip():
+        workdir = None
+    if workdir is not None:
+        owned = verifier_owned_overlap(workdir)
+        if owned is not None:
+            _issue(
+                unsupported,
+                path=VERIFIER_TRANSFER_ISSUE_PATH,
+                reason=(
+                    f"sandbox.workdir {workdir!r} overlaps verifier-owned {owned!r}; "
+                    "the separate verifier would receive the workspace there"
+                ),
+                sandbox=sandbox,
+            )
+    for index, item in enumerate(config.artifacts):
+        source = item if isinstance(item, str) else item.source
+        if not source.startswith("/") and workdir is not None:
+            source = str(PurePosixPath(workdir) / source)
+        owned = verifier_owned_overlap(source)
+        if owned is not None:
+            _issue(
+                unsupported,
+                path=VERIFIER_TRANSFER_ISSUE_PATH,
+                reason=(
+                    f"artifacts[{index}] {source!r} overlaps verifier-owned "
+                    f"{owned!r}; the separate verifier would receive it there"
+                ),
+                sandbox=sandbox,
+            )
 
 
 def _append_workdir_issue(
@@ -246,7 +560,7 @@ def _append_workdir_issue(
     if not isinstance(workdir, str) or not workdir.strip():
         _issue(
             unsupported,
-            path="environment.workdir",
+            path="sandbox.workdir",
             reason="configured workdir must be a non-empty absolute path",
             sandbox=sandbox,
         )
@@ -255,7 +569,7 @@ def _append_workdir_issue(
     if not path.is_absolute() or path == PurePosixPath("/"):
         _issue(
             unsupported,
-            path="environment.workdir",
+            path="sandbox.workdir",
             reason="configured workdir must be an absolute non-root path",
             sandbox=sandbox,
         )
@@ -268,11 +582,25 @@ def _append_network_issue(
     mode: NetworkMode | None,
     sandbox: str,
 ) -> None:
-    if mode == NetworkMode.ALLOWLIST:
+    if mode == NetworkMode.NO_NETWORK and sandbox in NO_NETWORK_UNSUPPORTED_PROVIDERS:
         _issue(
             unsupported,
             path=path,
-            reason="network allowlists are parsed but not enforced per sandbox",
+            reason=f"network_mode='no-network' is not enforced by {sandbox}",
+            sandbox=sandbox,
+        )
+    if mode == NetworkMode.ALLOWLIST and sandbox in ALLOWLIST_UNSUPPORTED_PROVIDERS:
+        _issue(
+            unsupported,
+            path=path,
+            reason=f"network_mode='allowlist' is not enforced by {sandbox}",
+            sandbox=sandbox,
+        )
+    if mode == NetworkMode.DENYLIST and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS:
+        _issue(
+            unsupported,
+            path=path,
+            reason=f"network_mode='denylist' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
 
@@ -412,17 +740,16 @@ def _append_benchflow_verifier_strategy_issues(
             "llm_judge",
             "agent_judge",
             "ors_episode",
-            "rewardkit",
-            "reward_kit",
+            "criteria_runner",
         }:
             continue
         _issue(
             unsupported,
             path=f"benchflow.verifier.implementation.strategies.{strategy_name}",
             reason=(
-                "verifier implementation strategy is parsed but not executable; "
-                "select script, llm-judge, reward-kit, agent-judge, or "
-                "ors-episode until the engine lands"
+                f"verifier strategy {strategy_name!r} is an unknown value; "
+                "choose one of: script, deterministic, test-script, llm-judge, "
+                "agent-judge, ors-episode, criteria-runner"
             ),
             sandbox=sandbox,
         )
@@ -510,6 +837,35 @@ def _append_layout_issues(
         sandbox=sandbox,
     )
     _append_verifier_strategy_issue(unsupported, paths=paths, sandbox=sandbox)
+    _append_compose_issue(unsupported, task_dir=task_dir, sandbox=sandbox)
+
+
+def _append_compose_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    task_dir: Path,
+    sandbox: str,
+) -> None:
+    """Refuse a multi-service task on a backend that runs one container.
+
+    Such a task would otherwise launch with its side services missing, and the
+    resulting failure would be attributed to the agent rather than reported as
+    an environment the backend cannot host.
+    """
+    if sandbox not in SINGLE_CONTAINER_PROVIDERS:
+        return
+    compose = compose_definition_path(task_dir / "environment")
+    if compose is None:
+        return
+    _issue(
+        unsupported,
+        path=f"environment/{compose.name}",
+        reason=(
+            f"multi-service compose topologies are not supported by {sandbox}; "
+            "use the docker or daytona sandbox"
+        ),
+        sandbox=sandbox,
+    )
 
 
 def _append_verifier_strategy_issue(
@@ -532,8 +888,8 @@ def _append_verifier_strategy_issue(
         return
 
     strategy = document.selected_strategy
-    if strategy.type == "reward-kit":
-        _append_reward_kit_strategy_issue(
+    if strategy.type == "criteria-runner":
+        _append_criteria_runner_strategy_issue(
             unsupported,
             paths=paths,
             strategy_name=strategy.name,
@@ -562,13 +918,25 @@ def _append_verifier_strategy_issue(
             sandbox=sandbox,
         )
         return
+    if strategy.type == "taskmd":
+        # A materialized task.md draft 2 package (benchflow.taskmd): its
+        # writer checked everything else when it refused unsupported fields.
+        command = strategy.command
+        if command is not None and not (paths.tests_dir / command).is_file():
+            _issue(
+                unsupported,
+                path=f"verifier.strategies.{strategy.name}.command",
+                reason=f"the verifier package has no {command}",
+                sandbox=sandbox,
+            )
+        return
     if strategy.type not in {"script", "llm-judge", "agent-judge", "ors-episode"}:
         _issue(
             unsupported,
             path=f"verifier.strategies.{strategy.name}",
             reason=(
                 f"{strategy.type} verifier strategies are parsed but not "
-                "executable; select script, llm-judge, reward-kit, agent-judge, "
+                "executable; select script, llm-judge, criteria-runner, agent-judge, "
                 "or ors-episode"
             ),
             sandbox=sandbox,
@@ -631,7 +999,7 @@ def _append_llm_judge_strategy_issue(
         )
 
 
-def _append_reward_kit_strategy_issue(
+def _append_criteria_runner_strategy_issue(
     unsupported: list[UnsupportedTaskFeature],
     *,
     paths: TaskPaths,
@@ -645,7 +1013,7 @@ def _append_reward_kit_strategy_issue(
         _issue(
             unsupported,
             path=f"verifier.strategies.{strategy_name}",
-            reason="reward-kit strategy must declare root",
+            reason="criteria-runner strategy must declare root",
             sandbox=sandbox,
         )
         return
@@ -665,7 +1033,7 @@ def _append_reward_kit_strategy_issue(
         _issue(
             unsupported,
             path=f"verifier.strategies.{strategy_name}",
-            reason=f"reward-kit runner not found at {runner}",
+            reason=f"criteria-runner runner not found at {runner}",
             sandbox=sandbox,
         )
     if criteria is None:
@@ -685,7 +1053,7 @@ def _append_reward_kit_strategy_issue(
         _issue(
             unsupported,
             path=f"verifier.strategies.{strategy_name}",
-            reason=f"reward-kit criteria not found at {criteria_file}",
+            reason=f"criteria-runner criteria not found at {criteria_file}",
             sandbox=sandbox,
         )
         return
@@ -695,7 +1063,7 @@ def _append_reward_kit_strategy_issue(
         _issue(
             unsupported,
             path=f"verifier.strategies.{strategy_name}",
-            reason=f"reward-kit criteria are invalid: {e}",
+            reason=f"criteria-runner criteria are invalid: {e}",
             sandbox=sandbox,
         )
 
@@ -713,7 +1081,7 @@ def _strategy_file_exists(value: str | None, *, verifier_dir: Path) -> bool:
 def _safe_relative_runtime_path(value: str) -> PurePosixPath:
     path = PurePosixPath(value)
     if not path.parts or path.is_absolute() or ".." in path.parts:
-        raise ValueError("reward-kit paths must be safe relative paths")
+        raise ValueError("criteria-runner paths must be safe relative paths")
     return path
 
 

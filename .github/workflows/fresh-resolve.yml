@@ -1,0 +1,73 @@
+name: fresh-resolve
+
+# The test workflow checks the locked environment (`uv sync --locked`), but
+# `uv tool install benchflow` and `pip install benchflow` never read uv.lock:
+# they take the newest versions pyproject.toml allows on the day (typer 0.27
+# broke 9 tests while the lock held 0.24). tools/ci/fresh_resolve.sh builds the
+# wheel, installs it in a fresh venv with no lock, and runs the unit suite from
+# a copy of the checkout without src/. A new upstream release can turn this red
+# with no change here, so it runs daily and on changes to what it reads, not on
+# every pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - constraints.txt
+      - tools/ci/**
+      - .github/workflows/fresh-resolve.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-resolve:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          # The point is a resolve with nothing reused, so no uv cache.
+          enable-cache: false
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+
+      # The script prints the resolved typer and click; the whole resolve is
+      # in $FRESH_RESOLVE_DIR/freeze.txt, uploaded below.
+      - name: Fresh resolve and unit suite
+        run: tools/ci/fresh_resolve.sh -n auto -q -rfE
+        env:
+          FRESH_RESOLVE_PYTHON: ${{ matrix.python-version }}
+          FRESH_RESOLVE_DIR: ${{ runner.temp }}/fresh-resolve
+          BENCHFLOW_DETERMINISTIC_SANDBOX: "off"
+
+      - name: Upload the resolved versions
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: fresh-resolve-freeze-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/fresh-resolve/freeze.txt
+          if-no-files-found: ignore
+          retention-days: 14

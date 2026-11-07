@@ -205,7 +205,9 @@ def load_manifest(path: str | Path) -> EnvironmentManifest:
     """Load and validate an environment manifest.
 
     ``path`` is either a TOML file path (the historical behavior) or a registry
-    spec ``name@version`` resolved via ``$BENCHFLOW_ENV_REGISTRY``. The spec form
+    spec ``name@version`` resolved via ``$BENCHFLOW_ENV_REGISTRY`` when set,
+    else the built-in registry shipped inside the wheel
+    (``benchflow/environment/_registry/``). The spec form
     lets a run bind its environment (the ``S`` axis) by name at the command line —
     decoupled from the task and swappable per run, like ``--agent`` / ``--model``
     / ``--sandbox``. Resolution is content-addressed so the bound world is

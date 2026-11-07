@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.6.4"
+version = "0.10.0rc2"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,15 +8,39 @@ keywords = ["benchmark", "llm-agents", "acp", "agent-evaluation", "multi-turn", 
 dependencies = [
     "agent-client-protocol>=0.10",
     "httpx>=0.27.0",
+    # Keep TLS clients and LiteLLM/Daytona on patched transitive releases.
+    "certifi>=2026.10.19",
+    "aiohttp>=3.14.4",
     "anyio>=4.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",
+    # Denylist egress mints TLS certificates on both Docker and Daytona.
+    "cryptography>=50",
     # Dataset registry bench_version checks (PEP 440 specifier sets).
     "packaging>=24",
-    "litellm[proxy]==1.89.0",
+    "litellm[proxy]==1.103.3",
+    # The model proxy gives a chat-completions model each PDF Claude Code
+    # sends as its text (providers/litellm_messages_bridge_patch.py), and a
+    # host proxy runs from this environment. The PDFs come from the agent:
+    # the floor is the release that was checked, with pypdf's latest limits
+    # on parsing work.
+    "pypdf>=6.21.4,<7",
+    "google-cloud-aiplatform>=1.133.0,<2.0",
     "tomli-w>=1.0",
-    "typer>=0.9",
+    # Upper bounds at the newest minors tools/ci/fresh_resolve.sh passes on
+    # (a fresh resolve, not the lock). typer 0.26 vendors its own click
+    # (typer._click): its CliRunner has no isolated_filesystem, the CLI parity
+    # test reads no flags, and traj upload's click.Abort handler no longer
+    # matches, so 9 tests fail on 0.26 and 0.27. cli/traj.py imports click
+    # itself, so click is a direct dependency; 8.5 passes. The typer floor is
+    # 0.19, the first typer that builds the CLI's typing.Literal options
+    # (0.16-0.18 stop every command with "Type not yet supported"); it also
+    # supports click 8.2's make_metavar(ctx), which typer before 0.16 does
+    # not, so pip cannot keep an old typer while the click floor upgrades
+    # click under it.
+    "typer>=0.19,<0.26",
+    "click>=8.2.1,<8.6",
 ]
 authors = [
     { name = "Xiangyi Li", email = "xiangyi@benchflow.ai" },
@@ -35,21 +59,52 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
 ]
 
 [project.optional-dependencies]
+azure = [
+    # Direct Azure Blob trajectory uploads (bench traj upload --direct).
+    # Broker-mode uploads need neither package.
+    "azure-storage-blob>=12.19",
+    "azure-identity>=1.16",
+]
+azure-service = [
+    # Dependencies baked into the public trajectory broker/validator image.
+    "azure-storage-blob>=12.19",
+    "azure-identity>=1.16",
+    "azure-data-tables>=12.5",
+    "azure-storage-queue>=12.9",
+    "uvicorn>=0.30",
+]
 dev = [
     "pre-commit>=3.7",
+    # AgentCore's CodeBuild path must reproduce Docker's ignore rules in tests
+    # even when the optional AWS backend is not installed.
+    "pathspec>=0.12",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
+    "pytest-timeout>=2.4.0",
+    # `pytest -n auto` (CI's unit job and the round's test command). 3.8 is
+    # the release the suite was first checked under.
+    "pytest-xdist>=3.8",
+    # Browser-level viewer tests (tests/trajectories/test_viewer_browser.py):
+    # drives the interactive template in real Chromium. Tests self-skip when
+    # playwright or its browser binary is absent, so plain `pytest tests/`
+    # stays runnable without `playwright install chromium`.
+    "playwright>=1.49",
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
 ]
 train = [
     # Used by the Prime-RL SFT wrapper for local token-window staging before
     # handing JSONL rows to Prime-RL.
-    "transformers==5.6.2",
+    "transformers==5.10.4",
+]
+trl = [
+    # Native tool-calling prompt/completion rows, assistant-only masks, and
+    # training chat-template patches used by `bench train validate --format trl-sft`.
+    "trl>=1.8.0,<2",
+    "datasets>=2.19.0",
 ]
 sandbox-daytona = [
     # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
@@ -57,12 +112,34 @@ sandbox-daytona = [
     # >=0.184: the top-level sync `Daytona` export is present (0.176-0.183 only
     # shipped `AsyncDaytona`); `sandbox/daytona.py` uses the sync client, so this
     # floor is required for it to import.
-    "daytona>=0.184.0",
+    # >=0.207: optional file timestamps must accept null, or readable outputs
+    # cannot be recovered. This is required for upgrades as well as fresh installs.
+    # <0.208: 0.207 is the newest release checked against BenchFlow's use of
+    # it: the PTY websocket
+    # heartbeat (sandbox/_sdk_ops.py, #1143) wraps 0.197's
+    # _open_ws(url, headers, subprotocols); the retry and start-path rules know
+    # 0.201's DaytonaConnectionTimeoutError, 0.207's 504 DaytonaTimeoutError
+    # and its "entered error state" wording; and Ctrl-C stays BenchFlow's
+    # although 0.197's clients open a Socket.IO event connection.
+    "daytona>=0.207.0,<0.208",
     "tenacity>=8.0",
 ]
 sandbox-modal = [
-    "modal>=0.73",
+    # 1.6: Sandbox.filesystem, the file API this backend uses (Modal's
+    # servers refuse the legacy Sandbox.open/mkdir/ls, which 1.6 removed).
+    "modal>=1.6.2,<1.7",
     "tenacity>=8.0",
+]
+sandbox-agentcore = [
+    # Bedrock AgentCore Runtime microVMs. The SDK supplies the interactive
+    # shell (`open_shell`) used as the ACP transport; boto3 supplies the
+    # control plane (CreateAgentRuntime) and the command plane
+    # (InvokeAgentRuntimeCommand). The boto3 floor is the first release that
+    # models the bedrock-agentcore/-control services.
+    "bedrock-agentcore>=1.18",
+    "boto3>=1.43.31",
+    # Docker-compatible build-context filtering without requiring a daemon.
+    "pathspec>=0.12",
 ]
 bedrock = [
     "boto3>=1.40",
@@ -83,8 +160,8 @@ deepagents = [
 ]
 
 [project.scripts]
-benchflow = "benchflow.cli.main:app"
-bench = "benchflow.cli.main:app"
+benchflow = "benchflow.cli.main:main"
+bench = "benchflow.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/benchflow-ai/benchflow"
@@ -93,15 +170,42 @@ Issues = "https://github.com/benchflow-ai/benchflow/issues"
 Discord = "https://discord.gg/mZ9Rc8q8W3"
 Changelog = "https://github.com/benchflow-ai/benchflow/blob/main/CHANGELOG.md"
 
+[dependency-groups]
+# What BenchFlow's LiteLLM model proxy installs when it runs inside a sandbox
+# (or on the host with extra requirements). Never installed by `uv sync`: they
+# are exported from uv.lock, with hashes, to
+# src/benchflow/providers/proxy_requirements/ (shipped in the wheel) by
+# `uv run python tools/export_proxy_requirements.py`, so the proxy runs the
+# audited, locked set instead of a fresh resolve. Keep litellm at the core pin.
+litellm-proxy = [
+    "litellm[proxy]==1.103.3",
+    "boto3>=1.40",
+    # PDF text for a chat-completions model, as in the core dependencies.
+    "pypdf>=6.21.4,<7",
+]
+# Vertex routes (google-vertex, anthropic-vertex) also need the Vertex SDK.
+litellm-proxy-vertex = [
+    { include-group = "litellm-proxy" },
+    "google-cloud-aiplatform>=1.133.0,<2.0",
+]
+
 [build-system]
-requires = ["hatchling"]
+# Pinned: an unpinned backend made the same source build a wheel with other
+# bytes (hatchling 1.33.0 writes its own version into WHEEL), so a rebuild of
+# an accepted release no longer matched its recorded SHA-256.
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+# bfx's two static binaries (scripts/build_bfx.sh, pinned in
+# src/benchflow/_bfx/pins.py) are package data though git ignores them.
+artifacts = ["src/benchflow/_bfx/bin/bfx-x86_64", "src/benchflow/_bfx/bin/bfx-aarch64"]
+
 [tool.hatch.build.targets.sdist]
-# Allowlist: only ship what the installed package needs.
+# Allowlist: only what builds and documents the installed package. The tests,
+# their fixtures and the docs stay in the repository, out of the sdist.
 only-include = [
     "src",
-    "tests",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -110,23 +214,40 @@ only-include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live and not integration'"
+# --dist loadgroup only matters with -n (pytest-xdist): tests that read one
+# session job share a worker, and long tests start first (tests/conftest.py).
+addopts = "-m 'not live and not integration and not e2e' --dist loadgroup"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
     "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
+    "browser: drives the viewer template in real Chromium via Playwright (self-skips without playwright/chromium; deselect with -m 'not browser')",
+    "e2e: end-to-end scenarios per SDK feature: real bench CLI and Python API on real sandboxes (tests/e2e/README.md: BENCHFLOW_E2E_SANDBOX=daytona for the feature tier; Docker or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona for the self-hosted policy scenario); excluded by default, run with -m e2e",
+    "deterministic: real CLI + real sandbox + scripted fake model provider; runs by default when a sandbox is available (Docker, or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona), skips with a reason otherwise (deselect with -m 'not deterministic')",
+    "transport_over_bound: the test hands a backend's provider a command over the exec transport bound on purpose (tests/conftest.py exec_transport_tripwire)",
 ]
 
 [tool.ruff]
 target-version = "py312"
 # Vendored third-party service packages baked into task images (e.g. the
 # smolclaws claw-* sources copied under a ClawsBench task's environment/) are
-# not BenchFlow code — do not lint them.
+# not BenchFlow code — do not lint them. The skill-creator, task-creator, and
+# task-review skills are verbatim upstream copies; keeping them byte-identical
+# matters more than local style, so they are excluded too. Skills authored here
+# (e.g. benchflow-experiment-review) stay linted.
 extend-exclude = [
     ".agents/skills/skill-creator",
+    ".agents/skills/task-creator",
+    ".agents/skills/task-review",
     ".claude/skills/skill-creator",
+    ".claude/skills/task-creator",
+    ".claude/skills/task-review",
     "benchmarks/**/tasks/**/environment/claw-*",
     "tests/fixtures/skillsbench_slice",
+    # task.md draft 2's reference tools, verbatim at the commit VENDOR.json
+    # pins: BenchFlow parses a package exactly as the reference parser does.
+    "src/benchflow/taskmd/_vendor",
+    "tests/fixtures/taskmd",
 ]
 
 [tool.ruff.lint]
@@ -178,4 +299,6 @@ exclude = [
     "src/benchflow/rewards/file_readers.py",
     "src/benchflow/rewards/rubric_config.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
+    # Verbatim upstream copies (see [tool.ruff] extend-exclude).
+    "src/benchflow/taskmd/_vendor",
 ]

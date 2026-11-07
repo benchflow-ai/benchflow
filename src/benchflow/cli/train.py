@@ -4,18 +4,93 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 
 import typer
 from rich.markup import escape
 
-from benchflow.cli._shared import console, print_error
+from benchflow.cli._shared import (
+    JOBS_FOLDER_NEXT,
+    command_arg,
+    console,
+    exit_if_missing,
+    print_error,
+)
+
+# Formats written from each rollout's calls as whole conversations
+# (benchflow.trajectories.rl_conversations), for the trainer that reads them.
+_CONVERSATION_FORMATS = ("verl-sft", "skyrl-sft", "openenv-episodes")
 
 
-def _ensure_prime_sft(format_name: str) -> None:
-    if format_name != "prime-sft":
-        print_error("--format currently supports only 'prime-sft'")
-        raise typer.Exit(1)
+def _ensure_training_format(format_name: str, *, convert: bool = False) -> None:
+    formats = ["prime-sft", "trl-sft", "branch-tree"]
+    if convert:
+        formats += _CONVERSATION_FORMATS
+    if format_name not in formats:
+        print_error(
+            f"--format {format_name!r} is not a training format",
+            next_step=f"pass --format {', '.join(formats[:-1])} or {formats[-1]}",
+        )
+        raise typer.Exit(2)
+
+
+def _export_conversation_format(
+    format_name: str, jobs_dir: Path, output: Path, **options: Any
+) -> Any:
+    if format_name == "verl-sft":
+        from benchflow.trajectories.export_verl_sft import export_verl_sft_parquet
+
+        return export_verl_sft_parquet(jobs_dir, output, **options)
+    if format_name == "skyrl-sft":
+        from benchflow.trajectories.export_skyrl_sft import export_skyrl_sft_jsonl
+
+        return export_skyrl_sft_jsonl(jobs_dir, output, **options)
+    if format_name == "openenv-episodes":
+        from benchflow.trajectories.export_openenv_episodes import (
+            export_openenv_episodes_jsonl,
+        )
+
+        return export_openenv_episodes_jsonl(jobs_dir, output, **options)
+    raise ValueError(f"--format {format_name} has no exporter")
+
+
+def _consumer_hint(format_name: str, output: Path, row_mode: str) -> str:
+    """The flags of the library that reads ``output``."""
+    if format_name == "verl-sft":
+        from benchflow.trajectories.export_verl_sft import (
+            VERL_DATASET_CLASS,
+            verl_dataset_path,
+        )
+
+        return (
+            f"verl: data.train_files={output} "
+            f"data.custom_cls.path={verl_dataset_path()} "
+            f"data.custom_cls.name={VERL_DATASET_CLASS}"
+        )
+    if format_name == "skyrl-sft":
+        from benchflow.trajectories.export_skyrl_sft import skyrl_train_on_what
+
+        return (
+            f"SkyRL: train_datasets=[{output.parent}] train_dataset_splits=[train] "
+            f"train_on_what={skyrl_train_on_what(cast(Any, row_mode))} "
+            f"(the folder must hold only {output.name})"
+        )
+    if format_name == "openenv-episodes":
+        hint = (
+            f"OpenEnv: RolloutSerializer({output.parent}) reads "
+            f"{output.parent / 'results.jsonl'}"
+        )
+        if output.name != "results.jsonl":
+            hint += f"; name the file results.jsonl, not {output.name}"
+        return hint
+    return ""
+
+
+def _has_branch_trees(jobs_dir: Path) -> bool:
+    try:
+        return next(Path(jobs_dir).rglob("tree.json"), None) is not None
+    except OSError:
+        return False
 
 
 def register_train(app: typer.Typer) -> None:
@@ -33,12 +108,45 @@ def register_train(app: typer.Typer) -> None:
         ],
         output: Annotated[
             Path,
-            typer.Option("--out", "-o", help="Output JSONL path"),
+            typer.Option(
+                "--out", "-o", help="Output path: JSONL, or parquet for verl-sft"
+            ),
         ],
         format_name: Annotated[
             str,
-            typer.Option("--format", help="Trainer format"),
+            typer.Option(
+                "--format",
+                help="Trainer format: prime-sft, trl-sft, branch-tree (one row "
+                "per branch child: shared prefix, continuation, reward, advantage), "
+                "verl-sft (parquet for verl's multi-turn SFT trainer), "
+                "skyrl-sft (rows for SkyRL's SFT trainer) or openenv-episodes "
+                "(OpenEnv episode records)",
+            ),
         ] = "prime-sft",
+        pairs: Annotated[
+            Path | None,
+            typer.Option(
+                "--pairs",
+                help="branch-tree only: also write one row per sibling pair whose "
+                "rewards differ (chosen/rejected, margin) to this JSONL path",
+            ),
+        ] = None,
+        pairs_any_request: Annotated[
+            bool,
+            typer.Option(
+                "--pairs-any-request",
+                help="branch-tree only: also pair siblings that were asked different "
+                "things (default: only siblings with the same first user message)",
+            ),
+        ] = False,
+        include_oracle: Annotated[
+            bool,
+            typer.Option(
+                "--include-oracle",
+                help="branch-tree only: keep oracle children as rows (skipped by "
+                "default; their only message is the solution script's exit code)",
+            ),
+        ] = False,
         min_reward: Annotated[
             float | None,
             typer.Option("--min-reward", help="Only include rows with reward >= value"),
@@ -82,32 +190,553 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = True,
+        context_policy: Annotated[
+            Literal["full", "message-window"],
+            typer.Option(
+                "--context-policy",
+                help="TRL context handling: full or tokenizer-aware message-window",
+            ),
+        ] = "full",
+        tokenizer_id: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer",
+                help="Tokenizer/model ID for TRL message-window conversion",
+            ),
+        ] = None,
+        tokenizer_revision: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer-revision",
+                help="Immutable tokenizer revision for TRL conversion",
+            ),
+        ] = None,
+        max_length: Annotated[
+            int | None,
+            typer.Option(
+                "--max-length",
+                help="Maximum rendered length for TRL message-window conversion",
+            ),
+        ] = None,
+        subagent_rows: Annotated[
+            bool,
+            typer.Option(
+                "--subagent-rows",
+                help=(
+                    "Also write each Claude subagent conversation as separate "
+                    "rows tagged with the spawning tool call. By default rows "
+                    "contain the parent agent's conversation only."
+                ),
+            ),
+        ] = False,
+        reward_vector: Annotated[
+            bool,
+            typer.Option(
+                "--reward-vector",
+                help=(
+                    "prime-sft/trl-sft: add reward_vector to every row: the "
+                    "test gate and each rubric criterion (names, kinds, weights, "
+                    "0-1 values) for rubric-scored trials, else every numeric "
+                    "key the verifier wrote. Unscored rollouts get null."
+                ),
+            ),
+        ] = False,
+        group_advantage: Annotated[
+            str | None,
+            typer.Option(
+                "--group-advantage",
+                help=(
+                    "prime-sft/trl-sft: add advantage and group to every row, "
+                    "normalised over the scored rollouts of the same group: "
+                    "grpo = (r - mean) / (std + 1e-4), sample std; loo = r - "
+                    "mean of the others. Unscored rollouts get null, never 0."
+                ),
+            ),
+        ] = None,
+        group_by: Annotated[
+            str,
+            typer.Option(
+                "--group-by",
+                help=(
+                    "Grouping key for --group-advantage, comma-separated from "
+                    "task, agent, model, task_digest, job. A group stays inside "
+                    "one job unless job is left out (jobs may have run different "
+                    "policy checkpoints)"
+                ),
+            ),
+        ] = "task,agent,model,job",
     ) -> None:
         """Convert BenchFlow rollout artifacts into trainer-ready data."""
-        _ensure_prime_sft(format_name)
-        from benchflow.trajectories.export_prime_sft import export_prime_sft_jsonl
+        _ensure_training_format(format_name, convert=True)
+        exit_if_missing(
+            jobs_dir, next_step="pass a rollout or jobs directory to convert"
+        )
+        from benchflow.trajectories.training_signal import check_options
 
         try:
-            stats = export_prime_sft_jsonl(
-                jobs_dir,
-                output,
-                min_reward=min_reward,
-                row_mode=row_mode,
-                expected_rows=expected_rows,
-                manifest=manifest,
-                canonical_selection=canonical_selection,
-                redact=redact,
+            group_keys = check_options(
+                group_advantage=group_advantage, group_by=group_by
             )
         except ValueError as exc:
-            print_error(str(exc))
+            flag = (
+                "--group-advantage" if "group_advantage" in str(exc) else "--group-by"
+            )
+            print_error(
+                f"{flag}: {exc}",
+                next_step="`bench train convert --help` describes --group-by and "
+                "--group-advantage",
+            )
+            raise typer.Exit(2) from None
+        for flag, used in (
+            ("--pairs", pairs is not None),
+            ("--pairs-any-request", pairs_any_request),
+            ("--include-oracle", include_oracle),
+        ):
+            if used and format_name != "branch-tree":
+                print_error(
+                    f"{flag} needs --format branch-tree",
+                    next_step=f"add --format branch-tree, or drop {flag}",
+                )
+                raise typer.Exit(2)
+        if format_name == "branch-tree":
+            from benchflow.trajectories.export_branch import export_branch_jsonl
+
+            for flag, used in (
+                ("--row-mode", row_mode != "rollout"),
+                ("--canonical-selection", canonical_selection is not None),
+                ("--context-policy", context_policy != "full"),
+                ("--tokenizer", tokenizer_id is not None),
+                ("--tokenizer-revision", tokenizer_revision is not None),
+                ("--max-length", max_length is not None),
+                ("--subagent-rows", subagent_rows),
+                ("--reward-vector", reward_vector),
+                ("--group-advantage", group_advantage is not None),
+            ):
+                if used:
+                    print_error(
+                        f"{flag} does not apply to --format branch-tree (one row per "
+                        "branch child from the ACP events, with advantage = reward "
+                        "- value)",
+                        next_step=f"drop {flag}",
+                    )
+                    raise typer.Exit(2)
+            try:
+                branch_stats = export_branch_jsonl(
+                    jobs_dir,
+                    output,
+                    pairs_out=pairs,
+                    redact=redact,
+                    min_reward=min_reward,
+                    expected_rows=expected_rows,
+                    manifest=manifest,
+                    include_oracle=include_oracle,
+                    any_request_pairs=pairs_any_request,
+                )
+            except ValueError as exc:
+                print_error(
+                    str(exc),
+                    next_step="pass the job folder of a branched run (`bench branch` "
+                    "writes one)",
+                )
+                raise typer.Exit(1) from None
+            console.print(
+                f"[green]Converted {branch_stats.child_rows} child row(s)[/green] "
+                f"from {branch_stats.forks} fork(s) in {branch_stats.trials} "
+                f"trial(s) -> {escape(str(output))}"
+                + (
+                    f"; {branch_stats.pair_rows} pair row(s) -> {escape(str(pairs))}"
+                    if pairs is not None
+                    else ""
+                ),
+                soft_wrap=True,
+            )
+            if branch_stats.unscored_children or branch_stats.missing_observations:
+                console.print(
+                    f"{branch_stats.unscored_children} child(ren) unscored (kept, no "
+                    f"reward or advantage); {branch_stats.missing_observations} "
+                    "without an observation.json (empty continuation)."
+                )
+            skipped = [
+                f"{n} {what}"
+                for n, what in (
+                    (
+                        branch_stats.skipped_oracle,
+                        "oracle child(ren) (--include-oracle)",
+                    ),
+                    (branch_stats.below_min_reward, "below --min-reward"),
+                    (
+                        branch_stats.pairs_skipped_different_request,
+                        "pair(s) of siblings asked different things "
+                        "(--pairs-any-request)",
+                    ),
+                )
+                if n
+            ]
+            if skipped:
+                console.print("Skipped: " + "; ".join(skipped) + ".")
+            if manifest is not None:
+                console.print(f"Stats: {escape(str(manifest))}")
+            return
+        exit_if_missing(
+            canonical_selection,
+            next_step="pass a canonical-selection.json file to --canonical-selection",
+        )
+        if format_name == "openenv-episodes":
+            from benchflow.trajectories.export_openenv_episodes import (
+                refuse_episode_options,
+            )
+
+            try:
+                refuse_episode_options(
+                    row_mode=row_mode,
+                    subagent_rows=subagent_rows,
+                    reward_vector=reward_vector,
+                    group_advantage=group_advantage,
+                )
+            except ValueError as exc:
+                print_error(
+                    str(exc),
+                    next_step="`bench train convert --help` describes each flag",
+                )
+                raise typer.Exit(2) from None
+        try:
+            if format_name != "trl-sft" and (
+                context_policy != "full"
+                or tokenizer_id is not None
+                or tokenizer_revision is not None
+                or max_length is not None
+            ):
+                raise ValueError(
+                    "--context-policy/--tokenizer/--tokenizer-revision/"
+                    "--max-length are supported only with --format trl-sft"
+                )
+            if format_name in _CONVERSATION_FORMATS:
+                stats = _export_conversation_format(
+                    format_name,
+                    jobs_dir,
+                    output,
+                    min_reward=min_reward,
+                    row_mode=row_mode,
+                    expected_rows=expected_rows,
+                    manifest=manifest,
+                    canonical_selection=canonical_selection,
+                    redact=redact,
+                    subagent_rows=subagent_rows,
+                    reward_vector=reward_vector,
+                    group_advantage=cast(Any, group_advantage),
+                    group_by=group_keys,
+                )
+            elif format_name == "prime-sft":
+                from benchflow.trajectories.export_prime_sft import (
+                    export_prime_sft_jsonl,
+                )
+
+                stats = export_prime_sft_jsonl(
+                    jobs_dir,
+                    output,
+                    min_reward=min_reward,
+                    row_mode=row_mode,
+                    expected_rows=expected_rows,
+                    manifest=manifest,
+                    canonical_selection=canonical_selection,
+                    redact=redact,
+                    subagent_rows=subagent_rows,
+                    reward_vector=reward_vector,
+                    group_advantage=cast(Any, group_advantage),
+                    group_by=group_keys,
+                )
+            else:
+                from benchflow.trajectories.export_trl_sft import (
+                    export_trl_sft_jsonl,
+                )
+
+                stats = export_trl_sft_jsonl(
+                    jobs_dir,
+                    output,
+                    min_reward=min_reward,
+                    row_mode=row_mode,
+                    expected_rows=expected_rows,
+                    manifest=manifest,
+                    canonical_selection=canonical_selection,
+                    redact=redact,
+                    context_policy=context_policy,
+                    tokenizer_id=tokenizer_id,
+                    tokenizer_revision=tokenizer_revision,
+                    max_length=max_length,
+                    subagent_rows=subagent_rows,
+                    reward_vector=reward_vector,
+                    group_advantage=cast(Any, group_advantage),
+                    group_by=group_keys,
+                )
+        except (OSError, ValueError) as exc:
+            message = str(exc)
+            next_step = (
+                "`bench train convert --help` describes what it reads and writes"
+            )
+            if "llm_trajectory.jsonl" in message and _has_branch_trees(jobs_dir):
+                message = (
+                    "this is a branch run: runs that branch record the ACP "
+                    "trajectory, not an LLM-proxy llm_trajectory.jsonl "
+                    f"({message})"
+                )
+                next_step = "use --format branch-tree"
+            print_error(message, next_step=next_step)
             raise typer.Exit(1) from None
 
+        if stats.rollouts_seen and stats.skipped_control == stats.rollouts_seen:
+            # An oracle or nop job made no model calls (DFR-p5-18).
+            console.print(
+                f"0 rows: the job holds only control runs ({stats.skipped_control} "
+                f"oracle or nop rollout(s)) -> {escape(str(output))}"
+            )
+            return
         console.print(
             f"[green]Converted {stats.rows_written} row(s)[/green] "
             f"from {stats.rollouts_seen} rollout(s) -> {escape(str(output))}"
+            + (
+                f"; skipped {stats.skipped_control} control run(s) (oracle, nop)"
+                if stats.skipped_control
+                else ""
+            )
+            + (
+                f"; left out {unparsed} model call(s) whose tool input was not a "
+                "JSON object"
+                if (unparsed := getattr(stats, "skipped_unparsed_tool_calls", 0))
+                else ""
+            )
+            + (
+                f"; left out {stats.skipped_terminal_error} rollout(s) that did not "
+                "end cleanly (an error, a time limit or a conversation cut short; "
+                "skipped_terminal_error in the manifest)"
+                if getattr(stats, "skipped_terminal_error", 0)
+                else ""
+            )
         )
+        if format_name in _CONVERSATION_FORMATS:
+            from benchflow.trajectories.rl_conversations import context_summary
+
+            label = (
+                "listed in extra.train_message_indices"
+                if format_name == "openenv-episodes"
+                else "trained"
+            )
+            console.print(
+                context_summary(cast(Any, stats), trained_label=label) + ".",
+                soft_wrap=True,
+            )
+            if unscored := getattr(stats, "skipped_unscored", 0):
+                console.print(
+                    f"Left out {unscored} unscored rollout(s): an OpenEnv episode "
+                    "needs a reward."
+                )
+            console.print(
+                escape(_consumer_hint(format_name, output, row_mode)), soft_wrap=True
+            )
+        subagents = stats.subagents
+        if subagents.rollouts_with_subagents:
+            hint = "" if subagent_rows else " (--subagent-rows emits them as rows)"
+            console.print(
+                f"Subagents: {subagents.rollouts_with_subagents} rollout(s) made "
+                f"{subagents.subagent_calls_seen} subagent call(s); included "
+                f"{subagents.subagent_rows_written} subagent row(s), excluded "
+                f"{subagents.subagent_exchanges_excluded} subagent LLM "
+                f"exchange(s){hint}."
+            )
+        signal = stats.training_signal
+        if signal is not None and signal["group_advantage"] is not None:
+            groups = signal["groups"]
+            unscored = sum(
+                1
+                for g in groups
+                for m in g["members"]
+                if m.get("excluded") == "unscored"
+            )
+            single = sum(1 for g in groups if g["scored"] == 1)
+            console.print(
+                f"Groups ({signal['group_advantage']}, by "
+                f"{','.join(signal['group_by'])}): {len(groups)}; "
+                f"{unscored} unscored rollout(s) left out of every baseline"
+                + (
+                    f"; {single} group(s) with one scored rollout (no advantage)"
+                    if single
+                    else ""
+                )
+                + "."
+            )
         if manifest is not None:
             console.print(f"Stats: {escape(str(manifest))}")
+
+    @train_app.command("token-coverage")
+    def train_token_coverage(
+        path: Annotated[
+            Path,
+            typer.Argument(help="BenchFlow rollout or jobs directory"),
+        ],
+        as_json: Annotated[
+            bool, typer.Option("--json", help="Print the report as JSON")
+        ] = False,
+    ) -> None:
+        """Report whether each rollout's model calls carry token ids and logprobs.
+
+        Reads trajectory/llm_trajectory.jsonl token_capture blocks (see
+        docs/train/trainer.md#token-ids-and-logprobs). A rollout is training-grade when
+        every call has prompt token ids, sampled token ids and logprobs, and
+        each prompt extends the previous call's prompt and sampled tokens.
+        """
+        from benchflow.trajectories.token_capture import (
+            summarize_rollout_token_capture,
+        )
+
+        if not path.exists():
+            print_error(f"No such path: {path}", next_step=JOBS_FOLDER_NEXT)
+            raise typer.Exit(2)
+        from benchflow._utils.result_paths import iter_task_result_paths
+
+        # Same discovery as bf.load_job: a trial's nested reviewer runs are
+        # not rollouts of the job.
+        result_paths = (
+            [path / "result.json"]
+            if (path / "result.json").is_file()
+            else iter_task_result_paths(path)
+        )
+        rollouts = sorted({p.parent for p in result_paths})
+        per_rollout = [summarize_rollout_token_capture(r) for r in rollouts]
+        report = {
+            "rollouts": len(per_rollout),
+            "training_grade_rollouts": sum(
+                1 for r in per_rollout if r["training_grade"]
+            ),
+            "per_rollout": per_rollout,
+        }
+        if as_json:
+            typer.echo(json.dumps(report, indent=2))
+            return
+        for r in per_rollout:
+            if r["status"] == "captured":
+                prefix = r["prefix"]
+                detail = (
+                    f"{r['complete_calls']}/{r['calls']} calls complete, "
+                    f"{prefix['extends_previous_call']}/{prefix['pairs']} prompts "
+                    "extend the previous call"
+                )
+                if r["unavailable"]:
+                    detail += "; missing: " + ", ".join(
+                        f"{k} in {v} calls" for k, v in r["unavailable"].items()
+                    )
+            else:
+                detail = r["reason"]
+            mark = "yes" if r["training_grade"] else "no "
+            route = f" [{r['path']}]" if r.get("path") else ""
+            typer.echo(f"{mark}  {r['rollout']}{route}: {detail}")
+        typer.echo(
+            f"{report['training_grade_rollouts']} of {report['rollouts']} rollouts "
+            "are training-grade (complete token ids and logprobs, token-in/token-out)"
+        )
+
+    @train_app.command("stream")
+    def train_stream(
+        job_dir: Annotated[
+            Path,
+            typer.Argument(
+                help="Job folder (or a --jobs-dir holding one job); may not exist yet"
+            ),
+        ],
+        format_name: Annotated[
+            str, typer.Option("--format", help="Output format: jsonl")
+        ] = "jsonl",
+        follow: Annotated[
+            bool,
+            typer.Option(
+                "--follow/--no-follow",
+                help="Keep polling until the job finishes (default), or scan once",
+            ),
+        ] = True,
+        poll_interval: Annotated[
+            float, typer.Option("--poll-interval", help="Seconds between scans")
+        ] = 1.0,
+        timeout: Annotated[
+            float | None,
+            typer.Option("--timeout", help="Stop after this many seconds (exit 3)"),
+        ] = None,
+        group_size: Annotated[
+            int | None,
+            typer.Option(
+                "--group-size",
+                help="Hold rollouts until N of a group finished, then emit them "
+                "with a GRPO advantage",
+            ),
+        ] = None,
+        group_by: Annotated[
+            str | None,
+            typer.Option(
+                "--group-by",
+                help="Grouping key, comma-separated from task, agent, model, "
+                "task_digest, job (default task,agent,model,job)",
+            ),
+        ] = None,
+    ) -> None:
+        """Print each finished rollout of a (running) job as one JSON line.
+
+        For a trainer that consumes a job while it runs: every line is a
+        benchflow.rollout-stream.v1 record with the reward, group id and,
+        when the gateway captured them, per-call token ids and logprobs
+        (docs/train/trainer.md#stream-rollouts-while-a-job-runs). Status goes to stderr. Exit 0
+        when the job finished, 1 when it was stopped or its process died
+        first, 2 on bad input, 3 on --timeout.
+        """
+        from benchflow.trajectories.rollout_stream import (
+            JobNotFound,
+            JobProcessGone,
+            StreamTimeout,
+            stream_rollouts,
+        )
+        from benchflow.trajectories.training_signal import parse_group_by
+
+        def fail(message: str, code: int, next_step: str) -> typer.Exit:
+            print_error(f"bench train stream: {message}", next_step=next_step)
+            return typer.Exit(code)
+
+        if format_name != "jsonl":
+            raise fail("--format must be 'jsonl'", 2, "pass --format jsonl")
+        if group_size is not None and group_size < 1:
+            raise fail(
+                "--group-size must be at least 1", 2, "pass --group-size 1 or more"
+            )
+        try:
+            group_key = parse_group_by(group_by)
+        except ValueError as exc:
+            raise fail(
+                f"--group-by: {exc}",
+                2,
+                "`bench train stream --help` describes --group-by",
+            ) from None
+        count = 0
+        try:
+            for record in stream_rollouts(
+                job_dir,
+                follow=follow,
+                poll_interval=poll_interval,
+                timeout=timeout,
+                group_by=group_key,
+                group_size=group_size,
+            ):
+                typer.echo(record.to_json())
+                count += 1
+        except JobNotFound as exc:
+            raise fail(str(exc), 2, JOBS_FOLDER_NEXT) from None
+        except JobProcessGone as exc:
+            raise fail(
+                f"{exc}; {count} rollouts streamed",
+                1,
+                f"`bench eval resume "
+                f"{command_arg(exc.job_dir or job_dir, '<job folder>')}` runs the "
+                "trials it did not finish",
+            ) from None
+        except StreamTimeout as exc:
+            raise fail(
+                str(exc), 3, "raise --timeout, or check that the job is still running"
+            ) from None
+        typer.echo(f"bench train stream: {count} rollouts streamed", err=True)
 
     @train_app.command("validate")
     def train_validate(
@@ -154,13 +783,87 @@ def register_train(app: typer.Typer) -> None:
                 help="Fail unless trainer rows and source rows include tool calls",
             ),
         ] = False,
+        tokenizer_id: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer",
+                help="Tokenizer/model ID for TRL render and assistant-mask validation",
+            ),
+        ] = None,
+        tokenizer_revision: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer-revision",
+                help="Immutable tokenizer revision for TRL validation",
+            ),
+        ] = None,
+        max_length: Annotated[
+            int | None,
+            typer.Option(
+                "--max-length",
+                help="Fail TRL validation when a rendered row exceeds this length",
+            ),
+        ] = None,
     ) -> None:
         """Validate trainer-ready data."""
-        _ensure_prime_sft(format_name)
-        from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
-
+        exit_if_missing(jsonl, next_step="pass the trainer JSONL file to validate")
+        if format_name in _CONVERSATION_FORMATS:
+            print_error(
+                f"bench train validate does not check --format {format_name}",
+                next_step="load the file with the library it was written for "
+                "(see bench train convert in docs/reference/commands.md)",
+            )
+            raise typer.Exit(2)
+        _ensure_training_format(format_name)
         try:
-            result = validate_prime_sft_jsonl(jsonl, expected_rows=expected_rows)
+            if format_name == "branch-tree":
+                for flag, used in (
+                    ("--tokenizer", tokenizer_id is not None),
+                    ("--tokenizer-revision", tokenizer_revision is not None),
+                    ("--max-length", max_length is not None),
+                    ("--require-llm-trajectory", require_llm_trajectory),
+                ):
+                    if used:
+                        raise ValueError(
+                            f"{flag} does not apply to --format branch-tree "
+                            "(branch rows come from the ACP trajectory)"
+                        )
+                from benchflow.trajectories.export_branch import (
+                    validate_branch_jsonl,
+                )
+
+                result = validate_branch_jsonl(jsonl, expected_rows=expected_rows)
+                result["format"] = "branch-tree"
+            elif format_name == "prime-sft":
+                if (
+                    tokenizer_id is not None
+                    or tokenizer_revision is not None
+                    or max_length is not None
+                ):
+                    raise ValueError(
+                        "--tokenizer/--tokenizer-revision/--max-length "
+                        "are supported only with --format trl-sft"
+                    )
+                from benchflow.trajectories.export_prime_sft import (
+                    validate_prime_sft_jsonl,
+                )
+
+                result = validate_prime_sft_jsonl(
+                    jsonl,
+                    expected_rows=expected_rows,
+                )
+            else:
+                from benchflow.trajectories.export_trl_sft import (
+                    validate_trl_sft_jsonl,
+                )
+
+                result = validate_trl_sft_jsonl(
+                    jsonl,
+                    expected_rows=expected_rows,
+                    tokenizer_id=tokenizer_id,
+                    tokenizer_revision=tokenizer_revision,
+                    max_length=max_length,
+                )
             if require_tool_calls and result["rows_with_tool_calls"] != result["rows"]:
                 raise ValueError(
                     "not all trainer rows contain tool calls: "
@@ -217,7 +920,10 @@ def register_train(app: typer.Typer) -> None:
                     raise ValueError(f"{task_manifest}: tasks must be a list")
                 result["task_manifest_rows"] = len(tasks)
         except (OSError, ValueError) as exc:
-            print_error(str(exc))
+            print_error(
+                str(exc),
+                next_step="`bench train validate --help` describes the files it reads",
+            )
             raise typer.Exit(1) from None
         console.print(json.dumps(result, sort_keys=True))
 
@@ -509,13 +1215,16 @@ def register_train(app: typer.Typer) -> None:
                 )
             )
         except ValueError as exc:
-            print_error(str(exc))
+            print_error(
+                str(exc), next_step="`bench train run sft --help` describes the flags"
+            )
             raise typer.Exit(1) from None
 
         if result.returncode != 0:
             print_error(
-                f"Prime-RL SFT failed with exit code {result.returncode}; "
-                f"see {result.manifest_path}"
+                f"Prime-RL SFT failed with exit code {result.returncode}",
+                next_step=f"its manifest and logs are at "
+                f"{command_arg(result.manifest_path, '<manifest file>')}",
             )
             raise typer.Exit(result.returncode)
         console.print(

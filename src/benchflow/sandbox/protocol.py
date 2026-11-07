@@ -1,8 +1,23 @@
+"""Shared sandbox protocol value types and capability interfaces."""
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+from benchflow.errors import UserError
+
+# Directories a provider daemon owns inside the sandbox, matched as path
+# components below a captured root. Daytona keeps ~/.daytona/sessions in the
+# home of the account its daemon runs as (root in task images): the
+# entrypoint's stdin/stdout/stderr FIFOs plus every session command's script,
+# output log and exit code. With a /root workspace that tree sits inside the
+# solver's working directory, changes while any command runs (evidence capture
+# included), and is harness state rather than solver output. Docker keeps exec
+# state outside the container filesystem, so it needs no entry.
+SANDBOX_RUNTIME_STATE_PATHS = (".daytona",)
 
 
 @dataclass(frozen=True)
@@ -25,13 +40,33 @@ class SandboxImage:
     * Daytona: ``provider="daytona"``, ``ref`` is the daytona snapshot name.
 
     ``ref`` is opaque to the kernel — only the originating provider knows
-    how to ``restore`` from it. ``meta`` carries provider-specific extras
-    (image digest, parent container id, etc.) for diagnostics.
+    how to ``restore`` from it. ``meta`` carries provider-specific state (startup
+    receipts, image digest, parent container id, etc.). Persist the whole handle:
+    providers may require that state to admit a checkpoint.
     """
 
     provider: str
     ref: str
     meta: dict[str, str] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        """The complete JSON-compatible handle, including provider state."""
+        return {"provider": self.provider, "ref": self.ref, "meta": dict(self.meta)}
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any]) -> SandboxImage:
+        """Read a persisted handle; legacy records have no provider metadata.
+
+        Provider-specific admission still decides whether missing state is safe.
+        Malformed metadata must never be normalized into a valid receipt.
+        """
+        meta = record.get("meta", {})
+        if not isinstance(meta, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in meta.items()
+        ):
+            raise ValueError("Invalid sandbox checkpoint metadata")
+        return cls(provider=record["provider"], ref=record["ref"], meta=dict(meta))
 
 
 class SandboxSnapshotNotSupported(NotImplementedError):
@@ -42,6 +77,27 @@ class SandboxSnapshotNotSupported(NotImplementedError):
     ``Rollout.branch()`` — catch this to fail closed with a clear diagnostic
     when the run requires container-level checkpointing.
     """
+
+
+class SandboxRestoreHostConfigUnavailable(RuntimeError):
+    """Restore cannot safely reconstruct the live container host configuration.
+
+    Adapted from JeremyJC67, benchflow-ai/benchflow PR #1046.
+    """
+
+
+class ExecTimeoutError(RuntimeError):
+    """A command in the sandbox ran past the timeout its caller gave it.
+
+    The message is the one every backend has always raised, so text
+    classification of a recorded error is unchanged; the type lets a caller
+    that set the budget (the oracle's agent timeout) tell its own deadline
+    from a transport failure.
+    """
+
+    def __init__(self, timeout_sec: float | None, message: str | None = None) -> None:
+        super().__init__(message or f"Command timed out after {timeout_sec} seconds")
+        self.timeout_sec = timeout_sec
 
 
 class SandboxStartupError(RuntimeError):
@@ -80,7 +136,22 @@ class SandboxStartupError(RuntimeError):
         )
 
 
+class EnvironmentStartTimeoutError(SandboxStartupError):
+    """The whole environment start ran past its budget: a YAML job config's
+     environment build phase (``environment.build_timeout_sec`` times its
+     build timeout multiplier), which bounds the whole start
+    . A sandbox startup error, not a ``TimeoutError``:
+     ``Rollout.run`` reads a ``TimeoutError`` as the agent's timeout."""
+
+
 SandboxStartupFailure = SandboxStartupError
+
+
+class KeptServiceFreezerUnavailable(RuntimeError, UserError):
+    """The sandbox cannot hold the services a task keeps (K1-R9-1): raised by
+    the freezer probe before agent code runs, and, once identities are
+    measured, for a non-root agent that keeps services where the sandbox or
+    its Engine cannot give the freezer."""
 
 
 @runtime_checkable
@@ -94,7 +165,7 @@ class Sandbox(Protocol):
     ``start()``.
 
     BenchFlow provides the sandbox infrastructure; it does **not**
-    orchestrate agent-internal loops or tool protocols (ENG-50).
+    orchestrate agent-internal loops or tool protocols.
 
     Roll-back (``snapshot``/``restore``) is part of the contract — Branch
     composes container, environment-state, and agent-session checkpoints in
@@ -105,17 +176,45 @@ class Sandbox(Protocol):
 
     async def exec(
         self, cmd: str, *, user: str = "root", timeout_sec: int = 30
-    ) -> ExecResult: ...
+    ) -> ExecResult:
+        """Run a shell command as ``user``; return its exit code and output.
 
-    async def upload_file(self, src: Path, dst: str) -> None: ...
-    async def upload_dir(self, src: Path, dst: str, service: str = "main") -> None: ...
-    async def download_file(self, src: str, dst: Path) -> None: ...
-    async def download_dir(
-        self, src: str, dst: Path, service: str = "main"
-    ) -> None: ...
+        Harness parsers invoke this through ``sandbox._exec_output.exec_raw``.
+        Preserve the unmodified streams for that request; redact display copies.
+        """
+        ...
 
-    async def start(self) -> None: ...
-    async def stop(self, *, delete: bool = True) -> None: ...
+    async def upload_file(
+        self, src: Path, dst: str, *, mode: str | None = None, admission: Any
+    ) -> None:
+        """Upload one file; ``mode`` chmods it (e.g. ``"600"`` for secrets).
+
+        ``admission`` is what ``trust.admit()`` returned for this sandbox
+        (every transfer primitive requires one)."""
+        ...
+
+    async def upload_dir(
+        self, src: Path, dst: str, service: str = "main", *, admission: Any
+    ) -> None:
+        """Copy a host directory into the sandbox at ``dst`` (``admission`` as
+        for :meth:`upload_file`)."""
+        ...
+
+    async def download_file(self, src: str, dst: Path) -> None:
+        """Copy the sandbox file ``src`` to the host path ``dst``."""
+        ...
+
+    async def download_dir(self, src: str, dst: Path, service: str = "main") -> None:
+        """Copy the sandbox directory ``src`` to the host path ``dst``."""
+        ...
+
+    async def start(self) -> None:
+        """Create and start the sandbox."""
+        ...
+
+    async def stop(self, *, delete: bool = True) -> None:
+        """Stop the sandbox, deleting it unless ``delete=False``."""
+        ...
 
     # container-level roll-back (the substrate Branch runs on)
     async def snapshot(self, name: str | None = None) -> SandboxImage:
@@ -145,7 +244,9 @@ class Sandbox(Protocol):
         ...
 
     @property
-    def host(self) -> str: ...
+    def host(self) -> str:
+        """The host where the sandbox's exposed ports are reachable."""
+        ...
 
     @property
     def expose_ports(self) -> list[int]:
@@ -174,5 +275,10 @@ class ImageConfig:
 class ImageBuilder(Protocol):
     """Build-only: produces image refs from Dockerfiles/configs."""
 
-    async def build(self, config: ImageConfig) -> ImageRef: ...
-    async def cached(self, config: ImageConfig) -> ImageRef | None: ...
+    async def build(self, config: ImageConfig) -> ImageRef:
+        """Build the image ``config`` describes and return its reference."""
+        ...
+
+    async def cached(self, config: ImageConfig) -> ImageRef | None:
+        """The reference of an already-built image for ``config``, or None."""
+        ...

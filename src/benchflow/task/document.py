@@ -62,6 +62,7 @@ from benchflow.task._document_parse import (
     _string_dict,  # noqa: F401
     _string_list,  # noqa: F401
     _unescape_reserved_section_headings,  # noqa: F401
+    dump_frontmatter_yaml,  # noqa: F401
     render_normalized_task_md,
     render_task_md,  # noqa: F401
     render_task_md_from_legacy,

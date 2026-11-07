@@ -52,7 +52,9 @@ def test_tasks_generate_rejects_removed_short_options(
     )
 
     assert result.exit_code != 0
-    assert f"No such option: {alias}" in click.unstyle(result.output)
+    output = click.unstyle(result.output)
+    assert "No such option" in output
+    assert alias in output
 
 
 def test_tasks_generate_dry_run_uses_generation_filters(

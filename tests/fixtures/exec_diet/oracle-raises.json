@@ -1,0 +1,5 @@
+{
+ "message": "session lost",
+ "preview_ran": false,
+ "raised": "ConnectionResetError"
+}

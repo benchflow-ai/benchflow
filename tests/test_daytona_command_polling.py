@@ -10,6 +10,51 @@ import pytest
 
 class TestDaytonaCommandPolling:
     @pytest.mark.asyncio
+    async def test_transient_exec_deletes_completed_session(self) -> None:
+        """Guards the Daytona live-capture session fix in PR #921."""
+        pytest.importorskip("daytona")
+        from benchflow.sandbox.daytona import (
+            DaytonaSandbox,
+            _DaytonaDirect,
+            _load_daytona_sdk,
+        )
+
+        _load_daytona_sdk()
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.created: list[str] = []
+                self.deleted: list[str] = []
+
+            async def create_session(self, session_id):
+                self.created.append(session_id)
+
+            async def execute_session_command(self, session_id, request, timeout=None):
+                return SimpleNamespace(cmd_id="cmd-1")
+
+            async def get_session_command(self, session_id, command_id):
+                return SimpleNamespace(id="cmd-1", exit_code=0)
+
+            async def get_session_command_logs(self, session_id, command_id):
+                return SimpleNamespace(stdout="ok", stderr="")
+
+            async def delete_session(self, session_id):
+                self.deleted.append(session_id)
+
+        process = FakeProcess()
+        sandbox = DaytonaSandbox.__new__(DaytonaSandbox)
+        sandbox.default_user = None
+        sandbox._persistent_env = {}
+        sandbox._sandbox = SimpleNamespace(process=process)
+        sandbox._strategy = _DaytonaDirect(sandbox)
+
+        result = await sandbox.exec_transient("echo ok", timeout_sec=5)
+
+        assert result.return_code == 0
+        assert result.stdout == "ok"
+        assert process.deleted == process.created
+
+    @pytest.mark.asyncio
     async def test_exec_times_out_when_daytona_command_never_exits(self) -> None:
         """Guards the v0.5 Daytona polling timeout regression."""
         pytest.importorskip("daytona")  # sandbox-daytona optional dependency

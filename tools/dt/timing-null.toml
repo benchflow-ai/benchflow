@@ -1,0 +1,13 @@
+# How far a phase moves between two installs of the same build: the A/A
+# null's largest paired difference per phase (BASE_T0 against BASE_T0, 39
+# trees, oracle and nop, 3 rounds, task groups 10 at a time on
+# a build VM, 2026-10-16). compare.py flags a
+# timing_shift only when the paired median moves by more than this (and by
+# at least 1 s) and its bootstrap interval excludes 0. Setup is wide: image
+# builds of parallel cells share the Docker daemon. Measure again on another
+# VM or another parallelism before trusting a shift near these numbers.
+
+[seconds]
+setup = 9.5
+agent = 1.0
+verify = 0.8

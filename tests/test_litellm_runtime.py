@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import version
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+from packaging.requirements import Requirement
 
 from benchflow.agents.codex_config import CODEX_DEFAULT_AUTH_REQUEST_ENV
+from benchflow.agents.env import resolve_agent_env
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_bedrock_preflight import BedrockPatchPreflightError
 from benchflow.providers.litellm_config import LITELLM_MODEL_ALIAS_ENV
@@ -32,6 +36,12 @@ class FakeLiteLLMServer:
 
     async def stop(self) -> None:
         self.stopped = True
+
+
+def test_sandbox_litellm_version_matches_host_requirement():
+    """Guards PR #985 sandbox/host LiteLLM pin parity."""
+    requirement = Requirement(runtime_mod.LITELLM_VERSION_SPEC)
+    assert requirement.specifier.contains(version("litellm"), prereleases=True)
 
 
 @pytest.mark.asyncio
@@ -63,12 +73,13 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
     assert updated["OPENAI_BASE_URL"] == "http://host.docker.internal:32123/v1"
     assert updated["OPENAI_API_KEY"] == provider_runtime.master_key
     assert updated[LITELLM_MODEL_ALIAS_ENV] == (
-        "benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"
+        "runtime-aws-bedrock-us.anthropic.claude-opus-4-8"
     )
-    assert (
-        '"model":"benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"'
-        in updated["CODEX_CONFIG"]
-    )
+    # Codex is handed the bare slug, not the proxy alias: it resolves model
+    # metadata by slug and falls back to a reduced tool surface otherwise
+    # (#1145). The proxy serves both names.
+    assert '"model":"us.anthropic.claude-opus-4-8"' in updated["CODEX_CONFIG"]
+    assert "runtime-aws-bedrock" not in json.loads(updated["CODEX_CONFIG"])["model"]
     auth_request = json.loads(updated[CODEX_DEFAULT_AUTH_REQUEST_ENV])
     assert auth_request == {
         "methodId": "gateway",
@@ -80,6 +91,35 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
             }
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:32123", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    updated, _runtime = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env={"OPENAI_API_KEY": "sk-test"},
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        session_id="run-skill-gate",
+        required_skill_names=("mesh-analysis",),
+    )
+
+    proxy_env = starts[0]["agent_env"]
+    assert proxy_env["BENCHFLOW_SKILL_CATALOG_GATE_AGENT"] == "opencode"
+    assert json.loads(proxy_env["BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"]) == [
+        "mesh-analysis"
+    ]
+    assert "BENCHFLOW_SKILL_CATALOG_GATE_AGENT" not in updated
+    assert "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON" not in updated
 
 
 @pytest.mark.asyncio
@@ -99,8 +139,8 @@ async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypat
     )
 
     assert updated["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
-    assert updated["ANTHROPIC_AUTH_TOKEN"].startswith("sk-benchflow-")
-    assert updated["ANTHROPIC_MODEL"] == "benchflow-claude-sonnet-4-6"
+    assert updated["ANTHROPIC_AUTH_TOKEN"].startswith("sk-runtime-")
+    assert updated["ANTHROPIC_MODEL"] == "runtime-claude-sonnet-4-6"
     assert "CLAUDE_CODE_USE_BEDROCK" not in updated
 
 
@@ -129,9 +169,43 @@ async def test_daytona_uses_sandbox_local_litellm(monkeypatch):
     )
 
     assert starts[0]["sandbox"] is sandbox
+    assert provider_runtime is not None
     assert provider_runtime.base_url == "http://127.0.0.1:45678"
     assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
-    assert updated["LLM_MODEL"].startswith("openai/benchflow-aws-bedrock")
+    assert updated["LLM_MODEL"].startswith("openai/runtime-aws-bedrock")
+
+
+@pytest.mark.asyncio
+async def test_apple_container_uses_sandbox_local_litellm(monkeypatch):
+    """Guards PR #936 against handing the VM a host-loopback model endpoint."""
+
+    starts = []
+
+    async def fake_sandbox_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    async def unexpected_host_start(**_kwargs):
+        raise AssertionError("Apple Container must not use a host-local proxy")
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", unexpected_host_start)
+    sandbox = SimpleNamespace()
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={"OPENAI_API_KEY": "sk-test"},
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="apple-container",
+        session_id="run-936",
+        sandbox=sandbox,
+    )
+
+    assert starts[0]["sandbox"] is sandbox
+    assert provider_runtime is not None
+    assert provider_runtime.base_url == "http://127.0.0.1:45678"
+    assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
 
 
 @pytest.mark.asyncio
@@ -164,15 +238,18 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
     assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
     assert updated["LLM_BASE_URL"] == "http://172.17.0.1:45678/v1"
     assert updated["LLM_API_KEY"] == provider_runtime.master_key
-    assert updated["LLM_MODEL"] == "openai/benchflow-deepseek-deepseek-v4-flash"
-    assert updated["BENCHFLOW_PROVIDER_MODEL"] == (
-        "benchflow-deepseek-deepseek-v4-flash"
-    )
+    assert updated["LLM_MODEL"] == "openai/runtime-deepseek-deepseek-v4-flash"
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == ("runtime-deepseek-deepseek-v4-flash")
 
 
 @pytest.mark.asyncio
 async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
-    """Guards PR #803: Pi metadata follows the LiteLLM alias in proxy mode."""
+    """Guards PRs #803/#1093: supplied metadata wins over catalog lookup."""
+    import litellm
+
+    monkeypatch.setattr(
+        litellm, "get_model_info", lambda *_: pytest.fail("unexpected catalog lookup")
+    )
 
     async def fake_start(**kwargs):
         return FakeLiteLLMServer("http://172.17.0.1:45678", kwargs["route"])
@@ -204,12 +281,16 @@ async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
     )
 
     assert provider_runtime is not None
-    assert updated["BENCHFLOW_PROVIDER_MODEL"] == "benchflow-vllm-Qwen-Qwen3-4B"
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == "runtime-vllm-Qwen-Qwen3-4B"
     models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
-    alias = next(m for m in models if m["id"] == "benchflow-vllm-Qwen-Qwen3-4B")
-    assert alias["name"] == "benchflow-vllm-Qwen-Qwen3-4B"
-    assert alias["maxTokens"] == 1024
-    assert alias["contextWindow"] == 16384
+    assert models == [
+        provider_models[0],
+        {
+            **provider_models[0],
+            "id": "runtime-vllm-Qwen-Qwen3-4B",
+            "name": "runtime-vllm-Qwen-Qwen3-4B",
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -245,6 +326,65 @@ async def test_runtime_reuse_and_stop(monkeypatch):
     assert len(created) == 1
     await stop_provider_runtime(second)
     assert created[0].stopped is True
+
+
+@pytest.mark.asyncio
+async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch):
+    """Guards PR #1074: reconnects retain Z.AI upstream routing and auth."""
+    agent = "claude-agent-acp"
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    env = resolve_agent_env(agent, "zai-coding/glm-5.3", {"ZAI_API_KEY": "native-key"})
+    updated, first = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env=env,
+        model="zai-coding/glm-5.3",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+    _updated, second = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env=updated,
+        model="zai-coding/glm-5.3",
+        runtime=first,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert first is not None
+    assert second is first
+    assert len(starts) == 1
+    expected_params = {
+        "model": "openai/glm-5.3",
+        "api_base": "https://api.z.ai/api/coding/paas/v4",
+        "api_key": "os.environ/ZAI_API_KEY",
+        # An OpenAI-compatible route passes the agent's effort on (#55).
+        "allowed_openai_params": ["reasoning_effort"],
+    }
+    assert starts[0]["agent_env"]["ZAI_API_KEY"] == "native-key"
+    assert starts[0]["route"].litellm_params == expected_params
+
+    assert first.server is not None
+    await first.server.stop()
+    _updated, third = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env=updated,
+        model="zai-coding/glm-5.3",
+        runtime=first,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert third is not first
+    assert len(starts) == 2
+    assert starts[1]["agent_env"]["ZAI_API_KEY"] == "native-key"
+    assert starts[1]["route"].litellm_params == expected_params
 
 
 @pytest.mark.asyncio
@@ -502,6 +642,47 @@ async def test_auto_usage_fails_closed_when_litellm_start_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_proxy_start_failure_keeps_the_exception_type_and_retries(monkeypatch):
+    """A detail-free transport failure must stay diagnosable and retryable.
+
+    Under concurrent load the Daytona toolbox API can time out on the exec
+    that launches the sandbox proxy. httpx raises that timeout with an empty
+    message, so the SDK's wrapper renders the whole error as the bare
+    ``"Failed to execute session command: "``. Interpolating the exception
+    alone dropped the class name — the only surviving evidence that this was
+    a *timeout* rather than a crash — and left the message in the "other"
+    bucket, which the retry policy never retries, so the rollout died on a
+    blip that had not yet run any agent work.
+    """
+    from benchflow._utils.scoring import INFRA_ERROR, classify_error
+    from benchflow.diagnostics import TransientSandboxTransportError
+
+    # What the sandbox corridor actually raises once the SDK boundary has
+    # judged the vendor exception transient and stamped it.
+    async def fail_start(**_kwargs):
+        raise TransientSandboxTransportError(
+            "DaytonaTimeoutError: Failed to execute session command: (no detail)"
+        )
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await ensure_litellm_runtime(
+            agent="codex-acp",
+            agent_env={"OPENAI_API_KEY": "sk-openai"},
+            model="openai/gpt-4.1-mini",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+        )
+
+    message = str(excinfo.value)
+    assert "DaytonaTimeoutError" in message
+    assert "(no detail)" in message
+    assert classify_error(message) == INFRA_ERROR
+
+
+@pytest.mark.asyncio
 async def test_auto_usage_does_not_fallback_on_bedrock_patch_preflight(monkeypatch):
     """Guards PR #668's fail-closed fix for issue #602: an inactive Bedrock patch
     must abort even when usage_tracking=auto would normally skip LiteLLM."""
@@ -588,18 +769,115 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_required_usage_fails_for_native_agent_without_litellm_route():
-    """Guards the follow-up to PR #613: required cannot silently go unavailable."""
+async def test_antigravity_uses_gemini_pass_through(monkeypatch):
+    """The Antigravity CLI routes like Gemini CLI: the registry's
+    GOOGLE_GEMINI_BASE_URL mapping selects the GenerateContent pass-through,
+    every Google key alias is swapped for the master key, and no proxy alias
+    or env-owned model is left behind (the model is sent over ACP)."""
 
-    with pytest.raises(RuntimeError, match="cannot be routed through LiteLLM"):
-        await ensure_litellm_runtime(
-            agent="gemini",
-            agent_env={"GEMINI_API_KEY": "gemini-key"},
-            model="gemini-2.5-flash",
-            runtime=None,
-            environment="docker",
-            usage_tracking="required",
-        )
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="antigravity",
+        agent_env={"GEMINI_API_KEY": "upstream-gemini-key"},
+        model="gemini-3.8-flash",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+        sandbox=SimpleNamespace(),
+        force_sandbox_local=True,
+    )
+
+    assert provider_runtime is not None
+    assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
+    assert updated["GEMINI_API_KEY"] == provider_runtime.master_key
+    assert updated["GOOGLE_API_KEY"] == provider_runtime.master_key
+    assert "BENCHFLOW_LITELLM_MODEL_ALIAS" not in updated
+    assert "BENCHFLOW_LITELLM_MODEL_VIA_ENV" not in updated
+
+
+@pytest.mark.asyncio
+async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeypatch):
+    """Guards PR #942 and PR #1030: every Google key alias stays proxied."""
+
+    starts = []
+
+    async def fake_sandbox_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    async def unexpected_host_start(**_kwargs):
+        raise AssertionError("no-web Gemini must not use a host proxy")
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", unexpected_host_start)
+    sandbox = SimpleNamespace()
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="gemini",
+        agent_env={
+            "GEMINI_API_KEY": "upstream-gemini-key",
+            "GOOGLE_API_KEY": "upstream-google-key",
+            "GOOGLE_GENERATIVE_AI_API_KEY": "upstream-generative-ai-key",
+        },
+        model="gemini-2.5-flash",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+        sandbox=sandbox,
+        force_sandbox_local=True,
+    )
+
+    assert starts[0]["sandbox"] is sandbox
+    assert provider_runtime is not None
+    assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
+    for key in (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+    ):
+        assert updated[key] == provider_runtime.master_key
+    assert LITELLM_MODEL_ALIAS_ENV not in updated
+
+
+@pytest.mark.asyncio
+async def test_opencode_gemini_keeps_its_google_client_on_the_passthrough(monkeypatch):
+    """OpenCode on a Gemini model talks to the Gemini pass-through with its own
+    Google client, not to the chat-completions alias, and holds only the
+    gateway key."""
+
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env={
+            "GEMINI_API_KEY": "upstream-gemini-key",
+            "GOOGLE_GENERATIVE_AI_API_KEY": "upstream-generative-ai-key",
+        },
+        model="gemini/gemini-4-argon",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+        sandbox=SimpleNamespace(),
+        force_sandbox_local=True,
+    )
+
+    assert provider_runtime is not None
+    assert (
+        updated["BENCHFLOW_OPENCODE_GOOGLE_BASE_URL"]
+        == "http://127.0.0.1:45678/gemini/v1beta"
+    )
+    assert updated["GOOGLE_GENERATIVE_AI_API_KEY"] == provider_runtime.master_key
+    assert "GEMINI_API_KEY" not in updated
+    # Empty explicitly suppresses an inherited image alias at launch.
+    assert not updated.get(LITELLM_MODEL_ALIAS_ENV)
+    assert "OPENAI_API_KEY" not in updated
 
 
 @pytest.mark.asyncio
@@ -620,3 +898,130 @@ async def test_oracle_does_not_start_litellm(monkeypatch):
 
     assert updated == env
     assert provider_runtime is None
+
+
+def test_proxy_alias_metadata_is_reused_after_catalog_resolution(monkeypatch):
+    """Guards PR #1093: resolve capabilities once, preserve caller alias metadata."""
+    import litellm
+
+    route = runtime_mod.resolve_litellm_route("openai/gpt-5.5", {})
+    model_info = Mock(
+        return_value={
+            "supports_reasoning": True,
+            "max_output_tokens": 128000,
+            "max_input_tokens": 1050000,
+            "supports_vision": True,
+            "supported_openai_params": ["reasoning_effort"],
+        }
+    )
+    monkeypatch.setattr(litellm, "get_model_info", model_info)
+    params = dict(
+        agent="external-openclaw",
+        route=route,
+        base_url="http://proxy.test",
+        master_key="test-key",
+    )
+    updated = runtime_mod._wire_litellm_agent_env(agent_env={}, **params)
+    models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
+    assert models == [
+        {
+            "id": route.model_alias,
+            "name": route.model_alias,
+            "reasoning": True,
+            "maxTokens": 128000,
+            "contextWindow": 1050000,
+            "input": ["text", "image"],
+            "compat": {"supportsReasoningEffort": True},
+        }
+    ]
+    models[0].update(
+        reasoning=False, maxTokens=123, compat={"supportsReasoningEffort": False}
+    )
+    updated["BENCHFLOW_PROVIDER_MODELS"] = json.dumps(models)
+    rewired = runtime_mod._wire_litellm_agent_env(agent_env=updated, **params)
+    assert rewired["BENCHFLOW_PROVIDER_MODELS"] == updated["BENCHFLOW_PROVIDER_MODELS"]
+    model_info.assert_called_once_with(route.upstream_model)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        Exception("This model isn't mapped yet"),
+        {"supports_reasoning": None, "max_output_tokens": -1},
+    ],
+)
+def test_unknown_proxy_metadata_keeps_existing_behavior(monkeypatch, outcome):
+    """Guards PR #1093: absent catalog metadata does not block custom models."""
+    import litellm
+
+    monkeypatch.setattr(litellm, "get_model_info", Mock(side_effect=[outcome]))
+    route = runtime_mod.resolve_litellm_route("openai/custom-model", {})
+    assert runtime_mod._provider_models_for_proxy_alias(raw=None, route=route) is None
+
+
+@pytest.fixture
+def own_route_agent(monkeypatch):
+    """A custom agent that routes its own model calls (model_route = "agent")."""
+    from benchflow.agents.registry import AGENTS, AgentConfig
+
+    name = "en191-own-route"
+    monkeypatch.setitem(
+        AGENTS,
+        name,
+        AgentConfig(
+            name=name,
+            install_cmd="true",
+            launch_cmd=f"{name} --acp",
+            model_route="agent",
+        ),
+    )
+    return name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["docker", "daytona"])
+@pytest.mark.parametrize("label", [None, "openai/gpt-4.1-mini"])
+async def test_own_model_route_starts_no_litellm(
+    monkeypatch, own_route_agent, environment, label
+):
+    """An agent with model_route = "agent" gets no proxy on the
+    host or in the sandbox, with or without a model label, and its env is
+    handed back untouched (no proxy key, no rewritten endpoint)."""
+
+    async def fail_start(**_kwargs):
+        raise AssertionError("LiteLLM must not start for model_route = 'agent'")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fail_start)
+    env = {"OPENAI_API_KEY": "sk-openai", "EN191_ENDPOINT_KEY": "own-key"}
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent=own_route_agent,
+        agent_env=dict(env),
+        model=label,
+        runtime=None,
+        environment=environment,
+        sandbox=SimpleNamespace(),
+    )
+
+    assert updated == env
+    assert provider_runtime is None
+    assert runtime_mod.needs_litellm_runtime(own_route_agent, label) is False
+    assert runtime_mod.needs_litellm_runtime("openhands", "openai/gpt-4.1-mini")
+
+
+def test_own_model_route_has_no_proxy_install_record(monkeypatch, own_route_agent):
+    """config.json gets no litellm_proxy block for an agent that
+    routes its own model calls, and the proxy's extras are not checked: the
+    same conflicting extra refuses a proxied agent."""
+    from benchflow.providers.proxy_requirements import ProxyExtraRequirementError
+
+    monkeypatch.setenv("BENCHFLOW_LITELLM_EXTRA_REQUIREMENTS", "litellm==1.80.0")
+    kwargs = {
+        "model": "anthropic/claude-haiku-4-5",
+        "agent_env": {"ANTHROPIC_API_KEY": "k"},
+        "environment": "daytona",
+    }
+    with pytest.raises(ProxyExtraRequirementError):
+        runtime_mod.proxy_install_record(agent="openhands", **kwargs)
+    assert runtime_mod.proxy_install_record(agent=own_route_agent, **kwargs) is None

@@ -119,3 +119,48 @@ def test_extract_usage_accepts_bedrock_converse_usage_shape():
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 14
     assert usage["n_output_tokens"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label", [None, "deepseek/deepseek-v4-flash"])
+async def test_own_model_route_installs_nothing_in_the_sandbox(monkeypatch, label):
+    """On Daytona, an agent with model_route = "agent" runs no
+    proxy install, upload, launch or health poll in its sandbox: the real
+    in-sandbox start is left in place and the sandbox sees no command."""
+    from benchflow.agents.registry import AGENTS, AgentConfig
+
+    name = "en191-own-route"
+    monkeypatch.setitem(
+        AGENTS,
+        name,
+        AgentConfig(
+            name=name,
+            install_cmd="true",
+            launch_cmd=f"{name} --acp",
+            model_route="agent",
+        ),
+    )
+    calls: list[str] = []
+
+    class RecordingSandbox:
+        async def exec(self, command, **_kwargs):
+            calls.append(command)
+            raise AssertionError(f"unexpected sandbox command: {command[:80]}")
+
+        async def upload_file(self, *_args, **_kwargs):
+            calls.append("upload")
+            raise AssertionError("unexpected upload")
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent=name,
+        agent_env={"DEEPSEEK_API_KEY": "own-key"},
+        model=label,
+        runtime=None,
+        environment="daytona",
+        session_id="run",
+        sandbox=RecordingSandbox(),
+    )
+
+    assert provider_runtime is None
+    assert updated == {"DEEPSEEK_API_KEY": "own-key"}
+    assert calls == []

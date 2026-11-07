@@ -1,0 +1,19 @@
+version = "1.0"
+artifacts = ["/usr/local/bin/sv-tool"]
+
+[metadata]
+author_name = "BenchFlow"
+difficulty = "easy"
+category = "fixtures"
+
+[verifier]
+timeout_sec = 60.0
+environment_mode = "separate"
+
+[agent]
+timeout_sec = 120.0
+
+[environment]
+build_timeout_sec = 600.0
+network_mode = "no-network"
+workdir = "/app"

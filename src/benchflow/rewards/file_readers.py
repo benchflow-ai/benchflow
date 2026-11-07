@@ -11,7 +11,11 @@ import logging
 import subprocess
 from pathlib import Path
 
-from benchflow._paths import is_safe_regular_file, iter_safe_children
+from benchflow._utils.reachable_write import (
+    PrivateStorageError,
+    read_private_text,
+    snapshot_deliverables,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +25,7 @@ SUPPORTED_EXTENSIONS = frozenset(
 )
 
 
-def read_file_as_text(path: Path) -> str:
+def read_file_as_text(path: Path, *, private: bool = False) -> str:
     """Read *path* and return its content as plain text.
 
     For rich document formats the appropriate library is used; if that
@@ -39,13 +43,19 @@ def read_file_as_text(path: Path) -> str:
         if suffix == ".pdf":
             return _read_pdf(path)
         # Plain-text fallback (.md, .txt, .json, .csv, ...)
+        if private:
+            return read_private_text(path, errors="replace")
         return path.read_text(encoding="utf-8", errors="replace")
+    except PrivateStorageError:
+        raise
     except Exception as exc:
         logger.warning("Error reading %s: %s", path.name, exc)
         return f"(error reading {path.name}: {exc})"
 
 
-def find_deliverables(directory: Path) -> dict[str, str]:
+def find_deliverables(
+    directory: Path, *, evidence_root: Path | None = None
+) -> dict[str, str]:
     """Discover and read all deliverable files in *directory*.
 
     Skips files larger than 50 MB and hidden/internal files. Symlinks are
@@ -53,17 +63,25 @@ def find_deliverables(directory: Path) -> dict[str, str]:
     prompt by dropping a link inside the deliverable tree.
     """
     texts: dict[str, str] = {}
-    if not directory.is_dir():
-        return texts
-    for f in iter_safe_children(directory, context="judge deliverables"):
-        if not is_safe_regular_file(f):
-            continue
-        if f.name.startswith(".") or f.name == "rubric.json":
-            continue
-        if f.stat().st_size > 50_000_000:
-            continue
-        if f.suffix.lower() in SUPPORTED_EXTENSIONS:
-            texts[f.name] = read_file_as_text(f)
+    # Anchor every component, including workspace/output, before listing. Keep
+    # descriptors through the copy so replacing a checked name cannot redirect
+    # a reader (including a document library) into the controller's filesystem.
+    try:
+        for name, snapshot in snapshot_deliverables(
+            directory,
+            evidence_root=evidence_root,
+            accept=lambda name: (
+                not name.startswith(".")
+                and name != "rubric.json"
+                and Path(name).suffix.lower() in SUPPORTED_EXTENSIONS
+            ),
+            max_bytes=50_000_000,
+        ):
+            texts[name] = read_file_as_text(snapshot, private=True)
+    except PrivateStorageError:
+        raise
+    except (OSError, ValueError):
+        logger.warning("judge deliverables: refusing unsafe directory %s", directory)
     return texts
 
 

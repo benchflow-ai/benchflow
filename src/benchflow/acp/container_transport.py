@@ -2,14 +2,62 @@
 
 import json
 import logging
-from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
+from benchflow._utils.reachable_write import ReachableLog, ReachablePath
 from benchflow.sandbox.process import LiveProcess
+from benchflow.sandbox.process._acp_lines import line_limit, shrink_line
+from benchflow.sandbox.process._base import _ANSI_CSI_RE, _ANSI_OSC_RE
+from benchflow.trajectories.types import redact_trajectory_text
 
 from .transport import Transport, decode_json_rpc_message
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_pty_json_rpc_message(text: str) -> dict[str, Any] | None:
+    """Decode one JSON-RPC message from a line that may carry PTY noise.
+
+    Daytona's PTY transport gives the agent a real terminal, so the shell
+    prompt (with its CSI/OSC escape sequences) can land on the SAME line as
+    the agent's first protocol message — observed on BugSwarm-style images
+    as ``\\x1b[?2004h\\x1b]0;root@…\\x07root@…# \\x1b[?2004l{"jsonrpc":…}``.
+    Whole-line ``json.loads`` fails on that prefix, the response is treated
+    as non-protocol noise, and the handshake "times out" with the completed
+    initialize JSON sitting in the captured agent log — at ANY timeout.
+
+    Recovery is bounded to where the bug lives: :meth:`ContainerTransport.
+    receive` calls this lenient path only until the first successfully
+    decoded protocol message per connection (prompt glue is by construction
+    a pre-first-message PTY phenomenon), and stdio pipes keep the strict
+    whole-line contract in :func:`decode_json_rpc_message`.
+
+    1. fast path — the plain whole-line decode, unchanged;
+    2. retry from the first ``{`` when it is not at position 0 (drops a
+       glued prompt prefix);
+    3. if the line carries ``\\x1b``, strip CSI/OSC sequences (drops escapes
+       trailing or embedded around the JSON) and retry from the first ``{``.
+
+    Every retry still goes through :func:`decode_json_rpc_message`, so the
+    JSON-RPC 2.0 envelope check keeps rejecting agent log lines that merely
+    contain JSON (e.g. ``INFO {"jsonrpc": …}`` with a bad envelope).
+    """
+    message = decode_json_rpc_message(text)
+    if message is not None:
+        return message
+    if "{" not in text:
+        return None
+    brace = text.index("{")
+    if brace:  # brace == 0 would just repeat the whole-line decode
+        message = decode_json_rpc_message(text[brace:])
+        if message is not None:
+            return message
+    if "\x1b" not in text:
+        return None
+    cleaned = _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", text))
+    if "{" not in cleaned:
+        return None
+    return decode_json_rpc_message(cleaned[cleaned.index("{") :])
 
 
 class ContainerTransport(Transport):
@@ -26,14 +74,22 @@ class ContainerTransport(Transport):
         command: str,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
-        agent_log_path: Path | None = None,
+        agent_log_path: ReachablePath | None = None,
     ):
         self._cp = container_process
         self._command = command
         self._env = env or {}
         self._cwd = cwd
+        if agent_log_path is not None and not isinstance(agent_log_path, ReachablePath):
+            raise TypeError("ACP logs require a reachable-directory handle")
         self._agent_log_path = agent_log_path
-        self._agent_log_file: TextIO | None = None
+        self._agent_log_file: ReachableLog | None = None
+        # First-message latch: the lenient PTY-noise decode applies only
+        # until the first successfully decoded protocol message (prompt glue
+        # is a startup phenomenon). Afterwards the strict whole-line decode
+        # rules, so an agent echoing valid protocol envelopes into its logs
+        # mid-session can never impersonate protocol traffic.
+        self._saw_protocol = False
 
     async def start(self) -> None:
         """Start the agent process inside the sandbox."""
@@ -46,12 +102,28 @@ class ContainerTransport(Transport):
             # (which never re-opens the file). Unlink rather than truncating so we keep
             # the lazy-open contract: no empty placeholder for protocol-only runs.
             self._agent_log_path.unlink(missing_ok=True)
+        # The host and sandbox filters use the host's effective budget. Give
+        # standalone text-producing shims the same value, including "off".
+        process_env = {
+            **self._env,
+            "BENCHFLOW_ACP_LINE_LIMIT": str(line_limit() or 0),
+        }
         await self._cp.start(
             command=self._command,
-            env=self._env,
+            env=process_env,
             cwd=self._cwd,
         )
-        logger.info(f"ContainerTransport: agent started ({self._command})")
+        # The launch command is a long shell script: its head at INFO, all of
+        # it at DEBUG (BENCHFLOW_LOG_LEVEL=DEBUG).
+        shown = self._command
+        if len(shown) > 160:
+            shown = f"{shown[:120]}... ({len(self._command)} characters)"
+        logger.info(f"ContainerTransport: agent started ({shown})")
+        logger.debug(f"ContainerTransport: agent command: {self._command}")
+
+    def expect_silence(self, seconds: float) -> None:
+        """Pass the prompt's silence budget to the live process's read guard."""
+        self._cp.expect_silence(seconds)
 
     async def send(self, message: dict[str, Any]) -> None:
         """Send a JSON-RPC message to the agent."""
@@ -62,23 +134,41 @@ class ContainerTransport(Transport):
         """Receive a JSON-RPC message from the agent."""
         while True:
             line = await self._cp.readline()
+            limit = line_limit()
+            if limit is not None and len(line) > limit:
+                # The same rewrite the sandbox-side filter applies, for a line
+                # that reached us whole (no python3 there): #1138.
+                size = len(line)
+                line = shrink_line(line, limit)
+                logger.info("Shrank a %d-byte agent output line to %d", size, len(line))
             text = line.decode(errors="replace").strip()
             if not text:
                 continue
-            message = decode_json_rpc_message(text)
+            if self._saw_protocol:
+                message = decode_json_rpc_message(text)
+            else:
+                message = _decode_pty_json_rpc_message(text)
             if message is not None:
+                self._saw_protocol = True
                 return message
             # Capture non-protocol output (agent debug logs, errors, warnings).
             if self._agent_log_path:
                 if self._agent_log_file is None:
-                    self._agent_log_file = self._agent_log_path.open("w")
+                    self._agent_log_file = self._agent_log_path.log()
                 self._agent_log_file.write(text + "\n")
                 self._agent_log_file.flush()
             logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")
 
     async def close(self) -> None:
         """Terminate the agent process."""
-        if self._agent_log_file:
-            self._agent_log_file.close()
-            self._agent_log_file = None
-        await self._cp.close()
+        try:
+            await self._cp.close()
+            stderr = getattr(self._cp, "stderr_tail", "")
+            if isinstance(stderr, str) and stderr and self._agent_log_path:
+                if self._agent_log_file is None:
+                    self._agent_log_file = self._agent_log_path.log()
+                self._agent_log_file.write(redact_trajectory_text(stderr))
+        finally:
+            if self._agent_log_file:
+                self._agent_log_file.close()
+                self._agent_log_file = None

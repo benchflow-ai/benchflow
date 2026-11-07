@@ -11,13 +11,45 @@ uv run ty check src/
 uv run ruff check .
 ```
 
+### Suite temporary folders on build VMs
+
+Allow about 7 GB of free space for a full suite's temporary files, in addition
+to the checkout, environment and caches. Check `df -h /tmp` and the filesystem
+that holds your chosen temporary folder before starting.
+
+Give each lane and each invocation its own `--basetemp`. pytest clears that
+folder at the start of a run, so never point it at a shared folder or a folder
+holding evidence you want to keep. Without `--basetemp`, pytest retains only
+the last three runs under `/tmp/pytest-of-<user>` across all lanes using that
+user; another lane can remove your earlier run's files.
+
+```bash
+suite_tmp=$(mktemp -d "$HOME/w/bench-suite-XXXXXX")
+uv run python -m pytest tests/ --basetemp="$suite_tmp"
+```
+
+Keep the default `tmp_path_retention_policy=all`. Do not use
+`-o tmp_path_retention_policy=failed`: successful tests can produce fixtures
+that later tests still need, so early removal breaks the suite.
+
+Some tests freeze files and directories read-only. After the run and all its
+workers have exited, preserve any evidence you need, then make only that
+run's folder writable before deleting it:
+
+```bash
+chmod -R u+w "$suite_tmp"
+rm -r -- "$suite_tmp"
+```
+
+Never clean a shared pytest root or another lane's temporary folder.
+
 ## Conventions
 
 - **Don't rewrite passing tests** to match new behavior. Update for shape changes, not for semantic changes you don't understand. No tautological tests.
 - **Regression tests must name the PR/commit they guard** in the docstring (e.g. `Guards the fix from PR #198 against the regression introduced by PR #193`).
 - **Human review before `main`.** PRs only. No force-pushes to `main`. Self-approval doesn't count.
 - **Trunk-based:** branch off `main`, PR back to `main`. No long-lived release branches.
-- **Releases:** current mechanics live in [`docs/release.md`](./docs/release.md). Merges to `main` publish internal preview `.devN` builds after CI passes; public releases require a reviewed stable-version PR, a matching `v<version>` tag on `main`, then a bump back to the next `.dev0`.
+- **Releases:** current mechanics live in [`docs/release.md`](./docs/contributing/release.md). Merges to `main` publish internal preview `.devN` builds after CI passes; public releases require a reviewed stable-version PR, a matching `v<version>` tag on `main`, then a bump back to the next `.dev0`.
 
 ## Experiment guidance (when using benchflow to run batch tasks experiments)
 
@@ -26,6 +58,26 @@ uv run ruff check .
 - When running tasks experiments, for each API key that available to you, verify 1. whether the key is still working by sending basic LLM calls; 2. ask the user how many parallel tasks can each key support / figure it out by yourself. Thus you can use highest available concurrency when running experiments.
 - **A revoked/wrong model key shows up as an opaque agent error, not an auth error.** With `openhands`, a dead key surfaces only as `ACP error -32603: Internal error` on the *first* model call (and `--usage-tracking off` / `--agent-env LLM_CACHING_PROMPT=false` do **not** help). So before any run, verify the *exact* key string with a raw provider call: Gemini `curl ".../v1beta/models/<model>:generateContent?key=$GEMINI_API_KEY"` must return 200; Bedrock a `converse` call with `Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK` must return 200. Keys of the same provider can rotate format (e.g. Google AI Studio `AQ.…` vs legacy `AIza…`) — only the live one works, so never assume a `.env`/`keys.env` entry is current.
 - **Daytona hard-caps each sandbox at 10 GB** (a larger storage request is clamped — see the `Clamping storage_mb … -> 10240` log line). Tasks with heavy images — large HuggingFace model snapshots, Playwright, LaTeX/marker, e.g. `latex-formula-extraction` — overflow during bootstrap and fail with `No space left on device`, or **hang silently at "Sandbox user agent ready" with no trajectory** (this is an infra/disk failure, *not* a model or auth bug). On Daytona pick light tasks (e.g. `citation-check`, `3d-scan-calc`); for heavy tasks use `--sandbox docker` (host disk, no 10 GB cap).
-- **Opus-4.8 (and other Claude 4.8+) on Bedrock needs the adaptive-thinking patch.** Without it the first call 400s (`thinking.type.enabled is not supported … use thinking.type.adaptive`). It ships in the LiteLLM proxy as `src/benchflow/providers/litellm_bedrock_patch.py` (loaded into the proxy process via `sitecustomize`), so it applies the same way on both backends — there is no separate host Bedrock proxy. Model string is `aws-bedrock/us.anthropic.claude-opus-4-8` with `AWS_REGION=us-west-2`. **MAX effort is opt-in:** set `BENCHFLOW_BEDROCK_THINKING_EFFORT=max` — without it the run uses the agent's default effort (adaptive `high`, **not** max). It is honored on both backends (Daytona forwards it into the sandbox proxy; Docker's proxy reads it host-side) and is applied as the Bedrock reasoning effort for the run; verify it took effect by inspecting `trajectory/llm_trajectory.jsonl` rather than trusting the "MAX" label.
+- **Opus-4.8 (and other Claude 4.8+) on Bedrock needs the adaptive-thinking patch.** Without it the first call 400s (`thinking.type.enabled is not supported … use thinking.type.adaptive`). It ships in the LiteLLM proxy as `src/benchflow/providers/litellm_bedrock_patch.py` (loaded into the proxy process via `sitecustomize`), so it applies the same way on both backends — there is no separate host Bedrock proxy. Model string is `aws-bedrock/us.anthropic.claude-opus-4-8` with `AWS_REGION=us-west-2`. The run defaults to adaptive `high`; current LiteLLM Bedrock support also clamps requested `xhigh`/`max` to `high` for Claude 4.8 models. Verify the applied value in `trajectory/llm_trajectory.jsonl` rather than trusting a requested-effort label.
 - Use Huggingface as the ground truth of tasks traj database. The target is making sure number_of_tasks * 2 (with/without skills) * number_of_trials (usually 3 / 5) for each model + each harness is complete. Each traj on Huggingface must be "healthy" - "healthy" means 1. the trial has complete traj information (agent pass / fail / timeout the task); 2. the trial has complete meta information (for example: token usage; timing; etc.). For each traj, we should use subagents to audit 1. whether the fail / timeout is due to agent capability instead of task config or env setting; 2. there is no reward hacking behavior; 3. in "no-skill" trials the agents do not have access to any skill files or accessed any skill files in traj.
 - When reviewing task-run result trajectories, agents must use the installed `benchflow-experiment-review` skill from the active harness's skill root; in this repo the canonical copy lives at `.agents/skills/benchflow-experiment-review`, with `.claude/skills` kept as a symlink for Claude Code compatibility.
+
+## Skill catalog (`.agents/skills`, mirrored at `.claude/skills`)
+
+| Skill | Use it for |
+| --- | --- |
+| `benchflow` | Running benchmarks, creating tasks, inspecting results via the CLI/SDK. |
+| `benchflow-experiment-review` | Auditing **already-published run trajectories**: traj health, reward hacking, no-skill leakage, Daytona/Docker parity. Also covers speed and A/B comparisons, and reviews of changes to sandbox and security code. Wired into `.github/scripts/codex_review.py` and `integration-final-review.yml`. |
+| `benchflow-traj-upload` | Uploading trajectories to the HuggingFace/GCS traj database. |
+| `skill-creator` | Creating, improving, evaluating, and packaging reusable skills. Vendored from [anthropics/skills@f6656c1](https://github.com/anthropics/skills/tree/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/skill-creator). |
+| `task-creator` | Authoring a new **SkillsBench** task, idea → submission-ready PR. |
+| `task-review` | Reviewing a **SkillsBench task PR** pre-merge — track routing, policy checks, oracle+agent benchmarks, report bundle. |
+| `thermo-nuclear-code-quality-review` | Deliberately harsh maintainability review of a branch. User-invoked only (`disable-model-invocation: true`). |
+
+`task-creator` and `task-review` are verbatim copies from
+[benchflow-ai/skillsbench](https://github.com/benchflow-ai/skillsbench); they operate on a
+skillsbench checkout, not on this repo. Re-sync by copying `.agents/skills/{task-creator,task-review}`
+from there. `skill-creator` is a verbatim copy from
+[anthropics/skills@f6656c1](https://github.com/anthropics/skills/tree/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/skill-creator).
+Keep the two review skills distinct: **`task-review` is pre-merge task-PR review,
+`benchflow-experiment-review` is post-run trajectory auditing.**

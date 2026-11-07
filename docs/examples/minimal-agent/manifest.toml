@@ -1,0 +1,101 @@
+# A minimal agent for BenchFlow: one bash tool and any OpenAI-compatible model.
+# Guide: docs/evaluate/your-own-agent.md
+contract_version = "1.0"
+name = "minimal-agent"
+description = "A minimal ACP agent: one bash tool, any OpenAI-compatible model"
+api_protocol = "openai-completions"
+launch_cmd = "python3 /opt/minimal-agent/agent.py"
+install_cmd = '''
+set -e
+command -v python3 >/dev/null || { apt-get update -qq && apt-get install -y -qq python3; }
+mkdir -p /opt/minimal-agent
+cat > /opt/minimal-agent/agent.py <<'PY'
+"""A minimal ACP agent. It reads ACP requests on stdin and answers on stdout.
+For each prompt it asks the model what to do, runs the bash commands the model
+asks for, and stops when the model replies without a command."""
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+
+BASE_URL = os.environ["MINIMAL_AGENT_BASE_URL"].rstrip("/")
+API_KEY = os.environ["MINIMAL_AGENT_API_KEY"]
+MODEL = os.environ["MINIMAL_AGENT_MODEL"]
+BASH_TOOL = {"type": "function", "function": {
+    "name": "bash", "description": "Run a bash command and return its output.",
+    "parameters": {"type": "object", "properties": {"command": {"type": "string"}},
+                   "required": ["command"]}}}
+
+
+def send(message):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+    sys.stdout.flush()
+
+
+def update(session_id, body):
+    send({"method": "session/update", "params": {"sessionId": session_id, "update": body}})
+
+
+def ask_model(messages):
+    request = urllib.request.Request(
+        BASE_URL + "/chat/completions", method="POST",
+        data=json.dumps({"model": MODEL, "messages": messages, "tools": [BASH_TOOL]}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + API_KEY})
+    with urllib.request.urlopen(request, timeout=300) as response:
+        reply = json.load(response)["choices"][0]["message"]
+    reply.pop("reasoning_content", None)
+    return reply
+
+
+def solve(session_id, task, cwd):
+    messages = [
+        {"role": "system", "content": f"You work in a Linux shell in {cwd}. "
+         "Use the bash tool to do the task. When it is done, reply without a tool call."},
+        {"role": "user", "content": task}]
+    for _ in range(30):
+        reply = ask_model(messages)
+        messages.append(reply)
+        if reply.get("content"):
+            update(session_id, {"sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": reply["content"]}})
+        if not reply.get("tool_calls"):
+            return
+        for call in reply["tool_calls"]:
+            command = json.loads(call["function"]["arguments"])["command"]
+            update(session_id, {"sessionUpdate": "tool_call", "toolCallId": call["id"],
+                                "title": command, "kind": "execute", "status": "in_progress"})
+            done = subprocess.run(["bash", "-c", command], cwd=cwd, capture_output=True,
+                                  text=True, timeout=300)
+            output = (done.stdout + done.stderr)[-10000:]
+            update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": call["id"],
+                                "status": "completed",
+                                "content": [{"type": "content",
+                                             "content": {"type": "text", "text": output}}]})
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
+
+
+cwd = os.getcwd()
+for line in sys.stdin:
+    request = json.loads(line)
+    method, request_id = request.get("method"), request.get("id")
+    params = request.get("params") or {}
+    if method == "initialize":
+        send({"id": request_id, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    elif method == "session/new":
+        cwd = params.get("cwd") or cwd
+        send({"id": request_id, "result": {"sessionId": "session-1"}})
+    elif method == "session/prompt":
+        task = "\n".join(block.get("text", "") for block in params.get("prompt", [])
+                         if block.get("type") == "text")
+        solve(params["sessionId"], task, cwd)
+        send({"id": request_id, "result": {"stopReason": "end_turn"}})
+    elif request_id is not None:
+        send({"id": request_id, "result": {}})
+PY
+'''
+
+[env_mapping]
+BENCHFLOW_PROVIDER_BASE_URL = "MINIMAL_AGENT_BASE_URL"
+BENCHFLOW_PROVIDER_API_KEY = "MINIMAL_AGENT_API_KEY"
+BENCHFLOW_PROVIDER_MODEL = "MINIMAL_AGENT_MODEL"

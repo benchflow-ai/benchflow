@@ -12,6 +12,22 @@
 #   * detect-scope holds NO secrets (contents: read only) and runs in seconds so
 #     this whole workflow can be UNCONDITIONALLY REQUIRED in branch protection:
 #     when the diff needs no rollout it reports a green no-op (should_run=false).
+#   * TASK FIXTURES are DATA UNDER TEST, not verdict logic — but they are not
+#     inert: docs/examples/task-md/**/task.md carries sandbox.setup_commands and
+#     sandbox.docker_image, and each task ships solve.sh + verifier/test.sh. So
+#     PR-head fixtures run ONLY in fixture-scenarios, which holds NO secrets and
+#     keeps the assertions (tests/) trusted-main. The secret-bearing job never
+#     executes a PR's fixtures.
+#
+# WHY fixture-scenarios EXISTS (the src-only-overlay blind spot):
+#   rollout-smoke overlays ONLY src/benchflow onto the trusted base tree, so a PR
+#   that must change src AND the in-repo task fixtures together is graded against
+#   an INCOHERENT tree: new code + base fixtures. PR #966 (the task-config
+#   'environment' -> 'sandbox' rename) hit exactly this — the overlaid new parser
+#   correctly rejected base's un-migrated task.md, so a red check reported a
+#   version skew the PR itself had already fixed, and main went green the moment
+#   both halves landed together. fixture-scenarios grades the coherent PR-head
+#   pair; rollout-smoke keeps the trusted-fixture, secret-bearing coverage.
 #
 # This workflow REPLACES the role of the old integration-eval.yml (L1).
 name: integration-light
@@ -19,6 +35,13 @@ name: integration-light
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # A successful unit run on main feeds this live gate; the internal-preview
+  # publisher then consumes this workflow's successful completion.  Keep the
+  # main-only source checks on rollout-smoke below: workflow_run has access to
+  # repository environments, so an untrusted PR completion must stay a no-op.
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       task:
@@ -29,7 +52,7 @@ on:
 # Cancel superseded L1 runs on the same PR branch — this is the fast-feedback
 # lane, so a newer push supersedes the older run.
 concurrency:
-  group: integration-light-${{ github.event.pull_request.head.sha || github.ref }}
+  group: integration-light-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: true
 
 # Workflow-level least privilege; jobs elevate only what they need.
@@ -55,8 +78,10 @@ jobs:
       - name: Resolve refs
         id: refs
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # On workflow_run, pin trusted infra and code-under-test to the exact
+          # commit that the unit workflow tested.  Never follow moving main.
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.workflow_run.head_sha || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
@@ -92,8 +117,26 @@ jobs:
         env:
           BASE_REF: ${{ steps.refs.outputs.base_ref }}
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            if [ "$SOURCE_EVENT" = "push" ] && [ "$SOURCE_BRANCH" = "main" ]; then
+              if [ "$SOURCE_CONCLUSION" != "success" ]; then
+                echo "::error::unit workflow for main concluded $SOURCE_CONCLUSION; live release gate is red"
+                exit 1
+              fi
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "Unit-tested main commit $HEAD_SHA requires the live release gate."
+            else
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::workflow_run is not a main push; L1 stays a credential-free no-op"
+            fi
+            exit 0
+          fi
           if [ ! -f .github/scripts/integration_matrix.py ]; then
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::trusted base does not contain integration_matrix.py yet; bootstrap PR passes L1 as a green no-op"
@@ -156,6 +199,12 @@ jobs:
         (
           github.event_name == 'workflow_dispatch' ||
           (
+            github.event_name == 'workflow_run' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.event == 'push' &&
+            github.event.workflow_run.head_branch == 'main'
+          ) ||
+          (
             github.event_name == 'pull_request' &&
             github.event.pull_request.head.repo.full_name == 'benchflow-ai/benchflow'
           )
@@ -210,8 +259,12 @@ jobs:
         run: python .github/scripts/select_integration_provider.py
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python
@@ -244,19 +297,187 @@ jobs:
             --json
 
       - name: Run the live oracle/parity scenarios
-        # Oracle determinism + docker<->daytona parity + reaper safety. The
-        # agent-rollout scenario is skipped here because the step above already
-        # ran a real agent + judge.
+        # Docker<->daytona parity + reaper safety. Two exclusions:
+        #   * agent_rollout — the step above already ran a real agent + judge.
+        #   * oracle_determinism — fixture-scenarios grades it against the
+        #     coherent PR-head pair (code + fixtures); running it here, where
+        #     fixtures are base and code is PR-head, is the incoherent-tree
+        #     false-red this split exists to remove.
+        # The remaining fixture-dependent leg (sandbox_parity) needs
+        # DAYTONA_API_KEY, so it cannot move to the secretless job. When the PR
+        # changes the fixtures it would hit the same skew, so it is skipped with
+        # a LOUD notice rather than failing on a version mismatch the PR already
+        # resolved. Coverage is never silently dropped: fixture-scenarios still
+        # graded the coherent pair, and main re-runs this leg after merge.
+        env:
+          FIXTURES_PATH: docs/examples/task-md
         run: |
+          set -euo pipefail
+          DESELECT="not agent_rollout and not oracle_determinism"
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             ! git diff --quiet "origin/$BASE_REF...$HEAD_SHA" -- "$FIXTURES_PATH"; then
+            echo "::notice title=sandbox_parity skipped::This PR changes $FIXTURES_PATH, so this trusted-fixture job would grade PR code against base fixtures (an incoherent tree). The coherent pair was graded by the fixture-scenarios job; this leg re-runs on main after merge."
+            DESELECT="$DESELECT and not sandbox_parity"
+          fi
           uv run pytest tests/test_integration_suite.py \
-            -m integration -k "not agent_rollout" \
+            -m integration -k "$DESELECT" \
             -p no:cacheprovider -v
+
+      - name: Archive smoke rollout artifacts
+        if: always()
+        # The trusted base may predate this helper. Fetch its reviewed release,
+        # never the PR's infra, even when that base contains an older helper.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin 1a32bcbee558377912ae01c6d15767ef88d981f5
+          git show 1a32bcbee558377912ae01c6d15767ef88d981f5:.github/scripts/job_artifacts.py > "$RUNNER_TEMP/job_artifacts.py"
+          python -I "$RUNNER_TEMP/job_artifacts.py" pack jobs/integration-light "$RUNNER_TEMP/job-archives/jobs.tar.gz"
 
       - name: Upload smoke rollout artifacts
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
         with:
           name: integration-light-jobs
-          path: jobs/integration-light
+          path: ${{ runner.temp }}/job-archives/jobs.tar.gz
           if-no-files-found: ignore
+          retention-days: 14
+
+  # ----------------------------------------------------------------------------
+  # fixture-scenarios — the COHERENT-TREE half of the live gate. NO SECRETS, so
+  # a PR's own task fixtures (setup_commands, solve.sh, verifier/test.sh) can be
+  # executed here without anything to exfiltrate: this job holds no provider
+  # environment and only contents: read. Verdict integrity is preserved the same
+  # way rollout-smoke preserves it — the assertions (tests/) come from trusted
+  # base; only src/benchflow AND the task fixtures come from the PR head, and
+  # they must agree with each other.
+  #
+  # Scope is deliberately the Docker+oracle scenario: it needs no provider key
+  # and no Daytona token, which is exactly what lets it run secretless. The
+  # Daytona parity leg cannot move here (it needs DAYTONA_API_KEY) and stays in
+  # rollout-smoke, guarded there by the fixture-drift skip.
+  # ----------------------------------------------------------------------------
+  fixture-scenarios:
+    name: fixture-scenarios
+    needs: detect-scope
+    if: >-
+      ${{
+        needs.detect-scope.outputs.should_run == 'true' &&
+        github.repository == 'benchflow-ai/benchflow' &&
+        !contains(github.event.pull_request.labels.*.name, 'integration:deep') &&
+        (
+          github.event_name == 'workflow_dispatch' ||
+          (
+            github.event_name == 'workflow_run' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.event == 'push' &&
+            github.event.workflow_run.head_branch == 'main'
+          ) ||
+          github.event_name == 'pull_request'
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # No `environment:` — this job must never hold provider credentials.
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ needs.detect-scope.outputs.base_ref }}
+      HEAD_SHA: ${{ needs.detect-scope.outputs.head_sha }}
+    steps:
+      # Trusted-base checkout: the scenarios and their assertions stay base code
+      # so a PR cannot rewrite the test that grades it.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.detect-scope.outputs.base_ref }}
+          fetch-depth: 0
+
+      - name: Overlay PR-head code AND task fixtures (the coherent pair)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$HEAD_SHA"
+          # Both halves from the same commit — that coherence IS the point of
+          # this job. Safe only because this job holds no secrets; do NOT copy
+          # this overlay into a job that has an `environment:`.
+          git checkout "$HEAD_SHA" -- src/benchflow
+          git checkout "$HEAD_SHA" -- docs/examples/task-md
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      - name: Run the coherent-tree oracle scenario on Docker
+        run: |
+          uv run pytest tests/test_integration_suite.py \
+            -m integration -k "oracle_determinism" \
+            -p no:cacheprovider -v
+
+  # The preview publisher consumes this workflow's overall conclusion.  A
+  # condition regression must never turn a skipped live job into a green
+  # release gate, so successful-main workflow_run events end here and require
+  # both the unit source and the live rollout job to have succeeded.
+  release-gate:
+    needs: [detect-scope, rollout-smoke, fixture-scenarios]
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce unit and live integration success
+        env:
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DETECT_SCOPE_RESULT: ${{ needs.detect-scope.result }}
+          ROLLOUT_SMOKE_RESULT: ${{ needs.rollout-smoke.result }}
+          FIXTURE_SCENARIOS_RESULT: ${{ needs.fixture-scenarios.result }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_CONCLUSION" != "success" ]; then
+            echo "::error::unit workflow concluded $SOURCE_CONCLUSION"
+            exit 1
+          fi
+          if [ "$DETECT_SCOPE_RESULT" != "success" ]; then
+            echo "::error::integration planning concluded $DETECT_SCOPE_RESULT"
+            exit 1
+          fi
+          if [ "$ROLLOUT_SMOKE_RESULT" != "success" ]; then
+            echo "::error::live integration concluded $ROLLOUT_SMOKE_RESULT"
+            exit 1
+          fi
+          # The coherent-tree half is a gate too: without this check, adding it
+          # to `needs` would only make the gate WAIT for it, not require it.
+          if [ "$FIXTURE_SCENARIOS_RESULT" != "success" ]; then
+            echo "::error::fixture scenarios concluded $FIXTURE_SCENARIOS_RESULT"
+            exit 1
+          fi
+          echo "Unit and live integration gates both succeeded."
+          mkdir -p release-provenance
+          printf '%s\n' "$TESTED_SHA" > release-provenance/tested-sha
+          printf '%s\n' "$SOURCE_RUN_NUMBER" > release-provenance/source-run-number
+
+      - name: Upload tested release provenance
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: internal-preview-provenance
+          path: release-provenance
+          if-no-files-found: error
           retention-days: 14

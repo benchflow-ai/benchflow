@@ -15,12 +15,14 @@ def test_benchflow_version_flag() -> None:
     assert result.output.strip() == f"benchflow {__version__}"
 
 
-def test_benchflow_run_command_is_removed():
-    """Guards PR #610 so the deprecated top-level run command stays gone."""
-    result = CliRunner().invoke(app, ["run", "--help"])
+def test_top_level_run_is_the_verb_sets_run():
+    """PR #610 removed an older top-level `run`; `bench run` is now Rust 0.8.2's
+    verb (cli/new_verbs.py): `bench eval run` with Rust's flags, the oracle
+    without -a."""
+    result = CliRunner().invoke(app, ["run", "--help"], env={"COLUMNS": "200"})
 
-    assert result.exit_code != 0
-    assert "No such command" in result.output
+    assert result.exit_code == 0, result.output
+    assert "without -a, the oracle" in result.output
 
 
 def test_eval_create_exits_nonzero_when_verifier_errors(tmp_path, monkeypatch):

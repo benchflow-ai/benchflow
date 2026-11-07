@@ -1,6 +1,6 @@
 """Monitor mode — score a rollout in production.
 
-Architecture (``docs/architecture.md``) names three first-class modes on the
+Architecture (``docs/start/how-it-works.md``) names three first-class modes on the
 single ``scored rollout`` engine:
 
 - **Eval**    — score it and stop.
@@ -41,7 +41,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class MonitorConfig:
         jobs_dir:
             Output root for monitor artifacts. Defaults to
             ``jobs/monitor`` so monitor evidence is separable from eval
-            release evidence (see ``docs/architecture.md`` §Lifecycles).
+            release evidence (see ``docs/start/how-it-works.md`` §Lifecycles).
         run_name:
             Optional human-readable name for the monitor run; defaults
             to a timestamped id.
@@ -196,7 +196,7 @@ class Monitor:
         logger.warning(_NOT_IMPLEMENTED_MSG)
         raise MonitorNotImplementedError(_NOT_IMPLEMENTED_MSG)
 
-    async def watch(self):  # type: ignore[no-untyped-def]
+    async def watch(self) -> NoReturn:
         """Stream-score live production events.
 
         Not implemented — see :class:`Monitor` and :mod:`benchflow.monitor`.

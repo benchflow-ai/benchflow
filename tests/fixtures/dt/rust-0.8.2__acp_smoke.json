@@ -1,0 +1,140 @@
+{
+  "source": "engine-bench-1015 raw/trials/trials-jobs.tar.gz: jobs/pre-r0-037-rust-0.8.2-oracle-acp_smoke/2026-10-16__04-21-16",
+  "arm": "rust-0.8.2",
+  "agent": "oracle",
+  "task": "acp_smoke",
+  "job_name": "2026-10-16__04-21-16",
+  "files": {
+    "summary.json": {
+      "job_name": "2026-10-16__04-21-16",
+      "agent": "oracle",
+      "model": null,
+      "environment": "docker",
+      "concurrency": 1,
+      "total": 1,
+      "passed": 0,
+      "failed": 0,
+      "errored": 1,
+      "verifier_errored": 0,
+      "unscored": 0,
+      "pass": 0,
+      "fail": 0,
+      "error": 1,
+      "not_started": 0,
+      "stopped": 0,
+      "partial": false,
+      "score": "0.0%",
+      "score_ratio": 0,
+      "score_interval": [
+        0,
+        0.7934506856227626
+      ],
+      "score_excl_errors": "0.0%",
+      "score_excl_errors_ratio": 0,
+      "mean_reward": null,
+      "elapsed_sec": 0.013229449,
+      "total_input_tokens": 0,
+      "total_output_tokens": 0,
+      "total_cache_read_tokens": 0,
+      "total_cache_creation_tokens": 0,
+      "total_tokens": 0,
+      "total_cost_usd": null,
+      "pass_at_k": {
+        "1": 0
+      },
+      "pass_at_k_scored_only": {},
+      "failures_by_cause": [
+        {
+          "code": "R401",
+          "owner": "you",
+          "message": "acp_smoke asks for what this runner cannot do yet: environment/docker-compose.yaml services.main.working_dir (service main is the agent's container, which BenchFlow configures from the task; this setting is not read)",
+          "next": "remove or change what it names; `bench explain R401` shows how to run it with BenchFlow 0.8",
+          "trials": [
+            "acp_smoke__d692adde"
+          ]
+        }
+      ],
+      "environment_warnings": [],
+      "graded_unlocked_system_dirs": 0,
+      "rewards_out_of_range": [],
+      "engine": {
+        "name": "benchflow-rs",
+        "version": "0.8.2"
+      }
+    },
+    "acp_smoke__d692adde/result.json": {
+      "task_name": "acp_smoke",
+      "rollout_name": "acp_smoke__d692adde",
+      "rewards": null,
+      "agent": "oracle",
+      "agent_name": "oracle",
+      "model": null,
+      "skill_mode": "no-skill",
+      "n_tool_calls": 0,
+      "n_prompts": 0,
+      "agent_result": {
+        "n_tool_calls": 0,
+        "n_prompts": 0,
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": null,
+        "usage_source": "unavailable"
+      },
+      "trajectory_summary": null,
+      "error": "[R401] acp_smoke asks for what this runner cannot do yet: environment/docker-compose.yaml services.main.working_dir (service main is the agent's container, which BenchFlow configures from the task; this setting is not read)",
+      "error_category": "unsupported_task_feature",
+      "verifier_error": null,
+      "verifier_error_category": null,
+      "started_at": "2026-10-16T04:21:16.144360+00:00",
+      "finished_at": "2026-10-16T04:21:16.144468+00:00",
+      "timing": {
+        "environment_setup": 0,
+        "agent_execution": 0,
+        "verifier": 0,
+        "total": 0.00008594,
+        "image": 0,
+        "sandbox_start": 0,
+        "setup": 0,
+        "handoff": 0,
+        "verify": 0
+      },
+      "task_digest": "sha256:c268b4093a9ad98026d0dda86f46da5c34a741e0c07d2027d2c610fd2df76745",
+      "sandbox_id": null,
+      "task_id": "acp_smoke",
+      "status": "errored",
+      "passed": null,
+      "timed_out": false,
+      "problem": {
+        "code": "R401",
+        "owner": "you",
+        "phase": "setup",
+        "message": "acp_smoke asks for what this runner cannot do yet: environment/docker-compose.yaml services.main.working_dir (service main is the agent's container, which BenchFlow configures from the task; this setting is not read)",
+        "next": "remove or change what it names; `bench explain R401` shows how to run it with BenchFlow 0.8",
+        "transient": false
+      },
+      "defenses": {},
+      "login": null,
+      "verifier_exit_code": null,
+      "rubric": null,
+      "engine": {
+        "name": "benchflow-rs",
+        "version": "0.8.2"
+      }
+    },
+    "acp_smoke__d692adde/timing.json": {
+      "environment_setup": 0,
+      "agent_execution": 0,
+      "verifier": 0,
+      "total": 0.00008594,
+      "image": 0,
+      "sandbox_start": 0,
+      "setup": 0,
+      "handoff": 0,
+      "verify": 0
+    },
+    "acp_smoke__d692adde/prompts.json": []
+  }
+}

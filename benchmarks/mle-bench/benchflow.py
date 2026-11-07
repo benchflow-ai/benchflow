@@ -415,7 +415,7 @@ def _render_task_toml(competition: MLEBenchCompetition) -> str:
         timeout_sec = 3600
         user = "root"
 
-        [environment]
+        [sandbox]
         build_timeout_sec = 3600
         cpus = 4
         memory_mb = 16384

@@ -133,6 +133,71 @@ def test_validator_accepts_training_ready_results_jsonl(tmp_path: Path) -> None:
     }
 
 
+def test_validator_oracle_mode_accepts_reward_only_rollout(tmp_path: Path) -> None:
+    """Guards BenchFlow PR #1049's explicit oracle artifact exception."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    result_path = rollout / "result.json"
+    result = json.loads(result_path.read_text())
+    result.update(
+        {
+            "agent": "oracle",
+            "agent_name": "oracle",
+            "model": None,
+            "n_tool_calls": 0,
+            "agent_result": {
+                "n_tool_calls": 0,
+                "n_input_tokens": 0,
+                "n_output_tokens": 0,
+                "total_tokens": 0,
+                "usage_source": "unavailable",
+            },
+        }
+    )
+    result_path.write_text(json.dumps(result))
+    (rollout / "trajectory" / "llm_trajectory.jsonl").unlink()
+    _write_jsonl(
+        rollout / "results.jsonl",
+        [
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "solve"}],
+                "completion": None,
+                "info": {
+                    "task_id": "task-a",
+                    "training_ready": False,
+                    "training_ready_reason": (
+                        "missing_healthy_structured_llm_trajectory"
+                    ),
+                },
+                "reward": 1.0,
+                "error": {
+                    "error": "missing_llm_trajectory",
+                    "error_chain_str": "oracle has no LLM trajectory",
+                },
+                "is_completed": False,
+                "is_truncated": False,
+                "stop_condition": "agent_completed",
+                "metrics": {"n_tool_calls": 0, "reward": 1.0},
+                "tool_defs": [],
+                "token_usage": {
+                    "final_input_tokens": 0,
+                    "final_output_tokens": 0,
+                    "total_tokens": 0,
+                },
+                "trajectory": [],
+            }
+        ],
+    )
+
+    strict = validator.validate_rollout(rollout)
+    oracle = validator.validate_rollout(rollout, allow_oracle_without_llm=True)
+
+    assert strict["healthy"] is False
+    assert oracle["healthy"] is True
+    assert oracle["issues"] == []
+
+
 def test_validator_accepts_provider_total_only_token_usage(tmp_path: Path) -> None:
     """Some providers expose only total tokens; Prime-RL can still render the row."""
     validator = _load_validator()
@@ -238,3 +303,286 @@ def test_validator_rejects_unready_results_for_healthy_rollout(tmp_path: Path) -
 
     assert report["healthy"] is False
     assert any("training_ready=false" in issue for issue in report["issues"])
+
+
+def _native_subscription_rollout(tmp_path: Path) -> Path:
+    rollout = _rollout(tmp_path)
+    (rollout / "trajectory" / "llm_trajectory.jsonl").unlink()
+    result = json.loads((rollout / "result.json").read_text())
+    result["agent_result"]["usage_source"] = "agent_native_acp"
+    (rollout / "result.json").write_text(json.dumps(result))
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row.update(
+        {
+            "completion": None,
+            "error": None,
+            "is_completed": True,
+            "trajectory": [],
+        }
+    )
+    row["info"].update(
+        {
+            "training_ready": False,
+            "training_ready_reason": "missing_healthy_structured_llm_trajectory",
+        }
+    )
+    _write_jsonl(rollout / "results.jsonl", [row])
+    return rollout
+
+
+def test_validator_accepts_explicit_native_subscription_mode(tmp_path: Path) -> None:
+    """Guards this PR's explicit native-subscription evidence mode."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+
+    strict = validator.validate_rollout(rollout)
+    native = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert strict["healthy"] is False
+    assert native["healthy"] is True
+    assert any("native subscription rollout" in item for item in native["warnings"])
+
+
+def test_validator_native_mode_rejects_wrong_usage_source(tmp_path: Path) -> None:
+    """Guards this PR against widening subscription mode to other runs."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+    result = json.loads((rollout / "result.json").read_text())
+    result["agent_result"]["usage_source"] = "provider_response"
+    (rollout / "result.json").write_text(json.dumps(result))
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is False
+    assert any("missing required artifact" in issue for issue in report["issues"])
+
+
+def test_validator_native_mode_requires_token_components(tmp_path: Path) -> None:
+    """Guards this PR against accepting usage-free subscription evidence."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["token_usage"] = {"total_tokens": 17}
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is False
+    assert any("positive token components" in issue for issue in report["issues"])
+
+
+def test_validator_native_mode_rejects_malformed_present_llm(tmp_path: Path) -> None:
+    """Guards this PR against bypassing malformed provider evidence."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+    (rollout / "trajectory" / "llm_trajectory.jsonl").write_text("{\n")
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is False
+    assert any("JSON parse error" in issue for issue in report["issues"])
+
+
+def test_validator_rejects_results_with_dropped_successful_exchange(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 MAX review against silently omitted LLM exchanges."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    first = json.loads(llm_path.read_text())
+    second = json.loads(llm_path.read_text())
+    second["request"]["body"]["messages"][0]["content"] = "solve a different turn"
+    _write_jsonl(llm_path, [first, second])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is False
+    assert any(
+        "results trajectory steps 1 != successful LLM responses 2" in issue
+        for issue in report["issues"]
+    )
+
+
+def test_validator_rejects_nested_truncated_training_step(tmp_path: Path) -> None:
+    """Guards PR #921 MAX review against `truncation=\"disabled\"` truthiness."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"][0]["is_truncated"] = True
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is False
+    assert any(
+        "trajectory[0] is incorrectly truncated" in issue for issue in report["issues"]
+    )
+
+
+def test_validator_excludes_recovered_incomplete_response_from_expected_steps(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 MAX review content-filter recovery semantics."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    incomplete = json.loads(llm_path.read_text())
+    incomplete["response"]["body"].update(
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"},
+        }
+    )
+    completed = json.loads(llm_path.read_text())
+    completed["response"]["body"].update(
+        {"status": "completed", "incomplete_details": None}
+    )
+    _write_jsonl(llm_path, [incomplete, completed])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"][0]["extras"]["exchange_index"] = 1
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_responses"] == 1
+
+
+def test_validator_deduplicates_completed_retry_race(tmp_path: Path) -> None:
+    """Guards PR #921 MAX review against abandoned late responses."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    first = json.loads(llm_path.read_text())
+    second = json.loads(llm_path.read_text())
+    _write_jsonl(llm_path, [first, second])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"][0]["extras"]["exchange_index"] = 1
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_responses"] == 1
+    assert report["artifacts"]["llm"]["deduplicated_completed_responses"] == 1
+
+
+def test_validator_prefers_duplicate_consumed_by_later_request(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 against keeping a late abandoned response."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    consumed = json.loads(llm_path.read_text())
+    consumed["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_consumed",
+                "type": "function",
+                "function": {"name": "finish", "arguments": "{}"},
+            }
+        ],
+    }
+    abandoned = json.loads(json.dumps(consumed))
+    abandoned["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_abandoned"
+    )
+    followup = json.loads(llm_path.read_text())
+    followup["request"]["body"]["messages"].extend(
+        [
+            consumed["response"]["body"]["choices"][0]["message"],
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "done",
+            },
+        ]
+    )
+    _write_jsonl(llm_path, [consumed, abandoned, followup])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"] = [
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 0},
+        },
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 2},
+        },
+    ]
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_exchange_indices"] == [0, 2]
+
+
+def test_validator_excludes_unique_late_unconsumed_nonterminal_retry(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 against the adaptive-cruise exchange-59 regression."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    base = json.loads(llm_path.read_text())
+    late = json.loads(json.dumps(base))
+    late["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Late retry request."}
+    )
+    late["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_late",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{}"},
+            }
+        ],
+    }
+    terminal = json.loads(json.dumps(base))
+    terminal["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Final response."}
+    )
+    terminal["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_finish",
+                "type": "function",
+                "function": {"name": "finish", "arguments": "{}"},
+            }
+        ],
+    }
+    _write_jsonl(llm_path, [base, late, terminal])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"] = [
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 0},
+        },
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 2},
+        },
+    ]
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_exchange_indices"] == [0, 2]

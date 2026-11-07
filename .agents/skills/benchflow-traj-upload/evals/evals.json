@@ -1,0 +1,23 @@
+{
+  "skill_name": "benchflow-traj-upload",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, on this laptop) to the BenchFlow eval prize.\n\n1. First make sure the latest benchflow CLI is installed: uv tool install --python 3.12 --upgrade --force benchflow\n\n2. Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, and upload only after I (the human) review it.",
+      "expected_output": "Agent discovers local sessions, opens the viewer, waits for review, then uploads. Human is not told to run a CLI command.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "set up traj for the eval prize",
+      "expected_output": "Agent installs benchflow if needed, lists sessions or installs the skill, and opens the viewer before any upload.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "upload this session to benchflow",
+      "expected_output": "Agent treats this as a submit request, finds or uses the named session, opens the viewer, and only then uploads.",
+      "files": []
+    }
+  ]
+}

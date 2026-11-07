@@ -146,8 +146,8 @@ class TestGenerateTask:
         assert task.config.metadata["source_trace_id"] == "test-trace-001"
         assert task.config.agent.timeout_sec == 300
         assert task.config.verifier.timeout_sec == 60
-        assert task.config.environment.build_timeout_sec == 600
-        assert task.config.environment.storage_mb == 10240
+        assert task.config.sandbox.build_timeout_sec == 600
+        assert task.config.sandbox.storage_mb == 10240
 
     def test_task_md_prompt_content(
         self, simple_trace: ParsedTrace, tmp_path: Path

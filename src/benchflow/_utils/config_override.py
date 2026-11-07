@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,22 @@ from benchflow._utils.content_address import sha256_prefixed
 #: Top-level config sections a run-time overlay MAY patch (fail-closed allowlist).
 #: The C axis is agent/budgets/sandbox/config — never the scorer, so anything
 #: outside this set (verifier, reward, solution/oracle, …) is rejected.
-_PATCHABLE_SECTIONS = frozenset({"agent", "sandbox", "metadata"})
+#: ``artifacts`` is additive: an overlay's entries are collected besides the
+#: task's own, which a separate verifier may need, and never replace them.
+_PATCHABLE_SECTIONS = frozenset(
+    {"agent", "sandbox", "metadata", "artifacts", "timeout_multipliers"}
+)
+_ADDITIVE_SECTIONS = frozenset({"artifacts"})
+#: ``timeout_multipliers`` scales the task's own budgets instead of replacing
+#: them, so one overlay fits every task of a run: ``verifier`` multiplies
+#: ``verifier.timeout_sec`` and ``build`` multiplies ``sandbox.build_timeout_sec``
+#: (a YAML job config's timeout multipliers). It changes
+#: only how long a phase may run, never what the verifier checks.
+_TIMEOUT_MULTIPLIERS = {
+    "verifier": ("verifier", "timeout_sec"),
+    "build": ("sandbox", "build_timeout_sec"),
+}
+_COMPUTED_SECTIONS = _ADDITIVE_SECTIONS | {"timeout_multipliers"}
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +132,8 @@ def validate_overlay(overlay: dict[str, Any]) -> dict[str, Any]:
 
     Scoring sections (``verifier``/``reward``/``solution``/``oracle``) and any
     other non-config section are disallowed so a per-run overlay can never weaken
-    how the run is graded. Returns the overlay unchanged when it is legal.
+    how the run is graded. ``artifacts`` entries are added to the task's own.
+    Returns the overlay unchanged when it is legal.
     """
     illegal = set(overlay) - _PATCHABLE_SECTIONS
     if illegal:
@@ -125,6 +142,24 @@ def validate_overlay(overlay: dict[str, Any]) -> dict[str, Any]:
             f"disallowed section(s) {sorted(illegal)} — the C axis is "
             "agent/sandbox/config, not the verifier/reward/scorer"
         )
+    scales = overlay.get("timeout_multipliers")
+    if scales is not None:
+        if not isinstance(scales, dict) or set(scales) - set(_TIMEOUT_MULTIPLIERS):
+            raise ValueError(
+                "config override timeout_multipliers takes "
+                f"{sorted(_TIMEOUT_MULTIPLIERS)}, each a number above 0; got {scales!r}"
+            )
+        for key, value in scales.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(
+                    f"config override timeout_multipliers.{key} must be a number "
+                    f"above 0, got {value!r}"
+                )
     return overlay
 
 
@@ -144,10 +179,29 @@ def apply_config_override(config: Any, overlay: dict[str, Any] | None) -> Any:
 
     # Merge against the FIELD-NAME dump (``by_alias=False``) so overlays use the
     # canonical field names (``agent``, ``sandbox``, …); ``populate_by_name`` lets
-    # re-validation accept them. ``by_alias=True`` would force callers to write the
-    # alias (e.g. ``environment`` for ``sandbox``) — the bug this avoids.
-    merged = deep_merge(config.model_dump(by_alias=False), overlay)
+    # re-validation accept them. (``sandbox`` is now the only spelling — the
+    # legacy ``environment`` alias was removed in the rename — but ``oracle``
+    # still serializes via alias, so the field-name dump stays load-bearing.)
+    base = config.model_dump(by_alias=False)
+    merged = deep_merge(
+        base, {k: v for k, v in overlay.items() if k not in _COMPUTED_SECTIONS}
+    )
+    for key in _ADDITIVE_SECTIONS & set(overlay):
+        added = overlay[key]
+        if not isinstance(added, list):
+            raise ValueError(f"config override {key!r} must be a list, got {added!r}")
+        kept = list(base.get(key) or [])
+        merged[key] = kept + [item for item in added if item not in kept]
+    for key, scale in (overlay.get("timeout_multipliers") or {}).items():
+        section, field = _TIMEOUT_MULTIPLIERS[key]
+        merged[section] = dict(merged.get(section) or {})
+        # The dump always holds the field (its default when the task sets none).
+        merged[section][field] = float(merged[section][field]) * float(scale)
     patched = TaskConfig.model_validate(merged)
+    if "build" in (overlay.get("timeout_multipliers") or {}):
+        # The scaled budget bounds the whole environment start
+        # (review B2-M1); the image build keeps its own budget inside it.
+        patched.sandbox._start_deadline_sec = patched.sandbox.build_timeout_sec
     logger.debug(
         "config override applied: keys=%s (%s)", sorted(overlay), overlay_hash(overlay)
     )

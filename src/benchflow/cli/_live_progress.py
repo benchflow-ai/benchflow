@@ -3,7 +3,9 @@
 Renders a single Rich :class:`~rich.live.Live` panel — a progress bar with ETA,
 queued/running/passed/failed/errored counts, a "running now" table, and running
 token / cost / pass-rate totals — fed by the :class:`~benchflow.evaluation.Evaluation`
-engine's ``on_plan`` / ``on_task_start`` / ``on_result`` hooks.
+engine's ``on_plan`` / ``on_task_start`` / ``on_result`` hooks, plus render-time
+polls of the live-activity registry for the running tasks' in-flight session
+counters (activity cells and the footer's live token sum).
 
 TTY-only by contract: the CLI keeps its plain ``logger.info`` lines when stdout
 isn't a terminal (CI, pipes, parity files), so machine-readable output is never
@@ -27,6 +29,8 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+from benchflow._utils import live_activity
+from benchflow._utils.log_context import current_task, task_prefix
 from benchflow.cli._shared import console
 from benchflow.usage_tracking import is_trusted_usage_source
 
@@ -78,18 +82,35 @@ def quiet_root_logging() -> Iterator[None]:
         buffer.replay()
 
 
+# A record with this attribute set prints above the dashboard at once (the
+# run card, which a terminal user must see before the trials it describes).
+SHOW_LIVE = "benchflow_show_live"
+
+
 class _WarningBuffer(logging.Handler):
-    """Capture WARNING+ records during a Live; drop INFO/DEBUG; replay on exit."""
+    """Capture WARNING+ records during a Live; drop INFO/DEBUG; replay on exit.
+    A record marked :data:`SHOW_LIVE` prints above the Live at once instead."""
 
     def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
-        self._records: list[logging.LogRecord] = []
+        super().__init__(level=logging.NOTSET)
+        self._records: list[tuple[logging.LogRecord, str]] = []
 
     def emit(self, record: logging.LogRecord) -> None:
-        self._records.append(record)
+        if getattr(record, SHOW_LIVE, False):
+            text = escape(record.getMessage())
+            if record.levelno >= logging.WARNING:
+                text = f"[yellow]{text}[/yellow]"
+            console.print(text, highlight=False, soft_wrap=True)
+            return
+        if record.levelno < logging.WARNING:
+            return
+        # The task of the trial that logged it, read now, in the trial's
+        # context: replayed after the dashboard, a line without it cannot be
+        # told apart from another trial's (dogfood p5-16).
+        self._records.append((record, task_prefix(current_task())))
 
     def replay(self) -> None:
-        for record in self._records:
+        for record, prefix in self._records:
             style = "red" if record.levelno >= logging.ERROR else "yellow"
             # escape(): buffered warnings carry user-derived text (a malformed
             # task dir name, a resume agent-mismatch from config.json) that can
@@ -97,7 +118,8 @@ class _WarningBuffer(logging.Handler):
             # crashes the CLI on live-context exit (and silently swallows
             # balanced [tokens]), defeating the buffer's "warnings must survive
             # the Live" purpose.
-            console.print(f"[{style}]{escape(record.getMessage())}[/{style}]")
+            text = escape(prefix + record.getMessage())
+            console.print(f"[{style}]{text}[/{style}]")
 
 
 @contextlib.contextmanager
@@ -127,6 +149,76 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+# Rollout lifecycle phase (Rollout._phase — the completed phase, except
+# "verifying" which verify() marks at entry) -> what is running now. Shown
+# while the session counters are unavailable — before the agent session
+# exists and after it is torn down — so sandbox create, agent install, and
+# the verifier read as work, not as a hang.
+#
+# The labels must be monotonic across a run: the row is a progress indicator,
+# so stepping back to an earlier stage reads as the run having restarted.
+# "executed" maps to the agent stage, not the verifier: since verify() marks
+# "verifying" at its own entry, the only stretch that renders under "executed"
+# is the inside of disconnect() (session already dropped, agent process being
+# killed) — labelling that "verifying…" made the row show "verifying…", then
+# "running agent…" (disconnect's "installed"), then "verifying…" again.
+_PHASE_LABELS = {
+    "created": "creating sandbox…",
+    "setup": "creating sandbox…",
+    # Not Rollout phases: activity_snapshot reports them while the sandbox
+    # builds the task image inside setup, then starts it (DF-p1-first-run-6).
+    "image-building": "building image…",
+    "image-built": "starting sandbox…",
+    "started": "installing agent…",
+    "installed": "running agent…",
+    "connected": "running agent…",
+    "executed": "running agent…",
+    "verifying": "verifying…",
+    "verified": "cleaning up…",
+    "cleaned": "cleaning up…",
+}
+# Unknown phases (e.g. "branched") and pre-register/teardown races: still
+# never blank — a blank cell on a live row reads as a hang.
+_PHASE_FALLBACK = "starting…"
+
+
+def _activity_cell(snap: live_activity.ActivitySnapshot | None) -> str:
+    """Per-task activity for the "running now" table, e.g.
+    ``38 calls · last: file_editor``.
+
+    Pure formatter over one polled :class:`~benchflow._utils.live_activity.
+    ActivitySnapshot` — ``__rich__`` polls the registry exactly once per
+    running task per frame and shares the snapshots with the footer's live
+    token sum. The counters are the same ones the console heartbeat logs,
+    which the Live display otherwise mutes. Until the agent session exists
+    (and after it is closed for the verifier) the cell shows the rollout's
+    lifecycle phase as a label instead, and a registry miss (None) shows the
+    fallback label, so the row is never blank. Tokens appear as soon as
+    either live signal exists — the gateway's live callback capture (per
+    completed LLM request, i.e. mid-prompt) or the ACP usage snapshot (per
+    completed prompt); ``Rollout.activity_snapshot`` reconciles the two as
+    max(). Once tokens are present, a single-tool agent's cell is
+    ``38 calls · 412.0k tok`` (no ``last:``).
+    """
+    if snap is None:
+        return _PHASE_FALLBACK
+    counters = snap.counters
+    if counters is None:
+        return _PHASE_LABELS.get(snap.phase, _PHASE_FALLBACK)
+    noun = "call" if counters.tool_calls == 1 else "calls"
+    cell = f"{counters.tool_calls} {noun}"
+    if counters.total_tokens:
+        cell += f" · {_fmt_tokens(counters.total_tokens)} tok"
+    # A single-tool agent (prime-agent funnels every call through one IPython
+    # tool) makes "last: <name>" a constant: once tokens carry the signal,
+    # drop it. Varied tool names — and unknown distinct counts (0), and a
+    # first lone call, where the name is still news — keep the last: suffix.
+    constant_tool = counters.tool_calls > 1 and counters.distinct_tools == 1
+    if counters.last_tool and not (constant_tool and counters.total_tokens):
+        cell += f" · last: {counters.last_tool[:30]}"
+    return cell
+
+
 class LiveEvalProgress:
     """A live ``Live``-rendered dashboard, driven by the engine's progress hooks.
 
@@ -148,7 +240,12 @@ class LiveEvalProgress:
         self._console = console
         self._label = label
         self._agent = agent
-        self._model = model or "(default)"
+        # The controls (oracle, nop) call no model and install no agent:
+        # their header has no model slot, their footer no token, cost or
+        # telemetry figures, and the install stretch reads as preparing
+        # (DF-p1-first-run-20).
+        self._control = agent in ("oracle", "nop") and not model
+        self._model = model or "(default model)"
         self._sandbox = sandbox
         self._lock = threading.Lock()
 
@@ -168,6 +265,9 @@ class LiveEvalProgress:
         self._covered = 0  # finished with trusted token telemetry
 
         self._live: Live | None = None
+        # Set when Ctrl-C or SIGTERM ends the run: the last frame says the
+        # running trials were stopped, not that they are still starting.
+        self._stopped = False
 
     # -- engine hooks -------------------------------------------------------
 
@@ -196,13 +296,10 @@ class LiveEvalProgress:
     def on_result(self, name: str, result: RunResult) -> None:
         with self._lock:
             self._running.pop(name, None)
-            # Mirror Evaluation._log_and_report exactly: reward==1 -> PASS,
-            # reward not None -> FAIL, else ERR (no reward reached).
-            rewards = getattr(result, "rewards", None)
-            reward = rewards.get("reward") if rewards else None
-            if reward == 1:
+            outcome = result.score_outcome
+            if outcome == "passed":
                 self._passed += 1
-            elif reward is not None:
+            elif outcome == "failed":
                 self._failed += 1
             else:
                 self._errored += 1
@@ -231,6 +328,13 @@ class LiveEvalProgress:
         return self
 
     def __exit__(self, *exc) -> None:
+        if (
+            exc
+            and isinstance(exc[0], type)
+            and issubclass(exc[0], (KeyboardInterrupt, SystemExit))
+        ):
+            with self._lock:
+                self._stopped = True
         if self._live is not None:
             self._live.__exit__(*exc)
             self._live = None
@@ -247,6 +351,7 @@ class LiveEvalProgress:
             tokens, cost = self._tokens, self._cost
             completed, covered = self._completed, self._covered
             elapsed = time.monotonic() - self._run_start
+            stopped = self._stopped
 
         # passed/failed/errored already include the resumed-seeded outcomes, so
         # "done" is their sum — adding `resumed` again would double-count.
@@ -256,7 +361,9 @@ class LiveEvalProgress:
         header = Text()
         header.append("benchflow", style="bold cyan")
         header.append(f"  ·  {self._label}  ·  {self._agent}", style="dim")
-        header.append(f"  ·  {self._model}  ·  {self._sandbox}", style="dim")
+        if not self._control:
+            header.append(f"  ·  {self._model}", style="dim")
+        header.append(f"  ·  {self._sandbox}", style="dim")
 
         # Progress bar + ETA (computed from this run's finish rate).
         frac = (done / total) if total else 0.0
@@ -270,7 +377,15 @@ class LiveEvalProgress:
         bar.append(f"  {done}/{total}", style="bold")
         bar.append(f" · {frac * 100:.0f}%", style="dim")
         bar.append(f" · {_fmt_dur(elapsed)}", style="dim")
-        if eta is not None:
+        if running and not queued:
+            # Every task left is running: the rate of the finished ones says
+            # nothing about them, and its ETA only grew while the last one
+            # ran (dogfood p5-15). Say how long the oldest has run instead.
+            oldest = time.monotonic() - min(running.values())
+            bar.append(
+                f" · {len(running)} left, running {_fmt_dur(oldest)}", style="dim"
+            )
+        elif eta is not None:
             bar.append(f" · ETA {_fmt_dur(eta)}", style="dim")
         if resumed:
             bar.append(f" · {resumed} resumed", style="dim")
@@ -282,11 +397,21 @@ class LiveEvalProgress:
         counts.append("   ")
         counts.append(f"⚠ {errored} errored", style="yellow" if errored else "dim")
         counts.append("   ")
-        counts.append(f"◷ {len(running)} running", style="cyan")
+        counts.append(
+            f"◷ {len(running)} stopped" if stopped else f"◷ {len(running)} running",
+            style="cyan",
+        )
         counts.append("   ")
         counts.append(f"⋯ {queued} queued", style="dim")
 
         parts: list[RenderableType] = [header, bar, counts]
+
+        # ONE registry poll per running task per frame (each poll an O(1)
+        # counter read; see live_activity), shared by the running-now cells
+        # and the footer's live token sum — displayed rows are never polled
+        # twice, and cell vs footer can't read different snapshots within a
+        # frame.
+        snaps = {name: live_activity.activity(name) for name in running}
 
         # "Running now" — cap rows so short terminals don't overflow.
         if running:
@@ -295,34 +420,91 @@ class LiveEvalProgress:
             )
             tbl.add_column("running now", no_wrap=True)
             tbl.add_column("elapsed", justify="right")
+            tbl.add_column("activity", no_wrap=True)
             now = time.monotonic()
             for name in sorted(running, key=lambda n: running[n])[:_MAX_RUNNING_ROWS]:
                 # Text() so a task name containing Rich markup (`[` is legal in
                 # SkillsBench dir names) is rendered literally, not parsed as
                 # markup — a MarkupError here escapes __rich__ and aborts the
                 # CLI on live-context exit, violating this module's "a render
-                # bug can never perturb a run" contract.
-                tbl.add_row(Text(name), _fmt_dur(now - running[name]))
+                # bug can never perturb a run" contract. Same for the activity
+                # cell, which carries agent-authored tool titles.
+                cell = _activity_cell(snaps.get(name))
+                if self._control and cell == "installing agent…":
+                    cell = "preparing sandbox…"
+                tbl.add_row(
+                    Text(name),
+                    _fmt_dur(now - running[name]),
+                    Text("stopped" if stopped else cell, style="dim"),
+                )
             extra = len(running) - _MAX_RUNNING_ROWS
             if extra > 0:
-                tbl.add_row(f"… {extra} more", "")
+                tbl.add_row(f"… {extra} more", "", "")
             parts.append(tbl)
 
-        # Footer: pass-rate (excl errors) + token/cost economics. Show "—" (not
-        # 0 / $0.00) when no trusted telemetry, so a coverage-0 run reads broken,
-        # not free — matching the summary.json contract.
+        # Footer: pass-rate (excl errors) + token/cost economics. Tokens sum
+        # the completed tasks' trusted telemetry PLUS the running rollouts'
+        # live usage — per running task, max(ACP prompt-completion snapshot,
+        # gateway live-capture total): the gateway side steps forward per
+        # completed LLM *request*, so a single-prompt agent phase shows its
+        # spend while the prompt runs, not only at scoring (the ACP side
+        # alone stays empty until the prompt completes). Reconciliation
+        # (documented at Rollout.activity_snapshot): max() keeps the running
+        # figure monotonic whichever signal leads, and degrades to the
+        # ACP-only value when the gateway capture is unavailable. The total
+        # is still NOT monotonic across a task's completion boundary: scoring
+        # swaps the live figure for the trusted gateway import (which can be
+        # lower than either live signal — untracked discards, cache
+        # accounting, ACP over-report), and a task completing with
+        # untrusted/absent telemetry drops its live contribution entirely —
+        # a sole-task footer can collapse back to "— tokens". Clamping would
+        # falsify the trusted sum, so the dip is intended. Show "—" (not 0 /
+        # $0.00) when neither signal exists, so a coverage-0 run reads
+        # broken, not free — matching the summary.json contract. Cost stays
+        # completed-tasks-only: $ comes from the sandbox LiteLLM gateway log
+        # imported at scoring time (BenchFlow computes no prices of its own),
+        # so there is no live $ to show.
+        live_tokens = sum(
+            snap.counters.total_tokens or 0
+            for snap in snaps.values()
+            if snap is not None and snap.counters is not None
+        )
+
         footer = Text()
         scored = passed + failed
         if scored:
-            footer.append(f"pass-rate {passed / scored * 100:.1f}% (excl-err)", "bold")
+            footer.append(
+                f"pass rate {passed / scored * 100:.1f}% (errors excluded)", "bold"
+            )
         else:
-            footer.append("pass-rate —", style="dim")
+            footer.append("pass rate —", style="dim")
+        if self._control:
+            parts.append(footer)
+            return Group(*parts)
         footer.append(" · ")
-        footer.append(f"{_fmt_tokens(tokens)} tokens" if covered else "— tokens", "dim")
+        footer.append(
+            f"{_fmt_tokens(tokens + live_tokens)} tokens"
+            if covered or live_tokens
+            else "— tokens",
+            "dim",
+        )
         footer.append(" · ")
         footer.append(f"${cost:.2f}" if covered else "$—", style="dim")
         if completed:
             footer.append(f" · telemetry {covered / completed * 100:.0f}%", style="dim")
         parts.append(footer)
+        # The utilization watcher's last report, which the log holds back
+        # while this panel is live (benchflow._utils.utilization).
+        from benchflow._utils import utilization
+
+        report = utilization.latest()
+        if report is not None:
+            line, warnings = report
+            parts.append(
+                Text(
+                    line + (". Underused: " + "; ".join(warnings) if warnings else ""),
+                    style="yellow" if warnings else "dim",
+                )
+            )
 
         return Group(*parts)

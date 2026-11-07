@@ -161,7 +161,7 @@ timeout_sec = {_AGENT_TIMEOUT}
 [verifier]
 timeout_sec = {_VERIFIER_TIMEOUT}
 
-[environment]
+[sandbox]
 cpus = 1
 memory_mb = 1024
 storage_mb = 2048
@@ -235,7 +235,7 @@ def _render_dockerfile() -> str:
     """Generate Dockerfile for the evaluation environment.
 
     Test files (test.sh, evaluate.py, ground_truth.json) are uploaded
-    at runtime by BenchFlow/Harbor — they are NOT copied during the
+    at runtime by BenchFlow — they are NOT copied during the
     Docker build. The build context is ``environment/`` which does not
     include the sibling ``tests/`` directory.
     """

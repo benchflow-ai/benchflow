@@ -80,8 +80,8 @@ def _check_structural(task_dir: Path) -> list[str]:
             errors.append(f"{name}: task.toml missing [agent] section")
         if "[verifier]" not in content:
             errors.append(f"{name}: task.toml missing [verifier] section")
-        if "[environment]" not in content:
-            errors.append(f"{name}: task.toml missing [environment] section")
+        if "[sandbox]" not in content:
+            errors.append(f"{name}: task.toml missing [sandbox] section")
 
     # instruction.md
     instruction = task_dir / "instruction.md"

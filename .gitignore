@@ -177,6 +177,8 @@ cython_debug/
 
 trials/
 jobs/
+# The docs' Jobs chapter is not run output.
+!docs/jobs/
 .jobs/
 dogfood/
 tmp/
@@ -188,3 +190,9 @@ context/
 tutorials/
 .playwright-mcp/
 /.claude/handoffs
+
+# task.md draft 2 fixtures are verbatim copies; their logs are evidence, not output.
+!tests/fixtures/taskmd/**/*.log
+
+# bfx binaries are built (make bfx) or come with the wheel; never committed.
+src/benchflow/_bfx/bin/

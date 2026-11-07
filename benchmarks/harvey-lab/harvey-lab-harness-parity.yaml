@@ -3,6 +3,8 @@ source:
   path: datasets/harvey-lab/tasks
 
 agent: harvey-lab-harness
-model: gemini/gemini-3.1-flash-lite-preview
+# The recorded parity (README, parity_experiment.json) ran on
+# gemini-3.1-flash-lite-preview, which Google shut down on 2026-05-25.
+model: gemini/gemini-3.5-flash-lite
 environment: docker
 concurrency: 2

@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.sandbox._exec_output import exec_raw
+from benchflow.sandbox._task_route import as_task_command
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +73,7 @@ def register_service(
     cli_name: str,
     port: int,
     db_path: str,
-    **kwargs,
+    **kwargs: Any,
 ) -> ServiceConfig:
     """Register a custom service at runtime."""
     config = ServiceConfig(
@@ -101,13 +104,17 @@ def build_service_hooks(
 
     async def _start_services(env: Any):
         for svc in services:
-            await env.exec(
-                f"{svc.cli_name} --db {svc.db_path} serve "
-                f"--host 0.0.0.0 --port {svc.port} --no-mcp &",
-                timeout_sec=10,
-            )
+            # The image's service CLIs, on its PATH (C8's task route).
+            with as_task_command(env):
+                await exec_raw(
+                    env.exec,
+                    f"{svc.cli_name} --db {svc.db_path} serve "
+                    f"--host 0.0.0.0 --port {svc.port} --no-mcp &",
+                    timeout_sec=10,
+                )
         for svc in services:
-            await env.exec(
+            await exec_raw(
+                env.exec,
                 f"for i in $(seq 1 30); do "
                 f"curl -sf http://localhost:{svc.port}{svc.health_path} > /dev/null && break; "
                 f"sleep 1; done",

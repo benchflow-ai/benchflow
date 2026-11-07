@@ -1,0 +1,4 @@
+{
+ "message": "Command timed out after 1 seconds",
+ "raised": "ExecTimeoutError"
+}

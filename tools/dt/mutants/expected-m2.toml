@@ -1,0 +1,12 @@
+# Mutant (m2): validate_task_runtime_support returns []
+# (src/benchflow/task/runtime_capabilities.py:77-109). Every task the
+# runtime check refused now launches. At BASE_T0 (the A/A run) the one smoke
+# task it refuses is snapshot-hook ([[verifier.collect]]); task.md planner
+# refusals (refused_at_load) are a different check and do not change.
+
+[[change]]
+id = "m2-accepted"
+target = "DT1"
+item = "mutant:m2"
+cells = ["snapshot-hook/oracle", "snapshot-hook/nop"]
+class = "newly_accepted"

@@ -13,11 +13,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from benchflow.errors import UserError
 from benchflow.task._document_profiles import _PROFILE_KEYS, _TASK_AUTHORING_PROFILES
 
 
-class TaskDocumentParseError(ValueError):
+class TaskDocumentParseError(ValueError, UserError):
     """Raised when a ``task.md`` document cannot be parsed."""
+
+    fault = "task"
 
 
 def normalize_task_document_frontmatter(
@@ -52,7 +55,7 @@ def normalize_task_document_frontmatter(
     _apply_image_shorthand(
         normalized,
         shorthand_image,
-        canonical_was_explicit=_has_nested(raw, ("environment", "docker_image")),
+        canonical_was_explicit=_has_nested(raw, ("sandbox", "docker_image")),
     )
     _apply_path_shorthand(normalized, "verifier", verifier_path)
     _apply_path_shorthand(normalized, "oracle", oracle_path)
@@ -150,8 +153,8 @@ def _apply_image_shorthand(
         return
     if not isinstance(value, str) or not value.strip():
         raise TaskDocumentParseError("image must be a non-empty string")
-    environment = _ensure_mapping(normalized, "environment")
-    environment["docker_image"] = value.strip()
+    sandbox = _ensure_mapping(normalized, "sandbox")
+    sandbox["docker_image"] = value.strip()
 
 
 def _pop_path_shorthand(frontmatter: dict[str, Any], key: str) -> str | None:

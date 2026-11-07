@@ -1,0 +1,9 @@
+# Stacked when the task has no Compose file of its own (a Dockerfile or a
+# prebuilt image): main, the only service, is created with
+# no-new-privileges. A task's own Compose project gets the option on every
+# service once Compose has resolved it, whatever spelling the task used
+# (_compose_runtime.with_no_new_privileges), so no list holds it twice.
+services:
+  main:
+    security_opt:
+      - no-new-privileges:true

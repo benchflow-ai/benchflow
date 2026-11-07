@@ -1,0 +1,47 @@
+# Mutant (m3): the nop control runs the oracle's solve.sh (its own nop
+# trajectory kept). Predicted: nop_above_zero on every task whose oracle
+# scores above 0 and whose nop scores 0 in every A/A base round
+# (derived before the mutant ran); r2r-mpc-control's oracle
+# is flaky (flaky.toml). agent-timeout's oracle outlives the 10 s budget, so
+# its nop now errors as the oracle does (infra_failure, retried): failed 0.0
+# -> errored; the nop step is never recorded, so its trajectory counts change too (its family and attempts follow from the outcome and are not listed again).
+
+[[change]]
+id = "m3-nop"
+target = "DT1"
+item = "mutant:m3"
+cells = ["acp_smoke/nop", "hello-08/nop", "hello-split-run/nop", "hello-split/nop", "hello-world-task/nop", "hello/nop", "lake-warming-attribution/nop", "nanofirm-task/nop", "separate-verifier/nop", "sidecar-run/nop", "sidecar/nop", "skills/nop"]
+class = "nop_above_zero"
+
+[[change]]
+id = "m3-agent-timeout-outcome"
+target = "DT1"
+item = "mutant:m3"
+cells = ["agent-timeout/nop"]
+class = "outcome_flip"
+
+[[change]]
+id = "m3-agent-timeout-reward"
+target = "DT1"
+item = "mutant:m3"
+cells = ["agent-timeout/nop"]
+class = "reward_change"
+
+[[change]]
+id = "m3-agent-timeout-fields"
+target = "DT1"
+item = "mutant:m3"
+cells = ["agent-timeout/nop"]
+class = "field_change"
+fields = ["counts.trajectory_summary"]
+
+# Revised after the first round of the mutant run: the nop's agent_name is
+# set by the step after the oracle (_nop_trajectory), which the failing
+# oracle now skips, so result.json's agent_name goes from "nop" to "".
+[[change]]
+id = "m3-agent-timeout-agent-name"
+target = "DT1"
+item = "mutant:m3"
+cells = ["agent-timeout/nop"]
+class = "raw_value_change"
+fields = ["result.json:agent_name"]

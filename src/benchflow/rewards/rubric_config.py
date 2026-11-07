@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from benchflow._utils.reachable_write import read_private_text, snapshot_file
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python < 3.11
@@ -22,7 +24,7 @@ from benchflow.rewards.events import Space
 _VALID_SPACES: frozenset[str] = frozenset(
     {"output", "action", "reasoning", "memory", "latent"}
 )
-_VALID_REWARD_KIT_AGGREGATIONS = {
+_VALID_CRITERIA_RUNNER_AGGREGATIONS = {
     "weighted_mean",
     "weighted_sum",
     "all_pass",
@@ -69,6 +71,7 @@ class Criterion:
 
     @property
     def id(self) -> str:
+        """The criterion's name, or the start of its description."""
         return self.name or self.description[:40]
 
     def normalize(self, raw: float) -> float:
@@ -101,7 +104,8 @@ class ScoringConfig:
 class JudgeConfig:
     """The ``[judge]`` section of a rubric."""
 
-    model: str = "claude-sonnet-4-6"
+    # The current Sonnet; Sonnet 4.6 is legacy (Anthropic, read 2026-11-04).
+    model: str = "claude-sonnet-5-5"
     mode: Literal["batched", "individual"] = "individual"
     files: list[str] = field(default_factory=list)
     timeout: int = 120
@@ -132,7 +136,7 @@ def _parse_criterion(raw: dict) -> Criterion:
 
 def _parse_judge(raw: dict) -> JudgeConfig:
     return JudgeConfig(
-        model=raw.get("model", "claude-sonnet-4-6"),
+        model=raw.get("model", JudgeConfig.model),
         mode=raw.get("mode", "individual"),
         files=raw.get("files", []),
         timeout=raw.get("timeout", 120),
@@ -151,8 +155,9 @@ def _parse_scoring(raw: dict) -> ScoringConfig:
 
 def load_rubric_toml(path: Path) -> RubricConfig:
     """Load and parse a ``rubric.toml`` file."""
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
+    with snapshot_file(path) as snapshot:
+        text = read_private_text(snapshot, universal_newlines=False)
+    data = tomllib.loads(text)
 
     judge = _parse_judge(data.get("judge", {}))
     raw_criteria = data.get("criterion", data.get("criteria", []))
@@ -177,7 +182,9 @@ def load_rubric_json(path: Path) -> RubricConfig:
     Optional ``[judge]`` and ``[scoring]`` objects are also honoured so a
     JSON rubric can be fully self-describing.
     """
-    data = json.loads(path.read_text(encoding="utf-8"))
+    with snapshot_file(path) as snapshot:
+        text = read_private_text(snapshot)
+    data = json.loads(text)
 
     judge = _parse_judge(data.get("judge", {}))
     scoring = _parse_scoring(data.get("scoring", {}))
@@ -222,7 +229,7 @@ def load_rubric(path: Path) -> RubricConfig:
 def criteria_aggregate_policy_from_rubric(path: Path) -> dict[str, Any]:
     """Return a strict aggregate policy derived from declared rubric criteria.
 
-    Reward Kit runners may emit per-criterion ``metrics``. When a selected
+    Criteria runners may emit per-criterion ``metrics``. When a selected
     verifier strategy declares a criteria file, BenchFlow treats that file as
     the authoritative metric contract: ids are unique and nonempty, weights are
     finite and nonnegative, and the rubric scoring method becomes the aggregate
@@ -231,49 +238,41 @@ def criteria_aggregate_policy_from_rubric(path: Path) -> dict[str, Any]:
 
     rubric = load_rubric(path)
     if not rubric.criteria:
-        raise ValueError(f"Reward Kit criteria file {path} declares no criteria")
-    if rubric.scoring.aggregation not in _VALID_REWARD_KIT_AGGREGATIONS:
+        raise ValueError(f"Criteria file {path} declares no criteria")
+    if rubric.scoring.aggregation not in _VALID_CRITERIA_RUNNER_AGGREGATIONS:
         raise ValueError(
-            f"Reward Kit criteria file {path} uses unsupported scoring method "
+            f"Criteria file {path} uses unsupported scoring method "
             f"{rubric.scoring.aggregation!r}"
         )
     try:
         threshold = float(rubric.scoring.threshold)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Reward Kit criteria file {path} has invalid scoring threshold"
-        ) from exc
+        raise ValueError(f"Criteria file {path} has invalid scoring threshold") from exc
     if not math.isfinite(threshold) or threshold < 0.0 or threshold > 1.0:
-        raise ValueError(
-            f"Reward Kit criteria file {path} has invalid scoring threshold"
-        )
+        raise ValueError(f"Criteria file {path} has invalid scoring threshold")
 
     ids: list[str] = []
     weights: dict[str, float] = {}
     for criterion in rubric.criteria:
         criterion_id = criterion.id.strip()
         if not criterion_id:
-            raise ValueError(f"Reward Kit criteria file {path} has an empty id")
+            raise ValueError(f"Criteria file {path} has an empty id")
         if criterion_id in weights:
-            raise ValueError(
-                f"Reward Kit criteria file {path} has duplicate id {criterion_id!r}"
-            )
+            raise ValueError(f"Criteria file {path} has duplicate id {criterion_id!r}")
         if criterion.type not in {"binary", "likert", "numeric"}:
             raise ValueError(
-                f"Reward Kit criteria file {path} has unsupported criterion type "
+                f"Criteria file {path} has unsupported criterion type "
                 f"for {criterion_id!r}: {criterion.type!r}"
             )
         try:
             weight = float(criterion.weight)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"Reward Kit criteria file {path} has invalid weight for "
-                f"{criterion_id!r}"
+                f"Criteria file {path} has invalid weight for {criterion_id!r}"
             ) from exc
         if not math.isfinite(weight) or weight < 0.0:
             raise ValueError(
-                f"Reward Kit criteria file {path} has invalid weight for "
-                f"{criterion_id!r}"
+                f"Criteria file {path} has invalid weight for {criterion_id!r}"
             )
         ids.append(criterion_id)
         weights[criterion_id] = weight

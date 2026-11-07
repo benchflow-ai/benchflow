@@ -1,0 +1,226 @@
+# Known differences between Python BenchFlow and Rust 0.8.2 that stay. Each
+# row names its cells ("<corpus name>/<agent>", globs allowed), the class
+# (and, for field or verifier changes, the fields) it explains, which side
+# matches the documented behaviour (`spec_side`: python, rust, both,
+# neither, n/a when spec/expected.toml has no row), an owner and a cite.
+# A row that matches nothing in a full run of its tiers (default smoke)
+# fails the run. REL's "Differences from the Rust engine" text (DT3) is
+# built from these rows.
+
+[[row]]
+id = "acp_smoke-rust-refuses"
+mode = "cross-engine"
+cells = ["acp_smoke/oracle", "acp_smoke/nop"]
+class = "rust_refuses_python_runs"
+spec_side = "n/a"
+owner = "Rust 0.8.2"
+cite = "integ/p1:crates/benchflow-task/src/compose.rs:811-814 (services.main.working_dir: service main is the agent's container, R401)"
+reason = "Rust refuses a compose file that sets the main service's working_dir; Python runs the task as 0.8 did"
+
+[[row]]
+id = "snapshot-hook-python-refuses"
+mode = "cross-engine"
+cells = ["snapshot-hook/oracle", "snapshot-hook/nop"]
+class = "python_refuses_rust_runs"
+spec_side = "n/a"
+owner = "Python BenchFlow"
+cite = "src/benchflow/task/imports.py:52-61 ([[verifier.collect]] is an unhonoured foreign key, refused by the runtime capability check)"
+reason = "Python does not run verifier collect hooks and refuses the task (R401, unsupported_task_feature); Rust runs them"
+
+[[row]]
+id = "net-blocklist-refused-at-load"
+mode = "cross-engine"
+cells = ["net-blocklist/oracle", "net-blocklist/nop"]
+class = ["python_refuses_rust_runs", "spec_mismatch"]
+spec_side = "rust"
+owner = "Python BenchFlow (task.md planner)"
+cite = "src/benchflow/taskmd/plan.py:931-936 ([agent] network = { block = [...] } differs from the sandbox's network and is refused) -> src/benchflow/taskmd/materialize.py:133-138 (TaskMdError); integ/p1:examples/README.md:83 (E54: reward 1)"
+reason = "unconditional: Python's planner refuses an agent blocklist at load (no trial folder, refused_at_load); Rust enforces it"
+
+[[row]]
+id = "net-ip-blocklist-refused-at-load"
+mode = "cross-engine"
+cells = ["net-ip-blocklist/oracle", "net-ip-blocklist/nop"]
+class = ["python_refuses_rust_runs", "spec_mismatch"]
+spec_side = "rust"
+owner = "Python BenchFlow (task.md planner)"
+cite = "src/benchflow/taskmd/plan.py:931-936 -> src/benchflow/taskmd/materialize.py:133-138 (TaskMdError); integ/p1:examples/README.md:85 (E68: reward 1)"
+reason = "unconditional: the same refusal for a blocklist by address"
+
+[[row]]
+id = "mount-outputs-refused-at-load"
+mode = "cross-engine"
+cells = ["mount-outputs/oracle", "mount-outputs/nop"]
+class = ["python_refuses_rust_runs", "spec_mismatch"]
+spec_side = "rust"
+owner = "Python BenchFlow (task.md planner)"
+cite = "src/benchflow/taskmd/plan.py:224 ([sandbox] mounts: task files are not mounted at start yet) and :294 ([verifier] snapshot: snapshot commands are not run); integ/p1:examples/README.md:81 (E26: reward 1)"
+reason = "Python's planner refuses read-only mounts and snapshot commands at load; Rust runs them"
+
+[[row]]
+id = "stages-refused-at-load"
+mode = "cross-engine"
+cells = ["stages/oracle", "stages/nop"]
+class = "python_refuses_rust_runs"
+spec_side = "n/a"
+owner = "Python BenchFlow (task.md planner)"
+cite = "src/benchflow/taskmd/plan.py:331-333 (stages graded or set up on their own are not implemented)"
+reason = "Python's planner refuses gated stages at load; Rust runs them (README E25)"
+
+[[row]]
+id = "task-digest-split-layout"
+mode = "cross-engine"
+cells = [
+    "hello-split/*", "hello-split-run/*", "sidecar-run/*", "nanofirm-task/*",
+    "lake-warming-attribution/*", "r2r-mpc-control/*",
+]
+class = "field_change"
+fields = ["task_digest"]
+spec_side = "n/a"
+owner = "both engines (by design)"
+cite = "src/benchflow/_utils/task_authoring/__init__.py:85-114 (Python: sha256 over every file of the folder) vs Rust's task digest of the parsed package (lock.json task.digest); GOALS DT1 pairs cells on tree hash, never on task_digest"
+reason = "the engines digest a split-layout task differently; the harness pairs on the source tree hash instead"
+
+[[row]]
+id = "task-digest-taskmd"
+mode = "cross-engine"
+cells = [
+    "hello/*", "hello-08/*", "agent-timeout/*", "always-passes/*", "broken-image/*",
+    "build-timeout/*", "net-allowlist/*", "net-ip-allowlist/*", "net-ip-none/*",
+    "ready-never/*", "reward-*/*", "separate-verifier/*", "sidecar/*", "skills/*",
+    "verifier-timeout/*",
+]
+class = "field_change"
+fields = ["task_digest"]
+spec_side = "n/a"
+owner = "both engines (by design); Python's dependence on the folder is a finding for P2"
+cite = "Python digests the materialized native package (src/benchflow/task/formats.py:158-185 materialize_task_dir), which records the source folder (a recorded run); Rust digests the task.md package itself"
+reason = "a task.md package is digested after materializing in Python and as written in Rust"
+
+[[row]]
+id = "skill-mode-rust-hard-coded"
+mode = "cross-engine"
+kind = "drop"
+field = "skill_mode"
+cells = ["*"]
+class = "field_change"
+spec_side = "n/a"
+owner = "Rust 0.8.2"
+cite = "integ/p1:crates/benchflow-run/src/record.rs:556 (skill_mode is always \"no-skill\")"
+reason = "Rust writes skill_mode as a constant, so the reader keeps Python's value only (normalise.DROP)"
+
+[[row]]
+id = "hello-world-task-taskmd"
+mode = "cross-engine"
+tiers = ["model"]
+cells = ["hello-world-task/*"]
+class = ["field_change", "score_disagree"]
+fields = ["prompt.", "family"]
+spec_side = "n/a"
+owner = "Rust 0.8.2 (X207)"
+cite = "a recorded run (hello-world-task holds task.md and task.toml + instruction.md; Rust reads its task.md, X207)"
+reason = "only a model agent reads the instruction; with the oracle and nop the smoke tier shows no difference on hello-world-task (3 rounds), so the row is the model tier's"
+
+[[row]]
+id = "task-skills-deployment"
+mode = "cross-engine"
+tiers = ["skills"]
+cells = ["skills/*"]
+class = "score_disagree"
+spec_side = "rust"
+owner = "both engines (flags)"
+cite = "integ/p1:docs/rust/coming-from-0.8.md:11 and integ/p1:crates/benchflow-cli/src/cli.rs:673 (Rust deploys a task's skills unless --no-task-skills; 0.8 leaves them out); integ/p1:examples/README.md E48"
+reason = "the smoke tier runs Rust with --no-task-skills, as 0.8 runs by default; a model-agent run with task skills differs by design"
+
+[[row]]
+id = "taskmd-reward-json"
+mode = "cross-engine"
+cells = ["*"]
+class = "verifier_output_change"
+fields = ["reward_json"]
+spec_side = "n/a"
+owner = "Python BenchFlow"
+cite = "src/benchflow/taskmd/verify.py:560 (Python's task.md verifier writes verifier/reward.json beside reward.txt)"
+reason = "Python records the reward it read as reward.json for a task.md package; Rust leaves the verifier's files as they are"
+
+[[row]]
+id = "verifier-pytest-rootdir"
+mode = "cross-engine"
+cells = ["lake-warming-attribution/*"]
+class = "verifier_output_change"
+fields = ["ctrf", "stdout_sha256"]
+spec_side = "n/a"
+owner = "Python BenchFlow (verifier hardening)"
+cite = "src/benchflow/sandbox/lockdown.py:735-740 and :808-820 (PYTEST_ADDOPTS: -c /dev/null and a --rootdir of the workspace)"
+reason = "Python runs the verifier's pytest with its own config and rootdir, so CTRF test ids lose the file name and pytest's header differs; the tests and their results are the same"
+
+[[row]]
+id = "errored-before-the-agent-records-no-prompt"
+mode = "cross-engine"
+cells = ["broken-image/*", "ready-never/*"]
+class = "field_change"
+fields = ["counts.n_prompts", "prompt.n", "prompt.raw_sha256", "prompt.stripped_sha256"]
+spec_side = "n/a"
+owner = "both engines"
+cite = "src/benchflow/rollout/__init__.py:1179-1186 (Python resolves and records the prompt in setup(), before the sandbox starts); Rust records prompts as they are sent (none when the sandbox never starts)"
+reason = "a trial that fails before the agent starts has its prompt recorded by Python and none by Rust"
+
+[[row]]
+id = "verifier-timeout-output"
+mode = "cross-engine"
+cells = ["verifier-timeout/*"]
+class = "verifier_output_change"
+spec_side = "both"
+owner = "task (what a killed verifier printed)"
+cite = "integ/p1:examples/README.md:68 (E23: the verifier outlives its 5 s; unscored, R303 in both engines)"
+reason = "both engines kill the verifier at 5 s and record it unscored; what it had printed or written by then differs"
+
+[[row]]
+id = "build-timeout-warm-cache"
+mode = "cross-engine"
+cells = ["build-timeout/*"]
+class = "spec_mismatch"
+spec_side = "neither"
+owner = "task (the build VM's BuildKit cache)"
+cite = "integ/p1:examples/README.md:69 (E23b: errored, R102); Python 0.8 enforces no build timeout on Docker (src/benchflow/sandbox/docker.py:739 times only a pre-compose hook), so its first build ran the full 300 s and left the layer in the shared BuildKit cache (a recorded run: build-timeout oracle 315 s, passed)"
+reason = "on a VM where the 300 s layer is cached, neither engine's build outlives 15 s, so both pass; Python's missing build timeout is listed as a finding for its owner"
+
+# DT3-MJ2: the engine bench's terminal task, added to the corpus
+# after DT1.
+[[row]]
+id = "terminal-bench-smoke-task-digest"
+mode = "cross-engine"
+cells = ["terminal-bench-smoke-task/oracle", "terminal-bench-smoke-task/nop"]
+class = "field_change"
+fields = ["task_digest"]
+spec_side = "n/a"
+owner = "both engines (by design)"
+cite = "6e500408:tools/dt/divergences/accepted.toml task-digest-split-layout; src/benchflow/_utils/task_authoring/__init__.py:85-114 vs Rust parsed-package digest; a recorded merge-judge run on c3d593f5"
+reason = "Same pinned 0.6.0-rc.6 task tree; oracle 1 and nop 0 in all 10 arms. Python and Rust task_digest differ at BASE_T0 and every merge, while within-Python task_digest is unchanged. Extend the documented digest difference to the two added corpus cells."
+
+# A planner refusal has no summary. The completed Rust control's common
+# ratios must still be exactly the documented 1 (oracle) or 0 (nop), rather
+# than being covered by the outcome/refusal rows above (CONF2-DT1-1).
+[[row]]
+id = "load-refusal-oracle-summary"
+mode = "cross-engine"
+cells = ["clock-start/oracle", "mount-outputs/oracle", "net-blocklist/oracle", "net-ip-blocklist/oracle", "stages/oracle", "timezone/oracle", "world-sim/oracle"]
+class = "summary_change"
+exact_fields = true
+fields = ["score_ratio <missing> -> 1", "score_ratio <missing> -> 1.0", "score_excl_errors_ratio <missing> -> 1", "score_excl_errors_ratio <missing> -> 1.0"]
+spec_side = "rust"
+owner = "Python BenchFlow (task.md planner)"
+cite = "integ/p1:examples/README.md (oracle controls); a recorded run (three-round passed controls)"
+reason = "Python writes no summary when refused at load; Rust's oracle is exactly 1"
+
+[[row]]
+id = "load-refusal-nop-summary"
+mode = "cross-engine"
+cells = ["clock-start/nop", "mount-outputs/nop", "net-blocklist/nop", "net-ip-blocklist/nop", "stages/nop", "timezone/nop", "world-sim/nop"]
+class = "summary_change"
+exact_fields = true
+fields = ["score_ratio <missing> -> 0", "score_ratio <missing> -> 0.0", "score_excl_errors_ratio <missing> -> 0", "score_excl_errors_ratio <missing> -> 0.0"]
+spec_side = "rust"
+owner = "Python BenchFlow (task.md planner)"
+cite = "integ/p1:examples/README.md (nop controls); a recorded run (three-round failed controls)"
+reason = "Python writes no summary when refused at load; Rust's nop is exactly 0"

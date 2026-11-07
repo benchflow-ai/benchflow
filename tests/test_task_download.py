@@ -1,6 +1,9 @@
 """Tests for benchmark task repository materialization."""
 
+import json
 import shutil
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +16,19 @@ from benchflow._utils.benchmark_repos import (
     resolve_source_with_metadata,
     task_source_provenance,
 )
+from benchflow._utils.hf_datasets import SOURCE_SIDECAR, snapshot_hf_dataset
+
+
+@pytest.fixture(autouse=True)
+def _modern_git(monkeypatch):
+    """Pin git's sparse support: the clone commands below are exact.
+
+    Autouse, and module-wide: it also keeps `_git_can_sparse`'s
+    `functools.cache` from making these tests depend on what ran first. A
+    test of the old-git full-clone path therefore cannot live in this module
+    without overriding this — put it in tests/test_source_sparse_clone.py.
+    """
+    monkeypatch.setattr(task_download, "_git_can_sparse", lambda: True)
 
 
 def _fake_worktree(cmd):
@@ -23,11 +39,15 @@ def _fake_worktree(cmd):
 
 
 def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
-    """Guards PR #226: SkillsBench downloads must track GitHub main explicitly."""
+    """Guards PR #226: SkillsBench downloads must track GitHub main explicitly.
+
+    The alias names a path (``tasks``), so the clone is the blob-less sparse
+    one that dx/first-run introduced (see tests/test_source_sparse_clone.py).
+    """
     monkeypatch.chdir(tmp_path)
     calls = []
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check, **kwargs):
         calls.append(cmd)
         assert check is True
         clone_dir = Path(cmd[-1])
@@ -40,31 +60,44 @@ def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
 
     assert (
         target
-        == tmp_path / ".cache" / "datasets" / "benchflow-ai" / "skillsbench" / "tasks"
+        == tmp_path
+        / ".cache"
+        / "datasets-v2"
+        / "benchflow-ai"
+        / "skillsbench"
+        / "tasks"
     )
     assert target.exists()
     assert calls == [
         [
             "git",
             "clone",
+            "--quiet",
             "--depth",
             "1",
+            "--filter=blob:none",
+            "--sparse",
+            "--no-checkout",
             "--branch",
             "main",
             "https://github.com/benchflow-ai/skillsbench.git",
             str(
-                tmp_path / ".cache" / "datasets" / "benchflow-ai" / "_skillsbench_clone"
+                tmp_path
+                / ".cache"
+                / "datasets-v2"
+                / "benchflow-ai"
+                / "_skillsbench_clone"
             ),
         ]
     ]
 
 
 def test_programbench_alias_resolves_to_official_repo(tmp_path, monkeypatch):
-    """Guards ENG-81: programbench alias resolves to current upstream metadata."""
+    """programbench alias resolves to current upstream metadata."""
     monkeypatch.chdir(tmp_path)
     calls = []
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check, **kwargs):
         calls.append(cmd)
         assert check is True
         clone_dir = Path(cmd[-1])
@@ -82,7 +115,7 @@ def test_programbench_alias_resolves_to_official_repo(tmp_path, monkeypatch):
         target
         == tmp_path
         / ".cache"
-        / "datasets"
+        / "datasets-v2"
         / "facebookresearch"
         / "programbench"
         / "src"
@@ -100,7 +133,7 @@ def test_resolve_source_with_path(tmp_path, monkeypatch):
     """resolve_source with repo + path clones the repo and returns the subpath."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check, **kwargs):
         assert check is True
         clone_dir = Path(cmd[-1])
         clone_dir.mkdir(parents=True)
@@ -114,7 +147,12 @@ def test_resolve_source_with_path(tmp_path, monkeypatch):
 
     assert (
         target
-        == tmp_path / ".cache" / "datasets" / "acme-org" / "benchmarks" / "my-benchmark"
+        == tmp_path
+        / ".cache"
+        / "datasets-v2"
+        / "acme-org"
+        / "benchmarks"
+        / "my-benchmark"
     )
     assert target.exists()
 
@@ -125,7 +163,7 @@ def test_resolve_source_with_metadata_records_sha_and_task_hashes(
     """Guards v0.5-integration@cb8759e against unauditable source artifacts."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -161,7 +199,7 @@ def test_resolve_source_with_metadata_records_sha_and_task_hashes(
     assert resolved.path == (
         tmp_path
         / ".cache"
-        / "datasets"
+        / "datasets-v2"
         / "acme-org"
         / "benchmarks__snapshots"
         / "c65af83ae2c76fda3f1fd4d2fcf56563975e283e"
@@ -190,7 +228,7 @@ def test_resolve_source_with_metadata_records_task_md_hashes(tmp_path, monkeypat
     """Guards commit 67378ddd's 2026-06-04 task.md spike source hashes."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -236,7 +274,7 @@ def test_resolve_source_with_metadata_uses_snapshot_sha_for_provenance(
     mutated_sha = "b" * 40
     rev_parse_calls = 0
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         nonlocal rev_parse_calls
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
@@ -277,9 +315,9 @@ def test_resolve_source_with_metadata_uses_snapshot_sha_for_provenance(
 def test_resolve_source_with_metadata_snapshots_under_cache_lock(tmp_path, monkeypatch):
     """Guards v0.5-integration@cb8759e against concurrent checkout races."""
     monkeypatch.chdir(tmp_path)
-    lock_path = tmp_path / ".cache" / "datasets" / "acme-org" / ".benchmarks.lock"
+    lock_path = tmp_path / ".cache" / "datasets-v2" / "acme-org" / ".benchmarks.lock"
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -343,6 +381,128 @@ def test_task_source_provenance_derives_batch_task_path_and_hashes(tmp_path):
     assert "sample-task/task.toml" not in task_provenance["file_hashes"]
 
 
+def test_snapshot_hf_dataset_filters_selected_tasks(tmp_path, monkeypatch):
+    """Guards the selective snapshot support added with PR #907."""
+
+    source = tmp_path / "source"
+    selected = source / "tasks" / "beta"
+    (selected / "tests").mkdir(parents=True)
+    (selected / "task.toml").write_text("[task]\n")
+    (selected / "instruction.md").write_text("Solve beta.\n")
+    (selected / "tests" / "test.sh").write_text("exit 0\n")
+    unselected = source / "tasks" / "alpha"
+    unselected.mkdir()
+    (unselected / "task.toml").write_text("[task]\n")
+    captured = {}
+
+    def fake_download(repo_id, *, revision, cache_dir, allow_patterns=()):
+        captured["allow_patterns"] = allow_patterns
+        return source
+
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._read_hf_revision",
+        lambda *args, **kwargs: "resolved-sha",
+    )
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._download_snapshot", fake_download
+    )
+    output = tmp_path / "output"
+
+    snapshot_hf_dataset(
+        "org/tasks",
+        output_dir=output,
+        revision="main",
+        path="tasks",
+        include_tasks=["beta"],
+    )
+
+    assert captured["allow_patterns"] == ("tasks/beta/**",)
+    assert sorted(path.name for path in output.iterdir()) == [
+        SOURCE_SIDECAR,
+        "beta",
+    ]
+    assert not (output / "alpha").exists()
+    sidecar = json.loads((output / SOURCE_SIDECAR).read_text())
+    assert sidecar["include_tasks"] == ["beta"]
+
+
+def test_snapshot_hf_dataset_rejects_missing_selected_task(tmp_path, monkeypatch):
+    """Guards the selective snapshot support added with PR #907."""
+
+    source = tmp_path / "source"
+    (source / "tasks").mkdir(parents=True)
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._read_hf_revision",
+        lambda *args, **kwargs: "resolved-sha",
+    )
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._download_snapshot",
+        lambda *args, **kwargs: source,
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing"):
+        snapshot_hf_dataset(
+            "org/tasks",
+            output_dir=tmp_path / "output",
+            path="tasks",
+            include_tasks=["missing"],
+        )
+
+
+def test_snapshot_hf_dataset_writes_generic_source_sidecar(tmp_path, monkeypatch):
+    """Guards PR slice 1 HF task snapshots without format-specific imports."""
+    remote = tmp_path / "remote"
+    task = remote / "tasks" / "sample-task"
+    (task / "tests").mkdir(parents=True)
+    (task / "task.toml").write_text("[task]\n")
+    (task / "instruction.md").write_text("Solve it.\n")
+    (task / "tests" / "test.sh").write_text("exit 0\n")
+
+    class FakeHfApi:
+        def repo_info(self, repo_id, repo_type=None, revision=None):
+            assert repo_id == "benchflow/sample-tasks"
+            assert repo_type == "dataset"
+            assert revision == "abc123"
+            return SimpleNamespace(sha="d" * 40)
+
+    def fake_snapshot_download(**kwargs):
+        assert kwargs["repo_id"] == "benchflow/sample-tasks"
+        assert kwargs["repo_type"] == "dataset"
+        assert kwargs["revision"] == "d" * 40
+        return str(remote)
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.HfApi = lambda: FakeHfApi()
+    fake_hub.snapshot_download = fake_snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    output = tmp_path / "snapshot"
+    snapshot = snapshot_hf_dataset(
+        "benchflow/sample-tasks",
+        output_dir=output,
+        revision="abc123",
+    )
+
+    assert snapshot.path == output
+    assert (output / "tasks" / "sample-task" / "task.toml").is_file()
+    sidecar = json.loads((output / SOURCE_SIDECAR).read_text())
+    assert sidecar["type"] == "huggingface_dataset"
+    assert sidecar["repo"] == "benchflow/sample-tasks"
+    assert sidecar["repo_type"] == "dataset"
+    assert sidecar["requested_revision"] == "abc123"
+    assert sidecar["resolved_revision"] == "d" * 40
+
+    task_provenance = task_source_provenance(None, output / "tasks" / "sample-task")
+    assert task_provenance is not None
+    assert task_provenance["type"] == "huggingface_dataset"
+    assert task_provenance["path"] == "tasks/sample-task"
+    assert set(task_provenance["file_hashes"]) == {
+        "instruction.md",
+        "task.toml",
+        "tests/test.sh",
+    }
+
+
 def test_task_source_provenance_rejects_task_outside_source_root(tmp_path):
     """Guards v0.5-integration@cb8759e against false out-of-tree provenance."""
     tasks_root = tmp_path / "tasks"
@@ -370,7 +530,7 @@ def test_resolve_source_with_metadata_records_canonical_source_path(
     """Guards v0.5-integration@cb8759e against non-canonical source evidence."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -435,7 +595,7 @@ def test_resolve_source_with_metadata_fails_without_git_sha(tmp_path, monkeypatc
     """Guards v0.5-integration@cb8759e against unauditable source metadata."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -459,7 +619,7 @@ def test_resolve_source_with_metadata_rejects_path_escape(tmp_path, monkeypatch)
     """Guards v0.5-integration@cb8759e against source path escape evidence."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -489,7 +649,7 @@ def _clone_with(tmp_path, monkeypatch, *, populate):
     """Install a fake ``git`` whose clone is populated by ``populate(clone_dir)``."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -548,7 +708,7 @@ def test_resolve_source_without_path(tmp_path, monkeypatch):
     """resolve_source without path returns repo root."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check, **kwargs):
         assert check is True
         clone_dir = Path(cmd[-1])
         clone_dir.mkdir(parents=True)
@@ -559,7 +719,7 @@ def test_resolve_source_without_path(tmp_path, monkeypatch):
 
     target = resolve_source("acme-org/my-tasks")
 
-    assert target == tmp_path / ".cache" / "datasets" / "acme-org" / "my-tasks"
+    assert target == tmp_path / ".cache" / "datasets-v2" / "acme-org" / "my-tasks"
     assert target.exists()
 
 
@@ -568,7 +728,7 @@ def test_resolve_source_with_ref(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     calls = []
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check, **kwargs):
         calls.append(cmd)
         assert check is True
         clone_dir = Path(cmd[-1])
@@ -588,16 +748,19 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     calls = []
     sha_ref = "c65af83ae2c76fda3f1fd4d2fcf56563975e283e"
-    clone_tmp = tmp_path / ".cache" / "datasets" / "org" / "_repo_clone"
+    clone_tmp = tmp_path / ".cache" / "datasets-v2" / "org" / "_repo_clone"
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check=False, **kwargs):
+        # The clone checks its exit code; the ref's fetch and checkout run
+        # through _git_quiet, which reads returncode (dx/first-run).
         calls.append(cmd)
-        assert check is True
         if cmd[:2] == ["git", "clone"]:
+            assert check is True
             clone_dir = Path(cmd[-1])
             clone_dir.mkdir(parents=True)
             (clone_dir / ".git").mkdir()
             (clone_dir / "tasks").mkdir()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 
@@ -607,35 +770,49 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
         [
             "git",
             "clone",
+            "--quiet",
             "--depth",
             "1",
+            "--filter=blob:none",
+            "--sparse",
+            "--no-checkout",
             "https://github.com/org/repo.git",
             str(clone_tmp),
         ],
-        ["git", "-C", str(clone_tmp), "fetch", "--depth", "1", "origin", sha_ref],
-        ["git", "-C", str(clone_tmp), "checkout", "--detach", "FETCH_HEAD"],
+        [
+            "git",
+            "-C",
+            str(clone_tmp),
+            "fetch",
+            "--quiet",
+            "--depth",
+            "1",
+            "origin",
+            sha_ref,
+        ],
+        ["git", "-C", str(clone_tmp), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
     ]
 
 
 def test_resolve_source_with_ref_refreshes_cached_checkout(tmp_path, monkeypatch):
     """Guards v0.5-integration@cb8759e against stale branch cache evidence."""
     monkeypatch.chdir(tmp_path)
-    cache = tmp_path / ".cache" / "datasets" / "org" / "repo"
+    cache = tmp_path / ".cache" / "datasets-v2" / "org" / "repo"
     (cache / ".git").mkdir(parents=True)
     (cache / "tasks").mkdir()
     calls = []
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check=False, **kwargs):
         calls.append(cmd)
-        assert check is True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 
     resolve_source("org/repo", path="tasks", ref="main")
 
     assert calls == [
-        ["git", "-C", str(cache), "fetch", "--depth", "1", "origin", "main"],
-        ["git", "-C", str(cache), "checkout", "--detach", "FETCH_HEAD"],
+        ["git", "-C", str(cache), "fetch", "--quiet", "--depth", "1", "origin", "main"],
+        ["git", "-C", str(cache), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
     ]
 
 
@@ -644,7 +821,7 @@ def test_resolve_source_caches_on_second_call(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     call_count = 0
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check, **kwargs):
         nonlocal call_count
         call_count += 1
         clone_dir = Path(cmd[-1])
@@ -664,7 +841,7 @@ def test_source_dataclass_resolve(tmp_path, monkeypatch):
     """Source dataclass .resolve() delegates to resolve_source."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check, **kwargs):
         clone_dir = Path(cmd[-1])
         clone_dir.mkdir(parents=True)
         (clone_dir / ".git").mkdir()
@@ -678,13 +855,13 @@ def test_source_dataclass_resolve(tmp_path, monkeypatch):
 
     assert (
         target
-        == tmp_path / ".cache" / "datasets" / "benchflow-ai" / "benchmarks" / "tb2"
+        == tmp_path / ".cache" / "datasets-v2" / "benchflow-ai" / "benchmarks" / "tb2"
     )
     assert target.exists()
 
 
 def test_infer_task_source_provenance_for_cached_benchmark_repo(tmp_path, monkeypatch):
-    """Guards #492: tasks under ``.cache/datasets/<org>/<repo>/...`` must
+    """Guards #492: tasks under ``.cache/datasets-v2/<org>/<repo>/...`` must
     attribute provenance to the cached benchmark repo (its remote/HEAD), not
     to the BenchFlow worktree. Without this, ``check_results.py`` warns
     ``source.resolved_sha does not match local_path git HEAD`` and friends
@@ -694,10 +871,10 @@ def test_infer_task_source_provenance_for_cached_benchmark_repo(tmp_path, monkey
 
     monkeypatch.chdir(tmp_path)
     # Make the BenchFlow worktree marker live at tmp_path so ``_repo_root()``
-    # resolves here (matching the production layout under .cache/datasets).
+    # resolves here (matching the production layout under .cache/datasets-v2).
     (tmp_path / ".git").mkdir()
 
-    cache_root = tmp_path / ".cache" / "datasets" / "benchflow-ai" / "skillsbench"
+    cache_root = tmp_path / ".cache" / "datasets-v2" / "benchflow-ai" / "skillsbench"
     tasks_dir = cache_root / "tasks"
     task_dir = tasks_dir / "task-a"
     task_dir.mkdir(parents=True)

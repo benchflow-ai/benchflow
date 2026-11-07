@@ -2,11 +2,12 @@
 
 Guards the fix from benchflow-ai/benchflow PR #670 (BF-3).
 
-The strict contract (the default) rejects any unrecognized non-numeric
-top-level key — e.g. the Harbor-era ``{"reward": 1.0, "done": true}`` — and any
-non-numeric metric. Lenient mode (opt-in via ``BENCHFLOW_REWARD_LENIENT=1``)
-drops those keys with a single warning while still requiring a usable scalar
-``reward``. Default behaviour must not change.
+The strict contract (the default) rejects any non-numeric metric, and an
+unrecognized non-numeric top-level key in a map with no numeric ``reward``.
+Beside a numeric ``reward`` such a key (the task.toml-era
+``{"reward": 1.0, "done": true}``) is kept in both modes since #1178 (round
+PY8, V4). Lenient mode (opt-in via ``BENCHFLOW_REWARD_LENIENT=1``) drops the
+rest with a single warning while still requiring a usable scalar ``reward``.
 """
 
 from __future__ import annotations
@@ -16,16 +17,19 @@ import warnings
 import pytest
 
 from benchflow.rewards.validation import (
+    RewardOutOfRange,
     reward_lenient_from_env,
     validate_reward_map,
 )
 
 
 class TestStrictDefaultUnchanged:
-    def test_strict_rejects_legacy_done_key(self) -> None:
-        # The canonical regression: classic test.sh→reward.json payload.
-        with pytest.raises(ValueError, match="invalid reward value for 'done'"):
-            validate_reward_map({"reward": 1.0, "done": True}, source="reward JSON")
+    def test_strict_keeps_legacy_done_key(self) -> None:
+        # The classic test.sh→reward.json payload scores, its extra key kept
+        # (#1178; before, strict mode threw the whole reward away).
+        assert validate_reward_map(
+            {"reward": 1.0, "done": True}, source="reward JSON"
+        ) == {"reward": 1.0, "done": True}
 
     def test_strict_rejects_non_numeric_metric(self) -> None:
         with pytest.raises(ValueError, match="invalid metric value"):
@@ -35,9 +39,9 @@ class TestStrictDefaultUnchanged:
             )
 
     def test_strict_is_the_default(self) -> None:
-        # No lenient kwarg → same raise as before this change.
+        # No lenient kwarg → the strict raise.
         with pytest.raises(ValueError):
-            validate_reward_map({"reward": 1.0, "done": True})
+            validate_reward_map({"reward": 1.0, "metrics": {"label": "good"}})
 
     def test_strict_still_accepts_clean_map(self) -> None:
         parsed = validate_reward_map(
@@ -47,23 +51,23 @@ class TestStrictDefaultUnchanged:
 
 
 class TestLenientDropsAndWarns:
-    def test_lenient_drops_done_and_non_numeric_metric_keeps_reward(self) -> None:
+    def test_lenient_drops_non_numeric_metric_keeps_reward_and_done(self) -> None:
         with pytest.warns(UserWarning, match="lenient mode") as record:
             parsed = validate_reward_map(
                 {
                     "reward": 1.0,
                     "done": True,
-                    "metrics": {"accuracy": 0.5, "label": "good"},
+                    "metrics": {"accuracy": 0.5, "label": "good", "note": None},
                 },
                 source="reward JSON",
                 lenient=True,
             )
-        assert parsed == {"reward": 1.0, "metrics": {"accuracy": 0.5}}
+        assert parsed == {"reward": 1.0, "done": True, "metrics": {"accuracy": 0.5}}
         # A single aggregated warning listing every dropped key.
         assert len(record) == 1
         message = str(record[0].message)
-        assert "done" in message
-        assert "metrics.label" in message
+        assert "done" not in message
+        assert "metrics.label" in message and "metrics.note" in message
 
     def test_lenient_keeps_recognized_structured_keys(self) -> None:
         with warnings.catch_warnings():
@@ -76,11 +80,10 @@ class TestLenientDropsAndWarns:
         assert parsed == {"reward": 0.4, "metrics": {"acc": 0.4}, "reason": "ok"}
 
     def test_lenient_derives_reward_from_score_alias(self) -> None:
-        with pytest.warns(UserWarning):
-            parsed = validate_reward_map(
-                {"score": 0.75, "done": True}, source="reward JSON", lenient=True
-            )
-        assert parsed == {"reward": 0.75}
+        parsed = validate_reward_map(
+            {"score": 0.75, "done": True}, source="reward JSON", lenient=True
+        )
+        assert parsed == {"reward": 0.75, "done": True}
 
     def test_lenient_derives_reward_from_rewards_alias(self) -> None:
         parsed = validate_reward_map(
@@ -91,9 +94,17 @@ class TestLenientDropsAndWarns:
     def test_lenient_drops_unusable_reward_then_derives(self) -> None:
         with pytest.warns(UserWarning, match="reward"):
             parsed = validate_reward_map(
-                {"reward": 5.0, "score": 0.9}, source="reward JSON", lenient=True
+                {"reward": "n/a", "score": 0.9}, source="reward JSON", lenient=True
             )
         assert parsed == {"reward": 0.9}
+
+    def test_lenient_never_swaps_an_out_of_range_reward_for_an_alias(self) -> None:
+        # An out-of-range reward is kept raw and the trial unscored;
+        # scoring ``score`` in its place would be a score nobody gave.
+        with pytest.raises(RewardOutOfRange, match=r"reward = 5\.0 is outside"):
+            validate_reward_map(
+                {"reward": 5.0, "score": 0.9}, source="reward JSON", lenient=True
+            )
 
     def test_lenient_drops_whole_non_mapping_metrics(self) -> None:
         with pytest.warns(UserWarning, match="metrics"):
