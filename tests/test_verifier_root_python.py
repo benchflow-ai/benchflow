@@ -104,11 +104,44 @@ class ShellEnv:
         )
 
 
+def _acl_on_route(folder: Path) -> Path | None:
+    """The first folder from *folder* up to / that carries a POSIX ACL."""
+    listxattr = getattr(os, "listxattr", None)
+    if listxattr is None:
+        return None
+    for path in (folder, *folder.parents):
+        try:
+            names = listxattr(path)
+        except OSError:
+            continue
+        if any(name.startswith("system.posix_acl_") for name in names):
+            return path
+    return None
+
+
 @pytest.fixture
 def closed_root(monkeypatch):
     """A folder tree no world can write (unlike pytest's tmp under /tmp), so
-    its files can pass the route check for an agent user who is not us."""
-    base = Path.home() / f".v3-root-python-{uuid.uuid4().hex}"
+    its files can pass the route check for an agent user who is not us.
+
+    Under $HOME, unless a folder on its route carries a POSIX ACL, which the
+    judge refuses: GitHub's ubuntu-24.04 runner gives /home a default ACL
+    (default:user:runner:rwx). Then under $XDG_RUNTIME_DIR (/run/user/<uid>,
+    ours alone)."""
+    candidates = [Path.home()]
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        candidates.append(Path(os.environ["XDG_RUNTIME_DIR"]))
+    refused = []
+    for parent in candidates:
+        if not parent.is_dir():
+            refused.append(f"{parent} is missing")
+        elif (acl := _acl_on_route(parent)) is not None:
+            refused.append(f"{acl} carries a POSIX ACL")
+        else:
+            break
+    else:
+        pytest.fail(f"no folder of ours with an ACL-free route: {'; '.join(refused)}")
+    base = parent / f".v3-root-python-{uuid.uuid4().hex}"
     base.mkdir(mode=0o755)
     base.chmod(0o755)
     yield base
