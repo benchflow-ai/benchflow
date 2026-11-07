@@ -30,7 +30,7 @@ from benchflow.task.discovery import (
     resolve_task_collection_root,
 )
 
-_ADAPTER_VERSION = "2026-07-05.5"
+_ADAPTER_VERSION = "2026-07-05.6"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 logger = logging.getLogger(__name__)
